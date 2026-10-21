@@ -22,8 +22,7 @@ import {
   runUp,
   statusCommand,
   updateCommand,
-  upCommand,
-} from './actions'
+  upCommand, pgVolumeName } from './actions'
 import { deployCommand, warnEnvDrift } from './index'
 import { fakeCtx, type FakeCtx } from '../../testing'
 import { CliError } from '../../ui'
@@ -391,12 +390,12 @@ describe('talaria deploy — COMPOSE_FILE (the registry-image flow)', () => {
   // compose.registry.yml swaps the image but cannot REMOVE the base's build:
   // key — `up --build` would build the checkout and tag it as the registry
   // ref. Registry mode pulls what compose resolves and ups without --build.
-  test('registry mode: pull talaria + searxng-config first, then up -d — never --build', async () => {
+  test('registry mode: pull talaria first, then up -d — never --build', async () => {
     const ctx = fakeCtx({ env: { COMPOSE_FILE: FILES } })
     ctx.root = makeDeployTree()
     await runUp(ctx, '/nonexistent-deploy-test-socket')
     const pull = ctx.calls.find((c) => c.cmd === 'docker' && c.args.includes('pull'))!
-    expect(pull.args).toEqual(['compose', 'pull', 'talaria', 'searxng-config'])
+    expect(pull.args).toEqual(['compose', 'pull', 'talaria'])
     const up = ctx.calls.find((c) => c.cmd === 'docker' && c.args.includes('up'))!
     expect(up.args).toEqual(['compose', 'up', '-d'])
     expect(ctx.calls.indexOf(pull)).toBeLessThan(ctx.calls.indexOf(up))
@@ -407,13 +406,13 @@ describe('talaria deploy — COMPOSE_FILE (the registry-image flow)', () => {
     ctx.root = makeDeployTree()
     await runUpdate(ctx, '/nonexistent-deploy-test-socket')
     expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args[0] === 'pull' && c.args[1] === 'ghcr.io/outcrop-labs/talaria-api:main')).toBe(false)
-    expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args.includes('searxng-config'))).toBe(true)
+    expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args[0] === 'compose' && c.args[1] === 'pull')).toBe(true)
   })
 
   test('a failed compose pull dies before the up — never run on the daemon cache', async () => {
     const ctx = fakeCtx({ env: { COMPOSE_FILE: FILES } })
     ctx.root = makeDeployTree()
-    ctx.plant(['docker', ['compose', 'pull', 'talaria', 'searxng-config']], new Error('no route to ghcr'))
+    ctx.plant(['docker', ['compose', 'pull', 'talaria']], new Error('no route to ghcr'))
     const msg = await attempt(() => runUp(ctx, '/nonexistent-deploy-test-socket'))
     expect(msg).toContain('registry-mode up must not run')
     expect(ctx.calls.some((c) => c.args.includes('up'))).toBe(false)
@@ -439,7 +438,7 @@ describe('talaria deploy — COMPOSE_FILE (the registry-image flow)', () => {
     const update = fakeCtx({ env: { COMPOSE_FILE: broken } })
     update.root = makeDeployTree()
     await runUpdate(update, '/nonexistent-deploy-test-socket')
-    expect(update.calls.some((c) => c.cmd === 'docker' && c.args.includes('searxng-config'))).toBe(true)
+    expect(update.calls.some((c) => c.cmd === 'docker' && c.args[0] === 'compose' && c.args[1] === 'pull')).toBe(true)
     expect(update.calls.some((c) => c.cmd === 'docker' && c.args.includes('up'))).toBe(true)
   })
 
@@ -532,6 +531,25 @@ describe('talaria deploy up — first-boot shared secrets', () => {
     expect(text).not.toContain('from-shell') // shell values stay in the shell
     expect(text).toMatch(/^TALARIA_S3_ACCESS_KEY=[0-9a-f]{48}$/m) // only the gap is filled
     expect(text).not.toMatch(/^TALARIA_S3_SECRET_KEY=/m)
+  })
+
+  test('a renamed compose project guards ITS OWN postgres volume, not the default name', async () => {
+    // The dogfood shape: COMPOSE_PROJECT_NAME in docker/.env, an initialized
+    // cluster under <project>_pg-data. The guard used to inspect
+    // talaria_pg-data, miss, and treat the host as fresh.
+    const root = makeDeployTree('COMPOSE_PROJECT_NAME=talaria-dogfood\n')
+    const ctx = fakeCtx()
+    ctx.root = root
+    expect(pgVolumeName(ctx)).toBe('talaria-dogfood_pg-data')
+    ctx.plant(['docker', ['volume', 'inspect', 'talaria_pg-data']], new Error('no such volume'))
+    await ensureSharedSecrets(ctx)
+    const text = readFileSync(join(root, 'docker/.env'), 'utf8')
+    expect(text).toContain('POSTGRES_PASSWORD=talaria') // the pinned default, never a random
+    expect(ctx.calls.some((c) => c.args.join(' ') === 'volume inspect talaria-dogfood_pg-data')).toBe(true)
+    // the shell wins over the file, as everywhere else
+    const shell = fakeCtx({ env: { COMPOSE_PROJECT_NAME: 'other' } })
+    shell.root = root
+    expect(pgVolumeName(shell)).toBe('other_pg-data')
   })
 
   test('existing postgres data keeps the password it was born with — a fresh random would lock the app out', async () => {

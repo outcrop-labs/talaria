@@ -19,7 +19,10 @@
 //               and the depth budget. NO billed call.
 //   plan        ONE persona call: this round's queries (recon skips it — its
 //               single query is the question).
-//   search      ONE sonar call: one query, its findings, its sources.
+//   search      ONE sonar call: one query, its findings, its sources. At a
+//               round boundary with rounds still to spend it also asks — one
+//               cheap typed judgment — whether what it has already answers
+//               the ask, and goes straight to the report if it does.
 //   synthesize  ONE persona call: the report.
 //   artifact    create the report artifact and LINK it to the run, so a
 //               re-entry can find the one it already made.
@@ -35,7 +38,9 @@
 //
 // WHAT A RE-ENTRY REPEATS, IN THE WORST CASE, per step: begin nothing (`on
 // conflict do nothing`); plan one planner call, re-planned rather than
-// duplicated; search ONE sonar call, re-billed, for the one query in flight;
+// duplicated; search ONE sonar call, re-billed, for the one query in flight,
+// plus the round-boundary judgment above when the step that died had got that
+// far;
 // synthesize one synthesis call, re-billed, nothing downstream yet; artifact a
 // SECOND artifact only if the process dies between the create and the link,
 // which is one statement apart (the loser is an empty untitled doc); save
@@ -184,17 +189,14 @@ fn base_budget(mode: ResearchDepth) -> ModeBudget {
     }
 }
 
-/// Unset, unparsable or zero `TALARIA_RESEARCH_MAX_ROUNDS` all fall back to
-/// the mode's own bound; a positive integer overrides it.
-pub fn budget_for(mode: ResearchDepth) -> ModeBudget {
-    let mut b = base_budget(mode);
-    if let Ok(v) = std::env::var("TALARIA_RESEARCH_MAX_ROUNDS")
-        && let Ok(n) = v.parse::<u64>()
-        && n > 0
-    {
-        b.rounds = n;
-    }
-    b
+/// Unset, unparsable or zero `TALARIA_RESEARCH_MAX_ROUNDS` all answer None; a
+/// positive integer is the operator's own round bound.
+fn env_rounds() -> Option<u64> {
+    std::env::var("TALARIA_RESEARCH_MAX_ROUNDS")
+        .ok()?
+        .parse::<u64>()
+        .ok()
+        .filter(|n| *n > 0)
 }
 
 /// The picker's mode list: what the UI shows next to each button.
@@ -207,6 +209,117 @@ pub fn research_modes() -> Vec<(&'static str, &'static str)> {
     .into_iter()
     .map(|m| (depth_str(m), base_budget(m).blurb))
     .collect()
+}
+
+// ── The dials ────────────────────────────────────────────────────────────────
+//
+// WHY THREE NUMBERS BESIDE THE MODE. A mode is a name for a shape of run, and
+// a name is all it is: somebody who wanted an expedition's rounds over a
+// brief's handful of angles had to take the whole preset or none of it. The
+// dials are that preset taken apart — how long to work, how wide to cast, how
+// many citations the report may stand on — so a caller moves one axis and
+// leaves the others where the mode put them. A mode nobody has dialled is
+// EXACTLY its preset: recon, brief and expedition read through the maps
+// below to the same rounds and angles `base_budget` always gave them (1×1,
+// 1×3, 3×4), so turning the dials on changes nobody's bill until somebody
+// turns one. `base_budget` keeps its own numbers for the picker's blurbs,
+// and the maps are pinned to it by test.
+/// How hard a run works, on the three axes that trade off against each other.
+/// Each is 1..=3; `validate` is the gate, and the route answers 400 with the
+/// field it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Dials {
+    /// How many rounds the loop may spend.
+    pub effort: u8,
+    /// How many angles each round plans.
+    pub breadth: u8,
+    /// How many sources the report may stand on.
+    pub sources: u8,
+}
+
+impl Dials {
+    /// The mode's own preset — and the meaning of an input that names no
+    /// dials at all.
+    pub fn from_mode(mode: ResearchDepth) -> Dials {
+        match mode {
+            ResearchDepth::Recon => Dials {
+                effort: 1,
+                breadth: 1,
+                sources: 1,
+            },
+            ResearchDepth::Brief => Dials {
+                effort: 1,
+                breadth: 2,
+                sources: 2,
+            },
+            ResearchDepth::Expedition => Dials {
+                effort: 3,
+                breadth: 3,
+                sources: 3,
+            },
+        }
+    }
+
+    /// In band on every axis, or the FIELD NAME of the first one that is not:
+    /// a number nobody can locate is not an error message.
+    pub fn validate(self) -> Result<Dials, String> {
+        for (field, v) in [
+            ("effort", self.effort),
+            ("breadth", self.breadth),
+            ("sources", self.sources),
+        ] {
+            if !(1..=3).contains(&v) {
+                return Err(format!("{field} must be 1, 2 or 3 (got {v})"));
+            }
+        }
+        Ok(self)
+    }
+
+    /// Rounds of the loop. The three maps are deliberately not linear — the
+    /// top of a dial is a person saying they want the deep version, and
+    /// doubling is what makes that choice visible in the work. Written
+    /// saturating rather than exhaustive so a dial that got past `validate`
+    /// reads as the end of its band instead of deciding a paid run's budget
+    /// by panic.
+    pub fn rounds(self) -> u64 {
+        match self.effort {
+            0 | 1 => 1,
+            2 => 2,
+            _ => 3,
+        }
+    }
+
+    /// Angles per round — the planner's `max`.
+    pub fn queries(self) -> u64 {
+        match self.breadth {
+            0 | 1 => 1,
+            2 => 3,
+            _ => 4,
+        }
+    }
+
+    /// The ceiling on citations the report may stand on.
+    pub fn max_sources(self) -> u64 {
+        match self.sources {
+            0 | 1 => 6,
+            2 => 12,
+            _ => 24,
+        }
+    }
+}
+
+/// The budget a run with these dials gets: the mode keeps its search-model
+/// preference and its blurb, the dials say how much work to do. The env
+/// override still outranks the effort dial, because
+/// `TALARIA_RESEARCH_MAX_ROUNDS` exists to keep a run on somebody's laptop
+/// short and a dial that could lengthen it again would defeat that.
+pub fn budget_for_dials(mode: ResearchDepth, dials: Dials) -> ModeBudget {
+    ModeBudget {
+        rounds: env_rounds().unwrap_or_else(|| dials.rounds()),
+        queries: dials.queries(),
+        ..base_budget(mode)
+    }
 }
 
 // ── Search planning ──────────────────────────────────────────────────────────
@@ -374,6 +487,20 @@ pub struct ResearchInput {
     /// dies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
+    /// HOW HARD THIS RUN WORKS, when the caller said. None means the mode's
+    /// own preset (`Dials::from_mode`) and is what every input written before
+    /// the dials existed deserializes to — so a run reclaimed across the
+    /// deploy that added them keeps the budget it was started with.
+    #[serde(default)]
+    pub dials: Option<Dials>,
+    /// THE THREAD THIS RUN REPORTS INTO, when the caller named one instead of
+    /// letting the run make its own. On the INPUT for the same reason as the
+    /// parent link: `start_research` writes it into the row, and a reclaim
+    /// that had to rebuild the domain record from this input must put the run
+    /// back in the conversation people are reading rather than open a second
+    /// one beside it. Access was proved by the route that took it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
 }
 
 /// What the NEXT step does — the one field the driver's re-entry branches on.
@@ -407,6 +534,20 @@ pub struct ResearchCheckpoint {
     /// The adapted depth budget, likewise resolved once.
     pub rounds: u64,
     pub per_round: u64,
+    /// The ceiling on the citations the REPORT may stand on, from the
+    /// `sources` dial. ZERO IS NO CAP, and zero is what a checkpoint written
+    /// before the dials existed deserializes to: a run already in flight
+    /// finishes on the budget it started with rather than refusing to resume.
+    #[serde(default)]
+    pub max_sources: u64,
+    /// How many of `sources` a follow-up inherited from its parent's report.
+    /// The cap counts the run's OWN finds: the inherited ones are the
+    /// numbers the parent's prose already cites, lowest in the registry, and
+    /// a cap that counted them would keep the parent's sources and drop
+    /// every one this run went out and read. Zero on a fresh run and on any
+    /// checkpoint written before this field existed.
+    #[serde(default)]
+    pub seeded_sources: u64,
     /// 1-based. `round > rounds` means the loop is done.
     pub round: u64,
     /// This round's planned queries, in order.
@@ -477,6 +618,21 @@ pub struct PlanQueriesArgs {
     /// joined — or None on a run that scoped crisp with nothing to add, and on
     /// Recon, which never scopes.
     pub scope_note: Option<String>,
+}
+
+/// What the early-exit question is asked over at a round boundary. The
+/// findings are the run's own notes, which is the only state that can answer
+/// "do we have it yet" — the question is whether THESE answer THAT ask, not
+/// whether the topic is exhausted.
+pub struct EnoughArgs {
+    pub run_id: String,
+    pub question: String,
+    pub scope_read: Option<String>,
+    pub findings: Vec<String>,
+    /// The round that just finished, 1-based, and the run's whole allowance.
+    pub round: u64,
+    pub rounds: u64,
+    pub mode: ResearchDepth,
 }
 
 pub struct ScopeArgs {
@@ -602,6 +758,12 @@ pub type SearchPlanForFn =
 /// caller's fallback is to proceed as crisp.
 pub type ScopeAskFn =
     Arc<dyn Fn(ScopeArgs) -> BoxFuture<'static, Option<ScopeVerdict>> + Send + Sync>;
+/// TRUE = the findings already answer the ask at the depth that was asked
+/// for; write the report now and leave the remaining rounds unspent. False is
+/// the budget's own answer — keep going — and so is every failure, every
+/// silence and every judgment under the site's floor: this dep may only ever
+/// SHORTEN a run, so having nothing to say costs the run nothing.
+pub type EnoughFn = Arc<dyn Fn(EnoughArgs) -> BoxFuture<'static, bool> + Send + Sync>;
 pub type PlanQueriesFn =
     Arc<dyn Fn(PlanQueriesArgs) -> BoxFuture<'static, Vec<String>> + Send + Sync>;
 pub type SearchFn =
@@ -658,6 +820,10 @@ pub struct ResearchRunDeps {
     /// The persona judges the ask before anything is planned. None means
     /// "no verdict" and the run proceeds as crisp — see ScopeAskFn.
     pub scope_ask: ScopeAskFn,
+    /// IS THAT ENOUGH? Asked at a round boundary with rounds still to spend.
+    /// The budget's own answer is "keep going", so this dep is only ever
+    /// consulted for permission to stop early — see EnoughFn.
+    pub enough: EnoughFn,
     /// The persona plans a round. Never fails — a failed plan is one lost
     /// round, and an empty list is the persona saying the question is
     /// saturated.
@@ -783,16 +949,25 @@ async fn scope_stage(state: &AppState, args: ScopeArgs) -> Option<ScopeVerdict> 
     // are the transport's failures, and they get the same answer.
     .ok()?;
     let verdict: Option<ScopeVerdict> = run.value.and_then(|v| serde_json::from_value(v).ok());
+    let mode = format!("{:?}", args.mode).to_lowercase();
 
-    // MEASURED, NOT ACTED ON. `crisp` is a boolean a text model wrote with no
-    // number on it, and a Noul is exactly that question — but the verdict is
-    // coupled to its prose (`questions` is non-empty exactly when `crisp` is
-    // false, and both halves are posted into the run's discussion), so a typed
-    // answer cannot replace it without replacing the prose too. See
-    // `talaria_decide::scope`. Detached, after the verdict is decided.
+    // MEASURED ALWAYS, ACTED ON IN EXACTLY ONE DIRECTION. `crisp` is a boolean
+    // a text model wrote with no number on it, and a Noul is exactly that
+    // question — but the verdict is coupled to its prose (`questions` is
+    // non-empty exactly when `crisp` is false, and both halves are posted into
+    // the run's discussion), so a typed answer cannot replace it wholesale.
+    // What it can do is one-sided, below: a confident yes on a vague verdict
+    // keeps the read and drops the questions, which spares a person a park
+    // they did not need. The other direction has nothing to offer — a
+    // manufactured vague verdict would need questions to ask, and the typed
+    // answer has none. See `talaria_decide::scope`.
+    //
+    // The comparison row is written for every verdict either way, detached and
+    // after the verdict is decided: an agreement rate computed over only the
+    // half that was not overridden is not one.
     if let Some(v) = verdict.as_ref() {
         let (state, question) = (state.clone(), args.question.clone());
-        let mode = format!("{:?}", args.mode).to_lowercase();
+        let mode = mode.clone();
         let baseline = talaria_decide::scope::baseline_of(v.crisp);
         tokio::spawn(async move {
             let http = talaria_retrieval_http::real_http();
@@ -811,6 +986,35 @@ async fn scope_stage(state: &AppState, args: ScopeArgs) -> Option<ScopeVerdict> 
                 judged.as_ref(),
             )
             .await;
+        });
+    }
+
+    // THE ONE DIRECTION. The run parks exactly when the verdict is not crisp
+    // AND carries questions to ask, so that is the only verdict worth asking
+    // the port about and the only one the judgment is spent on.
+    // `crisp_override` is the site's own door (judge, then `acted`), so a port
+    // that is off, unsure or under its floor answers false and the run parks
+    // as it does today.
+    //
+    // THE PRICE, stated: on that path the question is asked twice — once
+    // detached for the ledger, once here to decide. That is what leaving the
+    // measurement untouched costs while the override is on trial, and the
+    // vague verdict is the rare one.
+    if let Some(v) = verdict
+        .as_ref()
+        .filter(|v| !v.crisp && !v.questions.is_empty())
+        && talaria_decide::scope::crisp_override(
+            state,
+            &talaria_retrieval_http::real_http(),
+            &args.question,
+            &mode,
+        )
+        .await
+    {
+        return Some(ScopeVerdict {
+            crisp: true,
+            read: v.read.clone(),
+            questions: Vec::new(),
         });
     }
     verdict
@@ -925,6 +1129,7 @@ fn truncate_chars(s: &str, n: usize) -> String {
 pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
     let st_plan = state.clone();
     let st_scope = state.clone();
+    let st_enough = state.clone();
     let st_plan_q = state.clone();
     let st_search = state.clone();
     let st_synth = state.clone();
@@ -952,6 +1157,30 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
         scope_ask: Arc::new(move |args| {
             let state = st_scope.clone();
             Box::pin(async move { scope_stage(&state, args).await })
+        }),
+        enough: Arc::new(move |args: EnoughArgs| {
+            let state = st_enough.clone();
+            Box::pin(async move {
+                // THE SITE'S OWN DOOR, not a second spelling of it:
+                // `enough_now` asks, records the comparison (every answer,
+                // including the silences and the ones under the floor — an
+                // agreement rate over the acted-on half is not one) and only
+                // then reads `acted`. Writing that sequence out here instead
+                // is how the ledger and the behaviour come to disagree about
+                // what this site did.
+                talaria_decide::enough::enough_now(
+                    &state,
+                    &talaria_retrieval_http::real_http(),
+                    &args.run_id,
+                    &args.question,
+                    args.scope_read.as_deref(),
+                    &args.findings,
+                    args.round,
+                    args.rounds,
+                    depth_str(args.mode),
+                )
+                .await
+            })
         }),
         plan_queries: Arc::new(move |args| {
             let state = st_plan_q.clone();
@@ -1350,6 +1579,26 @@ fn first_round(input: &ResearchInput) -> (ResearchStage, Vec<String>) {
     }
 }
 
+/// The sources the REPORT may stand on, when the `sources` dial set a
+/// ceiling. LOWEST INDEX FIRST, and that is the whole of the choice: [1] is
+/// the first thing the run found, the findings handed to synthesis cite the
+/// early numbers most, and a cap that kept the tail would hand the writer a
+/// source list its own notes never refer to.
+///
+/// Zero is no cap (an older deploy's checkpoint). And the cap bounds the
+/// REPORT, not the record: `save_sources` still writes every source the run
+/// consulted, so the citation rows say what was read and the report says what
+/// it stands on.
+fn capped(sources: &[ResearchSource], max: u64) -> Vec<ResearchSource> {
+    if max == 0 || sources.len() as u64 <= max {
+        return sources.to_vec();
+    }
+    let mut kept = sources.to_vec();
+    kept.sort_by_key(|s| s.idx);
+    kept.truncate(max as usize);
+    kept
+}
+
 /// The report-side marker grammar. TWO digits — deliberately narrower than
 /// the REGISTRY's marker grammar (`source_registry::MARKER_RE`), which is
 /// three because an expedition's global numbering can pass [99], while this
@@ -1677,6 +1926,33 @@ async fn advance(
             next.findings.push(note);
             next.sources = registry.list();
             next.search_failed = failed;
+            // IS THAT ENOUGH? Asked at a round boundary only, and only with a
+            // round still left to spend: on the last round there is nothing to
+            // save, and a run with nothing citable yet has no findings for the
+            // question to read. An abandoned step is not asked either — the
+            // search above is already paid for, and checkpointing it the
+            // ordinary way is worth more than the question.
+            if round_over
+                && next.round <= cp.rounds
+                && !next.sources.is_empty()
+                && !ctx.signal.is_aborted()
+                && (deps.enough)(EnoughArgs {
+                    run_id: run_id.clone(),
+                    question: input.question.clone(),
+                    scope_read: cp.scope_read.clone(),
+                    findings: next.findings.clone(),
+                    round: cp.round,
+                    rounds: cp.rounds,
+                    mode: input.mode,
+                })
+                .await
+            {
+                // The remaining rounds go unspent, and the phase says why: a
+                // run that simply stopped planning would read as a budget
+                // somebody had miscounted.
+                next.stage = ResearchStage::Synthesize;
+                return step_next(&next, &format!("enough after round {}", cp.round));
+            }
             step_next(&next, &format!("searched {n}"))
         }
 
@@ -1714,7 +1990,17 @@ async fn advance(
 
             (ctx.log)("writing the report".to_string());
             stop_if_abandoned(ctx)?;
-            let registry = SourceRegistry::from(&cp.sources);
+            // ONE REGISTRY FOR THE WHOLE STEP, and it is the capped one: the
+            // source list handed to the writer, the markers that are allowed
+            // to resolve, and the Sources section underneath the prose all
+            // have to agree about which [n] exist, or the report would cite a
+            // number its own list does not carry.
+            let cap = if cp.max_sources == 0 {
+                0
+            } else {
+                cp.max_sources + cp.seeded_sources
+            };
+            let registry = SourceRegistry::from(&capped(&cp.sources, cap));
             let synth_sources: Vec<SynthSource> = registry
                 .list()
                 .iter()
@@ -1745,9 +2031,15 @@ async fn advance(
             // is in the best position to report, thrown away by the line that
             // fixed the symptom.
             let known: HashSet<u64> = registry.list().iter().map(|s| s.idx).collect();
+            // `dropped` counts INVENTED markers — numbers no source the run
+            // read ever carried. A marker the cap took off the report's list
+            // was a real citation the writer saw in the findings, and
+            // counting it as fabricated would make a capped run read as a
+            // model that makes things up.
+            let read: HashSet<u64> = cp.sources.iter().map(|s| s.idx).collect();
             let dropped = marker_nums(&doc)
                 .into_iter()
-                .filter(|n| !known.contains(n))
+                .filter(|n| !read.contains(n))
                 .count() as u64;
             let cleaned = cleanup_markers(&doc, &known);
             let cited: HashSet<u64> = marker_nums(&cleaned).into_iter().collect();
@@ -1976,6 +2268,18 @@ async fn research_step(ctx: RunStepContext, deps: &ResearchRunDeps) -> Result<St
     }
 }
 
+/// The dials a run actually works at: the caller's when they named any, the
+/// mode's preset otherwise. Out-of-band dials fall back to the preset rather
+/// than failing the run — the route validates and names the field, and an
+/// input that reaches a driver anyway (a row an older deploy wrote, a
+/// hand-made enqueue) is not worth ending a paid run over.
+fn effective_dials(input: &ResearchInput) -> Dials {
+    input
+        .dials
+        .and_then(|d| d.validate().ok())
+        .unwrap_or_else(|| Dials::from_mode(input.mode))
+}
+
 async fn begin(
     ctx: &RunStepContext,
     deps: &ResearchRunDeps,
@@ -1991,7 +2295,11 @@ async fn begin(
             return Err(NO_SEARCH_REASON.to_string());
         };
         let search_model = plan.model.clone();
-        let budget = adapt_budget(budget_for(input.mode), &search_model);
+        // THE DIALS FIRST, THEN THE CLAMP: the dials are what the caller asked
+        // for, and `adapt_budget` is what the search model that was actually
+        // resolved can usefully be asked to do.
+        let dials = effective_dials(input);
+        let budget = adapt_budget(budget_for_dials(input.mode, dials), &search_model);
         // A FOLLOW-UP CONTINUES ITS PARENT'S NUMBERING. Seeded here, into the
         // checkpoint, so [1]..[n] keep meaning what the parent's
         // already-written prose says they mean and anything new starts above
@@ -2019,6 +2327,8 @@ async fn begin(
             search_supplier: plan.supplier,
             rounds: budget.rounds,
             per_round: budget.queries,
+            max_sources: dials.max_sources(),
+            seeded_sources: parent_sources.len() as u64,
             round: 1,
             done: 0,
             queries_run: 0,
@@ -2123,6 +2433,10 @@ mod tests {
         searched: Vec<String>,
         suppliers: Vec<Option<Supplier>>,
         scoped: u32,
+        /// Every early-exit ask, as (the round that finished, the allowance).
+        /// A list rather than a count because WHEN the question was asked is
+        /// the whole of the contract.
+        enough_asks: Vec<(u64, u64)>,
         posted: Vec<(String, String)>,
         planned_notes: Vec<Option<String>>,
         planned: u32,
@@ -2159,6 +2473,9 @@ mod tests {
         scope_vague: bool,
         scope_none: bool,
         has_conversation: bool,
+        /// What the early-exit judgment answers. False is the default because
+        /// false is what an install with no decision model configured gets.
+        enough_true: bool,
     }
 
     impl Default for WorldSpec {
@@ -2173,6 +2490,7 @@ mod tests {
                 scope_vague: false,
                 scope_none: false,
                 has_conversation: true,
+                enough_true: false,
             }
         }
     }
@@ -2188,6 +2506,7 @@ mod tests {
             scope_vague,
             scope_none,
             has_conversation,
+            enough_true,
         } = spec;
         let w: Arc<std::sync::Mutex<World>> = Arc::new(std::sync::Mutex::new(World {
             row_exists: true,
@@ -2232,6 +2551,19 @@ mod tests {
                                 Vec::new()
                             },
                         })
+                    })
+                })
+            },
+            enough: {
+                let w = w.clone();
+                Arc::new(move |args: EnoughArgs| {
+                    let w = w.clone();
+                    Box::pin(async move {
+                        w.lock()
+                            .expect("the world is never held across an await")
+                            .enough_asks
+                            .push((args.round, args.rounds));
+                        enough_true
                     })
                 })
             },
@@ -2510,6 +2842,30 @@ mod tests {
             owner_user_id: Some("user-1".into()),
             requested_by: "user-1".into(),
             parent_run_id: None,
+            dials: None,
+            conversation_id: None,
+        }
+    }
+
+    /// The same run with the effort dial on its middle notch and one angle a
+    /// round: two rounds, one search each, so a step count stays readable.
+    fn two_round(mode: ResearchDepth) -> ResearchInput {
+        ResearchInput {
+            dials: Some(Dials {
+                effort: 2,
+                breadth: 1,
+                sources: 3,
+            }),
+            ..input(mode)
+        }
+    }
+
+    fn source(idx: u64) -> ResearchSource {
+        ResearchSource {
+            idx,
+            url: format!("https://example.com/{idx}"),
+            title: None,
+            snippet: None,
         }
     }
 
@@ -2667,6 +3023,8 @@ mod tests {
 
     #[tokio::test]
     async fn expedition_runs_three_rounds_of_four_and_stops_on_its_own() {
+        // The expedition preset is the dials at 3/3/3, which is three rounds
+        // of four — exactly what the mode cost before it had dials.
         let (w, deps) = make_world(WorldSpec::default());
         let out = drive_run(&deps, &input(ResearchDepth::Expedition), None).await;
         assert!(out.error.is_none());
@@ -2685,7 +3043,7 @@ mod tests {
         let out = drive_run(&deps, &input(ResearchDepth::Expedition), None).await;
         assert!(out.error.is_none());
         let g = w.lock().unwrap();
-        // rounds min(3,2) = 2, one query each.
+        // rounds min(4,2) = 2, one query each.
         assert_eq!(g.planned, 2);
         assert_eq!(g.searched.len(), 2);
     }
@@ -2947,6 +3305,294 @@ mod tests {
         assert!(body.starts_with("Report ready: **"));
         assert!(body.contains("3 sources"));
         assert!(body.contains("[Open it beside this discussion](/research/run-1)"));
+    }
+
+    // ── The dials ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_mode_nobody_dialled_is_exactly_its_preset() {
+        for mode in [
+            ResearchDepth::Recon,
+            ResearchDepth::Brief,
+            ResearchDepth::Expedition,
+        ] {
+            let dials = Dials::from_mode(mode);
+            assert!(dials.validate().is_ok(), "{mode:?}");
+            let budget = budget_for_dials(mode, dials);
+            assert_eq!(budget.rounds, dials.rounds(), "{mode:?}");
+            assert_eq!(budget.queries, dials.queries(), "{mode:?}");
+            // The dials say how much work; the mode keeps everything else it
+            // ever said.
+            assert_eq!(budget.blurb, base_budget(mode).blurb, "{mode:?}");
+            assert_eq!(budget.search, base_budget(mode).search, "{mode:?}");
+        }
+        // Recon and brief are the two shapes that existed before the dials,
+        // and they still read exactly the same: one pass, and one planned
+        // round of three.
+        let recon = Dials::from_mode(ResearchDepth::Recon);
+        assert_eq!((recon.rounds(), recon.queries()), (1, 1));
+        let brief = Dials::from_mode(ResearchDepth::Brief);
+        assert_eq!((brief.rounds(), brief.queries()), (1, 3));
+    }
+
+    #[test]
+    fn the_three_maps_are_the_numbers_every_surface_promises() {
+        let d = |effort, breadth, sources| Dials {
+            effort,
+            breadth,
+            sources,
+        };
+        assert_eq!(
+            [
+                d(1, 1, 1).rounds(),
+                d(2, 1, 1).rounds(),
+                d(3, 1, 1).rounds()
+            ],
+            [1, 2, 3]
+        );
+        assert_eq!(
+            [
+                d(1, 1, 1).queries(),
+                d(1, 2, 1).queries(),
+                d(1, 3, 1).queries()
+            ],
+            [1, 3, 4]
+        );
+        assert_eq!(
+            [
+                d(1, 1, 1).max_sources(),
+                d(1, 1, 2).max_sources(),
+                d(1, 1, 3).max_sources()
+            ],
+            [6, 12, 24]
+        );
+    }
+
+    #[test]
+    fn validate_names_the_field_it_refuses_so_a_400_can_point_at_it() {
+        for ok in [(1, 1, 1), (3, 3, 3), (2, 1, 3)] {
+            let dials = Dials {
+                effort: ok.0,
+                breadth: ok.1,
+                sources: ok.2,
+            };
+            assert!(dials.validate().is_ok(), "{dials:?}");
+        }
+        for (bad, field) in [
+            ((0, 2, 2), "effort"),
+            ((4, 2, 2), "effort"),
+            ((2, 0, 2), "breadth"),
+            ((2, 9, 2), "breadth"),
+            ((2, 2, 0), "sources"),
+            ((2, 2, 4), "sources"),
+        ] {
+            let err = Dials {
+                effort: bad.0,
+                breadth: bad.1,
+                sources: bad.2,
+            }
+            .validate()
+            .expect_err("out of band");
+            assert!(err.starts_with(field), "{err}");
+        }
+        // Out of band and past the gate anyway — the maps saturate rather than
+        // deciding a paid run's budget by panic.
+        let wild = Dials {
+            effort: 9,
+            breadth: 0,
+            sources: 9,
+        };
+        assert_eq!(
+            (wild.rounds(), wild.queries(), wild.max_sources()),
+            (3, 1, 24)
+        );
+    }
+
+    #[test]
+    fn a_dialled_input_outranks_the_mode_and_a_broken_one_falls_back_to_it() {
+        let dialled = ResearchInput {
+            dials: Some(Dials {
+                effort: 3,
+                breadth: 1,
+                sources: 1,
+            }),
+            ..input(ResearchDepth::Brief)
+        };
+        assert_eq!(effective_dials(&dialled).rounds(), 3);
+        // A run is never ended over a dial: the route validates and names the
+        // field, and anything that reaches a driver anyway runs the preset.
+        let broken = ResearchInput {
+            dials: Some(Dials {
+                effort: 7,
+                breadth: 1,
+                sources: 1,
+            }),
+            ..input(ResearchDepth::Brief)
+        };
+        assert_eq!(
+            effective_dials(&broken),
+            Dials::from_mode(ResearchDepth::Brief)
+        );
+    }
+
+    #[test]
+    fn an_older_deploys_checkpoint_and_input_still_re_enter() {
+        // What a row written before the dials existed carries. The cap absent
+        // is NO CAP — a run in flight across the deploy finishes on the budget
+        // it started with rather than refusing to deserialize.
+        let cp: ResearchCheckpoint = serde_json::from_value(json!({
+            "stage": "search",
+            "searchModel": "sonar",
+            "searchSupplier": null,
+            "rounds": 3,
+            "perRound": 4,
+            "round": 2,
+            "plan": ["q"],
+            "done": 0,
+            "queriesRun": 4,
+            "findings": ["### Query: q\nwhat it found [1]"],
+            "sources": [],
+            "searchFailed": false,
+            "retries": 0,
+            "report": null,
+            "artifactId": null
+        }))
+        .expect("a checkpoint an older deploy wrote still re-enters");
+        assert_eq!(cp.max_sources, 0);
+        let thirty: Vec<ResearchSource> = (1..=30).map(source).collect();
+        assert_eq!(capped(&thirty, cp.max_sources).len(), 30, "zero is no cap");
+
+        let inp: ResearchInput = serde_json::from_value(json!({
+            "question": "what changed in postgres 17",
+            "mode": "brief",
+            "agentModel": "nomad",
+            "ownerUserId": "user-1",
+            "requestedBy": "user-1"
+        }))
+        .expect("an input an older deploy wrote still re-enters");
+        assert_eq!(inp.dials, None);
+        assert_eq!(
+            effective_dials(&inp),
+            Dials::from_mode(ResearchDepth::Brief)
+        );
+    }
+
+    #[test]
+    fn the_cap_keeps_the_lowest_indices_because_that_is_what_the_findings_cite() {
+        let all: Vec<ResearchSource> = (1..=10).map(source).collect();
+        assert_eq!(
+            capped(&all, 4).iter().map(|s| s.idx).collect::<Vec<_>>(),
+            [1, 2, 3, 4]
+        );
+        // At the cap and above it, nothing is dropped.
+        assert_eq!(capped(&all, 10).len(), 10);
+        assert_eq!(capped(&all, 99).len(), 10);
+        // A checkpoint whose sources came back out of order still keeps the
+        // lowest NUMBERS, not the first rows.
+        let mut reversed = all.clone();
+        reversed.reverse();
+        assert_eq!(
+            capped(&reversed, 3)
+                .iter()
+                .map(|s| s.idx)
+                .collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_sources_dial_caps_what_the_report_cites_not_what_the_run_read() {
+        // Twenty angles, twelve sources, and the lowest sources dial: the
+        // report stands on six of them, and the run still records all twelve.
+        let (w, deps) = make_world(WorldSpec::default());
+        let inp = ResearchInput {
+            dials: Some(Dials {
+                effort: 3,
+                breadth: 3,
+                sources: 1,
+            }),
+            ..input(ResearchDepth::Expedition)
+        };
+        let out = drive_run(&deps, &inp, None).await;
+        assert!(out.error.is_none());
+        let g = w.lock().unwrap();
+        assert_eq!(g.searched.len(), 12);
+        // The Sources section is one line per source the report may stand on.
+        let body = &g.written[0].1;
+        assert_eq!(body.matches("https://example.com/").count(), 6);
+        assert!(body.contains("\n6. ["));
+        assert!(!body.contains("\n7. ["));
+        // The record is not capped: the citation rows say what was read, and
+        // the report says what it stands on.
+        assert_eq!(stats_sources(&g), 12);
+        assert_eq!(g.sources_saved[0].len(), 12);
+    }
+
+    // ── Enough: the judgment may only ever SHORTEN a run ────────────────────
+
+    #[tokio::test]
+    async fn enough_after_round_one_writes_the_report_and_never_plans_round_two() {
+        let (w, deps) = make_world(WorldSpec {
+            enough_true: true,
+            ..Default::default()
+        });
+        let out = drive_run(&deps, &two_round(ResearchDepth::Brief), None).await;
+        assert!(out.error.is_none());
+        let g = w.lock().unwrap();
+        // Round one's plan and nothing after it: the round the budget still
+        // had is the round the judgment saved.
+        assert_eq!(g.planned, 1);
+        assert_eq!(g.searched, ["angle 1.1"]);
+        assert_eq!(g.enough_asks, [(1, 2)]);
+        // And the run finished a real report off that one round.
+        assert_eq!(g.synthesized, 1);
+        assert_eq!(g.finished.len(), 1);
+        assert!(g.written[0].1.contains("A report"));
+    }
+
+    #[tokio::test]
+    async fn a_no_from_the_judgment_runs_the_round_the_budget_bought() {
+        // The default world answers no, which is also what an install with no
+        // decision model configured answers: the loop is unchanged.
+        let (w, deps) = make_world(WorldSpec::default());
+        let out = drive_run(&deps, &two_round(ResearchDepth::Brief), None).await;
+        assert!(out.error.is_none());
+        let g = w.lock().unwrap();
+        assert_eq!(g.planned, 2);
+        assert_eq!(g.searched, ["angle 1.1", "angle 2.1"]);
+        // Asked after round one and NOT after round two.
+        assert_eq!(g.enough_asks, [(1, 2)]);
+    }
+
+    #[tokio::test]
+    async fn the_last_round_is_never_asked_because_there_is_nothing_to_save() {
+        // A brief is one round, so its only boundary is the end of the run — a
+        // judgment there could only spend a call to agree with what the next
+        // step was going to do anyway.
+        let (w, deps) = make_world(WorldSpec {
+            enough_true: true,
+            ..Default::default()
+        });
+        let out = drive_run(&deps, &input(ResearchDepth::Brief), None).await;
+        assert!(out.error.is_none());
+        let g = w.lock().unwrap();
+        assert!(g.enough_asks.is_empty());
+        assert_eq!(g.searched.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_round_that_found_nothing_citable_is_never_asked() {
+        // "Do these findings answer the ask" needs findings. A round whose
+        // every query died has failure notes and no sources, and what answers
+        // that is the no-sources retry, not a judgment.
+        let (w, deps) = make_world(WorldSpec {
+            enough_true: true,
+            ..Default::default()
+        });
+        w.lock().unwrap().all_searches_dead = true;
+        let out = drive_run(&deps, &two_round(ResearchDepth::Brief), None).await;
+        assert_eq!(out.error.as_deref(), Some(NO_SOURCES));
+        assert!(w.lock().unwrap().enough_asks.is_empty());
     }
 
     // ── Resume ──────────────────────────────────────────────────────────────

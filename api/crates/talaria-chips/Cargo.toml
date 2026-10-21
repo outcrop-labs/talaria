@@ -12,7 +12,12 @@ workspace = true
 redis = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The source chip's id is the first 16 hex of its URL's sha256 — a stable
+# handle for "this page", so two engines finding it is one chip.
+sha2 = { workspace = true }
 sqlx = { workspace = true }
+# clip_chars: the house's one display clip (a label, a snippet).
+talaria-body = { workspace = true }
 talaria-notify = { workspace = true }
 talaria-realtime = { workspace = true }
 tokio = { workspace = true }

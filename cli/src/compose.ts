@@ -17,8 +17,8 @@ import type { Ctx } from './ctx'
  *  spelled exactly this way. */
 export const COMPOSE_BASE = 'docker/compose.yml'
 
-/** The SHARED sidecar plane — postgres, redis, qdrant, embeddings, storage,
- *  searxng with their images, restart policies, data volumes, env defaults and
+/** The SHARED sidecar plane — postgres, redis, qdrant, embeddings, storage
+ *  with their images, restart policies, data volumes, env defaults and
  *  healthchecks — which EVERY stack layers IN FRONT of its own file:
  *
  *    docker compose -f docker/sidecars.compose.yml -f docker/dev-compose.yml …
@@ -27,7 +27,7 @@ export const COMPOSE_BASE = 'docker/compose.yml'
  *  so a stack's own container_name / ports / networks / divergent env only
  *  override if they come after it — and docker/devbox.compose.yml's `!reset`
  *  of the two services a box must not run only sticks for the same reason
- *  (a fragment listed last would hand the box a second TEI + SearXNG).
+ *  (a fragment listed last would hand the box a second TEI).
  *  It is deliberately NOT part of the COMPOSE_FILE env flow: that env names
  *  the operator's own layering, and this file is not their override. */
 export const SIDECARS_COMPOSE = 'docker/sidecars.compose.yml'

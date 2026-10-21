@@ -77,7 +77,7 @@ const GROUPS = {
   fleet: { segs: ['fleet'], blurb: 'The agent fleet: defs, containers, crons, federation.' },
   inbox: { segs: ['inbox'], blurb: 'The focus inbox and its command surface.' },
   integrations: { segs: ['integrations'], blurb: 'Connected accounts — Google Workspace and the rest.' },
-  knowledge: { segs: ['kb', 'rag', 'memory', 'search', 'templates'], blurb: 'Knowledge base, RAG collections, org templates, search.' },
+  knowledge: { segs: ['kb', 'rag', 'memory', 'search', 'templates', 'blueprints'], blurb: 'Knowledge base, RAG collections, org templates, blueprints, search.' },
   llm: { segs: ['llm'], blurb: 'The OpenAI-compatible wire (llm.v1.*).' },
   mcp: { segs: ['mcp'], blurb: 'MCP servers, governance, gateway, OAuth.' },
   models: { segs: ['models', 'keys', 'inference'], blurb: 'Model providers, gateway API keys, local backends.' },
@@ -330,7 +330,7 @@ function authClassRust(combined, locals, fileRaw) {
   // so it reads as `session` — the same answer the agent-secrets routes get
   // for the same admin-or-owner shape.
   if (has('broker_agent(')) return { auth: 'agent' }
-  if (has('require_agent_editor(') || has('require_feature(')) return { auth: 'session' }
+  if (has('require_agent_editor(') || has('require_feature(') || has('require_share_rights(')) return { auth: 'session' }
   if (has('check_fleet_key(') || has('fleet_caller(')) return { auth: 'fleet' }
   if (has('authenticate_key(')) return { auth: 'bearer-key' }
   if (has('require_agent(')) return { auth: 'agent' }
@@ -339,6 +339,12 @@ function authClassRust(combined, locals, fileRaw) {
   // the SESSION inside session.rs, so any handler that leads with it is dual
   // by construction, whatever guard spelling follows.
   if (has('acting_user(')) return { auth: 'dual' }
+  // body_editor is artifacts_id.rs's shared "may this caller rewrite this
+  // artifact's body" resolver: an agent-key arm and a require_user arm, both
+  // inside it. A handler that leads with it is dual by construction, the same
+  // reason acting_user above gets an explicit entry rather than falling
+  // through to the unrecognized-guard scan.
+  if (has('body_editor(')) return { auth: 'dual' }
   const manager = has('require_agent_manager(') || has('require_agent_manager_by_model(')
   const agentReader = has('require_agent_reader(')
   const session =

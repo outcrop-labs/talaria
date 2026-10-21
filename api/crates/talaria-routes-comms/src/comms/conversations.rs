@@ -8,7 +8,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use talaria_conversations::list_conversations;
+use talaria_conversations::list_conversations_in;
 use talaria_error::internal;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -24,10 +24,19 @@ pub async fn get(
     uri: Uri,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
-    // ?kind=plan selects plans and ?kind=work selects work sessions; every
-    // other value (absent included) → chats. A whitelist, not a pass-through:
-    // `kind` reaches a SQL bind, and an unknown one would silently list
-    // nothing rather than the chats the caller asked for by omission.
+    // A WHITELIST, not a pass-through: `kind` reaches a SQL bind, and an
+    // unknown one would silently list nothing rather than the chats the caller
+    // asked for by omission.
+    //
+    // `research` IS a kind and was missing from this list, so asking for it
+    // returned CHATS — a quiet wrong answer rather than an empty one, which is
+    // the worse of the two failures and the harder to notice.
+    //
+    // `sessions` is the merged surface's own question: the kinds that are a
+    // session you work in, as one list. Named rather than a comma-separated
+    // pass-through, so the server owns what is in the set — a caller that
+    // could compose arbitrary combinations could ask for one the audience
+    // predicate was never written for.
     let kind = uri
         .query()
         .and_then(|q| {
@@ -36,10 +45,12 @@ pub async fn get(
                 .map(|(_, v)| v.into_owned())
         })
         .unwrap_or_default();
-    let kind = match kind.as_str() {
-        "plan" => "plan",
-        "work" => "work",
-        _ => "chat",
+    let kinds: &[&str] = match kind.as_str() {
+        "plan" => &["plan"],
+        "work" => &["work"],
+        "research" => &["research"],
+        "sessions" => &["work", "plan", "research"],
+        _ => &["chat"],
     };
     // ?archived=1 — the exact string '1' — asks for the retired rows;
     // everything else sees the live ones. Same spelling as /api/boards.
@@ -53,7 +64,7 @@ pub async fn get(
         .as_deref()
         == Some("1");
     Ok(
-        match list_conversations(&state.pg, &user.id, kind, archived).await {
+        match list_conversations_in(&state.pg, &user.id, kinds, archived).await {
             Ok(rows) => (
                 StatusCode::OK,
                 Json(ConversationsEnvelope {

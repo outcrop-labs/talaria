@@ -8,9 +8,24 @@
   import Placeholder from '@tiptap/extension-placeholder'
   import { Markdown } from 'tiptap-markdown'
   import { Extension } from '@tiptap/core'
+  import Suggestion from '@tiptap/suggestion'
+  import { PluginKey } from '@tiptap/pm/state'
+  // The suggestion plugin speaks @tiptap/core's Editor; `$editor` below is
+  // svelte-tiptap's subclass of it, so the two names stay apart.
+  import type { Editor as CoreEditor, Range } from '@tiptap/core'
+  import { flushSync, mount, unmount } from 'svelte'
+  import { useQueryClient } from '@tanstack/svelte-query'
   import { MentionSuggest } from '@/components/ui/mention-suggest'
   import { EmojiSuggest } from '@/components/chat/emoji-suggest'
-  import { shouldSendOnEnter } from '@/components/chat/composer-keys'
+  import { menuHandlesKey, shouldSendNowOnModEnter, shouldSendOnEnter } from '@/components/chat/composer-keys'
+  import CommandMenu from '@/components/chat/CommandMenu.svelte'
+  import { commandItems, expandSlashCommand, platformSkills, type CommandItem } from '@/components/chat/command-suggest'
+  import { BLUEPRINTS_KEY, createBlueprint, deleteBlueprint, useBlueprints } from '@/lib/blueprints'
+  import { useSkills } from '@/lib/skills'
+  import { useSession } from '@/lib/session'
+  import { confirm, prompt } from '@/components/ui/confirm.svelte'
+  import { toastError } from '@/lib/toast.svelte'
+  import { placeMenu } from '@/lib/menu-position'
   import SendButton from '@/components/chat/SendButton.svelte'
   import StopButton from '@/components/chat/StopButton.svelte'
   import ComposerToolbar from './ComposerToolbar.svelte'
@@ -23,9 +38,10 @@
   // the toolbar; @ mentions and : emoji autocomplete inline. Enter sends —
   // except inside a code block, where it makes a newline (Slack semantics);
   // Shift+Enter is always a soft newline. An armed-but-empty autocomplete
-  // menu claims nothing: Enter falls through and sends (TALA-5). Messages
-  // travel as markdown, which is exactly what the message list renders and
-  // agents read.
+  // menu claims nothing: Enter falls through and sends (TALA-5). While a reply
+  // streams the host hands over `onSendNow` and ⌘/Ctrl+Enter becomes the
+  // mid-turn send — Enter still queues. Messages travel as markdown, which is
+  // exactly what the message list renders and agents read.
   //
   // Mercury anatomy (spec §7, updated): the editor sits in an INSET prompt well
   // — ground background, hairline border, radius 6, 14px padding all round —
@@ -40,11 +56,13 @@
     onSubmit,
     onFiles,
     onEscape,
+    commands = false,
     onEmptyChange,
     onInput,
     disabled,
     canSend,
     onStop,
+    onSendNow,
     leftControls,
     rightControls,
     controlRail,
@@ -58,6 +76,12 @@
     /** Pasted/dropped files — the host uploads and tracks pending chips. */
     onFiles?: (files: File[]) => void
     onEscape?: () => void
+    /** Offer "/" commands — the shipped skills and the viewer's blueprints — and
+     *  expand a leading one on send. AGENT-FACING HOSTS ONLY: a human channel
+     *  message that begins "/github" is a message, not a request to use a
+     *  skill, and must travel as typed. Off, the composer runs no command
+     *  reads at all. */
+    commands?: boolean
     /** Notifies emptiness changes so the host can drive its send hint. */
     onEmptyChange?: (empty: boolean) => void
     /** The person changed the text (focused edits only — restoring a draft
@@ -75,6 +99,13 @@
      *  queues the message into the streaming turn) and Escape still reaches
      *  `onEscape`. */
     onStop?: () => void
+    /** THE MID-TURN SEND, set for exactly as long as a reply is streaming.
+     *  Enter keeps its promise — a message sent while the agent replies queues
+     *  and never interrupts — and this is the other offer: hand the draft to
+     *  the turn that is already going. It buys ⌘/Ctrl+⏎ (the host renders the
+     *  visible control itself, and reaches this through `sendNow()`). Unset,
+     *  ⌘⏎ is not ours and falls through to the editor's own hard break. */
+    onSendNow?: (markdown: string) => void
     /** Host controls rendered at the START of the bottom row (attach, emoji). */
     leftControls?: Snippet
     /** Host controls rendered at the END of the bottom row (send hint, tiers, stop). */
@@ -90,8 +121,44 @@
     draftKey?: string | null
   } = $props()
 
+  // ── "/" slash commands (./command-suggest.ts) ──────────────────────────────
+  // The third suggestion menu in this well, beside "@" and ":". Two sources:
+  // the SHIPPED skills an agent already knows how to run, and the viewer's
+  // BLUEPRINTS — text they kept to send again. The reads live HERE rather than
+  // in each host because every composer offers the same commands: a prop would
+  // have been the same two queries wired six times, and a host that forgot one
+  // would silently have no menu. One query key each, so it is one fetch.
+  const qc = useQueryClient()
+  // Created only when the host asked for commands: a composer over a human
+  // channel fetches neither list. `commands` is fixed for a composer's life,
+  // so the conditional creation is stable.
+  // svelte-ignore state_referenced_locally -- reason: `commands` is fixed for a composer's life; the reads exist or not, they never toggle
+  const skillsQuery = commands ? useSkills() : null
+  // svelte-ignore state_referenced_locally -- reason: same — one decision at mount
+  const blueprintsQuery = commands ? useBlueprints() : null
+  const session = useSession()
+  const commandSkills = $derived(platformSkills(skillsQuery?.data ?? []))
+  const blueprints = $derived(blueprintsQuery?.data ?? [])
+  const viewerId = $derived(session.data?.id ?? null)
+  /** One list of names for BOTH halves: what the menu can insert is exactly
+   *  what the send path expands. */
+  const commandNames = $derived(commandSkills.map((s) => s.name))
+
   let empty = $state(true)
   let editor = $state() as Readable<Editor>
+
+  // What travels: markdown, emojified. One serialization for both sends, so
+  // the mid-turn one can never drift from the ordinary one.
+  //
+  // A SLASH COMMAND IS EXPANDED HERE, on the one path both sends share: the
+  // person typed "/github fix the CI", and what they sent — what the agent
+  // reads and what the transcript shows — is the sentence that asks for it.
+  // Doing it in the host would have meant doing it in every host, and a
+  // transcript that disagreed with the message in the one that forgot.
+  const outgoing = (e: Editor): string => {
+    const text = emojify((e.storage.markdown as { getMarkdown: () => string }).getMarkdown().trim())
+    return commands ? expandSlashCommand(text, commandNames) : text
+  }
 
   const submit = () => {
     const e = $editor
@@ -99,8 +166,7 @@
       onSubmit('')
       return
     }
-    const md = emojify((e.storage.markdown as { getMarkdown: () => string }).getMarkdown().trim())
-    onSubmit(md)
+    onSubmit(outgoing(e))
   }
 
   // The keymap is bound once at editor creation; props in runes mode are live
@@ -121,6 +187,24 @@
           submit()
           return true
         },
+        'Mod-Enter': () => {
+          // The mid-turn send, and only while the host offers one. Tiptap
+          // reverses the extension list before building keymaps, so a keymap
+          // declared after StarterKit is consulted first — returning false
+          // here hands the press back to HardBreak, which is what ⌘⏎ has
+          // always done in this well.
+          if (
+            !shouldSendNowOnModEnter({
+              offered: !!onSendNow,
+              hasText: !this.editor.isEmpty,
+              compositionActive: this.editor.view.composing,
+            })
+          ) {
+            return false
+          }
+          sendNow()
+          return true
+        },
         'Shift-Enter': () =>
           this.editor.commands.first(({ commands }) => [
             () => commands.createParagraphNear(),
@@ -135,6 +219,180 @@
           return false
         },
       }
+    },
+  })
+
+  // ── The "/" menu's plumbing ────────────────────────────────────────────────
+  // Clone of the "@"/":" pattern (mention-suggest.ts, emoji-suggest.ts): tiptap
+  // drives the menu from outside any component tree, so CommandMenu is mounted
+  // imperatively and fed through the handle it exports. What differs is that
+  // the rows here can WRITE — a blueprint replaces the draft, the last row
+  // saves it — and those mutations need this component's query client, which
+  // is the other reason the extension is built here and not in a module.
+
+  /** The imperative surface CommandMenu.svelte exports (mount() returns it). */
+  interface CommandMenuHandle {
+    update: (items: CommandItem[], command: (item: CommandItem) => void, remove: (item: CommandItem) => void) => void
+    onKeyDown: (e: KeyboardEvent) => boolean
+  }
+
+  /** Every row the menu shows for what has been typed, save row included.
+   *  `markdownOf` is the drafts helper below — the composer's whole text is
+   *  what the save row would keep. */
+  const commandRowsFor = (e: CoreEditor, query: string): CommandItem[] =>
+    commandItems({ query, skills: commandSkills, blueprints, text: e.isEmpty ? '' : markdownOf(e), viewerId })
+
+  /** The save row: name it, keep it, and leave the well holding the body
+   *  alone — the "/" that opened the menu was a gesture, not content. */
+  const saveAsBlueprint = async (body: string) => {
+    if (!body.trim()) return
+    const name = await prompt({ title: 'Save as blueprint', placeholder: 'Blueprint name', confirmLabel: 'Save' })
+    const trimmed = name?.trim()
+    if (!trimmed) return
+    try {
+      await createBlueprint({ name: trimmed, body })
+      void qc.invalidateQueries({ queryKey: BLUEPRINTS_KEY })
+      $editor?.chain().setContent(body, true).focus('end').run()
+    } catch (e) {
+      toastError('Could not save the blueprint', e)
+    }
+  }
+
+  const runCommand = ({ editor: e, range, props }: { editor: CoreEditor; range: Range; props: CommandItem }) => {
+    if (props.kind === 'skill') {
+      // The token, not the sentence: the well keeps reading as a command and
+      // `outgoing` expands it on the way out.
+      e.chain().focus().deleteRange(range).insertContent(`/${props.label} `).run()
+      return
+    }
+    if (props.kind === 'blueprint') {
+      // Mid-command by construction — the only thing lost is the "/…" — so the
+      // body REPLACES the draft without asking.
+      e.chain().setContent(props.body ?? '', true).focus('end').run()
+      return
+    }
+    void saveAsBlueprint(props.body ?? '')
+  }
+
+  type CommandRenderProps = {
+    items: CommandItem[]
+    command: (item: CommandItem) => void
+    query: string
+    editor: CoreEditor
+    clientRect?: (() => DOMRect | null) | null
+  }
+
+  const CommandSuggest = Extension.create({
+    name: 'commandSuggest',
+    addProseMirrorPlugins() {
+      return [
+        Suggestion<CommandItem>({
+          editor: this.editor,
+          pluginKey: new PluginKey('commandSuggest'),
+          char: '/',
+          // START OF LINE, ALWAYS: a slash mid-sentence belongs to a URL, a
+          // path or a date, and must never open a menu over what is being
+          // written. `allowSpaces` false ends the command at the first space,
+          // so the ask after it is prose again.
+          startOfLine: true,
+          allowSpaces: false,
+          items: ({ query, editor: e }) => commandRowsFor(e, query),
+          command: runCommand,
+          render: () => {
+            let menu: CommandMenuHandle | null = null
+            let popup: HTMLDivElement | null = null
+            // The list the menu was last rendered with — what onKeyDown
+            // consults, so an armed-but-empty menu falls through instead of
+            // eating Enter (TALA-5, composer-keys.ts).
+            let current: CommandItem[] = []
+            // The last render's props, so a deleted blueprint can leave the
+            // list it was deleted from: the plugin only re-runs `items` on the
+            // next keystroke, and a row that stays after its × looks broken.
+            let last: CommandRenderProps | null = null
+            // Escape DISMISSES the command, not just the popup: the suggestion
+            // plugin stays active until the token is gone, so without this a
+            // dismissed menu re-armed itself invisibly on the next keystroke and
+            // ate the Enter that meant send. Cleared when the suggestion exits.
+            let dismissed = false
+
+            const removeRow = async (item: CommandItem) => {
+              if (!item.id) return
+              // Quiet trigger, deliberate step: the × asks before it deletes,
+              // because the thing it deletes is text somebody wrote.
+              const go = await confirm({
+                title: 'Delete blueprint',
+                message: `“${item.label}” will stop being offered here. This cannot be undone.`,
+                confirmLabel: 'Delete blueprint',
+                danger: true,
+              })
+              if (!go) return
+              await deleteBlueprint(item.id)
+              await qc.invalidateQueries({ queryKey: BLUEPRINTS_KEY })
+              if (last) ensure({ ...last, items: commandRowsFor(last.editor, last.query) })
+            }
+
+            // Creatable from onUpdate too, not only onStart: the first result
+            // set can be empty (a query nothing matches), and onStart alone
+            // would then never show the menu for the rest of the command.
+            const ensure = (props: CommandRenderProps) => {
+              if (dismissed) {
+                current = []
+                return
+              }
+              current = props.items
+              last = props
+              if (menu) {
+                menu.update(props.items, (item: CommandItem) => props.command(item), (item: CommandItem) => void removeRow(item))
+              } else if (props.items.length) {
+                popup = document.createElement('div')
+                popup.style.position = 'fixed'
+                popup.style.zIndex = '60'
+                document.body.appendChild(popup)
+                menu = mount(CommandMenu, { target: popup }) as unknown as CommandMenuHandle
+                menu.update(props.items, (item: CommandItem) => props.command(item), (item: CommandItem) => void removeRow(item))
+              }
+              // Render synchronously so placeMenu() can measure the popup.
+              flushSync()
+              const rect = props.clientRect?.()
+              if (popup && rect) placeMenu(popup, rect)
+            }
+
+            return {
+              onStart: ensure,
+              onUpdate: ensure,
+              onKeyDown: (props) => {
+                if (props.event.key === 'Escape') {
+                  popup?.remove()
+                  popup = null
+                  if (menu) {
+                    void unmount(menu as unknown as Record<string, unknown>)
+                    menu = null
+                  }
+                  // And it claims nothing more, now or on the next keystroke: a
+                  // dismissed menu that kept its candidate list would go on
+                  // eating Enter invisibly, and the key that sends a message
+                  // has to mean send.
+                  current = []
+                  dismissed = true
+                  return true
+                }
+                if (!menuHandlesKey(props.event.key, current)) return false
+                return menu?.onKeyDown(props.event) ?? false
+              },
+              onExit: () => {
+                popup?.remove()
+                popup = null
+                last = null
+                dismissed = false
+                if (menu) {
+                  void unmount(menu as unknown as Record<string, unknown>)
+                  menu = null
+                }
+              },
+            }
+          },
+        }),
+      ]
     },
   })
 
@@ -158,6 +416,7 @@
         // list installed nothing — the @ key did nothing at all).
         MentionSuggest.configure({ items: () => mentionables ?? [] }),
         EmojiSuggest,
+        ...(commands ? [CommandSuggest] : []),
       ],
       content: '',
       editorProps: {
@@ -299,6 +558,15 @@
   }
   export function isEmpty(): boolean {
     return $editor?.isEmpty ?? true
+  }
+  /** Send the draft into the reply that is streaming (see `onSendNow`). The
+   *  visible control belongs to the host's rail — beside the stop tile, where
+   *  the pair reads as the two things you can do to a turn in flight — so the
+   *  host needs a way in; ⌘⏎ takes the same door. */
+  export function sendNow(): void {
+    const e = $editor
+    if (!e || e.isEmpty || !onSendNow) return
+    onSendNow(outgoing(e))
   }
   export function clear(): void {
     $editor?.commands.clearContent(true)

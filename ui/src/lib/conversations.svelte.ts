@@ -21,6 +21,15 @@ export interface Conversation {
   ownerLabel?: string | null
   /** Landed messages past your read cursor — the rail pill. */
   unreadCount?: number
+  /** Your own pin — a pinned thread leads the rail however old it is. Per
+   *  viewer, never per thread: a collaborator's pin on a shared plan is
+   *  invisible to its owner. List rows only. */
+  pinned?: boolean
+  /** The heading this thread sits under in your rail; null until you file it. */
+  group?: string | null
+  /** A hand-placed slot — lower first, and threads with none fall back to
+   *  newest activity. */
+  position?: number | null
   /** The document pane's memory, on the detail read. Absent on list rows. */
   pinnedFiles?: PinnedFile[]
 }
@@ -61,9 +70,19 @@ export interface StoredMessage {
   authorLabel?: string | null
   /** Confab-guard findings pinned to a reply (annotate/strict modes). */
   guard?: Array<{ check: string; severity: 'low' | 'medium' | 'high'; confidence: number; message: string; snippet: string }> | null
-  /** Row-level stamps; `resumed` marks a turn the server auto-resumed after
-   *  its stream died mid-flight. */
-  metadata?: { resumed?: boolean } | null
+  /** Row-level stamps, the whole `metadata` bag as the row carries it:
+   *  `resumed` marks a turn the server auto-resumed after its stream died
+   *  mid-flight, `stopped` a turn somebody ended (the stop route, or the
+   *  doom-loop guard), `steer` a user row said INTO a reply that was already
+   *  streaming. All three are written the same way — a merge into the row's
+   *  jsonb — and travel the same way, so they are declared together here
+   *  rather than widened at the one surface that reads them.
+   *
+   *  `marker` is the fourth and the only one carrying a VALUE rather than a
+   *  flag: a named place in the transcript ("before the refactor") a person
+   *  or an agent dropped on a row so it can be jumped back to. Same bag, same
+   *  merge; a string because the name is the whole point. */
+  metadata?: { resumed?: boolean; stopped?: boolean; steer?: boolean; marker?: string } | null
   chips?: ChatChip[]
   /** The row's id — what a reaction toggles against. Absent on older
    *  payloads; a row without one shows no action bar. */
@@ -182,8 +201,16 @@ export const markConversationRead = async (
     seq === undefined ? {} : { seq },
   )
 
+/** The user's conversations of one kind, or of the merged session set.
+ *
+ *  'sessions' is the work harness's own question — work sessions, plans and
+ *  research threads as ONE list, ordered once by the server (see
+ *  `list_conversations_in`). It is a named kind rather than a composed filter
+ *  because the server owns what is in the set: the audience predicate is per
+ *  row kind, and a client that could ask for arbitrary combinations could ask
+ *  for one nobody wrote that predicate for. */
 export function useConversations(
-  kind: MaybeGetter<'chat' | 'plan' | 'work'> = 'chat',
+  kind: MaybeGetter<'chat' | 'plan' | 'work' | 'research' | 'sessions'> = 'chat',
   archived: MaybeGetter<boolean> = false,
 ) {
   return createQuery(() => {
@@ -230,6 +257,34 @@ export async function renameConversation(
     return true
   } catch (e) {
     toastError('Rename failed', e)
+    return false
+  }
+}
+
+/** THE VIEWER'S OWN LAYOUT for one thread: pinned to the top of their rail,
+ *  filed under a group, held at a slot they chose. Per viewer, never per
+ *  thread — a collaborator's pin on a shared plan is invisible to its owner
+ *  (`talaria-conversation-layout` is the server half).
+ *
+ *  MERGE, NOT REPLACE, and the two nullable fields say it twice: an ABSENT
+ *  key leaves that field alone, and an explicit `null` is the clear a person
+ *  asked for (take it out of its group, give up its slot). So a reorder sends
+ *  `{ position }` alone and does not have to restate the group it is in.
+ *
+ *  Does not invalidate: the caller holds the query (a rail knows which kind
+ *  it listed, this does not), so it is the caller that settles the list —
+ *  optimistically first, if it wants the row to move under the cursor. */
+export async function patchConversation(
+  id: string,
+  patch: { pinned?: boolean; group?: string | null; position?: number | null },
+): Promise<boolean> {
+  try {
+    await patchJson(`/api/conversations/${id}`, patch)
+    return true
+  } catch (e) {
+    // One sentence for all three fields: a pin, a group and a slot are the
+    // same thing to the person doing it — the shape of their own list.
+    toastError('Could not update your list', e)
     return false
   }
 }
@@ -299,4 +354,42 @@ export async function loadConversation(
   return getJson<{ conversation: Conversation; messages: StoredMessage[] }>(`/api/conversations/${id}`).catch(
     () => null,
   )
+}
+
+/** What Hermes has done to a pinned conversation's session, as the server
+ *  reads it back off the agent: `/api/conversations/{id}/session`.
+ *
+ *  `applies` is the one field to branch on. It is false — with zeros and
+ *  nulls behind it — for every conversation the question does not arise for:
+ *  an agent that does not run pinned sessions, a history that no longer fits
+ *  one, and an agent nobody can reach right now. A surface that read
+ *  `compacted` without it would claim "nothing was compacted" where the
+ *  honest answer is "nobody asked". */
+export interface SessionOverview {
+  applies: boolean
+  /** Compaction carriers in the session — rows Hermes folded away. Hermes
+   *  sends NO summary text over the wire, so this is a count and nothing
+   *  more; copy built on it must not imply a summary exists. */
+  compacted: number
+  /** ISO timestamp of the FIRST SURVIVING message — what the thread now
+   *  starts at. Null when there is nothing to date. */
+  since: string | null
+  sessionId: string | null
+  messageCount: number | null
+  /** The api read one 500-row page of a longer session: `compacted` is a
+   *  floor, and copy built on it says "at least". */
+  partial: boolean
+  /** True when the container answered. Null when nothing was asked (an
+   *  unpinned agent, a history that does not fit); false is reserved for an
+   *  asked-and-silent container, which this route cannot tell apart yet. */
+  reachable: boolean | null
+}
+
+// Imperative like `loadConversation` above, and non-throwing for the same
+// reason: ChatView calls it from an effect with no rejection handler. Every
+// failure — an unreachable api, a 403 on a conversation that is not yours,
+// a shape the server does not answer yet — reads as "no overview to show",
+// which renders as no row at all.
+export async function loadSessionOverview(id: string): Promise<SessionOverview | null> {
+  return getJson<SessionOverview>(`/api/conversations/${id}/session`).catch(() => null)
 }

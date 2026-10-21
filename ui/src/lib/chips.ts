@@ -11,7 +11,17 @@ import { postJson } from '@/lib/fetch-json'
 
 export type ChipEntity = 'board' | 'ticket' | 'kb' | 'document' | 'channel' | 'plan' | 'research'
 
-export type ChipKind = 'link' | 'tool' | 'approval' | 'unlock'
+export type ChipKind =
+  | 'link'
+  | 'tool'
+  | 'approval'
+  | 'unlock'
+  | 'todo'
+  | 'question'
+  | 'notice'
+  | 'image'
+  | 'subagent'
+  | 'source'
 
 export interface PlatformLink {
   /** App path, origin stripped, no trailing slash. */
@@ -28,9 +38,29 @@ export interface ChipField {
   required?: boolean
 }
 
+/** One edit `edit_document` made, as the route reported it.
+ *
+ *  `added` and `removed` are LINE counts — the same unit the refine notice
+ *  counts in, so a one-word swap is 1 and 1 rather than a pair of character
+ *  totals that look like a rewrite. `preview` is present only for a Replace,
+ *  where showing the two strings is the only way a reader can tell what moved;
+ *  a section replacement carries none, because its heading is the summary. */
+export interface DocChange {
+  label: string
+  added: number
+  removed: number
+  preview?: { old: string; new: string }
+}
+
 export interface ChatChip {
   id: string
   kind: ChipKind
+  /** `subagent` chips only: what the child was asked to do. One chip per
+   *  child `delegate_task` spawned, keyed by the child's session id so its
+   *  stop overwrites its start; `summary` and `tools` below carry what came
+   *  back, and `status` reads running | done | error. The renderer lands
+   *  separately. */
+  goal?: string
   href?: string
   entity?: ChipEntity
   title?: string
@@ -42,9 +72,45 @@ export interface ChatChip {
   actionId?: string
   actionKind?: string
   summary?: string
-  status?: 'pending' | 'approved' | 'denied'
+  status?: 'pending' | 'approved' | 'denied' | 'running' | 'done' | 'error'
   tools?: string[]
   approvalId?: string
+  /** `todo` chips only: the agent's plan as it stood when this chip landed.
+   *  The WHOLE list, not a delta — the stream is read top-to-bottom and
+   *  somebody scrolling back should see the plan of that moment rather than a
+   *  diff they have to replay forwards. */
+  items?: TodoItem[]
+  /** `question` chips only: the answers the agent offered. Clicking one sends
+   *  its own words through the composer, so the answer is an ordinary message
+   *  rather than a second record of what was decided. */
+  options?: AskOption[]
+  /** `notice` chips only: the sentence behind the label, on hover. A notice
+   *  states what happened to a row — "sent mid-turn" — so the pill stays
+   *  short enough to read at a glance and the why waits for the pointer. */
+  detail?: string
+  /** `image` chips only: the upload the chip shows. An agent that screenshots
+   *  a page posts the PNG to its own uploads door, which stamps it on the turn
+   *  and lands this chip; `href` serves the bytes through the ordinary
+   *  attachment check, and the id is what a renderer needs to tell two
+   *  screenshots of the same page apart. */
+  uploadId?: string
+  /** `link` chips with entity `document` only: what an `edit_document` call
+   *  changed, copied from the route result. The chip then renders as a
+   *  document card rather than a bare link — a reader who was not watching
+   *  wants to know what moved, and the link alone does not say. */
+  changes?: DocChange[]
+}
+
+/** One answer the agent offered (the `ask` tool). */
+export interface AskOption {
+  label: string
+  detail?: string | null
+}
+
+/** One step of the agent's own plan (the `todo` tool). */
+export interface TodoItem {
+  text: string
+  status: 'pending' | 'active' | 'done'
 }
 
 const ID = '[A-Za-z0-9_-]{1,80}'
@@ -281,10 +347,15 @@ export function findPlatformLinks(text: string): Array<{ start: number; end: num
 
 /** Link chips already painted from the prose stay out of the row, so a URL
  *  the agent wrote does not appear twice. Tool, approval, and unlock chips
- *  always stay — they are not in the prose. */
+ *  always stay — they are not in the prose.
+ *
+ *  A link carrying `changes` stays too: it renders as the document card, which
+ *  says what the edit MOVED, and the prose's pill says nothing of the kind.
+ *  Dropping it because the agent happened to paste the URL would silently take
+ *  the change list with it. */
 export function chipsBesideProse(chips: ChatChip[] | undefined, content: string): ChatChip[] {
   if (!chips?.length) return []
-  return chips.filter((c) => c.kind !== 'link' || !c.href || !content.includes(c.href))
+  return chips.filter((c) => c.kind !== 'link' || !!c.changes?.length || !c.href || !content.includes(c.href))
 }
 
 const titleCache = new Map<string, string>()

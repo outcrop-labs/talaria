@@ -32,7 +32,7 @@ use uuid::Uuid;
 // work owns its resolution; callers import them from here.
 use talaria_realtime::RealtimeDeps;
 pub use talaria_research_def::{
-    ModeBudget, NO_SEARCH_REASON, SearchPlan, budget_for, plan_search, research_modes,
+    ModeBudget, NO_SEARCH_REASON, SearchPlan, plan_search, research_modes,
 };
 use talaria_research_def::{ORG_AGENT_RUN, ResearchInput, research_run};
 use talaria_runs_run::{EnqueueOptions, cancel_run, enqueue};
@@ -215,6 +215,18 @@ pub struct ResearchRun {
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
+    /// THE DIALS THIS RUN WAS STARTED WITH — effort, breadth and sources, as
+    /// the body sent them. None for every run that took its mode's preset,
+    /// which is every run that predates the column: the preset is resolved
+    /// from the mode wherever it is needed, so a null here is "the mode's",
+    /// never "no dials".
+    ///
+    /// LAST, and that is the join's order rather than an afterthought — the
+    /// projection appends, so renumbering the epoch columns in front of it to
+    /// group this with `mode` would move three index-keyed reads for a
+    /// cosmetic win.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dials: Option<Value>,
 }
 
 /// THE five-value projection, on its own so it has exactly one spelling. Two
@@ -263,7 +275,8 @@ const ROW: &str = "research_runs.id::text, research_runs.owner_user_id::text, \
     (trunc(extract(epoch from research_runs.created_at) * 1000))::bigint, \
     (trunc(extract(epoch from greatest(research_runs.updated_at, \
         coalesce(r.updated_at, research_runs.updated_at))) * 1000))::bigint, \
-    (trunc(extract(epoch from research_runs.completed_at) * 1000))::bigint";
+    (trunc(extract(epoch from research_runs.completed_at) * 1000))::bigint, \
+    research_runs.dials";
 
 /// Always joined, never selected from alone: the projection above needs `r`.
 /// ONE RUN PER RESEARCH RECORD, AND THE SAME UUID NAMES BOTH — that is what
@@ -280,7 +293,7 @@ fn projection_sql(where_clause: &str) -> String {
 }
 
 /// Map one row of the projection. Written against column INDEX rather than
-/// name: seventeen columns is past sqlx's tuple ceiling, and a name-keyed read
+/// name: eighteen columns is past sqlx's tuple ceiling, and a name-keyed read
 /// of a format!-built list would drift silently if the list reordered — an
 /// index-keyed one fails loudly.
 fn row_of(row: &sqlx::postgres::PgRow) -> ResearchRun {
@@ -309,6 +322,7 @@ fn row_of(row: &sqlx::postgres::PgRow) -> ResearchRun {
         created_at: talaria_agent_auth::epoch_ms_to_iso(created_ms),
         updated_at: talaria_agent_auth::epoch_ms_to_iso(updated_ms),
         completed_at: completed_ms.map(talaria_agent_auth::epoch_ms_to_iso),
+        dials: row.get(17),
     }
 }
 
@@ -602,6 +616,15 @@ pub async fn briefable_research(
 /// delete proceeds — `missing` (a record with no run behind it) and
 /// `terminal` (a finished run) are both perfectly normal, and neither is a
 /// reason to leave the record behind.
+///
+/// A RESEARCH SESSION IS ONE THING WITH TWO ROWS, and both go together in one
+/// transaction. The run holds the question, the sources and the report; the
+/// conversation holds the discussion of them, created WITH the run (see
+/// `ensure_research_conversation`) and shown as a single session on the
+/// workspace. `research_runs.conversation_id` is ON DELETE SET NULL, so
+/// dropping the run alone left the thread behind as a session with nothing to
+/// discuss — a row the merged list still shows, and nobody can delete from
+/// the research side any more because the run that named it is gone.
 pub async fn delete_research_run(
     state: &talaria_state::AppState,
     run_id: &str,
@@ -617,10 +640,27 @@ pub async fn delete_research_run(
             }
         }
     }
+    // Read the thread's id BEFORE the run goes: the FK nulls the column on the
+    // way out, so after the delete there is nothing left pointing at it.
+    let mut tx = state.pg.begin().await?;
+    let conversation: Option<(Option<String>,)> =
+        sqlx::query_as("select conversation_id::text from research_runs where id = $1::uuid")
+            .bind(run_id)
+            .fetch_optional(&mut *tx)
+            .await?;
     sqlx::query("delete from research_runs where id = $1::uuid")
         .bind(run_id)
-        .execute(&state.pg)
+        .execute(&mut *tx)
         .await?;
+    // An older run discussed nowhere, or one an agent with no human owner
+    // started, has no thread to take with it.
+    if let Some(conversation_id) = conversation.and_then(|(id,)| id) {
+        sqlx::query("delete from conversations where id = $1::uuid")
+            .bind(&conversation_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -746,10 +786,25 @@ pub async fn start_research(
     .await
     .map_err(|e| format!("could not enqueue the research run: {e}"))?;
 
+    // THE CONVERSATION GOES IN WITH THE ROW when the caller named one, and
+    // that ordering is the whole mechanism: `ensure_research_conversation`
+    // below returns a conversation the row already has instead of creating
+    // one, so a run told where to report never makes a second thread nobody
+    // reads. The caller proved access to it; this write does not re-check.
+    //
+    // `dials` is the body's three numbers verbatim, or NULL for "the mode's
+    // preset" — resolved from the mode wherever it is needed, so the column
+    // never has to be backfilled.
+    let dials = match input.dials {
+        Some(d) => Some(serde_json::to_value(d).map_err(|e| e.to_string())?),
+        None => None,
+    };
     sqlx::query(
         "insert into research_runs \
-         (id, owner_user_id, requested_by, agent_model, mode, question, parent_run_id) \
-         values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::uuid) on conflict (id) do nothing",
+         (id, owner_user_id, requested_by, agent_model, mode, question, parent_run_id, \
+          conversation_id, dials) \
+         values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::uuid, $8::uuid, $9::jsonb) \
+         on conflict (id) do nothing",
     )
     .bind(&id)
     .bind(&input.owner_user_id)
@@ -758,13 +813,16 @@ pub async fn start_research(
     .bind(talaria_research_def::depth_str(input.mode))
     .bind(&input.question)
     .bind(&input.parent_run_id)
+    .bind(&input.conversation_id)
+    .bind(&dials)
     .execute(&state.pg)
     .await
     .map_err(|e| e.to_string())?;
     // The discussion thread exists from the first minute: the scope step
     // asks its clarifying question in here, and the surface opens the run
     // straight into the conversation. None for an ownerless run — same rule
-    // as ever, just applied at start instead of on first use.
+    // as ever, just applied at start instead of on first use. A caller that
+    // named a thread above gets that one back, unmade.
     ensure_research_conversation(&state.pg, &id)
         .await
         .map_err(|e| e.to_string())?;
@@ -831,6 +889,12 @@ pub async fn start_research(
 /// the teammate answering questions about the report is the one that wrote
 /// it. Returns None for a run that is gone, or one an agent with no human
 /// owner started — it is still readable; it just cannot be talked in.
+///
+/// A RUN THE CALLER POINTED AT A THREAD takes the early return below with no
+/// write at all: `start_research` sets `conversation_id` in the insert, so the
+/// column is already filled by the time this runs. That is why "creates it"
+/// above is conditional — the one thing this function must never do is make a
+/// second thread beside the one somebody asked the run to report into.
 pub async fn ensure_research_conversation(
     pg: &PgPool,
     run_id: &str,
@@ -905,10 +969,16 @@ pub async fn research_run_for_conversation(
     conversation_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(String,)> =
-        sqlx::query_as("select id::text from research_runs where conversation_id = $1::uuid")
-            .bind(conversation_id)
-            .fetch_optional(pg)
-            .await?;
+        // The NEWEST, now that a conversation can host more than one run (a
+        // run started from inside a plan or work session): the chat beside
+        // it talks about the latest report.
+        sqlx::query_as(
+            "select id::text from research_runs where conversation_id = $1::uuid \
+             order by created_at desc limit 1",
+        )
+        .bind(conversation_id)
+        .fetch_optional(pg)
+        .await?;
     Ok(row.map(|(id,)| id))
 }
 

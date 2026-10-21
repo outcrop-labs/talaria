@@ -3,6 +3,8 @@
 // connects (headers sealed at rest — e.g. { Authorization: "Bearer <your
 // token>" }); headers null disconnects. Your assistant only carries a
 // per-user server once you've connected, and it acts as YOU there.
+// `needsReconnect` marks an OAuth account the provider refused to refresh
+// (found by the MCP health pass) — connected once, now gone.
 
 use axum::Json;
 use axum::extract::State;
@@ -26,6 +28,9 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         Ok(s) => s,
         Err(e) => return Ok(internal("[me/mcp] registry read failed", e)),
     };
+    // Grants the provider refused to refresh (the health pass flags them):
+    // the row says Reconnect, not a first-time Connect.
+    let reconnect = talaria_api_facades::mcp::health::reconnect_servers(&state.pg, &user.id).await;
     let mut out = Vec::new();
     for s in servers
         .iter()
@@ -50,6 +55,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             "requiredHeaders": s.required_headers,
             "authKind": if s.oauth_enabled { "oauth" } else { "headers" },
             "connected": connected,
+            "needsReconnect": !connected && reconnect.contains(&s.id),
         }));
     }
     Ok(Json(json!({ "servers": out })).into_response())
@@ -109,6 +115,9 @@ pub async fn put(
     {
         return Ok(internal("[me/mcp] oauth drop failed", e));
     }
+    // Any write settles a refused grant: a disconnect on purpose should read
+    // Connect next time, not Reconnect.
+    talaria_api_facades::mcp::health::clear_reconnect(&state.pg, &server_id, &user.id).await;
     log_audit(
         &state.pg,
         AuditEntry {

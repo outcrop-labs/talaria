@@ -562,24 +562,6 @@ server.registerTool(
   async ({ taskId, seconds }) => ok(await api('PUT', `/api/tasks/${encodeURIComponent(taskId)}`, { addTimeSpentSeconds: seconds })),
 )
 
-// ── Live web search (supplied by the deployment, not by the model) ─────────
-// Talaria runs its own search engine (SearXNG, its own container) so an agent
-// on a model with no native browsing can still answer a question about the
-// world. See ui/src/server/search.ts for why the client is ours rather than a
-// third-party MCP bridge, and why the engine is a separate process.
-server.registerTool(
-  'web_search',
-  {
-    description:
-      'Search the live web and get back ranked results with their URLs. Use it for anything that happened or changed recently, anything you would otherwise be guessing at, and any claim a reader would expect a source for — then cite the URLs you used. This searches the PUBLIC web: for this organization\'s own documents and past conversations use search_knowledge instead.',
-    inputSchema: {
-      query: z.string().min(2).max(400).describe('What to look up, as you would type it into a search engine'),
-      limit: z.number().int().min(1).max(25).optional().describe('How many results to return (default 10)'),
-    },
-  },
-  async ({ query, limit }) => ok(await api('POST', '/api/search', { query, limit })),
-)
-
 // ── Image understanding (supplied by the deployment, not by the model) ─────
 // A model that cannot see can still call a tool. This reads an image with
 // whatever model the org assigned to the `vision` role and hands back text —
@@ -618,7 +600,7 @@ server.registerTool(
   'create_document',
   {
     description:
-      "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. For a spreadsheet use create_sheet; for a public HTML page use create_page. It's versioned, shareable, and hostable. Returns the document id (use update_document to keep editing it).",
+      "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. For a spreadsheet use create_sheet; for a public HTML page use create_page. It's versioned, shareable, and hostable. Returns the document id (use edit_document to keep changing it — update_document replaces the whole body and is rarely what you want).",
     inputSchema: {
       title: z.string().min(1).max(200).describe('Document title'),
       markdown: z.string().max(1_000_000).optional().describe('Initial body as markdown (headings, lists, tables, code, links)'),
@@ -665,7 +647,7 @@ server.registerTool(
   'update_document',
   {
     description:
-      'Edit a document you created (or were granted Editor access to). markdown replaces a markdown doc\'s body; rows (string[][], row 0 the header) replaces a spreadsheet; html replaces a web page. Passing markdown on a sheet or page refuses — it would smash the grid/HTML into a single string. Each save is versioned.',
+      'REPLACE a document\'s whole body. For changing part of one, use edit_document instead — this tool rewrites everything, so any section you do not re-send is gone and any edit a person made meanwhile is overwritten. Use it to replace a document wholesale, or to write a spreadsheet grid. markdown replaces a markdown doc\'s body; rows (string[][], row 0 the header) replaces a spreadsheet; html replaces a web page. Passing markdown on a sheet or page refuses — it would smash the grid/HTML into a single string. Each save is versioned.',
     inputSchema: {
       documentId: z.string().describe('Document id (from create_document, create_sheet, create_page, or list_documents)'),
       title: z.string().max(200).optional(),
@@ -693,6 +675,96 @@ server.registerTool(
     const body = kind === 'sheet' && rows ? JSON.stringify(rows) : kind === 'microsite' && html ? html : markdown
     return ok(await api('PUT', `/api/artifacts/${encodeURIComponent(documentId)}`, { title, body }))
   },
+)
+
+server.registerTool(
+  'edit_document',
+  {
+    description:
+      "Change PART of a markdown document or web page, without resending the rest of it. Prefer this over update_document for every change to an existing document: it is cheaper, it cannot silently drop the sections you did not mention, and it does not overwrite edits a person made while you were working. Read the document first with get_document so your anchors are exact. Two forms, one per edit: oldString/newString replaces exact text (oldString must appear EXACTLY ONCE — include surrounding lines to make it unique; omit newString to delete), or section/markdown rewrites the body under a heading, keeping the heading line. Edits apply in order and a failure anywhere applies none of them, so the document is never left half-edited. Spreadsheets are not editable this way — their body is a grid; use update_document with rows.",
+    inputSchema: {
+      documentId: z.string().describe('Document id (from create_document, create_page, or list_documents)'),
+      edits: z
+        .array(
+          z.union([
+            z.object({
+              oldString: z.string().min(1).max(200_000).describe('Exact existing text to replace. Must occur EXACTLY ONCE in the document — include surrounding lines to make it unique.'),
+              newString: z.string().max(200_000).describe('What replaces it. Pass "" to delete the matched text.'),
+            }),
+            z.object({
+              section: z.string().min(1).max(200).describe('The heading to rewrite under, with or without its #s — "## Rollback" pins the level, "Rollback" matches any level as long as only one heading says it.'),
+              markdown: z.string().max(200_000).describe("The section's new body. The heading line stays, so do not repeat it. Pass \"\" to empty the section."),
+            }),
+          ]),
+        )
+        .min(1)
+        .max(50)
+        .describe('The edits, applied in order. Each one is EITHER oldString+newString or section+markdown.'),
+    },
+  },
+  async ({ documentId, edits }) =>
+    ok(await api('POST', `/api/artifacts/${encodeURIComponent(documentId)}/edit`, { edits })),
+)
+
+server.registerTool(
+  'ask',
+  {
+    description:
+      "Ask the person a question with concrete options, when you genuinely cannot tell which of several things they meant and guessing would send you down the wrong path. Give the ONE thing that is blocking you and 2 to 6 short answers; they pick one and their choice arrives as your next message. END YOUR TURN after asking — do not carry on and act on the guess you just said you could not make. Use it for a real fork (which board, which of two documents, replace or append), not for permission to do what they already asked for, and not for anything you could settle by reading. If the question is open-ended, just ask it in your own words instead: this tool is for competing concrete answers.",
+    inputSchema: {
+      question: z.string().min(1).max(400).describe('The question, in one sentence — "Which board should these tickets land on?"'),
+      detail: z.string().max(400).optional().describe('One more sentence of context, if the question needs it to be answerable'),
+      options: z
+        .array(
+          z.union([
+            z.string().min(1).max(80).describe('The answer, as the short words that go on the button'),
+            z.object({
+              label: z.string().min(1).max(80).describe('The answer, as the short words that go on the button'),
+              detail: z.string().max(200).describe('What picking this one means or costs'),
+            }),
+          ]),
+        )
+        .min(2)
+        .max(6)
+        .describe('The answers to offer, 2 to 6. Each must read differently from the others — the answer is sent as the option\'s own words.'),
+    },
+  },
+  async ({ question, detail, options }) => ok(await api('POST', '/api/agent/ask', { question, detail, options })),
+)
+
+server.registerTool(
+  'todo',
+  {
+    description:
+      "Write down the steps you are working through, so the person watching can see your plan and where you are in it. Use it for any request that takes more than one step: list the steps first, mark one active as you start it, and call this again to move the marker and add or drop steps as you learn. Each call REPLACES the whole list, so always send every step, not just the one that changed. Exactly one step may be active at a time, or none. Keep steps short and concrete — one line each, the thing you are about to do, not a description of the task. Do not use it as a ticket list: tickets are durable work a person signs off, and this is your own scratch plan for this conversation. An empty list clears it.",
+    inputSchema: {
+      items: z
+        .array(
+          z.object({
+            text: z.string().min(1).max(200).describe('The step, as one short line — "read the retry spec", "draft the three tickets"'),
+            status: z.enum(['pending', 'active', 'done']).optional().describe("Where this step is. Omitted means pending. At most one step may be 'active'."),
+          }),
+        )
+        .max(30)
+        .describe('Every step, in the order you will do them. This replaces the whole list.'),
+    },
+  },
+  async ({ items }) => ok(await api('PUT', '/api/agent/todo', { items })),
+)
+
+server.registerTool(
+  'organize_session',
+  {
+    description:
+      "Organise THIS conversation the way the person asks: rename it, pin it to the top of the list, file it under a group, or put it away. Use it when they say what should happen to the thread — call it something else, pin it, file it under Billing, put it away now that the work is finished — or when you finish a piece of work they asked you to file. NEVER archive a conversation unasked: putting one away takes it out of their list, and that is theirs to decide. Pass only the fields you are changing, and at least one of them: title renames it, pinned lifts it to the top, group files it under a name (null takes it out of its group), archived puts it away or, as false, brings it back. It always acts on the conversation you are in — there is no id to pass, so you cannot organise somebody else's thread by mistake.",
+    inputSchema: {
+      title: z.string().min(1).max(120).optional().describe('A new name for the conversation — what they called it, or a short line saying what it is about'),
+      pinned: z.boolean().optional().describe('true keeps it at the top of their list, false lets it fall back into date order'),
+      group: z.string().max(40).nullable().optional().describe('File it under this group, e.g. Billing. null takes it out of the group it is in.'),
+      archived: z.boolean().optional().describe('true puts the conversation away, false brings one back. Only ever when they ask.'),
+    },
+  },
+  async ({ title, pinned, group, archived }) => ok(await api('POST', '/api/agent/organize', { title, pinned, group, archived })),
 )
 
 server.registerTool(
@@ -1369,6 +1441,11 @@ server.registerTool(
 // ── Research (Recon / Brief / Expedition) ────────────────────────────────────
 // Cited web research, run server-side by YOUR persona + a search model — your
 // chat context stays clean. Results are org-visible report documents.
+//
+// The mode is still the choice to make; the three dials are that choice taken
+// apart, one axis each, for the question that doesn't sit on a preset — a
+// recon that needs twelve sources, an expedition over a single narrow angle.
+// Pass only the dial you mean to move: the rest stay the mode's own.
 server.registerTool(
   'research',
   {
@@ -1377,9 +1454,13 @@ server.registerTool(
     inputSchema: {
       question: z.string().min(8).max(4000).describe('What to research, in natural language — be specific'),
       mode: z.enum(['recon', 'brief', 'expedition']).optional().describe("Depth (default 'brief')"),
+      effort: z.number().int().min(1).max(3).optional().describe("How hard to dig — rounds of searching, 1–3 (default: the mode's)"),
+      breadth: z.number().int().min(1).max(3).optional().describe("How wide to cast — queries per round, 1–3 (default: the mode's)"),
+      sources: z.number().int().min(1).max(3).optional().describe("How many sources to keep, 1–3 (default: the mode's)"),
     },
   },
-  async ({ question, mode }) => ok(await api('POST', '/api/research', { question, mode })),
+  async ({ question, mode, effort, breadth, sources }) =>
+    ok(await api('POST', '/api/research', { question, mode, effort, breadth, sources })),
 )
 
 server.registerTool(

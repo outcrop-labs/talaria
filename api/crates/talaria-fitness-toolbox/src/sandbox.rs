@@ -54,10 +54,10 @@ use talaria_harness::transport::ToolDefinition;
 
 use talaria_fitness_talaria_tools::{SandboxTool, TALARIA_TOOLS, tools_named};
 use talaria_fitness_world::{
-    AGENT_STATUSES, BLOCKED, IN_PROGRESS, INBOX, QUALITY_REVIEW, SandboxBoard, SandboxComment,
-    SandboxDm, SandboxDocument, SandboxDriveFile, SandboxEmailDraft, SandboxEventDraft,
-    SandboxKbDoc, SandboxKbSpace, SandboxLabel, SandboxMember, SandboxOutcome, SandboxTicket,
-    SandboxWorld, base_world,
+    AGENT_STATUSES, BLOCKED, IN_PROGRESS, INBOX, QUALITY_REVIEW, SandboxAsked, SandboxBoard,
+    SandboxComment, SandboxDm, SandboxDocument, SandboxDriveFile, SandboxEmailDraft,
+    SandboxEventDraft, SandboxKbDoc, SandboxKbSpace, SandboxLabel, SandboxMember, SandboxOutcome,
+    SandboxTicket, SandboxTodoItem, SandboxWorld, base_world,
 };
 
 // ── The refusal, and the arg narrowing that produces it ─────────────────────
@@ -83,6 +83,23 @@ fn req_str<'a>(v: &'a Value, field: &str) -> Result<&'a str, ToolRefusal> {
 /// `optStr(v)`: a string that is present and not blank, or nothing.
 fn opt_str(v: &Value) -> Option<&str> {
     v.as_str().filter(|s| !s.trim().is_empty())
+}
+
+/// A RESEARCH DIAL: absent, or an integer in 1..=3. The refusal names the
+/// dial, because a call carries three of them and "out of range" tells a
+/// model nothing about which one to move. Production's route refuses the same
+/// three values the same way — a sandbox that accepted effort 5 would teach
+/// a model a call the API answers with a 400.
+fn opt_dial(v: &Value, field: &str) -> Result<Option<u64>, ToolRefusal> {
+    if v.is_null() {
+        return Ok(None);
+    }
+    match v.as_u64() {
+        Some(n) if (1..=3).contains(&n) => Ok(Some(n)),
+        _ => Err(refuse(format!(
+            "\"{field}\" is a dial from 1 to 3 — leave it out to take the mode's own"
+        ))),
+    }
 }
 
 fn ticket_of<'a>(w: &'a SandboxWorld, id: &Value) -> Result<&'a SandboxTicket, ToolRefusal> {
@@ -895,6 +912,162 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             )
         }
 
+        // THE SURGICAL EDIT, graded against the REAL matching engine. The
+        // whole point of this backend is that a model which can edit a
+        // document here can edit one in production, so the match-once rule,
+        // the section addressing and the refusal sentences all come from
+        // `talaria_doc_edit` rather than being approximated. An approximation
+        // that was kinder than production would certify models that cannot
+        // actually use the tool.
+        "edit_document" => {
+            let id = a["documentId"].as_str().unwrap_or("");
+            let idx = w.documents.iter().position(|d| d.id == id).ok_or_else(|| {
+                refuse(format!(
+                    "no document \"{id}\" — list_documents shows the ones you can read"
+                ))
+            })?;
+            let kind = w.documents[idx].kind.clone();
+            match kind.as_str() {
+                "doc" | "microsite" => {}
+                "sheet" => {
+                    return Err(refuse(
+                        "this is a spreadsheet — its body is a JSON grid, so a text edit would corrupt it. Use update_document with rows",
+                    ));
+                }
+                other => {
+                    return Err(refuse(format!(
+                        "a {other} artifact has no editable text body"
+                    )));
+                }
+            }
+            let edits = talaria_doc_edit::wire::edits_from_value(&a["edits"]).map_err(refuse)?;
+            let applied = talaria_doc_edit::apply(&w.documents[idx].markdown, &edits)
+                .map_err(|e| refuse(e.to_string()))?;
+            // A no-op edit does not spend a version — same rule the route
+            // holds, for the same reason: the version history is what a person
+            // reads to see what the agent did.
+            if applied.body == w.documents[idx].markdown {
+                return Ok(
+                    json!({ "ok": true, "unchanged": true, "version": w.documents[idx].versions }),
+                );
+            }
+            w.documents[idx].markdown = applied.body;
+            w.documents[idx].versions += 1;
+            // The shape the real route answers with — changes FIRST, each
+            // row with its one-line preview when the edit has one — so a
+            // fixture that reads this result reads what the model gets in
+            // production (artifacts_id_edit.rs's `changes_json`).
+            Ok(json!({
+                "changes": applied.changes.iter().take(20)
+                    .map(|c| {
+                        let mut row = json!({ "label": c.label, "added": c.added, "removed": c.removed });
+                        if let Some(p) = &c.preview
+                            && let Some(obj) = row.as_object_mut()
+                        {
+                            obj.insert("preview".into(), json!({ "old": p.old, "new": p.new }));
+                        }
+                        row
+                    })
+                    .collect::<Vec<_>>(),
+                "ok": true,
+                "version": w.documents[idx].versions,
+            }))
+        }
+
+        // ASKING THE PERSON, graded against the real validator: the
+        // two-option floor, the duplicate-label refusal and the caps all come
+        // from `talaria_agent_ask`. The sandbox has no person in it, so what
+        // is recorded is that the question was ASKED and what it offered — a
+        // fixture asserts on the question, and a model that asks a good one is
+        // doing something a grader should be able to see.
+        "ask" => {
+            let q = talaria_agent_ask::question_from(
+                a.as_object()
+                    .ok_or_else(|| refuse("arguments must be an object"))?,
+            )
+            .map_err(refuse)?;
+            w.asked.push(SandboxAsked {
+                question: q.question.clone(),
+                options: q.options.iter().map(|o| o.label.clone()).collect(),
+            });
+            Ok(json!({ "ok": true, "asked": talaria_agent_ask::asked_sentence(&q) }))
+        }
+
+        // THE AGENT'S PLAN, graded against the real validator. The caps, the
+        // blank-step refusal and the one-active rule all come from
+        // `talaria_agent_todo` rather than being approximated here, for the
+        // same reason the document editor's do: a sandbox kinder than
+        // production certifies a model that cannot actually use the tool.
+        "todo" => {
+            let items = talaria_agent_todo::items_from_value(&a["items"]).map_err(refuse)?;
+            w.todo = items
+                .iter()
+                .map(|i| SandboxTodoItem {
+                    text: i.text.clone(),
+                    status: i.status.as_str().to_string(),
+                })
+                .collect();
+            Ok(json!({ "ok": true, "summary": talaria_agent_todo::summary(&items) }))
+        }
+
+        // ORGANISING THE SESSION IT IS IN. The three layout fields go through
+        // `talaria_conversation_layout`, the validator the route uses, for the
+        // same reason the plan's do: a sandbox that accepts a 50-character
+        // group production refuses would certify a model that cannot use the
+        // tool. The title bound is the route's own (1..120), and `archived` is
+        // recorded rather than enforced — whether the agent put a conversation
+        // away UNASKED is the thing a fixture is grading, not something the
+        // sandbox should prevent.
+        "organize_session" => {
+            let obj = a
+                .as_object()
+                .ok_or_else(|| refuse("arguments must be an object"))?;
+            let mut changed: Vec<&str> = Vec::new();
+            if let Some(v) = obj.get("title") {
+                let title = v
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .ok_or_else(|| refuse("a title is a line of text, and not a blank one"))?;
+                if title.chars().count() > 120 {
+                    return Err(refuse("a title is 120 characters at most"));
+                }
+                w.layout.title = Some(title.to_string());
+                changed.push("title");
+            }
+            if ["pinned", "group", "position"]
+                .iter()
+                .any(|k| obj.contains_key(*k))
+            {
+                let patch = talaria_conversation_layout::patch_from(obj).map_err(refuse)?;
+                if let Some(pinned) = patch.pinned {
+                    w.layout.pinned = Some(pinned);
+                    changed.push("pinned");
+                }
+                if let Some(group) = patch.group {
+                    w.layout.group = group;
+                    changed.push("group");
+                }
+                if let Some(position) = patch.position {
+                    w.layout.position = position;
+                    changed.push("position");
+                }
+            }
+            if let Some(v) = obj.get("archived") {
+                let archived = v
+                    .as_bool()
+                    .ok_or_else(|| refuse("\"archived\" is true or false"))?;
+                w.layout.archived = Some(archived);
+                changed.push("archived");
+            }
+            if changed.is_empty() {
+                return Err(refuse(
+                    "nothing to change — give a title, pinned, group, position or archived",
+                ));
+            }
+            Ok(json!({ "ok": true, "changed": changed }))
+        }
+
         "list_documents" => Ok(json!({ "documents": w.documents.iter()
             .map(|d| json!({ "id": d.id, "title": d.title, "folder": d.folder, "visibility": d.visibility, "kind": d.kind }))
             .collect::<Vec<_>>() })),
@@ -1515,6 +1688,15 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                     "\"question\" needs to be a real question — be specific about what to look up",
                 ));
             }
+            // THE DIALS, read before the run is queued: a refused call must
+            // leave the world exactly as it was, or a fixture's next
+            // `list_research` would show a run the API never started.
+            let mut dials = serde_json::Map::new();
+            for field in ["effort", "breadth", "sources"] {
+                if let Some(n) = opt_dial(&a[field], field)? {
+                    dials.insert(field.to_string(), json!(n));
+                }
+            }
             let run_id = next_id("run", w.research.len());
             let mode = opt_str(&a["mode"]).unwrap_or("brief");
             // QUEUED, NOT DONE. The tool is documented as running in the
@@ -1525,8 +1707,18 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                 "runId": run_id, "question": question, "mode": mode,
                 "status": "queued", "phase": "planning", "documentId": null, "sources": 0, "error": null
             })).expect("a queued run deserializes"));
-            Ok(json!({ "ok": true, "runId": run_id, "status": "queued",
-                "note": "running in the background — poll research_status, then read the report with get_document" }))
+            // Echoed back so a fixture can see the depth the run was queued
+            // at; null means no dial was moved, which is the mode's own
+            // preset — the server fills those in, not the caller.
+            let asked = if dials.is_empty() {
+                Value::Null
+            } else {
+                Value::Object(dials)
+            };
+            Ok(
+                json!({ "ok": true, "runId": run_id, "status": "queued", "dials": asked,
+                "note": "running in the background — poll research_status, then read the report with get_document" }),
+            )
         }
 
         "list_research" => Ok(json!({ "runs": w.research.iter()
@@ -1799,6 +1991,10 @@ pub const BACKED_TOOLS: &[&str] = &[
     "create_sheet",
     "create_page",
     "update_document",
+    "edit_document",
+    "todo",
+    "organize_session",
+    "ask",
     "list_documents",
     "get_document",
     "save_image_artifact",
@@ -2439,6 +2635,240 @@ mod tests {
     }
 
     #[test]
+    fn asks_the_person_a_real_choice_and_refuses_a_fake_one() {
+        let mut s = sb();
+        let args = json!({
+            "question": "Which board should these tickets land on?",
+            "options": [
+                { "label": "Platform", "detail": "the infra board" },
+                "Growth",
+            ],
+        })
+        .to_string();
+        let asked = s.dispatch("ask", &args);
+        assert!(!asked.is_error, "{}", asked.text);
+        // The result TELLS THE AGENT TO STOP, which is the one thing it must
+        // do after admitting it cannot choose.
+        assert!(asked.text.contains("end your turn"), "{}", asked.text);
+        assert_eq!(s.world.asked.len(), 1);
+        assert_eq!(s.world.asked[0].options, ["Platform", "Growth"]);
+
+        // One option is a statement with a button under it, not a question.
+        let one = json!({ "question": "ok?", "options": ["Yes"] }).to_string();
+        let refused = s.dispatch("ask", &one);
+        assert!(refused.is_error);
+        assert!(refused.text.contains("at least 2"), "{}", refused.text);
+        // And it names the move that IS right for an open question.
+        assert!(
+            refused.text.contains("just ask it in your message"),
+            "{}",
+            refused.text
+        );
+
+        // Two answers that read alike cannot be told apart, because the
+        // answer travels as the option's own words.
+        let dupes =
+            json!({ "question": "which?", "options": ["Platform", "platform"] }).to_string();
+        let dupe = s.dispatch("ask", &dupes);
+        assert!(dupe.is_error);
+        assert!(dupe.text.contains("same thing"), "{}", dupe.text);
+
+        // A refused ask asked nobody anything.
+        assert_eq!(s.world.asked.len(), 1);
+    }
+
+    #[test]
+    fn writes_a_plan_replaces_it_wholesale_and_holds_the_one_active_rule() {
+        let mut s = sb();
+        let first = json!({ "items": [
+            { "text": "read the retry spec", "status": "done" },
+            { "text": "draft the tickets", "status": "active" },
+            { "text": "update the doc" },
+        ]})
+        .to_string();
+        let wrote = s.dispatch("todo", &first);
+        assert!(!wrote.is_error, "{}", wrote.text);
+        // The summary is what a person reads without opening the plan.
+        assert!(wrote.text.contains("1/3 done"), "{}", wrote.text);
+        assert!(
+            wrote.text.contains("now: draft the tickets"),
+            "{}",
+            wrote.text
+        );
+        assert_eq!(s.world.todo.len(), 3);
+        // An unstamped step is pending rather than a refusal.
+        assert_eq!(s.world.todo[2].status, "pending");
+
+        // REPLACE, NOT MERGE. The second call is the whole plan, and the step
+        // it leaves out is gone — a merge would make a dropped step
+        // un-droppable.
+        let second = json!({ "items": [
+            { "text": "draft the tickets", "status": "done" },
+            { "text": "update the doc", "status": "active" },
+        ]})
+        .to_string();
+        assert!(!s.dispatch("todo", &second).is_error);
+        assert_eq!(s.world.todo.len(), 2);
+        assert!(!s.world.todo.iter().any(|i| i.text == "read the retry spec"));
+
+        // Two active steps leave the strip unable to say what is happening
+        // now, so the rule is stated and the plan does not change.
+        let two = json!({ "items": [
+            { "text": "a", "status": "active" },
+            { "text": "b", "status": "active" },
+        ]})
+        .to_string();
+        let refused = s.dispatch("todo", &two);
+        assert!(refused.is_error);
+        assert!(refused.text.contains("at most one"), "{}", refused.text);
+        assert_eq!(s.world.todo.len(), 2, "a refused plan changes nothing");
+
+        // A blank step is refused by position rather than stored unreadable.
+        let blank = json!({ "items": [{ "text": "ok" }, { "text": "  " }] }).to_string();
+        let blanked = s.dispatch("todo", &blank);
+        assert!(blanked.is_error);
+        assert!(blanked.text.contains("item 2"), "{}", blanked.text);
+
+        // An empty list is how an agent clears the plan when it is done.
+        assert!(
+            !s.dispatch("todo", &json!({ "items": [] }).to_string())
+                .is_error
+        );
+        assert!(s.world.todo.is_empty());
+    }
+
+    #[test]
+    fn organises_the_session_it_is_in_and_refuses_a_call_that_asks_for_nothing() {
+        let mut s = sb();
+        let args =
+            json!({ "title": "Billing migration", "pinned": true, "group": "Billing" }).to_string();
+        let done = s.dispatch("organize_session", &args);
+        assert!(!done.is_error, "{}", done.text);
+        // `changed` is what the model may claim it did, so a fixture can hold
+        // it to the fields that actually moved.
+        assert!(done.text.contains("title"), "{}", done.text);
+        assert_eq!(s.world.layout.title.as_deref(), Some("Billing migration"));
+        assert_eq!(s.world.layout.pinned, Some(true));
+        assert_eq!(s.world.layout.group.as_deref(), Some("Billing"));
+        // Nothing said about putting it away, so nothing was put away —
+        // archiving unasked is the failure this tool is watched for.
+        assert_eq!(s.world.layout.archived, None);
+
+        // An empty call is a model reaching for the tool with no instruction
+        // behind it, which the route answers 400 for.
+        let nothing = s.dispatch("organize_session", "{}");
+        assert!(nothing.is_error);
+        assert!(
+            nothing.text.contains("nothing to change"),
+            "{}",
+            nothing.text
+        );
+
+        // A group name is a shelf label: the 40-character bound is production's
+        // and the sandbox must not be kinder about it.
+        let long = json!({ "group": "g".repeat(50) }).to_string();
+        let refused = s.dispatch("organize_session", &long);
+        assert!(refused.is_error);
+        assert!(refused.text.contains("40"), "{}", refused.text);
+        assert_eq!(
+            s.world.layout.group.as_deref(),
+            Some("Billing"),
+            "a refused call changes nothing"
+        );
+    }
+
+    #[test]
+    fn edits_part_of_a_document_and_holds_the_match_once_rule() {
+        let mut s = sb();
+        let plan = json!({
+            "title": "Plan",
+            "markdown": "# Plan\n\n## Rollback\n\nold steps\n\n## Owners\n\nDana\n",
+        })
+        .to_string();
+        s.dispatch("create_document", &plan);
+
+        // The surgical edit: one anchor replaced, the rest of the document
+        // untouched — which is the whole difference from update_document.
+        let args =
+            json!({ "documentId": "doc-2", "edits": [{ "oldString": "Dana", "newString": "Ravi" }] })
+                .to_string();
+        let edited = s.dispatch("edit_document", &args);
+        assert!(!edited.is_error, "{}", edited.text);
+        assert!(s.world.documents[1].markdown.contains("Ravi"));
+        assert!(s.world.documents[1].markdown.contains("## Rollback"));
+        assert_eq!(s.world.documents[1].versions, 2);
+
+        // A section rewrite keeps the heading and stops at the next sibling.
+        let args = json!({
+            "documentId": "doc-2",
+            "edits": [{ "section": "## Rollback", "markdown": "1. stop\n2. revert" }],
+        })
+        .to_string();
+        let sectioned = s.dispatch("edit_document", &args);
+        assert!(!sectioned.is_error, "{}", sectioned.text);
+        let body = s.world.documents[1].markdown.clone();
+        assert!(body.contains("## Rollback\n\n1. stop\n2. revert"), "{body}");
+        assert!(body.contains("## Owners"), "{body}");
+
+        // THE RULE A MODEL HAS TO LEARN, and so the sandbox has to teach: an
+        // anchor that is not unique refuses, and says how many it found.
+        let twice = json!({ "title": "Twice", "markdown": "go\ngo\n" }).to_string();
+        s.dispatch("create_document", &twice);
+        let args =
+            json!({ "documentId": "doc-3", "edits": [{ "oldString": "go", "newString": "stop" }] })
+                .to_string();
+        let ambiguous = s.dispatch("edit_document", &args);
+        assert!(ambiguous.is_error);
+        assert!(ambiguous.text.contains("2 times"), "{}", ambiguous.text);
+        // Refused means NOTHING changed, the version included.
+        assert_eq!(s.world.documents[2].versions, 1);
+        assert_eq!(s.world.documents[2].markdown, "go\ngo\n");
+
+        // A missing anchor points at the read that fixes it.
+        let args = json!({
+            "documentId": "doc-2",
+            "edits": [{ "oldString": "nowhere", "newString": "x" }],
+        })
+        .to_string();
+        let missing = s.dispatch("edit_document", &args);
+        assert!(missing.is_error);
+        assert!(missing.text.contains("get_document"), "{}", missing.text);
+    }
+
+    #[test]
+    fn refuses_a_text_edit_on_a_spreadsheet_and_names_the_tool_that_can() {
+        // A find-and-replace inside `JSON.stringify(rows)` would corrupt the
+        // grid rather than edit a cell, so it is refused before it is tried.
+        let mut s = sb();
+        let sheet = json!({
+            "title": "Vendors",
+            "rows": [["Vendor", "Status"], ["Acme", "live"]],
+        })
+        .to_string();
+        s.dispatch("create_sheet", &sheet);
+        let args =
+            json!({ "documentId": "doc-2", "edits": [{ "oldString": "live", "newString": "gone" }] })
+                .to_string();
+        let refused = s.dispatch("edit_document", &args);
+        assert!(refused.is_error);
+        assert!(
+            refused.text.contains("update_document with rows"),
+            "{}",
+            refused.text
+        );
+
+        // A page IS editable this way — its body is text.
+        let page = json!({ "title": "Status", "html": "<h1>ok</h1>" }).to_string();
+        s.dispatch("create_page", &page);
+        let args =
+            json!({ "documentId": "doc-3", "edits": [{ "oldString": "ok", "newString": "live" }] })
+                .to_string();
+        let edited = s.dispatch("edit_document", &args);
+        assert!(!edited.is_error, "{}", edited.text);
+        assert_eq!(s.world.documents[2].markdown, "<h1>live</h1>");
+    }
+
+    #[test]
     fn creates_a_sheet_and_a_page_as_their_own_kinds() {
         let mut s = sb();
         let sheet = s.dispatch(
@@ -2807,6 +3237,47 @@ mod tests {
     }
 
     #[test]
+    fn queues_a_run_at_the_dials_asked_for_and_names_a_dial_off_the_scale() {
+        let mut s = sb();
+        let asked = s.dispatch(
+            "research",
+            r#"{"question":"What do competitors charge for seats?","effort":3,"sources":1}"#,
+        );
+        assert!(asked.text.contains("\"effort\":3"), "{}", asked.text);
+        assert!(asked.text.contains("\"sources\":1"), "{}", asked.text);
+        // A dial nobody moved is not invented here: the mode's preset is the
+        // server's to fill in, so the ack says nothing about breadth.
+        assert!(!asked.text.contains("breadth"), "{}", asked.text);
+
+        // Off the scale, wrong type, and zero — each refused by name, and
+        // each leaving the world as it was.
+        let before = s.world.research.len();
+        for (args, field) in [
+            (
+                r#"{"question":"Who audits the auditors?","effort":4}"#,
+                "effort",
+            ),
+            (
+                r#"{"question":"Who audits the auditors?","breadth":0}"#,
+                "breadth",
+            ),
+            (
+                r#"{"question":"Who audits the auditors?","sources":"x"}"#,
+                "sources",
+            ),
+        ] {
+            let r = s.dispatch("research", args);
+            assert!(r.is_error, "{}", r.text);
+            assert!(r.text.contains(field), "{}", r.text);
+        }
+        assert_eq!(
+            s.world.research.len(),
+            before,
+            "a refused start queues nothing"
+        );
+    }
+
+    #[test]
     fn reports_a_finished_run_with_the_document_to_read() {
         let mut s = sb();
         let listed = s.dispatch("list_research", "{}");
@@ -3086,7 +3557,7 @@ mod tests {
         }
         assert_eq!(
             catalog.len(),
-            81,
+            85,
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
     }

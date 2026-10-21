@@ -74,9 +74,6 @@ ui/.omc/
 .claude/settings.local.json
 .claude/worktrees/
 
-# Rendered per install from docker/searxng/settings.template.yml (holds the
-# generated SEARXNG_SECRET).
-docker/searxng/settings.local.yml
 
 # Client POC apps — true subrepos with their own history (see apps/leadworks/README.md).
 # Gitignore does not affect the build-time apps glob; the apps compile and run
@@ -94,3 +91,12 @@ ui/dist-prev/
 # fixtures, never committed. Evidence and drivers live outside the repo.
 ui/vite.api-stub.tala*.ts
 ui/vite.tala*.config.ts
+
+# Talaria Mobile (mobile/) — Gradle's working state and build outputs. The
+# wrapper JAR and properties ARE committed: ./gradlew is how every build and
+# every CI job pins its own Gradle version, so it is source, not output.
+mobile/.gradle/
+mobile/build/
+mobile/*/build/
+mobile/local.properties
+mobile/.kotlin/

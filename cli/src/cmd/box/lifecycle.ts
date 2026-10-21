@@ -16,10 +16,10 @@ export function runStop(ctx: Ctx, name: string): Promise<number> {
 
 export async function runStart(ctx: Ctx, name: string): Promise<number> {
   requireBox(ctx, name)
-  // The shared stateless services are outside this project — nudge them (the
-  // box would run degraded without them, but that's the `talaria dev` posture).
+  // The shared stateless service is outside this project — nudge it (the
+  // box would run degraded without it, but that's the `talaria dev` posture).
   const devSpec = { files: stackComposeFiles(ctx.root, 'docker/dev-compose.yml') }
-  for (const svc of ['embeddings', 'searxng']) {
+  for (const svc of ['embeddings']) {
     if ((await compose(ctx, devSpec, ['up', '-d', svc])) !== 0) {
       ctx.log.warn(`${svc} didn't start — box runs degraded without it`)
     }
@@ -86,7 +86,7 @@ export const stopCommand: Leaf = {
 export const startCommand: Leaf = {
   kind: 'leaf',
   name: 'start',
-  summary: 'restart a stopped devbox (and the shared TEI/SearXNG)',
+  summary: 'restart a stopped devbox (and the shared TEI)',
   usage: 'talaria box start <name>',
   positionals: { name: 'name', required: true },
   run: (ctx, args) => runStart(ctx, args.positionals[0]!),

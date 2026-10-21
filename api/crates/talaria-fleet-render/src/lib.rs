@@ -57,6 +57,13 @@ pub struct RenderDef {
     /// The Developer Agent switch: dev sandbox, Oh My Pi, and the Workbench
     /// MCP tools.
     pub developer: bool,
+    /// How many subagents this agent may run at once — the cap the emitted
+    /// config.yaml hands Hermes as `delegation.max_concurrent_children`.
+    pub max_children: i32,
+    /// Hermes toolsets this agent does NOT get, as the operator set them.
+    /// `fleet_disabled_toolsets` merges them on top of the pair Talaria always
+    /// suppresses and whatever the def's own config already listed.
+    pub disabled_toolsets: Vec<String>,
 }
 
 /// The version's render-facing columns (the full version shape lives in
@@ -74,7 +81,9 @@ pub struct RenderTarget {
     pub version: RenderVersion,
 }
 
-/// The managed_agents row shape, spelled once.
+/// The managed_agents row shape, spelled once. `disabled_toolsets` is the one
+/// jsonb column the def half carries, so it rides through sqlx's Json wrapper
+/// (a bare `Vec<String>` would decode as Postgres `text[]`, which this is not).
 type TargetTuple = (
     String,
     String,
@@ -85,6 +94,8 @@ type TargetTuple = (
     String,
     Option<String>,
     bool,
+    i32,
+    sqlx::types::Json<Vec<String>>,
     i32,
     String,
     Value,
@@ -102,11 +113,13 @@ fn target_of(r: TargetTuple) -> RenderTarget {
             source: r.6,
             active_slot: r.7,
             developer: r.8,
+            max_children: r.9,
+            disabled_toolsets: r.10.0,
         },
         version: RenderVersion {
-            version: r.9,
-            soul: r.10,
-            config: r.11,
+            version: r.11,
+            soul: r.12,
+            config: r.13,
         },
     }
 }
@@ -118,7 +131,7 @@ pub async fn managed_agents(pg: &PgPool) -> Result<Vec<RenderTarget>, sqlx::Erro
     // Literal SQL: one auditable statement, columns spelled once.
     let rows: Vec<TargetTuple> = sqlx::query_as(
         "select d.id::text, d.slug, d.department, d.model, d.display_name, d.role, d.source, \
-         d.active_slot, d.developer, v.version, v.soul, v.config \
+         d.active_slot, d.developer, d.max_children, d.disabled_toolsets, v.version, v.soul, v.config \
          from agent_defs d \
          join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
          where d.managed and d.enabled \
@@ -810,6 +823,40 @@ fn dial_is_container() -> bool {
     matches!(std::env::var("TALARIA_AGENT_DIAL"), Ok(v) if v == "container")
 }
 
+/// The operator's search endpoint AS AN AGENT CONTAINER CAN REACH IT, or None.
+/// The app's spelling is the app's view: on a host-run dev app a loopback
+/// address means the laptop, which an agent reaches as host.docker.internal
+/// (the chassis declares it); in a containerized stack a loopback address is
+/// the app container itself and reaches nothing from an agent, so it is
+/// withheld rather than rendered wrong. Any other host passes through as-is.
+fn agent_search_url(app_url: &str, container_dial: bool) -> Option<String> {
+    let url = app_url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return Some(url.to_string());
+    };
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h, Some(p)),
+        _ => (authority, None),
+    };
+    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "0.0.0.0") {
+        return Some(url.to_string());
+    }
+    if container_dial {
+        return None;
+    }
+    let port = port.map(|p| format!(":{p}")).unwrap_or_default();
+    let path = if path.is_empty() {
+        String::new()
+    } else {
+        format!("/{path}")
+    };
+    Some(format!("{scheme}://host.docker.internal{port}{path}"))
+}
+
 // ── The render loop ───────────────────────────────────────────────────────────
 
 pub struct RenderResult {
@@ -835,6 +882,8 @@ pub async fn render_fleet(
     roll: Option<RollOverlay<'_>>,
 ) -> Result<RenderResult, String> {
     let targets = managed_agents(pg).await.map_err(|e| e.to_string())?;
+    let agent_search_url =
+        agent_search_url(&talaria_search::search_url(pg).await, dial_is_container());
     let mut result = RenderResult {
         agents: Vec::new(),
         files: Vec::new(),
@@ -1063,6 +1112,8 @@ pub async fn render_fleet(
         routed.insert("plugins".into(), Value::Object(plugins));
 
         fleet_approvals(&mut routed);
+        fleet_delegation(&mut routed, def.max_children);
+        fleet_disabled_toolsets(&mut routed, &def.disabled_toolsets);
 
         let cfg_path = agent_dir.join("config.yaml");
         let cfg_text = format!(
@@ -1198,6 +1249,17 @@ pub async fn render_fleet(
         // stack and a host-app dev stack both render the truth without an
         // operator wiring anything new.
         env.insert("TALARIA_API_URL".into(), json!(gateway_origin()));
+        // THE OPERATOR'S OWN SEARCH ENDPOINT, HANDED TO HERMES — not a search
+        // tool of ours. Hermes carries its own web-search provider registry
+        // (searxng, brave, exa, tavily, …, and keyless public tiers as the
+        // floor), and it reads SEARXNG_URL for the self-hosted shape. Talaria
+        // used to bolt a second `web_search` onto every agent over MCP and run
+        // its own SearXNG to answer it; now the agent searches with what it
+        // has, and an endpoint the operator configured here reaches it too.
+        // Nothing set → nothing rendered → Hermes resolves its own floor.
+        if let Some(url) = &agent_search_url {
+            env.insert("SEARXNG_URL".into(), json!(url));
+        }
         env.insert(
             "TALARIA_HEARTBEAT_SECONDS".into(),
             json!("${TALARIA_HEARTBEAT_SECONDS:-45}"),
@@ -1623,6 +1685,77 @@ fn fleet_approvals(routed: &mut Map<String, Value>) {
     routed.insert("approvals".into(), Value::Object(cfg));
 }
 
+/// How many subagents this agent may run at once — the def's `max_children`,
+/// under the one key Hermes reads for the delegation cap. The cap is an
+/// operator's decision about the box the fleet runs on, not the agent's about
+/// its own work, so it is written from the column every render and a def
+/// cannot author its way past it. Every OTHER delegation key a def set is left
+/// alone: the rest of that block is the agent's to tune.
+fn fleet_delegation(routed: &mut Map<String, Value>, max_children: i32) {
+    let mut cfg = routed
+        .get("delegation")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    cfg.insert("max_concurrent_children".into(), json!(max_children));
+    routed.insert("delegation".into(), Value::Object(cfg));
+}
+
+/// Hermes' own `todo` and `clarify` toolsets are the two Talaria has to take
+/// off the table, because Talaria already does both jobs and only its versions
+/// reach a person: the MCP todo tool is what lands the chips someone can see
+/// and act on, and the MCP clarify tool is what puts a question in front of
+/// them. Hermes' clarify has no callback on the API platform — the question
+/// comes back undelivered, so the agent waits on an answer nobody was ever
+/// asked for — and two todo tools leave a model guessing which list is the
+/// real one. `agent.disabled_toolsets` is Hermes' last word on tool
+/// availability (applied after everything else, at tool granularity), so this
+/// suppression holds whatever else a def says. Names a def already disabled
+/// stay: ours are added, never a replacement, and never twice.
+///
+/// `def_disabled` is the operator's own list (agent_defs.disabled_toolsets) —
+/// `browser` above all, because a browsing agent costs a Chromium install on
+/// every roll. THE ORDER IS THE MERGE'S MEANING: the floor Talaria always
+/// suppresses, then what the operator closed, then whatever the authored
+/// config already carried. A reader of the rendered config.yaml can tell the
+/// three apart by where they sit, and a re-render of the same three lists
+/// emits the same bytes.
+fn fleet_disabled_toolsets(routed: &mut Map<String, Value>, def_disabled: &[String]) {
+    let mut agent = routed
+        .get("agent")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    // Authored entries ride as the Values they are: a def that spelled one
+    // wrong keeps its own garbage rather than having this drop it silently —
+    // Hermes ignoring a name it does not know is the authored list's problem.
+    let authored: Vec<Value> = agent
+        .get("disabled_toolsets")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut disabled: Vec<Value> = Vec::new();
+    let ours = talaria_agent_defs::MANDATORY_DISABLED
+        .iter()
+        .map(|n| json!(n));
+    let theirs = def_disabled.iter().map(|n| json!(n));
+    for name in ours.chain(theirs).chain(authored) {
+        if !disabled.contains(&name) {
+            disabled.push(name);
+        }
+    }
+    agent.insert("disabled_toolsets".into(), json!(disabled));
+    routed.insert("agent".into(), Value::Object(agent));
+}
+
+/// Whether this agent still holds Hermes' browser toolset — the switch behind
+/// the browser setup the post-health sites run (talaria-fleet-docker's
+/// `install_browser`). Absence from the disabled list is the "yes": every
+/// built-in toolset is on until something names it.
+pub fn browser_enabled(def: &RenderDef) -> bool {
+    !def.disabled_toolsets.iter().any(|name| name == "browser")
+}
+
 /// s6 cont-init path. Lexicographic: after Hermes's `02-reconcile-profiles`,
 /// before user services start.
 const HARNESS_OWN_HOOK: &str = "/etc/cont-init.d/03-talaria-workbench-own";
@@ -1836,6 +1969,31 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_operators_search_url_reaches_an_agent_only_where_it_can() {
+        // Nothing configured: nothing rendered — Hermes resolves its own floor.
+        assert_eq!(agent_search_url("", false), None);
+        assert_eq!(agent_search_url("   ", true), None);
+        // A real host passes through untouched, container or not.
+        assert_eq!(
+            agent_search_url("https://search.corp.example/", true).as_deref(),
+            Some("https://search.corp.example/")
+        );
+        // Loopback on a host-run app is the laptop, which an agent spells
+        // host.docker.internal; the port and any path survive.
+        assert_eq!(
+            agent_search_url("http://127.0.0.1:8888", false).as_deref(),
+            Some("http://host.docker.internal:8888")
+        );
+        assert_eq!(
+            agent_search_url("http://localhost:8080/searx", false).as_deref(),
+            Some("http://host.docker.internal:8080/searx")
+        );
+        // Loopback in a containerized stack is the app container itself —
+        // withheld, never rendered wrong.
+        assert_eq!(agent_search_url("http://127.0.0.1:8888", true), None);
+    }
     use serde_json::json;
 
     const CHASSIS: &str = "\
@@ -2160,6 +2318,150 @@ service:
                 "unattended_mode": "approve", "cron_mode": "approve"
             }))
         );
+    }
+
+    #[test]
+    fn fleet_delegation_writes_the_cap_and_leaves_the_rest_of_the_block() {
+        // No authored delegation block: the cap alone appears.
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!("x"));
+        fleet_delegation(&mut routed, 3);
+        assert_eq!(
+            routed.get("delegation"),
+            Some(&json!({ "max_concurrent_children": 3 }))
+        );
+
+        // An authored block keeps its own keys, and a def that tried to raise
+        // the cap itself is overridden — the column is the operator's word.
+        let mut authored = Map::new();
+        authored.insert(
+            "delegation".into(),
+            json!({ "max_concurrent_children": 99, "child_timeout": 600, "roles": ["eng"] }),
+        );
+        fleet_delegation(&mut authored, 0);
+        assert_eq!(
+            authored.get("delegation"),
+            Some(&json!({
+                "max_concurrent_children": 0,
+                "child_timeout": 600,
+                "roles": ["eng"]
+            })),
+            "0 is a real setting: this agent delegates to nobody"
+        );
+
+        // And the emitted bytes are what Hermes' 1.1 reader needs: an
+        // unquoted integer under the key it looks for, parsing back unchanged.
+        let yaml = yaml11_emit(&Value::Object(authored.clone()));
+        assert!(
+            yaml.contains("max_concurrent_children: 0"),
+            "the cap must emit as a number, not a quoted string:\n{yaml}"
+        );
+        let back: Value = serde_yaml_ng::from_str(&yaml).expect("emitted yaml parses");
+        assert_eq!(back, Value::Object(authored));
+    }
+
+    #[test]
+    fn fleet_disabled_toolsets_suppresses_both_and_adds_to_a_def_list() {
+        // No authored agent block and nothing closed by the operator: both
+        // mandatory names land, in order, and nothing else appears under
+        // `agent`.
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!("x"));
+        fleet_disabled_toolsets(&mut routed, &[]);
+        assert_eq!(
+            routed.get("agent"),
+            Some(&json!({ "disabled_toolsets": ["todo", "clarify"] }))
+        );
+
+        // A def that already disabled todo gets exactly one todo — the add is
+        // idempotent, so a re-render never grows the list.
+        let mut already = Map::new();
+        already.insert("agent".into(), json!({ "disabled_toolsets": ["todo"] }));
+        fleet_disabled_toolsets(&mut already, &[]);
+        assert_eq!(
+            already.get("agent"),
+            Some(&json!({ "disabled_toolsets": ["todo", "clarify"] }))
+        );
+        let mut twice = already.clone();
+        fleet_disabled_toolsets(&mut twice, &[]);
+        assert_eq!(twice, already, "the suppression is idempotent");
+
+        // A def's own names survive, and so do its other agent keys: ours are
+        // added, never a replacement. The mandatory pair leads — the merge's
+        // order is floor, then operator, then authored.
+        let mut authored = Map::new();
+        authored.insert(
+            "agent".into(),
+            json!({ "max_steps": 40, "disabled_toolsets": ["browser", "clarify"] }),
+        );
+        fleet_disabled_toolsets(&mut authored, &[]);
+        assert_eq!(
+            authored.get("agent"),
+            Some(&json!({
+                "max_steps": 40,
+                "disabled_toolsets": ["todo", "clarify", "browser"]
+            }))
+        );
+
+        // The operator's list sits between the two: after the floor, before
+        // the authored names, deduped against both. `browser` here is the
+        // switch that also skips the Chromium install.
+        let mut closed = Map::new();
+        closed.insert(
+            "agent".into(),
+            json!({ "disabled_toolsets": ["web", "memory"] }),
+        );
+        fleet_disabled_toolsets(
+            &mut closed,
+            &[
+                "browser".to_string(),
+                "memory".to_string(),
+                "todo".to_string(),
+            ],
+        );
+        assert_eq!(
+            closed.get("agent"),
+            Some(&json!({
+                "disabled_toolsets": ["todo", "clarify", "browser", "memory", "web"]
+            })),
+            "floor, then the operator's own order, then what only the config said"
+        );
+        let mut again = closed.clone();
+        fleet_disabled_toolsets(&mut again, &["browser".to_string(), "memory".to_string()]);
+        assert_eq!(again, closed, "a re-render emits the same list");
+
+        // The switch reads the def's list, not the rendered merge: `browser`
+        // closed is the one answer the install site acts on.
+        let def = |disabled: &[&str]| RenderDef {
+            id: "d1".into(),
+            slug: "analyst".into(),
+            department: "research".into(),
+            model: "analyst-research".into(),
+            display_name: "Analyst".into(),
+            role: None,
+            source: "created".into(),
+            active_slot: None,
+            developer: false,
+            max_children: 3,
+            disabled_toolsets: disabled.iter().map(|s| s.to_string()).collect(),
+        };
+        assert!(browser_enabled(&def(&[])), "every toolset is on by default");
+        assert!(browser_enabled(&def(&["memory", "web"])));
+        assert!(!browser_enabled(&def(&["browser"])));
+    }
+
+    #[test]
+    fn the_disabled_toolsets_round_trip_through_the_one_point_one_emitter() {
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!("x"));
+        fleet_disabled_toolsets(&mut routed, &[]);
+        let yaml = yaml11_emit(&Value::Object(routed.clone()));
+        assert!(
+            yaml.contains("agent:\n  disabled_toolsets:\n    - todo\n    - clarify\n"),
+            "the block Hermes reads is missing from:\n{yaml}"
+        );
+        let back: Value = serde_yaml_ng::from_str(&yaml).expect("emitted yaml parses");
+        assert_eq!(back, Value::Object(routed), "round-trip must be lossless");
     }
 
     #[test]

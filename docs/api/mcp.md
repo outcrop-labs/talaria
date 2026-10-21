@@ -7,15 +7,24 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-9 routes.
+16 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/mcp`](#apimcp) | GET | `session` |
+| [`/api/mcp/calls`](#apimcpcalls) | GET | `admin` |
+| [`/api/mcp/calls/retention`](#apimcpcallsretention) | GET | `admin` |
+| [`/api/mcp/calls/retention`](#apimcpcallsretention) | PUT | `admin` |
+| [`/api/mcp/calls/summary`](#apimcpcallssummary) | GET | `admin` |
 | [`/api/mcp/gw/{server}`](#apimcpgwserver) | GET | `agent` |
 | [`/api/mcp/gw/{server}`](#apimcpgwserver) | POST | `agent` |
+| [`/api/mcp/health`](#apimcphealth) | POST | `admin` |
 | [`/api/mcp/icon`](#apimcpicon) | GET | `session` |
 | [`/api/mcp/library`](#apimcplibrary) | GET | `session` + `perm:agents.manage` |
+| [`/api/mcp/library/featured`](#apimcplibraryfeatured) | GET | `admin` |
+| [`/api/mcp/library/featured`](#apimcplibraryfeatured) | PUT | `admin` |
+| [`/api/mcp/library/liveness`](#apimcplibraryliveness) | POST | `admin` |
+| [`/api/mcp/library/sync`](#apimcplibrarysync) | POST | `session` + `perm:agents.manage` |
 | [`/api/mcp/oauth/callback`](#apimcpoauthcallback) | GET | `public` |
 | [`/api/mcp/oauth/start`](#apimcpoauthstart) | GET | `session` + `perm:agents.manage` |
 | [`/api/mcp/servers`](#apimcpservers) | GET | `session` + `perm:agents.manage` |
@@ -38,6 +47,49 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp.rs`](../../api/crates/tala
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{name, url, timeout, extras}` | 200 | — |
 
+## `/api/mcp/calls`
+
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_calls.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_calls.rs)
+
+> /api/mcp/calls, /api/mcp/calls/summary and /api/mcp/calls/retention.
+> The gateway's per-call record, read back for admins (`mcp_tool_calls`, one
+> row per tools/call or refusal the gateway answered — see mcp::calls).
+> GET /api/mcp/calls → `{calls}`, newest first: `?server=` (id or name),
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{calls}` | 200, 400 | — |
+
+## `/api/mcp/calls/retention`
+
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_calls.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_calls.rs)
+
+> /api/mcp/calls, /api/mcp/calls/summary and /api/mcp/calls/retention.
+> The gateway's per-call record, read back for admins (`mcp_tool_calls`, one
+> row per tools/call or refusal the gateway answered — see mcp::calls).
+> GET /api/mcp/calls → `{calls}`, newest first: `?server=` (id or name),
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{days}` | 200 | — |
+| PUT | `admin` | — | `{days}` | 200, 400 | — |
+
+## `/api/mcp/calls/summary`
+
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_calls.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_calls.rs)
+
+> /api/mcp/calls, /api/mcp/calls/summary and /api/mcp/calls/retention.
+> The gateway's per-call record, read back for admins (`mcp_tool_calls`, one
+> row per tools/call or refusal the gateway answered — see mcp::calls).
+> GET /api/mcp/calls → `{calls}`, newest first: `?server=` (id or name),
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `…` | 200, 400 | — |
+
 ## `/api/mcp/gw/{server}`
 
 Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_gw_server.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_gw_server.rs)
@@ -51,7 +103,21 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_gw_server.rs`](../../api/c
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `agent` | — | `…` | 200, 403, 405, 502 | SSE |
-| POST | `agent` | — | `…` | 200, 403, 502 | SSE |
+| POST | `agent` | — | `…` | 200, 202, 403, 502 | SSE |
+
+## `/api/mcp/health`
+
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_health.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_health.rs)
+
+> /api/mcp/health.
+> POST → run one MCP health pass now (admin only) and answer its report:
+> `{checked, changed, down, recovered, notified, servers: [{id, name, state,
+> detail, event, catalogChanged}]}`. The same pass the hourly `mcp-health`
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | — | `…` | 200, 500 | — |
 
 ## `/api/mcp/icon`
 
@@ -72,14 +138,57 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_icon.rs`](../../api/crates
 Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs)
 
 > /api/mcp/library.
-> GET ?q= → the MCP server library (the official registry, live, filtered to
-> remote-capable servers). Backs the Add-server picker. BOTH arms answer
-> `{servers}` — featured shelf and search alike; the picker indexes
+> GET → the MCP server catalog, served from the LOCAL MIRROR of the official
+> registry (`talaria_mcp_library::catalog`): `?featured=1` is the editorial
+> shelf, `?q=` searches title/domain/name/description with full text, and
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | — | `{servers}` | 200 | — |
+| GET | `session` + `perm:agents.manage` | — | `…` | 200 | — |
+
+## `/api/mcp/library/featured`
+
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs)
+
+> /api/mcp/library.
+> GET → the MCP server catalog, served from the LOCAL MIRROR of the official
+> registry (`talaria_mcp_library::catalog`): `?featured=1` is the editorial
+> shelf, `?q=` searches title/domain/name/description with full text, and
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `…` | 200 | — |
+| PUT | `admin` | — | `…` | 200, 400 | audit |
+
+## `/api/mcp/library/liveness`
+
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs)
+
+> /api/mcp/library.
+> GET → the MCP server catalog, served from the LOCAL MIRROR of the official
+> registry (`talaria_mcp_library::catalog`): `?featured=1` is the editorial
+> shelf, `?q=` searches title/domain/name/description with full text, and
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | — | `{ok, running, catalog}` | 200 | — |
+
+## `/api/mcp/library/sync`
+
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs)
+
+> /api/mcp/library.
+> GET → the MCP server catalog, served from the LOCAL MIRROR of the official
+> registry (`talaria_mcp_library::catalog`): `?featured=1` is the editorial
+> shelf, `?q=` searches title/domain/name/description with full text, and
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` + `perm:agents.manage` | — | `{ok, catalog}` | 200 | — |
 
 ## `/api/mcp/oauth/callback`
 
@@ -139,9 +248,10 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_servers.rs`](../../api/cra
 Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_servers_id.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_servers_id.rs)
 
 > /api/mcp/servers/{id}.
-> One registry server: PUT patches config / assignment / user access / team
-> access / tool refresh in one idempotent surface; DELETE unregisters
-> (assignments, user access, and connected accounts cascade). Fleet re-renders after mutations.
+> One registry server: PUT patches config / credentials (`mergeHeaders`: set
+> keys, null removes, the rest kept) / assignment / user access / team access
+> / tool refresh / OAuth client (`oauthClient` with optional `scopes`) /
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -160,7 +270,9 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_servers_id.rs`](../../api/
 | `enabled` | `bool?` |  |
 | `allAgents` | `bool?` |  |
 | `authMode` | `enum(org|per-user)?` |  |
+| `mergeHeaders` | `merge_headers` |  |
 | `refreshTools` | `bool?` |  |
+| `redetectAuth` | `bool?` |  |
 | `assign` | `assign` |  |
 | `unassign` | `optional_string_member_max` |  |
 | `userAccess` | `user_access` |  |

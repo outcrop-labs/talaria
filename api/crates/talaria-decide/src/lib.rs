@@ -52,6 +52,7 @@ use talaria_state::AppState;
 
 pub mod action;
 pub mod config;
+pub mod enough;
 pub mod focus;
 pub mod guard;
 pub mod scope;

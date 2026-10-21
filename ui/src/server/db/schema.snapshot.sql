@@ -109,7 +109,10 @@ CREATE TABLE public.agent_defs (
     workbench_models jsonb DEFAULT '{}'::jsonb NOT NULL,
     proactive boolean DEFAULT false NOT NULL,
     email_alias text,
-    developer boolean DEFAULT false NOT NULL
+    developer boolean DEFAULT false NOT NULL,
+    pinned_sessions boolean DEFAULT false NOT NULL,
+    disabled_toolsets jsonb DEFAULT '[]'::jsonb NOT NULL,
+    max_children integer DEFAULT 3 NOT NULL
 );
 CREATE TABLE public.agent_google_connections (
     agent_model text NOT NULL,
@@ -281,6 +284,17 @@ CREATE TABLE public.audit_log (
     after jsonb,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.blueprints (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    name text NOT NULL,
+    body text DEFAULT ''::text NOT NULL,
+    owner_user_id uuid,
+    surface text DEFAULT 'work'::text NOT NULL,
+    sort integer DEFAULT 0 NOT NULL,
+    created_by text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.board_agent_requests (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     board_id uuid NOT NULL,
@@ -432,6 +446,14 @@ CREATE TABLE public.chat_approvals (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     decided_at timestamp with time zone
 );
+CREATE TABLE public.conversation_layout (
+    user_id uuid NOT NULL,
+    conversation_id uuid NOT NULL,
+    pinned boolean DEFAULT false NOT NULL,
+    group_name text,
+    "position" integer,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.conversation_members (
     conversation_id uuid NOT NULL,
     user_id uuid NOT NULL,
@@ -443,10 +465,25 @@ CREATE TABLE public.conversation_reads (
     last_read_seq integer DEFAULT 0 NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.conversation_schedules (
+    agent_model text NOT NULL,
+    job_id text NOT NULL,
+    conversation_id uuid NOT NULL,
+    name text NOT NULL,
+    schedule text NOT NULL,
+    created_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.conversation_teams (
     conversation_id uuid NOT NULL,
     team_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.conversation_todos (
+    conversation_id uuid NOT NULL,
+    items jsonb DEFAULT '[]'::jsonb NOT NULL,
+    updated_by text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE public.conversations (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -769,6 +806,29 @@ CREATE TABLE public.llm_endpoints (
     anthropic_base text,
     archived_prices jsonb
 );
+CREATE TABLE public.mcp_library_entries (
+    registry_name text NOT NULL,
+    source text DEFAULT 'registry'::text NOT NULL,
+    title text NOT NULL,
+    description text,
+    domain text,
+    domains text[] DEFAULT '{}'::text[] NOT NULL,
+    tier smallint DEFAULT 2 NOT NULL,
+    kind text DEFAULT 'hosted'::text NOT NULL,
+    entry jsonb NOT NULL,
+    registry_updated_at timestamp with time zone,
+    synced_at timestamp with time zone DEFAULT now() NOT NULL,
+    search tsvector GENERATED ALWAYS AS ((((setweight(to_tsvector('simple'::regconfig, COALESCE(title, ''::text)), 'A'::"char") || setweight(to_tsvector('simple'::regconfig, COALESCE(domain, ''::text)), 'A'::"char")) || setweight(to_tsvector('simple'::regconfig, replace(replace(registry_name, '/'::text, ' '::text), '.'::text, ' '::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(description, ''::text)), 'C'::"char"))) STORED,
+    live_state text,
+    live_checked_at timestamp with time zone,
+    live_detail text
+);
+CREATE TABLE public.mcp_oauth_reconnect (
+    server_id uuid NOT NULL,
+    subject text NOT NULL,
+    detail text NOT NULL,
+    flagged_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.mcp_oauth_states (
     state text NOT NULL,
     server_id uuid NOT NULL,
@@ -809,7 +869,10 @@ CREATE TABLE public.mcp_servers (
     oauth jsonb,
     app_slug text,
     package jsonb,
-    env_enc text
+    env_enc text,
+    last_probe jsonb,
+    headers_sealed text,
+    health_state text
 );
 CREATE TABLE public.mcp_team_access (
     server_id uuid NOT NULL,
@@ -817,6 +880,27 @@ CREATE TABLE public.mcp_team_access (
     allowed boolean DEFAULT true NOT NULL,
     tools text[]
 );
+CREATE TABLE public.mcp_tool_calls (
+    id bigint NOT NULL,
+    at timestamp with time zone DEFAULT now() NOT NULL,
+    server_id text NOT NULL,
+    server_name text NOT NULL,
+    agent text NOT NULL,
+    user_id text,
+    method text NOT NULL,
+    tool text,
+    outcome text NOT NULL,
+    status smallint,
+    latency_ms integer,
+    error text
+);
+CREATE SEQUENCE public.mcp_tool_calls_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.mcp_tool_calls_id_seq OWNED BY public.mcp_tool_calls.id;
 CREATE TABLE public.mcp_user_access (
     server_id uuid NOT NULL,
     user_id uuid NOT NULL,
@@ -851,7 +935,8 @@ CREATE TABLE public.messages (
     guard jsonb,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     streamed_at timestamp with time zone DEFAULT now() NOT NULL,
-    chips jsonb DEFAULT '[]'::jsonb NOT NULL
+    chips jsonb DEFAULT '[]'::jsonb NOT NULL,
+    hermes_run_id text
 );
 CREATE TABLE public.model_blurbs (
     model_id text NOT NULL,
@@ -1001,7 +1086,8 @@ CREATE TABLE public.research_runs (
     completed_at timestamp with time zone,
     title text,
     conversation_id uuid,
-    parent_run_id uuid
+    parent_run_id uuid,
+    dials jsonb
 );
 CREATE TABLE public.research_sources (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1390,6 +1476,7 @@ CREATE TABLE public.workspace_secrets (
     secret_folder_id uuid
 );
 ALTER TABLE ONLY public.agent_coding_accounts ALTER COLUMN id SET DEFAULT nextval('public.agent_coding_accounts_id_seq'::regclass);
+ALTER TABLE ONLY public.mcp_tool_calls ALTER COLUMN id SET DEFAULT nextval('public.mcp_tool_calls_id_seq'::regclass);
 ALTER TABLE ONLY public.agent_coding_account_blocks
     ADD CONSTRAINT agent_coding_account_blocks_pkey PRIMARY KEY (account_id, provider_key, block_scope);
 ALTER TABLE ONLY public.agent_coding_accounts
@@ -1446,6 +1533,8 @@ ALTER TABLE ONLY public.assistant_reply_grants
     ADD CONSTRAINT assistant_reply_grants_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.audit_log
     ADD CONSTRAINT audit_log_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.blueprints
+    ADD CONSTRAINT blueprints_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.board_agent_requests
     ADD CONSTRAINT board_agent_requests_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.board_agents
@@ -1486,12 +1575,18 @@ ALTER TABLE ONLY public.channels
     ADD CONSTRAINT channels_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.chat_approvals
     ADD CONSTRAINT chat_approvals_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.conversation_layout
+    ADD CONSTRAINT conversation_layout_pkey PRIMARY KEY (user_id, conversation_id);
 ALTER TABLE ONLY public.conversation_members
     ADD CONSTRAINT conversation_members_pkey PRIMARY KEY (conversation_id, user_id);
 ALTER TABLE ONLY public.conversation_reads
     ADD CONSTRAINT conversation_reads_pkey PRIMARY KEY (conversation_id, user_id);
+ALTER TABLE ONLY public.conversation_schedules
+    ADD CONSTRAINT conversation_schedules_pkey PRIMARY KEY (agent_model, job_id);
 ALTER TABLE ONLY public.conversation_teams
     ADD CONSTRAINT conversation_teams_pkey PRIMARY KEY (conversation_id, team_id);
+ALTER TABLE ONLY public.conversation_todos
+    ADD CONSTRAINT conversation_todos_pkey PRIMARY KEY (conversation_id);
 ALTER TABLE ONLY public.conversations
     ADD CONSTRAINT conversations_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.daily_brief_entries
@@ -1550,6 +1645,10 @@ ALTER TABLE ONLY public.llm_endpoints
     ADD CONSTRAINT llm_endpoints_name_key UNIQUE (name);
 ALTER TABLE ONLY public.llm_endpoints
     ADD CONSTRAINT llm_endpoints_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.mcp_library_entries
+    ADD CONSTRAINT mcp_library_entries_pkey PRIMARY KEY (registry_name);
+ALTER TABLE ONLY public.mcp_oauth_reconnect
+    ADD CONSTRAINT mcp_oauth_reconnect_pkey PRIMARY KEY (server_id, subject);
 ALTER TABLE ONLY public.mcp_oauth_states
     ADD CONSTRAINT mcp_oauth_states_pkey PRIMARY KEY (state);
 ALTER TABLE ONLY public.mcp_oauth_tokens
@@ -1562,6 +1661,8 @@ ALTER TABLE ONLY public.mcp_servers
     ADD CONSTRAINT mcp_servers_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.mcp_team_access
     ADD CONSTRAINT mcp_team_access_pkey PRIMARY KEY (server_id, team_id);
+ALTER TABLE ONLY public.mcp_tool_calls
+    ADD CONSTRAINT mcp_tool_calls_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.mcp_user_access
     ADD CONSTRAINT mcp_user_access_pkey PRIMARY KEY (server_id, user_id);
 ALTER TABLE ONLY public.mcp_user_credentials
@@ -1721,6 +1822,7 @@ CREATE UNIQUE INDEX assistant_reply_grants_standing_idx ON public.assistant_repl
 CREATE UNIQUE INDEX assistant_reply_grants_thread_idx ON public.assistant_reply_grants USING btree (user_id, channel_id) WHERE ((channel_id IS NOT NULL) AND (revoked_at IS NULL));
 CREATE INDEX audit_log_created_idx ON public.audit_log USING btree (created_at DESC);
 CREATE INDEX audit_log_target_idx ON public.audit_log USING btree (target_type, target_id);
+CREATE INDEX blueprints_owner_idx ON public.blueprints USING btree (owner_user_id, sort, name);
 CREATE UNIQUE INDEX board_agent_requests_one_open ON public.board_agent_requests USING btree (board_id, agent_model) WHERE (status = 'open'::text);
 CREATE INDEX board_views_board_idx ON public.board_views USING btree (board_id, "position");
 CREATE INDEX channel_messages_idx ON public.channel_messages USING btree (channel_id, seq);
@@ -1730,6 +1832,7 @@ CREATE UNIQUE INDEX channels_dm_key_idx ON public.channels USING btree (dm_key) 
 CREATE UNIQUE INDEX channels_task_idx ON public.channels USING btree (task_id) WHERE (task_id IS NOT NULL);
 CREATE UNIQUE INDEX chat_approvals_external_idx ON public.chat_approvals USING btree (external_id) WHERE ((external_id IS NOT NULL) AND (status = 'pending'::text));
 CREATE INDEX chat_approvals_pending_idx ON public.chat_approvals USING btree (status, created_at DESC);
+CREATE INDEX conversation_schedules_conversation_idx ON public.conversation_schedules USING btree (conversation_id);
 CREATE INDEX conversations_user_agent_idx ON public.conversations USING btree (user_id, agent_model, updated_at DESC);
 CREATE INDEX daily_brief_entries_batch_idx ON public.daily_brief_entries USING btree (brief_id, batch);
 CREATE INDEX daily_brief_entries_key_idx ON public.daily_brief_entries USING btree (brief_id, source_key);
@@ -1753,6 +1856,14 @@ CREATE INDEX kb_comments_doc_idx ON public.kb_comments USING btree (doc_id, crea
 CREATE INDEX kb_docs_fts_idx ON public.kb_docs USING gin (to_tsvector('english'::regconfig, ((COALESCE(title, ''::text) || ' '::text) || COALESCE(body, ''::text))));
 CREATE INDEX kb_docs_space_idx ON public.kb_docs USING btree (space_id, parent_id, sort);
 CREATE INDEX kb_editors_item_idx ON public.kb_editors USING btree (item_type, item_id);
+CREATE INDEX mcp_library_entries_dead_idx ON public.mcp_library_entries USING btree (tier) WHERE (live_state = 'dead'::text);
+CREATE INDEX mcp_library_entries_domains_idx ON public.mcp_library_entries USING gin (domains);
+CREATE INDEX mcp_library_entries_live_idx ON public.mcp_library_entries USING btree (live_checked_at NULLS FIRST);
+CREATE INDEX mcp_library_entries_search_idx ON public.mcp_library_entries USING gin (search);
+CREATE INDEX mcp_library_entries_tier_idx ON public.mcp_library_entries USING btree (tier, title);
+CREATE INDEX mcp_tool_calls_agent_idx ON public.mcp_tool_calls USING btree (agent, at DESC);
+CREATE INDEX mcp_tool_calls_at_idx ON public.mcp_tool_calls USING btree (at DESC);
+CREATE INDEX mcp_tool_calls_server_idx ON public.mcp_tool_calls USING btree (server_id, at DESC);
 CREATE INDEX messages_conv_idx ON public.messages USING btree (conversation_id, seq);
 CREATE INDEX messages_conversation_timeline_idx ON public.messages USING btree (conversation_id, created_at DESC, id DESC);
 CREATE INDEX messages_streaming_idx ON public.messages USING btree (created_at) WHERE (status = 'streaming'::text);
@@ -1846,6 +1957,8 @@ ALTER TABLE ONLY public.assistant_reply_grants
     ADD CONSTRAINT assistant_reply_grants_channel_id_fkey FOREIGN KEY (channel_id) REFERENCES public.channels(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.assistant_reply_grants
     ADD CONSTRAINT assistant_reply_grants_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.blueprints
+    ADD CONSTRAINT blueprints_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.board_agent_requests
     ADD CONSTRAINT board_agent_requests_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.board_agent_requests
@@ -1904,6 +2017,10 @@ ALTER TABLE ONLY public.chat_approvals
     ADD CONSTRAINT chat_approvals_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.chat_approvals
     ADD CONSTRAINT chat_approvals_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.conversation_layout
+    ADD CONSTRAINT conversation_layout_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.conversation_layout
+    ADD CONSTRAINT conversation_layout_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_members
     ADD CONSTRAINT conversation_members_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_members
@@ -1912,10 +2029,16 @@ ALTER TABLE ONLY public.conversation_reads
     ADD CONSTRAINT conversation_reads_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_reads
     ADD CONSTRAINT conversation_reads_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.conversation_schedules
+    ADD CONSTRAINT conversation_schedules_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.conversation_schedules
+    ADD CONSTRAINT conversation_schedules_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.conversation_teams
     ADD CONSTRAINT conversation_teams_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_teams
     ADD CONSTRAINT conversation_teams_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.conversation_todos
+    ADD CONSTRAINT conversation_todos_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversations
     ADD CONSTRAINT conversations_plan_template_id_fkey FOREIGN KEY (plan_template_id) REFERENCES public.templates(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.conversations
@@ -1972,6 +2095,8 @@ ALTER TABLE ONLY public.kb_spaces
     ADD CONSTRAINT kb_spaces_rag_collection_id_fkey FOREIGN KEY (rag_collection_id) REFERENCES public.rag_collections(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.llm_api_keys
     ADD CONSTRAINT llm_api_keys_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.mcp_oauth_reconnect
+    ADD CONSTRAINT mcp_oauth_reconnect_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.mcp_oauth_states
     ADD CONSTRAINT mcp_oauth_states_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.mcp_oauth_tokens

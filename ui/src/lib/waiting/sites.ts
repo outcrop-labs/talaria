@@ -81,6 +81,11 @@ export const WAITING_SITES = {
     slot: 'inline',
     note: 'The plan modal while an agent reads the conversation and drafts tickets.',
   },
+  'todo/active': {
+    role: 'reasoning',
+    slot: 'inline',
+    note: "The step an agent marked active in its own plan — the one thing it is working on now.",
+  },
 
   /* ── Comms ────────────────────────────────────────────────────────────── */
   'comms/conclude': {
@@ -123,6 +128,8 @@ export const WAITING_SITES = {
   'mcp/search': { role: 'tool', slot: 'inline', note: 'Marketplace search in flight.' },
   'mcp/install': { role: 'submitting', slot: 'button', note: 'Installing a server from the marketplace.' },
   'mcp/server-refresh': { role: 'tool', slot: 'button', note: 'Re-probing a server card for its tool list.' },
+  'mcp/sync': { role: 'submitting', slot: 'button', note: 'Mirroring the official MCP registry into the local catalog.' },
+  'mcp/featured-save': { role: 'submitting', slot: 'button', note: "Saving the operator's featured-shelf edits." },
   'skills/marketplace-search': { role: 'tool', slot: 'inline', note: 'Catalog search in flight.' },
   'skills/marketplace-install': { role: 'submitting', slot: 'button', note: 'Reading a repo or writing its skills into a destination.' },
 

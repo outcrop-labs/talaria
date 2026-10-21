@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-24 routes.
+31 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -50,8 +50,15 @@
 | [`/api/conversations/{id}/members`](#apiconversationsidmembers) | DELETE | `session` |
 | [`/api/conversations/{id}/messages/{msgId}/reactions`](#apiconversationsidmessagesmsgidreactions) | POST | `session` |
 | [`/api/conversations/{id}/read`](#apiconversationsidread) | POST | `session` |
+| [`/api/conversations/{id}/schedule`](#apiconversationsidschedule) | POST | `session` + `agent-manager` |
+| [`/api/conversations/{id}/schedules`](#apiconversationsidschedules) | GET | `session` |
+| [`/api/conversations/{id}/schedules/{jobId}`](#apiconversationsidschedulesjobid) | DELETE | `session` + `agent-manager` |
+| [`/api/conversations/{id}/session`](#apiconversationsidsession) | GET | `session` |
+| [`/api/conversations/{id}/steer`](#apiconversationsidsteer) | POST | `session` |
+| [`/api/conversations/{id}/stop`](#apiconversationsidstop) | POST | `session` |
 | [`/api/conversations/{id}/teams`](#apiconversationsidteams) | POST | `session` |
 | [`/api/conversations/{id}/teams`](#apiconversationsidteams) | DELETE | `session` |
+| [`/api/conversations/{id}/todo`](#apiconversationsidtodo) | GET | `session` |
 | [`/api/dms`](#apidms) | POST | `session` |
 
 ## `/api/channels`
@@ -433,6 +440,8 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id.rs`](../../
 | PATCH | `session` | [body](#patch-apiconversationsid-body) | `…` | 200, 400, 403, 404 | — |
 | DELETE | `session` | — | `…` | 200, 403, 404 | — |
 
+**PATCH** — PATCH takes any of five writes. `title` (1..120, trimmed) renames the thread. `archived: false` restores one the owner archived — owner only, and archiving itself is DELETE. `pinnedFiles` replaces the document pane's list (at most 12 entries, each { kind: "google" | "artifact", id, title?, mime? }). And three fields that say where the CALLER keeps this thread rather than anything about the thread: `pinned` (bool), `group` (trimmed string, 40 characters at most) and `position` (whole number, 0 to 100000). On group and position, null is the explicit clear and an absent field is left alone; those three land in the caller's own layout row, so any role the GET would show may write them, collaborator included, while title and archived stay owner (or plan-collaborator) writes. A body naming none of the five is a 400.
+
 ### PATCH `/api/conversations/{id}` body
 
 | field | schema | notes |
@@ -530,6 +539,116 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_read.rs`](.
 | :--- | :--- | :--- |
 | `seq` | `number?(0, 9007)` | seq: optional integer, min 0, no schema max — the ceiling is the safe-integer bound itself. |
 
+## `/api/conversations/{id}/schedule`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_schedule.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_schedule.rs)
+
+> /api/conversations/{id}/schedule.
+> POST { name, schedule, prompt } → a standing cron on this thread's agent
+> whose turns come back INTO this thread. The fleet's own cron door
+> (/api/fleet/agents/{id}/crons) creates the same job and reports nowhere;
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` + `agent-manager` | [body](#post-apiconversationsidschedule-body) | `{ok, jobId}` | 200, 400, 403, 404 | audit |
+
+**POST** — Put this conversation's agent on a timer: a cron job on the agent itself whose every run posts its answer back into this thread.
+
+### POST `/api/conversations/{id}/schedule` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string trimmed(1, 80)` | The same bounds the fleet door takes, because it is the same job. |
+| `schedule` | `string trimmed(1, 120)` |  |
+| `prompt` | `string trimmed(1, 20000)` |  |
+
+## `/api/conversations/{id}/schedules`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_schedules.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_schedules.rs)
+
+> /api/conversations/{id}/schedules.
+> GET → what this thread has put its agent on a timer for. Two halves: the
+> rows Talaria wrote when the schedule was created (name, schedule, when,
+> which job), and the live state only the agent's own jobs.json knows — is it
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{schedules}` | 200, 404 | — |
+
+**GET** — The cron jobs this conversation has scheduled on its agent, each with the live job state when the agent's container can be read.
+
+## `/api/conversations/{id}/schedules/{jobId}`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_schedules_jobid.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_schedules_jobid.rs)
+
+> /api/conversations/{id}/schedules/{jobId}.
+> DELETE → take a thread's schedule away: the job leaves the agent's own
+> scheduler and the row that made this thread its listener goes with it. The
+> same two gates as creating one — seeing the thread (404 for one you cannot
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| DELETE | `session` + `agent-manager` | — | `{ok}` | 200, 400, 403, 404 | audit |
+
+**DELETE** — Remove a schedule this conversation created: the job and its listener row.
+
+## `/api/conversations/{id}/session`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_session.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_session.rs)
+
+> GET /api/conversations/{id}/session — what the agent is still holding of
+> this thread.
+>
+> A PINNED agent keeps the transcript itself: Talaria's conversation id IS the
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{applies, compacted, since, sessionId, messageCount, partial, reachable}` | 200, 403 | — |
+
+**GET** — What the agent itself still holds of this thread: how many messages it has compacted away and how far back the surviving transcript reaches. `applies` is false — with zeros and nulls — for an agent that is not pinned, a thread Hermes never held, or a container that is not answering; the compacted summaries themselves never cross the wire.
+
+## `/api/conversations/{id}/steer`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_steer.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_steer.rs)
+
+> /api/conversations/{id}/steer.
+> POST { content } → say something to the agent WHILE it is replying, and have
+> it account for it in the turn it is already in. Hermes hands a steer to a
+> running agent mid-turn; without it, a correction typed over a streaming reply
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiconversationsidsteer-body) | `{steered, messageId}` | 200, 202, 400, 403, 409 | — |
+
+**POST** — Say something to the agent mid-reply. `steered` means the running turn took the words; `queued` (202) means it did not and the row waits in history for the next turn. Nothing is streaming → 409.
+
+### POST `/api/conversations/{id}/steer` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `content` | `string(1, 20000)` | content: what to say to the agent mid-turn — a sentence of redirection, not a document, which is what the small ceiling says. |
+
+## `/api/conversations/{id}/stop`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_stop.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_stop.rs)
+
+> /api/conversations/{id}/stop.
+> POST → interrupt the reply that is streaming in this thread right now. The
+> stop button, server-side: Hermes addresses a running turn by its own run id,
+> and the assistant row is the only place that says which one this is.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{ok, hermes}` | 200, 403, 409, 502 | — |
+
+**POST** — Interrupt the reply streaming in this thread. `hermes` says whether the agent's own run was interrupted, or whether hanging up was the whole stop. Nothing is streaming → 409.
+
 ## `/api/conversations/{id}/teams`
 
 Source: [`api/crates/talaria-routes-boards/src/plans/plans_id_teams.rs`](../../api/crates/talaria-routes-boards/src/plans/plans_id_teams.rs)
@@ -554,6 +673,22 @@ Source: [`api/crates/talaria-routes-boards/src/plans/plans_id_teams.rs`](../../a
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `teamId` | `uuid` |  |
+
+## `/api/conversations/{id}/todo`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_todo.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_todo.rs)
+
+> GET /api/conversations/{id}/todo — the agent's plan for this thread.
+>
+> THE READ DOOR, gated on the conversation's own access rule (the owner, or a
+> member of the plan / work session) — the same predicate every other
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{items, summary}` | 200, 403 | — |
+
+**GET** — The steps the agent is working through on this conversation.
 
 ## `/api/dms`
 

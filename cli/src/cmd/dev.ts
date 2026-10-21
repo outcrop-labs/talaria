@@ -12,7 +12,6 @@ import { PG_CONTAINER, REDIS_CONTAINER } from '../containers'
 import { envValue } from '../envfile'
 import { anyNewer } from '../paths'
 import { API_PORT } from '../ports'
-import { renderSearxng } from '../searxng'
 
 const DEV_COMPOSE = 'docker/dev-compose.yml'
 
@@ -25,7 +24,7 @@ const DEV_COMPOSE = 'docker/dev-compose.yml'
  *  it (`find -newer` semantics: a checkout of an older src still triggers,
  *  because its mtime is the checkout time). TALARIA_SKIP_MCP_BUILD=1 gets
  *  past a build you are mid-way through fixing. */
-async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Promise<void> {
+export async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Promise<void> {
   if (ctx.env.TALARIA_SKIP_MCP_BUILD === '1') {
     ctx.log.say('toolkit MCP — skipped (TALARIA_SKIP_MCP_BUILD=1); mcp/dist may be stale')
     return
@@ -74,7 +73,7 @@ async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Pr
  *  should not be blocked by a bundle it will never spawn. So a failure warns
  *  and carries on, and the feature's own routes say the bridge is not running
  *  if someone does turn it on. TALARIA_SKIP_OMP_AUTH_BUILD=1 skips it. */
-async function ompAuthBridge(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Promise<void> {
+export async function ompAuthBridge(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Promise<void> {
   if (ctx.env.TALARIA_SKIP_OMP_AUTH_BUILD === '1') {
     ctx.log.say('omp auth bridge — skipped (TALARIA_SKIP_OMP_AUTH_BUILD=1)')
     return
@@ -150,9 +149,10 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
   // switch, and it has to reach the api process to mean anything. (During
   // the port the same variable declared which RUNTIME armed the schedule;
   // the cutover deleted the TS scheduler, so the api arms unless this says
-  // `off`.) SEARXNG_URL rides so the cargo child sees the same value the
-  // vite process does (vite loads ui/.env itself) — the Rust read of it
-  // decides whether search is env-pinned, and the two views must agree.
+  // `off`.) SEARXNG_URL — an operator's own search endpoint, nothing is
+  // bundled — rides so the cargo child sees the same value the vite process
+  // does (vite loads ui/.env itself) — the Rust read of it decides whether
+  // search is env-pinned, and the two views must agree.
   // TALARIA_API_BIND and TALARIA_GATEWAY_SELF_URL are the container/devbox
   // dial: without the lift, ui/.env's 0.0.0.0 bind and :5274 gateway never
   // reach the renderer, and agents keep queueing on the UI hop.
@@ -160,8 +160,13 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
   // TALARIA_API_PORT is in this list because the api BINDS it (talaria-config
   // reads it, defaulting to 5274). Without the lift, a worktree's api would
   // dutifully bind the shared port while the proxy dialed the worktree's own —
-  // the two halves of the same setting have to agree.
-  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL', 'TALARIA_API_PORT', 'TALARIA_API_BIND', 'TALARIA_GATEWAY_SELF_URL']) {
+  // the two halves of the same setting have to agree. PORT and
+  // TALARIA_FLEET_PROJECT are the fleet renderer's: the MCP gateway URL it
+  // writes into every agent is built from the APP port, and the compose
+  // project it addresses is what keeps a worktree's agents apart from the
+  // main fleet — without the lift a worktree's agents would dial :5273 and
+  // its containers would land in the shared `talaria-fleet` project.
+  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL', 'TALARIA_API_PORT', 'TALARIA_API_BIND', 'TALARIA_GATEWAY_SELF_URL', 'PORT', 'TALARIA_FLEET_PROJECT']) {
     const val = ctx.env[varName] ?? envValue(uiEnv, varName)
     if (val) env[varName] = val
   }
@@ -314,9 +319,8 @@ export async function runDev(ctx: Ctx): Promise<number> {
     ctx.log.die('dev infra failed to start')
   }
 
-  // Object storage started separately, and non-fatally — the rule searxng and
-  // embeddings below already ride, which storage was the one sidecar still
-  // outside of. A single `up` resolves EVERY image before it creates ANY
+  // Object storage started separately, and non-fatally — the rule embeddings
+  // below already rides, which storage was the one sidecar still outside of. A single `up` resolves EVERY image before it creates ANY
   // container, so one unpullable image took postgres and redis down with it,
   // and `talaria dev` died at "dev infra failed to start" on a fresh clone
   // with the registry's error the only clue. That is exactly how the MinIO
@@ -330,18 +334,6 @@ export async function runDev(ctx: Ctx): Promise<number> {
       'If the image could not be pulled: it is ghcr.io/versity/versitygw, a public image — ' +
         'check network and daemon reachability rather than registry auth.',
     )
-  }
-
-  renderSearxng(ctx)
-
-  // Search started separately, and non-fatally: one unpullable image must not
-  // abort the services the app cannot boot without. Talaria runs fine with
-  // search down — `web_search` reports that live search is unavailable and
-  // models are told to say so rather than answer from memory.
-  ctx.log.say('web search (SearXNG)')
-  if ((await compose(ctx, devSpec, ['up', '-d', 'searxng'])) !== 0) {
-    ctx.log.warn('search service failed to start — web_search will report itself unavailable.')
-    ctx.log.warn('Continuing without it; see docker/searxng/settings.yml.')
   }
 
   // Embeddings started separately for the same reason: a single `up` resolves

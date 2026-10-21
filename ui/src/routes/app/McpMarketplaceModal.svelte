@@ -1,74 +1,148 @@
 <script lang="ts">
-  import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { Check, Plus } from '@lucide/svelte'
+  import { useQueryClient } from '@tanstack/svelte-query'
+  import { Check, Plus, RefreshCw } from '@lucide/svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
+  import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { cn } from '@/lib/cn'
-  import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
+  import { errorMessage } from '@/lib/fetch-json'
+  import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
+  import { useIsAdmin, useSession } from '@/lib/session'
+  import McpCredentialsModal from './McpCredentialsModal.svelte'
+  import McpFeaturedEditor from './McpFeaturedEditor.svelte'
   import McpInstallDialog from './McpInstallDialog.svelte'
   import McpServerMark from './McpServerMark.svelte'
-  import { TIER_BADGE, patchServer, slugify, useMcpServers, type LibraryServerRow } from './mcp'
+  import {
+    TIER_BADGE,
+    catalogLine,
+    connectPopup,
+    deadLine,
+    emptyHint,
+    hiddenDeadLine,
+    installLibraryServer,
+    livenessLine,
+    showDeadLabel,
+    syncCatalog,
+    useMcpLibrary,
+    useMcpServers,
+    type InstallOpts,
+    type KindFilter,
+    type LibraryServerRow,
+    type McpServerRow,
+    type TierFilter,
+  } from './mcp'
 
-  /** The marketplace: browse the official MCP registry like a store — featured
-   *  first-party servers up front, full search across 20k+ entries, one-click
-   *  install. Custom/self-hosted endpoints live in the separate form. */
-  let { onClose, onCustom }: { onClose: () => void; onCustom: () => void } = $props()
+  /** The marketplace: the official MCP registry, mirrored locally and
+   *  searched here — featured first-party servers up front, full-text search
+   *  across the whole catalog, one-click install. Installing runs discovery
+   *  in the same step, so a server that needs a key asks for it right here
+   *  and a server that speaks OAuth offers its Connect right here. Custom /
+   *  self-hosted endpoints live in the separate form.
+   *
+   *  Two callers: Manage → MCP (install into the org registry) and an agent's
+   *  MCP tab (`onInstalled` / `onPickInstalled` attach the server to that
+   *  agent as well; `carriedServerIds` marks the ones it already has). */
+  let {
+    onClose,
+    onCustom,
+    onInstalled,
+    onPickInstalled,
+    carriedServerIds = [],
+    title = 'MCP marketplace',
+  }: {
+    onClose: () => void
+    onCustom: () => void
+    onInstalled?: (serverId: string) => void
+    onPickInstalled?: (serverId: string) => void
+    carriedServerIds?: string[]
+    title?: string
+  } = $props()
 
   const qc = useQueryClient()
   const existingQuery = useMcpServers()
   let q = $state('')
+  // Debounced: the catalog answers in milliseconds, but every keystroke is
+  // still a request — 200ms is below what a person notices.
+  let dq = $state('')
+  let debounce: ReturnType<typeof setTimeout> | undefined
+  $effect(() => {
+    const next = q
+    clearTimeout(debounce)
+    debounce = setTimeout(() => (dq = next), 200)
+    return () => clearTimeout(debounce)
+  })
+  let tier = $state<TierFilter>('all')
+  let kind = $state<KindFilter>('all')
   let busyAdd = $state<string | null>(null)
-  let added = $state<Map<string, 'ok' | 'setup'>>(new Map())
+  let added = $state<Map<string, { serverId: string; state: 'ok' | 'needs-key' | 'connect' | 'needs-app' | 'failed'; detail?: string }>>(new Map())
   let error = $state<string | null>(null)
   let installing = $state<LibraryServerRow | null>(null)
+  let credentialsFor = $state<McpServerRow | null>(null)
+  let syncing = $state(false)
+  // Unreachable servers (the liveness job's `dead`) are left out unless the
+  // person asks; a new query starts hidden again.
+  let includeDead = $state(false)
+  $effect(() => {
+    void [dq, tier, kind]
+    includeDead = false
+  })
+  let editingFeatured = $state(false)
+  const sessionQuery = useSession()
+  const isAdmin = $derived(useIsAdmin(sessionQuery.data))
 
-  const resultsQuery = createQuery(() => ({
-    queryKey: ['mcp-marketplace', q],
-    queryFn: (): Promise<{ servers: LibraryServerRow[] }> =>
-      getJson<{ servers: LibraryServerRow[] }>(
-        q.trim() ? `/api/mcp/library?q=${encodeURIComponent(q.trim())}` : '/api/mcp/library?featured=1',
-      ),
-    placeholderData: (prev: { servers: LibraryServerRow[] } | undefined) => prev,
-    staleTime: 60_000,
-  }))
+  const resultsQuery = useMcpLibrary(() => ({ q: dq, tier, kind, includeDead }))
   const results = $derived(resultsQuery.data)
+  const catalog = $derived(results?.catalog)
+  const filtered = $derived(dq.trim() !== '' || tier !== 'all' || kind !== 'all')
+  const hiddenDead = $derived(hiddenDeadLine(results?.hiddenDead))
+  const shownDead = $derived(includeDead && (results?.servers ?? []).some((s) => s.live?.state === 'dead'))
 
   // Installed dedupe: hosted entries by endpoint; package entries by
   // registry identity (their url is a routing token, not an endpoint).
-  const installedUrls = $derived(new Set((existingQuery.data ?? []).filter((s) => !s.package).map((s) => s.url)))
-  const installedRegistryNames = $derived(
-    new Set((existingQuery.data ?? []).map((s) => s.package?.identifier).filter(Boolean) as string[]),
-  )
+  const existing = $derived(existingQuery.data ?? [])
+  const existingByUrl = $derived(new Map(existing.filter((s) => !s.package).map((s) => [s.url, s])))
+  const existingByPackage = $derived(new Map(existing.filter((s) => s.package).map((s) => [s.package!.identifier, s])))
+  const existingFor = (l: LibraryServerRow): McpServerRow | undefined =>
+    l.package ? existingByPackage.get(l.package.identifier) : existingByUrl.get(l.url)
+  const carried = $derived(new Set(carriedServerIds))
 
-  const register = async (
-    l: LibraryServerRow,
-    opts: { headers?: Record<string, string>; authMode?: 'org' | 'per-user'; env?: Record<string, string>; argValues?: Record<string, string> },
-  ) => {
+  const sync = async () => {
+    syncing = true
+    try {
+      await syncCatalog()
+    } catch (e) {
+      error = errorMessage(e)
+    }
+    // The walk runs behind the answer; poll the status a few times so the
+    // line updates as pages land.
+    for (let i = 0; i < 8; i++) {
+      await new Promise((r) => setTimeout(r, 2500))
+      await qc.invalidateQueries({ queryKey: ['mcp-library'] })
+    }
+    syncing = false
+  }
+
+  const register = async (l: LibraryServerRow, opts: InstallOpts) => {
     busyAdd = l.registryName
     error = null
     try {
-      const { server } = await postJson<{ server: { id: string; oauthMeta: { dcr: boolean; clientSet: boolean } | null } }>('/api/mcp/servers', {
-        name: slugify(l.title),
-        label: l.title,
-        url: l.package ? undefined : l.url,
-        description: l.description,
-        headers: opts.headers,
-        authMode: l.package ? 'org' : opts.authMode,
-        requiredHeaders: l.requiredHeaders,
-        package: l.package ?? undefined,
-        env: l.package ? opts.env : undefined,
-        argValues: l.package ? opts.argValues : undefined,
-      })
-      const needsSetup = !!server.oauthMeta && !server.oauthMeta.dcr && !server.oauthMeta.clientSet
-      added = new Map(added).set(l.registryName, needsSetup ? 'setup' : 'ok')
+      const out = await installLibraryServer(l, opts)
       installing = null
       await qc.invalidateQueries({ queryKey: ['mcp-servers'] })
-      void patchServer(server.id, { refreshTools: true }).then(() => qc.invalidateQueries({ queryKey: ['mcp-servers'] }))
+      const state = out.needsOauthApp ? 'needs-app' : out.needsConnect ? 'connect' : out.needsCredentials ? 'needs-key' : out.discoveryError ? 'failed' : 'ok'
+      added = new Map(added).set(l.registryName, { serverId: out.serverId, state, detail: out.discoveryError ?? undefined })
+      onInstalled?.(out.serverId)
+      // The drop-in moment: a server that answered 401 asks for its key
+      // now, not after someone finds the card.
+      if (out.needsCredentials) {
+        const fresh = (await qc.fetchQuery<McpServerRow[]>({ queryKey: ['mcp-servers'] })).find((s) => s.id === out.serverId)
+        if (fresh) credentialsFor = fresh
+      }
       return true
     } catch (e) {
       error = errorMessage(e)
@@ -79,21 +153,46 @@
   }
 
   // Package installs and servers declaring credentials get the install
-  // dialog (credentials to type, third-party-code to acknowledge); the rest
-  // one-click.
+  // dialog (credentials to type, third-party code to acknowledge); the rest
+  // one-click — discovery then says whether a key is needed after all.
   const install = (l: LibraryServerRow) => {
     if (l.package || l.requiredHeaders.length > 0) installing = l
     else void register(l, {})
   }
+
+  const TIERS: Array<{ id: TierFilter; label: string }> = [
+    { id: 'all', label: 'All' },
+    { id: 'official', label: 'Official' },
+    { id: 'verified', label: 'Verified' },
+    { id: 'community', label: 'Community' },
+  ]
+  const KINDS: Array<{ id: KindFilter; label: string }> = [
+    { id: 'all', label: 'Any' },
+    { id: 'hosted', label: 'Hosted' },
+    { id: 'package', label: 'Packages' },
+  ]
 </script>
 
-<Modal open {onClose} title="MCP marketplace" takeover>
-  <div class="flex h-full min-h-0 flex-col gap-4">
+{#snippet chip(active: boolean, label: string, onclick: () => void)}
+  <button
+    type="button"
+    {onclick}
+    class={cn(
+      'rounded border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
+      active ? 'border-accent/50 bg-accent/10 text-accent' : 'border-line-subtle text-muted hover:border-line hover:text-fg',
+    )}
+  >
+    {label}
+  </button>
+{/snippet}
+
+<Modal open {onClose} {title} takeover>
+  <div class="flex h-full min-h-0 flex-col gap-3">
     <div class="flex items-center gap-3">
       <Input
         autofocus
         bind:value={q}
-        placeholder="Search the official MCP registry: GitHub, Linear, Notion, Stripe, Vercel…"
+        placeholder="Search the catalog: GitHub, Linear, Notion, Stripe, Google Drive…"
         class="max-w-xl"
       />
       {#if resultsQuery.isFetching}<WaitingMark site="mcp/search" size={12} class="text-muted" />{/if}
@@ -102,10 +201,44 @@
         Custom / self-hosted server →
       </button>
     </div>
-    {#if !q.trim()}
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+      <div class="flex items-center gap-1">{#each TIERS as t (t.id)}{@render chip(tier === t.id, t.label, () => (tier = t.id))}{/each}</div>
+      <div class="flex items-center gap-1">{#each KINDS as k (k.id)}{@render chip(kind === k.id, k.label, () => (kind = k.id))}{/each}</div>
+      <span class="flex-1"></span>
+      <span class="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+        {#if catalog}
+          {@const live = livenessLine(catalog.liveness)}
+          <span title={catalog.error ?? undefined}>{catalogLine(catalog, relativeTime)}{live ? ` · ${live}` : ''}</span>
+          {#if catalog.phase !== 'ready' || catalog.error}
+            <Button size="xs" variant="ghost" class="gap-1 normal-case tracking-normal" disabled={syncing || catalog.syncing} onclick={() => void sync()}>
+              {#if syncing || catalog.syncing}<WaitingMark site="mcp/sync" size={11} />{:else}<RefreshCw size={11} />{/if}
+              Sync now
+            </Button>
+          {/if}
+        {/if}
+        <InfoTip text="The official MCP registry, mirrored into this instance and refreshed every half hour. Search covers titles, publishers, names and descriptions — hosted endpoints and runnable packages alike. Hosted endpoints are asked an MCP initialize every few hours; the ones that don't answer are hidden until you ask for them." />
+      </span>
+    </div>
+    {#if !filtered}
       <div class="flex items-center gap-1.5">
         <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Featured</span>
-        <InfoTip text="Companies publishing their own MCP server on their own verified domain: the official integrations. Search reaches the whole registry, community servers included." />
+        <InfoTip text="Companies publishing their own MCP server on their own verified domain: the official integrations. Search reaches the whole catalog, community servers included." />
+        {#if isAdmin}
+          <button type="button" onclick={() => (editingFeatured = true)} class="ml-1 text-xs text-accent hover:underline">Edit featured</button>
+        {/if}
+      </div>
+    {/if}
+    {#if hiddenDead || shownDead}
+      <div class="flex items-center gap-1.5 font-sans text-xs text-muted">
+        {#if hiddenDead}
+          <span>{hiddenDead}</span>
+          <span aria-hidden="true">·</span>
+          <button type="button" onclick={() => (includeDead = true)} class="text-accent hover:underline">show</button>
+        {:else}
+          <span>Showing unreachable servers last</span>
+          <span aria-hidden="true">·</span>
+          <button type="button" onclick={() => (includeDead = false)} class="text-accent hover:underline">hide them</button>
+        {/if}
       </div>
     {/if}
     {#if error}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{error}</div>{/if}
@@ -114,7 +247,7 @@
         <EmptyState
           icon="⚠"
           title="Marketplace didn't load"
-          hint="The MCP registry could not be reached. Close and reopen the marketplace to retry."
+          hint={errorMessage(resultsQuery.error)}
         />
       {:else if !results}
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -127,28 +260,49 @@
             </div>
           {/each}
         </div>
-      {:else if results.servers.length === 0}
+      {:else if results.servers.length === 0 && hiddenDead}
         <EmptyState
           icon="⌁"
-          title="No servers match"
-          hint="Hosted endpoints and runnable packages (npm/pypi/docker) both install from here. Try a broader search, or the custom form for self-hosted servers."
-        />
+          title="Only unreachable servers match"
+          hint="Every match failed its last liveness check — its endpoint 404'd, errored or didn't answer. They can still be installed if you know they're back."
+        >
+          {#snippet action()}
+            <Button size="sm" variant="outline" onclick={() => (includeDead = true)}>{showDeadLabel(results.hiddenDead)}</Button>
+          {/snippet}
+        </EmptyState>
+      {:else if results.servers.length === 0}
+        {@const e = emptyHint(catalog, dq)}
+        <EmptyState icon="⌁" title={e.title} hint={e.hint}>
+          {#snippet action()}
+            {#if catalog && catalog.phase === 'empty' && !catalog.syncing}
+              <Button size="sm" disabled={syncing} onclick={() => void sync()}>Sync the catalog</Button>
+            {:else}
+              <Button size="sm" variant="outline" onclick={onCustom}>Register a custom server</Button>
+            {/if}
+          {/snippet}
+        </EmptyState>
       {:else}
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {#each results.servers as l (l.registryName)}
-            {@const alreadyIn = l.package ? installedRegistryNames.has(l.package.identifier) : installedUrls.has(l.url)}
-            {@const addedState = added.get(l.registryName) ?? (alreadyIn ? 'ok' : null)}
-            {@const installed = addedState !== null}
+            {@const have = existingFor(l)}
+            {@const addedState = added.get(l.registryName)}
+            {@const installed = !!addedState || !!have}
+            {@const serverId = addedState?.serverId ?? have?.id}
+            {@const onAgent = !!serverId && carried.has(serverId)}
             {@const busy = busyAdd === l.registryName}
             {@const badge = TIER_BADGE[l.tier]}
+            {@const dead = deadLine(l.live, relativeTime)}
             <div
-              class="group relative flex flex-col rounded-lg border border-line-subtle p-4 transition-colors hover:border-line dither-fill"
+              class={cn(
+                'group relative flex flex-col rounded-lg border border-line-subtle p-4 transition-colors hover:border-line dither-fill',
+                dead && 'opacity-70',
+              )}
             >
-              <div class="flex items-center gap-3">
+              <div class="flex items-center gap-3 pr-8">
                 <McpServerMark title={l.title} domain={l.domain} icon={l.icon} size={34} />
                 <div class="min-w-0 flex-1">
                   <div class="truncate font-sans text-sm font-semibold text-fg">{l.title}</div>
-                  <div class="flex items-center gap-1.5">
+                  <div class="flex flex-wrap items-center gap-1.5">
                     {#if l.domain}<span class="truncate font-mono text-[11px] text-muted">{l.domain}</span>{/if}
                     <span title={badge.hint} class={cn('shrink-0 rounded border px-1.5 font-mono text-[10px] uppercase tracking-[0.05em]', badge.cls)}>
                       {badge.label}
@@ -161,25 +315,57 @@
                         pkg
                       </span>
                     {/if}
+                    {#if l.requiredHeaders.length || l.package?.declaredEnv.length}
+                      <span
+                        title="Declares the credentials it needs — you'll be asked for them"
+                        class="shrink-0 rounded border border-line-subtle px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim"
+                      >
+                        key
+                      </span>
+                    {/if}
                   </div>
                 </div>
               </div>
               <p class="mt-2.5 line-clamp-3 min-h-12 font-sans text-xs leading-relaxed text-muted">
                 {l.description ?? 'No description.'}
               </p>
+              {#if dead}
+                <p class="mt-1.5 font-sans text-[11px] text-ink-dim" title={l.live?.detail ?? undefined}>{dead}</p>
+              {/if}
+              {#if addedState && addedState.state !== 'ok'}
+                <div class="mt-2 flex flex-wrap items-center gap-2 font-sans text-[11px]">
+                  {#if addedState.state === 'connect'}
+                    <span class="text-muted">Added. It uses OAuth —</span>
+                    <Button size="xs" variant="accent-soft" onclick={() => void connectPopup(addedState.serverId, 'org')}>Connect org account</Button>
+                  {:else if addedState.state === 'needs-app'}
+                    <span class="text-warning">Added. Needs a one-time OAuth app setup on the MCP page before anyone can connect.</span>
+                  {:else if addedState.state === 'needs-key'}
+                    <span class="text-warning">Added. It wants credentials —</span>
+                    <Button
+                      size="xs"
+                      variant="accent-soft"
+                      onclick={() => {
+                        const s = existing.find((x) => x.id === addedState.serverId)
+                        if (s) credentialsFor = s
+                      }}
+                    >
+                      Set credentials
+                    </Button>
+                  {:else}
+                    <span class="text-danger" title={addedState.detail}>Added, but discovery failed: {addedState.detail}</span>
+                  {/if}
+                </div>
+              {/if}
               <!-- The install control: quiet until the card is engaged. -->
               <div class="absolute right-3 top-3">
-                {#if addedState === 'setup'}
-                  <span
-                    class="rounded border border-warning/40 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-warning"
-                    title="Added. This provider needs a one-time OAuth app setup on the MCP page before agents can connect"
-                  >
-                    needs setup
-                  </span>
+                {#if installed && onPickInstalled && !onAgent && serverId}
+                  <Button size="xs" variant="outline" onclick={() => onPickInstalled(serverId)} title="Already in the org registry — attach it to this agent">
+                    Use
+                  </Button>
                 {:else if installed}
                   <span
                     class="grid h-7 w-7 place-items-center rounded-full bg-success/10 text-success"
-                    title="In your org registry"
+                    title={onPickInstalled ? 'Already on this agent' : 'In your org registry'}
                   >
                     <Check size={14} />
                   </span>
@@ -212,6 +398,21 @@
         busy={busyAdd === cur.registryName}
         onCancel={() => (installing = null)}
         onInstall={(opts) => void register(cur, opts)}
+      />
+    {/if}
+    {#if editingFeatured}
+      <McpFeaturedEditor onClose={() => (editingFeatured = false)} />
+    {/if}
+    {#if credentialsFor}
+      {@const cur = credentialsFor}
+      <McpCredentialsModal
+        server={cur}
+        onClose={() => (credentialsFor = null)}
+        onSaved={() => {
+          // The card's "needs key" note clears once discovery succeeds.
+          const entry = Array.from(added.entries()).find(([, v]) => v.serverId === cur.id)
+          if (entry) added = new Map(added).set(entry[0], { serverId: cur.id, state: 'ok' })
+        }}
       />
     {/if}
   </div>

@@ -1,6 +1,7 @@
 // /api/history. Version history for agent internals, one API over two
 // stores:
-//   snapshot store (internal_versions): skill, memory, kb-doc, kb-space, artifact
+//   snapshot store (internal_versions): skill, memory, profile, kb-doc,
+//                                       kb-space, artifact
 //   agent versions (agent_versions):    soul, config, personality
 //
 //   GET /api/history?kind=skill&owner=<owner>&name=<name>   → revisions
@@ -31,7 +32,7 @@ use talaria_state::AppState;
 use talaria_yaml::stringify as stringify_yaml;
 
 const SNAPSHOT_KINDS: &[&str] = &[
-    "skill", "memory", "kb-doc", "kb-space", "artifact", "template",
+    "skill", "memory", "profile", "kb-doc", "kb-space", "artifact", "template",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +131,11 @@ async fn can_read_snapshot_history(
             },
             _ => false,
         },
-        "memory" => {
+        // MEMORY.md and USER.md — both files of the agent's memory, both
+        // keyed on the def id, both the agent's owner's business. The profile
+        // snapshots are written on every PUT; no panel reads them yet — this
+        // makes them reachable for the one that will.
+        "memory" | "profile" => {
             user.role == "admin" || owns_agent(&state.pg, &user.id, None, Some(owner_key)).await
         }
         "skill" => {

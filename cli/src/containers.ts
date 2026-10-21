@@ -13,7 +13,7 @@ import type { Ctx } from './ctx'
 
 /** dev-compose.yml declares `name: talaria-dev`, so its containers land on
  *  this default bridge network — the one a box joins to dial the shared
- *  stateless services (embeddings, SearXNG). */
+ *  stateless service (embeddings). */
 export const DEV_NETWORK = 'talaria-dev_default'
 
 export const PG_CONTAINER = 'talaria-postgres-dev'
@@ -21,7 +21,6 @@ export const REDIS_CONTAINER = 'talaria-redis-dev'
 export const QDRANT_CONTAINER = 'talaria-qdrant-dev'
 export const EMBED_CONTAINER = 'talaria-embeddings-dev'
 export const STORAGE_CONTAINER = 'talaria-storage-dev'
-export const SEARCH_CONTAINER = 'talaria-searxng-dev'
 
 /** A container's docker state as a string — 'running', 'exited', 'created',
  *  … — or null when the daemon does not know the name (never created, or the

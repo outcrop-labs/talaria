@@ -3645,6 +3645,298 @@ alter table tasks drop column if exists conversation_id`,
   `alter table decide_shadow add column if not exists tokens_in integer`,
   `alter table decide_shadow add column if not exists tokens_out integer`,
   `alter table decide_shadow add column if not exists fanned integer`,
+  // THE AGENT'S OWN PLAN for a conversation — what it decided to do, in order,
+  // and which step it is on. Agents carry 86 tools and had no way to say what
+  // they meant to do with them, so a multi-step request looked from the
+  // outside like silence followed by an answer.
+  //
+  // ONE ROW PER CONVERSATION, replaced wholesale on every `todo` call. This is
+  // scratch reasoning with the lifetime of one request, not a ticket list —
+  // tickets are durable work a human signs off, and `plan_drafts` already
+  // turns a conversation into them. Cascade-deleted with the conversation for
+  // the same reason: the plan has no meaning without the thread it was for.
+  //
+  // AT THE END, not beside the conversations table: MIGRATIONS is append-only
+  // and keyed by INDEX.
+  `create table if not exists conversation_todos (
+     conversation_id uuid primary key references conversations(id) on delete cascade,
+     items jsonb not null default '[]'::jsonb,
+     updated_by text,
+     updated_at timestamptz not null default now()
+   )`,
+  // ── One Hermes session per conversation (2026-10-15). A chat turn reaches
+  // the agent as a full-history /v1/chat/completions call, and Hermes derives
+  // the session it files that call under from THIS turn's system prompt plus
+  // the first user message. Talaria's system prompt moves between turns (the
+  // handle note is conditional; the sender block changes per speaker in a
+  // shared plan), so one Talaria conversation shatters into several Hermes
+  // sessions — and Hermes' compaction, session_search and /compress each see a
+  // fragment. A pinned agent is driven through Hermes' session API instead:
+  // one session whose id IS the conversation id, one new message per turn,
+  // Hermes holding the history.
+  //
+  // Per agent, off by default: for a pinned agent Talaria no longer sends the
+  // transcript, so a message deleted or relayed on the Talaria side is not
+  // mirrored into Hermes' copy until that is built. The switch is a roll.
+  `alter table agent_defs add column if not exists pinned_sessions boolean not null default false`,
+  // The Hermes run that produced an assistant row, kept so a running turn can
+  // be steered or stopped by the id Hermes knows it by — a stop today only
+  // aborts the client read, and the run keeps going until it idles. Null for
+  // every row from an unpinned agent and for every user row.
+  `alter table messages add column if not exists hermes_run_id text`,
+  // ── Which Hermes toolsets an agent does NOT get (2026-10-16). Hermes turns
+  // every built-in toolset on by default and `agent.disabled_toolsets` is its
+  // last word on availability, so naming a toolset here — and rendering it
+  // into config.yaml — is the only way to take one off an agent's table.
+  // Talaria already pins `todo` and `clarify` shut for every agent (its own
+  // versions are the ones a person can see and answer); this column is the
+  // operator's list ON TOP of that pair, and the first thing it governs is
+  // `browser`: a browsing agent costs a multi-minute Chromium install on
+  // every roll, so an agent that should not browse says so here and skips it.
+  //
+  // jsonb and not text[]: the def wire carries the list as a JSON array and
+  // the renderer merges it as one, so the column stores the shape both ends
+  // already speak. Empty default — no agent loses a toolset by migrating.
+  `alter table agent_defs add column if not exists disabled_toolsets jsonb not null default '[]'::jsonb`,
+  // WHERE ONE PERSON KEEPS A CONVERSATION — pinned to the top of their rail,
+  // filed under a group, held at a position they chose. Sessions accumulate
+  // faster than anything else in the product and "newest activity first" was
+  // the only shape they had, so the thread somebody returns to every morning
+  // sinks under a dozen one-question chats by lunchtime.
+  //
+  // PER VIEWER, WHICH IS WHY IT IS A TABLE AND NOT THREE COLUMNS ON
+  // `conversations`. Plans and work sessions are multiplayer: the owner and
+  // every collaborator read the same thread from their own list, and what one
+  // of them wants at the top is nobody else's business — a shared plan one
+  // person lives in all week is another's background noise. Columns on the
+  // conversation row would mean the first collaborator to tidy up rearranged
+  // the owner's morning. The key is the pair, so a write only ever touches the
+  // writer's own row and the list left-joins the one belonging to whoever is
+  // asking.
+  //
+  // CASCADE ON BOTH SIDES: an arrangement has no meaning without the person
+  // whose list it arranges or the thread it points at.
+  //
+  // AT THE END, not beside the conversations table: MIGRATIONS is append-only
+  // and keyed by INDEX.
+  `create table if not exists conversation_layout (
+     user_id uuid not null references users(id) on delete cascade,
+     conversation_id uuid not null references conversations(id) on delete cascade,
+     pinned boolean not null default false,
+     group_name text,
+     position integer,
+     updated_at timestamptz not null default now(),
+     primary key (user_id, conversation_id)
+   )`,
+  // WHAT A THREAD IS WAITING ON. A cron created from the fleet page is the
+  // agent's own job and reports nowhere; one created from a conversation is
+  // that thread's standing request, so its turns have to come back into the
+  // thread. This table is the only pointer that can carry them: jobs.json
+  // lives inside the agent and knows nothing about Talaria's conversations,
+  // and all a finished cron turn carries back out is the task id the
+  // scheduler stamped on it (`cron:<job>:<execution>`).
+  //
+  // KEYED (agent_model, job_id), not by job id alone — a job id is unique
+  // only within one agent's own jobs.json, so two agents can hand out the
+  // same one. The model is how a conversation names its agent, and it is what
+  // the agent's own authenticated call back carries.
+  //
+  // `name` and `schedule` are copies of what Hermes was told, so the list a
+  // thread shows still reads when the container is down and the live half of
+  // the answer is missing. Cascade-deleted with the conversation: a schedule
+  // has no meaning without the thread it posts into.
+  //
+  // AT THE END, not beside the conversations table: MIGRATIONS is append-only
+  // and keyed by INDEX.
+  `create table if not exists conversation_schedules (
+     agent_model text not null,
+     job_id text not null,
+     conversation_id uuid not null references conversations(id) on delete cascade,
+     name text not null,
+     schedule text not null,
+     created_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     primary key (agent_model, job_id)
+   )`,
+  // The thread's own question — "what did I schedule here" — reads by
+  // conversation, which the (agent_model, job_id) key does not serve.
+  `create index if not exists conversation_schedules_conversation_idx on conversation_schedules(conversation_id)`,
+  // THE DIALS A RUN WAS STARTED WITH — effort, breadth and sources, each 1..3.
+  // The mode is a preset over these three, so a run that set one of them is no
+  // longer described by its mode alone: NULL means "the mode's preset", which
+  // is every run that predates the column.
+  `alter table research_runs add column if not exists dials jsonb`,
+  // HOW MANY SUBAGENTS one agent may run at once. Delegation is the one agent
+  // capability that multiplies itself — a child may delegate too — so without a
+  // number somewhere, a single request can fan a managed box out into as many
+  // concurrent sessions as the model feels like asking for. Hermes reads the
+  // number from its config (`delegation.max_concurrent_children`), which the
+  // fleet render writes from this column.
+  //
+  // DEFAULT 3: enough that delegation is useful out of the box, small enough
+  // that nobody discovers the cap by running out of memory. 0 is a real
+  // setting and means this agent delegates to nobody. NOT NULL so the renderer
+  // never has to invent a number — the column always says what the fleet runs
+  // on.
+  `alter table agent_defs add column if not exists max_children integer not null default 3`,
+  // ── MCP catalog mirror (2026-10-16) ─────────────────────────────────────
+  // The marketplace used to query the official MCP registry LIVE on every
+  // keystroke; the registry stalls for 10-30s at a time and its search is a
+  // name-substring match, so "search is broken" was the honest description.
+  // The catalog is now mirrored here by the scheduler (a full cursor walk once,
+  // `updated_since` incrementals after) and searched with Postgres full text.
+  // One row per registry name (latest version only); `entry` is the wire shape
+  // the picker renders, the other columns exist for ranking and filtering.
+  // `source` says where a row came from: 'registry' (the official feed),
+  // 'curated' (a documented endpoint the registry lacks, e.g. GitHub), or
+  // 'well-known' (a publisher's /.well-known/mcp.json).
+  `create table if not exists mcp_library_entries (
+     registry_name text primary key,
+     source text not null default 'registry',
+     title text not null,
+     description text,
+     domain text,
+     domains text[] not null default '{}',
+     tier smallint not null default 2,
+     kind text not null default 'hosted',
+     entry jsonb not null,
+     registry_updated_at timestamptz,
+     synced_at timestamptz not null default now(),
+     search tsvector generated always as (
+       setweight(to_tsvector('simple', coalesce(title, '')), 'A') ||
+       setweight(to_tsvector('simple', coalesce(domain, '')), 'A') ||
+       setweight(to_tsvector('simple', replace(replace(registry_name, '/', ' '), '.', ' ')), 'B') ||
+       setweight(to_tsvector('simple', coalesce(description, '')), 'C')
+     ) stored
+   )`,
+  `create index if not exists mcp_library_entries_search_idx on mcp_library_entries using gin (search)`,
+  `create index if not exists mcp_library_entries_tier_idx on mcp_library_entries (tier, title)`,
+  `create index if not exists mcp_library_entries_domains_idx on mcp_library_entries using gin (domains)`,
+  // WHAT THE LAST DISCOVERY SAID about a registered server: {state, detail, at}
+  // with state ok | auth-required | unreachable | error. The card reads it to
+  // say "needs an API key" instead of "Discover tools" forever; null = never
+  // probed.
+  `alter table mcp_servers add column if not exists last_probe jsonb`,
+  // Hosted servers registered through the api carried a jsonb \`null\` in
+  // \`package\` (the insert bound Value::Null instead of SQL NULL), which read
+  // as "is a package" to every \`is_some()\` check. The api now binds NULL and
+  // reads \`null\` as none; this clears the rows already written.
+  `update mcp_servers set package = null where package = 'null'::jsonb`,
+  // ── MCP catalog liveness (2026-10-16) ───────────────────────────────────
+  // The mirror holds every hosted entry the registry lists, and a good share
+  // of them no longer answer: abandoned demos, expired tunnels, hosts that
+  // 404. The \`mcp-library-liveness\` job POSTs one JSON-RPC initialize to each
+  // and records what came back — ok | auth (alive, wants credentials) | dead
+  // | unknown — so search can sink and hide the dead ones instead of offering
+  // an install that cannot work. Null = never checked; the job takes those
+  // first, then the oldest, which is what the index serves.
+  `alter table mcp_library_entries add column if not exists live_state text`,
+  `alter table mcp_library_entries add column if not exists live_checked_at timestamptz`,
+  `alter table mcp_library_entries add column if not exists live_detail text`,
+  `create index if not exists mcp_library_entries_live_idx on mcp_library_entries (live_checked_at nulls first)`,
+  // ── MCP org headers, sealed (2026-10-16) ────────────────────────────────
+  // The org-level headers an admin types into a server's Credentials form
+  // (API keys, auth headers) were plaintext jsonb in \`headers\`. They now
+  // live SecretBox-sealed here as one JSON object; the api writes
+  // \`headers = '{}'\` beside every sealed value and seals the rows still
+  // holding plaintext at boot (talaria-mcp org_headers::seal_legacy_headers).
+  `alter table mcp_servers add column if not exists headers_sealed text`,
+  // ── MCP catalog: the dead count's index (2026-10-16) ────────────────────
+  // Search answers how many matches it hid as dead beside every page; the
+  // dead rows are a small slice of ~42k, and this partial index lets that
+  // count read only them instead of scanning the mirror per keystroke.
+  `create index if not exists mcp_library_entries_dead_idx on mcp_library_entries (tier) where live_state = 'dead'`,
+  // ── MCP health pass (2026-10-16) ────────────────────────────────────────
+  // The hourly \`mcp-health\` job re-asks every external server and notifies
+  // the admins when one goes from ok to down. \`health_state\` is what the
+  // LAST HEALTH PASS saw — kept apart from \`last_probe\`, which a person's
+  // Check now also writes, so a manual check cannot swallow the transition
+  // the schedule exists to announce. Null = no pass has seen the server yet.
+  `alter table mcp_servers add column if not exists health_state text`,
+  // An OAuth grant the provider refused to refresh. The token row itself is
+  // deleted on that refusal (it is what forces the reconnect), so the flag
+  // lives beside it, keyed the same way: Settings → Connections reads it to
+  // say Reconnect instead of Connect, and the server card reads the org's
+  // as the \`reconnect\` probe state. Read only together with the absence of
+  // tokens; a fresh sign-in makes it moot and the next pass deletes it.
+  `create table if not exists mcp_oauth_reconnect (
+    server_id uuid not null references mcp_servers(id) on delete cascade,
+    subject text not null,
+    detail text not null,
+    flagged_at timestamptz not null default now(),
+    primary key (server_id, subject)
+  )`,
+  // ── MCP gateway call record (2026-10-16) ────────────────────────────────
+  // One row per tools/call the gateway answers — and per refusal — so "which
+  // agent called which tool, how often, did it fail" has an answer that is
+  // not a log grep. Who (agent, the acting human on a personal assistant),
+  // where (server id + name: the name survives the server's deletion), what
+  // (tool), how (outcome ok | error | denied | not_connected | upstream_error
+  // | spend_error, the HTTP status answered, latency) and the error sentence
+  // capped at 300 chars. NEVER arguments, results, headers or tokens. Written
+  // off the hot path by talaria-mcp calls.rs; pruned past app_settings
+  // \`mcp_calls_retention_days\` (default 30) by the \`mcp-calls-prune\` job.
+  `create table if not exists mcp_tool_calls (
+     id bigserial primary key,
+     at timestamptz not null default now(),
+     server_id text not null,
+     server_name text not null,
+     agent text not null,
+     user_id text,
+     method text not null,
+     tool text,
+     outcome text not null,
+     status smallint,
+     latency_ms integer,
+     error text
+   )`,
+  // The admin list reads newest first, whole or per server or per agent; the
+  // prune deletes oldest first. Three indexes, one per read.
+  `create index if not exists mcp_tool_calls_at_idx on mcp_tool_calls (at desc)`,
+  `create index if not exists mcp_tool_calls_server_idx on mcp_tool_calls (server_id, at desc)`,
+  `create index if not exists mcp_tool_calls_agent_idx on mcp_tool_calls (agent, at desc)`,
+  // ── Blueprints (2026-10-16) ─────────────────────────────────────────────
+  // THE ASKS SOMEBODY SENDS AGAIN. A person's useful prompts lived in their
+  // own notes app: the composer could hold one message and remember nothing,
+  // so the standing ask — the weekly rollup, the review checklist, the shape
+  // of a brief — got retyped from memory every time, a little differently
+  // each time. A blueprint is that text saved under a name, pasted into the
+  // composer and sent.
+  //
+  // `owner_user_id` NULL MEANS SHARED, which is the whole access model in one
+  // column: a row with an owner belongs to that person and nobody else reads
+  // it, and a row with no owner is the org's, readable by every member and
+  // writable only with `templates.manage` — the permission that already
+  // governs the org-wide skeletons everyone starts from. Two tables would
+  // have meant two reads, two routes and a move operation; one nullable
+  // owner means the list is one query and sharing is one UPDATE.
+  //
+  // CASCADE on the owner: a personal blueprint has no meaning without the
+  // person whose it was, and promoting it to the org on their way out would
+  // publish private notes. A shared row has no owner to lose.
+  //
+  // `surface` is which composer offers it ('work' today), and `sort` is the
+  // hand-order a picker shows; both carry defaults so a blueprint created
+  // from a name alone already sits somewhere.
+  //
+  // NOT templates: a template is a document skeleton an agent fills under
+  // guidance, resolved through a chain of bindings. A blueprint is the
+  // message a person sends. Same word in English, different rows.
+  `create table if not exists blueprints (
+     id uuid primary key default gen_random_uuid(),
+     name text not null,
+     body text not null default '',
+     owner_user_id uuid references users(id) on delete cascade,
+     surface text not null default 'work',
+     sort integer not null default 0,
+     created_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  // The only read there is: "mine plus the shared ones, in picker order".
+  // owner_user_id leads because the WHERE clause is on it (the caller's id OR
+  // null), and sort/name follow because the ORDER BY never varies.
+  `create index if not exists blueprints_owner_idx on blueprints(owner_user_id, sort, name)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

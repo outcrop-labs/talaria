@@ -9,7 +9,9 @@
 #     cd cli && typecheck + bun test            (the `talaria` CLI)
 #     cd api && fmt + clippy + cargo test       (the Rust port)
 #     cd desktop && fmt + clippy + cargo test + svelte-check  (the desktop shell)
-#   That is the whole thing. It takes a couple of minutes.
+#     the MCP end-to-end suite (Playwright against a booted app + api + stubs)
+#   That is the whole thing. It takes a couple of minutes (the e2e job, when
+#   its surface moved, is the long pole — see its own note).
 #
 # WHY rc IS IN THE PUSH LIST. It is the branch the release workflow builds FROM
 #   (nightly = rc's tip, RCs = tags cut on rc) and the branch every pull request
@@ -202,6 +204,8 @@ jobs:
       cli: ${{ steps.d.outputs.cli }}
       api: ${{ steps.d.outputs.api }}
       desktop: ${{ steps.d.outputs.desktop }}
+      mobile: ${{ steps.d.outputs.mobile }}
+      e2e: ${{ steps.d.outputs.e2e }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -278,6 +282,10 @@ jobs:
           surface cli     'cli/*' '.github/workflows/ci.yml' '.github/actions/**'
           surface api     'api/*' '.github/workflows/ci.yml' '.github/actions/**'
           surface desktop 'desktop/*' '.github/workflows/ci.yml' '.github/actions/**'
+          surface mobile  'mobile/*' '.github/workflows/ci.yml' '.github/actions/**'
+          # The MCP end-to-end suite drives the ui, the stubs and the api's MCP
+          # crates together; a change to any of them can break the story.
+          surface e2e     'ui/*' 'scripts/e2e/*' 'api/crates/talaria-mcp*' 'api/crates/talaria-routes-fleet/*' 'api/Cargo.lock' '.github/workflows/ci.yml' '.github/actions/**'
 
   # Deliberately FIRST and deliberately dependency-free: it needs no install,
   # so it reports in well under a minute and a PR that re-introduces a known bug
@@ -564,3 +572,296 @@ jobs:
       - name: Typecheck
         working-directory: desktop
         run: bun run typecheck
+
+  # The surface gate, on Linux: what `bun run mobile:check` runs, and what a
+  # devbox runs. `--no-daemon` because a CI runner is thrown away afterwards and
+  # a lingering daemon only costs it memory.
+  mobile:
+    name: test + assemble (mobile)
+    needs: [changes]
+    if: needs.changes.outputs.mobile == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      # JDK 21: AGP and Gradle both fully support it, and newer JDKs lead AGP
+      # by months. mobile/tools/devbox-install.sh installs the same major.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The runner image ships an Android SDK; this adds only what the project
+      # pins. API 37 exists ONLY as a dotted minor (37.0/.1/.2) — there is no
+      # plain `android-37` — and AndroidX Compose 1.12 refuses to compile
+      # against anything below 37, failing in checkDebugAarMetadata a long way
+      # from the cause. The provisioner knows the same thing.
+      - name: Android platform the project pins
+        run: |
+          set -eu
+          sdkmanager=$(command -v sdkmanager || echo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager")
+          [ -x "$sdkmanager" ] || { echo "no sdkmanager on this runner" >&2; exit 1; }
+          yes | "$sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$sdkmanager" --install 'platforms;android-37.2' 'build-tools;37.0.0' >/dev/null
+
+      # The shared module's tests INCLUDE the headless UI ones: runComposeUiTest
+      # composes the real tree against Skia's software renderer, so there is no
+      # emulator and no display here. iOS is the next job's business — Kotlin/
+      # Native cannot build Apple targets off macOS.
+      - name: Test (shared, including the headless UI suite)
+        working-directory: mobile
+        run: ./gradlew :shared:jvmTest --no-daemon
+
+      - name: Assemble (android)
+        working-directory: mobile
+        run: ./gradlew :androidApp:assembleDebug --no-daemon
+
+  # THE APPLE LEG, and the only place it exists. Kotlin/Native needs Xcode's
+  # linker, so `iosArm64` and `iosSimulatorArm64` are declared on every host and
+  # buildable on exactly one — `kotlin.native.ignoreDisabledTargets` is what
+  # lets a Linux box configure this build rather than fail it. Until this job
+  # runs, those targets have never been compiled at all.
+  #
+  # BLOCKING, as of the run that first proved it works: both targets compiled
+  # and `linkDebugFrameworkIosSimulatorArm64` succeeded on PR #540. It was
+  # briefly `continue-on-error` for the honest reason that a job which had never
+  # been green must not gate the Android work being tested on real devices — and
+  # that reason expired the moment it went green.
+  #
+  # It has to be blocking rather than advisory, because this is the ONLY place
+  # the Apple targets are ever built: nobody compiles them locally (Kotlin/
+  # Native needs Xcode), so an advisory cross here means commonMain quietly
+  # stops being multiplatform and nobody finds out until somebody wants an iOS
+  # build. LINKING is checked for the same reason — a klib can compile and still
+  # fail to link, and linking is what an `iosApp/` project will depend on.
+  mobile-ios:
+    name: compile + link (mobile ios)
+    needs: [changes]
+    if: needs.changes.outputs.mobile == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Needed even though nothing Android is built here: `:shared` declares an
+      # android target, so Gradle must be able to CONFIGURE it before it will
+      # compile anything at all.
+      - name: Android platform (to configure :shared)
+        run: |
+          set -eu
+          sdkmanager=$(command -v sdkmanager || echo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager")
+          [ -x "$sdkmanager" ] || { echo "no sdkmanager on this runner" >&2; exit 1; }
+          yes | "$sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$sdkmanager" --install 'platforms;android-37.2' 'build-tools;37.0.0' >/dev/null
+
+      # Device and Apple-silicon simulator. NOT iosX64: Compose Multiplatform
+      # 1.12 no longer publishes an Intel-simulator variant, so declaring it
+      # fails resolution for every Compose-dependent source set.
+      - name: Compile the Apple targets
+        working-directory: mobile
+        run: ./gradlew :shared:compileKotlinIosArm64 :shared:compileKotlinIosSimulatorArm64 --no-daemon
+
+      # The framework Swift will consume. Linking is a separate failure mode
+      # from compiling — a klib can compile and still fail to link — and it is
+      # what an iosApp/ Xcode project will depend on.
+      - name: Link the shared framework
+        working-directory: mobile
+        run: ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64 --no-daemon
+
+  # THE MCP SURFACE, END TO END (docs/E2E.md). The one job in this file that
+  # boots services — postgres, redis, the api, the built ui and the stub
+  # world in scripts/e2e/mcp-stubs.mjs — because the thing it guards is the
+  # seam between them: the catalog mirror, install-time discovery, the
+  # credentials editor, the OAuth dance, an agent's MCP tab and the gateway
+  # each worked alone and regressed together before (no test crossed them).
+  # A tripwire still: one browser, seven chapters, no retries.
+  #
+  # WHY docker run AND NOT `services:`. `bun run migrations:check` pg_dumps
+  # through `docker exec talaria-mig-pg`, so the container needs that NAME —
+  # the same bootstrap api-integration.yml uses, which doubles as the
+  # schema-snapshot check.
+  #
+  # WHY THE STUBS ARE HTTPS. The mirror installs only https remotes, so the
+  # stub mints a throwaway CA; `--init` prints the three settings the api
+  # needs to reach it (TALARIA_FETCH_ALLOW_HOSTS for the SSRF guard,
+  # SSL_CERT_FILE for its TLS roots, TALARIA_MCP_REGISTRY_URL for the
+  # catalog) and they go into $GITHUB_ENV before the app (and the api it
+  # spawns) starts. None of them is a test hook — each is an operator setting.
+  e2e:
+    name: mcp end-to-end (playwright)
+    needs: [changes]
+    if: needs.changes.outputs.e2e == 'true'
+    runs-on: ubuntu-latest
+    # A cold api build is most of it; the cache below makes reruns minutes.
+    timeout-minutes: 45
+
+    env:
+      DATABASE_URL: postgres://talaria:talaria@127.0.0.1:55441/talaria
+      REDIS_URL: redis://127.0.0.1:6399
+      # Never a real key: these containers die with the job.
+      TALARIA_SECRET_KEY: ci-scratch-key
+      AUTH_SECRET: ci-scratch-auth-secret
+      CARGO_INCREMENTAL: '0'
+      PORT: '4173'
+      TALARIA_API_PORT: '5274'
+      # The OAuth callback base — the origin the browser is on.
+      AUTH_PUBLIC_URL: http://localhost:4173
+      E2E_BASE_URL: http://localhost:4173
+      E2E_STUB_PORT: '5390'
+      E2E_STUB_URL: https://127.0.0.1:5390
+      E2E_DATABASE_URL: postgres://talaria:talaria@127.0.0.1:55441/talaria
+      E2E_REDIS_URL: redis://127.0.0.1:6399
+      # The run's directories (the stub CA, the fleet tree, the results, the
+      # logs) live under $RUNNER_TEMP, which job-level env cannot name — the
+      # `runner` context does not exist there, and using it invalidates the
+      # whole workflow. The first step writes them into $GITHUB_ENV instead.
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      # Logs sit BESIDE the Playwright output, never in it: Playwright empties
+      # its outputDir when the run starts, which would take the app and stub
+      # logs written before it with it.
+      - name: Lay out the run's directories
+        run: |
+          {
+            echo "E2E_STUB_DIR=$RUNNER_TEMP/e2e-stub"
+            # Where the api renders agent credentials, and where the gateway
+            # chapter reads the hired agent's own key from.
+            echo "TALARIA_FLEET_DIR=$RUNNER_TEMP/fleet"
+            echo "E2E_FLEET_ENV=$RUNNER_TEMP/fleet/.env"
+            echo "E2E_OUTPUT_DIR=$RUNNER_TEMP/e2e-results"
+            echo "E2E_REPORT_DIR=$RUNNER_TEMP/e2e-report"
+            echo "E2E_LOG_DIR=$RUNNER_TEMP/e2e-logs"
+          } >> "$GITHUB_ENV"
+
+      # A hire renders the agent from the fleet chassis, and fails without
+      # one ("fleet chassis missing"). Seed the tree the way
+      # `talaria worktree` does (cli/src/cmd/worktree.ts): the dirs, the
+      # shipped chassis template, and a .env with the gateway-brain header
+      # the first render fills in.
+      - name: Seed the fleet config plane
+        run: |
+          set -eu
+          mkdir -p "$TALARIA_FLEET_DIR/skills" "$TALARIA_FLEET_DIR/hooks" "$TALARIA_FLEET_DIR/agents"
+          cp scripts/chassis.template.yml "$TALARIA_FLEET_DIR/chassis.yml"
+          ( umask 077; printf 'LLM_BASE_URL=\nLLM_API_KEY=\nLLM_MODEL=\n' > "$TALARIA_FLEET_DIR/.env" )
+
+      # Everything: Rust for the api, bun + node for the ui build, the stub
+      # and Playwright; the frozen ui install carries @playwright/test.
+      - uses: ./.github/actions/setup-runtime
+        with:
+          install-dir: ui
+
+      # The api job's cache, read-only: the debug build here shares its
+      # dependency tree, and one writer keeps the cache what the api job made.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: api
+          shared-key: api
+          save-if: false
+
+      - uses: ./.github/actions/mold
+
+      - name: Start scratch postgres 16 and redis 7
+        run: |
+          docker run -d --name talaria-mig-pg \
+            -e POSTGRES_USER=talaria -e POSTGRES_PASSWORD=talaria -e POSTGRES_DB=talaria \
+            -p 127.0.0.1:55441:5432 postgres:16-alpine
+          docker run -d --name talaria-ci-redis -p 127.0.0.1:6399:6379 redis:7-alpine
+          for i in $(seq 1 30); do
+            docker exec talaria-mig-pg pg_isready -h 127.0.0.1 -U talaria -q && echo "postgres ready" && exit 0
+            sleep 1
+          done
+          echo "postgres never became ready"; docker logs talaria-mig-pg; exit 1
+
+      - name: Bootstrap schema (full migration replay + snapshot check)
+        working-directory: ui
+        run: bun run migrations:check
+
+      - name: Build the api
+        working-directory: api
+        run: cargo build --quiet --bin talaria-api
+
+      - name: Build the ui
+        working-directory: ui
+        run: bun run build
+
+      - name: Start the stubs
+        run: |
+          set -eu
+          mkdir -p "$E2E_STUB_DIR" "$E2E_LOG_DIR"
+          node scripts/e2e/mcp-stubs.mjs --init | tee -a "$GITHUB_ENV"
+          nohup node scripts/e2e/mcp-stubs.mjs > "$E2E_LOG_DIR/stubs.log" 2>&1 &
+          for i in $(seq 1 20); do
+            curl -sf --cacert "$E2E_STUB_DIR/ca.pem" "$E2E_STUB_URL/_e2e/health" && echo && exit 0
+            sleep 1
+          done
+          echo "the stubs never answered"; cat "$E2E_LOG_DIR/stubs.log"; exit 1
+
+      # `bun run start` runs the migrations pass, then spawns the api binary
+      # with its own env — the stub settings above included — and proxies
+      # /api/* to it: the same process shape a deployed instance has.
+      - name: Start the app (ui + api)
+        working-directory: ui
+        env:
+          TALARIA_API_BIN: ${{ github.workspace }}/api/target/debug/talaria-api
+        run: |
+          set -eu
+          nohup bun run start > "$E2E_LOG_DIR/app.log" 2>&1 &
+          for i in $(seq 1 90); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$E2E_BASE_URL/api/healthz" || true)
+            [ "$code" = 200 ] && echo "app healthy" && exit 0
+            sleep 2
+          done
+          echo "the app never became healthy (last: $code)"; tail -100 "$E2E_LOG_DIR/app.log"; exit 1
+
+      - name: Install chromium
+        working-directory: ui
+        run: npx playwright install --with-deps chromium
+
+      - name: Typecheck the suite
+        working-directory: ui
+        run: bun run typecheck:e2e
+
+      - name: Run the suite
+        working-directory: ui
+        run: bun run test:e2e
+
+      - name: Logs on failure
+        if: failure()
+        run: |
+          echo "== app (ui + api) =="; tail -200 "$E2E_LOG_DIR/app.log" || true
+          echo "== stubs =="; tail -50 "$E2E_LOG_DIR/stubs.log" || true
+
+      # Traces, screenshots, the html report and both logs — everything a red
+      # run needs to be read without re-running it.
+      - name: Upload traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/e2e-results
+            ${{ runner.temp }}/e2e-report
+            ${{ runner.temp }}/e2e-logs
+          retention-days: 7
+          if-no-files-found: ignore

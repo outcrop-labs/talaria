@@ -7,23 +7,29 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-23 routes.
+29 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/agent-role-templates`](#apiagent-role-templates) | GET | `session` + `perm:agents.manage` |
 | [`/api/agent-role-templates`](#apiagent-role-templates) | PUT | `admin` |
 | [`/api/agent-role-templates`](#apiagent-role-templates) | DELETE | `admin` |
+| [`/api/agent/ask`](#apiagentask) | POST | `agent` |
 | [`/api/agent/chips`](#apiagentchips) | POST | `agent` |
 | [`/api/agent/gap`](#apiagentgap) | POST | `agent` |
 | [`/api/agent/message-user`](#apiagentmessage-user) | POST | `agent` |
+| [`/api/agent/organize`](#apiagentorganize) | POST | `agent` |
 | [`/api/agent/problem`](#apiagentproblem) | POST | `agent` |
+| [`/api/agent/todo`](#apiagenttodo) | PUT | `agent` |
 | [`/api/agent/whoami`](#apiagentwhoami) | GET | `agent` |
 | [`/api/agents`](#apiagents) | GET | `session` |
 | [`/api/agents/{id}/conversations`](#apiagentsidconversations) | GET | `session` |
 | [`/api/agents/{id}/heartbeat`](#apiagentsidheartbeat) | GET | `fleet` |
+| [`/api/agents/cron-output`](#apiagentscron-output) | POST | `agent` |
 | [`/api/agents/register`](#apiagentsregister) | POST | `fleet` |
+| [`/api/agents/subagent-events`](#apiagentssubagent-events) | POST | `agent` |
 | [`/api/agents/tool-events`](#apiagentstool-events) | POST | `agent` |
+| [`/api/agents/uploads`](#apiagentsuploads) | POST | `agent` |
 | [`/api/gaps`](#apigaps) | GET | `session` |
 | [`/api/gaps/{id}`](#apigapsid) | PUT | `session` + `perm:agents.manage` |
 | [`/api/muse`](#apimuse) | POST | `session` |
@@ -65,6 +71,28 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_role_templates.rs`](.
 | `department` | `kebab()` |  |
 | `description` | `string(0, 300)` |  |
 | `soul` | `string(1, 20000)` |  |
+
+## `/api/agent/ask`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/agent_ask.rs`](../../api/crates/talaria-routes-comms/src/comms/agent_ask.rs)
+
+> POST /api/agent/ask — the agent asks the person a question with real
+> options, on the turn it is writing.
+>
+> NO CONVERSATION PARAMETER, the same call `/api/agent/todo` and the research
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiagentask-body) | `{ok, asked}` | 200, 400, 409 | — |
+
+**POST** — Ask the person a question with options, on the conversation this agent is in.
+
+### POST `/api/agent/ask` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
 
 ## `/api/agent/chips`
 
@@ -127,6 +155,27 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_message_user.rs`](../
 | `to` | `string(1, 200)` | Teammate's email (preferred) or exact display name. |
 | `message` | `string(1, 4000)` |  |
 
+## `/api/agent/organize`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/agent_organize.rs`](../../api/crates/talaria-routes-comms/src/comms/agent_organize.rs)
+
+> POST /api/agent/organize — the agent tidies the conversation it is in:
+> renames it, pins it, files it under a group, or puts it away.
+>
+> NO CONVERSATION PARAMETER, the same call `/api/agent/todo` and
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiagentorganize-body) | `{ok, changed, said}` | 200, 400, 404, 409 | — |
+
+### POST `/api/agent/organize` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `title` | `string trimmed(1, 120)` |  |
+| `archived` | `bool?` |  |
+
 ## `/api/agent/problem`
 
 Source: [`api/crates/talaria-routes-fleet/src/agents/agent_problem.rs`](../../api/crates/talaria-routes-fleet/src/agents/agent_problem.rs)
@@ -149,6 +198,28 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_problem.rs`](../../ap
 | `details` | `string?(20000)` |  |
 | `context` | `string?(500)` | what the agent was trying to do |
 | `taskId` | `string?(200)` | the ticket the agent was working when it broke |
+
+## `/api/agent/todo`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/agent_todo.rs`](../../api/crates/talaria-routes-comms/src/comms/agent_todo.rs)
+
+> PUT /api/agent/todo — the agent writes down what it is going to do.
+>
+> NO CONVERSATION PARAMETER, deliberately, and this is the same call the
+> research tool already makes for the same reason: the agent is speaking in a
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PUT | `agent` | [body](#put-apiagenttodo-body) | `{ok, summary, items}` | 200, 400, 409 | — |
+
+**PUT** — Write down the steps this agent is working through, on the conversation it is in.
+
+### PUT `/api/agent/todo` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
 
 ## `/api/agent/whoami`
 
@@ -200,6 +271,20 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agents_id_heartbeat.rs`](..
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `fleet` | — | `{work_items}` | 200, 401, 403, 404 | — |
 
+## `/api/agents/cron-output`
+
+Source: [`api/crates/talaria-routes-fleet/src/agents/cron_output.rs`](../../api/crates/talaria-routes-fleet/src/agents/cron_output.rs)
+
+> POST /api/agents/cron-output. The other inbound half of the talaria-events
+> Hermes plugin: a cron run's FINAL TEXT, landed in the conversation that
+> scheduled the job, as an ordinary agent turn.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | — | `{ok, messageId}` | 200, 400, 404 | — |
+
 ## `/api/agents/register`
 
 Source: [`api/crates/talaria-routes-fleet/src/agents/agents_register.rs`](../../api/crates/talaria-routes-fleet/src/agents/agents_register.rs)
@@ -219,6 +304,20 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agents_register.rs`](../../
 | `role` | `string?(80)` |  |
 | `framework` | `string?(80)` |  |
 
+## `/api/agents/subagent-events`
+
+Source: [`api/crates/talaria-routes-fleet/src/agents/subagent_events.rs`](../../api/crates/talaria-routes-fleet/src/agents/subagent_events.rs)
+
+> POST /api/agents/subagent-events. The delegation half of the talaria-events
+> Hermes plugin: the harness fires subagent_start / subagent_stop around
+> every child the delegate_task tool spawns, and this route lands ONE chip
+> per child on the turn the parent is speaking in.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | — | `{ok, landed}` | 200, 400 | — |
+
 ## `/api/agents/tool-events`
 
 Source: [`api/crates/talaria-routes-fleet/src/agents/tool_events.rs`](../../api/crates/talaria-routes-fleet/src/agents/tool_events.rs)
@@ -232,6 +331,28 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/tool_events.rs`](../../api/
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `agent` | — | `{ok, landed}` | 200, 400 | — |
+
+## `/api/agents/uploads`
+
+Source: [`api/crates/talaria-routes-fleet/src/agents/uploads.rs`](../../api/crates/talaria-routes-fleet/src/agents/uploads.rs)
+
+> POST /api/agents/uploads.
+>
+> THE DOOR FOR BYTES THE AGENT MADE ITSELF. A persona that takes a browser
+> screenshot holds a PNG inside its own container and no other wire can carry
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiagentsuploads-body) | `{ok, uploadId, landed}` | 200, 400, 409, 500 | — |
+
+### POST `/api/agents/uploads` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `filename` | `string trimmed(1, 200)` |  |
+| `mime` | `string(1, 100)` |  |
+| `dataBase64` | `string(1)` |  |
 
 ## `/api/gaps`
 

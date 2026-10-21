@@ -87,6 +87,138 @@ fn arm_failed(context: &str, id: &str, arm: &str, e: impl std::fmt::Display) -> 
     internal(&format!("{context} artifact={id} arm={arm}"), e)
 }
 
+/// WHO MAY CHANGE THIS ARTIFACT'S BODY, resolved once.
+///
+/// TWO ROUTES ASK IT: the PUT (which sends a whole new body) and
+/// `/{id}/edit` (which sends a surgical patch). They are the same question —
+/// "may this caller rewrite this artifact's content, and under what name is
+/// the change stamped" — and two implementations of it is how they come to
+/// disagree, which on this plane means a tool reaching a document the UI
+/// would refuse. Sharing, official curation and brain routing are NOT here:
+/// those are the PUT's own state machine, and `/edit` cannot touch them.
+pub(crate) struct Editor {
+    /// The name the change is attributed to.
+    pub actor: String,
+    /// May govern the artifact (sharing, official, routing) — always false
+    /// for an agent key, which never governs.
+    pub owner: bool,
+    /// The session user, when a person is the caller. `None` means an agent
+    /// key, and the PUT reads it that way to strip the fields an agent may
+    /// not move.
+    pub human: Option<talaria_session::SessionUser>,
+}
+
+/// KEEP THE RETRIEVABLE COPY CURRENT after a content change: `auto` goes
+/// through the plan-doc activity flow, an explicit brain re-indexes there.
+///
+/// SHARED WITH `/{id}/edit` for one reason — a surgical edit changes the body
+/// exactly as a PUT does, so an edit that skipped this would leave agents
+/// retrieving the paragraph the document no longer contains. Detached, and its
+/// errors are swallowed: the save already succeeded, and failing the response
+/// over the index would tell the caller their edit did not land.
+pub(crate) fn reindex_content(state: &AppState, id: &str, updated: &talaria_artifacts::Artifact) {
+    let u = updated.clone();
+    if !u.rag_routing.is_empty() && u.rag_routing != "auto" {
+        let (pg, qd, ed) = (state.pg.clone(), qdrant::real_deps(), embed::real_deps());
+        tokio::spawn(async move {
+            apply_artifact_routing(&pg, &qd, &ed, &u).await;
+        });
+    } else {
+        let (pg, qd, ed, id) = (
+            state.pg.clone(),
+            qdrant::real_deps(),
+            embed::real_deps(),
+            id.to_string(),
+        );
+        tokio::spawn(async move {
+            if let Ok(targets) = targets_for_artifact(&pg, &id).await
+                && let Some((_, plan_id)) = targets.iter().find(|(tt, _)| tt == "plan")
+            {
+                let _ = index_plan_doc(&pg, &qd, &ed, &u, plan_id).await;
+            }
+        });
+    }
+}
+
+pub(crate) async fn body_editor(
+    state: &AppState,
+    headers: &HeaderMap,
+    artifact: &talaria_artifacts::Artifact,
+) -> Result<Editor, Response> {
+    let editors = list_editors(&state.pg, ITEM_ARTIFACT, &artifact.id)
+        .await
+        .map_err(|e| arm_failed("[artifacts] grants read failed", &artifact.id, "grants", e))?;
+    let g = guarded(artifact);
+
+    let agent = agent_caller(&state.pg, headers).await?;
+    if let Some(agent) = agent {
+        let name = agent.model.clone();
+        // Editor grant — or an admin-elevated assistant on any non-private artifact.
+        let elevated = artifact.visibility != "private"
+            && is_elevated_assistant(&state.pg, &AgentSubject::Caller(agent))
+                .await
+                .map_err(|e| {
+                    arm_failed(
+                        "[artifacts] elevation read failed",
+                        &artifact.id,
+                        "elevation",
+                        e,
+                    )
+                })?;
+        let team_ids = talaria_teams::team_ids_for_agent(&state.pg, &name)
+            .await
+            .map_err(|e| {
+                arm_failed(
+                    "[artifacts] team membership read failed",
+                    &artifact.id,
+                    "team-membership-agent",
+                    e,
+                )
+            })?;
+        if !(can_edit_agent(&name, &editors, &team_ids) || elevated) {
+            return Err(house_error(StatusCode::FORBIDDEN, "forbidden"));
+        }
+        return Ok(Editor {
+            actor: name,
+            owner: false,
+            human: None,
+        });
+    }
+
+    let user = require_user(state, headers).await?;
+    let who = who_of(&user);
+    let team_ids = talaria_teams::team_ids_for_user(&state.pg, &user.id)
+        .await
+        .map_err(|e| {
+            arm_failed(
+                "[artifacts] team membership read failed",
+                &artifact.id,
+                "team-membership-user",
+                e,
+            )
+        })?;
+    if !can_edit_human(&g, Some(&user.id), who.as_deref(), &editors, &team_ids) {
+        return Err(house_error(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    // `canGovern`, not `isOwner` — the same rule kb/docs/{id} already
+    // uses, and the reason canGovern exists. Attribution stamps a human
+    // owner on what an agent makes, but it cannot promise one: an
+    // untraceable caller (or output from before attribution) is ownerless,
+    // and strict ownership would leave those files orphans whose sharing
+    // literally nobody could change. canGovern hands the ownerless to
+    // admins and to whoever may use the agent that wrote them, while
+    // owned artifacts — agent-made or not — are owner-only, their
+    // owners' to govern.
+    let owner = can_govern(&state.pg, &g, &user.id, &user.role, who.as_deref())
+        .await
+        .map_err(|e| arm_failed("[artifacts] govern check failed", &artifact.id, "govern", e))?;
+    Ok(Editor {
+        actor: actor_of(&user),
+        owner,
+        human: Some(user),
+    })
+}
+
 pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -195,96 +327,12 @@ pub async fn put(
         Ok(b) => b,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &artifact.id).await {
-        Ok(e) => e,
-        Err(e) => {
-            return Ok(arm_failed(
-                "[artifacts] grants read failed",
-                &artifact.id,
-                "grants",
-                e,
-            ));
-        }
-    };
-    let g = guarded(&artifact);
-
-    let actor: String;
-    let mut owner = false;
-    let agent = agent_caller(&state.pg, &headers).await?;
-    if let Some(agent) = agent {
-        let name = agent.model.clone();
-        // Editor grant — or an admin-elevated assistant on any non-private artifact.
-        let elevated = artifact.visibility != "private"
-            && match is_elevated_assistant(&state.pg, &AgentSubject::Caller(agent)).await {
-                Ok(v) => v,
-                Err(e) => {
-                    return Ok(arm_failed(
-                        "[artifacts] elevation read failed",
-                        &artifact.id,
-                        "elevation",
-                        e,
-                    ));
-                }
-            };
-        let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
-            Ok(v) => v,
-            Err(e) => {
-                return Ok(arm_failed(
-                    "[artifacts] team membership read failed",
-                    &artifact.id,
-                    "team-membership-agent",
-                    e,
-                ));
-            }
-        };
-        let may_edit = can_edit_agent(&name, &editors, &team_ids) || elevated;
-        if !may_edit {
-            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
-        }
-        actor = name;
-        body.visibility = None;
-        body.edit_policy = None;
-        body.editors = None;
-        body.official = None;
-        body.rag_routing = None;
-    } else {
-        let user = require_user(&state, &headers).await?;
-        let who = who_of(&user);
-        let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
-            Ok(v) => v,
-            Err(e) => {
-                return Ok(arm_failed(
-                    "[artifacts] team membership read failed",
-                    &artifact.id,
-                    "team-membership-user",
-                    e,
-                ));
-            }
-        };
-        if !can_edit_human(&g, Some(&user.id), who.as_deref(), &editors, &team_ids) {
-            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
-        }
-        actor = actor_of(&user);
-        // `canGovern`, not `isOwner` — the same rule kb/docs/{id} already
-        // uses, and the reason canGovern exists. Attribution stamps a human
-        // owner on what an agent makes, but it cannot promise one: an
-        // untraceable caller (or output from before attribution) is ownerless,
-        // and strict ownership would leave those files orphans whose sharing
-        // literally nobody could change. canGovern hands the ownerless to
-        // admins and to whoever may use the agent that wrote them, while
-        // owned artifacts — agent-made or not — are owner-only, their
-        // owners' to govern.
-        owner = match can_govern(&state.pg, &g, &user.id, &user.role, who.as_deref()).await {
-            Ok(v) => v,
-            Err(e) => {
-                return Ok(arm_failed(
-                    "[artifacts] govern check failed",
-                    &artifact.id,
-                    "govern",
-                    e,
-                ));
-            }
-        };
+    let Editor {
+        actor,
+        owner,
+        human,
+    } = body_editor(&state, &headers, &artifact).await?;
+    if let Some(user) = human.as_ref() {
         if body.visibility.as_deref() == Some("public")
             && !matches!(
                 talaria_permissions::has_perm(&state.pg, &user.id, &user.role, "artifacts.publish")
@@ -312,6 +360,15 @@ pub async fn put(
                 "only the owner can change brain routing",
             ));
         }
+    } else {
+        // An agent key edits CONTENT and nothing else. Stripped here rather
+        // than refused so a tool that sends a whole artifact back does not
+        // fail on fields it was never going to be allowed to move.
+        body.visibility = None;
+        body.edit_policy = None;
+        body.editors = None;
+        body.official = None;
+        body.rag_routing = None;
     }
 
     if !owner {
@@ -421,32 +478,8 @@ pub async fn put(
             Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         }
     }
-    // Content edits keep the artifact's retrievable copy current: auto →
-    // the plan-doc activity flow; explicit brain → re-index there.
     if body.body.is_some() || body.title.is_some() {
-        let u = updated.clone();
-        if !u.rag_routing.is_empty() && u.rag_routing != "auto" {
-            let (pg, qd, ed) = (state.pg.clone(), qdrant::real_deps(), embed::real_deps());
-            tokio::spawn(async move {
-                apply_artifact_routing(&pg, &qd, &ed, &u).await;
-            });
-        } else {
-            let (pg, qd, ed, id) = (
-                state.pg.clone(),
-                qdrant::real_deps(),
-                embed::real_deps(),
-                id.clone(),
-            );
-            tokio::spawn(async move {
-                // The find-plan → index chain is detached; its errors are
-                // swallowed.
-                if let Ok(targets) = targets_for_artifact(&pg, &id).await
-                    && let Some((_, plan_id)) = targets.iter().find(|(tt, _)| tt == "plan")
-                {
-                    let _ = index_plan_doc(&pg, &qd, &ed, &u, plan_id).await;
-                }
-            });
-        }
+        reindex_content(&state, &id, &updated);
     }
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &id).await {
         Ok(e) => e,

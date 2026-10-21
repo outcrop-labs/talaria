@@ -4,7 +4,7 @@
 // so you can hack in it without any risk of breaking your primary dev stack.
 // Port of scripts/worktree.sh.
 
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
@@ -110,7 +110,7 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   ctx.env.TALARIA_PG_PORT = String(slot.pg)
   ctx.env.TALARIA_REDIS_CONTAINER = redisc
   ctx.env.TALARIA_REDIS_PORT = String(slot.redis)
-  // ONLY Postgres and Redis. The dev sidecars (qdrant/embeddings/storage/searxng)
+  // ONLY Postgres and Redis. The dev sidecars (qdrant/embeddings/storage)
   // carry fixed container names and fixed host ports, so a second project
   // cannot bring them up beside the main stack — `up` with no service list dies
   // on the name conflict whenever main is running (the bash script's latent
@@ -157,7 +157,15 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
     // TALARIA_API_PORT joins the stripped set because envValue returns the
     // FIRST match: leaving main's line in place would shadow the one appended
     // below, and the worktree would silently go back to sharing :5274.
-    .filter((l) => !/^(DATABASE_URL|REDIS_URL|PORT|TALARIA_API_PORT)=/.test(l))
+    //
+    // TALARIA_RUST_API_URL joins it for the same reason ONE STEP LATER, and
+    // the miss cost a worktree's whole api. `talaria dev` derives the url from
+    // TALARIA_API_PORT only when nothing else names it — and main's ui/.env
+    // names it, hardcoded to :5274 by `talaria setup`. So the derivation never
+    // fired, the app proxied /api/* to the primary stack's api, and the
+    // worktree's own api sat on its port with nobody talking to it. The port
+    // line below is not enough on its own; the url has to be written too.
+    .filter((l) => !/^(DATABASE_URL|REDIS_URL|PORT|TALARIA_API_PORT|TALARIA_RUST_API_URL)=/.test(l))
     .join('\n')
   const note = secretKey
     ? ''
@@ -183,9 +191,45 @@ PORT=${slot.app}
 # database. The api binds it (talaria-config reads TALARIA_API_PORT) and the
 # app's proxy dials it (TALARIA_RUST_API_URL derives from it in dev.ts).
 TALARIA_API_PORT=${slot.api}
+# And the url the app's proxy dials, written rather than derived: dev.ts only
+# derives it when no env names it, so an inherited line would win over the
+# port above.
+TALARIA_RUST_API_URL=http://127.0.0.1:${slot.api}
+# The fleet THIS worktree renders. Its agents call back over the docker host
+# bridge to this app's port — the gateway for their thinking, the MCP gateway
+# for their tools — and run under their own compose project, so neither the
+# main fleet nor the cleanup sweep reads them as something else's. dev.ts
+# lifts both into the api (the renderer reads them; nothing else does).
+TALARIA_GATEWAY_SELF_URL=http://host.docker.internal:${slot.app}/api/llm/v1
+TALARIA_FLEET_PROJECT=${project}-fleet
 `,
   )
   ctx.log.ok('ui/.env written')
+
+  // The fleet config plane, as `talaria setup` seeds it for the primary
+  // checkout: the renderer writes into it, and a hire against a missing
+  // fleet/.env fails honestly rather than inventing one. The chassis is
+  // user-owned config, so an existing one is kept.
+  ctx.log.say('Fleet config plane (fleet/)')
+  for (const d of ['fleet/skills', 'fleet/hooks', 'fleet/agents']) mkdirSync(join(wt, d), { recursive: true })
+  const chassisTemplate = join(root, 'scripts/chassis.template.yml')
+  if (!existsSync(join(wt, 'fleet/chassis.yml')) && existsSync(chassisTemplate)) {
+    copyFileSync(chassisTemplate, join(wt, 'fleet/chassis.yml'))
+  }
+  if (!existsSync(join(wt, 'fleet/.env'))) {
+    writeFileSync(
+      join(wt, 'fleet/.env'),
+      `# Fleet env — compose interpolation + per-agent HERMES_KEY_* (Talaria appends
+# those automatically when you create agents). The gateway brain is
+# provisioned here by the first render.
+LLM_BASE_URL=
+LLM_API_KEY=
+LLM_MODEL=
+`,
+      { mode: 0o600 },
+    )
+  }
+  ctx.log.ok('fleet/ seeded')
 
   ctx.log.say('Sharing node_modules')
   if (!existsSync(join(wt, 'ui/node_modules'))) {

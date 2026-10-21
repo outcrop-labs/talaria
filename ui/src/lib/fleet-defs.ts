@@ -15,6 +15,27 @@ export interface ModelTarget {
   effort?: string | null
 }
 
+/** When Hermes compacts a pinned session. Both values are clearable, and a
+ *  cleared one is `null` — "use Hermes' own default" rather than zero, which
+ *  would mean "compact constantly".
+ *
+ *  `threshold` is a RATIO of the routed model's context window; Hermes floors
+ *  anything under 0.75 at 0.75 for models with less than 512K of context, so a
+ *  small number here is not honored everywhere. `thresholdTokens` is an
+ *  absolute ceiling, and whichever of the two is reached first fires. */
+/** The compaction knobs' bounds, the client's one spelling of the route's
+ *  (`fleet_defs_id_edit.rs`): the guards, the inputs and the copy read these,
+ *  so a change on the api side moves the whole form at once. */
+export const COMPACTION_BOUNDS = {
+  threshold: { min: 0.1, max: 1, step: 0.05 },
+  tokens: { min: 1_000, max: 10_000_000, step: 1_000 },
+} as const
+
+export interface AgentCompression {
+  threshold: number | null
+  thresholdTokens: number | null
+}
+
 export interface AgentConfig {
   main?: ModelTarget
   aliases?: Array<ModelTarget & { name: string }>
@@ -56,10 +77,27 @@ export interface AgentDef {
   source: 'imported' | 'created'
   /** The Developer Agent switch: dev sandbox + Oh My Pi + the Workbench tools. */
   developer: boolean
+  /** How many subagents this agent may run at once (0 = it delegates to
+   *  nobody) — the cap the fleet render hands Hermes. */
+  maxChildren: number
+  /** Pinned sessions: one Hermes session per conversation, Hermes holding the
+   *  history, so its compaction and session search cover the whole thread. */
+  pinnedSessions: boolean
+  /** Hermes toolsets this agent does NOT get. Empty for most agents; `browser`
+   *  here is what keeps a non-browsing agent from paying for a Chromium
+   *  install on every roll. `todo` and `clarify` are off for every agent
+   *  whatever this says — Talaria's own versions are the ones a person sees. */
+  disabledToolsets: string[]
   /** Template overrides — this agent always formats tickets/plans on these. */
   ticketTemplateId: string | null
   planTemplateId: string | null
   currentVersion: number
+  /** The latest version's `raw.compression`, projected into camelCase by the
+   *  roster read — a def-level field rather than a member of `latest.config`,
+   *  because the wire's `config` is the stored jsonb verbatim and this is a
+   *  derived view of one block inside it. Null (or absent, on an older api)
+   *  means the def says nothing and Hermes' own defaults are in force. */
+  compression?: AgentCompression | null
   latest: AgentVersion | null
 }
 
@@ -130,6 +168,14 @@ export interface FleetDefs {
   endpoints: LlmEndpoint[]
   brains?: AgentBrainHealth[]
   canHire: boolean
+  /** The toolset vocabulary, published by the server rather than restated
+   *  here: `governed` is every Hermes toolset Talaria will accept in a def's
+   *  `disabledToolsets` (alphabetical), and `mandatoryDisabled` is the floor
+   *  the renderer merges on top of any agent's list — off for every agent
+   *  whatever a def says, because Talaria's own versions of those tools are
+   *  the ones a person sees. Optional so a UI built against an older api
+   *  simply renders no toolset grid instead of an empty one. */
+  toolsets?: { governed: string[]; mandatoryDisabled: string[] }
 }
 
 export function useFleetDefs(enabled: MaybeGetter<boolean>) {
@@ -208,14 +254,33 @@ export interface AgentEdit {
   fallbacks: ModelTarget[]
   note?: string
   apply?: boolean
+  /** Compaction, three-valued per field and that is the point: ABSENT leaves
+   *  the def's current value alone (the soul-only publish must not silently
+   *  reset it), a number writes it, and `null` CLEARS the key so Hermes'
+   *  default stands. Writes `raw.compression.threshold` /
+   *  `raw.compression.threshold_tokens`; every other raw key is kept. */
+  compression?: { threshold?: number | null; thresholdTokens?: number | null }
 }
 
 export async function saveAgentEdit(
   id: string,
   edit: AgentEdit,
-): Promise<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean; error?: string }> {
+): Promise<{
+  ok?: boolean
+  version?: number
+  created?: boolean
+  applied?: boolean
+  /** The route's own remarks about what it did with the edit — e.g. a
+   *  threshold Hermes will floor on this model, or a change saved without a
+   *  roll. Optional: an api that reports none simply shows nothing. */
+  notes?: string[]
+  error?: string
+}> {
   try {
-    return await postJson<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean }>(`/api/fleet/defs/${id}/edit`, edit)
+    return await postJson<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean; notes?: string[] }>(
+      `/api/fleet/defs/${id}/edit`,
+      edit,
+    )
   } catch (e) {
     return { error: errorMessage(e) }
   }
@@ -272,7 +337,7 @@ export function useFleetHires(enabled: MaybeGetter<boolean>) {
 /** Update an agent's editable identity (role, display name, template bindings). */
 export async function patchAgentMeta(
   id: string,
-  patch: { role?: string | null; displayName?: string; emailAlias?: string | null; ticketTemplateId?: string | null; planTemplateId?: string | null; developer?: boolean },
+  patch: { role?: string | null; displayName?: string; emailAlias?: string | null; ticketTemplateId?: string | null; planTemplateId?: string | null; developer?: boolean; pinnedSessions?: boolean; disabledToolsets?: string[]; maxChildren?: number },
 ): Promise<{ ok?: boolean; error?: string }> {
   try {
     return await patchJson<{ ok: boolean }>(`/api/fleet/defs/${id}`, patch)

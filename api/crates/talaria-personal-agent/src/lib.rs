@@ -13,8 +13,8 @@ use serde_json::Value;
 use sqlx::PgPool;
 
 use talaria_agent_defs::{
-    AgentDefRow, ConfigEdits, ModelTarget, add_version_if_changed, apply_config_edits,
-    list_versions,
+    AgentDefRow, CompressionEdits, ConfigEdits, ModelTarget, add_version_if_changed,
+    apply_config_edits, list_versions,
 };
 use talaria_fleet_create::{CreateAgentInput, create_agent, ensure_agent_key, restamp_slug};
 use talaria_fleet_docker::{container_status, fleet_restart, fleet_up, wait_healthy};
@@ -481,6 +481,13 @@ async fn rename_agent_slug(
             "update usage_events set agent_model = $1 where agent_model = $2",
             vec![new_model.as_str(), def.model.as_str()],
         ),
+        // The threads listening to this agent's cron jobs are keyed by its
+        // model too; left behind, every scheduled run would post into
+        // nothing after a rename.
+        (
+            "update conversation_schedules set agent_model = $1 where agent_model = $2",
+            vec![new_model.as_str(), def.model.as_str()],
+        ),
         (
             "update rag_collection_access set principal_id = $1 \
              where principal_type = 'agent' and principal_id = $2",
@@ -617,6 +624,8 @@ pub async fn update_personal_agent(
                     main,
                     aliases: alias_list,
                     fallbacks,
+                    // A model patch turns no compaction knob.
+                    compression: CompressionEdits::default(),
                 },
             )
             .await?;

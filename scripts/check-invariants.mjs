@@ -2249,7 +2249,6 @@ const UNSET_SEAM_CENSUS = [
     ['PG_PORT', cliValue('PG_PORT'), composeDefault('TALARIA_PG_PORT'), 'docker/dev-compose.yml'],
     ['REDIS_PORT', cliValue('REDIS_PORT'), composeDefault('TALARIA_REDIS_PORT'), 'docker/dev-compose.yml'],
     ['STORAGE_PORT', cliValue('STORAGE_PORT'), composeDefault('TALARIA_STORAGE_PORT'), 'docker/dev-compose.yml'],
-    ['SEARCH_PORT', cliValue('SEARCH_PORT'), composeDefault('TALARIA_SEARCH_PORT'), 'docker/dev-compose.yml'],
   ]
   const problems = checks
     .filter(([, a, b]) => a === undefined || b === undefined || a !== b)

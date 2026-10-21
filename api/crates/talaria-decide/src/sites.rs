@@ -130,6 +130,22 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         reads: FLOOR_CERTAINTY,
         floor_why: "A wrong merge HIDES a real gap behind someone else's row, and seen_count is what ranks the Suggested queue — so this is the least forgiving site on the list. A wrong split is merely a duplicate an admin can see.",
     },
+    // The same question gap-align asks, one surface over: is this thing I am
+    // about to file the thing already filed? Modelled on it down to the floor,
+    // because the asymmetry is the same shape — the cost of being wrong lands
+    // on work that is already there and that nobody is looking at any more.
+    SiteDef {
+        id: "ticket-dupe",
+        label: "Ticket draft dedup",
+        primitive: "choice",
+        acts: "Flags a drafted ticket as re-proposing an open ticket on the board: the proposal starts unticked in the review and names the ticket it matched. The reviewer still decides.",
+        default_on: true,
+        switch_lives_at: None,
+        measured_at: None,
+        default_floor: 0.85,
+        reads: FLOOR_CERTAINTY,
+        floor_why: "A wrong flag hides real work behind an untick the reviewer may not notice — they are reading a list of things to create, and an unticked row reads as a row someone already dealt with. A missed flag is a duplicate the board shows, next to the ticket it duplicates. So the bar sits with gap-align's, high enough that only a near-certain match moves a tick.",
+    },
     // The brief's tiebreak. Judged WITHIN a bucket only — reordering across
     // buckets would let a confident model drop a failed deploy below an unread
     // mention, and the buckets are a policy decision a person already made.
@@ -190,20 +206,45 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         reads: FLOOR_CERTAINTY,
         floor_why: "A proposal is a button an owner may click, so a wrong one is a wrong action they were invited to take — high. Not yet acted on at all, so this number is what the ledger will be read against rather than something currently in force.",
     },
-    // Measured only, for the same reason as `action-select`: see
-    // `talaria_decide::scope`. The verdict is coupled to prose that belongs to
-    // it, so a typed answer cannot replace one without replacing the other.
+    // ACTS IN ONE DIRECTION ONLY, and the half it cannot do is the half that
+    // would need prose it has no way to write: see `talaria_decide::scope`.
+    // Overriding a vague verdict to crisp discards questions nobody now has
+    // to answer; overriding a crisp one to vague would need questions a Noul
+    // cannot produce. So only the first direction exists.
     SiteDef {
         id: "research-scope",
         label: "Research scoping",
         primitive: "noul",
-        acts: "Nothing yet. Judges whether a research ask can be worked as typed at the depth requested, and records it beside the scoper's own verdict. The scoper still decides.",
+        acts: "Lets a research run proceed on an ask its own scoper called vague, when a judgment says the ask can be worked as typed at the depth requested: the scoper's read is posted and its clarifying questions are not asked. One direction only — an ask the scoper called crisp is never sent back for questions.",
         default_on: false,
         switch_lives_at: None,
         measured_at: None,
         default_floor: 0.70,
         reads: FLOOR_LEAN,
-        floor_why: "Low stakes in both directions: a wrong \"crisp\" costs a research run that answers the wrong question, a wrong \"vague\" costs a person two clarifying questions they did not need. Not yet acted on, so this is what the ledger will be read against.",
+        floor_why: "Low stakes in both directions: a wrong \"crisp\" costs a research run that answers the wrong question, a wrong \"vague\" costs a person two clarifying questions they did not need. Off on every install, so the ledger is what this number is read against until somebody turns it on.",
+    },
+    // ON BY DEFAULT, which only two other sites are, and the asymmetry is the
+    // whole argument: this site can only ever STOP a run early. It cannot add
+    // a round, cannot plan another query, cannot spend anything — the worst it
+    // does is write the report at round two of four from findings a model said
+    // already answer the ask, which is the report the last round was going to
+    // write anyway. The rounds it declines to spend are billed searches on
+    // every run that did not need them.
+    //
+    // The baseline it is measured against is the budget's own "keep going", so
+    // a high agreement rate here means "it would rarely have stopped early",
+    // not "it is right" — the same reading `channel-speech`'s rows need.
+    SiteDef {
+        id: "research-enough",
+        label: "Research: enough?",
+        primitive: "noul",
+        acts: "Ends a research run early: when the findings so far answer the ask at the requested depth, the report is written instead of spending the remaining rounds. The budget's own 'keep going' is the baseline.",
+        default_on: true,
+        switch_lives_at: None,
+        measured_at: None,
+        default_floor: 0.75,
+        reads: FLOOR_LEAN,
+        floor_why: "A clear lean rather than a coin flip, because the thing being traded is a round of searching a reader might have wanted: a wrong yes writes the report one round early off findings that looked complete, a wrong no spends a round the budget was going to spend regardless. Only the probability of yes is read — a confident \"not yet\" means keep going, which is exactly what happens with this site off.",
     },
     // Declared so the census is complete. Its switch is the guard's own
     // per-rule toggle, and its record is `guard_findings` grouped by
@@ -683,12 +724,15 @@ mod tests {
             ("ticket-relevance", FLOOR_CERTAINTY, 0.70),
             ("workflow-match", FLOOR_LEAN, 0.75),
             ("gap-align", FLOOR_CERTAINTY, 0.85),
+            ("ticket-dupe", FLOOR_CERTAINTY, 0.85),
             ("tool-prune", FLOOR_LEAN, 0.15),
             ("guard-semantic", FLOOR_LEAN, 0.50),
             ("focus-rank", FLOOR_CERTAINTY, 0.60),
             ("channel-speech", FLOOR_LEAN, 0.90),
             ("action-select", FLOOR_CERTAINTY, 0.80),
             ("research-scope", FLOOR_LEAN, 0.70),
+            ("research-enough", FLOOR_LEAN, 0.75),
+            ("rerank", FLOOR_LEAN, 0.0),
         ];
         for (id, reads, floor) in expect {
             let d = def_of(id).unwrap_or_else(|| panic!("{id} left the census"));
@@ -702,7 +746,7 @@ mod tests {
         // And the census covers every site the ledger can group by.
         assert_eq!(
             DECIDE_SITES.len(),
-            10,
+            12,
             "a site was added without a census entry"
         );
     }

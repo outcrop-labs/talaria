@@ -30,8 +30,6 @@ const makeTree = (over: { distMtime?: Date; uiEnv?: string; bridgeDistMtime?: Da
   mkdirSync(join(root, 'omp-auth/node_modules'), { recursive: true })
   writeFileSync(join(root, 'omp-auth/src/server.ts'), 'x')
   writeFileSync(join(root, 'omp-auth/dist/server.js'), 'built')
-  mkdirSync(join(root, 'docker/searxng'), { recursive: true })
-  writeFileSync(join(root, 'docker/searxng/settings.template.yml'), 'secret_key: "__SEARXNG_SECRET__"\n')
   writeFileSync(join(root, 'ui/.env'), over.uiEnv ?? 'DATABASE_URL=x\nREDIS_URL=y\n')
   const distTime = over.distMtime ?? new Date()
   utimesSync(join(root, 'mcp/dist/index.js'), distTime, distTime)

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { toolRowLabel } from './tool-cards'
   import MessageAvatar from './MessageAvatar.svelte'
   import MessageActions from './MessageActions.svelte'
   import ReactionChips, { type ReactionChip } from './ReactionChips.svelte'
@@ -6,10 +7,12 @@
   import GuardCaveat from '@/components/chat/GuardCaveat.svelte'
   import StreamText from './StreamText.svelte'
   import Disclosure from '@/components/ui/Disclosure.svelte'
+  import Button from '@/components/ui/Button.svelte'
   import ChatWaiting from './ChatWaiting.svelte'
   import ChatChips from './ChatChips.svelte'
   import { fade } from '@/lib/motion'
   import { resolveAgentMedia } from '@/lib/agent-media'
+  import { readFlag, writeFlag } from '@/lib/persist'
   import type { DisplayMessage } from './chat-view'
 
   // Flattened assistant turn (spec §10): avatar square + agent name, compact
@@ -44,6 +47,22 @@
     onDecided?: () => void
   } = $props()
 
+  // Whether THIS viewer wants reasoning open. The trace stays collapsed by
+  // default — it is the secondary read — but a reader following an agent's
+  // thinking reopened it on every single turn, which is a preference the app
+  // can just remember. Per-viewer convenience, so it rides `lib/persist`'s
+  // flag pair: that module already owns the two storage facts (access itself
+  // throws in a private window; whatever comes back degrades to the fallback),
+  // and a browser that refuses storage simply gets the default.
+  const REASONING_KEY = 'talaria.chat.reasoning-open'
+
+  let reasoningOpen = $state(readFlag(REASONING_KEY))
+
+  function setReasoningPref(next: boolean) {
+    reasoningOpen = next
+    writeFlag(REASONING_KEY, next)
+  }
+
   const hasReasoning = $derived(!!message.reasoning?.trim())
   const tools = $derived(message.tools ?? [])
   const hasTools = $derived(tools.length > 0)
@@ -77,10 +96,30 @@
     </div>
 
     {#if hasReasoning}
-      <Disclosure title="Thinking">
-        {#snippet icon()}<span>✦</span>{/snippet}
-        <div class="whitespace-pre-wrap text-xs text-muted">{message.reasoning}</div>
-      </Disclosure>
+      <!-- The preference is what the Disclosure's DEFAULT is, and Disclosure
+           reads that once per mount (by design — a caller wanting another
+           default remounts), so flipping it keys a remount here. That is also
+           the behaviour a reader expects: choosing "keep open" opens this one
+           too, rather than promising something about the next turn. -->
+      <div class="flex items-start gap-2">
+        <div class="min-w-0 flex-1">
+          {#key reasoningOpen}
+            <Disclosure title="Thinking" defaultOpen={reasoningOpen}>
+              {#snippet icon()}<span>✦</span>{/snippet}
+              <div class="whitespace-pre-wrap text-xs text-muted">{message.reasoning}</div>
+            </Disclosure>
+          {/key}
+        </div>
+        <Button
+          variant="link"
+          size="xs"
+          class="mt-1 shrink-0 text-[11px]"
+          title={reasoningOpen ? 'Collapse thinking by default' : 'Keep thinking open on every turn'}
+          onclick={() => setReasoningPref(!reasoningOpen)}
+        >
+          {reasoningOpen ? 'collapse by default' : 'keep open'}
+        </Button>
+      </div>
     {/if}
 
     {#if hasTools}
@@ -89,14 +128,15 @@
         <!-- Compact mono tool rows, hairline separated (spec §10). -->
         <ul class="divide-y divide-line">
           {#each tools as t, i (t.id ?? `${t.name}-${i}`)}
+            {@const rowLabel = toolRowLabel(t.label)}
             <li class="flex items-start gap-2 py-1.5 font-mono text-[11px] first:pt-0 last:pb-0">
               <span class="mt-0.5 shrink-0">
                 <ToolStatus status={t.status} />
               </span>
               <span class="min-w-0 flex-1">
                 <span class="text-fg">{t.name}</span>
-                {#if t.label}
-                  <span class="mt-0.5 block whitespace-pre-wrap break-words text-muted">{t.label}</span>
+                {#if rowLabel}
+                  <span class="mt-0.5 block whitespace-pre-wrap break-words text-muted">{rowLabel}</span>
                 {/if}
               </span>
             </li>
@@ -133,13 +173,30 @@
     {#if empty && live}<ChatWaiting id={String(turn)} role="submitting" class="my-1" />{/if}
     {#if !empty && !message.content && live}<ChatWaiting id={String(turn)} role="reasoning" class="my-1" />{/if}
     {#if message.content && live}<span class="gd-pulse ml-0.5 inline-block h-4 w-1.5 bg-accent align-middle"></span>{/if}
+    <!-- A SCHEDULED RUN IS STILL JUST A TURN, by design — the cron posts into
+         this thread rather than into a surface of its own — so the row says
+         where it came from in the same quiet mono voice "· stopped" uses.
+         Without it the agent reads as having spoken up unprompted. The job id
+         rides the tooltip: it is the handle on the schedule, not something to
+         paint across the transcript. -->
+    {#if message.cronJobId}
+      <div class="font-mono text-[11px] text-muted" title={`job ${message.cronJobId}`}>· scheduled run</div>
+    {/if}
     {#if !live && message.status === 'streaming'}
       <div class="font-mono text-[11px] text-muted">· saved (was in progress)</div>
     {/if}
     {#if !live && message.resumed}
       <div class="font-mono text-[10px] tracking-[0.05em] text-ink-dim">↻ resumed after a dropped stream</div>
     {/if}
-    {#if !live && message.status === 'error'}
+    <!-- A stop is a decision, not a fault: the reader chose to end the turn,
+        so it says so in the muted voice. It used to arrive as danger-red "·
+        interrupted" — the typography of something going wrong — and an empty
+        stop drew the routing-error line, which blamed the model's config for
+        a key the person pressed. A turn the SERVER wrote a reason into still
+        shows that reason: it is news, and stopping does not explain it. -->
+    {#if !live && message.stopped && agentErrorNote === null}
+      <div class="font-mono text-[11px] text-muted">· stopped</div>
+    {:else if !live && message.status === 'error'}
       <div class="text-xs" style:color="var(--theme-danger)">
         {#if agentErrorNote}
           {agentErrorNote}

@@ -14,6 +14,16 @@ export type ResearchMode = 'recon' | 'brief' | 'expedition'
  *  It still polls like an in-flight run — the answer can land any second. */
 export type ResearchStatus = 'queued' | 'running' | 'awaiting' | 'done' | 'error'
 
+/** THE THREE DIALS, 1–3 each: how hard to dig (rounds of searching), how wide
+ *  to cast (queries per round), how many sources to keep. A mode is a preset
+ *  over exactly these three — recon 1/1/1, brief 1/2/2, expedition 3/3/3 — so
+ *  a dial moves one axis of the mode and leaves the others where they were. */
+export interface ResearchDials {
+  effort: number
+  breadth: number
+  sources: number
+}
+
 export interface ResearchRun {
   id: string
   ownerUserId: string | null
@@ -34,6 +44,10 @@ export interface ResearchRun {
    *  rows predating eager conversations. */
   conversationId: string | null
   error: string | null
+  /** The dials the run actually ran at. Absent or null on a run an older
+   *  deploy started — which reads as "whatever the mode presets", not as
+   *  "no dials": the run had them, the row just never wrote them down. */
+  dials?: ResearchDials | null
   stats: { queries?: number; sources?: number; cited?: number }
   createdAt: string
   completedAt: string | null
@@ -65,6 +79,60 @@ export const MODE_META: Record<ResearchMode, { label: string; tagline: string; e
   expedition: { label: 'Expedition', tagline: 'Iterative deep dive: a full report', eta: '10 min +' },
 }
 
+/** A MODE IS A PRESET OVER THE THREE DIALS, and these are the numbers — the
+ *  same table the server keeps (`Dials::from_mode`, talaria-research-def).
+ *  Spelled out on the client because a picker that resets the dials when the
+ *  preset changes has to know what it is resetting them TO; the server stays
+ *  the authority, and a body carrying all three is simply agreeing with it. */
+export const MODE_DIALS: Record<ResearchMode, ResearchDials> = {
+  recon: { effort: 1, breadth: 1, sources: 1 },
+  brief: { effort: 1, breadth: 2, sources: 2 },
+  expedition: { effort: 3, breadth: 3, sources: 3 },
+}
+
+/** A FRESH COPY of a mode's preset. The composer holds its dials as state and
+ *  moves one axis at a time, so handing out the table's own object would edit
+ *  the preset itself for every later ask on the page. */
+export const dialsForMode = (mode: ResearchMode): ResearchDials => ({ ...MODE_DIALS[mode] })
+
+/** One dial as a picker renders it: the axis name, the one line saying what
+ *  its rungs COUNT, and the three rungs read out in full. */
+export interface DialAxis {
+  key: keyof ResearchDials
+  label: string
+  /** What moving this dial buys — the picker's tooltip and menu caption. */
+  note: string
+  /** Rungs 1, 2 and 3, in order. The numbers are the server's own ladders
+   *  (`Dials::rounds` / `queries` / `max_sources`), said out loud: a dial
+   *  whose menu reads "1 · 2 · 3" asks the reader to guess what they bought. */
+  steps: [string, string, string]
+}
+
+export const DIAL_AXES: readonly DialAxis[] = [
+  { key: 'effort', label: 'Effort', note: 'Rounds of searching', steps: ['1 round', '2 rounds', '3 rounds'] },
+  { key: 'breadth', label: 'Breadth', note: 'Queries per round', steps: ['1 query', '3 queries', '4 queries'] },
+  {
+    key: 'sources',
+    label: 'Sources',
+    note: 'Sources the writer sees',
+    steps: ['6 sources', '12 sources', '24 sources'],
+  },
+]
+
+/** WHAT A 409 MEANS, in the words of the conflict that caused it. The route
+ *  answers `{ run: null, duplicateOf, reason }` — `thread` when the session
+ *  already has a live run, `question` when the same question is already in
+ *  flight anywhere — and the sentence follows the reason, not a guess from
+ *  whether the ask named a thread. */
+export const duplicateRunMessage = (inThread: boolean): string =>
+  inThread ? 'this session already has a run going' : 'that question is already being researched'
+
+/** Which of the route's two conflicts a 409 was. The route names it
+ *  (`reason: "thread" | "question"`); an older api that does not is read the
+ *  way it always was — by whether the ask named a thread. */
+export const duplicateReasonInThread = (reason: string | undefined, askedInThread: boolean): boolean =>
+  reason === 'thread' ? true : reason === 'question' ? false : askedInThread
+
 export function useResearchRuns() {
   return createQuery(() => ({
     queryKey: ['research-runs'],
@@ -92,15 +160,30 @@ export function useResearchRun(id: MaybeGetter<string | null>) {
   })
 }
 
-export async function startResearch(question: string, mode: ResearchMode, agentModel: string): Promise<ResearchRun> {
-  // 409 is an answer, not a failure: its body names the run already asking
-  // this question. Every other non-2xx throws with the server's sentence.
-  const j = await postJsonOr<{ run?: ResearchRun | null; duplicateOf?: string; error?: string }>(
-    '/api/research',
-    { question, mode, agentModel },
-    [409],
-  )
-  if (j.duplicateOf) throw new Error('that question is already being researched')
+/** Start a run. `dials` is PARTIAL on purpose: the body carries only the axes
+ *  the caller moved, and the server fills the rest from the mode's preset — so
+ *  a surface with one slider never has to invent values for the other two.
+ *
+ *  `conversationId` points the run at a thread that already exists instead of
+ *  the one it would make for itself: the scope question, the ack and the
+ *  report-ready turn land in the session the person asked from, so the run is
+ *  discussed where it was asked for. */
+export async function startResearch(
+  question: string,
+  mode: ResearchMode,
+  agentModel: string,
+  dials?: Partial<ResearchDials>,
+  conversationId?: string,
+): Promise<ResearchRun> {
+  // 409 is an answer, not a failure: its body names the run this one would
+  // duplicate. Every other non-2xx throws with the server's sentence.
+  const j = await postJsonOr<{
+    run?: ResearchRun | null
+    duplicateOf?: string
+    reason?: string
+    error?: string
+  }>('/api/research', { question, mode, agentModel, ...dials, ...(conversationId ? { conversationId } : {}) }, [409])
+  if (j.duplicateOf) throw new Error(duplicateRunMessage(duplicateReasonInThread(j.reason, !!conversationId)))
   if (!j.run) throw new Error(j.error ?? 'could not start the run')
   return j.run
 }
@@ -194,14 +277,23 @@ export interface ResearchTeam {
  *  control in the header, and the @mention list in the discussion — and a
  *  second spelling would eventually offer a mention to somebody who cannot open
  *  the report being discussed. */
-export const useResearchMembers = (runId: () => string) =>
-  createQuery(() => ({
-    queryKey: ['research-members', runId()],
-    queryFn: (): Promise<{ members: ResearchMember[]; active?: string[]; teams?: ResearchTeam[] }> =>
-      getJson<{ members: ResearchMember[]; active?: string[]; teams?: ResearchTeam[] }>(
-        `/api/research/${runId()}/members`,
-      ),
-  }))
+export const useResearchMembers = (runId: () => string | null) =>
+  createQuery(() => {
+    const id = runId()
+    return {
+      queryKey: ['research-members', id],
+      // NULL IS A REAL STATE for a caller that reads whatever session is open
+      // and finds a plan or a work session, which have no run and share
+      // through a different plane entirely. Ungated, that caller would spend a
+      // request on `/api/research//members` — a 404 by construction — the same
+      // way `useResearchPresence` below guards its own missing id.
+      enabled: !!id,
+      queryFn: (): Promise<{ members: ResearchMember[]; active?: string[]; teams?: ResearchTeam[] }> =>
+        getJson<{ members: ResearchMember[]; active?: string[]; teams?: ResearchTeam[] }>(
+          `/api/research/${id}/members`,
+        ),
+    }
+  })
 
 /** Presence for a run, the same shape the shared conversations use: ping while
  *  the view is mounted and re-read so everyone's rings stay current. A dropped

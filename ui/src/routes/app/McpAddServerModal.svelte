@@ -7,9 +7,15 @@
   import Modal from '@/components/ui/Modal.svelte'
   import { slide } from '@/lib/motion'
   import { errorMessage, postJson } from '@/lib/fetch-json'
-  import { patchServer, slugify } from './mcp'
+  import McpHeaderRows from './McpHeaderRows.svelte'
+  import { emptyHeaderRow, headersOfRows, patchServer, slugify, type HeaderRow } from './mcp'
 
-  let { onClose }: { onClose: () => void } = $props()
+  /** A custom / self-hosted endpoint: name, URL, how it authenticates — as
+   *  many auth headers as it wants — and discovery runs on save, so the
+   *  server card says "ready", "needs credentials" or "unreachable" the
+   *  moment the dialog closes. `onCreated` lets the agent tab attach the new
+   *  server to its agent in the same breath. */
+  let { onClose, onCreated }: { onClose: () => void; onCreated?: (serverId: string) => void } = $props()
 
   const qc = useQueryClient()
   let label = $state('')
@@ -17,8 +23,7 @@
   let name = $state('')
   let url = $state('')
   let description = $state('')
-  let headerKey = $state('')
-  let headerVal = $state('')
+  let rows = $state<HeaderRow[]>([emptyHeaderRow()])
   let authMode = $state<'org' | 'per-user'>('org')
   let timeoutSecs = $state('')
   let error = $state<string | null>(null)
@@ -34,20 +39,23 @@
     busy = true
     error = null
     try {
+      const headers = headersOfRows(rows)
       const { server } = await postJson<{ server: { id: string } }>('/api/mcp/servers', {
         name: name.trim(),
         label: label.trim() || undefined,
         url: url.trim(),
         description: description.trim() || null,
-        headers: headerKey.trim() && headerVal.trim() ? { [headerKey.trim()]: headerVal } : undefined,
+        headers: authMode === 'org' && Object.keys(headers).length ? headers : undefined,
         timeoutSecs: timeoutSecs.trim() ? Number(timeoutSecs) : undefined,
         authMode,
       })
       busy = false
       await qc.invalidateQueries({ queryKey: ['mcp-servers'] })
-      // Kick discovery right away — a server with no tool catalog is half-registered.
-      void patchServer(server.id, { refreshTools: true }).then(() => qc.invalidateQueries({ queryKey: ['mcp-servers'] }))
+      onCreated?.(server.id)
       onClose()
+      // Discovery right away — a server with no tool catalog is half-registered.
+      // Its verdict lands on the card (ready / needs credentials / unreachable).
+      void patchServer(server.id, { refreshTools: true }).then(() => qc.invalidateQueries({ queryKey: ['mcp-servers'] }))
     } catch (e) {
       busy = false
       error = errorMessage(e)
@@ -105,18 +113,12 @@
       />
     </div>
     {#if authMode === 'org'}
-      <div class="grid grid-cols-[10rem_1fr] gap-2">
-        <div>
-          <label for="mcp-auth-header" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Auth header</label>
-          <Input id="mcp-auth-header" bind:value={headerKey} onkeydown={onEnter} placeholder="Authorization" />
+      <div>
+        <div class="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+          Auth headers
+          <InfoTip text="Stored on the server row and spoken only by the gateway; never rendered into an agent config, never echoed back to this UI. Leave empty for a server that needs none — or one that speaks OAuth, which is detected on save." />
         </div>
-        <div>
-          <label for="mcp-auth-value" class="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-            Value
-            <InfoTip text="Stored on the server row and spoken only by the gateway; never rendered into an agent config, never echoed back to this UI." />
-          </label>
-          <Input id="mcp-auth-value" type="password" bind:value={headerVal} onkeydown={onEnter} placeholder="Bearer …" autocomplete="off" />
-        </div>
+        <McpHeaderRows bind:rows />
       </div>
     {/if}
     <details>

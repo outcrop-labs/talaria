@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The whole app is a client of instances the person names, so INTERNET is
+         the one permission phase 1 needs. Notifications, camera and the rest
+         arrive with the phases that use them, never ahead of them: a permission
+         asked before there is a reason gets reflex-denied, and denied is
+         near-permanent (the same rule ui/src/lib/browser-notify.ts states). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:label="Talaria"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Talaria">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

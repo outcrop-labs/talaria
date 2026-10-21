@@ -488,6 +488,34 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_comms::comms::conversations_id_read::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
+        // Run control on the reply that is streaming NOW: stop it, or say
+        // something into it. Both address the Hermes run the assistant row
+        // names, and both are gated by the conversation's own access rule.
+        .route(
+            "/api/conversations/{id}/stop",
+            post(talaria_routes_comms::comms::conversations_id_stop::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/conversations/{id}/steer",
+            post(talaria_routes_comms::comms::conversations_id_steer::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/conversations/{id}/schedule",
+            post(talaria_routes_comms::comms::conversations_id_schedule::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/conversations/{id}/schedules",
+            get(talaria_routes_comms::comms::conversations_id_schedules::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/conversations/{id}/schedules/{jobId}",
+            delete(talaria_routes_comms::comms::conversations_id_schedules_jobid::delete)
+                .fallback(|| async { method_not_allowed("DELETE") }),
+        )
         .route(
             "/api/dms",
             post(talaria_routes_comms::comms::dms::post).fallback(|| async { method_not_allowed("POST") }),
@@ -1188,6 +1216,16 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_knowledge::files::artifacts_id_duplicate::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
+        // Change PART of a document. The PUT above takes the new body, which
+        // is right for an editor holding the whole thing and wrong for an
+        // agent fixing one paragraph; this takes the edit instead. Same
+        // authority and same reindex as the PUT — both shared from
+        // `artifacts_id`.
+        .route(
+            "/api/artifacts/{id}/edit",
+            post(talaria_routes_knowledge::files::artifacts_id_edit::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
         // Comment threads on a Talaria document — the twin of the kb-doc route,
         // same engine and same table, gated on the artifact's own read
         // permission.
@@ -1196,6 +1234,14 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_knowledge::files::artifacts_id_comments::get)
                 .post(talaria_routes_knowledge::files::artifacts_id_comments::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        // Download the artifact ITSELF as an Office file — the local twin of
+        // the Google export below, answering bytes where that one answers a
+        // Drive file. Same read gate, no connected account needed.
+        .route(
+            "/api/artifacts/{id}/export",
+            get(talaria_routes_knowledge::files::artifacts_id_export::get)
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/artifacts/{id}/export/google",
@@ -1497,11 +1543,43 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/fleet/defs/{id}/mcp",
-            post(talaria_routes_fleet::fleet::fleet_defs_id_mcp::post).fallback(|| async { method_not_allowed("POST") }),
+            get(talaria_routes_fleet::fleet::fleet_defs_id_mcp::get)
+                .post(talaria_routes_fleet::fleet::fleet_defs_id_mcp::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/mcp/library",
             get(talaria_routes_fleet::mcp::mcp_library::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/mcp/library/sync",
+            post(talaria_routes_fleet::mcp::mcp_library::sync).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/mcp/library/liveness",
+            post(talaria_routes_fleet::mcp::mcp_library::liveness).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/mcp/library/featured",
+            get(talaria_routes_fleet::mcp::mcp_library::featured_get)
+                .put(talaria_routes_fleet::mcp::mcp_library::featured_put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        // The gateway's per-call record, read back (admin): the newest calls
+        // under filters, and the per-server / per-agent summary.
+        .route(
+            "/api/mcp/calls",
+            get(talaria_routes_fleet::mcp::mcp_calls::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/mcp/calls/summary",
+            get(talaria_routes_fleet::mcp::mcp_calls::summary).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/mcp/calls/retention",
+            get(talaria_routes_fleet::mcp::mcp_calls::retention_get)
+                .put(talaria_routes_fleet::mcp::mcp_calls::retention_put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/mcp/icon",
@@ -1510,6 +1588,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/mcp/test",
             post(talaria_routes_fleet::mcp::mcp_test::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/mcp/health",
+            post(talaria_routes_fleet::mcp::mcp_health::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/mcp/oauth/start",
@@ -1541,6 +1623,25 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/agents/tool-events",
             post(talaria_routes_fleet::agents::tool_events::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/agents/subagent-events",
+            post(talaria_routes_fleet::agents::subagent_events::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/agents/cron-output",
+            post(talaria_routes_fleet::agents::cron_output::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/agents/uploads",
+            // A screenshot rides as base64 in the body, so this route owns its
+            // own cap: the extractor's hidden 2 MB default would refuse every
+            // image worth sending before the handler could answer for it.
+            post(talaria_routes_fleet::agents::uploads::post)
+                .fallback(|| async { method_not_allowed("POST") })
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    talaria_routes_fleet::agents::uploads::ROUTE_BODY_LIMIT,
+                )),
         )
         .route(
             "/api/me/events",
@@ -1624,6 +1725,21 @@ pub fn router(state: AppState) -> Router {
                 .delete(talaria_routes_knowledge::knowledge::templates_id::delete)
                 .fallback(|| async { method_not_allowed("PUT, DELETE") }),
         )
+        // The blueprint library: the asks a person sends again. Beside the
+        // templates pair because they share a permission — a SHARED blueprint
+        // is org-wide content, which is what templates.manage governs.
+        .route(
+            "/api/blueprints",
+            get(talaria_routes_knowledge::knowledge::blueprints::get)
+                .post(talaria_routes_knowledge::knowledge::blueprints::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/blueprints/{id}",
+            axum::routing::put(talaria_routes_knowledge::knowledge::blueprints_id::put)
+                .delete(talaria_routes_knowledge::knowledge::blueprints_id::delete)
+                .fallback(|| async { method_not_allowed("PUT, DELETE") }),
+        )
         // The org's skill library: the owner index with edit flags, and the
         // one-skill verbs (rename/copy/move ride POST).
         .route(
@@ -1671,6 +1787,30 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/agent/whoami",
             get(talaria_routes_fleet::agents::agent_whoami::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        // The agent writes down what it is going to do. No id in the path: the
+        // conversation is whichever one this agent is mid-turn in, resolved
+        // server-side so a model cannot name the wrong thread.
+        // The agent asks the person something it genuinely cannot infer. The
+        // chip's buttons answer through the composer's own send path, so
+        // there is no answer endpoint beside this one.
+        .route(
+            "/api/agent/ask",
+            post(talaria_routes_comms::comms::agent_ask::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/agent/todo",
+            put(talaria_routes_comms::comms::agent_todo::put)
+                .fallback(|| async { method_not_allowed("PUT") }),
+        )
+        // The agent tidies the conversation it is in — rename, pin, group, or
+        // put away. No id here either, and the layout row it writes is the
+        // owner's: a pin only means something in somebody's own list.
+        .route(
+            "/api/agent/organize",
+            post(talaria_routes_comms::comms::agent_organize::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/agent/chips",
@@ -1752,6 +1892,21 @@ pub fn router(state: AppState) -> Router {
         // rather than a second copy that would drift. The `/api/plans/…` pair
         // above stays because Plan's client already speaks it and a URL is a
         // promise; new surfaces use these.
+        // The plan, for the surface that renders it. Gated on the
+        // conversation's own membership; the write door is agent-key only.
+        .route(
+            "/api/conversations/{id}/todo",
+            get(talaria_routes_comms::comms::conversations_id_todo::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        // What the agent itself still holds of the thread — the compaction
+        // count and the boundary, read off its own Hermes session. Same gate
+        // as the plan above.
+        .route(
+            "/api/conversations/{id}/session",
+            get(talaria_routes_comms::comms::conversations_id_session::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
         .route(
             "/api/conversations/{id}/members",
             get(talaria_routes_boards::plans::plans_id_members::get)

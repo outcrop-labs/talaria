@@ -73,6 +73,22 @@ pub struct TicketProposal {
     /// classification fires when the ticket is later approved to an agent.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// The index IN THIS BATCH of the proposal that is this one's epic, or
+    /// None for a top-level ticket. Remapped through the kept-index map, the
+    /// same way `depends_on` is. A proposal other proposals name as their
+    /// parent IS the epic — there is no separate kind flag to disagree with.
+    #[serde(default)]
+    pub parent: Option<usize>,
+    /// Board member USER IDS the model picked out of the rendered member
+    /// list. Ids, never names: a name is not addressable, and an assignee the
+    /// create path cannot resolve is an assignee nobody gets.
+    #[serde(default)]
+    pub assignees: Vec<String>,
+    /// The id of an OPEN ticket on the board this proposal re-proposes, read
+    /// off the rendered open-ticket list. The reviewer sees it, and the
+    /// proposal starts unticked.
+    #[serde(default)]
+    pub duplicate_of: Option<String>,
 }
 
 /// Everything the model is shown, assembled by the caller.
@@ -101,6 +117,12 @@ pub struct ChannelPlanInput {
     /// The routing map, already rendered: match rules → skills → agents.
     #[serde(default)]
     pub routing_map: Option<String>,
+    /// The board the tickets will land on, already rendered: its open
+    /// tickets, its labels, its members. Produced by `board_context` in
+    /// talaria-channel-plan, because it is three database reads and this
+    /// module stays importable without a database.
+    #[serde(default)]
+    pub board_context: Option<String>,
 }
 
 // ── The prompts ──────────────────────────────────────────────────────────────
@@ -118,7 +140,7 @@ pub struct ChannelPlanInput {
 // wrapper), so the prompt is the only place to fix it: the shape is shown
 // inside its brackets, and the one-ticket case is named, because that is the
 // case the model gets wrong.
-const PLAN_PROMPT: &str = "You are a planning assistant. Break the discussed work into concrete, actionable tickets.\nWhen a plan document is provided, it is the curated source of truth — draft tickets from it and use the transcript only for supporting context; the raw chat never overrides the document.\n\nRespond with ONLY a JSON array — no prose before or after, no markdown fence. The whole reply starts with \"[\" and ends with \"]\", even when there is exactly one ticket: one ticket is an array of one, never a bare object.\n[{\"title\": \"imperative, <= 80 chars\", \"description\": \"markdown body with enough context that someone who didn't read the chat can act on it\", \"priority\": \"low|medium|high|urgent\", \"effort\": \"xs|s|m|l|xl\", \"dependsOn\": [zero-based indices of tickets in THIS array that must finish first], \"tags\": [\"optional routing labels\"]}]\n\nRules: 2-10 tickets. Each independently actionable. Don't invent work nobody discussed. Capture decisions and constraints (and any @mentioned people) in the descriptions. Use dependsOn only for real ordering constraints — most tickets have none.\nWhen a workflow map is provided and a ticket clearly falls under one of its workflows, add that workflow's matching label(s) to tags and end the description with one line: \"Routing: <workflow> → <agent>\". Most tickets won't match — then omit tags and the routing line entirely; never force a fit.";
+const PLAN_PROMPT: &str = "You are a planning assistant. Break the discussed work into concrete, actionable tickets.\nWhen a plan document is provided, it is the curated source of truth — draft tickets from it and use the transcript only for supporting context; the raw chat never overrides the document.\n\nRespond with ONLY a JSON array — no prose before or after, no markdown fence. The whole reply starts with \"[\" and ends with \"]\", even when there is exactly one ticket: one ticket is an array of one, never a bare object.\n[{\"title\": \"imperative, <= 80 chars\", \"description\": \"markdown body with enough context that someone who didn't read the chat can act on it\", \"priority\": \"low|medium|high|urgent\", \"effort\": \"xs|s|m|l|xl\", \"dependsOn\": [zero-based indices of tickets in THIS array that must finish first], \"tags\": [\"optional routing labels\"], \"parent\": null or the index of this ticket's epic in THIS array, \"assignees\": [member ids from the Members list], \"duplicateOf\": null or the id of the open ticket this would duplicate}]\n\nRules: 2-10 tickets. Each independently actionable. Don't invent work nobody discussed. Capture decisions and constraints (and any @mentioned people) in the descriptions. Use dependsOn only for real ordering constraints — most tickets have none.\nWhen a workflow map is provided and a ticket clearly falls under one of its workflows, add that workflow's matching label(s) to tags and end the description with one line: \"Routing: <workflow> → <agent>\". Most tickets won't match — then omit tags and the routing line entirely; never force a fit.\nWhen three or more tickets serve one deliverable, make the deliverable its own ticket — that ticket is the epic — and set each of the others' parent to its index in this array. The epic's own parent is null and nothing nests deeper: a child is never itself a parent.\nWhen an open ticket on the board already covers a piece of the work, do not re-propose it: set duplicateOf to that ticket's id and keep the title you would have written, so the reviewer sees what it matched.\nPut ids from the Members list in assignees — ids, never display names — and only when the discussion says who does the work; nobody named means assignees is empty. With no board block in the input, parent is null, assignees is empty and duplicateOf is null.";
 
 /// The widened pass. ADDITIVE — the narrow branch is the standing prompt
 /// unchanged, so no install gets a different answer than it already did.
@@ -132,7 +154,8 @@ const PLAN_PROMPT: &str = "You are a planning assistant. Break the discussed wor
 /// omit-rather-than-pad rule, and gated for the same reason.
 const WIDENED: &str = "
 Before you add a dependsOn edge, name to yourself the artifact the blocked ticket needs from the blocker — a file, a decision, a deployed change. If you cannot name one, there is no edge: shipping order is not a dependency. Most tickets have none, and an empty dependsOn is the correct answer far more often than not.
-Apply the same test to routing: add a tag only when a workflow's own match rule fires on this ticket's subject, and quote that rule's term in the description's Routing line. A workflow that merely sounds related is not a match.";
+Apply the same test to routing: add a tag only when a workflow's own match rule fires on this ticket's subject, and quote that rule's term in the description's Routing line. A workflow that merely sounds related is not a match.
+The same test again for the board: there is an epic only when you can name the deliverable its children add up to — name it, and let the epic's title be that name; if the best you can say is the area they share, there is no epic and every parent stays null. And a duplicate only when the open ticket's TITLE says the same work, not the same area: two tickets about billing are two tickets.";
 
 // ── The preprocess and the coercion ──────────────────────────────────────────
 
@@ -175,6 +198,12 @@ const TITLE_MAX: usize = 300;
 const DESCRIPTION_MAX: usize = 20_000;
 const TAG_MAX: usize = 40;
 const MAX_TAGS: usize = 5;
+/// An id is an id — a member id or a ticket id that runs past this is not a
+/// long id, it is prose in the wrong field, and `verify` will say so.
+const ID_MAX: usize = 80;
+/// Five owners is already more than a ticket a human reviews can carry; past
+/// that the model is listing everyone in the channel.
+const MAX_ASSIGNEES: usize = 5;
 
 /// Null and missing are the empty string; everything else goes through
 /// `js_string` coercion.
@@ -183,6 +212,22 @@ fn field_string(x: &Map<String, Value>, name: &str) -> String {
         None | Some(Value::Null) => String::new(),
         Some(v) => js_string(v),
     }
+}
+
+/// An index field, gated before the cast. Absent, null and a blank string are
+/// all "no index" — which `dependsOn`'s own loop does not have to care about
+/// (a null member there is an index nothing equals) and `parent` does, since
+/// null IS the normal answer for it.
+///
+/// The integer gate itself exists for the cast, exactly as it does in that
+/// loop: a negative `as usize` saturates to 0 and would name the first ticket.
+fn field_index(v: Option<&Value>) -> Option<usize> {
+    let v = v?;
+    if v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()) {
+        return None;
+    }
+    let n = js_number(v);
+    (n.is_finite() && n >= 0.0 && n.fract() == 0.0).then_some(n as usize)
 }
 
 /// The field-by-field coercion.
@@ -207,7 +252,8 @@ pub fn to_proposals(rows: &Value) -> Vec<TicketProposal> {
         .collect();
     let new_index = |i: usize| kept.iter().position(|(ki, _)| *ki == i);
 
-    kept.iter()
+    let mut out: Vec<TicketProposal> = kept
+        .iter()
         .map(|(i, x)| {
             let mut depends_on: Vec<usize> = Vec::new();
             if let Some(deps) = x.get("dependsOn").and_then(Value::as_array) {
@@ -259,12 +305,77 @@ pub fn to_proposals(rows: &Value) -> Vec<TicketProposal> {
                     })
                     .unwrap_or_default(),
                 depends_on,
+                // Through the same kept-index map as `depends_on`, and for
+                // the same reason: the model numbered its own list, and a
+                // titleless row dropped out of it. An index nothing equals
+                // reads as top-level, which is the shape a batch whose epic
+                // was dropped has to collapse to anyway.
+                //
+                // NULL IS READ BEFORE THE NUMBER, and that order is the whole
+                // care this field needs: `js_number` is the JS coercion, so
+                // null and the empty string are both 0 — the commonest answer
+                // in the field (no epic) would otherwise adopt whichever
+                // ticket came first as every ticket's parent, and the Plan
+                // modal would draw a hierarchy nobody wrote.
+                parent: field_index(x.get("parent"))
+                    .and_then(|n| new_index(n).filter(|m| Some(*m) != new_index(*i))),
+                // Ids, so the same shape as tags: trim, clamp, drop empties,
+                // cap. Deduped BEFORE the cap, unlike tags, because a model
+                // that names the same owner twice should still get its other
+                // four assignees through.
+                assignees: x
+                    .get("assignees")
+                    .and_then(Value::as_array)
+                    .map(|us| {
+                        let mut out: Vec<String> = Vec::new();
+                        // Strings only: a null or a number in an id list is
+                        // not an id, and `js_string(null)` would manufacture
+                        // a member called "null" that `verify` then rejects.
+                        for u in us.iter().filter_map(Value::as_str) {
+                            let id = truncate_utf16(u.trim(), ID_MAX).to_string();
+                            if !id.is_empty() && !out.contains(&id) && out.len() < MAX_ASSIGNEES {
+                                out.push(id);
+                            }
+                        }
+                        out
+                    })
+                    .unwrap_or_default(),
+                // Same null-before-coercion care as `parent`, for the twin
+                // reason: `js_string(null)` is the literal "null", which would
+                // make every proposal that correctly declines a duplicate
+                // claim to duplicate a ticket called "null" — and `verify`
+                // below would spend the repair turn on it.
+                duplicate_of: match x.get("duplicateOf") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => {
+                        let id = truncate_utf16(js_string(v).trim(), ID_MAX).to_string();
+                        (!id.is_empty()).then_some(id)
+                    }
+                },
             }
         })
-        .collect()
+        .collect();
+    // ONE LEVEL ONLY, flattened rather than refused. A model that nests —
+    // a child pointing at a child — has still said which deliverable the
+    // ticket belongs to, so the ticket is re-pointed at the epic its parent
+    // belongs to. Refusing it instead would spend the repair turn (or the
+    // whole contract) on a shape the review can hold perfectly well. Bounded
+    // by the batch length: a cycle resolves to whichever ticket the walk
+    // reaches last, and self-parents were already dropped above.
+    for i in 0..out.len() {
+        let mut hops = 0;
+        while let Some(p) = out[i].parent
+            && let Some(gp) = out.get(p).and_then(|e| e.parent)
+            && hops < out.len()
+        {
+            out[i].parent = if gp == i { None } else { Some(gp) };
+            hops += 1;
+        }
+    }
+    out
 }
 
-// ── The contract's two assertions ────────────────────────────────────────────
+// ── The contract's assertions ────────────────────────────────────────────────
 
 /// THE ALL-OR-NOTHING TITLE CHECK. An
 /// EMPTY array is a valid answer and always has been — the prompt's strongest
@@ -327,6 +438,54 @@ pub fn defined_labels(routing_map: &str) -> Vec<String> {
     out
 }
 
+/// Every id the BOARD BLOCK's open-ticket list names, and every id its member
+/// list names.
+///
+/// Same situation as `defined_labels` and the same answer: the vocabulary is a
+/// runtime argument, so the rule has to be a `verify`. `board_context()`
+/// renders three sections — the open tickets as `- <id> #<no> [<status>]
+/// <title>`, one `Labels:` line, the members as `- <id> <display name>` — and
+/// the id is the FIRST token of a bullet, which is the only part of the line
+/// either of these has to be right about: a title is prose and a display name
+/// is somebody's name with spaces in it.
+pub fn open_ticket_ids(board_context: &str) -> Vec<String> {
+    section_ids(board_context, "Open tickets on the board:")
+}
+
+pub fn member_ids(board_context: &str) -> Vec<String> {
+    section_ids(board_context, "Members:")
+}
+
+/// The read both parsers are: the bullets under one section header, each
+/// bullet's first token, deduped.
+///
+/// Deliberately loose about everything else. A line that is not a bullet ENDS
+/// the section, so the `Labels:` line between the two lists cannot leak a
+/// token into either; a header that is missing yields an EMPTY list, which is
+/// what `context_issue` reads as "no list was rendered".
+fn section_ids(board_context: &str, header: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut inside = false;
+    for line in board_context.lines() {
+        let line = line.trim();
+        match line.strip_prefix("- ") {
+            Some(rest) if inside => {
+                if let Some(id) = rest.split_whitespace().next()
+                    && !out.iter().any(|o| o == id)
+                {
+                    out.push(id.to_string());
+                }
+            }
+            // A bullet outside the section is somebody else's list; anything
+            // that is not a bullet at all closes whatever was open and may be
+            // the header that opens the next one.
+            Some(_) => {}
+            None => inside = line.starts_with(header),
+        }
+    }
+    out
+}
+
 /// Tags that name no workflow, as one sentence the model can act on.
 ///
 /// WHY THIS IS A CONTRACT FAILURE AND NOT A NOTE. `tags` are not decoration
@@ -379,6 +538,100 @@ pub fn tag_issue(proposals: &[TicketProposal], routing_map: Option<&str>) -> Opt
     ))
 }
 
+/// The board claims a proposal can get wrong, as one sentence the model can
+/// act on.
+///
+/// WHY EACH ONE IS A CONTRACT FAILURE. A `duplicateOf` is shown to the
+/// reviewer as "this work already exists, here it is" and starts the proposal
+/// unticked — pointed at an id the board does not have, it is a reason to drop
+/// a real ticket, sourced from nothing. An `assignees` entry that is not a
+/// member id assigns NOBODY, because the create path resolves ids: a display
+/// name or an invented handle is an owner the ticket silently does not have.
+/// And a parent whose own parent is set is a three-level tree the create path
+/// has no pass for — epics first, children second, and nothing after.
+///
+/// NO ESCAPE HATCH ON AN EMPTY LIST, unlike `tag_issue`'s, because the two are
+/// not the same shape. A tag with no workflow behind it is inert; an id is a
+/// claim about a ROW, and a board that renders no open tickets is a board
+/// where "this duplicates ticket X" is false about every X there could be.
+///
+/// WITH NO BOARD BLOCK the model was shown neither list, so neither field has
+/// anything it could honestly hold and the prompt says to leave both alone.
+/// `parent` is deliberately not in that sentence: an epic is a claim about
+/// THIS batch, which a transcript alone can support — it is the ids that need
+/// the board.
+pub fn context_issue(proposals: &[TicketProposal], board_context: Option<&str>) -> Option<String> {
+    let Some(board) = board_context.map(str::trim).filter(|b| !b.is_empty()) else {
+        for p in proposals {
+            if let Some(dup) = &p.duplicate_of {
+                return Some(format!(
+                    "\"{}\" says it duplicates ticket \"{dup}\", but this request showed you no board. There is no open-ticket list to read an id off, so \"duplicateOf\" is null here.",
+                    p.title
+                ));
+            }
+            if !p.assignees.is_empty() {
+                return Some(format!(
+                    "\"{}\" assigns {}, but this request showed you no board. There is no member list to read an id off, so \"assignees\" is empty here.",
+                    p.title,
+                    p.assignees
+                        .iter()
+                        .map(|a| format!("\"{a}\""))
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                ));
+            }
+        }
+        return None;
+    };
+
+    // The lists as the model was shown them. Each sentence names the whole
+    // vocabulary rather than only the offending token, so the repair turn has
+    // the thing it needs to pick a right answer instead of guessing again.
+    let open = open_ticket_ids(board);
+    for p in proposals {
+        if let Some(dup) = &p.duplicate_of
+            && !open.iter().any(|id| id == dup)
+        {
+            return Some(format!(
+                "\"{dup}\" is not the id of an open ticket on the board. Set \"duplicateOf\" only to an id from the \"Open tickets on the board\" list - {} - or leave it null, which is the right answer for most tickets.",
+                if open.is_empty() {
+                    "which lists none in this request".to_string()
+                } else {
+                    open.join(", ")
+                }
+            ));
+        }
+    }
+    let members = member_ids(board);
+    for p in proposals {
+        if let Some(who) = p
+            .assignees
+            .iter()
+            .find(|a| !members.iter().any(|id| id == *a))
+        {
+            return Some(format!(
+                "\"{who}\" is not a member id. Put only ids from the Members list in \"assignees\" - {} - or leave it empty, which is right whenever the discussion did not say who does the work.",
+                if members.is_empty() {
+                    "which lists none in this request".to_string()
+                } else {
+                    members.join(", ")
+                }
+            ));
+        }
+    }
+    for (i, p) in proposals.iter().enumerate() {
+        if let Some(parent) = p.parent
+            && proposals.get(parent).is_some_and(|e| e.parent.is_some())
+        {
+            return Some(format!(
+                "ticket {i} (\"{}\") has \"parent\": {parent}, and that ticket has a parent of its own. An epic is one level deep - point a child at the epic itself, or leave \"parent\" null.",
+                p.title
+            ));
+        }
+    }
+    None
+}
+
 // ── Eval fixtures ────────────────────────────────────────────────────────────
 
 const CHANNEL_TRANSCRIPT: &str = "Priya: The ledger migration is the blocker for everything else this month. We agreed on Postgres over SQLite.\n\nDex: I can take the migration itself. Someone needs to write the rollback plan before we run it though.\n\nPriya: Nadia owns the rollback plan. Also the weekly digest is still going out at 09:00 UTC instead of local time — that is a separate, smaller thing.\n\nDex: What about the Slack integration?\n\nPriya: We are explicitly NOT doing the Slack integration this quarter. Do not plan it.";
@@ -390,6 +643,23 @@ const BILLING_TRANSCRIPT: &str = "Sam: Invoices are rounding tax to the wrong de
 /// sends measures the harness against a prompt nobody gets, and
 /// `defined_labels` reads this string in production.
 const BILLING_ROUTING_MAP: &str = "- billing-fixes — matches [labels: billing; keywords: invoice, tax] → skills: billing-review (Ana)\n- infra-oncall — matches [labels: infra; keywords: outage, pager] → skills: incident-response (Dex)";
+
+/// Spelled the way the caller's `board_context()` actually renders a board,
+/// down to the three section headers — for the same reason the routing map
+/// above is: `open_ticket_ids` and `member_ids` read this exact shape in
+/// production, and a fixture that replayed a prettier one would be measuring
+/// a prompt nobody gets.
+const BOARD_CONTEXT: &str = "Open tickets on the board:\n- tkt_7f2 #41 [open] Send the weekly digest at local time\n- tkt_9a1 #38 [in_progress] Upgrade the Postgres client library\nLabels: billing, infra, digest\nMembers:\n- usr_priya Priya Raman\n- usr_dex Dex Okafor\n- usr_nadia Nadia Haddad";
+
+/// The one open ticket in `BOARD_CONTEXT` whose TITLE is work
+/// `CHANNEL_TRANSCRIPT` raises again.
+const DIGEST_TICKET: &str = "tkt_7f2";
+
+/// Four pieces of work and one deliverable, said in so many words. The
+/// transcript names the deliverable itself ("the portal launch is the thing we
+/// are shipping"), because the epic rule asks the model to name it too — a
+/// transcript where nobody could is a transcript with no epic in it.
+const PORTAL_TRANSCRIPT: &str = "Priya: the customer portal launch is one deliverable, in four pieces: the sign-up flow, the billing page, the invite emails, and the docs site.\n\nDex: none of the four is worth anything on its own — the portal is either launched or it is not.\n\nPriya: right. The portal launch is the thing we are shipping; those four are how we get there.";
 
 fn mentions(proposals: &[TicketProposal], token: &str) -> bool {
     proposals.iter().any(|p| {
@@ -461,7 +731,7 @@ pub struct ChannelPlanFixture {
     pub check: fn(&[TicketProposal]) -> Option<String>,
 }
 
-/// TEN FIXTURES, THREE BANDS.
+/// TWELVE FIXTURES, THREE BANDS.
 pub fn fixtures() -> Vec<ChannelPlanFixture> {
     vec![
         ChannelPlanFixture {
@@ -673,6 +943,79 @@ pub fn fixtures() -> Vec<ChannelPlanFixture> {
                 })
             },
         },
+        ChannelPlanFixture {
+            name: "names the open ticket it would duplicate instead of re-proposing it",
+            band: EvalBand::Standard,
+            // The board already carries the digest fix, under that title, and
+            // the transcript raises it again. The right draft keeps the ticket
+            // and marks it — a second ticket on work the board already has is
+            // exactly what a reviewer then has to notice and delete.
+            input: serde_json::json!({
+                "transcript": CHANNEL_TRANSCRIPT,
+                "boardContext": BOARD_CONTEXT,
+            }),
+            check: |value| {
+                context_issue(value, Some(BOARD_CONTEXT))
+                    .or_else(|| shape_problem(value, 2))
+                    .or_else(|| {
+                        let marked: Vec<&TicketProposal> =
+                            value.iter().filter(|p| p.duplicate_of.is_some()).collect();
+                        match marked.as_slice() {
+                            [one]
+                                if one.duplicate_of.as_deref() == Some(DIGEST_TICKET)
+                                    && mentions(std::slice::from_ref(*one), "digest") =>
+                            {
+                                None
+                            }
+                            [] => Some(format!(
+                                "no proposal points at {DIGEST_TICKET}, the open ticket that already covers the weekly digest"
+                            )),
+                            [one] => Some(format!(
+                                "the only proposal marked as a duplicate is \"{}\" of \"{}\" - the work the board already carries is the weekly digest, {DIGEST_TICKET}",
+                                one.title,
+                                one.duplicate_of.as_deref().unwrap_or_default()
+                            )),
+                            many => Some(format!(
+                                "{} proposals claim to duplicate an open ticket - only the weekly digest is one",
+                                many.len()
+                            )),
+                        }
+                    })
+            },
+        },
+        ChannelPlanFixture {
+            name: "groups a multi-part deliverable under one epic",
+            band: EvalBand::Hard,
+            // Four pieces worth nothing apart: the deliverable earns its own
+            // ticket and the four hang off it. The failure this catches is the
+            // flat list of five peers — what a model returns when `parent` is
+            // a field it does not believe in. The board block is here because
+            // the prompt only asks for a parent when one was rendered.
+            input: serde_json::json!({
+                "transcript": PORTAL_TRANSCRIPT,
+                "boardContext": BOARD_CONTEXT,
+            }),
+            check: |value| {
+                context_issue(value, Some(BOARD_CONTEXT))
+                    .or_else(|| shape_problem(value, 4))
+                    .or_else(|| {
+                        let epics: Vec<usize> = (0..value.len())
+                            .filter(|i| value.iter().filter(|p| p.parent == Some(*i)).count() >= 3)
+                            .collect();
+                        match epics.as_slice() {
+                            [_] => None,
+                            [] => Some(
+                                "no proposal is named as parent by three or more others - the portal launch is one deliverable and its four pieces belong under it"
+                                    .to_string(),
+                            ),
+                            many => Some(format!(
+                                "{} proposals are each named as parent by three or more others - one deliverable is one epic",
+                                many.len()
+                            )),
+                        }
+                    })
+            },
+        },
     ]
 }
 
@@ -712,10 +1055,11 @@ pub fn channel_plan_harness() -> HarnessDefinition {
             }
             parts.push(UNTRUSTED_INPUT.to_string());
             // Order: the workflow map first (context for the routing rule),
-            // then the document, then the transcript. The document sits ABOVE
-            // the transcript because the prompt calls it the source of truth
-            // and the last thing a small model reads weighs most. All three
-            // gates are on the TRIMMED value but interpolate the raw one.
+            // then the board, then the document, then the transcript. The
+            // document sits ABOVE the transcript because the prompt calls it
+            // the source of truth and the last thing a small model reads
+            // weighs most. Every gate is on the TRIMMED value but interpolates
+            // the raw one.
             let mut user_parts: Vec<String> = Vec::new();
             if let Some(map) = ci.routing_map.as_deref()
                 && !map.trim().is_empty()
@@ -723,6 +1067,15 @@ pub fn channel_plan_harness() -> HarnessDefinition {
                 user_parts.push(format!(
                     "Workflow map (match rules → skills → agents):\n{map}"
                 ));
+            }
+            // The board goes in VERBATIM, headers and all: its three sections
+            // name themselves, and `open_ticket_ids`/`member_ids` read ids
+            // back out of the same string the model was shown — a lead-in that
+            // reworded it would be a second spelling to keep in step.
+            if let Some(board) = ci.board_context.as_deref()
+                && !board.trim().is_empty()
+            {
+                user_parts.push(board.to_string());
             }
             if let Some(doc) = ci.plan_doc.as_deref()
                 && !doc.trim().is_empty()
@@ -765,9 +1118,17 @@ pub fn channel_plan_harness() -> HarnessDefinition {
                         return Ok(Some(issue));
                     }
                     let proposals = to_proposals(value);
-                    Ok(tag_issue(
+                    if let Some(issue) =
+                        tag_issue(&proposals, input.get("routingMap").and_then(Value::as_str))
+                    {
+                        return Ok(Some(issue));
+                    }
+                    // Both halves of the board claim — the ids and the one
+                    // level of nesting — read off the SAME rendered block the
+                    // render put in front of the model.
+                    Ok(context_issue(
                         &proposals,
-                        input.get("routingMap").and_then(Value::as_str),
+                        input.get("boardContext").and_then(Value::as_str),
                     ))
                 },
             )),
@@ -821,7 +1182,7 @@ pub fn channel_plan_harness() -> HarnessDefinition {
     // pinning one would change every existing install's drafts for no stated
     // reason.
 
-    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase` — ten
+    // THE FIXTURE TABLE, folded onto the fitness plane's `EvalCase` — twelve
     // fixtures, every check a deterministic fact about a draft (see
     // `fixtures`). The checks take the TRANSFORMED value — the coerced
     // proposals rather than the raw rows — so the fold runs `to_proposals`,
@@ -868,6 +1229,9 @@ mod tests {
             effort: None,
             depends_on: Vec::new(),
             tags: Vec::new(),
+            parent: None,
+            assignees: Vec::new(),
+            duplicate_of: None,
         }
     }
 
@@ -952,6 +1316,103 @@ mod tests {
         assert!(out.tags.is_empty() && out.depends_on.is_empty());
     }
 
+    #[test]
+    fn a_parent_is_remapped_like_a_dependency_and_null_is_never_index_zero() {
+        // Index 1 drops, so the epic the model numbered 0 is still the epic,
+        // and the orphan that named the dropped row has no parent at all.
+        let rows = json!([
+            {"title": "Epic", "description": "d", "parent": null},
+            {"description": "titleless"},
+            {"title": "Child", "description": "d", "parent": 0},
+            {"title": "Orphan", "description": "d", "parent": 1},
+        ]);
+        let out = to_proposals(&rows);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].parent, None);
+        assert_eq!(out[1].parent, Some(0));
+        assert_eq!(out[2].parent, None);
+
+        // THE REGRESSION THIS PINS: `js_number` is the JS coercion, so null
+        // and the empty string are both 0 — read through it alone, every
+        // ticket that correctly has no epic would name ticket 0 as one. Null,
+        // absent, blank, a fraction, a word, a negative and a self-reference
+        // are all top-level; a numeric string is an index, as it is in
+        // dependsOn.
+        let rows = json!([
+            {"title": "a", "description": "d"},
+            {"title": "b", "description": "d", "parent": null},
+            {"title": "c", "description": "d", "parent": ""},
+            {"title": "d", "description": "d", "parent": 3},
+            {"title": "e", "description": "d", "parent": 1.5},
+            {"title": "f", "description": "d", "parent": "nope"},
+            {"title": "g", "description": "d", "parent": -1},
+            {"title": "h", "description": "d", "parent": "0"},
+        ]);
+        let parents: Vec<Option<usize>> = to_proposals(&rows).iter().map(|p| p.parent).collect();
+        assert_eq!(
+            parents,
+            vec![None, None, None, None, None, None, None, Some(0)]
+        );
+    }
+
+    /// A child of a child is re-pointed at the epic, never refused: the
+    /// grouping the model meant survives and the review draws one level.
+    #[test]
+    fn a_nested_child_is_lifted_to_its_epic() {
+        let rows = json!([
+            { "title": "epic" },
+            { "title": "child", "parent": 0 },
+            { "title": "grandchild", "parent": 1 },
+            { "title": "great", "parent": 2 },
+        ]);
+        let out = to_proposals(&rows);
+        assert_eq!(out[1].parent, Some(0));
+        assert_eq!(out[2].parent, Some(0));
+        assert_eq!(out[3].parent, Some(0));
+        // A two-ticket cycle collapses rather than spinning.
+        let rows = json!([{ "title": "a", "parent": 1 }, { "title": "b", "parent": 0 }]);
+        let out = to_proposals(&rows);
+        assert!(
+            out.iter()
+                .all(|p| p.parent.is_none() || p.parent == Some(0) || p.parent == Some(1))
+        );
+        assert_eq!(context_issue(&out, None), None);
+    }
+
+    #[test]
+    fn assignees_and_duplicate_of_are_ids_not_prose() {
+        let rows = json!([{
+            "title": "t",
+            "description": "d",
+            "assignees": ["  usr_dex ", "usr_dex", "", null, "x".repeat(200), "usr_a", "usr_b", "usr_c"],
+            "duplicateOf": "  tkt_7f2  ",
+        }]);
+        let out = &to_proposals(&rows)[0];
+        // Trim, drop empties, dedup, clamp to 80, cap at five — and a null
+        // member is DROPPED, unlike a null tag: an id list holds ids, and a
+        // manufactured "null" would only buy a repair turn. The dedup runs
+        // BEFORE the cap, so the repeated owner does not cost another id its
+        // place.
+        assert_eq!(
+            out.assignees,
+            vec!["usr_dex", &"x".repeat(80), "usr_a", "usr_b", "usr_c"]
+        );
+        assert_eq!(out.duplicate_of.as_deref(), Some("tkt_7f2"));
+
+        // `js_string(null)` is the literal "null", so null has to be read
+        // before the coercion: otherwise every proposal that correctly
+        // declines a duplicate claims to duplicate a ticket called "null",
+        // and `context_issue` spends the repair turn on it.
+        for sent in [json!(null), json!(""), json!("   ")] {
+            let rows = json!([{"title": "t", "duplicateOf": sent}]);
+            assert_eq!(to_proposals(&rows)[0].duplicate_of, None);
+        }
+        let out = &to_proposals(&json!([{"title": "t"}]))[0];
+        assert_eq!(out.duplicate_of, None);
+        assert!(out.assignees.is_empty());
+        assert_eq!(out.parent, None);
+    }
+
     // ── rows_title_issue / defined_labels / tag_issue ────────────────────────
 
     #[test]
@@ -999,6 +1460,114 @@ mod tests {
         // A defined label passes at any casing.
         p.tags = vec!["Billing".into()];
         assert_eq!(tag_issue(&[p], Some(BILLING_ROUTING_MAP)), None);
+    }
+
+    #[test]
+    fn the_board_block_yields_its_open_ticket_and_member_ids() {
+        assert_eq!(open_ticket_ids(BOARD_CONTEXT), vec!["tkt_7f2", "tkt_9a1"]);
+        assert_eq!(
+            member_ids(BOARD_CONTEXT),
+            vec!["usr_priya", "usr_dex", "usr_nadia"]
+        );
+        // The `Labels:` line sits between the two lists and is not a bullet,
+        // so it closes the open-ticket section instead of leaking a label into
+        // it — and the members below it belong to their own header.
+        assert!(
+            !open_ticket_ids(BOARD_CONTEXT)
+                .iter()
+                .any(|id| id == "billing")
+        );
+        assert!(!member_ids(BOARD_CONTEXT).iter().any(|id| id == "tkt_7f2"));
+        // A block missing a section reads as an empty list for that one and
+        // the right ids for the other.
+        let members_only = "Members:\n- usr_solo Solo Dev";
+        assert!(open_ticket_ids(members_only).is_empty());
+        assert_eq!(member_ids(members_only), vec!["usr_solo"]);
+        // Nothing that resembles the renderer's shape yields nothing at all.
+        assert!(open_ticket_ids("the board is fine").is_empty());
+        assert!(member_ids("").is_empty());
+    }
+
+    #[test]
+    fn the_board_claims_are_checked_against_the_block_the_model_was_shown() {
+        let good = {
+            let mut p = ticket(
+                "Send the weekly digest at local time",
+                "The digest goes out at 09:00 UTC instead of each org's local time.",
+            );
+            p.duplicate_of = Some(DIGEST_TICKET.into());
+            p.assignees = vec!["usr_nadia".into()];
+            vec![p]
+        };
+        assert_eq!(context_issue(&good, Some(BOARD_CONTEXT)), None);
+
+        // An id the board does not have is a claim about a row that does not
+        // exist; the sentence hands the whole list back.
+        let mut dup = good.clone();
+        dup[0].duplicate_of = Some("tkt_000".into());
+        let issue = context_issue(&dup, Some(BOARD_CONTEXT)).unwrap();
+        assert!(
+            issue.starts_with("\"tkt_000\" is not the id of an open ticket on the board."),
+            "{issue}"
+        );
+        assert!(issue.contains("tkt_7f2, tkt_9a1"), "{issue}");
+
+        // A display name is not a member id, which is the way this one gets
+        // broken: the name is right there in the Members line.
+        let mut who = good.clone();
+        who[0].assignees = vec!["Nadia Haddad".into()];
+        let issue = context_issue(&who, Some(BOARD_CONTEXT)).unwrap();
+        assert!(
+            issue.starts_with("\"Nadia Haddad\" is not a member id."),
+            "{issue}"
+        );
+        assert!(issue.contains("usr_priya, usr_dex, usr_nadia"), "{issue}");
+
+        // One level deep: a child may not also be a parent.
+        let mut deep = vec![
+            ticket("Launch the portal", "the deliverable"),
+            ticket("Build the sign-up flow", "a piece of it"),
+            ticket("Send the confirmation email", "a piece of a piece"),
+        ];
+        deep[1].parent = Some(0);
+        deep[2].parent = Some(1);
+        assert_eq!(
+            context_issue(&deep, Some(BOARD_CONTEXT)).as_deref(),
+            Some(
+                "ticket 2 (\"Send the confirmation email\") has \"parent\": 1, and that ticket has a parent of its own. An epic is one level deep - point a child at the epic itself, or leave \"parent\" null."
+            )
+        );
+        // However wide, one level is fine.
+        deep[2].parent = Some(0);
+        assert_eq!(context_issue(&deep, Some(BOARD_CONTEXT)), None);
+
+        // No board — including a block that is only whitespace — means there
+        // was no list to read either id off.
+        for board in [None, Some(""), Some("  \n ")] {
+            let issue = context_issue(&good, board).unwrap();
+            assert!(issue.contains("showed you no board"), "{issue}");
+        }
+        let mut assigned = good.clone();
+        assigned[0].duplicate_of = None;
+        let issue = context_issue(&assigned, None).unwrap();
+        assert!(
+            issue.ends_with("so \"assignees\" is empty here."),
+            "{issue}"
+        );
+        // ...and a draft that leaves both alone is correct without one.
+        assigned[0].assignees.clear();
+        assert_eq!(context_issue(&assigned, None), None);
+
+        // A board that renders no open tickets is a board where no duplicateOf
+        // can be true. No disable-on-empty escape here, unlike `tag_issue`'s:
+        // an id is a claim about a row.
+        let empty_board =
+            "Open tickets on the board:\nLabels: billing\nMembers:\n- usr_nadia Nadia Haddad";
+        let issue = context_issue(&good, Some(empty_board)).unwrap();
+        assert!(
+            issue.contains("which lists none in this request"),
+            "{issue}"
+        );
     }
 
     // ── The fixtures ─────────────────────────────────────────────────────────
@@ -1050,6 +1619,45 @@ mod tests {
                 "Write the ledger rollback plan",
                 "The migration needs its rollback plan before it runs; the pasted vendor line is boilerplate, not the work.",
             )],
+            // The digest proposal keeps its title and points at the open
+            // ticket the board already has for it.
+            "names the open ticket it would duplicate instead of re-proposing it" => {
+                let mut draft = channel_draft();
+                draft[2].duplicate_of = Some(DIGEST_TICKET.into());
+                draft
+            }
+            // The epic first, its four pieces after it — and one assignee, by
+            // id, so a good draft exercises the member list rather than only
+            // the empty case.
+            "groups a multi-part deliverable under one epic" => {
+                let mut draft = vec![
+                    ticket(
+                        "Launch the customer portal",
+                        "The deliverable itself: the portal is launched when the four pieces below are done, and none of them ships on its own.",
+                    ),
+                    ticket(
+                        "Build the portal sign-up flow",
+                        "First of the four portal pieces: the self-serve sign-up, from the form through the confirmation email.",
+                    ),
+                    ticket(
+                        "Build the portal billing page",
+                        "Second of the four portal pieces: the plan, the card on file and the invoice history, read-only for now.",
+                    ),
+                    ticket(
+                        "Send the portal invite emails",
+                        "Third of the four portal pieces: the invite an admin sends and the accept link it carries.",
+                    ),
+                    ticket(
+                        "Stand up the portal docs site",
+                        "Fourth of the four portal pieces: the docs site the portal links out to, deployed under the marketing domain.",
+                    ),
+                ];
+                for child in draft.iter_mut().skip(1) {
+                    child.parent = Some(0);
+                }
+                draft[1].assignees = vec!["usr_dex".into()];
+                draft
+            }
             _ => channel_draft(),
         }
     }
@@ -1132,6 +1740,29 @@ mod tests {
             msg,
             format!("returned 1 ticket(s) from a transcript that discussed three pieces of work")
         );
+        // The board already carries the digest fix, so a draft that re-proposes
+        // it as a new ticket is the thing this fixture is for.
+        assert_eq!(
+            (by("names the open ticket it would duplicate instead of re-proposing it").check)(
+                &channel_draft()
+            )
+            .as_deref(),
+            Some(
+                "no proposal points at tkt_7f2, the open ticket that already covers the weekly digest"
+            )
+        );
+        // ...and five peers is what an epic looks like to a model that does
+        // not believe in `parent`.
+        let mut flat = good_draft_for("groups a multi-part deliverable under one epic");
+        for p in flat.iter_mut() {
+            p.parent = None;
+        }
+        assert_eq!(
+            (by("groups a multi-part deliverable under one epic").check)(&flat).as_deref(),
+            Some(
+                "no proposal is named as parent by three or more others - the portal launch is one deliverable and its four pieces belong under it"
+            )
+        );
         let mut short_desc = channel_draft();
         short_desc[2].description = "too thin".into();
         let msg =
@@ -1147,9 +1778,9 @@ mod tests {
     }
 
     #[test]
-    fn ten_fixtures_across_three_bands() {
+    fn twelve_fixtures_across_three_bands() {
         let fixtures = fixtures();
-        assert_eq!(fixtures.len(), 10);
+        assert_eq!(fixtures.len(), 12);
         assert_eq!(
             fixtures.iter().filter(|f| f.band == EvalBand::Easy).count(),
             1
@@ -1159,11 +1790,11 @@ mod tests {
                 .iter()
                 .filter(|f| f.band == EvalBand::Standard)
                 .count(),
-            5
+            6
         );
         assert_eq!(
             fixtures.iter().filter(|f| f.band == EvalBand::Hard).count(),
-            4
+            5
         );
     }
 
@@ -1301,6 +1932,47 @@ mod tests {
             "{user}"
         );
         assert!(user.contains("\n\n---\n\nTranscript:\n\n"));
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_of_nothing_on_the_board_earns_the_repair_turn() {
+        let def = channel_plan_harness();
+        let invented = "[{\"title\": \"Send the weekly digest at local time\", \"description\": \"The digest goes out at 09:00 UTC instead of each org's local time.\", \"priority\": \"medium\", \"duplicateOf\": \"tkt_000\"}]";
+        let fixed = "[{\"title\": \"Send the weekly digest at local time\", \"description\": \"The digest goes out at 09:00 UTC instead of each org's local time.\", \"priority\": \"medium\", \"parent\": null, \"assignees\": [\"usr_nadia\"], \"duplicateOf\": \"tkt_7f2\"}]";
+        let r = recorded_run(World {
+            replies: replies(&[invented, fixed]),
+            ..Default::default()
+        });
+        let input = json!({
+            "transcript": CHANNEL_TRANSCRIPT,
+            "routingMap": BILLING_ROUTING_MAP,
+            "boardContext": BOARD_CONTEXT,
+        });
+        let res = run(&def, &input, &r).await.unwrap();
+        assert!(res.schema_valid, "{:?}", res.error);
+        let second = r.req_at(1);
+        let repair = second.messages.last().unwrap();
+        assert!(
+            repair
+                .content
+                .contains("\"tkt_000\" is not the id of an open ticket"),
+            "{}",
+            repair.content
+        );
+        // The board block goes in VERBATIM — the ids `context_issue` reads
+        // back are the ones the model was shown — below the workflow map and
+        // above the transcript.
+        let user = &r.req_at(0).messages[1].content;
+        assert!(
+            user.contains(&format!("\n\n---\n\n{BOARD_CONTEXT}\n\n---\n\nTranscript:")),
+            "{user}"
+        );
+        // The accepted reply's explicit `null` parent is top-level, not
+        // ticket 0 — the coercion's one sharp edge, through the runner.
+        let proposals = to_proposals(res.value.as_ref().unwrap());
+        assert_eq!(proposals[0].parent, None);
+        assert_eq!(proposals[0].duplicate_of.as_deref(), Some("tkt_7f2"));
+        assert_eq!(proposals[0].assignees, vec!["usr_nadia"]);
     }
 
     #[tokio::test]

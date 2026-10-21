@@ -14,6 +14,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-agent-auth = { workspace = true }
+talaria-agent-defs = { workspace = true }
 talaria-agent-secrets = { workspace = true }
 talaria-coding-accounts = { workspace = true }
 talaria-fleet-docker = { workspace = true }
@@ -24,6 +25,7 @@ talaria-mcp = { workspace = true }
 talaria-mcp-service = { workspace = true }
 talaria-org = { workspace = true }
 talaria-repo-env = { workspace = true }
+talaria-search = { workspace = true }
 talaria-secretbox = { workspace = true }
 talaria-workbench = { workspace = true }
 talaria-workbench-harnesses = { workspace = true }

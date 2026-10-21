@@ -5,7 +5,7 @@
   import { type Mentionable } from '@/components/chat/mentions.svelte'
   import EmojiButton from '@/components/chat/EmojiButton.svelte'
   import { bottomStick } from '@/lib/stick-to-bottom'
-  import { classifyPlatformHref } from '@/lib/chips'
+  import { classifyPlatformHref, type ChatChip } from '@/lib/chips'
   import ChatComposer from '@/components/chat/ChatComposer.svelte'
   import type { ChatComposerHandle } from '@/components/chat/chat-composer'
   import AttachButton from '@/components/chat/AttachButton.svelte'
@@ -15,24 +15,35 @@
   import { useProfilePrefs } from '@/lib/muse.svelte'
   import UserTurn from './UserTurn.svelte'
   import DayDivider from './DayDivider.svelte'
+  import CompactedRow from './CompactedRow.svelte'
   import { dayDividerMap } from '@/lib/day-dividers'
   import { useSession } from '@/lib/session'
-  import { toastError } from '@/lib/toast.svelte'
+  import { pushToast, toastError } from '@/lib/toast.svelte'
+  import Button from '@/components/ui/Button.svelte'
   import AssistantTurn from './AssistantTurn.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { slide } from '@/lib/motion'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { queueChatMessage, streamChat, type ChatKind } from '@/lib/chat'
+  import { queueChatMessage, steerChat, stopChat, streamChat, type ChatKind } from '@/lib/chat'
+  import { HttpError } from '@/lib/fetch-json'
   import { mergeTool } from '@/lib/sse-parse'
-  import { loadConversation, markConversationRead, toggleConversationReaction } from '@/lib/conversations.svelte'
+  import {
+    loadConversation,
+    loadSessionOverview,
+    markConversationRead,
+    toggleConversationReaction,
+    type SessionOverview,
+  } from '@/lib/conversations.svelte'
   import { uploadFile, splitAttachments, type Attachment } from '@/lib/attachments'
   import {
     reactionChips,
+    sendRoute,
     stampFromServer,
     toDisplay,
     toggleReactionLocal,
     turnTime,
     type DisplayMessage,
+    type SendIntent,
     type Viewer,
   } from './chat-view'
   import { landingTransition, type TurnArm } from './turn-landing'
@@ -142,6 +153,13 @@
   // True while an EXISTING conversation's history is being fetched — the pane
   // shows transcript-shaped skeletons, never the "Talk to X" hero.
   let loadingConversation = $state(false)
+  // What Hermes has done to this thread's pinned session, read ONCE per
+  // conversation beside the history. Deliberately not in the pollers: a
+  // compaction is not news arriving turn by turn, and the read goes out to
+  // the agent container — polling it would put a per-tick container call
+  // behind every open chat. Null covers both "not asked yet" and "could not
+  // ask", which render the same way: no row.
+  let sessionOverview = $state<SessionOverview | null>(null)
   let error = $state<string | null>(null)
   // Right-click a bubble → copy its text (the content is already markdown,
   // so one copy action covers both plain and markdown wants).
@@ -149,7 +167,10 @@
   let abortCtrl: AbortController | null = null
   let convId: string | null = null
   let scrollEl = $state<HTMLDivElement | null>(null)
-  let composer = $state<ChatComposerHandle | null>(null)
+  // The mid-turn send is this surface's own: every other composer host has a
+  // single submit, so `sendNow` is intersected in here rather than added to
+  // the handle every host would then have to satisfy.
+  let composer = $state<(ChatComposerHandle & { sendNow: () => void }) | null>(null)
 
   // ── The message queue ──────────────────────────────────────────────────────
   // Claude-style: sending while the agent replies NEVER interrupts. The server
@@ -203,6 +224,9 @@
     held = []
     userStopped = false
     loadingConversation = false
+    // A fresh thread has no session behind it yet, so the previous thread's
+    // compaction row must not survive the switch.
+    sessionOverview = null
     error = null
   })
 
@@ -273,6 +297,7 @@
     userStopped = false
     let cancelled = false
     loadingConversation = true
+    sessionOverview = null
     loadConversation(conversationId)
       .then((res) => {
         if (!cancelled) messages = (res?.messages ?? []).map(toDisplay)
@@ -280,6 +305,12 @@
       .finally(() => {
         if (!cancelled) loadingConversation = false
       })
+    // The session overview rides the same guard but NOT the same spinner: the
+    // transcript must not wait on a container read, so a slow or unreachable
+    // agent simply means the row appears late or never.
+    loadSessionOverview(conversationId).then((o) => {
+      if (!cancelled) sessionOverview = o
+    })
     return () => {
       cancelled = true
     }
@@ -321,10 +352,31 @@
   // STOP suppresses it (see `userStopped`): the poller's sync would hand
   // back the server's still-streaming row and the stopped reply would keep
   // typing.
+  // A STEERED row is no exception to "the last message is the user's": the
+  // running turn took its words, but the row is still owed an answer of its
+  // own and the server chains one (`continue_conversation`) — so the poller
+  // waits on it exactly as it waits on a queued message.
   const last = $derived(messages[messages.length - 1])
   const resuming = $derived(
     !streaming && !userStopped && (last?.role === 'user' || (last?.role === 'assistant' && last.status === 'streaming')),
   )
+
+  // WHICH ROW IS LIVE: the newest assistant row, while it is still streaming —
+  // not simply the last row. A message sent mid-turn lands beneath the reply
+  // that is still writing, and keying `live` off the tail made that reply read
+  // as finished: the cursor went out and "· saved (was in progress)" appeared
+  // under prose that was still arriving. A newest-assistant row that is NOT
+  // streaming means nothing is live (the poller waiting on a queued message's
+  // chained turn must not re-animate the reply above it).
+  const liveIndex = $derived.by(() => {
+    if (!streaming && !resuming) return -1
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i]
+      if (m?.role !== 'assistant') continue
+      return m.status === 'streaming' ? i : -1
+    }
+    return -1
+  })
 
   // Turn-landing edge: fire onTurnComplete when an IN-FLIGHT turn (one we
   // streamed, or one the poller was watching) flips to a complete assistant
@@ -451,7 +503,16 @@
     void syncFromServer()
   })
 
-  const send = async (text: string) => {
+  // Claude-style flow: sending while the agent is replying never interrupts —
+  // Enter queues the message into history and the agent picks it up next turn.
+  // `send-now` is the second offer (⌘/Ctrl+⏎, and the rail's control): the
+  // message goes INTO the reply that is streaming. Which of the four routes a
+  // submit takes is `sendRoute`'s decision, spelled out there; this dispatches
+  // it. (Sending while the server owes a turn we didn't stream — the `resuming`
+  // poller's watch — goes the fresh path on purpose: the server demotes it to a
+  // queue itself when a chained turn is already streaming, via the `queued`
+  // event, and when one is not the fresh turn is exactly right.)
+  const send = async (text: string, intent: SendIntent = 'enter') => {
     if (!text && attachments.length === 0) return
     // You always see what you just said, even if you were reading history.
     stick.jump()
@@ -460,23 +521,64 @@
     attachments = []
     composer?.clear()
 
-    // Claude-style flow: sending while the agent is replying never interrupts —
-    // the message queues into history and the agent picks it up next turn.
-    // (Sending while the server owes a turn we didn't stream — the `resuming`
-    // poller's watch — goes the fresh path below on purpose: the server demotes
-    // it to a queue itself when a chained turn is already streaming, via the
-    // `queued` event, and when one is not the fresh turn is exactly right.)
-    if (streaming) {
-      messages.push({ role: 'user', content: text, attachments: atts, createdAt: new Date().toISOString() })
-      if (convId) void enqueue(text, atts)
-      // No conversation id yet — the first turn's response headers are the
-      // only place it comes from. Hold locally; the flush happens the moment
-      // the id lands (or the turn dies and the re-send path takes over).
-      else held.push({ text, atts })
-      return
-    }
+    const route = sendRoute({ streaming, intent, hasConversation: !!convId, hasAttachments: atts.length > 0 })
+    if (route === 'fresh') return startTurn(text, atts, false)
+    // The steer path draws its own row — whether the turn took the message or
+    // only queued it is the server's answer, and the row says which.
+    if (route === 'steer') return steer(text)
 
-    await startTurn(text, atts, false)
+    messages.push({ role: 'user', content: text, attachments: atts, createdAt: new Date().toISOString() })
+    if (route === 'queue') void enqueue(text, atts)
+    // No conversation id yet — the first turn's response headers are the
+    // only place it comes from. Hold locally; the flush happens the moment
+    // the id lands (or the turn dies and the re-send path takes over).
+    else held.push({ text, atts })
+  }
+
+  /** The note a steered row wears. Derived from the row's stamp rather than
+   *  sent as a chip of its own: the server marks the row and this is the one
+   *  surface that has anything to say about it. Without it a message sitting
+   *  inside somebody else's turn reads as a transcript out of order. */
+  const STEER_NOTICE: ChatChip = {
+    id: 'steer',
+    kind: 'notice',
+    label: 'sent mid-turn',
+    detail: 'Said while the agent was still writing its reply, rather than after it.',
+  }
+
+  /** Send now: hand the message to the turn already running. The server
+   *  answers which happened — `steered` into the live run, or `queued` because
+   *  its window had closed — and the row is drawn from THAT, never from what
+   *  we hoped. A 409 means the reply finished between the keypress and the
+   *  request, so the ordinary send path takes it from here. */
+  const steer = async (text: string) => {
+    const id = convId
+    if (!id) return
+    // The row is drawn FIRST, like a queued send: the person's words must not
+    // leave the screen while the server is asked where they went. The server
+    // then says which happened, and the row is patched from that answer.
+    const at = new Date().toISOString()
+    messages.push({ role: 'user', content: text, createdAt: at, steer: true })
+    const drawn = messages.length - 1
+    try {
+      const result = await steerChat({ conversationId: id, content: text })
+      const steered = 'steered' in result
+      // The note the row wears comes off this (see the render below). The
+      // server stamps `metadata.steer` on the row it wrote either way, so a
+      // message the run could not take still reads as said mid-turn once the
+      // sync replaces this row — which is the truth about when it was sent.
+      messages[drawn] = { role: 'user', content: text, createdAt: at, id: result.messageId, steer: steered }
+      if (!steered) {
+        pushToast({ title: 'Queued', body: 'This agent takes it after the current reply.' })
+      }
+    } catch (e) {
+      // Nothing landed: the row comes back off and the words go back into
+      // the composer, so a failed send is never a lost one.
+      messages.splice(drawn, 1)
+      if (e instanceof HttpError && e.status === 409) return void send(text)
+      composer?.insertText(text)
+      error = (e as Error).message
+    }
   }
 
   /** Queue one message into the streaming turn. Never throws — a failed queue
@@ -528,9 +630,19 @@
     streaming = true
     userStopped = false
 
+    // The streaming row is not always the LAST row: a message sent mid-turn —
+    // queued behind the reply, or steered into it — lands beneath it, and a
+    // patch that only ever looked at the tail dropped the rest of the reply on
+    // the floor (the transcript froze the moment you typed into it). Walk back
+    // to the newest assistant row instead.
     const patchLast = (fn: (m: DisplayMessage) => DisplayMessage) => {
-      const l = messages[messages.length - 1]
-      if (l?.role === 'assistant') messages[messages.length - 1] = fn(l)
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        const m = messages[i]
+        if (m?.role === 'assistant') {
+          messages[i] = fn(m)
+          return
+        }
+      }
     }
 
     const ctrl = new AbortController()
@@ -579,6 +691,10 @@
         userStopped = true
         patchLast((m) => ({
           ...m,
+          // Stamped on the row at once, not waited for: the server writes the
+          // same `stopped` into the turn's metadata, but the person who just
+          // pressed stop should read "stopped" now rather than a beat later.
+          stopped: true,
           status: m.content || m.reasoning?.trim() || m.tools?.length ? 'complete' : 'error',
         }))
       } else error = (e as Error).message
@@ -600,7 +716,18 @@
     }
   }
 
-  const stop = () => abortCtrl?.abort()
+  /** Stop means stop — on the server too. The abort below only ends THIS
+   *  client's read: a Hermes run kept generating (and spending) behind the
+   *  frozen transcript, and the turn landed minutes later full of work nobody
+   *  was waiting for. So the run is told first and the reader hangs up second;
+   *  the call is fire-and-forget because the transcript must freeze on the
+   *  keypress, not on a round trip, and a 409 (the turn finished on its own)
+   *  is nothing to report. Everything `userStopped` means is unchanged. */
+  const stop = () => {
+    const id = convId
+    if (id) void stopChat(id).catch(() => {})
+    abortCtrl?.abort()
+  }
 
   /** Merge the server's identity fields onto what is on screen — never its
    *  prose (see stampFromServer). */
@@ -732,9 +859,14 @@
         class="mx-auto w-full max-w-[var(--converse-width)] space-y-5 px-6 py-6"
         style:padding-bottom="calc(var(--chat-composer, 0px) + 0.5rem)"
       >
+      <!-- The top of what is left: inside this branch on purpose, so it never
+           appears over the loading skeletons or above the zero state. Renders
+           itself away unless the thread runs a pinned session that Hermes has
+           actually compacted. -->
+      <CompactedRow overview={sessionOverview} />
       {#each messages as m, i (i)}
         {@const day = dividers.get(i)}
-        {@const live = (streaming || resuming) && i === messages.length - 1}
+        {@const live = i === liveIndex}
         <!-- No bar while the turn streams or before the server has given it
             an id — there is nothing to react to yet. -->
         {@const onReact = m.id && !live ? (e: string) => react(m.id!, e) : undefined}
@@ -745,7 +877,7 @@
           <UserTurn
             content={m.content}
             attachments={m.attachments}
-            chips={m.chips}
+            chips={m.steer ? [STEER_NOTICE, ...(m.chips ?? [])] : m.chips}
             author={m.authorLabel ?? null}
             picture={!m.authorUserId || m.authorUserId === viewer.id ? (session.data?.picture ?? null) : null}
             time={turnTime(m.createdAt, timeZone)}
@@ -818,6 +950,7 @@
     >
       <PendingAttachments items={attachments} onRemove={(id) => (attachments = attachments.filter((a) => a.id !== id))} />
       <ChatComposer
+        commands
         bind:this={composer}
         placeholder={kind === 'ticket' ? 'Message the room — @ to mention' : `What would you like ${agentLabel} to work on?`}
         {mentionables}
@@ -833,6 +966,7 @@
         onEmptyChange={(v) => (composerEmpty = v)}
         canSend={!composerEmpty || attachments.length > 0}
         onStop={streaming ? stop : undefined}
+        onSendNow={streaming ? (md) => void send(md, 'send-now') : undefined}
       >
         {#snippet leftControls()}
           <!-- Attach stays live while a reply streams: a queued message may
@@ -897,6 +1031,24 @@
                 }}
               />
             {/if}
+          {/if}
+          <!-- SEND NOW — the rail's last control before the stop tile, and
+               only while a reply streams. The pair is the point: stop ends the
+               turn, send-now reaches into it, and Enter still means "after
+               you're done" (the queue). Text only, so it is dead while the
+               well is empty — a draft with attachments goes the queue, which
+               takes them (sendRoute). MINIMAL surfaces keep it: their contract
+               drops the model chrome, not what you can do to a live turn. -->
+          {#if streaming}
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={composerEmpty}
+              title="Send now (⌘⏎) — reaches the agent during this reply"
+              onclick={() => composer?.sendNow()}
+            >
+              Send now
+            </Button>
           {/if}
         {/snippet}
       </ChatComposer>

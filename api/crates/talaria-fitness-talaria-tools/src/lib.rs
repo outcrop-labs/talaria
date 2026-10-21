@@ -12,7 +12,11 @@
 // to mean one of those two surfaces, and they have different sizes, different
 // callers and different failure modes.
 //
-//     hermes      63 tools, over MCP, inside the agent container   THIS FILE
+//     hermes      62 tools, over MCP, inside the agent container   THIS FILE
+//     native      `web_search` — Hermes's OWN tool inside the agent (its
+//                 web-search provider registry, keyless tiers included), and
+//                 the research harness's platform tool; never over MCP, so
+//                 the sync test does not look for it in mcp/src/index.ts
 
 //     platform     handed to a model by a harness via `toolDefs`   research.rs (search)
 //
@@ -57,13 +61,23 @@ use talaria_task_const::{EFFORTS, PRIORITIES, TICKET_COLORS};
 
 // ── The axes a report reads along ────────────────────────────────────────────
 
-/// WHERE A TOOL IS CALLED FROM. One value today and that is the finding, not an
-/// oversight: every tool below is MCP, and Talaria's own harnesses hold almost
-/// nothing. The platform's own native surface is the research harness's single
-/// `web_search` tool (`harness/defs/research.ts`).
+/// WHERE A TOOL IS CALLED FROM. Nearly every tool below is MCP, registered by
+/// `mcp/src/index.ts`; Talaria's own harnesses hold almost nothing. The one
+/// exception is `web_search`: a fleet agent has it as Hermes's OWN tool (Hermes
+/// ships a web-search provider registry, keyless public tiers as the floor),
+/// and the research harness holds the platform's twin (`harness/defs/research.rs`
+/// owns that schema). Talaria used to register a third copy over MCP, backed by
+/// a bundled SearXNG; that duplicate is gone (2026-10), and the sandbox keeps
+/// the tool so a fixture can still measure "searched first" against a fixed
+/// tiny web.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCaller {
+    /// Over MCP from the Talaria toolkit — the sync test holds it to
+    /// `mcp/src/index.ts`.
     Hermes,
+    /// Held by the agent runtime itself, or by a Talaria harness — not an MCP
+    /// registration, so the sync test does not look for it.
+    Native,
 }
 
 /// What the tool is FOR — the axis an admin reads a fitness report along, and
@@ -139,6 +153,14 @@ fn num_schema(description: &str) -> Value {
 
 fn bool_schema(description: &str) -> Value {
     json!({ "type": "boolean", "description": description })
+}
+
+/// A DIAL: an integer the caller may move inside a closed range. `num_schema`
+/// would describe research's 1–3 knobs as any number at all, and the route
+/// refuses 0, 4 and 2.5 — the bounds belong in the schema so a model reads
+/// them before it spends a call learning them from a 400.
+fn dial_schema(description: &str, min: i64, max: i64) -> Value {
+    json!({ "type": "integer", "minimum": min, "maximum": max, "description": description })
 }
 
 fn strs_schema(description: &str) -> Value {
@@ -239,11 +261,80 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             needs_google: false,
         },
         SandboxTool {
+            name: "ask",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Comms,
+            description: "Ask the person a question with concrete options, when you genuinely cannot tell which of several things they meant and guessing would send you down the wrong path. Give the ONE thing that is blocking you and 2 to 6 short answers; they pick one and their choice arrives as your next message. END YOUR TURN after asking — do not carry on and act on the guess you just said you could not make. Use it for a real fork (which board, which of two documents, replace or append), not for permission to do what they already asked for, and not for anything you could settle by reading. If the question is open-ended, just ask it in your own words instead: this tool is for competing concrete answers.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "question": str_schema("The question, in one sentence"),
+                    "detail": str_schema("One more sentence of context, if the question needs it to be answerable"),
+                    "options": json!({
+                        "type": "array",
+                        "description": "The answers to offer, 2 to 6. Each must read differently from the others.",
+                        "items": { "type": "string" },
+                    }),
+                },
+                "required": ["question", "options"],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
+            name: "todo",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Comms,
+            description: "Write down the steps you are working through, so the person watching can see your plan and where you are in it. Use it for any request that takes more than one step: list the steps first, mark one active as you start it, and call this again to move the marker and add or drop steps as you learn. Each call REPLACES the whole list, so always send every step, not just the one that changed. Exactly one step may be active at a time, or none. Keep steps short and concrete — one line each, the thing you are about to do, not a description of the task. Do not use it as a ticket list: tickets are durable work a person signs off, and this is your own scratch plan for this conversation. An empty list clears it.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "items": json!({
+                        "type": "array",
+                        "description": "Every step, in the order you will do them. This replaces the whole list.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": { "type": "string", "description": "The step, as one short line" },
+                                "status": { "type": "string", "enum": ["pending", "active", "done"], "description": "Where this step is. Omitted means pending. At most one step may be 'active'." },
+                            },
+                            "required": ["text"],
+                        },
+                    }),
+                },
+                "required": ["items"],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        // ORGANISING THE SESSION ITSELF, which is the one thing an agent could
+        // see the person ask for and had no way to do. Pin/group/position are
+        // PER VIEWER in production, so the sandbox records what the agent asked
+        // for and a fixture grades whether it archived something unasked.
+        SandboxTool {
+            name: "organize_session",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Comms,
+            description: "Organise THIS conversation the way the person asks: rename it, pin it to the top of the list, file it under a group, or put it away. Use it when they say what should happen to the thread — call it something else, pin it, file it under Billing, put it away now that the work is finished — or when you finish a piece of work they asked you to file. NEVER archive a conversation unasked: putting one away takes it out of their list, and that is theirs to decide. Pass only the fields you are changing, and at least one of them: title renames it, pinned lifts it to the top, group files it under a name (null takes it out of its group), archived puts it away or, as false, brings it back. It always acts on the conversation you are in — there is no id to pass, so you cannot organise somebody else's thread by mistake.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "title": str_schema("A new name for the conversation — what they called it, or a short line saying what it is about"),
+                    "pinned": bool_schema("true keeps it at the top of their list, false lets it fall back into date order"),
+                    "group": str_schema("File it under this group, e.g. Billing. null takes it out of the group it is in."),
+                    "archived": bool_schema("true puts the conversation away, false brings one back. Only ever when they ask."),
+                },
+                "required": [],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
             name: "expose_tools",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Comms,
             description: "Show platform tools in the current chat as chips the person can open and run. Use this when they should see a tool and its inputs without you calling it yourself. Pass the tool names you want on screen, and any inputs you already know.",
-            parameters: json!({ "type": "object", "properties": { "tools": str_schema("Platform tool name, e.g. create_ticket") }, "required": [] }),
+            parameters: json!({ "type": "object", "properties": { "tools": str_schema("Platform tool name, e.g. create_ticket") }, "required": ["tools"] }),
             assistant_only: false,
             needs_google: false,
         },
@@ -359,7 +450,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
         // ── Knowledge ──────────────────────────────────────────────────────────
         SandboxTool {
             name: "web_search",
-            caller: ToolCaller::Hermes,
+            caller: ToolCaller::Native,
             group: ToolGroup::Knowledge,
             description: "Search the live web and get back ranked results with their URLs. Use it for anything that happened or changed recently, anything you would otherwise be guessing at, and any claim a reader would expect a source for — then cite the URLs you used. This searches the PUBLIC web: for this organization's own documents and past conversations use search_knowledge instead.",
             parameters: json!({
@@ -510,7 +601,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "create_document",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Documents,
-            description: "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. For a spreadsheet use create_sheet; for a public HTML page use create_page. It's versioned, shareable, and hostable. Returns the document id (use update_document to keep editing it).",
+            description: "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. For a spreadsheet use create_sheet; for a public HTML page use create_page. It's versioned, shareable, and hostable. Returns the document id (use edit_document to keep changing it — update_document replaces the whole body and is rarely what you want).",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -564,7 +655,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "update_document",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Documents,
-            description: "Edit a document you created (or were granted Editor access to). markdown replaces a markdown doc's body; rows (string[][], row 0 the header) replaces a spreadsheet; html replaces a web page. Passing markdown on a sheet or page refuses — it would smash the grid/HTML into a single string. Each save is versioned.",
+            description: "REPLACE a document's whole body. For changing part of one, use edit_document instead — this tool rewrites everything, so any section you do not re-send is gone and any edit a person made meanwhile is overwritten. Use it to replace a document wholesale, or to write a spreadsheet grid. markdown replaces a markdown doc's body; rows (string[][], row 0 the header) replaces a spreadsheet; html replaces a web page. Passing markdown on a sheet or page refuses — it would smash the grid/HTML into a single string. Each save is versioned.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -575,6 +666,45 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                     "html": str_schema("New full HTML body — web pages only"),
                 },
                 "required": ["documentId"],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
+            name: "edit_document",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Documents,
+            description: "Change PART of a markdown document or web page, without resending the rest of it. Prefer this over update_document for every change to an existing document: it is cheaper, it cannot silently drop the sections you did not mention, and it does not overwrite edits a person made while you were working. Read the document first with get_document so your anchors are exact. Two forms, one per edit: oldString/newString replaces exact text (oldString must appear EXACTLY ONCE — include surrounding lines to make it unique; omit newString to delete), or section/markdown rewrites the body under a heading, keeping the heading line. Edits apply in order and a failure anywhere applies none of them, so the document is never left half-edited. Spreadsheets are not editable this way — their body is a grid; use update_document with rows.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "documentId": str_schema("Document id (from create_document, create_page, or list_documents)"),
+                    "edits": json!({
+                        "type": "array",
+                        "description": "The edits, applied in order. Each one is EITHER oldString+newString or section+markdown.",
+                        "items": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "oldString": { "type": "string", "description": "Exact existing text to replace. Must occur EXACTLY ONCE in the document — include surrounding lines to make it unique." },
+                                        "newString": { "type": "string", "description": "What replaces it. Pass \"\" to delete the matched text." },
+                                    },
+                                    "required": ["oldString", "newString"],
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "section": { "type": "string", "description": "The heading to rewrite under, with or without its #s." },
+                                        "markdown": { "type": "string", "description": "The section's new body. The heading line stays, so do not repeat it." },
+                                    },
+                                    "required": ["section", "markdown"],
+                                },
+                            ],
+                        },
+                    }),
+                },
+                "required": ["documentId", "edits"],
             }),
             assistant_only: false,
             needs_google: false,
@@ -1020,7 +1150,13 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             description: "Start cited web research on a question in your field. Modes: 'recon' (one fast pass — a cited answer, ~1 min), 'brief' (planned angles → a briefing document, a few minutes), 'expedition' (iterative deep dive → a full report, can take a while). Runs in the background — you get a runId; poll research_status, then read the report with get_document. Every claim in the report carries [n] citations. Use recon for quick facts mid-task; brief/expedition for real questions worth a document.",
             parameters: json!({
                 "type": "object",
-                "properties": { "question": str_schema("What to research, in natural language — be specific"), "mode": one_of(&["recon", "brief", "expedition"], "Depth (default 'brief')") },
+                "properties": {
+                    "question": str_schema("What to research, in natural language — be specific"),
+                    "mode": one_of(&["recon", "brief", "expedition"], "Depth (default 'brief')"),
+                    "effort": dial_schema("How hard to dig — rounds of searching, 1–3 (default: the mode's)", 1, 3),
+                    "breadth": dial_schema("How wide to cast — queries per round, 1–3 (default: the mode's)", 1, 3),
+                    "sources": dial_schema("How many sources to keep, 1–3 (default: the mode's)", 1, 3),
+                },
                 "required": ["question"],
             }),
             assistant_only: false,
@@ -1265,6 +1401,30 @@ mod tests {
             .expect("mcp/src/index.ts must be readable — the sync test does not silently skip")
     }
 
+    /// Does this key's expression call `.optional()` at ITS OWN nesting level?
+    /// Depth counts the brackets the expression opens, so a call inside
+    /// `z.object({ … })` or `z.array( … )` is somebody else's optionality.
+    fn optional_at_top(expr: &[char]) -> bool {
+        const NEEDLE: &[char] = &['.', 'o', 'p', 't', 'i', 'o', 'n', 'a', 'l', '(', ')'];
+        let mut depth: i64 = 0;
+        for i in 0..expr.len() {
+            // Tested BEFORE the bracket count, so `.optional()`'s own paren
+            // cannot push the call it belongs to out of depth 0. Anything
+            // inside `.describe('…')` is at depth 1 or more, which is also
+            // why a describe string that happened to contain the word cannot
+            // false-positive.
+            if depth == 0 && expr[i..].starts_with(NEEDLE) {
+                return true;
+            }
+            match expr[i] {
+                '{' | '[' | '(' => depth += 1,
+                '}' | ']' | ')' => depth -= 1,
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// The scans below run over a `Vec<char>` rather than slicing the `&str`:
     /// the source carries multi-byte punctuation (—, ’) and byte-offset
     /// arithmetic must never land mid-character, where a slice would panic
@@ -1433,8 +1593,16 @@ mod tests {
                             }
                             j += 1;
                         }
-                        let value: String = chars[i..j].iter().collect();
-                        if !value.contains(".optional()") {
+                        // OPTIONAL AT THIS KEY'S OWN LEVEL, not anywhere
+                        // inside it. A `.optional()` on a NESTED field —
+                        // `items: z.array(z.object({ status: ….optional() }))`
+                        // — says the status may be omitted, not that `items`
+                        // may be. Reading it as the latter let the catalog
+                        // declare a required argument optional, which is
+                        // exactly the flattery these tests exist to stop: a
+                        // fixture could omit it, pass here, and 400 in
+                        // production.
+                        if !optional_at_top(&chars[i..j]) {
                             required.push(name);
                         }
                         i = j - 1;
@@ -1490,6 +1658,9 @@ mod tests {
         let real = real_descriptions(&source());
         let missing: Vec<&str> = TALARIA_TOOLS
             .iter()
+            // Native tools are the agent runtime's own (or a harness's) and
+            // were never registered by the toolkit — see ToolCaller.
+            .filter(|t| t.caller == ToolCaller::Hermes)
             .map(|t| t.name)
             .filter(|n| !real.contains_key(*n))
             .collect();
@@ -1559,6 +1730,51 @@ mod tests {
     }
 
     #[test]
+    fn a_nested_optional_does_not_make_the_key_itself_optional() {
+        // THE READING THAT FLATTERED A MODEL. `.optional()` inside a key's
+        // value — `items: z.array(z.object({ status: ….optional() }))` — says
+        // the nested field may be omitted, not the key. Read as the key's, the
+        // catalog declared a REQUIRED argument optional: a fixture could leave
+        // it out, pass the benchmark, and 400 in production.
+        let shape = |src: &str| {
+            let full = format!(
+                "server.registerTool(\n  'probe',\n  {{\n    description: 'x',\n    inputSchema: {{\n{src}\n    }},\n  }},\n)"
+            );
+            real_parameters(&full)
+                .remove("probe")
+                .expect("probe parsed")
+        };
+
+        let nested = shape(
+            "      items: z.array(z.object({ text: z.string(), status: z.string().optional() })).max(30),",
+        );
+        assert_eq!(nested.keys, ["items"]);
+        assert_eq!(
+            nested.required,
+            ["items"],
+            "a nested optional is not the key's"
+        );
+
+        // And the plain case still reads as optional, or this would have
+        // traded one wrong answer for the opposite one.
+        let plain = shape("      matchCase: z.boolean().optional().describe('x'),");
+        assert_eq!(plain.keys, ["matchCase"]);
+        assert!(
+            plain.required.is_empty(),
+            "a top-level optional still counts"
+        );
+
+        // A `.optional()` after the nesting closes is the key's own.
+        let trailing = shape("      rows: z.array(z.string()).optional(),");
+        assert!(trailing.required.is_empty(), "{:?}", trailing.required);
+
+        // The two real registrations this rule exists for.
+        let real = real_parameters(&source());
+        assert_eq!(real["todo"].required, ["items"]);
+        assert_eq!(real["expose_tools"].required, ["tools"]);
+    }
+
+    #[test]
     fn requires_exactly_what_the_toolkit_requires() {
         // A sandbox that demands MORE fails a model for a call production accepts;
         // one that demands FEWER lets a model omit an argument the API rejects.
@@ -1621,9 +1837,9 @@ mod tests {
         // updates — and this crate's tests were never run, so nothing made
         // anyone notice. The assertion is the contract; the name says what it
         // is for.
-        assert_eq!(TALARIA_TOOLS.len(), 81);
+        assert_eq!(TALARIA_TOOLS.len(), 85);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 81);
+        assert_eq!(names.len(), 85);
     }
 
     #[test]

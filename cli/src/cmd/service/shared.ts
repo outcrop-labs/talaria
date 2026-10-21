@@ -70,7 +70,7 @@ export function parseComposeVersion(out: string): string | null {
 
 /** The unit's up argv. `--wait` gates the unit's start on the stack's
  *  healthchecks — but builds older than 2.24 hang on it with a one-shot
- *  service in the project (searxng-config), and an unparseable version gets
+ *  service in the project (state-init), and an unparseable version gets
  *  the same conservative treatment: a hung unit is worse than an ungated
  *  one, the containers' own restart policies carry the steady state. */
 export function upArgsFor(version: string | null): string[] {

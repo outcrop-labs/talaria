@@ -20,8 +20,8 @@
   import ProposalCard from './ProposalCard.svelte'
   import DraftingTickets from './DraftingTickets.svelte'
   import { discardPlanDraft, patchPlanDraft, planDraft, startPlanDraft } from './plan-drafts.svelte'
-  import type { Proposal } from './plan-modal'
-  import { addDependency, createTask, useBoards } from '@/lib/boards.svelte'
+  import { createOrder, parentIndex, ticketAssignee, type Proposal } from './plan-modal'
+  import { addDependency, createTask, useBoardMembers, useBoardTasks, useBoards } from '@/lib/boards.svelte'
   import { useTemplates } from '@/lib/templates'
   import type { AgentModel } from '@/lib/agents'
 
@@ -67,6 +67,22 @@
   const editable = $derived(boards.filter((b) => b.role === 'owner' || b.role === 'editor'))
   const ticketTemplates = $derived(templates.filter((t) => t.kind === 'ticket'))
   const included = $derived(proposals?.filter((p) => p.include) ?? [])
+  // Two reads of the BOARD the cards need: names for the user ids the drafter
+  // assigned, and the ticket a proposal calls a duplicate of. Both share their
+  // query keys with the board surface, so a review opened from a board it was
+  // just drafted on resolves from cache and fetches nothing; and both are
+  // asked for only when some proposal actually carries one, so the common
+  // batch (nobody named, nothing duplicated) makes no request at all.
+  //
+  // No `listQuery` notice here on purpose: a failed read is not hidden, it
+  // degrades in view — the card shows the raw assignee id and calls the
+  // duplicate "an open ticket".
+  const wantsMembers = $derived((proposals ?? []).some((p) => p.assignees.length > 0))
+  const wantsTickets = $derived((proposals ?? []).some((p) => p.duplicateOf !== null))
+  const membersQuery = useBoardMembers(() => (boardId && wantsMembers ? boardId : null))
+  const boardTasksQuery = useBoardTasks(() => (boardId && wantsTickets ? boardId : null))
+  const members = $derived(membersQuery.data ?? [])
+  const boardTasks = $derived(boardTasksQuery.data ?? [])
 
   // The board picked when the draft started rides on the job; a modal that
   // reopens straight into review (or retry) adopts it, since creation and the
@@ -100,6 +116,16 @@
   // what's still pending — never duplicates. Unticks go to the STORE, so even
   // a modal closed mid-loop keeps its place (the loop itself runs to completion
   // regardless — its writes are all store writes).
+  //
+  // The first pass walks `createOrder`, not the batch: an epic has to exist
+  // before the child that names it can be created under it. `parentIndex` is
+  // the same rule the order was built from, so a child whose epic was dropped
+  // (or failed) files top-level instead of hanging off whatever index the
+  // drafter wrote.
+  //
+  // THE ASSIGNEE SPELLING CHANGES AT THE CREATE (`ticketAssignee`), and it
+  // has to: the drafter picked bare member user ids off the rendered board
+  // block, while a ticket spells a person `user:<id>`.
   const createAll = async () => {
     const batch = proposals
     if (!boardId || included.length === 0 || !batch) return
@@ -107,8 +133,10 @@
     note = null
     const createdIds = new Map<number, string>() // proposal index → task id
     let failed: string | null = null
-    for (const [i, p] of batch.entries()) {
-      if (!p.include) continue
+    for (const i of createOrder(batch)) {
+      const p = batch[i]
+      if (!p) continue
+      const parent = parentIndex(batch, i)
       try {
         const res = (await createTask(boardId, {
           title: p.title,
@@ -116,6 +144,8 @@
           priority: p.priority,
           effort: p.effort,
           tags: p.tags.length ? p.tags : undefined,
+          parentId: parent === null ? undefined : createdIds.get(parent),
+          assignees: p.assignees.length ? p.assignees.map(ticketAssignee) : undefined,
         })) as { task?: { id: string } }
         if (res.task?.id) createdIds.set(i, res.task.id)
         createdCount += 1
@@ -132,7 +162,10 @@
         if (dependsOnId) await addDependency(taskId, dependsOnId).catch(() => {})
       }
     }
-    await qc.invalidateQueries({ queryKey: ['tasks', boardId] })
+    // The board list's real key (boards.svelte.ts): the duplicate lookup this
+    // modal reads comes off the same cache, so a stale list here would hide
+    // the tickets just created from the next draft's dedup.
+    await qc.invalidateQueries({ queryKey: ['board-tasks', boardId] })
     if (failed) {
       note = `"${failed}" failed to create. The ones before it are done; retry creates only what's left`
       phase = 'idle'
@@ -307,6 +340,9 @@
             index={slide}
             proposal={proposals[slide]!}
             all={proposals}
+            {boardId}
+            {members}
+            {boardTasks}
             onPatch={(patchP) => patch(slide, patchP)}
           />
         </div>

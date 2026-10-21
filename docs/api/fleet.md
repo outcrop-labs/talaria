@@ -34,6 +34,7 @@
 | [`/api/fleet/defs/{id}/google/connect`](#apifleetdefsidgoogleconnect) | GET | `session` + `agent-manager` |
 | [`/api/fleet/defs/{id}/managers`](#apifleetdefsidmanagers) | GET | `session` + `agent-reader` |
 | [`/api/fleet/defs/{id}/managers`](#apifleetdefsidmanagers) | PUT | `session` + `agent-manager` |
+| [`/api/fleet/defs/{id}/mcp`](#apifleetdefsidmcp) | GET | `session` + `agent-reader` |
 | [`/api/fleet/defs/{id}/mcp`](#apifleetdefsidmcp) | POST | `session` + `agent-manager` |
 | [`/api/fleet/defs/{id}/versions`](#apifleetdefsidversions) | GET | `session` + `agent-reader` |
 | [`/api/fleet/defs/{id}/versions`](#apifleetdefsidversions) | POST | `session` + `agent-manager` |
@@ -226,22 +227,25 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_crons.rs`](../../api/c
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs)
 
 > GET /api/fleet/defs. The harness registry: agent definitions (latest
-> version inline) + LLM endpoints + brain routability.
+> version inline) + LLM endpoints + brain routability + toolset vocabulary.
 >
 > Who sees what: `agents.manage` (and admins) read the whole fleet; everyone
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{defs, endpoints, brains, canHire}` | 200 | — |
+| GET | `session` | — | `{defs, endpoints, brains, canHire, toolsets}` | 200 | — |
+
+**GET** — The roster also carries `toolsets`, the agent editor's vocabulary: `governed`, every Hermes toolset an operator may disable on an agent (28 names, alphabetical), and `mandatoryDisabled`, the two Talaria takes off every agent's table whatever its def says — `todo` and `clarify`, because Talaria's own MCP versions are the ones a person sees. Both lists are the constants the `PATCH /api/fleet/defs/{id}` validator reads, so the picker cannot offer a name the write door would refuse.
 
 ## `/api/fleet/defs/{id}`
 
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs)
 
 > /api/fleet/defs/{id}. PATCH → editable agent identity metadata (role,
-> display name, send alias) plus the Developer Agent switch and template
-> binds. Not versioned: this is identity, not config. Admin only.
+> display name, send alias) plus the Developer Agent switch, the delegation
+> cap, the toolsets the agent does not get, and template binds. Not
+> versioned: this is identity, not config. Admin only.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -255,6 +259,9 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api
 | `ticketTemplateId` | `uuid? nullable` | Template overrides: uuid binds, null clears, omitted leaves unchanged. |
 | `planTemplateId` | `uuid? nullable` |  |
 | `developer` | `bool?` | The Developer Agent switch: on sets the agent up end to end (sandbox, Oh My Pi, Workbench tools); the roll below applies it. |
+| `maxChildren` | `number?(0, 16)` | How many subagents this agent may run at once; 0 means it delegates to nobody. The ceiling is the box's, not the agent's — the roll applies it. |
+| `pinnedSessions` | `bool?` | Pinned sessions: one Hermes session per conversation, Hermes holding the history, so its compaction and session search see the whole thread. Talaria-side only — no roll. |
+| `disabledToolsets` | `string[]?(1, 40, 40)` | The Hermes toolsets this agent does NOT get — the whole list, or absent. Only governed names pass: a stranger reaches the rendered config, is ignored in silence, and the toolset stays open. It rolls. |
 
 ## `/api/fleet/defs/{id}/edit`
 
@@ -267,7 +274,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_edit.rs`](../.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidedit-body) | `{ok, version, created, applied}` | 200, 400, 404 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidedit-body) | `{ok, version, created, applied, notes}` | 200, 400, 404 | audit |
 
 ### POST `/api/fleet/defs/{id}/edit` body
 
@@ -279,6 +286,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_edit.rs`](../.
 | `fallbacks` | `target_array` |  |
 | `note` | `string?(300)` |  |
 | `apply` | `bool?` | Re-render + restart the managed container so the edit takes effect now. |
+| `compression` | `parse_compression` | The compaction knobs, and what the answer owes the caller about them. note: `compression` — `{ threshold?: number|null (0.1..1), thresholdTokens?: number|null (1000..10000000) }`; null clears a knob, absent leaves it; a threshold under 0.75 saves and the answer's `notes` says Hermes raises it for models under 512K context |
 
 ## `/api/fleet/defs/{id}/google`
 
@@ -341,18 +349,24 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_managers.rs`](
 
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_mcp.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_mcp.rs)
 
-> /api/fleet/defs/{id}/mcp. POST → add/remove MCP servers on an agent as a
-> NEW config version (same versioned-internals contract as model edits),
-> optionally applied live.
+> /api/fleet/defs/{id}/mcp. ONE AGENT'S VIEW OF THE ORG MCP REGISTRY.
+> GET → every enabled registry server with what it means for THIS agent:
+> whether the agent carries it — exactly what its rendered config lists
+> (`servers_for_agent`) — and why (`via`: all-agents, assigned, team,
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidmcp-body) | `{ok, version, created, applied}` | 200, 400, 404 | audit |
+| GET | `session` + `agent-reader` | — | `{agent, canInstall, servers, legacy}` | 200, 404 | — |
+| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidmcp-body) | `…` | 200, 400, 404 | audit |
 
 ### POST `/api/fleet/defs/{id}/mcp` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
+| `unassign` | `parse_names` |  |
+| `removeLegacy` | `parse_names` | `remove` is the old spelling of `removeLegacy`; both clean raw entries. |
+| `remove` | `parse_names` |  |
 | `apply` | `bool?` |  |
 
 ## `/api/fleet/defs/{id}/versions`

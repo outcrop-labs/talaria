@@ -1,4 +1,7 @@
 // Channels, messages, reactions, plans, DMs, chat and conversations.
+pub mod agent_ask;
+pub mod agent_organize;
+pub mod agent_todo;
 pub mod agents_id_conversations;
 pub mod channels;
 pub mod channels_id;
@@ -21,6 +24,13 @@ pub mod conversations;
 pub mod conversations_id;
 pub mod conversations_id_messages_msgid_reactions;
 pub mod conversations_id_read;
+pub mod conversations_id_schedule;
+pub mod conversations_id_schedules;
+pub mod conversations_id_schedules_jobid;
+pub mod conversations_id_session;
+pub mod conversations_id_steer;
+pub mod conversations_id_stop;
+pub mod conversations_id_todo;
 pub mod dms;
 pub mod me_sent;
 pub mod me_threads;

@@ -81,6 +81,31 @@ describe('chipsBesideProse', () => {
   it('drops a link chip the prose already paints and keeps the approval', () => {
     expect(chipsBesideProse([link, approval], 'open /boards/b-1')).toEqual([approval])
   })
+
+  it('keeps an edited-document chip even when the prose paints its URL', () => {
+    // The card says what the edit moved; the prose's pill says only that the
+    // document exists. Dropping it would take the change list with it.
+    const edited: ChatChip = {
+      id: 'd',
+      kind: 'link',
+      href: '/artifacts?a=file-3',
+      entity: 'document',
+      title: 'Rollout',
+      changes: [{ label: 'Appended a section', added: 6, removed: 0 }],
+    }
+    expect(chipsBesideProse([edited], 'updated /artifacts?a=file-3')).toEqual([edited])
+  })
+
+  it('keeps a source chip, which is off-platform and never painted by the markdown', () => {
+    const source: ChatChip = {
+      id: 'source:9f2c1a',
+      kind: 'source',
+      label: 'Retry budgets',
+      href: 'https://example.com/retry',
+      detail: 'A budget caps the retries a request may spend.',
+    }
+    expect(chipsBesideProse([source], 'see https://example.com/retry')).toEqual([source])
+  })
 })
 
 describe('unlock and invoke', () => {
@@ -93,5 +118,80 @@ describe('unlock and invoke', () => {
   it('builds the run sentence from filled inputs only', () => {
     expect(invokeText('draft_email', { to: 'a@b.c', subject: '', body: 'hi' })).toContain('"to": "a@b.c"')
     expect(invokeText('draft_email', { to: 'a@b.c', subject: '', body: 'hi' })).not.toContain('subject')
+  })
+})
+
+describe('the agent plan chip', () => {
+  const plan: ChatChip = {
+    id: 'todo',
+    kind: 'todo',
+    label: '1/3 done · now: draft the tickets',
+    items: [
+      { text: 'read the retry spec', status: 'done' },
+      { text: 'draft the tickets', status: 'active' },
+      { text: 'update the doc', status: 'pending' },
+    ],
+  }
+
+  it('survives the prose filter, because a plan is never painted by the text', () => {
+    // Only a link whose href the prose already carries is dropped; a plan has
+    // no href and the agent's words never contain the timeline.
+    expect(chipsBesideProse([plan], 'I will start on the tickets now.')).toEqual([plan])
+  })
+
+  it('carries the whole list so an old chip still reads as the plan of its moment', () => {
+    // The stream is read top-to-bottom. A delta would need replaying forwards
+    // to mean anything, and a reader scrolling back is not doing that.
+    expect(plan.items).toHaveLength(3)
+    expect(plan.items?.filter((i) => i.status === 'active')).toHaveLength(1)
+  })
+})
+
+describe('the ask chip', () => {
+  const ask: ChatChip = {
+    id: 'ask:9f2',
+    kind: 'question',
+    label: 'Which board should these tickets land on?',
+    description: 'Both have an inbox column.',
+    options: [
+      { label: 'Platform', detail: 'the infra board' },
+      { label: 'Growth', detail: null },
+    ],
+  }
+
+  it('survives the prose filter so a question cannot scroll past unanswered', () => {
+    expect(chipsBesideProse([ask], 'I need to know which board before I file these.')).toEqual([ask])
+  })
+
+  it('carries the answers as their own words, which is what gets sent', () => {
+    // Clicking sends the label through the composer's send path, so the reply
+    // is an ordinary message and there is no second record of the answer.
+    expect(ask.options?.map((o) => o.label)).toEqual(['Platform', 'Growth'])
+    // A missing detail is null rather than absent — the server emits it.
+    expect(ask.options?.[1]?.detail).toBeNull()
+  })
+})
+
+describe('the notice chip', () => {
+  const notice: ChatChip = {
+    id: 'steer:m-7',
+    kind: 'notice',
+    label: 'sent mid-turn',
+    detail: 'The agent took this into the reply it was already writing.',
+  }
+
+  it('survives the prose filter, because a notice is never painted by the words', () => {
+    // Same reason the plan and the question survive: only a link whose href
+    // the prose already carries is dropped.
+    expect(chipsBesideProse([notice], 'actually, target rc')).toEqual([notice])
+  })
+
+  it('says what happened and offers nothing to do about it', () => {
+    // The row renders label + title and no controls: a notice with an action
+    // would be an approval, which is a different chip with a different story.
+    expect(notice.label).toBe('sent mid-turn')
+    expect(notice.detail).toContain('already writing')
+    expect(notice.actionId).toBeUndefined()
+    expect(notice.options).toBeUndefined()
   })
 })

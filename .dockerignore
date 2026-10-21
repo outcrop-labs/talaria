@@ -29,7 +29,6 @@ stack
 logs
 **/.uploads
 ui/.env*
-docker/searxng/settings.local.yml
 **/.env
 !**/.env.example
 

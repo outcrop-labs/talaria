@@ -134,6 +134,18 @@ describe('parseAgentStream — event kinds', () => {
     ])
   })
 
+  it('maps a failed tool onto the error status, under either wording', async () => {
+    // Hermes sends `tool.failed`; the status field spells it either way. The
+    // row's third face is the whole point: a failure that arrived as
+    // `undefined` left the tool row spinning forever.
+    for (const word of ['error', 'failed', 'FAILED']) {
+      const payload = JSON.stringify({ tool: 'web_search', label: 'Search failed', toolCallId: 'c3', status: word })
+      expect(await drain([`event: hermes.tool.progress\ndata: ${payload}\n\n`])).toEqual([
+        { type: 'tool', id: 'c3', name: 'web_search', label: 'Search failed', status: 'error' },
+      ])
+    }
+  })
+
   it('leaves status undefined for an unrecognised value and defaults the name to "tool"', async () => {
     const payload = JSON.stringify({ label: 'Doing a thing', status: 'weird' })
     expect(await drain([`event: hermes.tool.progress\ndata: ${payload}\n\n`])).toEqual([
@@ -150,6 +162,117 @@ describe('parseAgentStream — event kinds', () => {
     const events = await drain([`event: queued\ndata: ${JSON.stringify({ queued: true })}\n\n`, delta('hi')])
     expect(events.some((e) => e.type === 'queued')).toBe(false)
     expect(events).toEqual([{ type: 'content', text: 'hi' }])
+  })
+})
+
+describe('parseAgentStream — raw Hermes session frames', () => {
+  // A turn pinned to a Hermes session is forwarded byte for byte: the tool
+  // rows arrive as the session's OWN frames, flat payload and all, not as the
+  // `hermes.tool.progress` envelope. Before these three event names were read
+  // a session turn ran its whole tool loop with no row on screen.
+  const session = (event: string, payload: Record<string, unknown>) =>
+    `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`
+  const rows = (events: ChatEvent[]) =>
+    events.flatMap((e) => (e.type === 'tool' ? [{ id: e.id, name: e.name, label: e.label, status: e.status }] : []))
+
+  it('maps tool.started / tool.completed / tool.failed onto the three statuses', async () => {
+    expect(
+      rows(
+        await drain([
+          session('tool.started', { message_id: 'm1', tool_name: 'read_file', preview: 'docs/plan.md' }),
+          session('tool.completed', { message_id: 'm1', tool_name: 'read_file', preview: '' }),
+          session('tool.started', { message_id: 'm1', tool_name: 'web_search', preview: 'retry budgets' }),
+          session('tool.failed', { message_id: 'm1', tool_name: 'web_search', preview: 'the search timed out' }),
+        ]),
+      ),
+    ).toEqual([
+      { id: 'm1:read_file#1', name: 'read_file', label: 'docs/plan.md', status: 'running' },
+      { id: 'm1:read_file#1', name: 'read_file', label: '', status: 'completed' },
+      { id: 'm1:web_search#1', name: 'web_search', label: 'retry budgets', status: 'running' },
+      { id: 'm1:web_search#1', name: 'web_search', label: 'the search timed out', status: 'error' },
+    ])
+  })
+
+  it('builds the id the gateway persists: <message_id>:<tool_name>#<nth started>', async () => {
+    // `session_tool` in fleet_chat.rs counts `tool.started` per name within a
+    // message; the parser mirrors it with a per-stream counter so the live row
+    // and the row that comes back from history are ONE row.
+    expect(
+      rows(
+        await drain([
+          session('tool.started', { message_id: 'm2', tool_name: 'read_file', preview: 'a.md' }),
+          session('tool.completed', { message_id: 'm2', tool_name: 'read_file', preview: '' }),
+          session('tool.started', { message_id: 'm2', tool_name: 'read_file', preview: 'b.md' }),
+          session('tool.completed', { message_id: 'm2', tool_name: 'read_file', preview: '' }),
+        ]),
+      ).map((r) => r.id),
+    ).toEqual(['m2:read_file#1', 'm2:read_file#1', 'm2:read_file#2', 'm2:read_file#2'])
+  })
+
+  it('counts per message, so a second message starts over at #1', async () => {
+    expect(
+      rows(
+        await drain([
+          session('tool.started', { message_id: 'm3', tool_name: 'read_file', preview: 'a.md' }),
+          session('tool.started', { message_id: 'm4', tool_name: 'read_file', preview: 'b.md' }),
+        ]),
+      ).map((r) => r.id),
+    ).toEqual(['m3:read_file#1', 'm4:read_file#1'])
+  })
+
+  it('opens #1 for a completion whose start never arrived', async () => {
+    // The Rust bumps the counter when it is still 0 for exactly this: a frame
+    // addressing a call nobody saw start still gets the first slot rather than
+    // an id ending `#0` that nothing else will ever match.
+    expect(rows(await drain([session('tool.completed', { message_id: 'm5', tool_name: 'read_file' })]))).toEqual([
+      { id: 'm5:read_file#1', name: 'read_file', label: '', status: 'completed' },
+    ])
+  })
+
+  it('prefers an explicit tool_call_id, and defaults the name when there is none', async () => {
+    expect(
+      rows(await drain([session('tool.started', { message_id: 'm6', tool_call_id: 'call_abc', preview: 'x' })])),
+    ).toEqual([{ id: 'call_abc', name: 'tool', label: 'x', status: 'running' }])
+  })
+
+  it('still reports the row when the frame names no call at all', async () => {
+    // No id to dedupe on, but the status is still news: `mergeTool` matches it
+    // onto the running row of the same name.
+    expect(rows(await drain([session('tool.completed', { tool_name: 'read_file' })]))).toEqual([
+      { id: undefined, name: 'read_file', label: '', status: 'completed' },
+    ])
+  })
+
+  it('keeps a long preview as the label, exactly as the gateway persists it', async () => {
+    // How much of it the tool list shows is the row's call (toolRowLabel),
+    // so the live row and the stored row carry the same words.
+    const long = 'x'.repeat(400)
+    expect(
+      rows(await drain([session('tool.started', { message_id: 'm7', tool_name: 'bash', preview: long })])),
+    ).toEqual([{ id: 'm7:bash#1', name: 'bash', label: long, status: 'running' }])
+  })
+
+  it('folds into two rows, one done and one failed, and the failure sticks', async () => {
+    let tools: ToolCall[] = []
+    const events = await drain([
+      session('tool.started', { message_id: 'm8', tool_name: 'read_file', preview: 'a.md' }),
+      session('tool.completed', { message_id: 'm8', tool_name: 'read_file', preview: '' }),
+      session('tool.started', { message_id: 'm8', tool_name: 'read_file', preview: 'b.md' }),
+      session('tool.failed', { message_id: 'm8', tool_name: 'read_file', preview: 'no such file' }),
+      // A stray late frame for the failed call: terminal is terminal.
+      session('tool.completed', { message_id: 'm8', tool_name: 'read_file', preview: '' }),
+    ])
+    for (const ev of events) if (ev.type === 'tool') tools = mergeTool(tools, ev)
+    expect(tools).toEqual([
+      { id: 'm8:read_file#1', name: 'read_file', label: 'a.md', status: 'completed' },
+      { id: 'm8:read_file#2', name: 'read_file', label: 'no such file', status: 'error' },
+    ])
+  })
+
+  it('ignores a session frame that is not JSON', async () => {
+    expect(await drain([`event: tool.started\ndata: {nope\n\n`, delta('on we go')])).toEqual([
+      { type: 'content', text: 'on we go' },
+    ])
   })
 })
 
@@ -317,6 +440,24 @@ describe('mergeTool', () => {
       ['a', 'completed'],
       ['b', 'running'],
     ])
+  })
+
+  it('flips the status to error and keeps it there', () => {
+    const failed = mergeTool([running()], { type: 'tool', id: 't1', name: 'search', label: 'Search failed', status: 'error' })
+    expect(failed).toEqual([{ id: 't1', name: 'search', label: 'Search failed', status: 'error' }])
+    // Terminal, exactly like completed: a stray later frame — a retry's
+    // progress, a duplicated id — must not hide the failure behind a spinner
+    // that never resolves.
+    const late = mergeTool(failed, { type: 'tool', id: 't1', name: 'search', label: 'Searching', status: 'running' })
+    expect(late[0]!.status).toBe('error')
+    expect(late).toHaveLength(1)
+  })
+
+  it('does not let a late running frame un-finish a completed tool either', () => {
+    const done = mergeTool([running()], { type: 'tool', id: 't1', name: 'search', label: 'Searched', status: 'completed' })
+    expect(mergeTool(done, { type: 'tool', id: 't1', name: 'search', label: 'Searching', status: 'running' })[0]!.status).toBe(
+      'completed',
+    )
   })
 
   it('does not mutate the array it was given', () => {

@@ -39,6 +39,84 @@ pub fn dept_ok(department: &str) -> bool {
         .is_match(department)
 }
 
+/// The Hermes toolsets Talaria governs — `toolsets.py`'s own TOOLSETS, in its
+/// order, minus the platform/integration ones (bot_room, discord*, feishu*,
+/// hermes-*, homeassistant, spotify, yuanbao) that no Talaria agent is ever
+/// wired to and that nobody here could switch on by naming them.
+///
+/// A name outside this list is a typo or a Hermes version nobody has read
+/// yet, and either way it reaches `agent.disabled_toolsets` in the rendered
+/// config.yaml, where Hermes IGNORES it in silence: the operator would see a
+/// toolset they believe is closed and an agent that still has it. The write
+/// path refuses the stranger instead — the same bar, for the same reason, as
+/// the alphabets above.
+pub const GOVERNED_TOOLSETS: &[&str] = &[
+    "browser",
+    "clarify",
+    "code_execution",
+    "coding",
+    "computer_use",
+    "connections",
+    "context_engine",
+    "cronjob",
+    "debugging",
+    "delegation",
+    "desktop_ui",
+    "file",
+    "image_gen",
+    "kanban",
+    "memory",
+    "project",
+    "safe",
+    "search",
+    "session_search",
+    "skills",
+    "terminal",
+    "todo",
+    "tts",
+    "video",
+    "video_gen",
+    "vision",
+    "web",
+    "x_search",
+];
+
+/// The two Talaria takes off every agent's table whatever a def says, because
+/// Talaria already does both jobs and only its versions reach a person: the
+/// MCP todo tool lands the chips someone can see and act on, and the MCP
+/// clarify tool puts a question in front of them. The renderer merges these
+/// ahead of an agent's own list (talaria-fleet-render's
+/// `fleet_disabled_toolsets`), so storing them per agent would be noise —
+/// they are the floor, not a choice.
+pub const MANDATORY_DISABLED: &[&str] = &["todo", "clarify"];
+
+/// The longest list a caller may hand us. Nothing can legitimately exceed
+/// GOVERNED_TOOLSETS' own length once duplicates are gone, so this is a bound
+/// on the WALK, not on the answer: a request cannot make this validate a
+/// thousand names before refusing them.
+const MAX_TOOLSETS: usize = 40;
+
+/// Clean and bless a disabled-toolsets list (fleet.defs.$id PATCH): trim each
+/// name, drop repeats keeping the first, and refuse anything outside
+/// [`GOVERNED_TOOLSETS`] — naming the first stranger, because an operator who
+/// mistyped one of eight names needs to know WHICH.
+pub fn validate_toolsets(names: &[String]) -> Result<Vec<String>, String> {
+    if names.len() > MAX_TOOLSETS {
+        return Err(format!("at most {MAX_TOOLSETS} toolsets"));
+    }
+    let mut out: Vec<String> = Vec::with_capacity(names.len());
+    for raw in names {
+        let name = raw.trim();
+        if !GOVERNED_TOOLSETS.contains(&name) {
+            return Err(format!("unknown toolset \"{name}\""));
+        }
+        if !out.iter().any(|kept| kept == name) {
+            out.push(name.to_string());
+        }
+    }
+    Ok(out)
+}
+
 /// A model target: which endpoint serves it and the upstream model id there.
 /// `contextLength`/`effort` are ABSENT when
 /// unset — skip_serializing_if, not null — so the jsonb round-trips only the
@@ -63,12 +141,69 @@ pub struct AliasTarget {
     pub target: ModelTarget,
 }
 
+/// One nullable member of an edit: absent from the request (leave whatever is
+/// stored), null (drop the key), or a value (write it). The three-way
+/// distinction is the whole point — "the caller said nothing" and "the caller
+/// said none" are different instructions, and a plain `Option` can only carry
+/// one of them.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Knob<T> {
+    #[default]
+    Keep,
+    Clear,
+    Set(T),
+}
+
+/// The compaction knobs an editor turns on an agent's Hermes compression
+/// block (`raw.compression`): the ratio of the context window at which Hermes
+/// starts folding old turns away, and the absolute token ceiling that can trip
+/// it first. EVERY OTHER KEY IN THE BLOCK IS THE DEF AUTHOR'S — `enabled`,
+/// `protect_last_n`, `min_tail_user_messages`, `progress_notices` stay exactly
+/// as written, because the renderer emits the block verbatim and a form that
+/// rewrote it whole would silently revert hand-authored config.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CompressionEdits {
+    pub threshold: Knob<f64>,
+    pub threshold_tokens: Knob<i64>,
+}
+
 /// The structured edit a caller applies onto a previous config.
 #[derive(Debug, Clone)]
 pub struct ConfigEdits {
     pub main: ModelTarget,
     pub aliases: Vec<AliasTarget>,
     pub fallbacks: Vec<ModelTarget>,
+    /// The compaction knobs. Default is both `Keep`: a caller that says
+    /// nothing about compression leaves the stored block untouched.
+    pub compression: CompressionEdits,
+}
+
+/// The current compaction knobs off a stored config, for the editor that
+/// turns them: `{ threshold, thresholdTokens }`, or null when the def carries
+/// no `raw.compression` block at all. An absent block means Hermes' own
+/// defaults are in force (0.50 of the window, 256K tokens) and the form is
+/// what says so — this does not invent numbers the def never wrote. A member
+/// that is stored as something other than a number reads as null for the same
+/// reason: the wire type is a promise.
+pub fn compression_wire(config: &Value) -> Value {
+    let Some(block) = config
+        .get("raw")
+        .and_then(|raw| raw.get("compression"))
+        .and_then(Value::as_object)
+    else {
+        return Value::Null;
+    };
+    let num = |key: &str| {
+        block
+            .get(key)
+            .and_then(Value::as_f64)
+            .and_then(serde_json::Number::from_f64)
+            .map_or(Value::Null, Value::Number)
+    };
+    serde_json::json!({
+        "threshold": num("threshold"),
+        "thresholdTokens": block.get("threshold_tokens").and_then(Value::as_i64).map_or(Value::Null, |n| serde_json::json!(n)),
+    })
 }
 
 /// A version row, the columns the create path reads (timestamps nothing
@@ -179,6 +314,12 @@ struct DefListRow {
     managed: bool,
     source: String,
     developer: bool,
+    max_children: i32,
+    pinned_sessions: bool,
+    /// The jsonb list rides out as the Value it is stored as — a passthrough,
+    /// like `config` above it: the column is written only through
+    /// `set_disabled_toolsets`, so its shape is already the wire's.
+    disabled_toolsets: Value,
     ticket_template_id: Option<String>,
     plan_template_id: Option<String>,
     current_version: i32,
@@ -189,8 +330,8 @@ struct DefListRow {
 pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error> {
     let defs: Vec<DefListRow> = sqlx::query_as(
         "select id::text, slug, department, model, display_name, role, email_alias::text, \
-           owner_user_id::text, enabled, managed, source, developer, \
-           ticket_template_id::text, plan_template_id::text, \
+           owner_user_id::text, enabled, managed, source, developer, max_children, \
+           pinned_sessions, disabled_toolsets, ticket_template_id::text, plan_template_id::text, \
            current_version, (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
            (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms \
          from agent_defs order by slug asc",
@@ -249,9 +390,16 @@ pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error
                 "managed": d.managed,
                 "source": d.source,
                 "developer": d.developer,
+                "maxChildren": d.max_children,
+                "pinnedSessions": d.pinned_sessions,
+                "disabledToolsets": d.disabled_toolsets,
                 "ticketTemplateId": d.ticket_template_id,
                 "planTemplateId": d.plan_template_id,
                 "currentVersion": d.current_version,
+                // The compaction knobs off the latest version's config — the
+                // Config tab reads the current values from here, and null
+                // means "the def says nothing, Hermes' defaults are in force".
+                "compression": compression_wire(latest.get("config").unwrap_or(&Value::Null)),
                 "createdAt": epoch_ms_to_iso(d.created_ms),
                 "updatedAt": epoch_ms_to_iso(d.updated_ms),
                 "latest": latest,
@@ -260,14 +408,68 @@ pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error
         .collect())
 }
 
+/// Flip "pinned sessions" (fleet.defs.$id PATCH). A pinned agent is driven
+/// through Hermes' session API — one Hermes session whose id is the
+/// conversation id, one new message per turn, Hermes holding the history —
+/// so Hermes' compaction, session_search and /compress see the whole
+/// conversation instead of the fragments a shifting system prompt files it
+/// under. Returns whether the stored value changed, for the audit row.
+pub async fn set_pinned_sessions(pg: &PgPool, id: &str, on: bool) -> Result<bool, sqlx::Error> {
+    let changed = sqlx::query(
+        "update agent_defs set pinned_sessions = $1, updated_at = now() \
+         where id = $2::uuid and pinned_sessions is distinct from $1",
+    )
+    .bind(on)
+    .bind(id)
+    .execute(pg)
+    .await?
+    .rows_affected();
+    Ok(changed > 0)
+}
+
+/// Replace an agent's disabled-toolsets list (fleet.defs.$id PATCH), the list
+/// the renderer merges on top of [`MANDATORY_DISABLED`]. The caller passes it
+/// through [`validate_toolsets`] first — this writes what it is given. Whole
+/// list, not a delta: the UI edits a set of checkboxes and the column is what
+/// they show. Returns whether the stored value changed, for the audit row and
+/// for the roll (a re-save of the same set must not bounce a container).
+pub async fn set_disabled_toolsets(
+    pg: &PgPool,
+    id: &str,
+    names: &[String],
+) -> Result<bool, sqlx::Error> {
+    let changed = sqlx::query(
+        "update agent_defs set disabled_toolsets = $1, updated_at = now() \
+         where id = $2::uuid and disabled_toolsets is distinct from $1",
+    )
+    .bind(serde_json::json!(names))
+    .bind(id)
+    .execute(pg)
+    .await?
+    .rows_affected();
+    Ok(changed > 0)
+}
+
+/// Whether the agent behind a model id is pinned — the chat path's question,
+/// asked by the identity it routes on. An unknown model is not pinned: the
+/// full-history path is the one every agent speaks.
+pub async fn pinned_sessions_for_model(pg: &PgPool, model: &str) -> Result<bool, sqlx::Error> {
+    let row: Option<(bool,)> =
+        sqlx::query_as("select pinned_sessions from agent_defs where model = $1")
+            .bind(model)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.is_some_and(|(on,)| on))
+}
+
 /// One agent def by id — the getAgentDef wire shape (the same columns the
 /// list emits, minus `latest`: the versions route pairs this with the
 /// history it is already reading).
 pub async fn get_agent_def_wire(pg: &PgPool, id: &str) -> Result<Option<Value>, sqlx::Error> {
     let d: Option<DefListRow> = sqlx::query_as(
         "select id::text, slug, department, model, display_name, role, email_alias::text, \
-           owner_user_id::text, enabled, managed, source, developer, \
-           ticket_template_id::text, plan_template_id::text, \
+           owner_user_id::text, enabled, managed, source, developer, max_children, \
+           pinned_sessions, disabled_toolsets, ticket_template_id::text, plan_template_id::text, \
            current_version, (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
            (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms \
          from agent_defs where id = $1::uuid",
@@ -289,6 +491,9 @@ pub async fn get_agent_def_wire(pg: &PgPool, id: &str) -> Result<Option<Value>, 
             "managed": d.managed,
             "source": d.source,
             "developer": d.developer,
+            "maxChildren": d.max_children,
+            "pinnedSessions": d.pinned_sessions,
+            "disabledToolsets": d.disabled_toolsets,
             "ticketTemplateId": d.ticket_template_id,
             "planTemplateId": d.plan_template_id,
             "currentVersion": d.current_version,
@@ -406,6 +611,19 @@ pub fn canonical(v: &Value) -> String {
     }
 }
 
+/// One knob onto one key of a raw block: left alone, removed, or written.
+fn turn_knob<T: Into<Value>>(block: &mut Map<String, Value>, key: &str, knob: Knob<T>) {
+    match knob {
+        Knob::Keep => {}
+        Knob::Clear => {
+            block.remove(key);
+        }
+        Knob::Set(v) => {
+            block.insert(key.to_string(), v.into());
+        }
+    }
+}
+
 /// Structured edits applied onto a previous version's config
 /// (applyConfigEdits). The raw Hermes config is rebuilt in the same stroke so
 /// rendering reflects the edit: model/base_url/api_key come from the endpoint
@@ -500,6 +718,27 @@ pub fn apply_config_edits_over(
         fallbacks.push(block(ep_of(&f.endpoint)?, f, None));
     }
     raw.insert("fallback_providers".into(), Value::Array(fallbacks));
+
+    // raw.compression — the two knobs, turned inside the block the def author
+    // wrote. Clearing the last one takes the block with it: an empty
+    // `compression: {}` in the rendered config says nothing Hermes' defaults
+    // do not already say.
+    let mut compression = raw
+        .get("compression")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    turn_knob(&mut compression, "threshold", edits.compression.threshold);
+    turn_knob(
+        &mut compression,
+        "threshold_tokens",
+        edits.compression.threshold_tokens,
+    );
+    if compression.is_empty() {
+        raw.remove("compression");
+    } else {
+        raw.insert("compression".into(), Value::Object(compression));
+    }
 
     // `{...prev, main, aliases, fallbacks, raw}` — the structured fields
     // replace, every other key the previous config carried survives.
@@ -616,6 +855,24 @@ pub async fn update_agent_meta(
     Ok(())
 }
 
+/// Set the delegation cap (fleet.defs.$id PATCH) — how many subagents this
+/// agent may run at once. Returns whether the stored value changed, so the
+/// caller rolls the agent only when there is something to apply: the number
+/// reaches Hermes through the rendered config, and a render it already has is
+/// not worth a restart.
+pub async fn set_max_children(pg: &PgPool, id: &str, n: i32) -> Result<bool, sqlx::Error> {
+    let changed = sqlx::query(
+        "update agent_defs set max_children = $1, updated_at = now() \
+         where id = $2::uuid and max_children is distinct from $1",
+    )
+    .bind(n)
+    .bind(id)
+    .execute(pg)
+    .await?
+    .rows_affected();
+    Ok(changed > 0)
+}
+
 /// Re-hire a retired agent: re-enable so it renders + can start again.
 pub async fn set_agent_enabled(pg: &PgPool, id: &str, enabled: bool) -> Result<(), sqlx::Error> {
     sqlx::query("update agent_defs set enabled = $1, updated_at = now() where id = $2::uuid")
@@ -653,6 +910,51 @@ mod tests {
         assert!(!dept_ok("Research"));
         assert!(!dept_ok("research_"));
         assert!(!dept_ok(&"d".repeat(42)));
+    }
+
+    #[test]
+    fn validate_toolsets_trims_dedupes_and_names_the_stranger() {
+        let got = validate_toolsets(&[
+            "  browser ".into(),
+            "memory".into(),
+            "browser".into(),
+            "memory".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            got,
+            vec!["browser".to_string(), "memory".to_string()],
+            "trimmed, first occurrence kept, order as asked"
+        );
+        assert_eq!(validate_toolsets(&[]).unwrap(), Vec::<String>::new());
+        // The message has to carry the name: eight checkboxes and one typo is
+        // otherwise a 400 the operator cannot act on.
+        assert_eq!(
+            validate_toolsets(&["browser".into(), "brower".into(), "nope".into()]).unwrap_err(),
+            "unknown toolset \"brower\"",
+            "the FIRST stranger is the one named"
+        );
+        // Hermes' platform toolsets are real names Talaria still refuses:
+        // nothing here is wired to Discord, so disabling it would be theatre.
+        assert_eq!(
+            validate_toolsets(&["discord".into()]).unwrap_err(),
+            "unknown toolset \"discord\""
+        );
+        // The cap is on the WALK: 41 repeats of a blessed name would dedupe to
+        // one, and still never get that far.
+        let many: Vec<String> = std::iter::repeat_n("todo".to_string(), MAX_TOOLSETS + 1).collect();
+        assert_eq!(validate_toolsets(&many).unwrap_err(), "at most 40 toolsets");
+        let at_cap: Vec<String> = std::iter::repeat_n("todo".to_string(), MAX_TOOLSETS).collect();
+        assert_eq!(
+            validate_toolsets(&at_cap).unwrap(),
+            vec!["todo".to_string()],
+            "the cap itself is in"
+        );
+        // The governed list is the floor's home too — the renderer merges
+        // MANDATORY_DISABLED, so both names must be nameable here as well.
+        for name in MANDATORY_DISABLED {
+            assert!(GOVERNED_TOOLSETS.contains(name), "{name} is not governed");
+        }
     }
 
     #[test]
@@ -720,6 +1022,7 @@ mod tests {
             main: target("ollama", "m"),
             aliases: vec![],
             fallbacks: vec![],
+            compression: CompressionEdits::default(),
         };
         let out = apply_config_edits_over(&endpoints, &prev, &edits).unwrap();
         let raw = out.get("raw").unwrap();
@@ -759,6 +1062,7 @@ mod tests {
                 target: target("ollama", "new-deep"),
             }],
             fallbacks: vec![],
+            compression: CompressionEdits::default(),
         };
         let out = apply_config_edits_over(&endpoints, &prev, &edits).unwrap();
         let model = out["raw"]["model"].as_object().unwrap();
@@ -778,6 +1082,133 @@ mod tests {
         );
     }
 
+    /// The config the compression tests edit: one endpoint, a hand-authored
+    /// compression block with keys no form offers, and a sibling raw key.
+    fn prev_with_compression() -> Value {
+        serde_json::from_str(
+            r#"{"main":{"endpoint":"ollama","model":"m"},"aliases":[],"fallbacks":[],
+                "raw":{"model":{"provider":"ollama","model":"m"},
+                       "agent":{"name":"scout"},
+                       "compression":{"enabled":true,"threshold":0.5,
+                                      "threshold_tokens":256000,"protect_last_n":20}}}"#,
+        )
+        .unwrap()
+    }
+
+    fn edits_with(compression: CompressionEdits) -> ConfigEdits {
+        ConfigEdits {
+            main: target("ollama", "m"),
+            aliases: vec![],
+            fallbacks: vec![],
+            compression,
+        }
+    }
+
+    /// Setting the knobs writes exactly the two keys and leaves the rest of
+    /// the author's block — and the rest of raw — alone.
+    #[test]
+    fn the_compression_knobs_write_into_the_authors_block() {
+        let endpoints = vec![ep("ollama", "ollama", None, None)];
+        let out = apply_config_edits_over(
+            &endpoints,
+            &prev_with_compression(),
+            &edits_with(CompressionEdits {
+                threshold: Knob::Set(0.8),
+                threshold_tokens: Knob::Set(400_000),
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            out["raw"]["compression"],
+            serde_json::json!({"enabled": true, "threshold": 0.8,
+                               "threshold_tokens": 400_000, "protect_last_n": 20})
+        );
+        // the sibling raw key the renderer owns is untouched
+        assert_eq!(out["raw"]["agent"], serde_json::json!({"name": "scout"}));
+    }
+
+    /// `Clear` is the null in the request: the key goes, and only that key.
+    #[test]
+    fn clearing_a_knob_drops_its_key_and_nothing_else() {
+        let endpoints = vec![ep("ollama", "ollama", None, None)];
+        let out = apply_config_edits_over(
+            &endpoints,
+            &prev_with_compression(),
+            &edits_with(CompressionEdits {
+                threshold: Knob::Keep,
+                threshold_tokens: Knob::Clear,
+            }),
+        )
+        .unwrap();
+        let block = out["raw"]["compression"].as_object().unwrap();
+        assert!(!block.contains_key("threshold_tokens"), "{block:?}");
+        assert_eq!(block.get("threshold"), Some(&serde_json::json!(0.5)));
+        assert_eq!(block.get("enabled"), Some(&serde_json::json!(true)));
+    }
+
+    /// Saying nothing about compression changes nothing about compression —
+    /// the default every other caller of this function passes.
+    #[test]
+    fn an_edit_that_says_nothing_leaves_the_block_as_written() {
+        let endpoints = vec![ep("ollama", "ollama", None, None)];
+        let prev = prev_with_compression();
+        let out =
+            apply_config_edits_over(&endpoints, &prev, &edits_with(CompressionEdits::default()))
+                .unwrap();
+        assert_eq!(out["raw"]["compression"], prev["raw"]["compression"]);
+    }
+
+    /// Nothing authored and nothing asked for leaves no block at all: an
+    /// empty `compression: {}` would be a key in the rendered config that
+    /// says nothing Hermes' own defaults do not already say.
+    #[test]
+    fn clearing_the_last_knob_takes_the_block_with_it() {
+        let endpoints = vec![ep("ollama", "ollama", None, None)];
+        let prev: Value = serde_json::from_str(
+            r#"{"main":{"endpoint":"ollama","model":"m"},"aliases":[],"fallbacks":[],
+                "raw":{"compression":{"threshold":0.5}}}"#,
+        )
+        .unwrap();
+        let out = apply_config_edits_over(
+            &endpoints,
+            &prev,
+            &edits_with(CompressionEdits {
+                threshold: Knob::Clear,
+                threshold_tokens: Knob::Clear,
+            }),
+        )
+        .unwrap();
+        assert!(out["raw"].get("compression").is_none(), "{}", out["raw"]);
+        // and a def that never had a block does not grow an empty one
+        let bare: Value = serde_json::from_str(
+            r#"{"main":{"endpoint":"ollama","model":"m"},"aliases":[],"fallbacks":[]}"#,
+        )
+        .unwrap();
+        let out =
+            apply_config_edits_over(&endpoints, &bare, &edits_with(CompressionEdits::default()))
+                .unwrap();
+        assert!(out["raw"].get("compression").is_none(), "{}", out["raw"]);
+    }
+
+    /// The read side the Config tab uses: the stored block, camelCased, with
+    /// a non-number reading as absent rather than as itself.
+    #[test]
+    fn the_compression_wire_is_the_stored_block_or_null() {
+        assert_eq!(
+            compression_wire(&prev_with_compression()),
+            serde_json::json!({"threshold": 0.5, "thresholdTokens": 256_000})
+        );
+        assert_eq!(compression_wire(&serde_json::json!({})), Value::Null);
+        assert_eq!(
+            compression_wire(&serde_json::json!({"raw": {"compression": {}}})),
+            serde_json::json!({"threshold": null, "thresholdTokens": null})
+        );
+        assert_eq!(
+            compression_wire(&serde_json::json!({"raw": {"compression": {"threshold": "half"}}})),
+            serde_json::json!({"threshold": null, "thresholdTokens": null})
+        );
+    }
+
     #[test]
     fn an_unknown_endpoint_is_the_one_edit_error() {
         let out = apply_config_edits_over(
@@ -787,6 +1218,7 @@ mod tests {
                 main: target("nowhere", "m"),
                 aliases: vec![],
                 fallbacks: vec![],
+                compression: CompressionEdits::default(),
             },
         );
         assert_eq!(out.unwrap_err(), "unknown endpoint \"nowhere\"");

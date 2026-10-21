@@ -2,7 +2,7 @@
 // the generated ui/.env (marker + own URLs + shared encryption root).
 
 import { describe, expect, test } from 'bun:test'
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runWorktree, worktreeSlot } from './worktree'
@@ -75,7 +75,12 @@ describe('runWorktree — happy path', () => {
     mkdirSync(join(root, 'ui/node_modules'), { recursive: true })
     writeFileSync(
       join(root, 'ui/.env'),
-      'DATABASE_URL=postgres://t:t@127.0.0.1:5544/talaria\nREDIS_URL=redis://x\nPORT=5273\nTALARIA_SECRET_KEY=rootkey\nAUTH_SECRET=authkey\n',
+      // The fixture carries TALARIA_RUST_API_URL because `talaria setup`
+      // really writes it, hardcoded to :5274. Leaving it out of the fixture
+      // is what hid the bug below: the worktree inherited main's url, the
+      // derivation in dev.ts never fired, and the stack proxied /api/* to
+      // the primary api on the primary database.
+      'DATABASE_URL=postgres://t:t@127.0.0.1:5544/talaria\nREDIS_URL=redis://x\nPORT=5273\nTALARIA_RUST_API_URL=http://127.0.0.1:5274\nTALARIA_SECRET_KEY=rootkey\nAUTH_SECRET=authkey\n',
     )
     // `git worktree add` is planted (fake success, creates nothing): the
     // module's own mkdir carries the ui/.env write from here.
@@ -134,6 +139,22 @@ describe('runWorktree — happy path', () => {
     // on the first worktree's database.
     expect(lines.filter((l) => l.startsWith('TALARIA_API_PORT='))).toHaveLength(1)
     expect(lines).toContain(`TALARIA_API_PORT=${port + 100}`)
+    // ...and the URL the app's proxy dials has to move WITH it. dev.ts derives
+    // the url from the port only when no env names it, and main's ui/.env
+    // names it — so inheriting that line put the worktree's app back on the
+    // primary's api, on the primary's database, with the worktree's own api
+    // listening to nobody. Exactly one line, and it is this stack's.
+    expect(lines.filter((l) => l.startsWith('TALARIA_RUST_API_URL='))).toHaveLength(1)
+    expect(lines).toContain(`TALARIA_RUST_API_URL=http://127.0.0.1:${port + 100}`)
+    // The worktree's agents call back to THIS app and run in their own
+    // compose project: without these the renderer aims agents at :5273 and
+    // files their containers under the shared `talaria-fleet`.
+    expect(lines).toContain(`TALARIA_GATEWAY_SELF_URL=http://host.docker.internal:${port}/api/llm/v1`)
+    expect(lines).toContain('TALARIA_FLEET_PROJECT=talaria-wt-demo-fleet')
+    // ...and the fleet plane exists for the renderer to write into — a hire
+    // against a missing fleet/.env fails rather than inventing one.
+    expect(existsSync(join(wt, 'fleet/agents'))).toBe(true)
+    expect(readFileSync(join(wt, 'fleet/.env'), 'utf8')).toContain('LLM_BASE_URL=')
 
       // node_modules shared by symlink
       expect(lstatSync(join(wt, 'ui/node_modules')).isSymbolicLink()).toBe(true)

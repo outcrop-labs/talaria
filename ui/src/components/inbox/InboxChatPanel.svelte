@@ -686,6 +686,7 @@
       <div class="flex flex-col gap-2 rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)]">
         <PendingAttachments items={attachments} onRemove={(id) => (attachments = attachments.filter((item) => item.id !== id))} />
         <ChatComposer
+          commands
           bind:this={composer}
           placeholder={attached ? `Tell ${assistantName} what should happen…` : `Message ${assistantName}…`}
           onSubmit={submit}

@@ -1,5 +1,5 @@
 // GET /api/fleet/defs. The harness registry: agent definitions (latest
-// version inline) + LLM endpoints + brain routability.
+// version inline) + LLM endpoints + brain routability + toolset vocabulary.
 //
 // Who sees what: `agents.manage` (and admins) read the whole fleet; everyone
 // else reads the agents they MANAGE and nothing more, because being named a
@@ -23,7 +23,7 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
-use talaria_agent_defs::list_agent_defs_wire;
+use talaria_agent_defs::{GOVERNED_TOOLSETS, MANDATORY_DISABLED, list_agent_defs_wire};
 use talaria_agent_managers::{managed_agent_ids, managers_by_agent, reads_whole_fleet};
 use talaria_api_facades::gateway::registry::list_endpoints_wire;
 use talaria_brain_health::fleet_brain_health;
@@ -52,6 +52,37 @@ fn pare_endpoint(e: &Value) -> Value {
     Value::Object(out)
 }
 
+/// The toolset vocabulary, straight from the crates that own it: `governed`
+/// is every Hermes toolset an operator may name ([`GOVERNED_TOOLSETS`]) and
+/// `mandatoryDisabled` is the floor the renderer merges ahead of any def
+/// ([`MANDATORY_DISABLED`]).
+///
+/// It rides on the roster because the editor needs it the moment the roster
+/// renders, and it is READ from the constants rather than spelled again here:
+/// the PATCH refuses a name outside that list, so a hand-kept copy would be a
+/// picker offering toolsets the write door rejects the day Hermes grows one.
+///
+/// `governed` is sorted on the way out. The constant is kept in `toolsets.py`'s
+/// order — alphabetical today, and not something this route gets to require of
+/// it — while the wire promise to the editor is a list it can paint top to
+/// bottom without sorting it again.
+fn toolsets_block() -> Value {
+    let mut governed: Vec<&str> = GOVERNED_TOOLSETS.to_vec();
+    governed.sort_unstable();
+    json!({
+        "governed": governed,
+        "mandatoryDisabled": MANDATORY_DISABLED,
+    })
+}
+
+// doc: The roster also carries `toolsets`, the agent editor's vocabulary:
+// doc: `governed`, every Hermes toolset an operator may disable on an agent
+// doc: (28 names, alphabetical), and `mandatoryDisabled`, the two Talaria
+// doc: takes off every agent's table whatever its def says — `todo` and
+// doc: `clarify`, because Talaria's own MCP versions are the ones a person
+// doc: sees. Both lists are the constants the `PATCH /api/fleet/defs/{id}`
+// doc: validator reads, so the picker cannot offer a name the write door
+// doc: would refuse.
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
     let fleet_wide = match reads_whole_fleet(&state.pg, &user.id, &user.role).await {
@@ -130,7 +161,45 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         "endpoints": endpoints,
         "brains": brains,
         "canHire": fleet_wide,
+        "toolsets": toolsets_block(),
     });
     talaria_body::js_numberify(&mut body);
     Ok(Json(body).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The vocabulary reaches the wire whole, alphabetical, with the floor
+    // nameable inside it — the three things the editor assumes when it paints
+    // a row per governed toolset and locks two of them. Serialised and read
+    // back, because what the editor gets is JSON, not a &[&str].
+    #[test]
+    fn the_serialised_roster_carries_the_governed_vocabulary_and_the_floor() {
+        let mut body = json!({ "toolsets": toolsets_block() });
+        talaria_body::js_numberify(&mut body);
+        let wire: Value =
+            serde_json::from_str(&serde_json::to_string(&body).expect("the block serialises"))
+                .expect("the block round-trips");
+
+        let names = |v: &Value| -> Vec<String> {
+            v.as_array()
+                .expect("a list of toolset names")
+                .iter()
+                .map(|n| n.as_str().expect("a toolset name").to_string())
+                .collect()
+        };
+        let governed = names(&wire["toolsets"]["governed"]);
+        assert_eq!(governed.len(), 28, "28 governed toolsets, got {governed:?}");
+        let mut alphabetical = governed.clone();
+        alphabetical.sort();
+        assert_eq!(governed, alphabetical, "governed ships alphabetical");
+
+        let mandatory = names(&wire["toolsets"]["mandatoryDisabled"]);
+        assert_eq!(mandatory, ["todo", "clarify"]);
+        for name in &mandatory {
+            assert!(governed.contains(name), "{name} is not governed");
+        }
+    }
 }

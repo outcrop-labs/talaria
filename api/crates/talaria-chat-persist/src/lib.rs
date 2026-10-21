@@ -4,7 +4,9 @@
 // disconnects/reloads. Throttled flushes during streaming; final on end.
 // Also records the turn in the token ledger (real usage or a char estimate).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
@@ -12,18 +14,22 @@ use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
+use sqlx::PgPool;
 use talaria_agent_auth::now_ms;
+use talaria_agent_defs::pinned_sessions_for_model;
 use talaria_body::utf16_len;
 use talaria_conversations::{
     active_streaming_assistant, content_js_length, insert_streaming_assistant,
-    last_user_message_effort, mark_message_resumed, message_still_errored, next_seq,
-    prior_messages, resurrect_streaming_assistant, set_message_guard, touch_conversation,
-    update_assistant,
+    last_user_message_effort, mark_message_resumed, mark_message_stopped, merge_message_chips,
+    message_still_errored, next_seq, pinned_history_fits, prior_messages,
+    resurrect_streaming_assistant, set_message_guard, set_message_run_id, touch_conversation,
+    unanswered_user_after, update_assistant,
 };
 use talaria_fleet_agents::routed_model_for;
 use talaria_fleet_layout::describe_agent;
 use talaria_gateway::fleet_chat::{
-    AgentStreamEvent, AgentStreamParser, ToolCall, chat_payload, merge_tool, proxy_chat,
+    AgentStreamEvent, AgentStreamParser, ChatStream, SteerOutcome, ToolCall, chat_payload,
+    merge_tool, proxy_chat, proxy_session_turn, steer_run, stop_run,
 };
 use talaria_gateway::guard::{
     Finding, GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
@@ -257,6 +263,126 @@ impl TurnDeath {
 /// when a reply finishes and when a queued message lands with nothing in
 /// flight; chains until the conversation goes quiet. No-op unless the last
 /// message is the user's.
+/// Whether THIS turn goes through the agent's pinned Hermes session.
+///
+/// Two things have to hold: the agent is pinned (its def says so), and the
+/// conversation's history is one Hermes can answer from — fresh, or driven
+/// through the session before. A conversation that ran on the full-history
+/// path before the flip stays there: Hermes never saw that transcript, and a
+/// turn that sent only the new message would answer from an empty room.
+pub async fn pinned_turn(
+    pg: &PgPool,
+    agent_model: &str,
+    conversation_id: &str,
+    resume_row: Option<&str>,
+) -> bool {
+    match pinned_sessions_for_model(pg, agent_model).await {
+        Ok(true) => pinned_history_fits(pg, conversation_id, resume_row)
+            .await
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// The pinned turn, cut out of the full-history message list the chat path
+/// already builds: the system rows fold into one ephemeral system message
+/// (Hermes takes it per turn, so the mode prompt, the sender block and the
+/// handle note ride exactly as they did), the trailing run of user rows is
+/// the message, and everything between — the history — is Hermes' to hold.
+///
+/// The trailing RUN, not the last row: two messages queued while a reply
+/// was streaming are both unanswered, and the chained turn covers both.
+/// A string run joins with blank lines; a run whose last row is content
+/// parts (an image turn) keeps the parts and carries the earlier text as a
+/// leading text part.
+pub fn session_turn_parts(messages: &[Value]) -> (Option<String>, Value) {
+    let system: Vec<&str> = messages
+        .iter()
+        .filter(|m| m["role"] == "system")
+        .filter_map(|m| m["content"].as_str())
+        .filter(|c| !c.trim().is_empty())
+        .collect();
+    let system_message = (!system.is_empty()).then(|| system.join("\n\n"));
+    let tail: Vec<&Value> = messages
+        .iter()
+        .rev()
+        .take_while(|m| m["role"] == "user")
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let message = match tail.split_last() {
+        None => Value::String(String::new()),
+        Some((last, earlier)) => {
+            let earlier_text: Vec<&str> = earlier
+                .iter()
+                .filter_map(|m| m["content"].as_str())
+                .filter(|c| !c.trim().is_empty())
+                .collect();
+            match &last["content"] {
+                Value::Array(parts) => {
+                    let mut out: Vec<Value> = Vec::new();
+                    if !earlier_text.is_empty() {
+                        out.push(json!({ "type": "text", "text": earlier_text.join("\n\n") }));
+                    }
+                    out.extend(parts.iter().cloned());
+                    Value::Array(out)
+                }
+                other => {
+                    let mut texts = earlier_text;
+                    let last_text = other.as_str().unwrap_or_default();
+                    if !last_text.trim().is_empty() {
+                        texts.push(last_text);
+                    }
+                    Value::String(texts.join("\n\n"))
+                }
+            }
+        }
+    };
+    (system_message, message)
+}
+
+/// Send the turn the way the agent takes it: through its pinned session, or
+/// as the full-history completion every agent speaks. Returns the stream and
+/// how many characters of prompt actually left — the ledger's estimate when
+/// no usage frame comes back.
+pub async fn send_turn(
+    pinned: bool,
+    agent_model: &str,
+    routed_model: &str,
+    conversation_id: &str,
+    messages: &[Value],
+    effort: Option<&str>,
+) -> (ChatStream, usize) {
+    if pinned {
+        let (system_message, message) = session_turn_parts(messages);
+        let prompt_chars = system_message
+            .as_deref()
+            .map(|s| s.encode_utf16().count())
+            .unwrap_or(0)
+            + content_js_length(&message);
+        let upstream = proxy_session_turn(
+            agent_model,
+            conversation_id,
+            system_message.as_deref(),
+            &message,
+            None,
+        )
+        .await;
+        return (upstream, prompt_chars);
+    }
+    let prompt_chars: usize = messages
+        .iter()
+        .map(|m| content_js_length(&m["content"]))
+        .sum();
+    let upstream = proxy_chat(
+        &chat_payload(routed_model, &Value::Array(messages.to_vec()), effort),
+        None,
+    )
+    .await;
+    (upstream, prompt_chars)
+}
+
 pub async fn continue_conversation(state: &AppState, conversation_id: &str, meta: &TurnMeta) {
     guarded_drive(state, conversation_id, meta, None).await;
 }
@@ -362,6 +488,9 @@ async fn continue_inner(
     // above already ran — a resume that lost the race to a newer turn stops
     // here silently, the error row it was going to revive left as the honest
     // record.
+    // Decided before the row below exists: a fresh conversation's first
+    // assistant row is the one being made here, and it must not count.
+    let pinned = pinned_turn(&state.pg, &meta.agent_model, conversation_id, resume).await;
     let assistant_id = match resume {
         Some(row) => match resurrect_streaming_assistant(&state.pg, row).await {
             Ok(()) => row.to_string(),
@@ -393,13 +522,13 @@ async fn continue_inner(
         Some(e) if efforts_for_model(&state.pg, &routed).await.contains(&e) => Some(e),
         _ => None,
     };
-    let prompt_chars: usize = messages
-        .iter()
-        .map(|m| content_js_length(&m["content"]))
-        .sum();
-    let upstream = proxy_chat(
-        &chat_payload(&routed, &Value::Array(messages), honored.as_deref()),
-        None,
+    let (upstream, prompt_chars) = send_turn(
+        pinned,
+        &meta.agent_model,
+        &routed,
+        conversation_id,
+        &messages,
+        honored.as_deref(),
     )
     .await;
     // The row is marked error and the chain STOPS
@@ -485,6 +614,71 @@ pub struct PersistMeta {
     pub resumed: bool,
 }
 
+// ── The doom-loop guard ─────────────────────────────────────────────────────
+//
+// An agent that calls the same thing with the same arguments over and over is
+// not working, it is stuck — and nothing downstream notices. The turn looks
+// busy, every frame resets the drain's idle ceiling, and the person watching
+// gets a spinner that never ends. So the stream is counted as it goes past, and
+// a pair that keeps coming back earns a word first and the plug second.
+
+/// Identical calls that earn the agent a word, and the count that ends the run.
+const LOOP_WARN_AT: u32 = 3;
+const LOOP_STOP_AT: u32 = 5;
+
+/// What a repeat count has earned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopAction {
+    /// Say so: a chip for the person reading, and a steer into the live run.
+    Warn,
+    /// Past talking — interrupt the run, and say in the reply why it ends.
+    Stop,
+}
+
+/// The guard's whole decision, pure. Each threshold fires on the EXACT count
+/// that reaches it, so a pair stuck at twelve repeats still produces one nudge
+/// and one stop rather than a nudge on every frame after the third.
+pub fn loop_verdict(count: u32) -> Option<LoopAction> {
+    match count {
+        LOOP_WARN_AT => Some(LoopAction::Warn),
+        LOOP_STOP_AT => Some(LoopAction::Stop),
+        _ => None,
+    }
+}
+
+/// A short stable key for a label, for the notice chip's id: the chip is
+/// per (tool, arguments), and the arguments are prose too long and too odd
+/// for an id.
+fn label_key(label: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    label.trim().hash(&mut h);
+    h.finish()
+}
+
+/// Count one call against this turn's tally and hand back what it earned.
+///
+/// The pair is (tool name, label), and the label is the frame's rendering of
+/// the call's own arguments — which is what makes two identical pairs the SAME
+/// call twice rather than the same tool used twice. A call whose frame carried
+/// no label is not counted at all: every unlabelled call of one tool would
+/// collapse into a single pair, and a tool legitimately used five times in a
+/// turn would read as a loop.
+fn count_repeat(
+    tally: &mut HashMap<(String, String), u32>,
+    name: &str,
+    label: &str,
+) -> Option<LoopAction> {
+    if label.trim().is_empty() {
+        return None;
+    }
+    let n = tally
+        .entry((name.to_string(), label.to_string()))
+        .or_insert(0);
+    *n += 1;
+    loop_verdict(*n)
+}
+
 /// Drain an assistant stream into the reply row.
 /// `forward`, when present, is the client's teed branch: every chunk rides to
 /// the caller first (a send failure is the client hanging up — the drain
@@ -509,6 +703,23 @@ pub async fn persist_assistant_stream(
     // (prior_messages sees through empty rows, so the user's message reads as
     // forever unanswered).
     let mut frame_error: Option<String> = None;
+    // The run was interrupted — a person on /stop, or the guard below. Not an
+    // error and not a death: it decides how the turn LANDS, nothing more.
+    let mut stopped = false;
+    // The live run's id, held as well as stamped: a steer or a stop fired from
+    // inside this loop has to name it, and the row is not where to go looking
+    // for something the loop just read.
+    let mut hermes_run: Option<String> = None;
+    // Identical (name, label) calls seen in this turn — the doom-loop tally —
+    // and the call ids already counted, so a call is one count however many
+    // progress and completion frames it goes on to send.
+    let mut repeats: HashMap<(String, String), u32> = HashMap::new();
+    let mut seen_calls: HashSet<String> = HashSet::new();
+    // Set by the guard's stop task once the container ACCEPTED the stop — a
+    // run still going is a run that will write more, so the sentence that
+    // says why the turn ended is written at landing, under this, after the
+    // last delta rather than in the middle of them.
+    let loop_stop_ok = Arc::new(AtomicBool::new(false));
     let mut last_flush: Option<Instant> = None;
     let mut parser = AgentStreamParser::new();
     let mut stream = body;
@@ -607,6 +818,101 @@ pub async fn persist_assistant_stream(
                         } => {
                             tools =
                                 merge_tool(&tools, id.as_deref(), &name, &label, status.as_deref());
+                            // THE DOOM-LOOP GUARD, counted once per CALL. The
+                            // parser gives every call its own id and sends
+                            // that id again on each progress and completion
+                            // frame, so the first sight of an id is the call
+                            // starting — counting every frame would trip the
+                            // guard on a single chatty call. A frame with no
+                            // id (the completions arm's older shape) is never
+                            // counted. Only this loop counts — the finish loop
+                            // below runs after the body has ended, where there
+                            // is no run left to steer or stop.
+                            let first_sight = id
+                                .as_deref()
+                                .is_some_and(|i| seen_calls.insert(i.to_string()));
+                            if first_sight
+                                && status.as_deref() == Some("running")
+                                && let Some(action) = count_repeat(&mut repeats, &name, &label)
+                            {
+                                let model = usage_meta.as_ref().map(|m| m.agent_model.clone());
+                                match action {
+                                    LoopAction::Warn => {
+                                        // The chip lands whether or not the
+                                        // agent can be reached: it is the
+                                        // person's explanation for a turn going
+                                        // nowhere, and the full-history arm has
+                                        // no run id to steer at all. Keyed by
+                                        // the call's arguments too, so a tool
+                                        // that loops on one input and later on
+                                        // another earns a notice each time.
+                                        let _ = merge_message_chips(
+                                            &state.pg,
+                                            &message_id,
+                                            &[json!({
+                                                "id": format!("loop:{name}:{:x}", label_key(&label)),
+                                                "kind": "notice",
+                                                "label": "Repeating the same call",
+                                                "detail": format!(
+                                                    "{name} has been called with the same \
+                                                     arguments {LOOP_WARN_AT} times"
+                                                ),
+                                            })],
+                                        )
+                                        .await;
+                                        // Detached: a steer is answered in
+                                        // milliseconds or not at all, and the
+                                        // drain must keep reading the stream
+                                        // while it is.
+                                        if let (Some(model), Some(run)) =
+                                            (model.clone(), hermes_run.clone())
+                                        {
+                                            let said = format!(
+                                                "You have called {name} with the same arguments \
+                                                 {LOOP_WARN_AT} times and it is not getting you \
+                                                 further. Change your approach, or stop and say \
+                                                 what is blocking you."
+                                            );
+                                            let row = message_id.clone();
+                                            let tool = name.clone();
+                                            tokio::spawn(async move {
+                                                match steer_run(&model, &run, &said).await {
+                                                    SteerOutcome::Accepted => tracing::info!(
+                                                        "[chat_persist] {row}: steered a looping {tool}"
+                                                    ),
+                                                    other => tracing::warn!(
+                                                        "[chat_persist] {row}: the loop steer did \
+                                                         not land ({other:?})"
+                                                    ),
+                                                }
+                                            });
+                                        }
+                                    }
+                                    LoopAction::Stop => {
+                                        // Detached for the same reason, and the
+                                        // flag is what the landing reads: the
+                                        // sentence saying why the turn ended
+                                        // rides only on an ACCEPTED stop, and
+                                        // only after the last delta.
+                                        if let (Some(model), Some(run)) =
+                                            (model, hermes_run.clone())
+                                        {
+                                            let ok = loop_stop_ok.clone();
+                                            let row = message_id.clone();
+                                            let tool = name.clone();
+                                            tokio::spawn(async move {
+                                                match stop_run(&model, &run).await {
+                                                    Ok(()) => ok.store(true, Ordering::Relaxed),
+                                                    Err(e) => tracing::warn!(
+                                                        "[chat_persist] {row}: stopping a looping \
+                                                         {tool} failed: {e}"
+                                                    ),
+                                                }
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                         }
                         AgentStreamEvent::Usage {
                             prompt_tokens,
@@ -617,6 +923,15 @@ pub async fn persist_assistant_stream(
                         AgentStreamEvent::Error { message } => {
                             frame_error = frame_error.or(Some(message));
                         }
+                        // Stamped the moment the session names its run: a
+                        // stop or a steer that arrives mid-turn needs it,
+                        // and mid-turn is the only time either makes sense.
+                        AgentStreamEvent::RunStarted { run_id } => {
+                            let _ = set_message_run_id(&state.pg, &message_id, &run_id).await;
+                            hermes_run = Some(run_id);
+                        }
+                        // Interrupted. The flag is read once, after the loops.
+                        AgentStreamEvent::Stopped => stopped = true,
                     }
                 }
                 // Stamped per CHUNK, not per parsed event: a keep-alive-only
@@ -652,6 +967,13 @@ pub async fn persist_assistant_stream(
             AgentStreamEvent::Error { message } => {
                 frame_error = frame_error.or(Some(message));
             }
+            // The run id is still stamped from here — a run that only named
+            // itself in the parser's leftovers still happened — but it is not
+            // held: the body has ended, and there is nothing left to steer.
+            AgentStreamEvent::RunStarted { run_id } => {
+                let _ = set_message_run_id(&state.pg, &message_id, &run_id).await;
+            }
+            AgentStreamEvent::Stopped => stopped = true,
         }
     }
 
@@ -680,17 +1002,42 @@ pub async fn persist_assistant_stream(
         }
         return;
     }
+    // The guard's stop, once the container accepted it: the turn is a
+    // stopped one even if the stream ended on a verdict other than
+    // run.cancelled, and the reply says why it ends — after its last word.
+    if loop_stop_ok.load(Ordering::Relaxed) {
+        content.push_str(&format!(
+            "\n\n(stopped: the agent repeated the same call {LOOP_STOP_AT} times)"
+        ));
+        stopped = true;
+    }
+    // A STOPPED TURN IS NOT A FAULT, so it lands like any finished one.
+    // Somebody pressed stop — or the guard above pulled the plug on a loop —
+    // and the partial reply is exactly what they chose to keep: the row
+    // lands COMPLETE with the content, reasoning and tools that arrived, and
+    // the stamp beside it is what says the turn was cut short. An error
+    // status would put a retry affordance on a turn nobody wants retried,
+    // and the death path's auto-resume would re-drive the very run that was
+    // just stopped. Everything the completed path does — the guard over the
+    // words, the rail's event, the reply notification, the chain — applies to
+    // the words a stopped turn managed to say, with two exceptions below.
     flush!("complete");
+    if stopped {
+        let _ = mark_message_stopped(&state.pg, &message_id).await;
+    }
     let _ = touch_conversation(&state.pg, &conversation_id, None).await;
     ledger!();
     // TALA-33: a landed plan turn rewrites the plan's living document
     // server-side (detached; see `spawn_plan_doc_auto_sync`). Only the
-    // completed path — the error and death paths above return early.
-    if let Some((plan, agent_model, tier)) = usage_meta.as_ref().and_then(|m| {
-        m.plan
-            .clone()
-            .map(|p| (p, m.agent_model.clone(), m.tier.clone()))
-    }) {
+    // completed path — the error and death paths above return early — and
+    // not a stopped one: half a plan turn must not rewrite the document.
+    if !stopped
+        && let Some((plan, agent_model, tier)) = usage_meta.as_ref().and_then(|m| {
+            m.plan
+                .clone()
+                .map(|p| (p, m.agent_model.clone(), m.tier.clone()))
+        })
+    {
         spawn_plan_doc_auto_sync(&state, &conversation_id, plan, agent_model, tier);
     }
     // First-exchange naming: the Titler upgrades the mechanical truncated
@@ -825,8 +1172,18 @@ pub async fn persist_assistant_stream(
             });
         }
     }
-    // Messages queued while this reply streamed become the next turn.
-    if let Some(meta) = usage_meta {
+    // Messages queued while this reply streamed become the next turn — the
+    // ones still owed an answer. A steer the running agent accepted was
+    // answered inside this turn, and after a STOP with nobody having spoken
+    // since the chain must stay quiet: `prior_messages` sees through an empty
+    // row, so a stopped turn that said nothing would leave its message
+    // looking forever unanswered and the chain would re-fire it without end —
+    // the loop the stop was pressed to get out of.
+    if let Some(meta) = usage_meta
+        && unanswered_user_after(&state.pg, &conversation_id, &message_id)
+            .await
+            .unwrap_or(false)
+    {
         let state = state.clone();
         let conversation_id = conversation_id.clone();
         tokio::spawn(async move {
@@ -886,6 +1243,212 @@ fn maybe_resume(state: &AppState, conversation_id: &str, message_id: &str, meta:
 mod tests {
     use super::*;
 
+    /// The pinned turn is cut from the same list the full-history path
+    /// sends: system rows fold into the ephemeral system message, the
+    /// history in the middle is dropped (Hermes has it), and the tail is
+    /// the message.
+    mod session_turn {
+        use super::*;
+
+        #[test]
+        fn system_rows_fold_and_history_is_dropped() {
+            let messages = vec![
+                json!({ "role": "system", "content": "mode prompt" }),
+                json!({ "role": "system", "content": "sender: Jon" }),
+                json!({ "role": "user", "content": "earlier question" }),
+                json!({ "role": "assistant", "content": "earlier answer" }),
+                json!({ "role": "user", "content": "the new one" }),
+            ];
+            let (system, message) = session_turn_parts(&messages);
+            assert_eq!(system.as_deref(), Some("mode prompt\n\nsender: Jon"));
+            assert_eq!(message, json!("the new one"));
+        }
+
+        /// Two messages queued during one reply are both unanswered; the
+        /// chained turn carries both, oldest first.
+        #[test]
+        fn a_trailing_run_of_user_rows_joins() {
+            let messages = vec![
+                json!({ "role": "assistant", "content": "reply" }),
+                json!({ "role": "user", "content": "first queued" }),
+                json!({ "role": "user", "content": "second queued" }),
+            ];
+            let (system, message) = session_turn_parts(&messages);
+            assert_eq!(system, None);
+            assert_eq!(message, json!("first queued\n\nsecond queued"));
+        }
+
+        /// An image turn keeps its parts; earlier queued text rides ahead
+        /// of them as a text part rather than being flattened away.
+        #[test]
+        fn content_parts_survive_with_earlier_text_ahead() {
+            let messages = vec![
+                json!({ "role": "user", "content": "look at this" }),
+                json!({ "role": "user", "content": [
+                    { "type": "text", "text": "what is it?" },
+                    { "type": "image_url", "image_url": { "url": "data:x" } }
+                ] }),
+            ];
+            let (_, message) = session_turn_parts(&messages);
+            let parts = message.as_array().expect("parts");
+            assert_eq!(parts.len(), 3);
+            assert_eq!(parts[0]["text"], "look at this");
+            assert_eq!(parts[2]["type"], "image_url");
+        }
+
+        #[test]
+        fn no_user_tail_is_an_empty_message() {
+            let messages = vec![json!({ "role": "system", "content": "only prompt" })];
+            let (system, message) = session_turn_parts(&messages);
+            assert_eq!(system.as_deref(), Some("only prompt"));
+            assert_eq!(message, json!(""));
+        }
+    }
+
+    /// `messages.tools` — the shape this crate persists and re-serves. The
+    /// drain loop is a stream plus a database, but the FOLD inside it is the
+    /// two lines below, so the vocabulary that lands in the column is testable
+    /// without either: parse the frames, merge them, read the words.
+    mod persisted_tools {
+        use super::*;
+
+        /// Exactly what the drain loop does with a tool event, at lines 820
+        /// and 959: parse, then merge by id.
+        fn fold(body: &str) -> Vec<ToolCall> {
+            let mut parser = AgentStreamParser::new();
+            let mut tools: Vec<ToolCall> = Vec::new();
+            let mut events = parser.feed(body.as_bytes());
+            events.extend(parser.finish());
+            for ev in events {
+                if let AgentStreamEvent::Tool {
+                    id,
+                    name,
+                    label,
+                    status,
+                } = ev
+                {
+                    tools = merge_tool(&tools, id.as_deref(), &name, &label, status.as_deref());
+                }
+            }
+            tools
+        }
+
+        /// A failed call persists as `error`, carrying Hermes' reason as its
+        /// label — the row used to say "completed", which read as a tool that
+        /// worked and left the failure invisible in history.
+        #[test]
+        fn a_failed_tool_persists_as_error_with_its_reason() {
+            let tools = fold(concat!(
+                "event: tool.started\n",
+                r#"data: {"message_id":"m1","tool_name":"memory","preview":"🧠 remember"}"#,
+                "\n\n",
+                "event: tool.failed\n",
+                r#"data: {"message_id":"m1","tool_name":"memory","preview":"memory: write refused"}"#,
+                "\n\n",
+            ));
+            assert_eq!(tools.len(), 1, "{tools:?}");
+            assert_eq!(tools[0].status, "error");
+            assert_eq!(tools[0].label, "memory: write refused");
+            assert_eq!(
+                serde_json::to_value(&tools).unwrap(),
+                json!([{
+                    "id": "m1:memory#1",
+                    "name": "memory",
+                    "label": "memory: write refused",
+                    "status": "error"
+                }])
+            );
+        }
+
+        /// `error` is terminal in the column too: a straggler progress frame
+        /// addressed to the same call — Hermes keeps the ordinal open after a
+        /// failure — must not walk the row back to "running" and leave it
+        /// spinning in history forever.
+        #[test]
+        fn a_straggler_frame_never_reopens_a_failed_row() {
+            let tools = fold(concat!(
+                "event: tool.started\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","preview":"🖥 ls"}"#,
+                "\n\n",
+                "event: tool.failed\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","preview":"exit 1"}"#,
+                "\n\n",
+                "event: tool.progress\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","delta":"still talking"}"#,
+                "\n\n",
+                "event: tool.completed\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","preview":""}"#,
+                "\n\n",
+            ));
+            assert_eq!(tools.len(), 1, "{tools:?}");
+            assert_eq!(tools[0].status, "error");
+        }
+
+        /// AND THE SAME FOR A COMPLETION. `tool.progress` addresses the call
+        /// still open — the ordinal does not advance when a call ends — so a
+        /// straggler frame after `tool.completed` would persist the row as
+        /// "running" and leave history showing a tool that never finished.
+        /// One terminality rule for both endings, shared with the client's
+        /// fold (`ui/src/lib/sse-parse.ts`).
+        #[test]
+        fn a_straggler_frame_never_reopens_a_completed_row() {
+            let tools = fold(concat!(
+                "event: tool.started\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","preview":"🖥 ls"}"#,
+                "\n\n",
+                "event: tool.completed\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","preview":""}"#,
+                "\n\n",
+                "event: tool.progress\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","delta":"still talking"}"#,
+                "\n\n",
+            ));
+            assert_eq!(tools.len(), 1, "{tools:?}");
+            assert_eq!(tools[0].status, "completed");
+            assert_eq!(
+                tools[0].label, "still talking",
+                "the chatter still lands; only the verdict is fixed"
+            );
+        }
+
+        /// The completions arm's own telemetry, same verdict: a failure rides
+        /// `hermes.tool.progress` with a status word, and it lands as `error`.
+        #[test]
+        fn the_completions_arm_persists_error_too() {
+            let tools = fold(concat!(
+                "event: hermes.tool.progress\n",
+                r#"data: {"tool":"search","toolCallId":"c1","emoji":"🔎","status":"running"}"#,
+                "\n\n",
+                "event: hermes.tool.progress\n",
+                r#"data: {"tool":"search","toolCallId":"c1","label":"quota exhausted","status":"error"}"#,
+                "\n\n",
+            ));
+            assert_eq!(tools.len(), 1, "{tools:?}");
+            assert_eq!(tools[0].status, "error");
+            assert_eq!(tools[0].label, "quota exhausted");
+        }
+
+        /// The three words, and only the three: a completed call still
+        /// completes, and a call still open still says running.
+        #[test]
+        fn the_other_two_words_are_unchanged() {
+            let tools = fold(concat!(
+                "event: tool.started\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","preview":"🖥 ls"}"#,
+                "\n\n",
+                "event: tool.completed\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","preview":""}"#,
+                "\n\n",
+                "event: tool.started\n",
+                r#"data: {"message_id":"m1","tool_name":"memory","preview":"🧠 remember"}"#,
+                "\n\n",
+            ));
+            assert_eq!(tools.len(), 2, "{tools:?}");
+            assert_eq!(tools[0].status, "completed");
+            assert_eq!(tools[1].status, "running");
+        }
+    }
+
     /// The silence ceiling parses like a knob: unset defaults to ten minutes,
     /// garbage falls back to the same, and the floor holds at a minute.
     #[test]
@@ -908,6 +1471,93 @@ mod tests {
         );
         assert!(TurnDeath::Idle.reason().contains("went silent for "));
         assert!(TurnDeath::Idle.reason().ends_with("s mid-turn"));
+    }
+
+    /// The doom-loop guard, at its pure seam. The counting and the verdict are
+    /// the whole policy — the steer and the stop behind them are HTTP calls
+    /// into a live container, which no unit test here can stand in for.
+    mod doom_loop {
+        use super::*;
+
+        /// A fresh tally, replayed over a list of calls, so the bookkeeping is
+        /// exercised through the verdict rather than beside it.
+        fn replay(calls: &[(&str, &str)]) -> Vec<Option<LoopAction>> {
+            let mut tally = HashMap::new();
+            calls
+                .iter()
+                .map(|(name, label)| count_repeat(&mut tally, name, label))
+                .collect()
+        }
+
+        /// The thresholds, on the bare count: a nudge at three, the plug at
+        /// five, and silence everywhere else — including PAST five, so a pair
+        /// stuck at a dozen repeats still stops once.
+        #[test]
+        fn verdict_fires_once_per_threshold() {
+            assert_eq!(loop_verdict(0), None);
+            assert_eq!(loop_verdict(1), None);
+            assert_eq!(loop_verdict(2), None);
+            assert_eq!(loop_verdict(3), Some(LoopAction::Warn));
+            assert_eq!(loop_verdict(4), None);
+            assert_eq!(loop_verdict(5), Some(LoopAction::Stop));
+            assert_eq!(loop_verdict(6), None);
+            assert_eq!(loop_verdict(50), None);
+        }
+
+        /// The same call five times: one word, then the plug.
+        #[test]
+        fn a_repeating_pair_warns_then_stops() {
+            let calls = [("read_file", "a.rs"); 5];
+            assert_eq!(
+                replay(&calls),
+                vec![
+                    None,
+                    None,
+                    Some(LoopAction::Warn),
+                    None,
+                    Some(LoopAction::Stop)
+                ]
+            );
+        }
+
+        /// The ARGUMENTS are what make it a loop. One tool used five times on
+        /// five different files is an agent working, and must never be touched.
+        #[test]
+        fn one_tool_on_different_arguments_is_not_a_loop() {
+            let verdicts = replay(&[
+                ("read_file", "a.rs"),
+                ("read_file", "b.rs"),
+                ("read_file", "c.rs"),
+                ("read_file", "d.rs"),
+                ("read_file", "e.rs"),
+            ]);
+            assert!(verdicts.iter().all(Option::is_none));
+        }
+
+        /// Two pairs are counted apart: interleaving them does not add up to
+        /// one loop, and the pair that does repeat still reaches its own
+        /// threshold.
+        #[test]
+        fn pairs_are_counted_separately() {
+            let verdicts = replay(&[
+                ("grep", "needle"),
+                ("read_file", "a.rs"),
+                ("grep", "needle"),
+                ("read_file", "a.rs"),
+                ("grep", "needle"),
+            ]);
+            assert_eq!(verdicts[4], Some(LoopAction::Warn));
+            assert_eq!(verdicts[3], None);
+        }
+
+        /// An unlabelled frame carries no arguments to compare, so it is not
+        /// counted — every such call of one tool would collide into a single
+        /// pair and read as a loop the moment the tool was used three times.
+        #[test]
+        fn unlabelled_calls_are_never_counted() {
+            let verdicts = replay(&[("bash", ""), ("bash", "   "), ("bash", ""), ("bash", "")]);
+            assert!(verdicts.iter().all(Option::is_none));
+        }
     }
 
     /// TALA-33: the auto-sync trigger policy, at the seam the tests can

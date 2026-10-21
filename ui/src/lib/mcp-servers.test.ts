@@ -31,6 +31,13 @@ describe('isInternalServer', () => {
     expect(isInternalServer(server({ url: 'talaria-workbench://core' }))).toBe(true)
   })
 
+  it('counts a marketplace package install as external', () => {
+    // Its URL is a routing token, not a hostname — but it is third-party code
+    // an admin chose to run, added and removed like any hosted server. It
+    // used to land on the Built-in tab, where nothing could remove it.
+    expect(isInternalServer(server({ url: 'talaria-pkg://notion-mcp' }))).toBe(false)
+  })
+
   it('counts a registered third-party endpoint as external', () => {
     expect(isInternalServer(server({ url: 'https://mcp.linear.app/mcp' }))).toBe(false)
     expect(isInternalServer(server({ url: 'http://mcp.corp.internal/mcp' }))).toBe(false)

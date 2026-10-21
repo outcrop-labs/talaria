@@ -61,3 +61,39 @@ export async function queueChatMessage(params: {
   // prove it arrived; the caller has nothing to read from it.
   await postJson<{ queued: true; conversationId: string }>('/api/chat', { ...params, queue: true })
 }
+
+/** What a stop did. `hermes` says the turn was running as a Hermes session, so
+ *  the RUN was told to stop and not merely this reader's stream. Callers fire
+ *  and forget; the field is named because the route answers it and the wire is
+ *  worth reading in a devtools log. */
+export interface StopResult {
+  ok: true
+  hermes: boolean
+}
+
+/** Stop the turn a conversation is streaming. A reader's abort is LOCAL — it
+ *  ends this client's stream and nothing else — so a Hermes run carried on
+ *  generating (and spending) behind a frozen transcript. This is the half that
+ *  reaches the run. Nothing streaming is a 409 and throws like any other
+ *  non-2xx: a stop that arrives after the turn landed has nothing to do. */
+export async function stopChat(conversationId: string): Promise<StopResult> {
+  return postJson<StopResult>(`/api/conversations/${encodeURIComponent(conversationId)}/stop`)
+}
+
+/** Where a mid-turn message landed. `steered` — the running turn took it;
+ *  `queued` — its window had closed, so the agent picks it up after this
+ *  reply, exactly as `queueChatMessage` would have. Either way the server owns
+ *  the row it wrote, and `messageId` is that row. */
+export type SteerResult = { steered: true; messageId: string } | { queued: true; messageId: string }
+
+/** Send NOW: hand a message to the reply that is already streaming, instead of
+ *  queueing it behind that reply (`queueChatMessage`, above). Which of the two
+ *  actually happened is the server's call — a run past its steering window
+ *  queues — so the caller reads the answer rather than assuming it. A 409
+ *  means nothing is streaming any more, and the ordinary send path is then
+ *  exactly right. */
+export async function steerChat(params: { conversationId: string; content: string }): Promise<SteerResult> {
+  return postJson<SteerResult>(`/api/conversations/${encodeURIComponent(params.conversationId)}/steer`, {
+    content: params.content,
+  })
+}

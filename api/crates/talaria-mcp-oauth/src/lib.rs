@@ -35,6 +35,8 @@ use talaria_mcp_jsonrpc::MCP_PROTOCOL_VERSION;
 use talaria_safe_fetch::{SafeFetch, safe_fetch};
 use talaria_secretbox::SecretBox;
 
+pub mod guides;
+
 // ── Domain pinning ──────────────────────────────────────────────────────────
 
 // An approximation of the public suffix list: enough multi-label suffixes
@@ -164,7 +166,13 @@ async fn post_json(
 fn as_metadata_candidates(as_url: &str) -> Option<Vec<String>> {
     let parsed = reqwest::Url::parse(as_url).ok()?;
     let scheme = parsed.scheme();
-    let host = parsed.host_str()?;
+    // The authority, not the bare host: an issuer on a non-default port
+    // (a local stub, an internal AS behind :8443) publishes its metadata
+    // there too, and the bare host would silently ask the default port.
+    let host = match parsed.port() {
+        Some(port) => format!("{}:{port}", parsed.host_str()?),
+        None => parsed.host_str()?.to_string(),
+    };
     let path = parsed.path().trim_end_matches('/');
     let mut candidates = vec![
         format!("{scheme}://{host}{path}/.well-known/oauth-authorization-server"),
@@ -401,6 +409,60 @@ pub async fn ensure_oauth_config(
     Ok(None)
 }
 
+/// Re-run discovery against the live server and replace the stored config,
+/// keeping a registered/manual client and a scopes override. The card's
+/// "Re-detect auth": a server registered while it was down, or one that
+/// started speaking OAuth after it was registered, is fixed here. A server
+/// that no longer advertises OAuth keeps a MANUAL client (an admin typed it
+/// on purpose) and otherwise drops its config.
+pub async fn redetect_oauth_config(
+    pg: &PgPool,
+    server_id: &str,
+    server_url: &str,
+) -> Result<Option<Value>, String> {
+    let existing = stored_oauth(pg, server_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let fresh = discover_oauth(server_url).await;
+    let keep_client = existing.as_ref().and_then(|o| o.get("client").cloned());
+    let keep_scopes = existing
+        .as_ref()
+        .and_then(|o| o.get("scopesOverride").cloned());
+    let manual = keep_client.is_some()
+        && existing
+            .as_ref()
+            .and_then(|o| o.get("registrationEndpoint"))
+            .is_none_or(Value::is_null);
+    let next = match (fresh, existing) {
+        (Some(mut cfg), _) => {
+            let o = cfg
+                .as_object_mut()
+                .expect("discover_oauth answers an object");
+            if let Some(c) = keep_client {
+                o.insert("client".into(), c);
+            }
+            if let Some(sc) = keep_scopes {
+                o.insert("scopesOverride".into(), sc);
+            }
+            Some(cfg)
+        }
+        (None, Some(old)) if manual => Some(old),
+        (None, _) => None,
+    };
+    match &next {
+        Some(cfg) => store_oauth(pg, server_id, cfg).await,
+        None => sqlx::query(
+            "update mcp_servers set oauth = null, updated_at = now() where id::text = $1",
+        )
+        .bind(server_id)
+        .execute(pg)
+        .await
+        .map(|_| ()),
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(next)
+}
+
 /// The refusal sentence for a failed dynamic registration: the upstream's own
 /// code and description kept (they say why), then the way out — the exact
 /// callback to register on a dashboard app. Pure so the tests can pin it.
@@ -619,8 +681,13 @@ pub async fn start_oauth(
         "resource",
         &str_field(&config, "resource").unwrap_or_default(),
     );
-    let scopes: Vec<String> = config
-        .get("scopes")
+    // An admin-set override (manual apps often need an explicit scope list)
+    // beats the discovered set.
+    let scopes_source = config
+        .get("scopesOverride")
+        .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+        .or_else(|| config.get("scopes"));
+    let scopes: Vec<String> = scopes_source
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
@@ -789,6 +856,14 @@ pub async fn handle_oauth_callback(
         return Err(msg);
     }
     store_tokens(pg, sb, &server_id, &subject, &parse_token_response(&j)).await?;
+    // A fresh sign-in answers any earlier refusal: drop its Reconnect flag.
+    // Best effort — the flag is only ever read alongside absent tokens.
+    let _ =
+        sqlx::query("delete from mcp_oauth_reconnect where server_id::text = $1 and subject = $2")
+            .bind(&server_id)
+            .bind(&subject)
+            .execute(pg)
+            .await;
     Ok((subject, server_id))
 }
 
@@ -842,8 +917,40 @@ async fn stored_tokens(
         .map_err(|_| "token store unreadable".to_string())
 }
 
+/// The sentence a grant the provider refused carries — the `reconnect`
+/// probe's detail and the reason Settings → Connections says Reconnect.
+pub const REFRESH_REJECTED: &str = "the provider rejected the refresh of the connected account, \
+     so the grant is gone: reconnect it on the server card";
+
+/// `(access token, expiresAt ms, refresh token)` of a stored token document.
+fn token_parts(t: &Value) -> (String, i64, Option<String>) {
+    (
+        str_field(t, "accessToken").unwrap_or_default(),
+        t.get("expiresAt").and_then(Value::as_i64).unwrap_or(0),
+        str_field(t, "refreshToken"),
+    )
+}
+
+/// Within a minute of expiry (0 = the provider named no expiry: never stale).
+fn is_stale(expires_at: i64, now: i64) -> bool {
+    expires_at != 0 && expires_at - now < 60_000
+}
+
 /// A live access token for the subject — silently refreshed when expiring.
 /// None = not connected (or refresh rejected → tokens dropped, reconnect).
+///
+/// THE REFRESH IS SINGLE-FLIGHT per (server, subject), across every caller
+/// and every instance: it runs under the token row's lock and re-reads the
+/// row once it holds it. Providers that rotate refresh tokens (the MCP auth
+/// spec requires it for public clients) answer a second refresh with the
+/// already-spent token 400 — without the lock, the gateway and the health
+/// pass refreshing the same grant at once would have the loser delete the
+/// winner's fresh tokens and flag a healthy grant for reconnect.
+///
+/// A REJECTED refresh is recorded where it happens: the token row goes (that
+/// is what forces the reconnect) and `mcp_oauth_reconnect` gets the flag, so
+/// "this grant existed and the provider refused it" survives whichever
+/// caller hit it — usually the gateway, mid agent call.
 pub async fn oauth_token_for(
     pg: &PgPool,
     sb: &SecretBox,
@@ -853,16 +960,13 @@ pub async fn oauth_token_for(
     let Some(t) = stored_tokens(pg, sb, server_id, subject).await? else {
         return Ok(None);
     };
-    let access = str_field(&t, "accessToken").unwrap_or_default();
-    let expires_at = t.get("expiresAt").and_then(Value::as_i64).unwrap_or(0);
-    let refresh = str_field(&t, "refreshToken");
-    let stale = expires_at != 0 && expires_at - now_ms() < 60_000;
-    if !stale {
+    let (access, expires_at, refresh) = token_parts(&t);
+    if !is_stale(expires_at, now_ms()) {
         return Ok(Some(access));
     }
-    let Some(refresh_token) = refresh else {
+    if refresh.is_none() {
         return Ok(Some(access)); // long-shot: let the upstream judge
-    };
+    }
     let srv: Option<(Option<Value>, String)> =
         sqlx::query_as("select oauth, url from mcp_servers where id::text = $1")
             .bind(server_id)
@@ -873,6 +977,44 @@ pub async fn oauth_token_for(
         return Ok(Some(access));
     };
     let Some((client_id, client_secret, _)) = client_of(&oauth, sb) else {
+        return Ok(Some(access));
+    };
+    // Off-domain token endpoint: never send the secret, let the upstream
+    // judge the old token.
+    let refresh_url = match pin_to(&server_url).and_then(|p| {
+        p.check(
+            &str_field(&oauth, "tokenEndpoint").unwrap_or_default(),
+            "the token endpoint",
+        )
+    }) {
+        Ok(u) => u,
+        Err(_) => return Ok(Some(access)),
+    };
+
+    // Take the row, then look again: whoever held it before us may already
+    // have refreshed (fresh tokens — use them) or seen the grant refused
+    // (no row — not connected). A dropped transaction rolls back, so every
+    // early return below releases the lock untouched.
+    let mut tx = pg.begin().await.map_err(|e| e.to_string())?;
+    let locked: Option<(String,)> = sqlx::query_as(
+        "select tokens_enc from mcp_oauth_tokens where server_id::text = $1 and subject = $2 \
+         for update",
+    )
+    .bind(server_id)
+    .bind(subject)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some((enc,)) = locked else {
+        return Ok(None);
+    };
+    let t: Value = serde_json::from_str(&sb.open(&enc).map_err(|e| e.to_string())?)
+        .map_err(|_| "token store unreadable".to_string())?;
+    let (access, expires_at, refresh) = token_parts(&t);
+    if !is_stale(expires_at, now_ms()) {
+        return Ok(Some(access));
+    }
+    let Some(refresh_token) = refresh else {
         return Ok(Some(access));
     };
     let mut pairs = vec![
@@ -887,17 +1029,7 @@ pub async fn oauth_token_for(
     if let Some(secret) = client_secret {
         pairs.push(("client_secret", secret));
     }
-    // Off-domain token endpoint: never send the secret, let the upstream
-    // judge the old token.
-    let refresh_url = match pin_to(&server_url).and_then(|p| {
-        p.check(
-            &str_field(&oauth, "tokenEndpoint").unwrap_or_default(),
-            "the token endpoint",
-        )
-    }) {
-        Ok(u) => u,
-        Err(_) => return Ok(Some(access)),
-    };
+    // The token POST's own 15s timeout bounds how long the row stays locked.
     let r = token_post(&refresh_url, token_body(pairs)).await;
     let j = r
         .as_ref()
@@ -908,8 +1040,18 @@ pub async fn oauth_token_for(
         if let Some(r) = &r
             && (r.status == 400 || r.status == 401)
         {
-            let _ = drop_oauth_tokens(pg, server_id, subject).await; // revoked — force reconnect
+            // Revoked — force the reconnect, and leave the trace that says so.
+            sqlx::query("delete from mcp_oauth_tokens where server_id::text = $1 and subject = $2")
+                .bind(server_id)
+                .bind(subject)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+            tx.commit().await.map_err(|e| e.to_string())?;
+            flag_refresh_rejected(pg, server_id, subject).await;
         }
+        // Unanswered (network, 5xx): the transaction rolls back and the
+        // grant stays for the next try.
         return Ok(None);
     }
     let mut next = parse_token_response(j.as_ref().expect("ok implies j"));
@@ -920,7 +1062,20 @@ pub async fn oauth_token_for(
             .expect("parse_token_response answers an object")
             .insert("refreshToken".into(), Value::String(refresh_token));
     }
-    store_tokens(pg, sb, server_id, subject, &next).await?;
+    let sealed = sb
+        .seal(&next.to_string())
+        .map_err(|e| format!("token seal failed: {e}"))?;
+    sqlx::query(
+        "update mcp_oauth_tokens set tokens_enc = $3, updated_at = now() \
+         where server_id::text = $1 and subject = $2",
+    )
+    .bind(server_id)
+    .bind(subject)
+    .bind(&sealed)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
     Ok(Some(
         next.get("accessToken")
             .and_then(Value::as_str)
@@ -929,18 +1084,49 @@ pub async fn oauth_token_for(
     ))
 }
 
-/// Store admin-provided OAuth app credentials (providers without dynamic
+/// The reconnect flag for a refused grant. Written after the token row's
+/// delete committed, on its own: a failure here costs the Reconnect wording,
+/// never the delete that forces the reconnect.
+async fn flag_refresh_rejected(pg: &PgPool, server_id: &str, subject: &str) {
+    if let Err(e) = sqlx::query(
+        "insert into mcp_oauth_reconnect (server_id, subject, detail) values ($1::uuid, $2, $3) \
+         on conflict (server_id, subject) do update set detail = $3, flagged_at = now()",
+    )
+    .bind(server_id)
+    .bind(subject)
+    .bind(REFRESH_REJECTED)
+    .execute(pg)
+    .await
+    {
+        tracing::warn!("[mcp/oauth] reconnect flag failed for {server_id}: {e}");
+    }
+}
+
+/// Admin-provided OAuth app credentials (providers without dynamic
 /// registration — GitHub). The redirect URI must be registered with the
 /// provider exactly as shown in the UI.
+pub struct ManualClient<'a> {
+    pub client_id: &'a str,
+    pub client_secret: Option<&'a str>,
+    pub redirect_uri: &'a str,
+    /// An explicit scope list; None/empty = use what the provider advertised.
+    pub scopes: Option<&'a [String]>,
+}
+
+/// Store a manual client on the server's OAuth config.
 pub async fn set_manual_oauth_client(
     pg: &PgPool,
     sb: &SecretBox,
     server_id: &str,
     server_url: &str,
-    client_id: &str,
-    client_secret: Option<&str>,
-    redirect_uri: &str,
+    client: &ManualClient<'_>,
 ) -> Result<(), String> {
+    let ManualClient {
+        client_id,
+        client_secret,
+        redirect_uri,
+        scopes,
+    } = *client;
     let Some(config) = ensure_oauth_config(pg, server_id, server_url).await? else {
         return Err("this server doesn't advertise OAuth".into());
     };
@@ -950,6 +1136,17 @@ pub async fn set_manual_oauth_client(
     let mut next = config;
     let next_obj = next.as_object_mut().expect("the config is an object");
     next_obj.remove("dcrRejected"); // a manual client supersedes any refusal
+    match scopes.filter(|s| !s.is_empty()) {
+        Some(s) => {
+            next_obj.insert(
+                "scopesOverride".into(),
+                Value::Array(s.iter().map(|x| Value::String(x.clone())).collect()),
+            );
+        }
+        None => {
+            next_obj.remove("scopesOverride");
+        }
+    }
     next_obj.insert(
         "client".into(),
         serde_json::json!({
@@ -967,7 +1164,7 @@ pub async fn set_manual_oauth_client(
 /// Surface the flags the UI needs: is this OAuth, does it self-register, is a
 /// client configured, has a registration been refused. Pure so the tests can
 /// drive it directly.
-fn meta_of(oauth: &Value) -> Value {
+fn meta_of(oauth: &Value, server_url: &str) -> Value {
     serde_json::json!({
         "dcr": !oauth.get("registrationEndpoint").map(Value::is_null).unwrap_or(true),
         "clientSet": oauth.get("client").is_some(),
@@ -977,17 +1174,43 @@ fn meta_of(oauth: &Value) -> Value {
         // The upstream's error code when it refused our registration (Vercel:
         // "invalid_redirect_uri"); null when never refused or since cleared.
         "dcrRejected": oauth.get("dcrRejected").and_then(Value::as_str),
+        // What the provider advertised, and what an admin pinned instead.
+        "scopes": oauth.get("scopes").cloned().filter(Value::is_array).unwrap_or_else(|| Value::Array(Vec::new())),
+        "scopesOverride": oauth.get("scopesOverride").cloned().filter(Value::is_array),
+        // Where the OAuth app gets created, for providers we have a row for.
+        "guide": guides::guide_for(server_url, oauth.get("authorizationEndpoint").and_then(Value::as_str)),
     })
 }
 
 pub async fn oauth_meta(pg: &PgPool, server_id: &str) -> Result<Option<Value>, sqlx::Error> {
-    let oauth = stored_oauth(pg, server_id).await?;
-    Ok(oauth.as_ref().map(meta_of))
+    let row: Option<(Option<Value>, String)> =
+        sqlx::query_as("select oauth, url from mcp_servers where id::text = $1")
+            .bind(server_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.and_then(|(oauth, url)| oauth.filter(Value::is_object).map(|o| meta_of(&o, &url))))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_grant_is_stale_inside_its_last_minute_and_never_without_an_expiry() {
+        let now = 1_000_000;
+        assert!(!is_stale(0, now), "no expiry named: never refreshed");
+        assert!(is_stale(now + 59_999, now));
+        assert!(is_stale(now - 1, now), "already expired");
+        assert!(!is_stale(now + 60_000, now));
+    }
+
+    #[test]
+    fn token_parts_reads_the_stored_document() {
+        let t = serde_json::json!({ "accessToken": "a", "expiresAt": 5, "refreshToken": "r" });
+        assert_eq!(token_parts(&t), ("a".into(), 5, Some("r".into())));
+        let bare = serde_json::json!({ "accessToken": "a", "refreshToken": null });
+        assert_eq!(token_parts(&bare), ("a".into(), 0, None));
+    }
 
     #[test]
     fn registrable_domains_collapse_to_the_company() {
@@ -1076,6 +1299,15 @@ mod tests {
                 "https://mcp.linear.app/.well-known/openid-configuration",
             ]
         );
+        // An issuer on a non-default port keeps it: the bare host would ask
+        // :443 for metadata the AS serves on :5390 (a local stub, an internal
+        // AS behind :8443).
+        let c = as_metadata_candidates("https://127.0.0.1:5390/oauth").unwrap();
+        assert_eq!(
+            c[0],
+            "https://127.0.0.1:5390/oauth/.well-known/oauth-authorization-server"
+        );
+        assert!(c.iter().all(|u| u.starts_with("https://127.0.0.1:5390/")));
         assert!(as_metadata_candidates("not a url").is_none());
     }
 
@@ -1103,32 +1335,56 @@ mod tests {
     #[test]
     fn meta_of_flags_dcr_refusals_and_manual_clients() {
         // Plain DCR provider: registrable, no client, never refused.
-        let m = meta_of(&serde_json::json!({
-            "registrationEndpoint": "https://api.vercel.com/login/oauth/register"
-        }));
+        let url = "https://mcp.vercel.com/";
+        let m = meta_of(
+            &serde_json::json!({
+                "registrationEndpoint": "https://api.vercel.com/login/oauth/register"
+            }),
+            url,
+        );
         assert_eq!(m["dcr"], Value::Bool(true));
         assert_eq!(m["clientSet"], Value::Bool(false));
         assert_eq!(m["dcrRejected"], Value::Null);
+        assert_eq!(m["scopes"], serde_json::json!([]));
+        assert_eq!(m["scopesOverride"], Value::Null);
+        assert_eq!(
+            m["guide"]["domain"], "vercel.com",
+            "the portal row rides along"
+        );
         // Vercel after a refused connect: refused, no client.
-        let m = meta_of(&serde_json::json!({
-            "registrationEndpoint": "https://api.vercel.com/login/oauth/register",
-            "dcrRejected": "invalid_redirect_uri"
-        }));
+        let m = meta_of(
+            &serde_json::json!({
+                "registrationEndpoint": "https://api.vercel.com/login/oauth/register",
+                "dcrRejected": "invalid_redirect_uri"
+            }),
+            url,
+        );
         assert_eq!(
             m["dcrRejected"],
             Value::String("invalid_redirect_uri".into())
         );
         // Manual client saved: the refusal is cleared, clientSet wins.
-        let m = meta_of(&serde_json::json!({
-            "registrationEndpoint": "https://api.vercel.com/login/oauth/register",
-            "client": { "id": "cl_x", "redirectUri": "https://talaria.example.com/api/mcp/oauth/callback" }
-        }));
+        let m = meta_of(
+            &serde_json::json!({
+                "registrationEndpoint": "https://api.vercel.com/login/oauth/register",
+                "client": { "id": "cl_x", "redirectUri": "https://talaria.example.com/api/mcp/oauth/callback" },
+                "scopesOverride": ["read"]
+            }),
+            url,
+        );
         assert_eq!(m["clientSet"], Value::Bool(true));
         assert_eq!(m["dcrRejected"], Value::Null);
-        // GitHub shape: no registration endpoint at all.
+        assert_eq!(m["scopesOverride"], serde_json::json!(["read"]));
+        // GitHub shape: no registration endpoint at all — and the guide
+        // resolves through the issuer, not the MCP host.
         let m = meta_of(
             &serde_json::json!({ "authorizationEndpoint": "https://github.com/login/oauth/authorize" }),
+            "https://api.githubcopilot.com/mcp/",
         );
         assert_eq!(m["dcr"], Value::Bool(false));
+        assert_eq!(m["guide"]["domain"], "github.com");
+        // Nobody we have a row for: guide is null, everything else intact.
+        let m = meta_of(&serde_json::json!({}), "https://mcp.example.com/mcp");
+        assert_eq!(m["guide"], Value::Null);
     }
 }
