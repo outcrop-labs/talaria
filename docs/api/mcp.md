@@ -25,7 +25,7 @@
 | [`/api/mcp/library/featured`](#apimcplibraryfeatured) | PUT | `admin` |
 | [`/api/mcp/library/liveness`](#apimcplibraryliveness) | POST | `admin` |
 | [`/api/mcp/library/sync`](#apimcplibrarysync) | POST | `session` + `perm:agents.manage` |
-| [`/api/mcp/oauth/callback`](#apimcpoauthcallback) | GET | `public` |
+| [`/api/mcp/oauth/callback`](#apimcpoauthcallback) | GET | `session` + `perm:agents.manage` |
 | [`/api/mcp/oauth/start`](#apimcpoauthstart) | GET | `session` + `perm:agents.manage` |
 | [`/api/mcp/servers`](#apimcpservers) | GET | `session` + `perm:agents.manage` |
 | [`/api/mcp/servers`](#apimcpservers) | POST | `session` + `perm:agents.manage` |
@@ -195,12 +195,14 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs`](../../api/cra
 Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_oauth_callback.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_oauth_callback.rs)
 
 > /api/mcp/oauth/callback.
-> The OAuth redirect target. No session requirement — identity was bound to
-> the state row when the flow started; the state is single-use and expiring.
+> The OAuth redirect target. The state row bound the SUBJECT when the flow
+> started; this route binds the PERSON: it needs a session, and the signed-in
+> user must be the subject the state names (or hold agents.manage for an
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `public` | — | `…` | 200 | audit |
+| GET | `session` + `perm:agents.manage` | — | `…` | 200 | audit |
 
 ## `/api/mcp/oauth/start`
 
@@ -228,7 +230,7 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_servers.rs`](../../api/cra
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `perm:agents.manage` | — | `{servers}` | 200 | — |
-| POST | `session` + `perm:agents.manage` | [body](#post-apimcpservers-body) | `{server}` | 200, 400 | audit |
+| POST | `session` + `perm:agents.manage` | [body](#post-apimcpservers-body) | `{server}` | 200, 400, 403 | audit |
 
 ### POST `/api/mcp/servers` body
 
@@ -238,6 +240,7 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_servers.rs`](../../api/cra
 | `label` | `string?(120)` |  |
 | `description` | `string? nullish(500)` |  |
 | `url` | `url` |  |
+| `force` | `bool?` |  |
 | `headers` | `optional_headers` |  |
 | `env` | `optional_headers` | The package credential capture: env values + filled run-args, sealed into one blob (`pkg::SealedDoc`). |
 | `timeoutSecs` | `int? nullish (>0)` |  |

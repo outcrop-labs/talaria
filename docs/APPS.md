@@ -82,8 +82,15 @@ rebuilding (managed update flows are on the roadmap).
   `talaria backup` dumps each app DB into the snapshot. The document store (`ctx.store`)
   is the API; app authors never see a connection string.
 
-- A throw in an app's UI, server, or MCP is isolated: the pane shows the crash, the rest of
-  Talaria keeps running.
+- A throw in an app's UI, server, or MCP is isolated — when it is awaited: the pane shows the
+  crash, the rest of Talaria keeps running. The boundary is the exception boundary, not a process
+  one (apps run fully trusted, in-process): a detached `setTimeout(() => { throw })` or an
+  un-awaited promise that rejects is an unhandled rejection in the host, and `process.exit` or
+  an infinite loop is the host's. Await what you start.
+- A tool argument may arrive carrying a resolved credential (an agent's `«secret:…»` handle is
+  resolved on its way into `mcp.ts`), and the app must not persist it — not in `ctx.store`, not
+  in a log, not in a thrown message. The call record Talaria keeps never stores arguments either
+  ([mcp.md](./sdk/mcp.md)).
 - App MCP servers appear in Manage → MCP badged **app**; their tool catalogs come from the module
   (no probe), and they cannot be deleted or re-pointed there — lifecycle belongs to Manage → Apps.
 - Everything an app's users do runs under their own session: platform permissions, resource ACLs,

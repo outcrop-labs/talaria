@@ -353,7 +353,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/chat.rs`](../../api/crates/t
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apichat-body) | `{role, content}` | 200, 202, 400, 403, 404, 500 | SSE |
+| POST | `session` | [body](#post-apichat-body) | `{role, content}` | 200, 202, 400, 403, 404, 409, … | SSE |
 
 ### POST `/api/chat` body
 

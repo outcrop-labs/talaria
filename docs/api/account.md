@@ -46,7 +46,7 @@ Source: [`api/crates/talaria-routes-integrations/src/account/auth_claim.rs`](../
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `public` | [body](#post-apiauthclaim-body) | `{email, role, provider}` | 200, 400, 409, 429 | audit |
+| POST | `public` | [body](#post-apiauthclaim-body) | `{email, role, provider}` | 200, 400, 403, 409, 429 | audit |
 
 ### POST `/api/auth/claim` body
 
@@ -238,7 +238,7 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me_mcp.rs`](../../a
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{servers}` | 200 | — |
-| PUT | `session` | [body](#put-apimemcp-body) | `{ok}` | 200, 400 | audit |
+| PUT | `session` | [body](#put-apimemcp-body) | `{ok}` | 200, 400, 404 | audit |
 
 ### PUT `/api/me/mcp` body
 

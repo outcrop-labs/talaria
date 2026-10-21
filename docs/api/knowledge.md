@@ -272,7 +272,7 @@ Source: [`api/crates/talaria-routes-knowledge/src/knowledge/kb_spaces.rs`](../..
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `{spaces}` | 200 | — |
-| POST | `dual` | [body](#post-apikbspaces-body) | `{space}` | 200, 400 | audit |
+| POST | `dual` | [body](#post-apikbspaces-body) | `{space}` | 200, 400, 409 | audit |
 
 ### POST `/api/kb/spaces` body
 

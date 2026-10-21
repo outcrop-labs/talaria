@@ -166,7 +166,12 @@ app reads to dial each agent's persona gateway directly on its published port. N
 multiplexer.
 
 - Every model spec in a rendered config routes through the app's LLM gateway, so agents have
-  exactly one upstream — guarded, metered, attributed.
+  exactly one upstream — guarded, metered, attributed. Each agent reaches it on **its own**
+  gateway key (`agent:<slug>`, stamped as `LLM_API_KEY_<SLUG>` and interpolated into that
+  service alone as `LLM_API_KEY`): the relay budgets it as the agent (`llm_budgets.perAgent`
+  / `agents{<model>}`, on the same `agent_model` window its chat turns land in) and refuses
+  any model outside the set its rendered config routes to (`gateway_agent_models`, written
+  by the render). No container holds a fleet-wide gateway secret.
 - Each agent presents its own `tak_` key; the renderer rewrites `fleet/.env` from the DB
   every render (0600 in a 0700 dir).
 - **Blue/green rolls** (api/src/fleet/reconcile.rs): the incoming slot comes up on a fresh port,
@@ -184,8 +189,10 @@ multiplexer.
 
 ## Agent work and the guardrails
 
-The MCP toolkit (`mcp/src/index.ts`) is **51 registered tools** — tickets, documents, KB,
-channels, Google calendar/mail, research, web search, board membership. The guardrail that
+The MCP toolkit (`mcp/src/index.ts`) is the fleet's registered tools — tickets, documents, KB,
+channels, Google calendar/mail, research, board membership — and no document states the count:
+it changes with every registration, and `bun run check` (`toolkit-tool-count-drift`) fails any doc
+that writes a number the source does not have; `mcp/README.md` lists every tool by name. The guardrail that
 actually holds is server-side and narrow: **agents cannot write assignees and cannot make a
 terminal status move** — the final sign-off is structurally a human's. The refusal predicate
 lives once in `server/tasks.ts` (`agentSafePatch`); a second definition anywhere fails the
@@ -233,7 +240,7 @@ Rust api's (`api/src/jobs.rs`), `off` arms nobody (the kill switch; `rust` is
 the retired coexistence-era value and reads as unset). Registered jobs with
 named intervals, **exactly-once via a Redis lease**
 — one run per interval fleet-wide; unreachable Redis skips the tick rather than running
-unguarded. The first eight jobs are required: a missing registration fails boot. The api
+unguarded. The first nine jobs are required: a missing registration refuses to arm the schedule, and the arm loop says which job is missing on every retry (boot never reports the schedule armed). The api
 arms in every posture that serves — `talaria dev`'s child included, so background jobs
 fire locally exactly as in prod; a bare `vite dev` with no api is the one posture that
 never arms them, which is why "my background job never fires locally" usually means the

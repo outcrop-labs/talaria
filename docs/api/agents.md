@@ -79,7 +79,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/agent_ask.rs`](../../api/cra
 > POST /api/agent/ask — the agent asks the person a question with real
 > options, on the turn it is writing.
 >
-> NO CONVERSATION PARAMETER, the same call `/api/agent/todo` and the research
+> AN OPTIONAL `conversationId`, the same shape `/api/agent/todo` takes. The
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -100,11 +100,13 @@ Source: [`api/crates/talaria-routes-comms/src/comms/chips_expose.rs`](../../api/
 
 > POST /api/agent/chips — an agent exposes tools as chips on the turn it is
 > writing. The platform also calls the same landing path when a tool result
-> produces a link or a protected action.
+> produces a link or a protected action. An optional `conversationId` names
+> the turn (the prompt carries it); without one the chips land only while
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `agent` | [body](#post-apiagentchips-body) | `{ok}` | 200 | — |
+| POST | `agent` | [body](#post-apiagentchips-body) | `{ok}` | 200, 409 | — |
 
 **POST** — Expose platform tools as chips on the conversation this agent is in.
 
@@ -205,8 +207,8 @@ Source: [`api/crates/talaria-routes-comms/src/comms/agent_todo.rs`](../../api/cr
 
 > PUT /api/agent/todo — the agent writes down what it is going to do.
 >
-> NO CONVERSATION PARAMETER, deliberately, and this is the same call the
-> research tool already makes for the same reason: the agent is speaking in a
+> AN OPTIONAL `conversationId`. The agent is speaking in a conversation right
+> now and Talaria usually knows which — but one agent answers several people
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -290,11 +292,14 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/cron_output.rs`](../../api/
 Source: [`api/crates/talaria-routes-fleet/src/agents/agents_register.rs`](../../api/crates/talaria-routes-fleet/src/agents/agents_register.rs)
 
 > POST /api/agents/register. An agent registers with Talaria (MC-compatible
-> contract, so the existing plugin works repointed). Agent-key auth.
+> contract, so the existing plugin works repointed). Agent-key auth: the
+> registry row is bound to the caller's PROVEN identity — a `tak_` caller
+> registers only its own model, a legacy caller only the name it asserted
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `fleet` | [body](#post-apiagentsregister-body) | `{agent, registered}` | 200, 400, 401 | — |
+| POST | `fleet` | [body](#post-apiagentsregister-body) | `{agent, registered}` | 200, 400, 401, 403 | — |
 
 ### POST `/api/agents/register` body
 
@@ -316,7 +321,7 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/subagent_events.rs`](../../
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `agent` | — | `{ok, landed}` | 200, 400 | — |
+| POST | `agent` | — | `{ok, landed}` | 200, 400, 409 | — |
 
 ## `/api/agents/tool-events`
 
@@ -465,15 +470,15 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/skills.rs`](../../api/crate
 
 Source: [`api/crates/talaria-routes-fleet/src/agents/skills_owner_name.rs`](../../api/crates/talaria-routes-fleet/src/agents/skills_owner_name.rs)
 
-> /api/skills/{owner}/{name}. One skill's SKILL.md. GET → content + file list (any member — the library
-> is org work material). PUT → save (creates the skill if new). DELETE →
-> remove the whole skill dir. Writes go through canEditSkill(s): admin /
-> agents.manage everywhere; personal-assistant owners and explicit
+> /api/skills/{owner}/{name}. One skill's SKILL.md. GET → content + file list
+> (any member for the shared root and for an org agent's skills — the
+> library is org work material; a PERSONAL assistant's skills are its
+> owner's, its managers' and the fleet readers' to read, nobody else's).
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{content, files}` | 200, 404 | — |
+| GET | `session` | — | `{content, files}` | 200, 403, 404 | — |
 | POST | `session` | [body](#post-apiskillsownername-body) | `{ok}` | 200, 400, 403 | — |
 | PUT | `session` | [body](#put-apiskillsownername-body) | `{ok}` | 200, 400, 403 | — |
 | DELETE | `session` | — | `{ok}` | 200, 400, 403 | — |
