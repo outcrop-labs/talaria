@@ -23,7 +23,9 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
-use talaria_agent_defs::{GOVERNED_TOOLSETS, MANDATORY_DISABLED, list_agent_defs_wire};
+use talaria_agent_defs::{
+    GOVERNED_TOOLSETS, MANDATORY_DISABLED, list_agent_defs_wire, mandatory_disabled,
+};
 use talaria_agent_managers::{managed_agent_ids, managers_by_agent, reads_whole_fleet};
 use talaria_api_facades::gateway::registry::list_endpoints_wire;
 use talaria_brain_health::fleet_brain_health;
@@ -54,8 +56,12 @@ fn pare_endpoint(e: &Value) -> Value {
 
 /// The toolset vocabulary, straight from the crates that own it: `governed`
 /// is every Hermes toolset an operator may name ([`GOVERNED_TOOLSETS`]) and
-/// `mandatoryDisabled` is the floor the renderer merges ahead of any def
-/// ([`MANDATORY_DISABLED`]).
+/// `mandatoryDisabled` is the WHOLE floor the renderer merges ahead of any
+/// def — [`MANDATORY_DISABLED`] plus whatever the org floor closes
+/// (`talaria_agent_defs::mandatory_disabled`), which the caller reads once
+/// and hands in. `orgDisabled` is the org part on its own, so the editor can
+/// say WHY a locked row is locked: Talaria's own tool for the pair, an admin
+/// for the rest.
 ///
 /// It rides on the roster because the editor needs it the moment the roster
 /// renders, and it is READ from the constants rather than spelled again here:
@@ -66,21 +72,31 @@ fn pare_endpoint(e: &Value) -> Value {
 /// order — alphabetical today, and not something this route gets to require of
 /// it — while the wire promise to the editor is a list it can paint top to
 /// bottom without sorting it again.
-fn toolsets_block() -> Value {
+fn toolsets_block(floor: &[String]) -> Value {
     let mut governed: Vec<&str> = GOVERNED_TOOLSETS.to_vec();
     governed.sort_unstable();
+    let org: Vec<&str> = floor
+        .iter()
+        .map(String::as_str)
+        .filter(|n| !MANDATORY_DISABLED.contains(n))
+        .collect();
     json!({
         "governed": governed,
-        "mandatoryDisabled": MANDATORY_DISABLED,
+        "mandatoryDisabled": floor,
+        "orgDisabled": org,
     })
 }
 
 // doc: The roster also carries `toolsets`, the agent editor's vocabulary:
 // doc: `governed`, every Hermes toolset an operator may disable on an agent
-// doc: (28 names, alphabetical), and `mandatoryDisabled`, the two Talaria
-// doc: takes off every agent's table whatever its def says — `todo` and
+// doc: (28 names, alphabetical); `mandatoryDisabled`, the whole floor the
+// doc: renderer closes on every agent whatever its def says — `todo` and
 // doc: `clarify`, because Talaria's own MCP versions are the ones a person
-// doc: sees. Both lists are the constants the `PATCH /api/fleet/defs/{id}`
+// doc: sees, plus the org-wide floor an admin sets on `PUT
+// doc: /api/admin/settings` (`mandatoryDisabledToolsets`) or pins with
+// doc: `TALARIA_MANDATORY_DISABLED_TOOLSETS`; and `orgDisabled`, that org
+// doc: part alone, so the editor can say an admin closed a row rather than
+// doc: Talaria. `governed` is the constant the `PATCH /api/fleet/defs/{id}`
 // doc: validator reads, so the picker cannot offer a name the write door
 // doc: would refuse.
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
@@ -154,6 +170,9 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             .filter(|b| visible_models.contains(&b.agent))
             .collect()
     };
+    // The floor is read here, once per roster, so the editor locks the same
+    // rows the next render will close.
+    let floor = mandatory_disabled(&state.pg).await;
     // The endpoints' prices ride as numbers — a whole $/MTok price prints the
     // JS way (`3`, never `3.0`).
     let mut body = json!({
@@ -161,7 +180,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         "endpoints": endpoints,
         "brains": brains,
         "canHire": fleet_wide,
-        "toolsets": toolsets_block(),
+        "toolsets": toolsets_block(&floor),
     });
     talaria_body::js_numberify(&mut body);
     Ok(Json(body).into_response())
@@ -171,25 +190,30 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
 mod tests {
     use super::*;
 
+    fn names(v: &Value) -> Vec<String> {
+        v.as_array()
+            .expect("a list of toolset names")
+            .iter()
+            .map(|n| n.as_str().expect("a toolset name").to_string())
+            .collect()
+    }
+
+    fn wire(floor: &[&str]) -> Value {
+        let floor: Vec<String> = floor.iter().map(|n| n.to_string()).collect();
+        let mut body = json!({ "toolsets": toolsets_block(&floor) });
+        talaria_body::js_numberify(&mut body);
+        serde_json::from_str(&serde_json::to_string(&body).expect("the block serialises"))
+            .expect("the block round-trips")
+    }
+
     // The vocabulary reaches the wire whole, alphabetical, with the floor
     // nameable inside it — the three things the editor assumes when it paints
     // a row per governed toolset and locks two of them. Serialised and read
     // back, because what the editor gets is JSON, not a &[&str].
     #[test]
     fn the_serialised_roster_carries_the_governed_vocabulary_and_the_floor() {
-        let mut body = json!({ "toolsets": toolsets_block() });
-        talaria_body::js_numberify(&mut body);
-        let wire: Value =
-            serde_json::from_str(&serde_json::to_string(&body).expect("the block serialises"))
-                .expect("the block round-trips");
-
-        let names = |v: &Value| -> Vec<String> {
-            v.as_array()
-                .expect("a list of toolset names")
-                .iter()
-                .map(|n| n.as_str().expect("a toolset name").to_string())
-                .collect()
-        };
+        // A fresh install's floor: the pair, and no org part.
+        let wire = wire(&["todo", "clarify"]);
         let governed = names(&wire["toolsets"]["governed"]);
         assert_eq!(governed.len(), 28, "28 governed toolsets, got {governed:?}");
         let mut alphabetical = governed.clone();
@@ -201,5 +225,25 @@ mod tests {
         for name in &mandatory {
             assert!(governed.contains(name), "{name} is not governed");
         }
+        assert_eq!(
+            names(&wire["toolsets"]["orgDisabled"]),
+            Vec::<String>::new()
+        );
+    }
+
+    // An org floor rides INSIDE `mandatoryDisabled` — the editor locks every
+    // name there without knowing where each came from — and `orgDisabled`
+    // carries the org part alone, for the row's reason.
+    #[test]
+    fn an_org_floor_is_part_of_the_floor_and_named_on_its_own() {
+        let wire = wire(&["todo", "clarify", "terminal", "browser"]);
+        assert_eq!(
+            names(&wire["toolsets"]["mandatoryDisabled"]),
+            ["todo", "clarify", "terminal", "browser"]
+        );
+        assert_eq!(
+            names(&wire["toolsets"]["orgDisabled"]),
+            ["terminal", "browser"]
+        );
     }
 }

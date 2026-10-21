@@ -8,6 +8,9 @@
 // immediately and inviting a tight loop.
 //
 // The access token goes out; the refresh token never does (see coding_broker).
+// Each account served writes `coding.snapshot_read` to the audit trail, one
+// row per account per ten minutes, so an operator can see when the sandbox
+// could read the credential.
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -20,7 +23,9 @@ use talaria_coding_accounts as ca;
 use talaria_error::internal;
 use talaria_state::AppState;
 
-use super::coding_broker::{broker_agent, generation, refresher_block, snapshot_entry};
+use super::coding_broker::{
+    audit_snapshot_read, broker_caller, generation, refresher_block, snapshot_entry,
+};
 
 /// A long poll is bounded well under any sane proxy's idle timeout, and the
 /// client re-polls on its own.
@@ -45,7 +50,8 @@ pub async fn get(
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, Response> {
-    let agent_id = broker_agent(&state, &headers).await?;
+    let agent = broker_caller(&state, &headers).await?;
+    let agent_id = agent.id.clone();
     let known = parse_generation_tag(headers.get(axum::http::header::IF_NONE_MATCH));
     let wait = q
         .get("wait")
@@ -92,6 +98,7 @@ pub async fn get(
             continue;
         }
         if let Some(entry) = snapshot_entry(&state, account).await {
+            audit_snapshot_read(&state, &agent, account);
             credentials.push(entry);
         }
     }

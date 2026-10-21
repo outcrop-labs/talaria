@@ -26,6 +26,18 @@
 // token and `__remote__` in the refresh slot, and the client calls back here
 // when it expires. Refreshing is the bridge's job (it runs omp's own
 // refresher), and the result re-seals before the answer is written.
+//
+// WHAT THE SANDBOX CAN SEE. The access token (or, for an api_key account,
+// the key itself) is in the snapshot, and code running in the sandbox can
+// read it as easily as omp can. That is the deal a coding account makes, and
+// it is said in docs/WORKBENCH.md; what this file adds is the trail — every
+// read of an account's credential writes `coding.snapshot_read` to the audit
+// log, rated to one row per account per ten minutes so a harness that
+// long-polls does not drown the log.
+
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -41,16 +53,83 @@ use talaria_state::AppState;
 /// which is what makes the broker the only possible refresher.
 pub const REMOTE_REFRESH_SENTINEL: &str = "__remote__";
 
-/// The caller's agent id, or a 401. A legacy shared-key caller is refused:
+/// The agent behind a broker call: its id (the scope every account read is
+/// keyed by) and its model (how the audit trail names it).
+pub struct BrokerAgent {
+    pub id: String,
+    pub model: String,
+}
+
+/// The calling agent, or a 401. A legacy shared-key caller is refused:
 /// coding accounts are per agent, and an unproven caller has no agent to be.
-pub async fn broker_agent(state: &AppState, headers: &HeaderMap) -> Result<String, Response> {
+pub async fn broker_caller(state: &AppState, headers: &HeaderMap) -> Result<BrokerAgent, Response> {
     let caller = require_agent(&state.pg, headers).await?;
-    caller.id.ok_or_else(|| {
+    let id = caller.id.ok_or_else(|| {
         house_error(
             StatusCode::FORBIDDEN,
             "coding accounts need a per-agent credential; this caller presented the fleet key",
         )
+    })?;
+    Ok(BrokerAgent {
+        id,
+        model: caller.model,
     })
+}
+
+/// The caller's agent id alone — what the per-credential routes key on.
+pub async fn broker_agent(state: &AppState, headers: &HeaderMap) -> Result<String, Response> {
+    broker_caller(state, headers).await.map(|agent| agent.id)
+}
+
+/// How often one account's credential leaving for the sandbox is written to
+/// the audit trail. omp long-polls the snapshot for as long as it runs, so a
+/// row per read would be a row every half-minute per account; one per ten
+/// minutes still tells an operator when the sandbox could see the secret.
+pub const SNAPSHOT_AUDIT_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+/// Last audited read per account id, this process only. A multi-instance
+/// deploy writes at most one row per instance per window, which is still a
+/// bounded trail; a Redis key would make it exactly one, at the cost of a
+/// round trip on the hot path of every snapshot.
+static SNAPSHOT_AUDIT_LAST: OnceLock<Mutex<HashMap<i64, Instant>>> = OnceLock::new();
+
+/// Whether a read at `now` earns an audit row, given when this account was
+/// last audited: never, or a full interval ago.
+pub fn snapshot_audit_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|at| now.duration_since(at) >= SNAPSHOT_AUDIT_INTERVAL)
+}
+
+/// Claim this read as the audited one for its window, or learn that the
+/// window's row was already written. Entries whose window has lapsed are
+/// dropped on the way past, so the map stays the size of the accounts read
+/// in the last ten minutes.
+fn claim_snapshot_audit(account_id: i64, now: Instant) -> bool {
+    let map = SNAPSHOT_AUDIT_LAST.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut last = map.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !snapshot_audit_due(last.get(&account_id).copied(), now) {
+        return false;
+    }
+    last.retain(|_, at| now.duration_since(*at) < SNAPSHOT_AUDIT_INTERVAL);
+    last.insert(account_id, now);
+    true
+}
+
+/// The sandbox read this account's credential. One audit row per account per
+/// window — actor the agent, target the account, never a value from the
+/// credential itself. Called on the way out of every snapshot read, after the
+/// entry was built, so a row never claims a read that did not happen.
+pub fn audit_snapshot_read(state: &AppState, agent: &BrokerAgent, account: &ca::OpenAccount) {
+    if !claim_snapshot_audit(account.id, Instant::now()) {
+        return;
+    }
+    talaria_audit::spawn_audit(
+        &state.pg,
+        format!("agent:{}", agent.model),
+        "coding.snapshot_read",
+        "coding_account",
+        Some(account.id.to_string()),
+        Some(json!({ "agentId": agent.id, "provider": account.provider })),
+    );
 }
 
 /// 404 with the protocol's own error shape — how we decline the optional
@@ -262,5 +341,43 @@ mod tests {
     fn the_refresher_block_tells_the_client_to_ask_us() {
         let b = refresher_block();
         assert_eq!(b["enabled"], json!(false), "no sweep; refresh on demand");
+    }
+
+    #[test]
+    fn a_snapshot_read_is_audited_once_per_window_not_once_per_poll() {
+        let t0 = Instant::now();
+        assert!(
+            snapshot_audit_due(None, t0),
+            "the first read is always logged"
+        );
+        assert!(
+            !snapshot_audit_due(Some(t0), t0 + Duration::from_secs(30)),
+            "a poll half a minute later is the same window"
+        );
+        assert!(
+            !snapshot_audit_due(
+                Some(t0),
+                t0 + SNAPSHOT_AUDIT_INTERVAL - Duration::from_secs(1)
+            ),
+            "still inside the window"
+        );
+        assert!(
+            snapshot_audit_due(Some(t0), t0 + SNAPSHOT_AUDIT_INTERVAL),
+            "a full interval later earns the next row"
+        );
+    }
+
+    #[test]
+    fn the_claim_is_per_account_and_the_second_poll_loses() {
+        // Ids no real account has, so a parallel test cannot share the slot.
+        let (a, b) = (i64::MIN + 7, i64::MIN + 8);
+        let t0 = Instant::now();
+        assert!(claim_snapshot_audit(a, t0));
+        assert!(!claim_snapshot_audit(a, t0 + Duration::from_secs(5)));
+        assert!(
+            claim_snapshot_audit(b, t0),
+            "another account is its own window"
+        );
+        assert!(claim_snapshot_audit(a, t0 + SNAPSHOT_AUDIT_INTERVAL));
     }
 }

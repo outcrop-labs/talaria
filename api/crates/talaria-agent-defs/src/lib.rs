@@ -116,11 +116,12 @@ pub const SHARED_AGENT_DISABLED: &[&str] = &["session_search"];
 
 /// The org-level floor: an `app_settings` row (a JSON array of governed
 /// names) every render merges beside [`MANDATORY_DISABLED`], so an operator
-/// can close a toolset for the whole fleet without visiting each agent. No
-/// admin route writes this key yet (the admin settings PUT takes fixed
-/// fields), so it is set with SQL today; the env var below is the
-/// read-only twin for an install that would rather pin it in the process
-/// environment. Both are read; the union is the floor.
+/// can close a toolset for the whole fleet without visiting each agent. The
+/// admin settings PUT writes it (`mandatoryDisabledToolsets`, governed names
+/// only, the pair implied and never stored) and the admin Security panel
+/// edits it; the env var below is the read-only twin for an install that
+/// would rather pin it in the process environment. Both are read; the union
+/// is the floor.
 pub const ORG_FLOOR_SETTING: &str = "agents.mandatory_disabled_toolsets";
 pub const ORG_FLOOR_ENV: &str = "TALARIA_MANDATORY_DISABLED_TOOLSETS";
 

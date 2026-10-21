@@ -452,6 +452,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_outreach.rs`](../../ap
 | `enabled` | `bool` |  |
 | `intervalMinutes` | `number(15, 1440)` |  |
 | `dailyDmCap` | `number(1, 20)` |  |
+| `dailyDmTotalCap` | `number?(1, 500)` |  |
 
 ## `/api/admin/password-accounts`
 
@@ -609,8 +610,8 @@ source.
 Source: [`api/crates/talaria-routes-admin/src/admin/admin_settings.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_settings.rs)
 
 > /api/admin/settings. App settings (admin). GET → current values. PUT →
-> update. Grows as more app-wide settings land; audit retention is the
-> first.
+> update. Grows as more app-wide settings land; audit retention was the
+> first, the org-wide toolset floor the latest.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -623,6 +624,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_settings.rs`](../../ap
 | :--- | :--- | :--- |
 | `auditRetentionDays` | `number?(0, 3650)` |  |
 | `cronMinIntervalMinutes` | `number?(0, 1440)` |  |
+| `mandatoryDisabledToolsets` | `string[]?(1, 64, 40)` |  |
 
 ## `/api/admin/storage`
 

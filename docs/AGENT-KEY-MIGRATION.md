@@ -325,4 +325,5 @@ curl -sS -b /tmp/talaria.cookies -X POST \
   http://127.0.0.1:5273/api/fleet/defs/<AGENT_ID>/rotate-key
 ```
 
-There is no button for it in the agents console yet; the route is the surface.
+The console surface is **Rotate credential** at the bottom of the agent's Summary tab (its managers,
+and admins): an in-place confirm that says the above, then the result in the same place.
