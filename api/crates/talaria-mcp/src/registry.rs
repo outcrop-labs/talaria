@@ -1664,13 +1664,66 @@ pub(crate) async fn converse_catalog(
                     let mut e = Map::new();
                     e.insert("name".into(), t.get("name").cloned().unwrap_or(Value::Null));
                     if let Some(d) = t.get("description").and_then(Value::as_str) {
-                        e.insert("description".into(), Value::String(utf16_slice(d, 300)));
+                        e.insert("description".into(), Value::String(d.to_string()));
                     }
                     Value::Object(e)
                 })
                 .collect()
         })
+        .map(|tools| bound_catalog(&Value::Array(tools)))
         .unwrap_or_default())
+}
+
+/// The most a cached tool name may run to, in UTF-16 units (what the UI
+/// measures in); an entry whose name is empty, missing, not a string or
+/// over this is not a tool this registry will offer.
+pub(crate) const TOOL_NAME_MAX: usize = 200;
+/// The most of a tool's description the cache keeps.
+pub(crate) const TOOL_DESCRIPTION_MAX: usize = 300;
+/// The most of a tool's `inputSchema` the cache keeps, in serialized bytes;
+/// a larger one is replaced by the permissive object schema plus
+/// `inputSchemaTruncated: true`, so the catalog stays a list of valid tools
+/// without carrying a document an upstream chose the size of.
+pub(crate) const TOOL_SCHEMA_MAX_BYTES: usize = 32 * 1024;
+
+/// THE CATALOG BOUND — every tool list an upstream answered, whichever path
+/// asked (hosted, package, Workbench), passes through here before it is
+/// stored: a name over `TOOL_NAME_MAX` or empty drops the entry, a
+/// description is clipped to `TOOL_DESCRIPTION_MAX`, an `inputSchema` over
+/// `TOOL_SCHEMA_MAX_BYTES` becomes the marker. Every other field an entry
+/// carries is kept as it came. Anything that is not an array of objects
+/// bounds to an empty catalog. Pure, pinned by tests.
+pub(crate) fn bound_catalog(tools: &Value) -> Vec<Value> {
+    let Some(entries) = tools.as_array() else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|t| {
+            let obj = t.as_object()?;
+            let name = obj.get("name").and_then(Value::as_str)?;
+            if name.is_empty() || name.encode_utf16().count() > TOOL_NAME_MAX {
+                return None;
+            }
+            let mut e = obj.clone();
+            if let Some(d) = obj.get("description").and_then(Value::as_str) {
+                e.insert(
+                    "description".into(),
+                    Value::String(utf16_slice(d, TOOL_DESCRIPTION_MAX)),
+                );
+            }
+            if let Some(schema) = obj.get("inputSchema")
+                && schema.to_string().len() > TOOL_SCHEMA_MAX_BYTES
+            {
+                e.insert(
+                    "inputSchema".into(),
+                    serde_json::json!({ "type": "object" }),
+                );
+                e.insert("inputSchemaTruncated".into(), Value::Bool(true));
+            }
+            Some(Value::Object(e))
+        })
+        .collect()
 }
 
 /// The handshake alone — `(status, WWW-Authenticate)` or the transport
@@ -1773,12 +1826,15 @@ pub(crate) async fn auth_required_message(
     }
 }
 
+/// Write a server's catalog — bounded first (`bound_catalog`), whatever
+/// path hands it in.
 pub(crate) async fn store_catalog(pg: &PgPool, id: &str, tools: &Value) -> Result<(), String> {
+    let tools = Value::Array(bound_catalog(tools));
     sqlx::query(
         "update mcp_servers set tools = $2, tools_refreshed_at = now(), updated_at = now() where id::text = $1",
     )
     .bind(id)
-    .bind(tools)
+    .bind(&tools)
     .execute(pg)
     .await
     .map_err(|e| e.to_string())?;
@@ -1962,6 +2018,55 @@ mod tests {
         assert!(url_host_changed("talaria-pkg://x", "https://a.example/mcp"));
         assert!(url_host_changed("https://a.example/mcp", "not a url"));
         assert!(url_host_changed("", ""));
+    }
+
+    /// The catalog bound, on the shapes upstreams answer with: a name over
+    /// the cap or missing drops the entry, a long description is clipped
+    /// in UTF-16 units, a huge schema becomes the marker, and every other
+    /// field rides through untouched.
+    #[test]
+    fn the_catalog_bound_drops_caps_and_marks_but_keeps_the_rest() {
+        let long_name = "n".repeat(TOOL_NAME_MAX + 1);
+        let edge_name = "n".repeat(TOOL_NAME_MAX);
+        let long_desc = "d".repeat(TOOL_DESCRIPTION_MAX + 50);
+        let big_schema = json!({ "type": "object", "properties": {
+            "blob": { "type": "string", "description": "x".repeat(TOOL_SCHEMA_MAX_BYTES) } } });
+        let small_schema = json!({ "type": "object", "properties": { "q": { "type": "string" } } });
+        let tools = json!([
+            { "name": "search", "description": long_desc, "inputSchema": small_schema,
+              "annotations": { "readOnlyHint": true } },
+            { "name": "", "description": "empty name" },
+            { "name": long_name, "description": "too long" },
+            { "name": 42 },
+            { "description": "no name" },
+            "not an object",
+            { "name": edge_name },
+            { "name": "dump", "inputSchema": big_schema },
+            { "name": "emoji", "description": "😀".repeat(200) },
+        ]);
+        let out = bound_catalog(&tools);
+        assert_eq!(out.len(), 4, "{out:?}");
+        assert_eq!(out[0]["name"], "search");
+        assert_eq!(
+            out[0]["description"]
+                .as_str()
+                .unwrap()
+                .encode_utf16()
+                .count(),
+            TOOL_DESCRIPTION_MAX
+        );
+        assert_eq!(out[0]["inputSchema"], small_schema);
+        assert_eq!(out[0]["annotations"]["readOnlyHint"], true);
+        assert!(out[0].get("inputSchemaTruncated").is_none());
+        assert_eq!(out[1]["name"].as_str().unwrap().len(), TOOL_NAME_MAX);
+        assert_eq!(out[2]["name"], "dump");
+        assert_eq!(out[2]["inputSchema"], json!({ "type": "object" }));
+        assert_eq!(out[2]["inputSchemaTruncated"], true);
+        // A 200-emoji description is 400 UTF-16 units: clipped to 150 emoji.
+        assert_eq!(out[3]["description"].as_str().unwrap().chars().count(), 150);
+        // Not a list at all: nothing, never a panic.
+        assert!(bound_catalog(&json!(null)).is_empty());
+        assert!(bound_catalog(&json!({ "name": "x" })).is_empty());
     }
 
     #[test]

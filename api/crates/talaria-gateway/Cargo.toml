@@ -13,6 +13,7 @@ axum = { workspace = true }
 base64 = { workspace = true }
 futures-util = { workspace = true }
 regex = { workspace = true }
+redis = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -30,3 +31,8 @@ getrandom = { workspace = true }
 
 tracing = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+# The turn register's tests drive its ceiling and refresh ticker on a
+# paused clock (`#[tokio::test(start_paused = true)]`); test builds only.
+tokio = { workspace = true, features = ["test-util"] }

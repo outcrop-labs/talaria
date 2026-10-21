@@ -10,7 +10,7 @@ use serde_json::json;
 use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_body::string_member;
 use talaria_channels::{
-    agent_may_access_channel, channel_role, get_channel_message, toggle_reaction,
+    ChannelIntent, agent_may_access_channel, channel_role, get_channel_message, toggle_reaction,
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::NotifyDeps;
@@ -50,16 +50,23 @@ pub async fn post(
     if let Some(caller) = caller {
         let name = caller.model.clone();
         // The CALLER, not `name`: elevation buys org-wide channel reach.
-        let may =
-            match agent_may_access_channel(&state.pg, &id, &AgentSubject::Caller(caller)).await {
-                Ok(v) => v,
-                Err(e) => {
-                    return Ok(internal(
-                        "[channels] agent access read on reactions failed",
-                        e,
-                    ));
-                }
-            };
+        // A reaction is a WRITE on the channel: it asks as a post.
+        let may = match agent_may_access_channel(
+            &state.pg,
+            &id,
+            &AgentSubject::Caller(caller),
+            ChannelIntent::Post,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                return Ok(internal(
+                    "[channels] agent access read on reactions failed",
+                    e,
+                ));
+            }
+        };
         if !may {
             return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }

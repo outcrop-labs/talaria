@@ -12,7 +12,7 @@
   import { toastError } from '@/lib/toast.svelte'
 
   interface OutreachData {
-    config: { enabled: boolean; intervalMinutes: number; dailyDmCap: number }
+    config: { enabled: boolean; intervalMinutes: number; dailyDmCap: number; dailyDmTotalCap: number }
     agents: Array<{ model: string; displayName: string; proactive: boolean; personal: boolean }>
     events: Array<{ agentModel: string; kind: string; note: string | null; createdAt: string }>
   }
@@ -100,6 +100,15 @@
           size="sm" type="number" min={1} max={20} class="w-16"
           value={cfg?.dailyDmCap ?? 3}
           oninput={(e) => void save({ dailyDmCap: Math.max(1, Math.min(20, Number(e.currentTarget.value) || 3)) })}
+        />
+        <span>/day</span>
+      </label>
+      <label class="flex items-center gap-2 text-xs text-muted" title="Agent-initiated direct messages allowed per agent per day, everyone counted">
+        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agent total</span>
+        <Input
+          size="sm" type="number" min={1} max={500} class="w-16"
+          value={cfg?.dailyDmTotalCap ?? 20}
+          oninput={(e) => void save({ dailyDmTotalCap: Math.max(1, Math.min(500, Number(e.currentTarget.value) || 20)) })}
         />
         <span>/day</span>
       </label>

@@ -729,7 +729,7 @@ pub async fn decide_action(
         if file_id.is_empty() {
             Err("doc_update missing fileId".into())
         } else {
-            update_doc_with_token(
+            match update_doc_with_token(
                 &token,
                 file_id,
                 payload
@@ -739,8 +739,20 @@ pub async fn decide_action(
                 payload.get("title").and_then(Value::as_str),
             )
             .await
-            .map(|doc| json!({ "id": doc.id, "url": doc.url, "name": doc.name }))
-            .map_err(|e| e.to_string())
+            {
+                Ok(doc) => {
+                    // The agent's token wrote the body: stamp it, so the
+                    // write itself is not mistaken for a person's edit next
+                    // time (a no-op unless the agent still owns the file).
+                    if let Some(agent) = agent_model.as_deref() {
+                        stamp_agent_write(pg, agent, file_id)
+                            .await
+                            .map_err(|e| format!("agent write stamp: {e}"))?;
+                    }
+                    Ok(json!({ "id": doc.id, "url": doc.url, "name": doc.name }))
+                }
+                Err(e) => Err(e.to_string()),
+            }
         }
     } else if kind == "slides_update" {
         let file_id = payload
@@ -1056,21 +1068,74 @@ pub async fn decide_action(
 
 /// A Drive file this agent brought into being — a Doc or a folder — which it
 /// may then edit, or create inside, without another card. The file id is
-/// Drive's; `on conflict do nothing` keeps the first creator.
+/// Drive's; on conflict the first creator is kept, and only that creator's
+/// own re-record moves the write stamp. Creating is the first agent write,
+/// so the row is born stamped.
 pub async fn record_agent_created(
     pg: &PgPool,
     agent_model: &str,
     file_id: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "insert into agent_created_google_docs (file_id, agent_model) values ($1, $2) \
-         on conflict (file_id) do nothing",
+        "insert into agent_created_google_docs (file_id, agent_model, last_agent_write_at) \
+         values ($1, $2, now()) \
+         on conflict (file_id) do update set last_agent_write_at = now() \
+         where agent_created_google_docs.agent_model = excluded.agent_model",
     )
     .bind(file_id)
     .bind(agent_model)
     .execute(pg)
     .await?;
     Ok(())
+}
+
+/// The agent wrote the file's body just now. Every path that puts the
+/// agent's token to a Doc it created calls this after Drive answered, so the
+/// stamp is never earlier than the revision it describes; the next replace
+/// compares Drive's `modifiedTime` against it. A no-op for a file this agent
+/// does not own.
+pub async fn stamp_agent_write(
+    pg: &PgPool,
+    agent_model: &str,
+    file_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update agent_created_google_docs set last_agent_write_at = now() \
+         where file_id = $1 and agent_model = $2",
+    )
+    .bind(file_id)
+    .bind(agent_model)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// What is known about a Drive file this agent created.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentCreated {
+    /// The agent's last write, epoch milliseconds; `None` on a row recorded
+    /// before the stamp existed and not written since.
+    pub last_agent_write_ms: Option<i64>,
+}
+
+/// The agent-created record for a Drive file, or `None` when this agent did
+/// not create it (or a person has since taken it over).
+pub async fn agent_created_record(
+    pg: &PgPool,
+    agent_model: &str,
+    file_id: &str,
+) -> Result<Option<AgentCreated>, sqlx::Error> {
+    let row: Option<(Option<f64>,)> = sqlx::query_as(
+        "select extract(epoch from last_agent_write_at) * 1000 \
+         from agent_created_google_docs where file_id = $1 and agent_model = $2",
+    )
+    .bind(file_id)
+    .bind(agent_model)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.map(|(ms,)| AgentCreated {
+        last_agent_write_ms: ms.map(|v| v as i64),
+    }))
 }
 
 /// Whether this agent created the Drive file (a Doc, or a folder it may
@@ -1080,14 +1145,9 @@ pub async fn agent_created(
     agent_model: &str,
     file_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    let row: Option<(i32,)> = sqlx::query_as(
-        "select 1 from agent_created_google_docs where file_id = $1 and agent_model = $2",
-    )
-    .bind(file_id)
-    .bind(agent_model)
-    .fetch_optional(pg)
-    .await?;
-    Ok(row.is_some())
+    Ok(agent_created_record(pg, agent_model, file_id)
+        .await?
+        .is_some())
 }
 
 /// A human took the file over: the agent's standing to edit it without a

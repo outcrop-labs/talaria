@@ -82,7 +82,8 @@ CREATE TABLE public.agent_coding_roles (
 CREATE TABLE public.agent_created_google_docs (
     file_id text NOT NULL,
     agent_model text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_agent_write_at timestamp with time zone
 );
 CREATE TABLE public.agent_defs (
     id uuid DEFAULT gen_random_uuid() NOT NULL,

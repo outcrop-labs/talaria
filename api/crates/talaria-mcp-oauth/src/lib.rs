@@ -18,7 +18,12 @@
 //      targets, and each redirect hop re-validated), and
 //   2. every discovered URL is PINNED to the registrable domain of the server
 //      URL an admin configured — so a server can send us to its own auth
-//      infrastructure and nowhere else.
+//      infrastructure and nowhere else — and must be https: the token POST
+//      carries a client secret and an authorization code, and a plain-http
+//      endpoint on the right domain would hand them to whoever sits on the
+//      path. The one exception is a loopback host the operator admitted
+//      through TALARIA_FETCH_ALLOW_HOSTS (a local stub), where there is no
+//      path to sit on.
 //
 // The config lives in mcp_servers.oauth as the raw jsonb Value: pg owns its
 // key order (canonical on write), so a typed struct re-serializing in
@@ -81,7 +86,8 @@ struct Pinned {
 }
 
 impl Pinned {
-    /// Err carries the same sentence the route answers with.
+    /// Err carries the same sentence the route answers with. Two refusals:
+    /// off the server's domain, and not https (`plain_http_refusal`).
     fn check(&self, url: &str, what: &str) -> Result<String, String> {
         let Ok(parsed) = reqwest::Url::parse(url) else {
             return Err(format!("{what} is not a valid URL"));
@@ -93,8 +99,61 @@ impl Pinned {
                 self.base
             ));
         }
+        if let Some(refusal) = plain_http_refusal(&parsed, what, operator_admits_host) {
+            return Err(refusal);
+        }
         Ok(url.to_string())
     }
+}
+
+/// Does TALARIA_FETCH_ALLOW_HOSTS admit this host by name? The guard's own
+/// hostname question (`host_allowed`: exact names and `*.` suffixes), plus
+/// an address spelled verbatim in the spec — the guard files an address
+/// under its CIDR table, which has no name lookup, and `127.0.0.1` is how
+/// the end-to-end stub is admitted.
+fn operator_admits_host(host: &str) -> bool {
+    talaria_safe_fetch::host_allowed(host)
+        || std::env::var("TALARIA_FETCH_ALLOW_HOSTS")
+            .unwrap_or_default()
+            .split([',', ' ', '\t'])
+            .any(|entry| {
+                entry
+                    .trim()
+                    .eq_ignore_ascii_case(host.trim_end_matches('.'))
+            })
+}
+
+/// The https rule: an endpoint that is not `https://` is refused with a
+/// sentence naming it — unless it is a loopback host (`localhost`,
+/// 127.0.0.0/8, `::1`) the operator has admitted through
+/// TALARIA_FETCH_ALLOW_HOSTS, which is how an end-to-end stub on the same
+/// machine registers; `allowed` is that allowlist's hostname question,
+/// handed in so the rule is pure for the tests.
+fn plain_http_refusal(
+    url: &reqwest::Url,
+    what: &str,
+    allowed: impl Fn(&str) -> bool,
+) -> Option<String> {
+    if url.scheme() == "https" {
+        return None;
+    }
+    let host = url
+        .host_str()
+        .unwrap_or_default()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let loopback = match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        None => false,
+    };
+    if loopback && allowed(host) {
+        return None;
+    }
+    Some(format!(
+        "{what} is {url}, which is not https, so it is refused (a credential would cross in the clear)"
+    ))
 }
 
 fn pin_to(server_url: &str) -> Result<Pinned, String> {
@@ -1326,6 +1385,67 @@ mod tests {
             gh.check("https://github.com/login/oauth/authorize", "x")
                 .is_ok()
         );
+    }
+
+    /// The https rule: a plain-http endpoint on the RIGHT domain is still
+    /// refused, with a sentence naming the endpoint; only a loopback host
+    /// the operator admitted is let through, and an admitted host that is
+    /// not loopback is not (the allowlist says reachable, not trusted).
+    #[test]
+    fn pinning_refuses_plain_http_except_an_admitted_loopback_stub() {
+        let pin = pin_to("https://mcp.linear.app/").unwrap();
+        let err = pin
+            .check("http://linear.app/oauth/token", "the token endpoint")
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "the token endpoint is http://linear.app/oauth/token, which is not https, so it is refused (a credential would cross in the clear)"
+        );
+        // Off-domain is named first: the domain sentence, not the scheme one.
+        assert!(
+            pin.check("http://evil.app/oauth", "the token endpoint")
+                .unwrap_err()
+                .contains("outside this server's own domain")
+        );
+
+        let what = "the client registration endpoint";
+        let url = |u: &str| reqwest::Url::parse(u).unwrap();
+        let none = |_: &str| false;
+        let stub = |h: &str| h == "127.0.0.1" || h == "localhost" || h == "::1";
+        assert_eq!(
+            plain_http_refusal(&url("https://linear.app/x"), what, none),
+            None
+        );
+        assert!(plain_http_refusal(&url("http://linear.app/x"), what, none).is_some());
+        // Loopback, admitted: passes in every spelling.
+        for u in [
+            "http://127.0.0.1:5390/oauth/register",
+            "http://localhost:5390/oauth/register",
+            "http://[::1]:5390/oauth/register",
+            "http://127.0.0.2/oauth/register",
+        ] {
+            assert_eq!(
+                plain_http_refusal(&url(u), what, |h| stub(h) || h == "127.0.0.2"),
+                None,
+                "{u}"
+            );
+        }
+        // Loopback, not admitted: refused.
+        assert!(plain_http_refusal(&url("http://127.0.0.1:5390/x"), what, none).is_some());
+        // Admitted but not loopback: refused — a LAN host is a path to sit on.
+        assert!(
+            plain_http_refusal(&url("http://mcp.corp.example/x"), what, |h| h
+                == "mcp.corp.example")
+            .is_some()
+        );
+        // The pinned path puts the stub through the env-backed question: a
+        // loopback stub on the server's own authority, admitted by name.
+        let local = pin_to("http://127.0.0.1:5390/oauth/mcp").unwrap();
+        let verdict = local.check("http://127.0.0.1:5390/oauth/token", "the token endpoint");
+        let admitted = std::env::var("TALARIA_FETCH_ALLOW_HOSTS")
+            .unwrap_or_default()
+            .contains("127.0.0.1");
+        assert_eq!(verdict.is_ok(), admitted, "{verdict:?}");
     }
 
     #[test]

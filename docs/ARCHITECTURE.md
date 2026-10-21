@@ -180,12 +180,24 @@ multiplexer.
   traffic shifts on the next manifest read — a drain window (default 45s), then the old slot
   is removed. `proxyChat` re-reads the manifest per attempt and holds a turn up to two
   minutes across a restart.
+- **Rolling the whole fleet** (`POST /api/fleet/roll`, admin): every running managed agent
+  is queued through the same blue/green roll, `TALARIA_FLEET_ROLL_CONCURRENCY` (default 2)
+  departments at a time so twenty agents never double the host's load at once; departments
+  already mid-roll are skipped and named. The request answers at once; the live picture
+  (`GET /api/fleet/roll`: rolling / idle / failed / done per agent, with each failure's
+  sentence) comes from the roll registry `roll_agent` writes at start and verdict — in
+  process, mirrored into the Redis hash `talaria:fleet-roll:v1` so every api instance
+  answers the same, outcomes kept an hour. A single agent's roll lands on the same page.
 - **Preflight probes from where the agent stands**: a throwaway container on the fleet
   network probes the gateway/MCP base URLs (api/src/fleet/preflight.rs) — the host's view proves
   nothing.
 - **Crons live in the agent**, not in Talaria: Hermes' own scheduler ticks inside the
   container; Talaria reads it for truth and mutates through `docker exec`
-  (api/src/agent_crons.rs).
+  (api/src/agent_crons.rs). Their spend is metered at the relay: a turn Talaria drives is
+  ledgered once by the flow that drove it, so the chat transport counts each such turn in
+  Redis (`talaria:turn:v1:<agent model>`) while it is open, and a call on an agent's key with
+  no turn counted — a cron — is booked by the relay under the agent as `unattended`, into the
+  same window its budget is judged on.
 
 ## Agent work and the guardrails
 

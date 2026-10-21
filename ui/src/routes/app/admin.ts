@@ -87,6 +87,17 @@ export interface AdminSettings {
   memberModels: string[]
   llmBudgets: LlmBudgets
   cronMinIntervalMinutes: number
+  /** The org-wide toolset floor: Hermes toolsets closed for EVERY agent,
+   *  whatever its managers opened (the `agents.mandatory_disabled_toolsets`
+   *  setting). Governed names, sorted; never carries the pair Talaria closes
+   *  for good. The PUT takes the same key. */
+  mandatoryDisabledToolsets: string[]
+  /** The checklist's vocabulary, from the server: every governed name
+   *  (alphabetical), `builtin` (the pair Talaria closes for good, locked),
+   *  and `env` (names the api's `TALARIA_MANDATORY_DISABLED_TOOLSETS` pins,
+   *  locked because unticking them here changes nothing). Optional so a UI
+   *  ahead of its api renders no checklist rather than an empty one. */
+  toolsets?: { governed: string[]; builtin: string[]; env: string[] }
 }
 export function useAdminSettings() {
   return createQuery(() => ({

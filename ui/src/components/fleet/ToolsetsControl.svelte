@@ -5,7 +5,7 @@
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import { patchAgentMeta, useFleetDefs, type AgentDef } from '@/lib/fleet-defs'
   import { toastError } from '@/lib/toast.svelte'
-  import { normalizeToolsets, sameToolsets, toggleToolset, toolsetRows } from './toolsets'
+  import { builtinFloor, normalizeToolsets, sameToolsets, toggleToolset, toolsetRows } from './toolsets'
 
   /** THE HERMES TOOLSETS THIS AGENT DOES NOT GET. The stored list is the
    *  absence (`disabledToolsets`); a checked box is the toolset being ON, and
@@ -17,6 +17,11 @@
    *  operator a toolset they believe is closed and an agent that still has it.
    *  No `toolsets` on the read (an older api) means no grid at all — better
    *  than an empty one that reads as "this agent has nothing".
+   *
+   *  The floor has two parts and the grid locks both: Talaria's own pair,
+   *  and whatever an admin closed org-wide (Admin → Security → Agent
+   *  toolsets). An org-closed row says so, because a manager who cannot open
+   *  `terminal` here needs to know it is an admin's call and not a bug.
    *
    *  This is the one control on the MCP tab that does NOT autosave: a change
    *  rolls the container, so per UI-CONVENTIONS it waits for an explicit
@@ -33,16 +38,23 @@
   let pending = $state<string[] | null>(null)
   let saving = $state(false)
   const shown = $derived(pending ?? def.disabledToolsets)
-  const rows = $derived(toolsets ? toolsetRows(toolsets.governed, toolsets.mandatoryDisabled, shown) : [])
+  const rows = $derived(
+    toolsets ? toolsetRows(toolsets.governed, toolsets.mandatoryDisabled, shown, toolsets.orgDisabled ?? []) : [],
+  )
+  const orgClosed = $derived(rows.filter((r) => r.orgClosed).map((r) => r.name))
+  // Only Talaria's own pair is stripped from what gets stored. An org-closed
+  // name stays in the def's list if its managers put it there, so lifting the
+  // floor later gives this agent back exactly what they chose.
+  const builtin = $derived(builtinFloor(toolsets))
   // Compared against the def's list in its STORABLE spelling, because Apply
   // must not offer to roll a container for a list that already means what is
   // stored: order is not a change, and neither is a legacy def carrying one of
   // the two names the renderer closes anyway.
-  const stored = $derived(normalizeToolsets(def.disabledToolsets, toolsets?.mandatoryDisabled))
+  const stored = $derived(normalizeToolsets(def.disabledToolsets, builtin))
   const dirty = $derived(pending !== null && !sameToolsets(pending, stored))
 
   const set = (name: string, on: boolean) => {
-    pending = toggleToolset(shown, name, on, toolsets?.mandatoryDisabled)
+    pending = toggleToolset(shown, name, on, builtin)
   }
 
   const apply = async () => {
@@ -76,6 +88,9 @@
     </div>
     <div class="mt-1 font-sans text-xs text-muted">
       Off takes effect on the next roll; browser off also skips the browser setup.
+      {#if orgClosed.length}
+        Closed org-wide by an admin, for every agent: {orgClosed.join(', ')}.
+      {/if}
     </div>
     <div class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3">
       {#each rows as r (r.name)}
@@ -84,11 +99,13 @@
           disabled={!canManage || r.forced || saving}
           onChange={(on) => set(r.name, on)}
           label={r.name}
-          title={r.forced
-            ? `Talaria's own ${r.name} tool is the one a person sees, so Hermes' stays closed for every agent`
-            : r.on
-              ? `${r.name} is on for this agent`
-              : `${r.name} is closed for this agent`}
+          title={r.orgClosed
+            ? `${r.name} is closed org-wide by an admin (Admin → Security → Agent toolsets)`
+            : r.forced
+              ? `Talaria's own ${r.name} tool is the one a person sees, so Hermes' stays closed for every agent`
+              : r.on
+                ? `${r.name} is on for this agent`
+                : `${r.name} is closed for this agent`}
           class={r.on ? 'text-fg' : undefined}
         />
       {/each}

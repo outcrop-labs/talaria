@@ -1,6 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
@@ -8,6 +9,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { submitOnEnter } from '@/components/ui/control'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
+  import { sameToolsets, toggleToolset, toolsetRows } from '@/components/fleet/toolsets'
   import { putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import { useAdminSettings } from './admin'
@@ -101,6 +103,52 @@
     floor = null
     floorFlash.flash()
     await qc.invalidateQueries({ queryKey: ['admin-settings'] })
+  }
+
+  // ── Agent toolsets: the org-wide floor ─────────────────────────────────────
+  // The same grid grammar as the agent editor (a box is the toolset being
+  // AVAILABLE; clearing one closes it), over the same logic in
+  // components/fleet/toolsets.ts, so the two surfaces cannot disagree about
+  // the sign. Here the stored list is the floor itself: what is closed for
+  // every agent. Two kinds of row are locked and say why: the pair Talaria
+  // replaces with its own tools, and names the api's environment pins.
+  // Explicit Save, not autosave: this is a governance control that lands on
+  // every agent, even though saving it rolls nothing.
+  const vocab = $derived(data?.toolsets)
+  const envClosed = $derived(vocab?.env ?? [])
+  const locked = $derived([...(vocab?.builtin ?? []), ...envClosed])
+  // null = untouched, showing the stored floor. A list = the pending edit.
+  let floorEdit = $state<string[] | null>(null)
+  let floorSaving = $state(false)
+  const toolsetFlash = useSavedFlash()
+  const closedShown = $derived(floorEdit ?? data?.mandatoryDisabledToolsets ?? [])
+  const floorRows = $derived(vocab ? toolsetRows(vocab.governed, locked, closedShown, envClosed) : [])
+  const floorDirty = $derived(floorEdit !== null && !sameToolsets(floorEdit, data?.mandatoryDisabledToolsets ?? []))
+  const setFloor = (name: string, on: boolean) => {
+    // Only the builtin pair is stripped from what gets stored. An env-pinned
+    // name stays in the row if it is there (its box is disabled, so this
+    // cannot add or remove it), so lifting the env pin later leaves the
+    // stored floor exactly as the admin last saved it.
+    floorEdit = toggleToolset(closedShown, name, on, vocab?.builtin ?? [])
+  }
+  const saveToolsetFloor = async () => {
+    if (!floorEdit) return
+    floorSaving = true
+    try {
+      await putJson<{ ok: true }>('/api/admin/settings', { mandatoryDisabledToolsets: floorEdit })
+    } catch (e) {
+      // The pending boxes stay, so a refused name can be fixed rather than
+      // re-ticked.
+      toastError('Save failed', e)
+      return
+    } finally {
+      floorSaving = false
+    }
+    floorEdit = null
+    toolsetFlash.flash()
+    // The agent editor locks its rows off the roster's floor, so it must see
+    // this too.
+    await Promise.all([qc.invalidateQueries({ queryKey: ['admin-settings'] }), qc.invalidateQueries({ queryKey: ['fleet-defs'] })])
   }
 </script>
 
@@ -209,6 +257,48 @@
       </Button>
       {#if floorFlash.saved}<span class="shrink-0 text-xs text-success">Saved</span>{/if}
     </div>
+
+    {#if floorRows.length}
+      <div class="mt-6 border-t border-border pt-4">
+        <SectionHeader class="mb-2" title="Agent toolsets" />
+        <p class="mb-3 text-xs text-muted">
+          The Hermes toolsets any agent may carry. A box is the toolset being available to the fleet; clearing one
+          closes it for every agent, whatever its managers opened, and a manager sees it locked in the agent's own
+          editor. Talaria's own todo and clarify tools replace Hermes' for good, so those two stay closed. Saving
+          rolls nothing: the floor applies at each agent's next render or roll.
+        </p>
+        <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3 md:grid-cols-4">
+          {#each floorRows as r (r.name)}
+            <Checkbox
+              checked={r.on}
+              disabled={r.forced || floorSaving}
+              onChange={(on) => setFloor(r.name, on)}
+              label={r.name}
+              title={r.orgClosed
+                ? `${r.name} is pinned closed by TALARIA_MANDATORY_DISABLED_TOOLSETS in the api's environment`
+                : r.forced
+                  ? `Talaria's own ${r.name} tool is the one a person sees, so Hermes' stays closed for every agent`
+                  : r.on
+                    ? `${r.name} is available to agents; clear it to close it org-wide`
+                    : `${r.name} is closed for every agent`}
+              class={r.on ? 'text-fg' : undefined}
+            />
+          {/each}
+        </div>
+        <div class="mt-3 flex items-center gap-3">
+          <Button size="sm" onclick={() => void saveToolsetFloor()} disabled={!floorDirty || floorSaving}>
+            Save
+          </Button>
+          {#if floorDirty}
+            <Button size="sm" variant="ghost" disabled={floorSaving} onclick={() => (floorEdit = null)}>Reset</Button>
+          {/if}
+          {#if toolsetFlash.saved}<span class="text-xs text-success">Saved. Applies at each agent's next render or roll.</span>{/if}
+          {#if envClosed.length}
+            <span class="text-xs text-muted">Pinned by the api's environment: {envClosed.join(', ')}.</span>
+          {/if}
+        </div>
+      </div>
+    {/if}
     {/snippet}
   </QueryState>
 </Panel>

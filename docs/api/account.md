@@ -190,14 +190,14 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me_assistant.rs`](.
 > /api/me/assistant. The signed-in user's personal assistant. GET → theirs
 > (or null), with personality + live status. POST → create + start one,
 > optionally named/personalized (idempotent: returns the existing one,
-> re-enabling if retired). PATCH → owner-scoped rename / personality edit.
+> re-enabling if retired). PATCH → owner-scoped rename / personality edit,
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{assistant}` | 200 | — |
-| POST | `session` | [body](#post-apimeassistant-body) | `{assistant}` | 200, 400 | — |
-| PATCH | `session` | [body](#patch-apimeassistant-body) | `{assistant}` | 200, 400 | — |
+| GET | `session` | — | `…` | 200 | — |
+| POST | `session` | [body](#post-apimeassistant-body) | `…` | 200, 400 | — |
+| PATCH | `session` | [body](#patch-apimeassistant-body) | `…` | 200, 400 | — |
 
 ### POST `/api/me/assistant` body
 
@@ -210,6 +210,7 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me_assistant.rs`](.
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `personality` | `string?(4000)` |  |
+| `dmAccess` | `enum(none|read|read-write)?` |  |
 
 ## `/api/me/events`
 

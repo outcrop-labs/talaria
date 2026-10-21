@@ -90,6 +90,18 @@ jobs:
             echo "::error::OMAPAK_SUBMIT_TOKEN is not set — a fine-grained PAT or GitHub App token with contents and pull-requests write on outcrop-labs/omapak. See RELEASING.md."
             exit 1
           fi
+          # A token that exists but cannot push is the failure that shipped
+          # desktop-v0.11.0 without a submission: the clone succeeds (the
+          # repo is public), the push answers 403 "Permission … denied", and
+          # the sentence names the account rather than the token. Ask GitHub
+          # what the token may do BEFORE the work, and say what to regenerate.
+          who=$(GH_TOKEN="$TOKEN" gh api user --jq .login 2>/dev/null || echo '?')
+          push=$(GH_TOKEN="$TOKEN" gh api repos/outcrop-labs/omapak --jq '.permissions.push // false' 2>/dev/null || echo false)
+          if [ "$push" != true ]; then
+            echo "::error::OMAPAK_SUBMIT_TOKEN (account: $who) cannot push to outcrop-labs/omapak. Regenerate it as a fine-grained PAT whose repository access lists outcrop-labs/omapak with Contents: read and write and Pull requests: read and write (an expired or repo-less token reads the public repo fine and fails only at the push), then: gh secret set OMAPAK_SUBMIT_TOKEN --repo $GITHUB_REPOSITORY. Re-run this workflow by dispatch with the tag."
+            exit 1
+          fi
+          echo "token for $who may push to outcrop-labs/omapak"
 
       - uses: actions/checkout@v5
         if: steps.gate.outputs.go == 'true'

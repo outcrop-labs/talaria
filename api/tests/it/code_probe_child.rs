@@ -83,8 +83,16 @@ fn the_grading_runs_the_candidate_in_the_child_and_survives_a_hostile_one() {
         started.elapsed()
     );
 
-    // A spin is the budget's own sentence, through the child.
+    // A spin ends through the child, whichever limit reaches it first: the
+    // budget's own sentence, or boa's loop-iteration ceiling. An empty loop
+    // can run its ten million iterations inside 200ms on a fast runner, so
+    // pinning the timer's sentence made this test a race (rc CI at 99e10098
+    // ended it on the loop limit). Either one is the runner doing its job.
     let spin = "function slugify(input) { while (true) {} }";
     let problem = run_code_task_within(slugify, spin, 200).expect("a spin fails");
-    assert!(problem.contains("timed out after 200ms"), "{problem}");
+    assert!(
+        problem.contains("timed out after 200ms")
+            || problem.contains("maximum number of iteration loops"),
+        "{problem}"
+    );
 }

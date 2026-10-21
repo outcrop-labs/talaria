@@ -5,7 +5,11 @@
 // that folder's sharing, which is a disclosure a person approves. Updating
 // a doc the agent did not create queues a `doc_update` for a human. Updating
 // one this agent created is immediate — until a person edits it, after which
-// a full-body replace queues too (an append stays immediate).
+// a full-body replace queues too (an append stays immediate). "A person
+// edited it" is read two ways before a replace: Drive's `lastModifyingUser.me`
+// (someone other than the token holder), and Drive's `modifiedTime` against
+// the stamp Talaria takes on every agent write (the token holder themselves —
+// the owner, from their own account, which the `me` flag cannot tell apart).
 //
 // GET  /docs/{id}           read markdown
 // POST /docs                create
@@ -26,13 +30,14 @@ use talaria_agent_auth::now_ms;
 use talaria_agent_auth::{AgentSubject, refuse_legacy, require_agent};
 use talaria_api_facades::google::agent::{resolve_agent_google, resolve_agent_principal};
 use talaria_api_facades::google::docs::{
-    create_doc_with_token, get_doc_with_token, last_modifier_with_token,
+    create_doc_with_token, get_doc_with_token, last_modifier_with_token, modified_after_agent,
     read_file_media_with_token, search_files_fulltext, update_doc_with_token,
 };
 use talaria_api_facades::google::errors::google_fail;
 use talaria_api_facades::google::oauth::query_pairs;
 use talaria_api_facades::google::pending_actions::{
-    QueueAction, agent_created, forget_agent_created, queue_action, record_agent_created,
+    QueueAction, agent_created, agent_created_record, forget_agent_created, queue_action,
+    record_agent_created, stamp_agent_write,
 };
 use talaria_body::{optional_boolean_member, optional_max_string_member, parse, string_member};
 use talaria_error::{house_error, house_error_msg, internal, object_or_400};
@@ -249,7 +254,7 @@ pub async fn post_update(
             ));
         }
     };
-    let mut owns = match agent_created(&state.pg, &agent_model, &id).await {
+    let created = match agent_created_record(&state.pg, &agent_model, &id).await {
         Ok(v) => v,
         Err(e) => {
             return Ok(internal(
@@ -258,6 +263,7 @@ pub async fn post_update(
             ));
         }
     };
+    let mut owns = created.is_some();
     let sb = state.secretbox().await.unwrap_or_default();
     let Some(google) =
         resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
@@ -267,14 +273,23 @@ pub async fn post_update(
     // Ownership expires when a person takes the doc over. Drive says who
     // last changed the file and whether that was the token holder; an edit
     // by anyone else ends the agent's standing to replace the body without a
-    // card, and the record is dropped so the next edit queues too. (The
-    // owner editing their own assistant's doc is the token holder, which
-    // Drive cannot tell from the agent — the limit of a probe with no
-    // last-agent-write stamp of our own.) An append adds and destroys
-    // nothing, so it stays immediate.
+    // card, and the record is dropped so the next edit queues too. The owner
+    // editing their own assistant's doc IS the token holder, which Drive
+    // cannot tell from the agent — so Drive's `modifiedTime` is also held
+    // against the stamp Talaria took when the agent last wrote the doc: a
+    // revision later than the agent's own write was a person's, whoever
+    // Drive says made it. An append adds and destroys nothing, so it stays
+    // immediate.
     if owns && !append {
+        let last_agent_write_ms = created.as_ref().and_then(|c| c.last_agent_write_ms);
         match last_modifier_with_token(&google.token, &id).await {
-            Ok(modifier) if modifier.by_token_holder == Some(false) => {
+            Ok(modifier)
+                if modifier.by_token_holder == Some(false)
+                    || modified_after_agent(
+                        modifier.modified_time.as_deref(),
+                        last_agent_write_ms,
+                    ) =>
+            {
                 if let Err(e) = forget_agent_created(&state.pg, &agent_model, &id).await {
                     return Ok(internal(
                         "[integrations/google/agent/docs] ownership expiry failed",
@@ -296,18 +311,27 @@ pub async fn post_update(
         markdown
     };
     if owns {
-        return match update_doc_with_token(&google.token, &id, &next, title.as_deref()).await {
-            Ok(doc) => Ok(Json(json!({
-                "id": doc.id,
-                "url": doc.url,
-                "name": doc.name,
-                "mimeType": doc.mime_type,
-                "createdByAgent": true,
-                "message": "Updated. This agent created the doc, so the edit was not queued.",
-            }))
-            .into_response()),
-            Err(e) => Ok(google_fail(e, "Docs")),
+        let doc = match update_doc_with_token(&google.token, &id, &next, title.as_deref()).await {
+            Ok(doc) => doc,
+            Err(e) => return Ok(google_fail(e, "Docs")),
         };
+        // Stamped after Drive answered, so the stamp is never earlier than
+        // the revision it covers; the next replace reads it.
+        if let Err(e) = stamp_agent_write(&state.pg, &agent_model, &id).await {
+            return Ok(internal(
+                "[integrations/google/agent/docs] agent write stamp failed",
+                e,
+            ));
+        }
+        return Ok(Json(json!({
+            "id": doc.id,
+            "url": doc.url,
+            "name": doc.name,
+            "mimeType": doc.mime_type,
+            "createdByAgent": true,
+            "message": "Updated. This agent created the doc, so the edit was not queued.",
+        }))
+        .into_response());
     }
     // One pending edit per file. A second draft while the first waits returns
     // that row instead of flooding the queue.

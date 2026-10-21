@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-25 routes.
+26 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -49,6 +49,8 @@
 | [`/api/fleet/reconcile`](#apifleetreconcile) | POST | `admin` |
 | [`/api/fleet/render`](#apifleetrender) | POST | `admin` |
 | [`/api/fleet/resources`](#apifleetresources) | GET | `admin` |
+| [`/api/fleet/roll`](#apifleetroll) | GET | `admin` |
+| [`/api/fleet/roll`](#apifleetroll) | POST | `admin` |
 
 ## `/api/fleet`
 
@@ -237,7 +239,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs`](../../api/cr
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{defs, endpoints, brains, canHire, toolsets}` | 200 | — |
 
-**GET** — The roster also carries `toolsets`, the agent editor's vocabulary: `governed`, every Hermes toolset an operator may disable on an agent (28 names, alphabetical), and `mandatoryDisabled`, the two Talaria takes off every agent's table whatever its def says — `todo` and `clarify`, because Talaria's own MCP versions are the ones a person sees. Both lists are the constants the `PATCH /api/fleet/defs/{id}` validator reads, so the picker cannot offer a name the write door would refuse.
+**GET** — The roster also carries `toolsets`, the agent editor's vocabulary: `governed`, every Hermes toolset an operator may disable on an agent (28 names, alphabetical); `mandatoryDisabled`, the whole floor the renderer closes on every agent whatever its def says — `todo` and `clarify`, because Talaria's own MCP versions are the ones a person sees, plus the org-wide floor an admin sets on `PUT /api/admin/settings` (`mandatoryDisabledToolsets`) or pins with `TALARIA_MANDATORY_DISABLED_TOOLSETS`; and `orgDisabled`, that org part alone, so the editor can say an admin closed a row rather than Talaria. `governed` is the constant the `PATCH /api/fleet/defs/{id}` validator reads, so the picker cannot offer a name the write door would refuse.
 
 ## `/api/fleet/defs/{id}`
 
@@ -538,4 +540,25 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_resources.rs`](../../a
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `admin` | — | `{host, agents}` | 200 | — |
+
+## `/api/fleet/roll`
+
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_roll.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_roll.rs)
+
+> /api/fleet/roll — roll every agent container at once, in-platform. Admin.
+>   POST  queue a blue/green roll of every managed, enabled agent that is
+>         running (`{"all": true}`: every managed enabled agent). Answers at
+>         once; the rolls run detached, TALARIA_FLEET_ROLL_CONCURRENCY
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{ok, rolling, batch, rolls, crossInstance}` | 200 | — |
+| POST | `admin` | [body](#post-apifleetroll-body) | `{ok, rolling, skipped, batch}` | 200, 400 | audit |
+
+### POST `/api/fleet/roll` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `all` | `bool?` | Every managed enabled agent, the stopped ones brought up too. |
 

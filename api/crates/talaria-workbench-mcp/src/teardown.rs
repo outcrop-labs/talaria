@@ -14,7 +14,10 @@
 // managed container (the agent never has to remember):
 //   · Stop:    kill every process whose cwd is inside the workdir. A PR
 //                opening ends the job's builds; the checkout stays, because a
-//                revise bounce pushes to the same branch from it.
+//                revise bounce pushes to the same branch from it. The job's
+//                project env (`.talaria/env`) does not stay: a job that is
+//                not running has no business holding the repo's secrets,
+//                and the start_job that resumes it writes them again.
 //   · Reclaim: drop what the repo says it can rebuild, keeping the checkout,
 //                the branch and every uncommitted edit. For a job that is
 //                alive and legitimate but holding a build tree nobody is
@@ -71,8 +74,11 @@ impl Teardown {
 /// what ignored it. Matching on cwd catches the whole tree the agent started
 /// there (the shell, cargo, every rustc and test binary) and nothing the
 /// container runs elsewhere (the Hermes gateway lives outside the jobs root).
+/// The project env file goes in BOTH modes — it is `devenv::JOB_ENV_FILE`,
+/// spelled here because the script is positional and that path is fixed.
 const TEARDOWN_SH: &str = r#"
 dir="$1"; mode="$2"
+rm -f -- "$dir/.talaria/env"
 in_dir() {
   cwd=$(readlink "$1/cwd" 2>/dev/null) || return 1
   case "$cwd/" in "$dir"/*) return 0 ;; esac

@@ -25,6 +25,12 @@
 //     members included — as one row in mcp_tool_calls (who, which server and
 //     tool, outcome, latency, the error sentence scrubbed of the arguments;
 //     never arguments or results), off the hot path (mcp::calls)
+//   · BINDS an upstream session to the agent it was minted for: the
+//     `mcp-session-id` an `initialize` answer carries is recorded against the
+//     caller (Redis, 24 h, refreshed on use), and a later request presenting
+//     a session recorded for ANOTHER agent is refused (-32602) rather than
+//     relayed — two agents sharing an org credential cannot ride each
+//     other's sessions; a session the gateway never saw passes through
 // so a hand-edited agent config can never exceed what the registry granted.
 
 use axum::Json;
@@ -32,6 +38,7 @@ use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
+use redis::AsyncCommands;
 use serde_json::{Value, json};
 use talaria_agent_auth::{AgentSubject, presented, require_agent, subject_model};
 use talaria_api_facades::mcp::calls::{
@@ -285,6 +292,122 @@ fn batch_refusal(rpc: Option<&Value>) -> Option<Response> {
     Some((StatusCode::OK, Json(body)).into_response())
 }
 
+// ── Session binding ─────────────────────────────────────────────────────────
+
+/// How long a recorded session binding lives without being used — longer
+/// than any upstream keeps an idle session, so the binding never expires
+/// before the session it guards.
+const SESSION_TTL_SECONDS: u64 = 24 * 60 * 60;
+/// A session id longer than this is never recorded (an upstream mints
+/// opaque tokens, not documents) and never looked up, so it cannot be used
+/// to grow keys without bound.
+const SESSION_ID_MAX: usize = 512;
+/// The refusal a foreign session earns — the agent's words, not the other
+/// agent's name.
+const SESSION_FOREIGN: &str = "this session belongs to another agent";
+
+fn session_key(server_name: &str, session_id: &str) -> String {
+    format!("talaria:mcp-session:v1:{server_name}:{session_id}")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionVerdict {
+    /// Nothing recorded: an upstream can mint a session out of band, so an
+    /// unknown id passes through as it always did.
+    Unknown,
+    /// Recorded for this very agent.
+    Own,
+    /// Recorded for another agent: refused.
+    Foreign,
+}
+
+/// THE BINDING RULE, pure: what the record says against who is asking.
+fn session_verdict(recorded: Option<&str>, caller: &str) -> SessionVerdict {
+    match recorded {
+        None => SessionVerdict::Unknown,
+        Some(owner) if owner == caller => SessionVerdict::Own,
+        Some(_) => SessionVerdict::Foreign,
+    }
+}
+
+/// Whether the session id a request presents belongs to the caller. A
+/// session of the caller's own has its binding refreshed on the way. Redis
+/// out of reach reads as Unknown — failing open like every Redis-backed
+/// gate in this house, and said so in the log.
+async fn presented_session_verdict(
+    state: &AppState,
+    server_name: &str,
+    session_id: &str,
+    caller: &str,
+) -> SessionVerdict {
+    if session_id.is_empty() || session_id.len() > SESSION_ID_MAX {
+        return SessionVerdict::Unknown;
+    }
+    let mut redis = match state.redis().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("[mcp/gw:{server_name}] session binding unavailable (redis): {e}");
+            return SessionVerdict::Unknown;
+        }
+    };
+    let key = session_key(server_name, session_id);
+    let recorded: Option<String> = match redis.get(&key).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("[mcp/gw:{server_name}] session binding unavailable (redis): {e}");
+            return SessionVerdict::Unknown;
+        }
+    };
+    let verdict = session_verdict(recorded.as_deref(), caller);
+    if verdict == SessionVerdict::Own {
+        let _: Result<bool, _> = redis.expire(&key, SESSION_TTL_SECONDS as i64).await;
+    }
+    verdict
+}
+
+/// Record the session an upstream `initialize` answer minted for this
+/// caller. A failure to record leaves the session unknown, which passes.
+async fn bind_session(state: &AppState, server_name: &str, session_id: &str, caller: &str) {
+    if session_id.is_empty() || session_id.len() > SESSION_ID_MAX {
+        return;
+    }
+    match state.redis().await {
+        Ok(mut redis) => {
+            if let Err(e) = redis
+                .set_ex::<_, _, ()>(
+                    session_key(server_name, session_id),
+                    caller,
+                    SESSION_TTL_SECONDS,
+                )
+                .await
+            {
+                tracing::warn!("[mcp/gw:{server_name}] session binding not recorded (redis): {e}");
+            }
+        }
+        Err(e) => {
+            tracing::warn!("[mcp/gw:{server_name}] session binding not recorded (redis): {e}");
+        }
+    }
+}
+
+/// The refusal for a session recorded for another agent, framed like the
+/// tool gate's: JSON-RPC -32602 over HTTP 200 with the request's own id.
+fn foreign_session_response(rpc: Option<&Value>) -> Response {
+    let id = rpc
+        .and_then(|r| r.get("id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    (
+        StatusCode::OK,
+        Json(rpc_error(&id, -32602, SESSION_FOREIGN)),
+    )
+        .into_response()
+}
+
+fn is_initialize(rpc: Option<&Value>) -> bool {
+    rpc.and_then(|r| r.get("method")).and_then(Value::as_str) == Some("initialize")
+}
+
 pub async fn post(
     State(state): State<AppState>,
     Path(server_name): Path<String>,
@@ -412,6 +535,25 @@ pub async fn post(
         Err(err) => return Ok(parse_error_response(body, &err, &server_name)),
     };
     let mut body_text = String::from_utf8_lossy(body).into_owned();
+
+    // The session gate: a session id this gateway recorded for another
+    // agent is refused before anything is relayed on it. Agents sharing an
+    // org credential look alike to the upstream; only the gateway knows
+    // which of them the session was minted for.
+    let presented_session = headers
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    if let Some(sid) = presented_session.as_deref()
+        && presented_session_verdict(&state, &server_name, sid, &name).await
+            == SessionVerdict::Foreign
+    {
+        tracing::warn!(
+            "[mcp/gw:{server_name}] {name} presented a session bound to another agent; refused"
+        );
+        note(&call, Outcome::Denied, 200, Some(SESSION_FOREIGN));
+        return Ok(foreign_session_response(rpc.as_ref()));
+    }
 
     // The call gate: reject disallowed tools before the upstream ever
     // hears about them.
@@ -695,6 +837,16 @@ pub async fn post(
             return Ok(house_error(StatusCode::BAD_GATEWAY, "upstream unreachable"));
         }
     };
+    // The session an initialize answer minted is this caller's from here on.
+    if is_initialize(rpc.as_ref())
+        && upstream.status().is_success()
+        && let Some(sid) = upstream
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+    {
+        bind_session(&state, &server_name, sid, &name).await;
+    }
     Ok(relay(
         upstream,
         rpc.as_ref(),
@@ -792,6 +944,13 @@ pub async fn get(
         hdr("accept").unwrap_or_else(|| "text/event-stream".into()),
     );
     if let Some(session) = hdr("mcp-session-id") {
+        // Same session gate as POST; a stream has no JSON-RPC envelope to
+        // answer in, so the refusal is the HTTP one.
+        if presented_session_verdict(&state, &server_name, &session, subject_model(&subject)).await
+            == SessionVerdict::Foreign
+        {
+            return Ok(house_error(StatusCode::FORBIDDEN, SESSION_FOREIGN));
+        }
         req = req.header("mcp-session-id", session);
     }
     for (k, v) in &eff.upstream_headers {
@@ -1076,6 +1235,52 @@ mod tests {
             },
             tools: None,
         }
+    }
+
+    /// The binding rule: nothing recorded passes (an upstream can mint a
+    /// session out of band), the agent's own session passes, anyone
+    /// else's is refused — and the refusal is framed like the tool
+    /// gate's, with the request's own id and never the owner's name.
+    #[tokio::test]
+    async fn a_session_belongs_to_the_agent_it_was_minted_for() {
+        assert_eq!(session_verdict(None, "research"), SessionVerdict::Unknown);
+        assert_eq!(
+            session_verdict(Some("research"), "research"),
+            SessionVerdict::Own
+        );
+        assert_eq!(
+            session_verdict(Some("research"), "helpdesk"),
+            SessionVerdict::Foreign
+        );
+        // Exact: a prefix or a case change is another agent.
+        assert_eq!(
+            session_verdict(Some("research"), "research-2"),
+            SessionVerdict::Foreign
+        );
+        assert_eq!(
+            session_verdict(Some("Research"), "research"),
+            SessionVerdict::Foreign
+        );
+        assert_eq!(
+            session_key("linear", "abc123"),
+            "talaria:mcp-session:v1:linear:abc123"
+        );
+
+        let rpc = json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": { "name": "search", "arguments": {} } });
+        let v = jsonrpc_of(foreign_session_response(Some(&rpc))).await;
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["error"]["code"], -32602);
+        assert_eq!(v["error"]["message"], SESSION_FOREIGN);
+        assert!(!v.to_string().contains("research"));
+        let v = jsonrpc_of(foreign_session_response(None)).await;
+        assert_eq!(v["id"], Value::Null);
+
+        assert!(is_initialize(Some(
+            &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize" })
+        )));
+        assert!(!is_initialize(Some(&rpc)));
+        assert!(!is_initialize(None));
     }
 
     #[tokio::test]

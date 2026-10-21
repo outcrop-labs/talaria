@@ -23,3 +23,4 @@ pub mod fleet_hires;
 pub mod fleet_reconcile;
 pub mod fleet_render;
 pub mod fleet_resources;
+pub mod fleet_roll;

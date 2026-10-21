@@ -406,6 +406,39 @@ pub async fn research_role(
     })
 }
 
+/// A queued/running run of the same question that THIS viewer may read —
+/// the double-click the start route answers 409 with. Scoped exactly as
+/// `list_research_runs` scopes the rail (own, shared, org; None viewer sees
+/// org runs only), so a stranger's in-flight question is neither detected
+/// nor disclosed: a run id in a 409 is a run the caller could open anyway.
+pub async fn live_duplicate_question(
+    pg: &PgPool,
+    viewer_user_id: Option<&str>,
+    question: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(
+        format!(
+            "select research_runs.id::text from research_runs \
+             where research_runs.question = $2 \
+               and research_runs.status in ('queued', 'running') \
+               and (research_runs.owner_user_id is null or ({ORG_AGENT_RUN}) \
+                 or research_runs.owner_user_id = $1::uuid \
+                 or exists(select 1 from research_members rm \
+                           where rm.run_id = research_runs.id and rm.user_id = $1::uuid) \
+                 or exists(select 1 from research_teams rt \
+                           join team_members tm on tm.team_id = rt.team_id \
+                           where rt.run_id = research_runs.id and tm.user_id = $1::uuid)) \
+             limit 1",
+        )
+        .as_str(),
+    ))
+    .bind(viewer_user_id)
+    .bind(question)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.map(|(id,)| id))
+}
+
 /// One member of a run.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -136,6 +136,12 @@ pub async fn post(
                     "this agent is already rolling — wait for it to finish",
                 ));
             }
+            // The roll records itself in the fleet-wide registry (start and
+            // verdict), which is what /api/fleet/roll shows; the Redis
+            // mirror behind it is wired here as well as there, so a
+            // manager's roll on an instance nobody pressed "roll all" on
+            // still reaches every other instance's picture.
+            super::fleet_roll::wire_roll_sink(&state);
             if let Ok(sb) = state.secretbox().await {
                 let pg = state.pg.clone();
                 let dept = def.department.clone();

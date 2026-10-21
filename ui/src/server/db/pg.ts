@@ -3979,6 +3979,17 @@ alter table tasks drop column if exists conversation_id`,
    delete from task_workchain_edges where from_step = to_step`,
   `alter table task_workchain_edges
      add constraint task_workchain_edges_no_self_check check (from_step <> to_step)`,
+  // WHEN THE AGENT LAST WROTE A DOC IT CREATED. An agent may replace the body
+  // of a doc it made without a card until a person edits it. Drive's
+  // `lastModifyingUser.me` catches another person; it cannot catch the owner
+  // editing their own assistant's doc from the same account (the token
+  // holder, which Drive cannot tell from the agent). This stamp can: a Drive
+  // `modifiedTime` later than the agent's own last write means somebody
+  // else's hand was on the doc, and the replace queues. Null on rows from
+  // before the column — those fall back to the `me` flag alone until the
+  // agent's next write stamps them.
+  `alter table agent_created_google_docs
+     add column if not exists last_agent_write_at timestamptz`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

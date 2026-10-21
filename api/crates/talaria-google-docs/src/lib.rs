@@ -522,6 +522,104 @@ pub(crate) fn last_modifier_from(meta: &serde_json::Value) -> LastModifier {
     }
 }
 
+/// How far Drive's `modifiedTime` may run past the agent's own write stamp
+/// before it counts as somebody else's edit. The stamp is taken after Drive
+/// answers the agent's write, so an honest revision is never later than it
+/// by more than clock skew; the allowance absorbs that skew without hiding a
+/// person's edit, which lands seconds to days later, not milliseconds.
+pub const AGENT_WRITE_SKEW_MS: i64 = 5_000;
+
+/// Whether a person edited the doc after the agent's last write, judged from
+/// Drive's `modifiedTime` against the stamp Talaria took when the agent last
+/// wrote it. This is the check `lastModifyingUser.me` cannot make: the owner
+/// editing their own assistant's doc is the token holder, so Drive reports
+/// `me: true` for them and for the agent alike, but the clock does not lie —
+/// a revision later than the agent's own write was not the agent's. Unknown
+/// on either side (Drive sent no time, or the row was never stamped) is not
+/// evidence, so it answers `false` and the `me` flag alone decides.
+pub fn modified_after_agent(modified_time: Option<&str>, last_agent_write_ms: Option<i64>) -> bool {
+    let (Some(modified), Some(stamp)) =
+        (modified_time.and_then(rfc3339_to_ms), last_agent_write_ms)
+    else {
+        return false;
+    };
+    modified > stamp + AGENT_WRITE_SKEW_MS
+}
+
+/// An RFC 3339 instant (`2026-10-20T10:00:00.123Z`, any fraction length, `Z`
+/// or a `±HH:MM` offset) as epoch milliseconds — the form Drive's
+/// `modifiedTime` takes. Anything else is `None`, never a guess.
+pub fn rfc3339_to_ms(raw: &str) -> Option<i64> {
+    let raw = raw.trim();
+    let b = raw.as_bytes();
+    let num = |from: usize, to: usize| -> Option<i64> {
+        let part = raw.get(from..to)?;
+        if part.is_empty() || !part.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        part.parse::<i64>().ok()
+    };
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't' | b' ') {
+        return None;
+    }
+    if b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let (year, month, day) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (hour, minute, second) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let mut i = 19;
+    let mut millis = 0i64;
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        let start = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == start {
+            return None;
+        }
+        // Three digits of fraction are milliseconds; fewer are scaled up,
+        // more are truncated.
+        let frac = &raw[start..i];
+        let scaled: String = frac.chars().chain("000".chars()).take(3).collect();
+        millis = scaled.parse::<i64>().ok()?;
+    }
+    let offset_s = match b.get(i) {
+        Some(b'Z') | Some(b'z') if i + 1 == b.len() => 0i64,
+        Some(sign @ (b'+' | b'-')) if i + 6 == b.len() && b[i + 3] == b':' => {
+            let oh = num(i + 1, i + 3)?;
+            let om = num(i + 4, i + 6)?;
+            if oh > 23 || om > 59 {
+                return None;
+            }
+            let total = oh * 3600 + om * 60;
+            if *sign == b'-' { -total } else { total }
+        }
+        _ => return None,
+    };
+    let days = days_from_civil(year, month, day);
+    let secs = days * 86_400 + hour * 3600 + minute * 60 + second - offset_s;
+    Some(secs * 1000 + millis)
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
+/// `days_from_civil`), so the parser above needs no calendar crate.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,5 +712,101 @@ mod tests {
         assert_eq!(me.by_token_holder, Some(true));
         let unknown = last_modifier_from(&serde_json::json!({}));
         assert_eq!(unknown.by_token_holder, None);
+    }
+
+    #[test]
+    fn drive_timestamps_parse_to_epoch_milliseconds() {
+        assert_eq!(rfc3339_to_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(rfc3339_to_ms("1970-01-01T00:00:00.250Z"), Some(250));
+        // Drive's own shape: millisecond fraction, Z.
+        assert_eq!(
+            rfc3339_to_ms("2026-10-20T10:00:00.123Z"),
+            Some(1_792_490_400_123)
+        );
+        // Fraction lengths other than three are scaled, not misread.
+        assert_eq!(
+            rfc3339_to_ms("2026-10-20T10:00:00.5Z"),
+            Some(1_792_490_400_500)
+        );
+        assert_eq!(
+            rfc3339_to_ms("2026-10-20T10:00:00.123456Z"),
+            Some(1_792_490_400_123)
+        );
+        // An offset moves the instant the other way.
+        assert_eq!(
+            rfc3339_to_ms("2026-10-20T12:00:00+02:00"),
+            Some(1_792_490_400_000)
+        );
+        assert_eq!(
+            rfc3339_to_ms("2026-10-20T08:00:00-02:00"),
+            Some(1_792_490_400_000)
+        );
+        // A leap day and a year boundary land where the calendar says.
+        assert_eq!(
+            rfc3339_to_ms("2024-02-29T00:00:00Z"),
+            Some(1_709_164_800_000)
+        );
+        assert_eq!(rfc3339_to_ms("2000-01-01T00:00:00Z"), Some(946_684_800_000));
+    }
+
+    #[test]
+    fn a_timestamp_that_is_not_rfc3339_is_not_guessed_at() {
+        for bad in [
+            "",
+            "yesterday",
+            "2026-10-20",
+            "2026-10-20T10:00:00",
+            "2026-10-20T10:00:00.Z",
+            "2026-13-20T10:00:00Z",
+            "2026-10-20T25:00:00Z",
+            "2026-10-20T10:00:00+2:00",
+            "2026-10-20T10:00:00Zjunk",
+            "1792490400123",
+        ] {
+            assert_eq!(rfc3339_to_ms(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_revision_after_the_agents_own_write_is_somebody_elses() {
+        let stamp = 1_792_490_400_000; // 2026-10-20T10:00:00Z
+        // An hour later: a person edited.
+        assert!(modified_after_agent(
+            Some("2026-10-20T11:00:00.000Z"),
+            Some(stamp)
+        ));
+        // One second past the skew allowance still counts.
+        assert!(modified_after_agent(
+            Some("2026-10-20T10:00:06.000Z"),
+            Some(stamp)
+        ));
+        // Drive's revision of the agent's own write: at or just before the
+        // stamp, or inside the skew allowance after it.
+        assert!(!modified_after_agent(
+            Some("2026-10-20T09:59:59.900Z"),
+            Some(stamp)
+        ));
+        assert!(!modified_after_agent(
+            Some("2026-10-20T10:00:00.000Z"),
+            Some(stamp)
+        ));
+        assert!(!modified_after_agent(
+            Some("2026-10-20T10:00:05.000Z"),
+            Some(stamp)
+        ));
+        // Long before the stamp: the agent's write was the latest.
+        assert!(!modified_after_agent(
+            Some("2026-10-19T10:00:00Z"),
+            Some(stamp)
+        ));
+    }
+
+    #[test]
+    fn an_unknown_side_is_not_evidence_of_a_persons_edit() {
+        assert!(!modified_after_agent(None, Some(1_792_490_400_000)));
+        assert!(!modified_after_agent(Some("2026-10-20T11:00:00Z"), None));
+        assert!(!modified_after_agent(None, None));
+        // Unparseable is unknown, not "later".
+        assert!(!modified_after_agent(Some("soon"), Some(0)));
     }
 }

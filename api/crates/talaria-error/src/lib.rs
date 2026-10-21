@@ -462,10 +462,208 @@ fn is_digits(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// The one place the verbatim body is allowed to go, capped at 500 chars.
+/// The one place an upstream body is allowed to go, scrubbed of anything
+/// credential-shaped (`scrub_secrets`) and capped at 500 chars — in that
+/// order, so the cap can never cut a token in half and leave its head.
 pub fn log_upstream_error(where_: &str, status: impl std::fmt::Display, body: &str) {
-    let cap: String = body.chars().take(500).collect();
+    let cap: String = scrub_secrets(body).chars().take(500).collect();
     tracing::warn!("[upstream] {where_} {status}: {cap}");
+}
+
+/// The JSON keys whose string value is a credential wherever a body echoes
+/// them: a 4xx from an OAuth token endpoint quotes the grant it refused, an
+/// API that rejects a key often quotes the key. Matched case-insensitively
+/// as the whole key.
+const SECRET_JSON_KEYS: [&str; 14] = [
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "client_secret",
+    "api_key",
+    "apikey",
+    "x-api-key",
+    "authorization",
+    "password",
+    "secret",
+    "token",
+    "key",
+    "credential",
+    "x-talaria-key",
+];
+
+/// Header names an upstream (or a proxy in front of it) echoes back in
+/// prose — `x-api-key: …`, `Authorization=Bearer …`. The whole value after
+/// the separator goes, to the end of the line or the closing quote.
+const SECRET_HEADER_NAMES: [&str; 5] = [
+    "x-api-key",
+    "api-key",
+    "authorization",
+    "x-auth-token",
+    "x-talaria-key",
+];
+
+/// The prefixes a Talaria or provider key starts with: a gateway key, an
+/// agent credential, an OpenAI/Anthropic-shaped secret key.
+const SECRET_PREFIXES: [&str; 3] = ["tlk_", "tak_", "sk-"];
+
+const REDACTED: &str = "[redacted]";
+
+/// Redact credential-shaped text before it reaches a log line: `Bearer
+/// <token>`, `tlk_`/`tak_`/`sk-` keys, `"access_token": "…"`-style JSON
+/// fields and `x-api-key: …` header echoes each become a `[redacted]`
+/// marker (the prefix and the key name stay, so the line still says WHAT
+/// was echoed). Everything else passes through byte for byte. Hand-rolled
+/// over the bytes — this crate carries no regex — and only ever cutting at
+/// ASCII, so multi-byte text survives intact.
+pub fn scrub_secrets(body: &str) -> String {
+    let b = body.as_bytes();
+    let mut out = String::with_capacity(body.len());
+    let mut i = 0;
+    while i < b.len() {
+        if let Some((text, next)) = scrub_json_field(body, i)
+            .or_else(|| scrub_header_echo(body, i))
+            .or_else(|| scrub_bearer(body, i))
+            .or_else(|| scrub_prefixed_key(body, i))
+        {
+            out.push_str(&text);
+            i = next;
+            continue;
+        }
+        // Copy one whole char, however many bytes it spans.
+        let ch = body[i..].chars().next().expect("i sits on a char boundary");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn is_word_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_' || c == b'-'
+}
+
+/// Does `s[i..]` start with `word`, case-insensitively, at a word boundary?
+fn word_at(s: &str, i: usize, word: &str) -> bool {
+    let b = s.as_bytes();
+    if i > 0 && is_word_byte(b[i - 1]) {
+        return false;
+    }
+    b.len() >= i + word.len() && s.is_char_boundary(i + word.len()) && {
+        let slice = &s[i..i + word.len()];
+        slice.eq_ignore_ascii_case(word)
+    }
+}
+
+fn skip_spaces(b: &[u8], mut i: usize) -> usize {
+    while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
+        i += 1;
+    }
+    i
+}
+
+/// `"<secret key>" : "<value>"` → the value is the marker. The key must be
+/// a whole quoted word; the value a JSON string, escapes honoured.
+fn scrub_json_field(s: &str, i: usize) -> Option<(String, usize)> {
+    let b = s.as_bytes();
+    if b[i] != b'"' {
+        return None;
+    }
+    let key_end = i + 1 + b[i + 1..].iter().position(|&c| c == b'"')?;
+    let key = &s[i + 1..key_end];
+    if !SECRET_JSON_KEYS.iter().any(|k| key.eq_ignore_ascii_case(k)) {
+        return None;
+    }
+    let mut j = skip_spaces(b, key_end + 1);
+    if j >= b.len() || b[j] != b':' {
+        return None;
+    }
+    j = skip_spaces(b, j + 1);
+    if j >= b.len() || b[j] != b'"' {
+        return None;
+    }
+    // The value: to the next unescaped quote, or the end of the text when
+    // the body was cut mid-string.
+    let mut k = j + 1;
+    while k < b.len() && b[k] != b'"' {
+        k += if b[k] == b'\\' { 2 } else { 1 };
+    }
+    let k = k.min(b.len());
+    Some((format!("{}\"{REDACTED}", &s[i..j]), k))
+}
+
+/// `x-api-key: <value>` / `Authorization=<value>` → the value is the marker,
+/// to the end of the line or a closing quote. A JSON `"authorization": "…"`
+/// never reaches here: the quote in front of the key is `scrub_json_field`'s.
+fn scrub_header_echo(s: &str, i: usize) -> Option<(String, usize)> {
+    let b = s.as_bytes();
+    let name = SECRET_HEADER_NAMES.iter().find(|n| word_at(s, i, n))?;
+    let mut j = skip_spaces(b, i + name.len());
+    if j >= b.len() || (b[j] != b':' && b[j] != b'=') {
+        return None;
+    }
+    j = skip_spaces(b, j + 1);
+    let mut k = j;
+    while k < b.len()
+        && !matches!(
+            b[k],
+            b'\n' | b'\r' | b'"' | b'\'' | b',' | b';' | b'}' | b']'
+        )
+    {
+        k += 1;
+    }
+    if k == j {
+        return None;
+    }
+    Some((format!("{}{REDACTED}", &s[i..j]), k))
+}
+
+/// `Bearer <token>` → `Bearer [redacted]`, for a run of at least twelve
+/// token characters ("the bearer of this message" is prose). A lowercase
+/// word followed by `=` is a challenge parameter (`Bearer realm="mcp"`,
+/// `resource_metadata="…"`), not a token, and stays; base64 padding after a
+/// real token is left in place, which gives nothing away.
+fn scrub_bearer(s: &str, i: usize) -> Option<(String, usize)> {
+    let b = s.as_bytes();
+    if !word_at(s, i, "bearer") {
+        return None;
+    }
+    let mut j = i + "bearer".len();
+    if j >= b.len() || !(b[j] == b' ' || b[j] == b'\t') {
+        return None;
+    }
+    j = skip_spaces(b, j);
+    let mut k = j;
+    while k < b.len()
+        && (b[k].is_ascii_alphanumeric() || matches!(b[k], b'.' | b'_' | b'~' | b'+' | b'/' | b'-'))
+    {
+        k += 1;
+    }
+    if k - j < 12 {
+        return None;
+    }
+    let parameter = k < b.len()
+        && b[k] == b'='
+        && k - j <= 24
+        && b[j..k].iter().all(|c| c.is_ascii_lowercase() || *c == b'_');
+    if parameter {
+        return None;
+    }
+    Some((format!("{}{REDACTED}", &s[i..j]), k))
+}
+
+/// `tlk_…`, `tak_…`, `sk-…` → the prefix plus the marker, for a run of at
+/// least eight key characters after the prefix.
+fn scrub_prefixed_key(s: &str, i: usize) -> Option<(String, usize)> {
+    let b = s.as_bytes();
+    let prefix = SECRET_PREFIXES.iter().find(|p| word_at(s, i, p))?;
+    let j = i + prefix.len();
+    let mut k = j;
+    while k < b.len() && is_word_byte(b[k]) {
+        k += 1;
+    }
+    if k - j < 8 {
+        return None;
+    }
+    Some((format!("{}{REDACTED}", &s[i..j]), k))
 }
 
 #[cfg(test)]
@@ -511,6 +709,81 @@ mod tests {
         let rejected =
             r#"{"error":{"message":"Unrecognized request argument supplied: reasoning_effort"}}"#;
         assert!(sanitized_upstream_body(400, rejected).contains("upstream error (400)"));
+    }
+
+    /// The scrubber on bodies shaped like the ones upstreams actually
+    /// answer with: an OAuth token endpoint quoting the grant, an API
+    /// quoting the key it refused, a proxy echoing the header, a JWT
+    /// bearer. Every marker keeps the prefix or the key name, so the line
+    /// still says what was echoed and never what it was.
+    #[test]
+    fn the_scrubber_redacts_every_credential_shape_and_nothing_else() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abc-DEF_ghi+jkl/mno";
+        let body = format!(r#"{{"error":{{"message":"Invalid token: Bearer {jwt}"}}}}"#);
+        assert_eq!(
+            scrub_secrets(&body),
+            r#"{"error":{"message":"Invalid token: Bearer [redacted]"}}"#
+        );
+        assert!(!scrub_secrets(&body).contains("eyJ"));
+
+        let oauth = r#"{"access_token":"ya29.a0AfH6SMB-xyz","refresh_token":"1//0gabc","token_type":"Bearer","expires_in":3599,"id_token": "eyJ.x.y"}"#;
+        assert_eq!(
+            scrub_secrets(oauth),
+            r#"{"access_token":"[redacted]","refresh_token":"[redacted]","token_type":"Bearer","expires_in":3599,"id_token": "[redacted]"}"#
+        );
+
+        assert_eq!(
+            scrub_secrets("unauthorized: key tlk_0123456789abcdef is not valid"),
+            "unauthorized: key tlk_[redacted] is not valid"
+        );
+        assert_eq!(
+            scrub_secrets(r#"header "tak_abcdefghijklmnop" rejected"#),
+            r#"header "tak_[redacted]" rejected"#
+        );
+        assert_eq!(
+            scrub_secrets(
+                r#"{"error":{"message":"Incorrect API key provided: sk-proj-abc123def456ghi789. You can find your API key at https://platform.openai.com."}}"#
+            ),
+            r#"{"error":{"message":"Incorrect API key provided: sk-[redacted]. You can find your API key at https://platform.openai.com."}}"#
+        );
+
+        assert_eq!(
+            scrub_secrets("400 bad request\nx-api-key: sk-ant-api03-abcdefghijklmnop\naccept: */*"),
+            "400 bad request\nx-api-key: [redacted]\naccept: */*"
+        );
+        assert_eq!(
+            scrub_secrets("echo: Authorization=Bearer abcdefghijklmnopqrstuvwxyz, host=x"),
+            "echo: Authorization=[redacted], host=x"
+        );
+        assert_eq!(
+            scrub_secrets(r#"{"Authorization": "Basic dXNlcjpwYXNz", "X-Api-Key":"k-1234567890"}"#),
+            r#"{"Authorization": "[redacted]", "X-Api-Key":"[redacted]"}"#
+        );
+        // An escaped quote inside the value does not end it early.
+        assert_eq!(
+            scrub_secrets(r#"{"password":"a\"b","next":1}"#),
+            r#"{"password":"[redacted]","next":1}"#
+        );
+
+        // A challenge's parameters are not tokens; a provider's prose, a
+        // short word, a key-named field with no string value and
+        // multi-byte text all pass through byte for byte.
+        for plain in [
+            r#"Bearer realm="mcp", error="invalid_token", resource_metadata="https://x/.well-known/oauth-protected-resource""#,
+            r#"{"error":{"code":"1113","message":"Insufficient balance or no resource package. Please recharge."}}"#,
+            "the bearer of this message is a token of goodwill",
+            r#"{"token": 42, "secret": null, "tokens": "many"}"#,
+            "tlk_short sk-x tak_ab",
+            "naïve façade — 日本語 ✓",
+        ] {
+            assert_eq!(scrub_secrets(plain), plain, "{plain}");
+        }
+        // A body cut mid-token (the 500-char cap, a truncated upstream)
+        // still redacts what is there.
+        assert_eq!(
+            scrub_secrets(r#"{"access_token":"ya29.abcdef"#),
+            r#"{"access_token":"[redacted]"#
+        );
     }
 
     #[test]

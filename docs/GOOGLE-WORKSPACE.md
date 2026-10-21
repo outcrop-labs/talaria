@@ -89,9 +89,14 @@ multi-account setup path.
   inside a folder the agent created; inside **any other folder** they queue
   (`doc_create` / `drive_folder_create`) because the file inherits that
   folder's sharing. `update_google_doc` on a doc the agent created is
-  immediate until **someone else edits it** (Drive's `lastModifyingUser` is
-  not the token holder); from then on a full-body replace queues like any
-  human-owned doc, and `append_google_doc` stays immediate. `read_drive_file`
+  immediate until **a person edits it**, read two ways before every
+  full-body replace: Drive's `lastModifyingUser` is not the token holder
+  (someone else), or Drive's `modifiedTime` is later than Talaria's own
+  stamp of the agent's last write (`last_agent_write_at`, taken on every
+  agent write — which catches the owner editing their assistant's doc from
+  their own account, the one case the `me` flag cannot tell from the agent).
+  From then on a full-body replace queues like any human-owned doc, and
+  `append_google_doc` stays immediate. `read_drive_file`
   and `import_drive_file` stop at the upload limit (25 MiB).
 - **Who an agent may act as.** Setting an agent's Google principal to
   `owner` for a user **other than yourself** is admin-only (an agent's

@@ -9,13 +9,16 @@
     openManage: () => void
     /** The frame root's `oncontextmenu` (the manage/duplicate/lifecycle menu). */
     onContextMenu: (e: MouseEvent) => void
+    /** The department is mid-roll — its own roll or the fleet-wide batch —
+     *  so the Roll control is disabled and the frame can say so. */
+    rolling: boolean
   }
 </script>
 
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import type { AgentContainers, AgentDef, LlmEndpoint } from '@/lib/fleet-defs'
+  import type { AgentContainers, AgentDef, FleetRollRow, LlmEndpoint } from '@/lib/fleet-defs'
   import AgentRetireModal from '@/routes/app/AgentRetireModal.svelte'
   import { healthOf, useAgentMenu } from '@/routes/app/agents.svelte'
   import AgentManageModal from './AgentManageModal.svelte'
@@ -29,12 +32,15 @@
     containers,
     endpoints,
     onDuplicate,
+    roll,
     frame,
   }: {
     def: AgentDef
     containers: AgentContainers | null
     endpoints: LlmEndpoint[]
     onDuplicate: () => void
+    /** This agent's row in the roll picture (admins see it; undefined otherwise). */
+    roll?: FleetRollRow
     /** The frame: row or tile markup, rendering whatever it wants of AgentFrame. */
     frame: Snippet<[AgentFrame]>
   } = $props()
@@ -42,10 +48,11 @@
   let manage = $state(false)
   const openManage = () => (manage = true)
   const running = $derived(healthOf(d, containers).running)
-  const am = useAgentMenu(() => d, () => running, openManage, () => onDuplicate())
+  const rolling = $derived(roll?.state === 'rolling')
+  const am = useAgentMenu(() => d, () => running, openManage, () => onDuplicate(), () => rolling)
 </script>
 
-{@render frame({ running, openManage, onContextMenu: am.onContextMenu })}
+{@render frame({ running, openManage, onContextMenu: am.onContextMenu, rolling })}
 <ContextMenu menu={am.menu} />
 {#if am.retiring}
   <AgentRetireModal def={d} onClose={() => (am.retiring = false)} onConfirm={() => void am.act('retire', 'retiring')} />

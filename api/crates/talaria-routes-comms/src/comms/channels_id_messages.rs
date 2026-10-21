@@ -20,8 +20,8 @@ use talaria_body::{
 };
 use talaria_channel_replies::{notify_dm_message, notify_user_mentions, trigger_agent_replies};
 use talaria_channels::{
-    agent_may_access_channel, channel_role, get_channel_message, insert_channel_message,
-    inserted_wire, list_channel_messages, list_thread_messages,
+    ChannelIntent, agent_may_access_channel, channel_role, get_channel_message,
+    insert_channel_message, inserted_wire, list_channel_messages, list_thread_messages,
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::NotifyDeps;
@@ -75,7 +75,14 @@ pub async fn get(
         Ok(None) => return get_as_user(&state, &headers, &id, since, thread).await,
         Err(resp) => return Err(resp),
     };
-    let may = match agent_may_access_channel(&state.pg, &id, &AgentSubject::Caller(caller)).await {
+    let may = match agent_may_access_channel(
+        &state.pg,
+        &id,
+        &AgentSubject::Caller(caller),
+        ChannelIntent::Read,
+    )
+    .await
+    {
         Ok(v) => v,
         Err(e) => return Ok(internal("[channels] agent access read failed", e)),
     };
@@ -249,7 +256,14 @@ pub async fn post(
     };
     let name = caller.model.clone();
     // The CALLER, not `name`: elevation buys org-wide posting rights.
-    let may = match agent_may_access_channel(&state.pg, &id, &AgentSubject::Caller(caller)).await {
+    let may = match agent_may_access_channel(
+        &state.pg,
+        &id,
+        &AgentSubject::Caller(caller),
+        ChannelIntent::Post,
+    )
+    .await
+    {
         Ok(v) => v,
         Err(e) => return Ok(internal("[channels] agent access read on POST failed", e)),
     };

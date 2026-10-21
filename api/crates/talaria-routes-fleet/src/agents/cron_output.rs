@@ -12,10 +12,14 @@
 // Agent-authenticated, never session-authenticated — the same door as
 // /api/agents/tool-events, and the same distrust of the plugin: the text is
 // re-clamped and secret-scrubbed HERE, at the boundary, before it becomes a
-// message row that models and transcripts will read back. Correlation is
-// exact rather than approximate (unlike tool-events' newest-live-run): the
-// cron task id carries the job id, and the schedule row names the one
-// conversation listening to that job for this agent.
+// message row that models and transcripts will read back, and then run
+// through the same reply guard the chat path applies when a streamed reply
+// lands (`guard_chat_reply`): a cron turn is nobody's open stream, so this
+// door is the only place that pass can happen. Correlation is exact rather
+// than approximate (unlike tool-events' newest-live-run): the cron task id
+// carries the job id, and the schedule row names the one conversation
+// listening to that job for this agent — and the person who scheduled it,
+// whom the landed turn is attributed to as its responsible user.
 
 use axum::Json;
 use axum::extract::State;
@@ -23,6 +27,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::{refuse_legacy, require_agent};
+use talaria_api_facades::gateway::guard::{
+    GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
+};
 use talaria_body::truncate_utf16;
 use talaria_error::{house_error, internal};
 use talaria_notify::{NotifyDeps, fan_conversation_event, notify_agent_reply};
@@ -75,9 +82,9 @@ pub async fn post(
     // The job→conversation link is scoped to the CALLER's model, so one
     // agent's key can never post into a conversation listening to another
     // agent's schedule.
-    let conversation =
+    let listener =
         match talaria_agent_crons::conversation_for_job(&state.pg, &caller.model, &job).await {
-            Ok(Some(id)) => id,
+            Ok(Some(l)) => l,
             Ok(None) => {
                 return Ok(house_error(
                     StatusCode::NOT_FOUND,
@@ -86,6 +93,7 @@ pub async fn post(
             }
             Err(e) => return Ok(internal("[cron-output] conversation lookup failed", e)),
         };
+    let conversation = listener.conversation_id;
     let text = parsed.get("text").and_then(|v| v.as_str()).unwrap_or("");
     // The plugin never sends a blank turn; a hand-rolled caller that does
     // would land an empty assistant row and ring a bell for nothing.
@@ -99,6 +107,28 @@ pub async fn post(
     // A cron turn is a stored, re-readable message, so a key echoed into the
     // agent's closing summary would otherwise outlive the run.
     let text = talaria_api_facades::runs::defs::work_session::scrub_secrets(clamp_text(text));
+    // The chat path's landing pass, on the one turn this door lands. No tool
+    // names reach here (the cron ran inside the container), so the record
+    // honestly says neither half is supplied; a conversation is a contained
+    // audience. Strict mode redacts the SAVED copy before it is written —
+    // there is no stream to flush, so the row never holds the unredacted
+    // text — and annotate/strict pin the scrubbed findings on the row as the
+    // caveat the UI renders (transcripts never read that column).
+    let (findings, mode) = guard_chat_reply(
+        &state.pg,
+        &text,
+        &[],
+        "",
+        &format!("cron:{}", caller.model),
+        &caller.model,
+        Spread::Contained,
+    )
+    .await;
+    let text = if mode == GuardMode::Strict && needs_redaction(&findings) {
+        redact_secrets(&text, None).0
+    } else {
+        text
+    };
     let marker = turn_marker(
         &job,
         &execution,
@@ -115,6 +145,32 @@ pub async fn post(
         Ok(id) => id,
         Err(e) => return Ok(internal("[cron-output] turn insert failed", e)),
     };
+    // THE RESPONSIBLE USER. A cron turn arrives with no person behind it —
+    // nobody is chatting — so the turn is attributed to the person who set
+    // the schedule up: `author_user_id` is the one slot a turn carries for a
+    // human, and the UI labels only user turns from it, so an assistant row
+    // gains an accountable person without gaining a byline. A re-delivered
+    // execution finds the stamp already there and leaves it.
+    if let Some(creator) = listener.created_by.as_deref()
+        && let Err(e) = sqlx::query(
+            "update messages set author_user_id = $2::uuid \
+             where id = $1::uuid and author_user_id is null",
+        )
+        .bind(&message_id)
+        .bind(creator)
+        .execute(&state.pg)
+        .await
+    {
+        tracing::error!("[cron-output] responsible-user stamp failed: {e}");
+    }
+    if !findings.is_empty() && matches!(mode, GuardMode::Annotate | GuardMode::Strict) {
+        let _ = talaria_conversations::set_message_guard(
+            &state.pg,
+            &message_id,
+            &redact_findings(&findings),
+        )
+        .await;
+    }
     // Exactly what the chat persist path does once a reply lands complete:
     // every reader's thread pill moves, and whoever was away gets the one
     // agent-reply row. Both are id-shaped and both are detached — a cron
