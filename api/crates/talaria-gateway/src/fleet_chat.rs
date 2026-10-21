@@ -26,6 +26,7 @@ use futures_util::StreamExt;
 use serde_json::{Value, json};
 
 use crate::provider::http;
+use crate::usage::{TurnRegistration, register_turn};
 use crate::vault::{SecretVault, seal_content};
 use talaria_fleet_layout::{ManifestEntry, describe_agent, read_manifest};
 
@@ -135,6 +136,12 @@ pub async fn proxy_chat(payload: &Value, wait_ms: Option<u64>) -> ChatStream {
 /// keyed by `conversation_id`. That is why this is not `proxy_chat` with
 /// another path: there is no `messages` array to assemble here, so there is no
 /// way for our idea of what was said to drift from the agent's.
+///
+/// THE KEY IS THE CALLER'S, and it is also the id the agent's talaria-events
+/// plugin reports every tool frame against: a pinned chat keys the session by
+/// its conversation id, a work session by its RUN id (the harness transport's
+/// `PersonaSession`), so a frame at the tool-events door names the thing it
+/// belongs to.
 ///
 /// Everything else is `proxy_chat`'s contract, deliberately: the session is
 /// created on the way in (idempotently — an existing one answers 409, which is
@@ -318,6 +325,18 @@ fn lost_sessions_first_sight(conversation_id: &str) -> bool {
 /// rather than a silent failure. `wait_ms` None is the two-minute default.
 /// `Err(SessionLost)` is the session arm's one way out that is not a stream:
 /// the room it expected is gone, and the caller decides what to send instead.
+///
+/// THE TURN IS REGISTERED HERE — once, before the first attempt reaches the
+/// container, and for as long as the stream it opens is being read. This is
+/// the one door every Talaria-driven persona turn goes through (both arms,
+/// every caller: chat, channel, harness), and the register is what lets the
+/// gateway relay tell these turns — whose spend the driving flow ledgers —
+/// from a turn Hermes started by itself (a cron), whose spend it must meter
+/// (usage.rs, "The in-flight turn register"). It is counted before the
+/// request goes out because the agent's tool loop, the calls being judged,
+/// runs during the headers wait; it rides the stream so the consumer's end
+/// — clean, hung up, errored — is the turn's end; and a hold that gives up
+/// with a canned reply drops it on the way out.
 async fn hold_for_agent(
     model: &str,
     request: AgentRequest,
@@ -325,6 +344,7 @@ async fn hold_for_agent(
 ) -> Result<ChatStream, SessionLost> {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms.unwrap_or(120_000));
     let mut attempt: u32 = 0;
+    let mut turn: Option<TurnRegistration> = None;
     loop {
         let manifest = read_manifest().await;
         let entry = manifest.iter().find(|m| m.model == model);
@@ -335,8 +355,11 @@ async fn hold_for_agent(
         }
 
         if let Some(entry) = entry {
+            if turn.is_none() {
+                turn = register_turn(&turn_subject(&manifest, entry)).await;
+            }
             match request.open(entry).await {
-                Opened::Stream(stream) => return Ok(stream),
+                Opened::Stream(stream) => return Ok(bind_turn(stream, turn)),
                 Opened::Lost => return Err(SessionLost),
                 Opened::NotYet => {}
             }
@@ -351,6 +374,51 @@ async fn hold_for_agent(
         ))
         .await;
     }
+}
+
+/// The name a turn is registered under: the agent's model id — the relay's
+/// subject for that agent's key, and the ledger namespace its rows land in.
+/// A tier is dialed as its own manifest row, `<agent model>-<tier>`, pointing
+/// at the same container as the agent's row; the agent's row is the shortest
+/// model sharing the container's url, so a tiered turn registers under the
+/// agent and not under a name the relay never sees.
+fn turn_subject(manifest: &[ManifestEntry], entry: &ManifestEntry) -> String {
+    manifest
+        .iter()
+        .filter(|m| m.url == entry.url)
+        .map(|m| m.model.as_str())
+        .min_by_key(|m| m.len())
+        .unwrap_or(entry.model.as_str())
+        .to_string()
+}
+
+/// The stream with its registration riding along: the turn stays counted
+/// until the consumer lets go of the body — the end of a drain, a hang-up, an
+/// error — and no later.
+struct TurnBound {
+    inner: ByteStream,
+    _turn: TurnRegistration,
+}
+
+impl futures_util::Stream for TurnBound {
+    type Item = reqwest::Result<Bytes>;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.get_mut().inner.as_mut().poll_next(cx)
+    }
+}
+
+/// Tie a registration to the stream it covers. No registration (the register
+/// was unreachable) leaves the stream as it was.
+fn bind_turn(mut stream: ChatStream, turn: Option<TurnRegistration>) -> ChatStream {
+    if let Some(turn) = turn {
+        let inner = std::mem::replace(&mut stream.body, Box::pin(futures_util::stream::empty()));
+        stream.body = Box::pin(TurnBound { inner, _turn: turn });
+    }
+    stream
 }
 
 /// An authenticated POST to one agent's own gateway. The session arm and the
@@ -1369,6 +1437,38 @@ fn session_error_message(json: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turn_registers_under_the_agent_whatever_tier_it_dials() {
+        let row = |model: &str, url: &str| ManifestEntry {
+            model: model.into(),
+            url: url.into(),
+            key: None,
+        };
+        let manifest = vec![
+            row("x-eng", "http://agent-eng:8642"),
+            row("x-eng-fast", "http://agent-eng:8642"),
+            row("x-eng-deep", "http://agent-eng:8642"),
+            row("y-ops", "http://agent-ops:8642"),
+        ];
+        assert_eq!(turn_subject(&manifest, &manifest[0]), "x-eng");
+        assert_eq!(
+            turn_subject(&manifest, &manifest[2]),
+            "x-eng",
+            "a tier row registers under the agent sharing its container"
+        );
+        assert_eq!(
+            turn_subject(&manifest, &manifest[3]),
+            "y-ops",
+            "another container is another agent"
+        );
+        let alone = vec![row("x-eng-fast", "http://agent-eng:8642")];
+        assert_eq!(
+            turn_subject(&alone, &alone[0]),
+            "x-eng-fast",
+            "a row with no sibling is its own subject"
+        );
+    }
 
     #[test]
     fn parser_handles_frames_split_across_chunks() {

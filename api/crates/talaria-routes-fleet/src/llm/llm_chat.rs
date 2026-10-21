@@ -25,6 +25,14 @@
 // routes to (gateway_agent_models, written by the render); anything else is
 // a 403 before any upstream is touched.
 //
+// WHETHER THE RELAY METERS AN AGENT'S CALL. A turn Talaria drove — chat,
+// channel, harness — is ledgered as one row by the flow that drove it, so
+// the inner-loop calls behind it are skipped here. A turn Hermes started by
+// itself (a cron inside the container) looks the same at this relay and no
+// flow writes its row, so the relay asks the turn register (gateway
+// usage.rs): a Talaria turn open for this agent → skip, as before; none →
+// meter here, under the agent, source `unattended`.
+//
 // THE GUARD'S TWO POSTURES. Observe (or an agent-loop key): the guard runs
 // detached after the bytes are gone — findings record, response untouched.
 // Annotate/strict on a human's key: non-streaming awaits the guard and
@@ -58,8 +66,8 @@ use talaria_api_facades::gateway::registry::resolve_route;
 use talaria_api_facades::gateway::settings::get_setting_hot;
 use talaria_api_facades::gateway::upstream::{Reply, build_upstream, fetch_upstream, js_truthy};
 use talaria_api_facades::gateway::usage::{
-    ReportedSpend, TokenCounts, estimate_tokens, normalize_usage, record_gateway_usage_with_spend,
-    reported_spend,
+    RELAY_SOURCE, ReportedSpend, TokenCounts, UNATTENDED_SOURCE, estimate_tokens, normalize_usage,
+    record_relay_usage, reported_spend, talaria_turn_open,
 };
 use talaria_auth::{authenticate_key, bearer_secret};
 use talaria_error::{
@@ -275,24 +283,30 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
     // inner-loop calls behind it counts that turn twice. Everything else is
     // metered HERE because here is the only place it lands.
     //
-    // KNOWN GAP, deliberately left: a turn no Talaria flow drives — a Hermes
-    // cron firing inside the container — reaches this relay byte-identical
-    // to a chat turn (Hermes makes the call, not Talaria, so nothing the chat
-    // proxy sends can ride along as a marker) and is skipped with the rest.
-    // Closing it needs the chat proxy to register its in-flight turns so the
-    // relay can tell "no Talaria turn is open for this agent" — that is the
-    // chat proxy's change, not this file's.
+    // An agent's key asks the turn register first: the chat transport counts
+    // every turn Talaria drives while it is open, so a call that arrives
+    // with NO turn counted for this agent is one Hermes started by itself —
+    // a cron — and nothing else will ledger it. That call is metered here,
+    // under the agent, as `unattended`. Only a key the render scoped can ask
+    // (the register is keyed by the agent's model id, which is the scope);
+    // an unscoped key keeps the skip. KNOWN DOUBLE-SKIP: a cron firing
+    // while a chat turn is open for the same agent is skipped with that
+    // turn's calls — the relay cannot tell one agent's two loops apart.
     let unmetered = get_setting_hot(
         &state.pg,
         "gateway_unmetered_keys",
         json!(["fleet-gateway"]),
     )
     .await;
-    let skip_meter = is_agent_key
-        || unmetered
-            .as_array()
-            .map(|a| a.iter().any(|v| v.as_str() == Some(id.key_name.as_str())))
-            .unwrap_or(false);
+    let listed_unmetered = unmetered
+        .as_array()
+        .map(|a| a.iter().any(|v| v.as_str() == Some(id.key_name.as_str())))
+        .unwrap_or(false);
+    let talaria_turn = match &agent_scope {
+        Some(scope) => talaria_turn_open(&scope.model).await,
+        None => None,
+    };
+    let meter = meter_plan(is_agent_key, listed_unmetered, talaria_turn);
 
     // ANNOTATION — is the caller an agent's own tool loop? Guard caveats are
     // for humans reading a reply; injecting one into an agent's loop would
@@ -343,7 +357,8 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         provider: route.endpoint.provider.clone(),
         upstream_model: route.upstream_model.clone(),
         prompt_chars,
-        skip: skip_meter,
+        skip: meter.skip(),
+        source: meter.source(),
     };
 
     // ── Non-streaming: read, meter, relay ─────────────────────────────────
@@ -509,6 +524,50 @@ fn prompt_chars_of(messages: &Value) -> usize {
         .sum()
 }
 
+/// What the ledger does with one call, decided before the upstream is
+/// touched: skip because another writer books the turn, or book it here
+/// under a source that says whose spend it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Meter {
+    /// The flow that drove this turn writes the row — or nobody can tell.
+    Skip,
+    /// Book it here, under this source.
+    Book(&'static str),
+}
+
+impl Meter {
+    fn skip(self) -> bool {
+        self == Meter::Skip
+    }
+
+    fn source(self) -> &'static str {
+        match self {
+            Meter::Book(source) => source,
+            Meter::Skip => RELAY_SOURCE,
+        }
+    }
+}
+
+/// The metering decision. `talaria_turn` is the register's answer for an
+/// agent key — Some(true) a Talaria turn is open, Some(false) none is, None
+/// the register could not be read (or the key is unscoped, so there was
+/// nothing to ask under) — and it is only consulted for an agent key.
+fn meter_plan(is_agent_key: bool, listed_unmetered: bool, talaria_turn: Option<bool>) -> Meter {
+    if listed_unmetered {
+        return Meter::Skip;
+    }
+    if !is_agent_key {
+        return Meter::Book(RELAY_SOURCE);
+    }
+    match talaria_turn {
+        // Nobody is driving this turn: the row lands here or nowhere.
+        Some(false) => Meter::Book(UNATTENDED_SOURCE),
+        // A Talaria turn is open (or the question could not be asked): the
+        // flow's row is the row, as before.
+        Some(true) | None => Meter::Skip,
+    }
+}
+
 /// The ledger write for one call — spawned, never awaited on the request
 /// path.
 #[derive(Clone)]
@@ -521,6 +580,7 @@ struct Ledger {
     upstream_model: String,
     prompt_chars: usize,
     skip: bool,
+    source: &'static str,
 }
 
 impl Ledger {
@@ -557,8 +617,9 @@ impl Ledger {
         let l = self.clone();
         let spend = spend.clone();
         tokio::spawn(async move {
-            if let Err(e) = record_gateway_usage_with_spend(
+            if let Err(e) = record_relay_usage(
                 &l.pg,
+                l.source,
                 &l.caller,
                 &l.endpoint,
                 &l.endpoint_class,
@@ -892,6 +953,30 @@ mod tests {
         assert_eq!(caller_of("agent:xeng", None), "xeng");
     }
 
+    #[test]
+    fn an_agents_call_is_metered_here_only_when_no_talaria_turn_is_open() {
+        // An operator's key: metered here, as ever — unless listed unmetered.
+        assert_eq!(meter_plan(false, false, None), Meter::Book(RELAY_SOURCE));
+        assert_eq!(meter_plan(false, true, None), Meter::Skip);
+        // An agent's key during a chat turn: the flow writes the row.
+        assert_eq!(meter_plan(true, false, Some(true)), Meter::Skip);
+        // An agent's key with no Talaria turn open — a cron: the row lands
+        // here, named for what it is.
+        assert_eq!(
+            meter_plan(true, false, Some(false)),
+            Meter::Book(UNATTENDED_SOURCE)
+        );
+        // The register unreadable, or an unscoped key: today's skip, never a
+        // double-counted turn.
+        assert_eq!(meter_plan(true, false, None), Meter::Skip);
+        // An operator listing an agent key as unmetered still wins.
+        assert_eq!(meter_plan(true, true, Some(false)), Meter::Skip);
+        // The ledger's view of a decision.
+        assert!(Meter::Skip.skip());
+        assert!(!Meter::Book(UNATTENDED_SOURCE).skip());
+        assert_eq!(Meter::Book(UNATTENDED_SOURCE).source(), "unattended");
+    }
+
     fn scanner_mode(mode: MeterMode) -> MeteredStream {
         // skip:true — settle runs its scan logic, the ledger write doesn't
         // (no DB in unit tests; the write itself is exercised live).
@@ -904,6 +989,7 @@ mod tests {
             upstream_model: "m".into(),
             prompt_chars: 0,
             skip: true,
+            source: RELAY_SOURCE,
         };
         let guard_spec = GuardSpec {
             pg: sqlx::PgPool::connect_lazy("postgres://x").unwrap(),

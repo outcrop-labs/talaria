@@ -4,13 +4,16 @@
 // jobs.json for truth and drives the `hermes cron` CLI for mutations through
 // the running container (docker exec). Requires the container to be up.
 //
-// METERING CAVEAT: a cron fires the agent's own
-// loop on the agent's own config, i.e. the PERSONA gateway key, which the
-// gateway leaves unmetered because a Talaria flow normally writes that turn's
-// ledger row. A cron has no flow, so its spend reaches no ledger. Not fixable
-// from here: `hermes cron create` takes no model/provider/credential, and the
-// scheduler runs inside the single `hermes gateway run` process — so at the
-// gateway a cron turn is byte-identical to a persona turn.
+// METERING: a cron fires the agent's own loop on the agent's own config,
+// i.e. the agent's own gateway key — the same key a chat turn uses, and at
+// the gateway a cron turn is byte-identical to a persona turn (`hermes cron
+// create` takes no model/provider/credential, and the scheduler runs inside
+// the single `hermes gateway run` process). The gateway relay tells them
+// apart by the turn register (talaria-gateway usage.rs): the chat transport
+// counts every turn Talaria drives while it is open, and a call on the
+// agent's key with no turn counted is metered at the relay, under the agent,
+// source `unattended` — so cron spend reaches the ledger and the agent's
+// budget. A cron firing while a chat turn is open is the known double-skip.
 
 use sqlx::PgPool;
 
@@ -745,21 +748,36 @@ pub async fn set_jobs_paused_for_conversation(
     changed
 }
 
+/// The thread listening to a job, and the person who set the job up — the
+/// one who asked for the output, and so the one a landed turn answers to.
+#[derive(Debug, Clone)]
+pub struct JobListener {
+    pub conversation_id: String,
+    /// `conversation_schedules.created_by`: None only for a row written
+    /// before the column was stamped.
+    pub created_by: Option<String>,
+}
+
 /// Which conversation, if any, is listening to this agent's job — the lookup
-/// the agent's own call back makes, keyed the way the row is keyed.
+/// the agent's own call back makes, keyed the way the row is keyed — and who
+/// scheduled it.
 pub async fn conversation_for_job(
     pg: &PgPool,
     agent_model: &str,
     job_id: &str,
-) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "select conversation_id::text from conversation_schedules \
+) -> Result<Option<JobListener>, sqlx::Error> {
+    let row: Option<(String, Option<String>)> = sqlx::query_as(
+        "select conversation_id::text, created_by::text from conversation_schedules \
          where agent_model = $1 and job_id = $2",
     )
     .bind(agent_model)
     .bind(job_id)
     .fetch_optional(pg)
-    .await
+    .await?;
+    Ok(row.map(|(conversation_id, created_by)| JobListener {
+        conversation_id,
+        created_by,
+    }))
 }
 
 /// What this thread has scheduled, oldest first.

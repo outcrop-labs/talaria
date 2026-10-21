@@ -203,7 +203,13 @@ pub fn stale_assignments(
         .collect()
 }
 
-/// The drift sentence: what appeared and what went, by name.
+/// The most names one side of the drift sentence spells out; the rest is
+/// a count. A server that swapped its whole thousand-tool catalog gets a
+/// probe line, not a probe document.
+const DRIFT_NAMES_MAX: usize = 20;
+
+/// The drift sentence: what appeared and what went, by name — the first
+/// `DRIFT_NAMES_MAX` of each side, "and N more" for the rest.
 pub fn drift_detail(before: &BTreeSet<String>, after: &BTreeSet<String>) -> Option<String> {
     let added: Vec<&str> = after.difference(before).map(String::as_str).collect();
     let removed: Vec<&str> = before.difference(after).map(String::as_str).collect();
@@ -212,12 +218,20 @@ pub fn drift_detail(before: &BTreeSet<String>, after: &BTreeSet<String>) -> Opti
     }
     let mut parts = Vec::new();
     if !added.is_empty() {
-        parts.push(format!("added {}", added.join(", ")));
+        parts.push(format!("added {}", some_names(&added)));
     }
     if !removed.is_empty() {
-        parts.push(format!("removed {}", removed.join(", ")));
+        parts.push(format!("removed {}", some_names(&removed)));
     }
     Some(format!("the tool catalog changed: {}", parts.join("; ")))
+}
+
+fn some_names(names: &[&str]) -> String {
+    let shown = names[..names.len().min(DRIFT_NAMES_MAX)].join(", ");
+    match names.len().saturating_sub(DRIFT_NAMES_MAX) {
+        0 => shown,
+        more => format!("{shown} and {more} more"),
+    }
 }
 
 /// The servers a health pass asks: enabled, external, and with an address —
@@ -818,6 +832,26 @@ mod tests {
             drift_detail(&names(&["a"]), &names(&[])).as_deref(),
             Some("the tool catalog changed: removed a")
         );
+    }
+
+    /// A wholesale swap names the first twenty of each side and counts the
+    /// rest; exactly twenty is spelled out in full.
+    #[test]
+    fn drift_detail_names_at_most_twenty_and_counts_the_rest() {
+        let many: Vec<String> = (0..25).map(|i| format!("t{i:02}")).collect();
+        let gone: Vec<&str> = many.iter().map(String::as_str).collect();
+        let sentence = drift_detail(
+            &gone.iter().map(|s| s.to_string()).collect(),
+            &names(&["new"]),
+        )
+        .unwrap();
+        assert!(sentence.starts_with("the tool catalog changed: added new; removed t00, t01, "));
+        assert!(sentence.ends_with(", t19 and 5 more"), "{sentence}");
+        assert!(!sentence.contains("t20"), "{sentence}");
+        let exactly: Vec<&str> = gone[..20].to_vec();
+        let sentence = drift_detail(&names(&exactly), &names(&[])).unwrap();
+        assert!(sentence.ends_with(", t19"), "{sentence}");
+        assert!(!sentence.contains("more"), "{sentence}");
     }
 
     #[test]

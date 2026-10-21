@@ -31,6 +31,13 @@ listener on 5280. The fleet key + agent name identify the caller, and the gatewa
   (JSON-RPC `-32601`, recorded as denied), while an agent with no subset relays them as before;
 - injects the right credentials upstream (org headers, org OAuth token, or the acting user's
   connected account) — a hand-edited agent config can never exceed what the registry granted;
+- **binds upstream sessions to the agent they were minted for**: the `mcp-session-id` an
+  upstream's `initialize` answer carries is recorded against the calling agent (Redis,
+  `talaria:mcp-session:v1:<server>:<sid>`, 24 h, refreshed on use), and a later request
+  presenting a session recorded for another agent is refused with JSON-RPC `-32602` ("this
+  session belongs to another agent") — two agents sharing an org credential look alike to the
+  upstream, so the gateway is what keeps them out of each other's sessions; a session the
+  gateway never saw minted passes through, since an upstream can mint one out of band;
 - tells **"no access"** from **"not connected"**. A server the agent may not use answers 403
   `no access to this MCP server`. A server it *may* use but whose account nobody connected yet
   (a per-user server whose owner has not connected, an org OAuth server nobody connected, a
@@ -87,6 +94,11 @@ Per server:
   (`talaria-mcp-oauth/src/guides.rs`, keyed by domain), the **one canonical callback URL** (the
   verified hosting domain when set, else the request origin — computed by the api and shown
   verbatim, never by the browser), client id/secret, and an optional explicit scope list.
+  Every discovered endpoint (resource metadata, authorization server, registration, authorize,
+  token) is pinned to the server's own registrable domain **and must be `https://`** — a
+  plain-http endpoint on the right domain is refused with a sentence naming it, the one
+  exception being a loopback host the operator admitted through `TALARIA_FETCH_ALLOW_HOSTS`,
+  which is how a stub on the same machine registers.
   Discovery re-runs on demand (**Re-detect auth**) and automatically when a header server starts
   answering 401 with OAuth metadata. Tokens are sealed per subject (`org` or a user), refreshed
   silently, and a revocation forces a visible reconnect.
@@ -168,7 +180,8 @@ time; each server's conversation gets 45 seconds whatever its own timeout, and e
 written as it arrives, so one hung server delays only its own line:
 
 - **org + headers** — `initialize` + `tools/list` with the sealed org headers. A changed tool
-  *name* set replaces the cached catalog; assignments whose tool subset names a tool no longer
+  *name* set replaces the cached catalog (the probe's drift line names at most twenty tools a
+  side and counts the rest); assignments whose tool subset names a tool no longer
   offered land in the probe as `staleAssignments: [{agent, missing}]`, and the agent's MCP tab
   answers `assignedToolsMissing` per server (computed live against the catalog) with a one-click
   **Drop missing tools**. The tab's copy of the probe leaves `staleAssignments` out: it names

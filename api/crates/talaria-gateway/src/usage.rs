@@ -2,9 +2,16 @@
 // estimate, the priced rolling-window spend read (budget check's read side),
 // and the gateway's usage_events insert.
 
+use redis::AsyncCommands;
+use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use serde_json::Value;
 use sqlx::PgPool;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use talaria_body::js_num;
+use talaria_state::redis_response_timeout;
 
 /// Set from the api binary so an unpriced cloud row can nudge the oracle
 /// without this crate depending on price_oracle (scheduler still lives
@@ -707,15 +714,54 @@ pub async fn record_gateway_usage_with_spend(
     estimated: bool,
     spend: Option<&ReportedSpend>,
 ) -> Result<(), sqlx::Error> {
+    record_relay_usage(
+        pg,
+        RELAY_SOURCE,
+        caller,
+        endpoint_name,
+        endpoint_class,
+        upstream_model,
+        counts,
+        estimated,
+        spend,
+    )
+    .await
+}
+
+/// The source a relay row carries when the calling key is the writer of
+/// record — an operator's own key, a harness run on the workbench key.
+pub const RELAY_SOURCE: &str = "gateway";
+/// The source a relay row carries when it was written FOR an agent whose
+/// turn no Talaria flow drove — a Hermes cron, or anything else the
+/// container started by itself (see the turn register below). The agent's
+/// chat and channel turns keep their own sources; this one names the spend
+/// that used to reach no ledger at all.
+pub const UNATTENDED_SOURCE: &str = "unattended";
+
+/// One relay-metered row under `source`. `record_gateway_usage_with_spend`
+/// is this with the operator-key source; the relay picks the source by who
+/// the caller is and whether a Talaria turn is open for it.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_relay_usage(
+    pg: &PgPool,
+    source: &str,
+    caller: &str,
+    endpoint_name: &str,
+    endpoint_class: &str,
+    upstream_model: &str,
+    counts: &TokenCounts,
+    estimated: bool,
+    spend: Option<&ReportedSpend>,
+) -> Result<(), sqlx::Error> {
     let spend = spend.cloned().unwrap_or_default();
-    let source = spend.cost_usd.map(|_| "provider");
+    let cost_source = spend.cost_usd.map(|_| "provider");
     sqlx::query(
         "insert into usage_events (agent_model, source, prompt_tokens, completion_tokens, \
                                   cache_write_tokens, cache_read_tokens, reasoning_tokens, \
                                   estimated, endpoint_class, llm_model, endpoint, \
                                   provider_cost, cost_source, cost_provider, cost_variant, \
                                   cost_fetched_at, generation_id) \
-         values ($1, 'gateway', $2, $3, $4, $5, $6, $7, $8, $9, $10, \
+         values ($1, $16, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
                  $11, $12, $13, $14, case when $11::numeric is null then null else now() end, $15)",
     )
     .bind(caller)
@@ -729,10 +775,11 @@ pub async fn record_gateway_usage_with_spend(
     .bind(upstream_model)
     .bind(endpoint_name)
     .bind(spend.cost_usd)
-    .bind(source)
+    .bind(cost_source)
     .bind(spend.provider)
     .bind(spend.variant.filter(|v| !v.is_empty()))
     .bind(spend.generation_id)
+    .bind(source)
     .execute(pg)
     .await
     .map(|_| ())
@@ -937,6 +984,263 @@ pub async fn record_usage(pg: &PgPool, u: &UsageInput<'_>) -> Result<(), sqlx::E
     Ok(())
 }
 
+// ── The in-flight turn register ──────────────────────────────────────────────
+//
+// WHO WRITES AN AGENT'S ROW. A persona turn Talaria drives — a chat turn, a
+// channel reply, a harness run — is ledgered ONCE, as the whole turn, by the
+// flow that drove it, under the agent's model id; so the relay skips the N
+// inner-loop calls that turn makes on the agent's own key. But a turn Hermes
+// starts by itself — a cron firing inside the container — reaches the relay
+// byte-identical to a chat turn (Hermes makes the request, not Talaria, so no
+// header can ride along), and no flow writes its row. The register is how
+// the relay tells the two apart: the chat transport (fleet_chat.rs,
+// `hold_for_agent`, the one door every Talaria-driven turn goes through)
+// counts each turn here while it is open, and the relay meters an agent's
+// call itself when no turn is counted for that agent.
+//
+//   talaria:turn:v1:<agent model id>  →  how many Talaria turns are open
+//
+// A COUNTER, NOT A FLAG: two turns can overlap for one agent — two people in
+// two conversations, a resume racing the turn it replaces — and the first to
+// finish must not unregister the other. A CEILING, REFRESHED WHILE OPEN: an
+// api that dies mid-turn leaves its increment behind, and the ceiling is what
+// forgets it — kept at or under the turn's own idle ceiling (chat-persist's
+// `TALARIA_AGENT_IDLE_SECS`, floored at a minute), so a stale count never
+// outlives a turn that could still be running. The refresh is a ticker rather
+// than a per-chunk touch because the agent's tool loop — the calls the relay
+// is judging — runs during the minutes BEFORE its first frame comes back.
+//
+// KNOWN DOUBLE-SKIP: a cron firing WHILE a chat turn is open for the same
+// agent is skipped along with that turn's calls — the relay cannot tell one
+// agent's two loops apart. The under-count is bounded to one cron per
+// overlapping turn; metering everything and subtracting would double-count
+// the common case instead.
+//
+// FAILURE DIRECTION: a relay that cannot read the register keeps the skip, so
+// a Redis outage lands the ledger exactly where it was before the register
+// existed, never at a double-counted turn. Both ends talk to the same Redis,
+// so a transport that cannot register is a relay that cannot read.
+
+/// The key prefix every registration lives under.
+pub const TURN_KEY_PREFIX: &str = "talaria:turn:v1:";
+/// How long a registration lives without a refresh. At the floor of the
+/// turn's idle ceiling, so a crashed api's leftover is forgotten no later
+/// than the turn it belonged to would have been.
+pub const TURN_TTL: Duration = Duration::from_secs(60);
+/// How often an open turn re-arms its ceiling — three misses before it lapses.
+pub const TURN_REFRESH: Duration = Duration::from_secs(20);
+
+/// The register key for an agent: `talaria:turn:v1:<agent model id>`.
+pub fn turn_key(agent_model: &str) -> String {
+    format!("{TURN_KEY_PREFIX}{agent_model}")
+}
+
+/// A register call, owning what it needs so a guard's Drop can spawn it.
+pub type RegisterFut<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
+
+/// Where open turns are counted. Redis in the process; a memory one under
+/// test, so the counting, the lapse and the refresh are pinned without a
+/// server.
+pub trait TurnRegister: Send + Sync {
+    /// Count one more open turn under `key` and (re)arm its ceiling at `ttl`.
+    /// Answers the count after the increment.
+    fn open(&self, key: String, ttl: Duration) -> RegisterFut<i64>;
+    /// Re-arm the ceiling of a key that is still counted.
+    fn refresh(&self, key: String, ttl: Duration) -> RegisterFut<()>;
+    /// Count one turn closed; a key that reaches zero is removed. Answers
+    /// the count left (never below zero).
+    fn close(&self, key: String) -> RegisterFut<i64>;
+    /// How many turns are counted — zero for a key that lapsed or never was.
+    fn count(&self, key: String) -> RegisterFut<i64>;
+}
+
+/// The Redis register. Its handle is the crate's own, built lazily from the
+/// same `REDIS_URL` the api's state reads, because the chat transport has no
+/// `AppState` to borrow one from — its callers hand it a payload and nothing
+/// else. A failed connect is not cached: the next turn tries again.
+struct RedisTurnRegister {
+    conn: Arc<tokio::sync::OnceCell<ConnectionManager>>,
+}
+
+async fn redis_turn_conn(
+    cell: &tokio::sync::OnceCell<ConnectionManager>,
+) -> Result<ConnectionManager, String> {
+    cell.get_or_try_init(|| async {
+        let url = std::env::var("REDIS_URL")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if url.is_empty() {
+            return Err("REDIS_URL unset".to_string());
+        }
+        let client = redis::Client::open(url.as_str()).map_err(|e| e.to_string())?;
+        // The same patience the shared handle has — see talaria-state.
+        let config = ConnectionManagerConfig::new()
+            .set_response_timeout(Some(redis_response_timeout(
+                std::env::var("TALARIA_REDIS_RESPONSE_TIMEOUT_MS")
+                    .ok()
+                    .as_deref(),
+            )))
+            .set_connection_timeout(Some(Duration::from_millis(2_000)));
+        match tokio::time::timeout(
+            Duration::from_millis(2_500),
+            ConnectionManager::new_with_config(client, config),
+        )
+        .await
+        {
+            Ok(Ok(conn)) => Ok(conn),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err("redis connect timeout".to_string()),
+        }
+    })
+    .await
+    .cloned()
+}
+
+impl TurnRegister for RedisTurnRegister {
+    fn open(&self, key: String, ttl: Duration) -> RegisterFut<i64> {
+        let cell = self.conn.clone();
+        Box::pin(async move {
+            let mut conn = redis_turn_conn(&cell).await?;
+            let count: i64 = conn.incr(&key, 1).await.map_err(|e| e.to_string())?;
+            let _: bool = conn
+                .expire(&key, ttl.as_secs() as i64)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(count)
+        })
+    }
+
+    fn refresh(&self, key: String, ttl: Duration) -> RegisterFut<()> {
+        let cell = self.conn.clone();
+        Box::pin(async move {
+            let mut conn = redis_turn_conn(&cell).await?;
+            let _: bool = conn
+                .expire(&key, ttl.as_secs() as i64)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    }
+
+    fn close(&self, key: String) -> RegisterFut<i64> {
+        let cell = self.conn.clone();
+        Box::pin(async move {
+            let mut conn = redis_turn_conn(&cell).await?;
+            let left: i64 = conn.decr(&key, 1).await.map_err(|e| e.to_string())?;
+            if left <= 0 {
+                // A lapsed key DECRs to -1; removing it is the same answer.
+                let _: i64 = conn.del(&key).await.map_err(|e| e.to_string())?;
+            }
+            Ok(left.max(0))
+        })
+    }
+
+    fn count(&self, key: String) -> RegisterFut<i64> {
+        let cell = self.conn.clone();
+        Box::pin(async move {
+            let mut conn = redis_turn_conn(&cell).await?;
+            let count: Option<i64> = conn.get(&key).await.map_err(|e| e.to_string())?;
+            Ok(count.unwrap_or(0).max(0))
+        })
+    }
+}
+
+fn redis_register() -> Arc<dyn TurnRegister> {
+    static REGISTER: OnceLock<Arc<dyn TurnRegister>> = OnceLock::new();
+    REGISTER
+        .get_or_init(|| {
+            Arc::new(RedisTurnRegister {
+                conn: Arc::new(tokio::sync::OnceCell::new()),
+            })
+        })
+        .clone()
+}
+
+/// One open turn in the register. Counted on `open`, refreshed on a ticker
+/// while this value lives, and counted closed when it drops — however the
+/// turn ended: a clean end, the consumer hanging up, an error, the hold
+/// loop giving up before any stream opened. The close is spawned from Drop
+/// (`try_current`: a drop outside the runtime at shutdown loses the close,
+/// which the ceiling then covers; it must not panic).
+pub struct TurnRegistration {
+    key: String,
+    register: Arc<dyn TurnRegister>,
+    refresher: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl TurnRegistration {
+    /// Count a turn open under `agent_model` in `register`.
+    pub async fn open(register: Arc<dyn TurnRegister>, agent_model: &str) -> Result<Self, String> {
+        let key = turn_key(agent_model);
+        register.open(key.clone(), TURN_TTL).await?;
+        let refresher = {
+            let register = register.clone();
+            let key = key.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(TURN_REFRESH);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                // The first tick is immediate — the open just armed the ceiling.
+                tick.tick().await;
+                loop {
+                    tick.tick().await;
+                    if let Err(e) = register.refresh(key.clone(), TURN_TTL).await {
+                        tracing::warn!("[turn-register] refresh of {key} failed: {e}");
+                    }
+                }
+            })
+        };
+        Ok(TurnRegistration {
+            key,
+            register,
+            refresher: Some(refresher),
+        })
+    }
+}
+
+impl Drop for TurnRegistration {
+    fn drop(&mut self) {
+        if let Some(refresher) = self.refresher.take() {
+            refresher.abort();
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let key = self.key.clone();
+            let fut = self.register.close(key.clone());
+            handle.spawn(async move {
+                if let Err(e) = fut.await {
+                    tracing::warn!("[turn-register] close of {key} failed: {e}");
+                }
+            });
+        }
+    }
+}
+
+/// Count a Talaria-driven turn open for `agent_model` — the chat transport's
+/// call. None when the register is unreachable: the turn goes on unregistered
+/// and the relay, which cannot read either, keeps its skip.
+pub async fn register_turn(agent_model: &str) -> Option<TurnRegistration> {
+    match TurnRegistration::open(redis_register(), agent_model).await {
+        Ok(turn) => Some(turn),
+        Err(e) => {
+            tracing::warn!("[turn-register] cannot register a turn for {agent_model}: {e}");
+            None
+        }
+    }
+}
+
+/// Is a Talaria-driven turn open for `agent_model` right now — the relay's
+/// question. None when the register cannot be read, which the relay treats
+/// as "assume one is" (today's skip).
+pub async fn talaria_turn_open(agent_model: &str) -> Option<bool> {
+    match redis_register().count(turn_key(agent_model)).await {
+        Ok(count) => Some(count > 0),
+        Err(e) => {
+            tracing::warn!("[turn-register] cannot read the register for {agent_model}: {e}");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1053,5 +1357,167 @@ mod tests {
             "OpenAI"
         ));
         assert!(published_price_applies("openai", None, ""));
+    }
+    // ── The turn register ────────────────────────────────────────────────
+
+    /// A register in memory with Redis' semantics: a count per key, a
+    /// ceiling that lapses on the paused clock, zero for what lapsed.
+    struct MemoryRegister {
+        rows: std::sync::Mutex<std::collections::HashMap<String, (i64, tokio::time::Instant)>>,
+        refreshes: std::sync::atomic::AtomicUsize,
+    }
+
+    impl MemoryRegister {
+        fn new() -> Arc<Self> {
+            Arc::new(MemoryRegister {
+                rows: std::sync::Mutex::new(std::collections::HashMap::new()),
+                refreshes: std::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+
+        fn live(&self, key: &str) -> i64 {
+            let mut rows = self.rows.lock().unwrap();
+            match rows.get(key) {
+                Some((_, until)) if *until <= tokio::time::Instant::now() => {
+                    rows.remove(key);
+                    0
+                }
+                Some((count, _)) => *count,
+                None => 0,
+            }
+        }
+    }
+
+    impl TurnRegister for MemoryRegister {
+        fn open(&self, key: String, ttl: Duration) -> RegisterFut<i64> {
+            let count = self.live(&key) + 1;
+            self.rows
+                .lock()
+                .unwrap()
+                .insert(key, (count, tokio::time::Instant::now() + ttl));
+            Box::pin(async move { Ok(count) })
+        }
+
+        fn refresh(&self, key: String, ttl: Duration) -> RegisterFut<()> {
+            self.refreshes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.live(&key) > 0
+                && let Some(row) = self.rows.lock().unwrap().get_mut(&key)
+            {
+                row.1 = tokio::time::Instant::now() + ttl;
+            }
+            Box::pin(async { Ok(()) })
+        }
+
+        fn close(&self, key: String) -> RegisterFut<i64> {
+            let left = self.live(&key) - 1;
+            let mut rows = self.rows.lock().unwrap();
+            if left <= 0 {
+                rows.remove(&key);
+            } else if let Some(row) = rows.get_mut(&key) {
+                row.0 = left;
+            }
+            Box::pin(async move { Ok(left.max(0)) })
+        }
+
+        fn count(&self, key: String) -> RegisterFut<i64> {
+            let count = self.live(&key);
+            Box::pin(async move { Ok(count) })
+        }
+    }
+
+    /// Let the closes a Drop spawned run.
+    async fn settle() {
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[test]
+    fn the_key_is_the_agent_model_under_the_versioned_prefix() {
+        assert_eq!(turn_key("x-eng"), "talaria:turn:v1:x-eng");
+        assert!(
+            TURN_TTL <= Duration::from_secs(60),
+            "the ceiling must not outlive the turn's idle floor (a minute)"
+        );
+        assert!(
+            TURN_REFRESH * 2 < TURN_TTL,
+            "an open turn must get more than one chance to re-arm before it lapses"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn two_overlapping_turns_are_a_count_and_the_first_to_end_keeps_the_other() {
+        let register = MemoryRegister::new();
+        let reg: Arc<dyn TurnRegister> = register.clone();
+        let key = turn_key("x-eng");
+        let first = TurnRegistration::open(reg.clone(), "x-eng").await.unwrap();
+        let second = TurnRegistration::open(reg.clone(), "x-eng").await.unwrap();
+        assert_eq!(reg.count(key.clone()).await.unwrap(), 2);
+        drop(first);
+        settle().await;
+        assert_eq!(
+            reg.count(key.clone()).await.unwrap(),
+            1,
+            "a flag would have cleared the second turn here"
+        );
+        drop(second);
+        settle().await;
+        assert_eq!(reg.count(key.clone()).await.unwrap(), 0);
+        assert!(
+            register.rows.lock().unwrap().is_empty(),
+            "the last close removes the key"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_open_turn_re_arms_its_ceiling_and_a_crashed_one_lapses() {
+        let register = MemoryRegister::new();
+        let reg: Arc<dyn TurnRegister> = register.clone();
+        let key = turn_key("x-eng");
+        let turn = TurnRegistration::open(reg.clone(), "x-eng").await.unwrap();
+        // Well past the ceiling: the ticker kept it alive.
+        tokio::time::sleep(TURN_TTL * 3).await;
+        assert_eq!(reg.count(key.clone()).await.unwrap(), 1);
+        assert!(
+            register.refreshes.load(std::sync::atomic::Ordering::SeqCst) >= 3,
+            "the ticker refreshed while the turn was open"
+        );
+        drop(turn);
+        settle().await;
+        assert_eq!(reg.count(key.clone()).await.unwrap(), 0);
+
+        // THE CRASH: the api dies mid-turn — no refresh, no close. Nothing
+        // but the ceiling forgets the increment, and it does, within TTL.
+        let mut crashed = TurnRegistration::open(reg.clone(), "x-eng").await.unwrap();
+        crashed.refresher.take().unwrap().abort();
+        std::mem::forget(crashed);
+        assert_eq!(reg.count(key.clone()).await.unwrap(), 1);
+        tokio::time::sleep(TURN_TTL - Duration::from_secs(1)).await;
+        assert_eq!(
+            reg.count(key.clone()).await.unwrap(),
+            1,
+            "still within the ceiling: a turn that could be running stays counted"
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(
+            reg.count(key.clone()).await.unwrap(),
+            0,
+            "past the ceiling the stale registration is gone"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_turn_that_never_opened_a_stream_still_closes_on_drop() {
+        // The hold loop registers before the first attempt and may give up
+        // with a canned reply — the guard drops either way.
+        let reg: Arc<dyn TurnRegister> = MemoryRegister::new();
+        let key = turn_key("x-eng");
+        {
+            let _turn = TurnRegistration::open(reg.clone(), "x-eng").await.unwrap();
+            assert_eq!(reg.count(key.clone()).await.unwrap(), 1);
+        }
+        settle().await;
+        assert_eq!(reg.count(key).await.unwrap(), 0);
     }
 }
