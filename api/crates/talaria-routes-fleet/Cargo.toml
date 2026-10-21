@@ -49,6 +49,7 @@ talaria-realtime-watch = { workspace = true }
 talaria-safe-fetch = { workspace = true }
 talaria-secretbox = { workspace = true }
 talaria-session = { workspace = true }
+talaria-settings = { workspace = true }
 talaria-skill-access = { workspace = true }
 talaria-skills-marketplace = { workspace = true }
 talaria-state = { workspace = true }
