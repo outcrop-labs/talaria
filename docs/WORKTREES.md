@@ -53,14 +53,28 @@ data so you still have realistic agents/boards/tickets to work against.
    mid-way with `FATAL: database "talaria" does not exist` — after both
    containers were up and before `ui/.env` was written, which is the step that
    makes the checkout usable.
-4. Writes the worktree's `ui/.env`: its own
-   `DATABASE_URL`/`REDIS_URL`/`PORT`/`TALARIA_API_PORT`, **copying the encryption
-   root key** (`TALARIA_SECRET_KEY`, or `AUTH_SECRET` if that's what you use) so
-   the seeded secrets decrypt. This is the one thing shared, and it's a read-only
-   root — see below. Any of those four inherited from main is stripped first:
-   `envValue` takes the *first* match, so a leftover line would shadow the one
-   written here.
-5. Symlinks `node_modules` from main (fast; no reinstall).
+4. Writes the worktree's `ui/.env`: its own `DATABASE_URL`/`REDIS_URL`/`PORT`,
+   its own api port **and the url the app's proxy dials**
+   (`TALARIA_API_PORT`, `TALARIA_RUST_API_URL` — `talaria dev` only derives the
+   url when nothing names it, and main's env names it, hardcoded to `:5274` by
+   `talaria setup`), its fleet's callback url and compose project
+   (`TALARIA_GATEWAY_SELF_URL`, `TALARIA_FLEET_PROJECT`), and the
+   `TALARIA_WORKTREE` marker — **copying the encryption root key**
+   (`TALARIA_SECRET_KEY`, or `AUTH_SECRET` if that's what you use) so the seeded
+   secrets decrypt. This is the one thing shared, and it's a read-only root — see
+   below. Every key that block writes is stripped from the copy of main's env
+   first (`WORKTREE_ENV_KEYS` in `cli/src/cmd/worktree.ts`, derived from what is
+   written rather than kept by hand): `envValue` takes the *first* match, so a
+   leftover line would shadow the one written here. That is exactly how a
+   worktree once answered every `/api/*` with `upstream unreachable` — its own
+   api healthy on `:54xx`, its app still dialling main's `:5274`.
+5. Seeds the fleet config plane the way `talaria setup` seeds the primary's:
+   `fleet/skills`, `fleet/hooks`, `fleet/agents`, **`fleet/chassis.yml` from
+   `scripts/chassis.template.yml`** and a blank `fleet/.env`. `fleet/` is
+   gitignored, so a fresh checkout has none of it — and without the chassis the
+   first fleet render 500s with `fleet chassis missing`. An existing chassis is
+   kept; it is your config.
+6. Symlinks `node_modules` from main (fast; no reinstall).
 
 It prints the exact `talaria dev` command and the teardown steps.
 
