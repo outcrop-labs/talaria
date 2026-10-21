@@ -141,7 +141,7 @@ pub async fn post(
         } else {
             None
         };
-        match export_artifact_with_token(
+        let file = match export_artifact_with_token(
             &state.pg,
             &sb,
             &google.token,
@@ -152,7 +152,39 @@ pub async fn post(
         {
             Ok(f) => f,
             Err(e) => return Ok(export_failed(e)),
-        }
+        };
+        // An immediate Drive write with the owner's (or the org's) token is
+        // a governance-relevant mutation whichever plane it came from: the
+        // agent arm records the same row the human arm does, with the
+        // identity it acted as beside the file it made.
+        let (pg, audit_actor, target_id, target_label, after) = (
+            state.pg.clone(),
+            format!("agent:{name}"),
+            id.clone(),
+            artifact.title.clone(),
+            json!({
+                "principal": google.principal,
+                "ownerUserId": google.owner_user_id,
+                "fileId": file.id,
+                "url": file.url,
+            }),
+        );
+        tokio::spawn(async move {
+            log_audit(
+                &pg,
+                AuditEntry {
+                    actor: &audit_actor,
+                    action: "artifact.export_google",
+                    target_type: "artifact",
+                    target_id: Some(&target_id),
+                    target_label: Some(&target_label),
+                    before: None,
+                    after: Some(after),
+                },
+            )
+            .await;
+        });
+        file
     } else {
         let user = require_user(&state, &headers).await?;
         let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {

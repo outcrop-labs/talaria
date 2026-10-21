@@ -1,6 +1,7 @@
 // /api/integrations/google/agent/pending — the confirm-sends queue the
 // calling agent's approver actually opens. Personal assistant → its owner's
-// personal queue (admin arm off). General agent → the org arm an admin sees.
+// personal queue (admin arm off). General agent → the org arm an admin sees,
+// narrowed to the rows THIS agent queued.
 //
 // This is the read `draft_email` tells the agent to call before it reports a
 // draft ready. A success from the draft route that this list does not contain
@@ -47,6 +48,16 @@ async fn queue(state: &AppState, headers: &HeaderMap) -> Result<ApproverQueue, R
     )
     .await
     .map_err(|e| internal("[integrations/google/agent/pending] list failed", e))?;
+    // The org arm is every org agent's queue — an admin sees all of it, and
+    // that is right for the admin. For the AGENT it is only its own rows:
+    // another agent's unsent email (recipients, bcc, body) is not this
+    // caller's to read. The personal arm is already one owner's queue.
+    let pending: Vec<PendingAction> = pending
+        .into_iter()
+        .filter(|action| {
+            !principal.is_org || action.agent_model.as_deref() == Some(caller.model.as_str())
+        })
+        .collect();
     Ok(ApproverQueue {
         is_org: principal.is_org,
         owner_user_id: principal.owner_user_id,

@@ -11,9 +11,10 @@ use talaria_artifacts::Artifact;
 use talaria_body::percent_encode;
 use talaria_gateway::provider::http;
 use talaria_google_connections::{RequireError, TokenError, get_access_token, require_token};
+use talaria_google_docs::{export_file_bytes_with_token, read_file_media_with_token};
 use talaria_google_errors::GoogleError;
 use talaria_secretbox::SecretBox;
-use talaria_uploads::{get_upload, save_upload};
+use talaria_uploads::{MAX_BYTES, get_upload, save_upload};
 
 // supportsAllDrives lets us create into a Shared Drive (team-owned files).
 const UPLOAD_ENDPOINT: &str = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,webViewLink,name,mimeType";
@@ -1007,32 +1008,15 @@ async fn export_google_text(
         .map_err(|e| GoogleError::Failed(format!("drive export body: {e}")))
 }
 
+/// Bytes of a native file, under the upload plane's own limit — a Drive
+/// import can never hold more than an upload may. The docs engine owns the
+/// capped read; this is the import's name for it.
 async fn export_google_bytes(
     token: &str,
     file_id: &str,
     mime_type: &str,
 ) -> Result<Vec<u8>, GoogleError> {
-    let res = http()
-        .get(format!(
-            "{FILES_ENDPOINT}/{}/export?mimeType={}",
-            percent_encode(file_id),
-            percent_encode(mime_type)
-        ))
-        .header("authorization", format!("Bearer {token}"))
-        .send()
-        .await
-        .map_err(|e| GoogleError::Failed(format!("drive export request: {e}")))?;
-    if !res.status().is_success() {
-        let status = res.status();
-        let text = res.text().await.unwrap_or_default();
-        return Err(GoogleError::Failed(format!(
-            "drive export({mime_type}) failed: {status} {text}"
-        )));
-    }
-    res.bytes()
-        .await
-        .map(|b| b.to_vec())
-        .map_err(|e| GoogleError::Failed(format!("drive export body: {e}")))
+    export_file_bytes_with_token(token, file_id, mime_type, MAX_BYTES).await
 }
 
 /// Pull a Drive file's content into a Talaria-artifact shape.
@@ -1144,28 +1128,8 @@ pub async fn import_drive_file_with_token(
         });
     }
 
-    // A regular binary file → download and store.
-    let dl_res = http()
-        .get(format!(
-            "{FILES_ENDPOINT}/{}?alt=media",
-            percent_encode(file_id)
-        ))
-        .header("authorization", format!("Bearer {token}"))
-        .send()
-        .await
-        .map_err(|e| GoogleError::Failed(format!("drive download request: {e}")))?;
-    if !dl_res.status().is_success() {
-        let status = dl_res.status();
-        let text = dl_res.text().await.unwrap_or_default();
-        return Err(GoogleError::Failed(format!(
-            "drive download failed: {status} {text}"
-        )));
-    }
-    let bytes = dl_res
-        .bytes()
-        .await
-        .map(|b| b.to_vec())
-        .map_err(|e| GoogleError::Failed(format!("drive download body: {e}")))?;
+    // A regular binary file → download (capped at the upload limit) and store.
+    let bytes = read_file_media_with_token(token, file_id, MAX_BYTES).await?;
     let up = save_upload(pg, sb, &name, &mime, &bytes, upload_owner)
         .await
         .map_err(GoogleError::Failed)?;

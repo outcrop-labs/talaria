@@ -3,6 +3,8 @@
 // mailbox.
 // GET  → read recent mail (free)
 // POST → DRAFT an email; queued for approval (the owner, or an admin for org).
+//        A still-live grant from an earlier approval in the same conversation
+//        covers ONE more draft to the same people within 30 minutes.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -179,15 +181,24 @@ pub async fn post(
         Ok(q) => q,
         Err(e) => return Ok(internal("[integrations/google/agent] queue failed", e)),
     };
-    // A prior approval in this conversation unlocked draft_email. Execute
-    // the draft now instead of asking again — and only say it sent when the
-    // decide path actually marked it executed.
+    // A prior approval in this conversation left a BOUNDED grant for
+    // draft_email — it expires, it covers one call, and it covers only the
+    // people the approved draft named (`talaria_chips::tool_unlocked` spends
+    // it, once, under a row lock). Only then does the draft execute without
+    // a new card — and only say it sent when the decide path actually marked
+    // it executed. The owner is resolved BEFORE the grant is spent, so a
+    // draft nobody could execute does not burn it.
+    let recipients = talaria_chips::normalize_recipients([
+        to.as_str(),
+        cc.as_deref().unwrap_or(""),
+        bcc.as_deref().unwrap_or(""),
+    ]);
     if !principal.is_org
+        && let Some(owner) = principal.owner_user_id.as_deref()
         && let Ok(Some(conv)) = talaria_chips::live_conversation_id(&state.pg, &agent_model).await
-        && talaria_chips::tool_unlocked(&state.pg, &conv, "draft_email")
+        && talaria_chips::tool_unlocked(&state.pg, &conv, "draft_email", &recipients)
             .await
             .unwrap_or(false)
-        && let Some(owner) = principal.owner_user_id.as_deref()
     {
         let sb = state.secretbox().await.unwrap_or_default();
         let id = queued.action.id.clone();
@@ -206,7 +217,7 @@ pub async fn post(
                 Ok(Some(outcome)) => super::integrations_google_agent_queue::answer_executed(
                     &id,
                     &outcome.status,
-                    "Sent — this conversation already unlocked draft_email.",
+                    "Sent — the earlier approval covered this one; the next needs its own.",
                     "Unlocked draft_email did not send",
                 ),
                 Ok(None) => house_error(

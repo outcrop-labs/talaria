@@ -6,6 +6,11 @@ use axum::http::header;
 use sqlx::PgPool;
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_gateway::provider::http;
+
+/// The whole-request budget for a Google token call. The shared client bounds
+/// only the connect; a Google that accepts the socket and then stalls must
+/// not hold an approval, a brief tick or a disconnect open forever.
+pub const GOOGLE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 use talaria_google_client::resolve_google_client;
 use talaria_secretbox::SecretBox;
 
@@ -123,6 +128,7 @@ pub async fn request_refresh(
     let res = http()
         .post(TOKEN_ENDPOINT)
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .timeout(GOOGLE_REQUEST_TIMEOUT)
         .body(body)
         .send()
         .await
@@ -321,6 +327,7 @@ pub async fn disconnect(pg: &PgPool, sb: &SecretBox, user_id: &str) {
         let _ = http()
             .post("https://oauth2.googleapis.com/revoke")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .timeout(GOOGLE_REQUEST_TIMEOUT)
             .body(body)
             .send()
             .await;
