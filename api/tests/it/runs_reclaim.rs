@@ -76,6 +76,7 @@ fn row(id: &str) -> RunRow {
         result: Value::Null,
         error: None,
         attempt: 0,
+        crashes: 0,
         lease_owner: Some("dead-driver-token".into()),
         lease_expires_at: Some(epoch_ms_to_iso(NOW - 60_000)),
         approval_key: None,
@@ -194,8 +195,8 @@ async fn settle() {
     }
 }
 
-/// A run whose driver says the attempts are spent — the canned result behind
-/// every give-up test.
+/// A run whose driver says the crash budget is spent — the canned result
+/// behind every give-up test.
 fn exhausted_drive() -> DriveFn {
     Arc::new(|run_id| {
         Box::pin(async move {
@@ -204,8 +205,8 @@ fn exhausted_drive() -> DriveFn {
                 DriveStop::Exhausted,
                 Some(RunState::Error),
                 Some(
-                    "run gave up after 3 attempt(s): each driver that took it stopped without \
-                     finishing or checkpointing",
+                    "run gave up after 3 driver crash(es): each driver that took it died holding \
+                     it, without releasing or checkpointing",
                 ),
             ))
         })
@@ -329,13 +330,16 @@ async fn leaves_terminal_runs_alone_too() {
 
 #[tokio::test]
 async fn awaits_the_hand_over_and_reports_the_give_up_with_what_actually_happened() {
-    // attempt 2, and the claim will make it 3 — the default maximum. The
-    // driver files the error; the sweep watches so the pass can SAY so. (The
-    // sentence itself — the count, the driver's diagnosis, the phase it died
-    // at, and never "went stale" — is pinned by the unit tests in reclaim.rs,
-    // where it is built by a pure function.)
+    // Two drivers died holding it, and the claim of this still-running row
+    // will make it three — the default maximum. (`attempt` counts clean
+    // hand-overs too and is NOT what exhausts a run.) The driver files the
+    // error; the sweep watches so the pass can SAY so. (The sentence itself
+    // — the count, the driver's diagnosis, the phase it died at, and never
+    // "went stale" — is pinned by the unit tests in reclaim.rs, where it is
+    // built by a pure function.)
     let mut r = row("run-1");
     r.attempt = 2;
+    r.crashes = 2;
     r.phase = "summarizing 40 sources".into();
     let h = harness(vec![r], Opts::with_drive(exhausted_drive()));
     let out = sweep_reclaimable_runs(None, &h.deps).await.unwrap();
@@ -491,9 +495,12 @@ async fn errs_when_a_hand_over_errs_so_the_failure_reaches_observability() {
     // `drive` is total for everything a run can do to itself. An error out of
     // it means the store or the lease is broken under the whole runtime, and
     // the scheduler's error state is the only place that fact reaches a
-    // person.
+    // person. Two crashes already, so the sweep predicts the give-up and
+    // AWAITS the hand-over — a detached drive's error lands in the log, not
+    // here.
     let mut r = row("run-1");
     r.attempt = 2;
+    r.crashes = 2;
     let h = harness(
         vec![r],
         Opts::with_drive(Arc::new(|_run_id| {

@@ -25,12 +25,25 @@
 // because the alternative — grading code by asking another model whether it
 // looks right — is not a measurement at all, and the input is a function this
 // same admin just asked their own configured model to write.
+//
+// BUT IT IS NOT IN THE API'S ADDRESS SPACE EITHER. boa's runtime limits bound
+// loop iterations and recursion, not memory and not a regex engine: a reply
+// of `'x'.repeat(2**32-1)` allocated gigabytes inside talaria-api before any
+// limit fired, and `/(a+)+$/.test(...)` pinned a core the timeout could only
+// abandon, not stop. So in production the evaluation runs in a CHILD PROCESS
+// — the api binary re-executed in a hidden argv mode (`CHILD_PROBE_ARG`),
+// under RLIMIT_AS and RLIMIT_CPU, fed the script on stdin and answering on
+// stdout — and the parent kills it on its deadline. A runaway candidate now
+// costs one small process, never the api. The in-process evaluator is kept
+// as the child's own body and as what the unit tests call directly.
 
-use std::sync::{LazyLock, mpsc};
-use std::time::Duration;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, OnceLock, mpsc};
+use std::time::{Duration, Instant};
 
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// One code task: a precise contract plus the assertions it must satisfy. The
@@ -199,11 +212,209 @@ const RECURSION_LIMIT: usize = 1_024;
 
 /// What the evaluating thread sends back. The JsValue itself never crosses the
 /// channel — boa objects are not `Send` — so the string-or-not conversion
-/// happens on the thread that owns the context.
+/// happens on the thread that owns the context. It is also the child
+/// process's answer on stdout, so it serializes.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 enum EvalOutcome {
     Reply(String),
     NotAString,
     Failed(String),
+}
+
+// ── The child process ────────────────────────────────────────────────────────
+
+/// The hidden argv mode the api binary answers: `talaria-api __code-probe`
+/// reads a [`ProbeAsk`] on stdin and writes a [`ProbeReply`] on stdout.
+pub const CHILD_PROBE_ARG: &str = "__code-probe";
+
+/// The executable that handles [`CHILD_PROBE_ARG`]. Set once by the binary
+/// that does (main.rs, from `current_exe`), and left unset by anything that
+/// does not — the unit tests of this crate run in a test binary with no such
+/// mode, and grade in-process exactly as before.
+pub static CHILD_PROBE: OnceLock<PathBuf> = OnceLock::new();
+
+/// The child's address-space ceiling. The candidate is a five-line function
+/// and boa's heap for it is megabytes; the ceiling exists for the reply that
+/// allocates until the kernel kills something, and has to leave room for the
+/// api binary's own mapped image (a debug build is several hundred MiB of
+/// text) plus boa's context.
+pub const CHILD_RLIMIT_AS_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// CPU seconds the child may burn past its budget before the kernel takes it.
+/// SIGXCPU at the soft limit, SIGKILL at the hard one; a regex that pins a
+/// core is what this is for, because no wall clock inside boa can stop it.
+const CHILD_CPU_GRACE_SECS: u64 = 5;
+
+/// Engine setup in the child is untimed by the budget (the same 30 s the
+/// in-process path allows a slow host), so the parent's hard deadline is the
+/// budget plus that allowance. The child's own thread timeout fires first
+/// in every ordinary case; this is the kill the api needs when it does not.
+const CHILD_SETUP_ALLOWANCE_MS: u64 = 30_000;
+
+/// What the child reads: the whole script (definition plus assertions, built
+/// by the parent) and the budget it runs under.
+#[derive(Serialize, Deserialize)]
+pub struct ProbeAsk {
+    pub script: String,
+    pub budget_ms: u64,
+}
+
+/// What the child writes back. `Outcome` is the evaluator's answer (the
+/// candidate ran, or threw, or returned a non-string); `Error` is the
+/// evaluator's own sentence (timed out, did not come back).
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+enum ProbeReply {
+    Outcome(EvalOutcome),
+    Error(String),
+}
+
+/// The child's whole body: parse the ask, evaluate, write the reply. Pure
+/// over its streams so the protocol is unit-testable without a process. The
+/// exit code is 0 for a reply written (whatever it says about the candidate)
+/// and 2 for an ask the child could not read.
+pub fn probe_child(input: &str, output: &mut dyn Write) -> i32 {
+    let ask: ProbeAsk = match serde_json::from_str(input) {
+        Ok(a) => a,
+        Err(e) => {
+            let _ = writeln!(
+                output,
+                "{}",
+                serde_json::to_string(&ProbeReply::Error(format!("bad probe ask: {e}")))
+                    .expect("a reply serializes")
+            );
+            return 2;
+        }
+    };
+    let reply = match eval_candidate(ask.script, ask.budget_ms) {
+        Ok(outcome) => ProbeReply::Outcome(outcome),
+        Err(msg) => ProbeReply::Error(msg),
+    };
+    let _ = writeln!(
+        output,
+        "{}",
+        serde_json::to_string(&reply).expect("a reply serializes")
+    );
+    0
+}
+
+/// `main` for the hidden mode: stdin in, stdout out, exit. Returning from
+/// here ends the process, which is also what reaps an evaluator thread the
+/// budget abandoned.
+pub fn child_main() -> i32 {
+    let mut input = String::new();
+    if let Err(e) = std::io::stdin().read_to_string(&mut input) {
+        eprintln!("code-probe: could not read stdin: {e}");
+        return 2;
+    }
+    let mut out = std::io::stdout().lock();
+    let code = probe_child(&input, &mut out);
+    let _ = out.flush();
+    code
+}
+
+/// The most of the child's stdout the parent will read. A reply is the
+/// candidate's JSON-stringified results, so a correct one is small; a hostile
+/// one is cut here rather than buffered.
+const CHILD_REPLY_CAP: u64 = 4 * 1024 * 1024;
+
+/// Evaluate in a child process under rlimits, killed on the deadline.
+fn eval_in_child(exe: &Path, script: String, budget_ms: u64) -> Result<EvalOutcome, String> {
+    use std::process::{Command, Stdio};
+    let mut cmd = Command::new(exe);
+    cmd.arg(CHILD_PROBE_ARG)
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let cpu_soft = budget_ms.div_ceil(1000) + CHILD_CPU_GRACE_SECS;
+        // SAFETY: only async-signal-safe calls between fork and exec —
+        // setrlimit is one; nothing here allocates or takes a lock.
+        // (`rlim_t` is a platform alias — u64 here — so the casts are
+        // identity on this target and real on another.)
+        #[allow(clippy::unnecessary_cast)]
+        unsafe {
+            cmd.pre_exec(move || {
+                let mem = libc::rlimit {
+                    rlim_cur: CHILD_RLIMIT_AS_BYTES as libc::rlim_t,
+                    rlim_max: CHILD_RLIMIT_AS_BYTES as libc::rlim_t,
+                };
+                if libc::setrlimit(libc::RLIMIT_AS, &mem) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let cpu = libc::rlimit {
+                    rlim_cur: cpu_soft as libc::rlim_t,
+                    rlim_max: (cpu_soft + 2) as libc::rlim_t,
+                };
+                if libc::setrlimit(libc::RLIMIT_CPU, &cpu) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("the evaluator could not start: {e}"))?;
+    let ask = serde_json::to_string(&ProbeAsk { script, budget_ms }).expect("an ask serializes");
+    // A child that died before reading is an EPIPE here; the wait below
+    // reports it the same way as any other evaluator death.
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(ask.as_bytes());
+        drop(stdin);
+    }
+    // Drain stdout on its own thread so a child writing more than the pipe
+    // holds can still exit, and so the cap applies before anything is kept.
+    let reader = child.stdout.take().map(|stdout| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout.take(CHILD_REPLY_CAP).read_to_end(&mut buf);
+            buf
+        })
+    });
+    let deadline = Instant::now() + Duration::from_millis(budget_ms + CHILD_SETUP_ALLOWANCE_MS);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let out = reader.and_then(|r| r.join().ok()).unwrap_or_default();
+    let Some(status) = status else {
+        return Err(format!("Script execution timed out after {budget_ms}ms"));
+    };
+    let text = String::from_utf8_lossy(&out);
+    match serde_json::from_str::<ProbeReply>(text.trim()) {
+        Ok(ProbeReply::Outcome(o)) => Ok(o),
+        Ok(ProbeReply::Error(msg)) => Err(msg),
+        // Killed by the rlimit (SIGKILL/SIGXCPU), an allocation abort, or a
+        // reply it never finished: the evaluator died, the candidate fails,
+        // the probe — and the api — live.
+        Err(_) => Err(format!("the evaluator did not come back (exit {status})")),
+    }
+}
+
+/// The evaluator the grading uses: the child process when a binary has
+/// registered itself as able to be one, the in-process thread otherwise.
+fn evaluate(script: String, budget_ms: u64) -> Result<EvalOutcome, String> {
+    match CHILD_PROBE.get() {
+        Some(exe) => eval_in_child(exe, script, budget_ms),
+        None => eval_candidate(script, budget_ms),
+    }
 }
 
 /// The script's own JSON coming back, validated. Defensive because the string
@@ -349,7 +560,7 @@ pub fn run_code_task_within(task: &CodeTask, raw: &str, budget_ms: u64) -> Optio
 }})()",
         fn_ = task.fn_,
     );
-    let reply = match eval_candidate(script, budget_ms) {
+    let reply = match evaluate(script, budget_ms) {
         // `Failed` is the one branch whose sentence carries the thrown error;
         // every engine words its parse errors differently, so the shape is the
         // contract, not the message text.
@@ -544,6 +755,67 @@ mod tests {
             "function f() { return \"export function\" }"
         );
     }
+    #[test]
+    fn the_child_protocol_round_trips_a_reply_an_error_and_a_bad_ask() {
+        // The child's body, driven over in-memory streams: what the real
+        // process does between stdin and stdout, minus the process.
+        let ask = |script: &str, budget_ms: u64| {
+            serde_json::to_string(&ProbeAsk {
+                script: script.into(),
+                budget_ms,
+            })
+            .unwrap()
+        };
+        let mut out = Vec::new();
+        assert_eq!(
+            probe_child(&ask("JSON.stringify({a:1})", TEST_BUDGET_MS), &mut out),
+            0
+        );
+        let reply: ProbeReply = serde_json::from_slice(&out).unwrap();
+        assert_eq!(
+            reply,
+            ProbeReply::Outcome(EvalOutcome::Reply("{\"a\":1}".into()))
+        );
+
+        let mut out = Vec::new();
+        assert_eq!(probe_child(&ask("42", TEST_BUDGET_MS), &mut out), 0);
+        let reply: ProbeReply = serde_json::from_slice(&out).unwrap();
+        assert_eq!(reply, ProbeReply::Outcome(EvalOutcome::NotAString));
+
+        let mut out = Vec::new();
+        assert_eq!(probe_child(&ask("while (true) {}", 50), &mut out), 0);
+        let reply: ProbeReply = serde_json::from_slice(&out).unwrap();
+        match reply {
+            ProbeReply::Error(msg) => assert!(msg.contains("timed out after 50ms"), "{msg}"),
+            other => panic!("a spin is an error, got {other:?}"),
+        }
+
+        let mut out = Vec::new();
+        assert_eq!(probe_child("not json", &mut out), 2);
+        let reply: ProbeReply = serde_json::from_slice(&out).unwrap();
+        assert!(matches!(reply, ProbeReply::Error(m) if m.contains("bad probe ask")));
+    }
+
+    #[test]
+    fn without_a_registered_child_binary_the_grading_stays_in_process() {
+        // The test binary has no hidden mode, so nothing may have registered
+        // one — and the grading above ran in this process because of it.
+        assert!(CHILD_PROBE.get().is_none());
+    }
+
+    #[test]
+    fn a_binary_that_is_not_a_probe_child_fails_the_candidate_not_the_probe() {
+        // The wrapper against an executable that answers nothing useful:
+        // the candidate is reported as not having run, nothing panics, and
+        // the parent is back within the deadline.
+        let exe = PathBuf::from("/bin/sh");
+        let started = Instant::now();
+        let err = eval_in_child(&exe, "JSON.stringify(1)".into(), 200)
+            .expect_err("sh is not an evaluator");
+        assert!(err.contains("did not come back"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
     #[test]
     fn a_candidate_that_never_returns_is_stopped_and_says_so() {
         // The budget's own test, and the only place a tight one belongs. A

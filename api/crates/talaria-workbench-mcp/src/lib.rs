@@ -680,17 +680,23 @@ async fn call_tool(
                 Ok(id) => id,
                 Err(error) => return CallOutcome::Fail(error),
             };
-            // One live job per ticket keeps branches 1:1 with work.
+            // One live job per ticket keeps branches 1:1 with work. LIVE
+            // means started, queued or awaiting approval: the branch name is
+            // deterministic (`<ref>-<slug>`), so a second job minted while
+            // the first was still queued or waiting for a human silently
+            // resumed the first job's branch from a second workdir, and
+            // `finish_job` on either opened a PR carrying both.
             if let Some(task_id) = &task_id {
                 let dup = sqlx::query_scalar::<_, i32>(
-                    "select 1 from workbench_jobs where task_id = $1::uuid and status = 'started' limit 1",
+                    "select 1 from workbench_jobs where task_id = $1::uuid \
+                     and status in ('started', 'queued', 'awaiting_approval') limit 1",
                 )
                 .bind(task_id)
                 .fetch_optional(pg)
                 .await;
                 if matches!(dup, Ok(Some(_))) {
                     return CallOutcome::Fail(
-                        "a job is already running for this ticket — job_status shows it; finish or abandon it first"
+                        "a job is already live for this ticket (started, queued, or awaiting approval) — job_status shows it; finish or abandon it first"
                             .into(),
                     );
                 }

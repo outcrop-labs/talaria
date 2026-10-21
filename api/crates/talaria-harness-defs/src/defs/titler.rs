@@ -32,6 +32,7 @@ use talaria_harness::define::{
     count_problem, define_harness,
 };
 use talaria_harness_model::ModelSpec;
+use talaria_harness_prompt_rules::UNTRUSTED_INPUT;
 use talaria_harness_text::first_meaningful_line;
 
 // ── The input ────────────────────────────────────────────────────────────────
@@ -464,8 +465,10 @@ pub fn titler_harness() -> HarnessDefinition {
         Arc::new(|input: &Value, _ctx: &RenderContext| {
             let titler: TitlerInput =
                 serde_json::from_value(input.clone()).map_err(|e| e.to_string())?;
+            // The text being named is a conversation, a plan or a question
+            // somebody wrote; the boundary clause closes the system prompt.
             Ok(vec![
-                Message::system(prompt_for(titler.kind)),
+                Message::system(format!("{}\n{UNTRUSTED_INPUT}", prompt_for(titler.kind))),
                 Message::user(clip(&titler.text, 4000)),
             ])
         }),

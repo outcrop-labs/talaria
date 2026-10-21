@@ -53,6 +53,7 @@ use talaria_harness::define::{
     Output, RenderContext, RoleFloor, Widen, define_harness,
 };
 use talaria_harness_model::{ModelChainStep, ModelSpec};
+use talaria_harness_prompt_rules::UNTRUSTED_INPUT;
 use talaria_harness_schema::{Field, Schema};
 
 // ── The shapes ───────────────────────────────────────────────────────────────
@@ -560,10 +561,13 @@ pub fn judge_harness() -> HarnessDefinition {
                 serde_json::from_value(input.clone()).map_err(|e| e.to_string())?;
             // One blank line between the two — WIDENED carries its own
             // leading newline.
+            // The ticket, its template and the agent's reported outcome are
+            // all org content; the boundary clause closes the system prompt
+            // on both branches.
             let system = if ctx.widened {
-                format!("{SYSTEM}\n{WIDENED}")
+                format!("{SYSTEM}\n{WIDENED}\n{UNTRUSTED_INPUT}")
             } else {
-                SYSTEM.to_string()
+                format!("{SYSTEM}\n{UNTRUSTED_INPUT}")
             };
             Ok(vec![
                 Message::system(system),
@@ -994,11 +998,14 @@ mod tests {
                 .content
                 .starts_with("You are a meticulous, skeptical QA reviewer")
         );
+        // The narrow prompt's last instruction, then the boundary clause
+        // closing the system turn (the ticket and the outcome are org text).
         assert!(
             req.messages[0]
                 .content
-                .ends_with("Judge the WORK, not the writing.")
+                .contains("Judge the WORK, not the writing.\n")
         );
+        assert!(req.messages[0].content.ends_with(UNTRUSTED_INPUT));
         // The runner appends its JSON contract to the user turn of every
         // structured request, so the def's own content is the PREFIX.
         assert!(
@@ -1097,11 +1104,13 @@ mod tests {
         });
         let res = run(&def, &judge_input(), &r).await.unwrap();
         assert!(!res.widened);
+        let system = r.req_at(0).messages[0].content.clone();
+        assert!(system.contains("Judge the WORK, not the writing.\n"));
         assert!(
-            r.req_at(0).messages[0]
-                .content
-                .ends_with("Judge the WORK, not the writing.")
+            !system.contains(WIDENED.trim()),
+            "narrow carries no rubric walk"
         );
+        assert!(system.ends_with(UNTRUSTED_INPUT));
     }
 
     #[tokio::test]

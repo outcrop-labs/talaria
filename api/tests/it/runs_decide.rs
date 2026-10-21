@@ -121,6 +121,7 @@ impl MemoryStore {
             result: Value::Null,
             error: None,
             attempt: 0,
+            crashes: 0,
             lease_owner: lease.map(str::to_string),
             lease_expires_at: lease.map(|_| Self::iso(NOW + 30_000)),
             approval_key: None,
@@ -160,6 +161,7 @@ impl RunStore for MemoryStore {
             let full = RunRow {
                 state: RunState::Queued,
                 attempt: 0,
+                crashes: 0,
                 error: None,
                 result: Value::Null,
                 checkpoint: Value::Null,

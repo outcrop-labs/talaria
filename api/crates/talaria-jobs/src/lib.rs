@@ -80,6 +80,20 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
                     .map(|out| (out.structured, out.text))
             })
         }));
+    // The research harness's search loop dispatches to a registered MCP
+    // supplier through its own hook, and nothing set it: every org whose
+    // search supplier was a registered (non-platform) server got "The search
+    // tool failed" on every round. Same dispatcher, the tuple the other way
+    // round (text, structured).
+    let _ = talaria_harness_defs::CALL_MCP_TOOL.set(std::sync::Arc::new(
+        |pg, sb, server, tool, args| {
+            Box::pin(async move {
+                talaria_mcp::registry::call_mcp_tool(&pg, &sb, &server, &tool, &args)
+                    .await
+                    .map(|out| (out.text, out.structured))
+            })
+        },
+    ));
     let _ = talaria_fleet_create::RENDER_FLEET.set(std::sync::Arc::new(|pg, sb| {
         Box::pin(async move {
             talaria_fleet_render::render_fleet(&pg, &sb, None)
@@ -771,8 +785,11 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
         sb.clone(),
     ));
     // start_scheduler runs the missing-jobs boot check and logs the armed
-    // summary itself; its return is that list again.
-    let armed = scheduler::start_scheduler(conn);
+    // summary itself; its return is that list again — or the refusal, when a
+    // required job never registered. The refusal surfaces through `arm`'s
+    // retry log on every pass, and nothing arms until the build is whole:
+    // the documented "a missing registration fails boot".
+    let armed = scheduler::start_scheduler(conn)?;
     tracing::info!(
         "{LOG} the schedule is this process's — {} job(s) declared, {} armed",
         REQUIRED_JOBS.len() + 1,

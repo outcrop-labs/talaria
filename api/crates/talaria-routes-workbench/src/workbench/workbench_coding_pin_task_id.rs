@@ -18,6 +18,13 @@
 // The ticket's agent is the ASSIGNEE, which is what makes this safe: the plans
 // offered are that agent's, so a pin can never reach another agent's
 // credential. A ticket with no agent assigned has nothing to pin.
+//
+// WHO MAY ASK. All three verbs are gated on `can_edit` of the ticket's board,
+// the same gate the human job route (`workbench_jobs.rs`) puts on approving a
+// plan. The feature flag alone was not enough: a pin names which PERSON's
+// subscription a ticket burns, the GET lists those people's emails, and the
+// model it carries lands on the harness's invocation line — none of which a
+// signed-in user with no standing on the board has any business reaching.
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -26,16 +33,47 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use talaria_audit::spawn_audit;
+use talaria_boards::{board_role, can_edit};
 use talaria_body::{NumKind, nullable_number_member, optional_max_string_member, parse};
 use talaria_coding_accounts as ca;
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_session::actor_of;
+use talaria_params::uuid_gate_404;
+use talaria_session::{SessionUser, actor_of};
 use talaria_state::AppState;
+use talaria_tasks::get_task;
 
 use super::coding_gate::require_feature;
 
 /// The largest integer a JSON body can carry exactly.
 const SAFE_INT: f64 = 9_007_199_254_740_991.0;
+
+/// The object-level gate: the ticket exists and this user can edit its board.
+/// 404 for a ticket that is not there (the same answer a guessed uuid gets
+/// everywhere else), 403 for a board the user cannot act on.
+async fn require_ticket_editor(
+    state: &AppState,
+    user: &SessionUser,
+    task_id: &str,
+) -> Result<(), Response> {
+    // The id binds `::uuid` everywhere below; a malformed one is a 404, not
+    // a server fault.
+    if let Some(gate) = uuid_gate_404(task_id) {
+        return Err(gate);
+    }
+    let task = get_task(&state.pg, task_id)
+        .await
+        .map_err(|e| internal("[coding] pin ticket read failed", e))?;
+    let Some(task) = task else {
+        return Err(house_error(StatusCode::NOT_FOUND, "not found"));
+    };
+    let role = board_role(&state.pg, &user.id, &task.board_id)
+        .await
+        .map_err(|e| internal("[coding] pin board role read failed", e))?;
+    if !can_edit(role.as_deref()) {
+        return Err(house_error(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    Ok(())
+}
 
 /// The agent a ticket's coding work would run as, resolved to an
 /// `agent_defs.id`. `None` when the ticket is unassigned or assigned only to
@@ -65,7 +103,8 @@ pub async fn get(
     headers: HeaderMap,
     Path(task_id): Path<String>,
 ) -> Result<Response, Response> {
-    require_feature(&state, &headers).await?;
+    let user = require_feature(&state, &headers).await?;
+    require_ticket_editor(&state, &user, &task_id).await?;
     let agent_id = ticket_agent(&state, &task_id)
         .await
         .map_err(|e| internal("[coding] ticket agent lookup failed", e))?;
@@ -142,6 +181,7 @@ pub async fn put(
     // can act on the ticket can say which of the agent's plans this ticket
     // uses. It cannot reach a credential — the plans are the agent's own, the
     // pin only chooses among them, and nothing here reveals a token.
+    require_ticket_editor(&state, &user, &task_id).await?;
     let agent_id = ticket_agent(&state, &task_id)
         .await
         .map_err(|e| internal("[coding] ticket agent lookup failed", e))?;
@@ -159,10 +199,17 @@ pub async fn put(
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let plan = ca::Plan::from_account_id(account_id);
-    let model = optional_max_string_member(obj, "model", 200)
-        .ok()
-        .flatten()
-        .filter(|m| !m.trim().is_empty());
+    let model = match optional_max_string_member(obj, "model", 200) {
+        Ok(m) => m.filter(|m| !m.trim().is_empty()),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    // The pinned model lands on the harness's invocation line (`--model`),
+    // so it is a model id or nothing — never a string a shell could read.
+    if let Some(m) = &model
+        && !ca::valid_model_id(m)
+    {
+        return Ok(house_error(StatusCode::BAD_REQUEST, ca::MODEL_ID_RULE));
+    }
 
     let ok = ca::set_task_pin(
         &state.pg,
@@ -198,6 +245,7 @@ pub async fn delete(
     Path(task_id): Path<String>,
 ) -> Result<Response, Response> {
     let user = require_feature(&state, &headers).await?;
+    require_ticket_editor(&state, &user, &task_id).await?;
     ca::clear_task_pin(&state.pg, &task_id)
         .await
         .map_err(|e| internal("[coding] pin clear failed", e))?;

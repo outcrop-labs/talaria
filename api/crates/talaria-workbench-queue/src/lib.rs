@@ -29,8 +29,68 @@ const LOG: &str = "[wbqueue]";
 /// board-level wait clears when this job actually starts.
 struct QueuedJob {
     id: String,
+    agent_id: String,
     effort: String,
     task_id: Option<String>,
+}
+
+/// The two rules `start_job` checks before it writes a row, asked AGAIN at
+/// promotion: the per-agent live cap and one-live-job-per-ticket. A job
+/// queues after passing both, but the queue is a wait of minutes to hours,
+/// and in that time the agent's other jobs started and a human approved a
+/// heavy plan on the same ticket. Promotion is the moment the job becomes a
+/// clone and a harness in the container, so it is the moment the rules
+/// have to be true — not the moment it was filed.
+///
+/// `Hold` is not `break`: the host has room (the admission door said so),
+/// this one job is what cannot start, and the next in line may well be
+/// another agent's. It stays queued, keeps its place, and is asked again
+/// next pass.
+#[derive(Debug, PartialEq, Eq)]
+enum Promotion {
+    Go,
+    Hold(String),
+}
+
+/// Pure over the two counts, so the rule is pinned without a database.
+fn promotion_of(live_for_agent: usize, live_for_ticket: usize) -> Promotion {
+    if live_for_agent >= talaria_fleet_budget::MAX_LIVE_JOBS_PER_AGENT {
+        return Promotion::Hold(format!(
+            "the agent already has {live_for_agent} live job(s), the cap is {}",
+            talaria_fleet_budget::MAX_LIVE_JOBS_PER_AGENT
+        ));
+    }
+    if live_for_ticket > 0 {
+        return Promotion::Hold("another job for the same ticket is already started".into());
+    }
+    Promotion::Go
+}
+
+async fn promotion_for(pg: &PgPool, job: &QueuedJob) -> Result<Promotion, sqlx::Error> {
+    let live_for_agent: i64 = sqlx::query_scalar(
+        "select count(*) from workbench_jobs \
+         where agent_id = $1::uuid and status = 'started'",
+    )
+    .bind(&job.agent_id)
+    .fetch_one(pg)
+    .await?;
+    let live_for_ticket: i64 = match &job.task_id {
+        Some(task_id) => {
+            sqlx::query_scalar(
+                "select count(*) from workbench_jobs \
+                 where task_id = $1::uuid and status = 'started' and id <> $2::uuid",
+            )
+            .bind(task_id)
+            .bind(&job.id)
+            .fetch_one(pg)
+            .await?
+        }
+        None => 0,
+    };
+    Ok(promotion_of(
+        live_for_agent.max(0) as usize,
+        live_for_ticket.max(0) as usize,
+    ))
 }
 
 /// Park a job in the queue. `queued_at` keeps the FIRST time this job
@@ -103,6 +163,20 @@ pub async fn promote_head_of_line(pg: &PgPool, guard: usize) -> Vec<String> {
             tracing::debug!("{LOG} head of line {} still blocked: {reason}", job.id);
             break;
         }
+        // The host has room; does THIS job still pass the rules it was
+        // filed under? A hold skips it and keeps walking — the next job is
+        // likely another agent's, and the box is not full.
+        match promotion_for(pg, &job).await {
+            Ok(Promotion::Go) => {}
+            Ok(Promotion::Hold(why)) => {
+                tracing::debug!("{LOG} {} held in the queue: {why}", job.id);
+                continue;
+            }
+            Err(e) => {
+                tracing::error!("{LOG} rule check for {} failed, not promoting: {e}", job.id);
+                break;
+            }
+        }
         let flipped = sqlx::query(
             "update workbench_jobs \
              set status = 'started', queued_reason = null, updated_at = now() \
@@ -129,20 +203,23 @@ pub async fn promote_head_of_line(pg: &PgPool, guard: usize) -> Vec<String> {
 }
 
 async fn read_queue(pg: &PgPool) -> Result<Vec<QueuedJob>, sqlx::Error> {
-    Ok(sqlx::query_as::<_, (String, String, Option<String>)>(
-        "select id::text, effort, task_id::text from workbench_jobs \
+    Ok(
+        sqlx::query_as::<_, (String, String, String, Option<String>)>(
+            "select id::text, agent_id::text, effort, task_id::text from workbench_jobs \
          where status = 'queued' \
          order by queued_at, id",
+        )
+        .fetch_all(pg)
+        .await?
+        .into_iter()
+        .map(|(id, agent_id, effort, task_id)| QueuedJob {
+            id,
+            agent_id,
+            effort,
+            task_id,
+        })
+        .collect(),
     )
-    .fetch_all(pg)
-    .await?
-    .into_iter()
-    .map(|(id, effort, task_id)| QueuedJob {
-        id,
-        effort,
-        task_id,
-    })
-    .collect())
 }
 
 /// The pure position math, split for tests: given the queue's (queued_at,
@@ -200,7 +277,21 @@ pub fn promotion_job_spec(pg: PgPool) -> JobSpec {
 
 #[cfg(test)]
 mod tests {
-    use super::{phase_of, position_of};
+    use super::{Promotion, phase_of, position_of, promotion_of};
+
+    #[test]
+    fn promotion_re_asks_the_cap_and_the_one_job_per_ticket_rule() {
+        let cap = talaria_fleet_budget::MAX_LIVE_JOBS_PER_AGENT;
+        assert_eq!(promotion_of(0, 0), Promotion::Go);
+        assert_eq!(promotion_of(cap - 1, 0), Promotion::Go);
+        // At the cap: held, and the hold names the cap.
+        match promotion_of(cap, 0) {
+            Promotion::Hold(why) => assert!(why.contains(&cap.to_string()), "{why}"),
+            Promotion::Go => panic!("at the cap must hold"),
+        }
+        // Another started job on the same ticket: held, whatever the cap.
+        assert!(matches!(promotion_of(0, 1), Promotion::Hold(_)));
+    }
 
     #[test]
     fn position_is_the_rank_at_the_queue_time() {
