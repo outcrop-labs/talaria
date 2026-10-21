@@ -2056,17 +2056,29 @@ own /opt/data/workbench/sessions
 mise=/opt/data/.local/bin/mise
 if [ -x "$mise" ]; then
   runuser -u hermes -- sh -lc "\"$mise\" use -g bun@__BUN__ >/dev/null 2>&1" || true
+  # And put it where EVERY shell looks. mise's shims reach a login shell's
+  # PATH only through prepare_env's profile block; a plain `bash -c` — how
+  # the agent's terminal runs by default — never saw them, so omp died with
+  # `env: 'bun': No such file or directory` even with bun installed. The
+  # image's own PATH carries /opt/data/.local/bin. Only when this bun is
+  # already installed (no network at boot); the workbench provisions it
+  # otherwise, before doctor or start_job hands the harness out.
+  real="$(runuser -u hermes -- env XDG_DATA_HOME=__XDG__ "$mise" where bun@__BUN__ 2>/dev/null || true)/bin/bun"
+  if [ -x "$real" ]; then
+    runuser -u hermes -- ln -sfn "$real" /opt/data/.local/bin/bun || true
+  fi
 fi
 "#;
 
-/// The bun the coding harness runs on. omp declares a floor of 1.3.14; this
-/// is a pin so every sandbox agrees, and it is the harness runtime rather
-/// than the repo's own toolchain (`mise.toml`), which is a separate choice.
-const HARNESS_BUN: &str = "1.4.0";
+// The bun the coding harness runs on — one pin, shared with the workbench's
+// own provisioning (`talaria_workbench_harnesses::HARNESS_BUN`).
+use talaria_workbench_harnesses::{HARNESS_BUN, HARNESS_XDG_DATA_HOME};
 
-/// `HARNESS_OWN_SCRIPT` with the bun pin filled in.
+/// `HARNESS_OWN_SCRIPT` with the bun pin and mise's data dir filled in.
 fn harness_own_script() -> String {
-    HARNESS_OWN_SCRIPT.replace("__BUN__", HARNESS_BUN)
+    HARNESS_OWN_SCRIPT
+        .replace("__BUN__", HARNESS_BUN)
+        .replace("__XDG__", HARNESS_XDG_DATA_HOME)
 }
 
 /// Policy files Oh My Pi reads inside [`PI_CODING_AGENT_DIR`].
@@ -3306,6 +3318,14 @@ empty_list: []
         // The harness runtime is pinned, and the placeholder never ships.
         let filled = harness_own_script();
         assert!(!filled.contains("__BUN__"), "the bun pin was not filled in");
+        assert!(
+            !filled.contains("__XDG__"),
+            "mise's data dir was not filled in"
+        );
+        // An installed bun is linked onto the PATH every shell carries, so a
+        // non-login `bash -c` finds it too.
+        assert!(filled.contains(&format!("XDG_DATA_HOME={HARNESS_XDG_DATA_HOME}")));
+        assert!(filled.contains("ln -sfn \"$real\" /opt/data/.local/bin/bun"));
         assert!(filled.contains(&format!("bun@{HARNESS_BUN}")));
         // Globally, because a shim with no version is the whole bug: a Rust
         // job pins rust and mold, and omp is a bun program wherever it runs.

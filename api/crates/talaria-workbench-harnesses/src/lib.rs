@@ -51,6 +51,65 @@ pub const PROVIDER: &str = "talaria";
 /// fleet render's cont-init hook chowns it back to the runtime user.
 pub const PI_CODING_AGENT_DIR: &str = "/opt/data/workbench/harness/pi";
 
+/// The bun the coding harness runs on. omp's executable is a bun program
+/// (`#!/usr/bin/env bun`, `engines.bun >= 1.3.14`), so a sandbox without bun
+/// on the PATH cannot start it at all. Pinned so every sandbox agrees; this is
+/// the harness's runtime, not the repo's toolchain (`mise.toml` decides that).
+pub const HARNESS_BUN: &str = "1.4.0";
+
+/// mise's data dir on a Developer Agent's volume (the render sets
+/// `XDG_DATA_HOME` to this, and mise keeps its installs and shims under it).
+pub const HARNESS_XDG_DATA_HOME: &str = "/opt/data/workbench/harness/xdg";
+
+/// A directory that is on the agent's PATH in EVERY shell: the Hermes image
+/// puts it in the container's own `PATH`, so a plain `bash -c` sees it as well
+/// as a login shell. mise's shim directory is not like that — it reaches the
+/// PATH only through the profile block prepare_env writes, and only in a login
+/// shell — which is how a sandbox could hold an installed bun and still answer
+/// `env: 'bun': No such file or directory` when omp started.
+pub const AGENT_BIN_DIR: &str = "/opt/data/.local/bin";
+
+/// Make the harness's runtime real in a sandbox, idempotently, as the agent's
+/// own user: mise if the volume has none yet, bun pinned globally and
+/// installed, and `bun` linked into [`AGENT_BIN_DIR`] so every shell finds it
+/// without a profile. Prints the bun version on success; exits non-zero with
+/// the reason otherwise. Cheap once done (no download, a link refresh).
+///
+/// The platform runs this before it hands the agent a harness to use — doctor,
+/// start_job, prepare_env — rather than trusting that some earlier step put
+/// bun there. Before this, bun appeared only after a prepare_env on a cloned
+/// repo, so a fresh Developer Agent's doctor, and every non-login shell, found
+/// no bun and omp could not start.
+pub fn harness_runtime_script() -> String {
+    r#"set -eu
+export XDG_DATA_HOME="__XDG__" MISE_YES=1
+bin="__BIN__"
+mise="$bin/mise"
+mkdir -p "$bin"
+if [ ! -x "$mise" ]; then
+  if ! curl -fsSL https://mise.run | MISE_INSTALL_PATH="$mise" sh >/dev/null 2>&1; then
+    echo "could not install mise (the toolchain manager bun is installed with) into $bin" >&2
+    exit 1
+  fi
+fi
+"$mise" use -g bun@__BUN__ >/dev/null 2>&1 || true
+if ! "$mise" install bun@__BUN__ >/dev/null 2>&1; then
+  echo "could not install bun __BUN__ with mise" >&2
+  exit 1
+fi
+real="$("$mise" where bun@__BUN__ 2>/dev/null)/bin/bun"
+if [ ! -x "$real" ]; then
+  echo "bun __BUN__ is not at $real after installing it" >&2
+  exit 1
+fi
+ln -sfn "$real" "$bin/bun"
+"$bin/bun" --version
+"#
+    .replace("__XDG__", HARNESS_XDG_DATA_HOME)
+    .replace("__BIN__", AGENT_BIN_DIR)
+    .replace("__BUN__", HARNESS_BUN)
+}
+
 /// The MCP pass-through file omp reads inside [`PI_CODING_AGENT_DIR`].
 pub const MCP_CONFIG_FILE: &str = "mcp.json";
 
@@ -300,6 +359,20 @@ pub const SANDBOX_SHAPE_FILE: &str = "/opt/workbench-config/render-shape";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_runtime_script_puts_the_pinned_bun_on_every_shells_path() {
+        let s = harness_runtime_script();
+        assert!(!s.contains("__"), "every placeholder is filled: {s}");
+        assert!(s.contains(&format!("bun@{HARNESS_BUN}")));
+        assert!(s.contains(&format!("export XDG_DATA_HOME=\"{HARNESS_XDG_DATA_HOME}\"")));
+        // The link lands in the directory the image's own PATH carries, which
+        // is what makes a non-login shell find bun.
+        assert!(s.contains(&format!("bin=\"{AGENT_BIN_DIR}\"")));
+        assert!(s.contains("ln -sfn \"$real\" \"$bin/bun\""));
+        // It answers the version, which is what callers read back.
+        assert!(s.trim_end().ends_with("\"$bin/bun\" --version"));
+    }
 
     #[test]
     fn omp_env_carries_the_workbench_key_only_and_its_config_dir() {
