@@ -583,11 +583,20 @@ async fn real_turn(
     // drops the harness future mid-await — the same interrupt a stop or a
     // driver death produces (the persona sees the stream go away and stops
     // its task).
+    // The same subscriber is the turn's second LIVENESS source: the persona's
+    // HTTP chunks ping the tap from the transport, but a tool call that
+    // streams nothing (a build, a test run) is silent on that wire for its
+    // whole duration while the plugin's toolfull frames keep arriving here.
+    // Every frame on the watch channel is the agent working, so every frame
+    // pings — without this, a twelve-minute silent tool call hit the
+    // ten-minute idle deadline, the run was filed as an error, and the
+    // sweep opened a second session on an agent still mid-turn.
     let (breach_tx, mut breach_rx) = tokio::sync::oneshot::channel::<u32>();
     let thrash_watcher = {
         let state = state.clone();
         let channel = watch.clone();
-        tokio::spawn(async move {
+        let liveness = liveness.clone();
+        AbortOnDrop(tokio::spawn(async move {
             // A dedicated subscriber connection, the realtime crate's law:
             // pubsub owns the connection. Any failure here only disables
             // the brake for this turn — the session still runs, silence
@@ -605,6 +614,9 @@ async fn real_turn(
             let mut messages = pubsub.on_message();
             let mut streak = 0u32;
             while let Some(msg) = messages.next().await {
+                if let Some(ping) = liveness.as_ref() {
+                    ping();
+                }
                 let Ok(payload) = msg.get_payload::<String>() else {
                     continue;
                 };
@@ -613,7 +625,7 @@ async fn real_turn(
                     return;
                 }
             }
-        })
+        }))
     };
     let turn_harness = work_session_harness();
     let turn_payload = json!({ "prompt": prompt });
@@ -635,7 +647,7 @@ async fn real_turn(
     };
     let run = tokio::select! {
         r = run_harness(&state, &turn_harness, &turn_payload, turn_ctx) => {
-            thrash_watcher.abort();
+            drop(thrash_watcher);
             r
         }
         Ok(n) = &mut breach_rx => {
@@ -678,6 +690,49 @@ async fn real_turn(
         text,
         findings: run.findings,
     })
+}
+
+/// A spawned task that ends when its handle does. A dropped `JoinHandle`
+/// DETACHES its task, and this turn's future is dropped from outside on an
+/// idle deadline, a lost lease, a cancel or a shutdown — every interrupted
+/// turn used to leave its watcher subscribed to a channel a dead run never
+/// writes to again: one leaked task and one leaked Redis connection per
+/// interruption, for the life of the process.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// THE RUN A TOOL FRAME BELONGS TO, by the session the plugin names. The
+/// tool-events route attributes a frame to the agent's NEWEST live session,
+/// which is the wrong one whenever an agent drives two tickets (or one
+/// ticket and a chat): the thrash brake then aborts the wrong run and the
+/// older session's transcript loses its tail. A frame that names its session
+/// is attributed exactly — this answers a live work session of this agent
+/// whose run id IS that session id (the id a turn sent as a session turn
+/// keyed by its run carries), and `None` for anything else, so a caller
+/// falls back to its newest-session read only when the frame cannot say.
+pub async fn live_work_session_for(
+    pg: &PgPool,
+    agent_model: &str,
+    session_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    if uuid::Uuid::parse_str(session_id).is_err() {
+        return Ok(None);
+    }
+    sqlx::query_scalar(
+        "select id::text from runs \
+         where kind = 'work-session' and id = $2::uuid \
+           and state in ('queued', 'running', 'awaiting') \
+           and input->>'agentModel' = $1",
+    )
+    .bind(agent_model)
+    .bind(session_id)
+    .fetch_optional(pg)
+    .await
 }
 
 // ── The transcript artifact ──────────────────────────────────────────────────
@@ -2059,6 +2114,7 @@ mod tests {
             result: serde_json::Value::Null,
             error: None,
             attempt: 0,
+            crashes: 0,
             lease_owner: None,
             lease_expires_at: None,
             approval_key: None,

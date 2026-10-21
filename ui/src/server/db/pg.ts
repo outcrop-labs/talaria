@@ -3937,6 +3937,48 @@ alter table tasks drop column if exists conversation_id`,
   // owner_user_id leads because the WHERE clause is on it (the caller's id OR
   // null), and sort/name follow because the ORDER BY never varies.
   `create index if not exists blueprints_owner_idx on blueprints(owner_user_id, sort, name)`,
+  // ── The run plane's correctness fixes (2026-10-20) ──────────────────────
+  // ONE LIVE RAG REPAIR PER KIND. The admin "rebuild the index" button spawned
+  // its start detached and checked for a running twin with a plain read, so
+  // two clicks (or two instances) could start two reindexes: the second drops
+  // the collection the first is refilling, and the bookkeeping then says a
+  // document is indexed at a point that no longer exists. A partial unique
+  // index is the only check two inserts cannot both pass.
+  `create unique index if not exists runs_one_live_per_kind on runs (kind)
+     where state in ('queued', 'running', 'awaiting')
+       and kind in ('rag-reindex', 'rag-backfill')`,
+  // DRIVERS THAT DIED HOLDING THE RUN, apart from drivers that entered it.
+  // `attempt` counts every re-entry of a running row (the work session's
+  // "a turn was owed when the driver went away" signal rides on it), while
+  // `max_attempts` was meant to bound CRASHES — and a clean hand-over (a
+  // rolling deploy's drain, one Redis blip) was being counted as one. Three
+  // deploys killed an expedition as "gave up". A clean release now moves the
+  // row back to queued, and only a claim that finds it still running — the
+  // previous driver never released — counts here.
+  `alter table runs add column if not exists crashes integer not null default 0`,
+  // A STOPPED WORK SESSION STAYS STOPPED. The stop button cancelled the live
+  // session and recorded nothing the dispatcher reads, so the 60s redispatch
+  // sweep opened a fresh session on the same ticket and agent five minutes
+  // later, up to twenty-five times. One row per (ticket, agent) says "a
+  // person stopped this"; the next human status move on the ticket clears
+  // it (the dispatcher checks the ticket's activity after the block).
+  `create table if not exists work_dispatch_blocks (
+     task_id uuid not null references tasks(id) on delete cascade,
+     agent_model text not null,
+     blocked_by text not null,
+     created_at timestamptz not null default now(),
+     primary key (task_id, agent_model)
+   )`,
+  // A WORKCHAIN STEP CANNOT WIRE TO ITSELF. The positions PATCH stored a
+  // self-edge when a taskId appeared twice in the sent order, and a self-edge
+  // blocks its own step forever. Rows that already carry one are deleted
+  // first (the constraint cannot be added over them); each was a step wired
+  // to itself, which no reader could ever satisfy.
+  `-- deliberate: a self-edge is an invalid row — the step it names blocks on itself and
+   -- nothing can ever satisfy it. The CHECK that follows refuses the next one.
+   delete from task_workchain_edges where from_step = to_step`,
+  `alter table task_workchain_edges
+     add constraint task_workchain_edges_no_self_check check (from_step <> to_step)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

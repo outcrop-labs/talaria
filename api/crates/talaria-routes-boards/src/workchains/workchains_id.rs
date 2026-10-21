@@ -167,6 +167,40 @@ async fn reorder_steps(
         Ok(t) => t,
         Err(e) => return Err(internal("[workchains] reorder begin failed", e)),
     };
+    // EVERY STEP, EXACTLY ONCE. The rewrite below collapses the graph to the
+    // sent line and prunes every other edge — so a line naming two of five
+    // steps would leave the other three with no predecessor, which reads as
+    // "head" and serves them to agents at once: the gating the chain exists
+    // for, silently undone. A duplicate taskId would store a self-edge. Both
+    // are 400s, never a partial write.
+    let steps: Vec<(String,)> = match sqlx::query_as(
+        "select task_id::text from task_workchain_steps where workchain_id = $1::uuid for update",
+    )
+    .bind(chain_id)
+    .fetch_all(&mut *tx)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            let _ = tx.rollback().await;
+            return Err(internal("[workchains] reorder step read failed", e));
+        }
+    };
+    let named: std::collections::HashSet<&str> = sorted.iter().map(|(t, _)| t.as_str()).collect();
+    if named.len() != sorted.len() {
+        let _ = tx.rollback().await;
+        return Err(house_error(
+            StatusCode::BAD_REQUEST,
+            "every position must name a different step",
+        ));
+    }
+    if steps.len() != named.len() || steps.iter().any(|(t,)| !named.contains(t.as_str())) {
+        let _ = tx.rollback().await;
+        return Err(house_error(
+            StatusCode::BAD_REQUEST,
+            "positions must name every step of this workchain, each once",
+        ));
+    }
     for (i, (task_id, position)) in sorted.iter().enumerate() {
         let updated = sqlx::query(
             "update task_workchain_steps set position = $1 \
@@ -803,8 +837,8 @@ pub async fn delete_step(
 /// successor edges? If yes, adding from → to closes a cycle. Breadth-first
 /// over the adjacency list; a chain is dozens of nodes, so the O(V+E) walk
 /// is cheaper than cleverness.
-async fn would_cycle(
-    pg: &sqlx::PgPool,
+async fn would_cycle<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     chain_id: &str,
     from_task: &str,
     to_task: &str,
@@ -817,7 +851,7 @@ async fn would_cycle(
          where e.workchain_id = $1::uuid",
     )
     .bind(chain_id)
-    .fetch_all(pg)
+    .fetch_all(executor)
     .await?;
     let mut succ: HashMap<&str, Vec<&str>> = HashMap::new();
     for (f, t) in &edges {
@@ -902,15 +936,36 @@ pub async fn post_edge(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    match would_cycle(&state.pg, &id, &from_task, &to_task).await {
+    // CHECK AND INSERT UNDER ONE LOCK. The cycle walk and the insert used to
+    // be two pool statements, so two concurrent wires A→B and B→A each saw
+    // an acyclic chain and both landed — a 2-cycle no reader can satisfy.
+    // The chain row is locked for the transaction, which serialises every
+    // wire of one chain; the walk then reads the edges as of this lock.
+    let mut tx = match state.pg.begin().await {
+        Ok(t) => t,
+        Err(e) => return Ok(internal("[workchains] edge begin failed", e)),
+    };
+    if let Err(e) = sqlx::query("select id from task_workchains where id = $1::uuid for update")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+    {
+        let _ = tx.rollback().await;
+        return Ok(internal("[workchains] chain lock failed", e));
+    }
+    match would_cycle(&mut *tx, &id, &from_task, &to_task).await {
         Ok(false) => {}
         Ok(true) => {
+            let _ = tx.rollback().await;
             return Ok(house_error(
                 StatusCode::BAD_REQUEST,
                 "this wire would make the chain circular",
             ));
         }
-        Err(e) => return Ok(internal("[workchains] cycle check failed", e)),
+        Err(e) => {
+            let _ = tx.rollback().await;
+            return Ok(internal("[workchains] cycle check failed", e));
+        }
     }
     let inserted = sqlx::query(
         "insert into task_workchain_edges (workchain_id, from_step, to_step) \
@@ -920,13 +975,19 @@ pub async fn post_edge(
     .bind(&id)
     .bind(&from_step)
     .bind(&to_step)
-    .execute(&state.pg)
+    .execute(&mut *tx)
     .await;
     match inserted {
         // A duplicate wire is a quiet ok — the outcome the caller wanted
         // (the delete verb's own rule, mirrored).
         Ok(_) => {}
-        Err(e) => return Ok(internal("[workchains] edge insert failed", e)),
+        Err(e) => {
+            let _ = tx.rollback().await;
+            return Ok(internal("[workchains] edge insert failed", e));
+        }
+    }
+    if let Err(e) = tx.commit().await {
+        return Ok(internal("[workchains] edge commit failed", e));
     }
     if let Err(e) = sqlx::query("update task_workchains set updated_at = now() where id = $1::uuid")
         .bind(&id)

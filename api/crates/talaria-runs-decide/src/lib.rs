@@ -600,6 +600,7 @@ mod tests {
             result: Value::Null,
             error: None,
             attempt: 0,
+            crashes: 0,
             lease_owner: None,
             lease_expires_at: None,
             approval_key,

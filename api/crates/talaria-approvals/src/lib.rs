@@ -1015,6 +1015,66 @@ async fn mark_announced(pg: &PgPool, marks: &HashMap<String, String>) -> Result<
     Ok(())
 }
 
+/// CLAIM THE ANNOUNCEMENT BEFORE SENDING IT. One statement, under the
+/// settings row's own lock: the mark is written only if the key is not
+/// already in the map, and the caller learns which. Two announcers — the
+/// request path on one instance and the sweep on another, reading the same
+/// empty map in the same window — used to both send, because each wrote its
+/// mark after its notifications; now exactly one of them gets `true` and the
+/// other stands down. A claim whose send then reaches nobody is released
+/// with `unmark_announced`, so the sweep tries again.
+async fn claim_announce(pg: &PgPool, key: &str, at: &str) -> Result<bool, sqlx::Error> {
+    let rows = sqlx::query(
+        "insert into app_settings (key, value) \
+         values ($1, jsonb_build_object('announced', jsonb_build_object($2::text, $3::text))) \
+         on conflict (key) do update set \
+           value = jsonb_build_object(\
+             'announced', coalesce(app_settings.value -> 'announced', '{}'::jsonb) \
+               || jsonb_build_object($2::text, $3::text)\
+           ), \
+           updated_at = now() \
+         where not (coalesce(app_settings.value -> 'announced', '{}'::jsonb) ? $2::text) \
+         returning key",
+    )
+    .bind(ANNOUNCE_STATE_KEY)
+    .bind(key)
+    .bind(at)
+    .fetch_all(pg)
+    .await?;
+    Ok(!rows.is_empty())
+}
+
+/// Give a claimed mark back: the send reached nobody, so the key stays
+/// unannounced for the next sweep.
+async fn unmark_announced(pg: &PgPool, key: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update app_settings set \
+           value = jsonb_build_object(\
+             'announced', coalesce(value -> 'announced', '{}'::jsonb) - $2::text\
+           ), \
+           updated_at = now() \
+         where key = $1",
+    )
+    .bind(ANNOUNCE_STATE_KEY)
+    .bind(key)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// Every approval key a parked run still carries — whatever its kind. The
+/// prune must keep these even when THIS instance cannot define the kind (a
+/// mixed-version fleet mid-deploy): the census answers `None` for such a run
+/// and its key would otherwise look decided and be pruned, and the instance
+/// that can see it would re-announce on its next tick, every other tick.
+async fn awaiting_run_keys(pg: &PgPool) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "select approval_key from runs where state = 'awaiting' and approval_key is not null",
+    )
+    .fetch_all(pg)
+    .await
+}
+
 async fn prune_announced(
     pg: &PgPool,
     live_keys: &[String],
@@ -1334,19 +1394,27 @@ pub async fn announce_approval(deps: &ApprovalDeps, key: &str) -> usize {
     if target.awaiting_owner {
         return 0;
     }
-    let told = announce(deps, approval, &target).await;
-    // Marked when EITHER channel landed. A fact that reached the admins is an
-    // announcement — leaving it unmarked would repeat it every five minutes
-    // for the life of the approval. A mark that failed to WRITE logs and
-    // answers 0, leaving the key unmarked: the sweep will announce again —
-    // a double-send, the lesser failure.
-    if told.content > 0 || told.fact > 0 {
-        let mut marks = HashMap::new();
-        marks.insert(key.to_string(), epoch_ms_to_iso((deps.now)()));
-        if let Err(e) = mark_announced(deps.pg(), &marks).await {
-            tracing::error!("{LOG} could not record the announce mark for {key}: {e}");
+    // CLAIM, THEN SEND. The read above is a courtesy; this is the gate a
+    // sweep on another instance cannot pass at the same time. A claim that
+    // cannot be written is no claim: nothing is sent, the sweep owns it.
+    match claim_announce(deps.pg(), key, &epoch_ms_to_iso((deps.now)())).await {
+        Ok(true) => {}
+        Ok(false) => return 0,
+        Err(e) => {
+            tracing::error!("{LOG} could not claim the announce mark for {key}: {e}");
             return 0;
         }
+    }
+    let told = announce(deps, approval, &target).await;
+    // Kept when EITHER channel landed. A fact that reached the admins is an
+    // announcement — leaving it unmarked would repeat it every five minutes
+    // for the life of the approval. Nobody heard: the claim is given back so
+    // the sweep announces again.
+    if told.content == 0 && told.fact == 0 {
+        if let Err(e) = unmark_announced(deps.pg(), key).await {
+            tracing::error!("{LOG} could not release the announce mark for {key}: {e}");
+        }
+        return 0;
     }
     told.content + told.fact
 }
@@ -1427,19 +1495,39 @@ pub async fn sweep_unannounced(
             result.awaiting_owner += 1;
             continue;
         }
+        // CLAIM, THEN SEND — the request path's rule, here too. The
+        // snapshot above is a fast path; the claim is what keeps this sweep
+        // and a request on another instance from both announcing the same
+        // question in the same window.
+        match claim_announce(pg, &approval.key, &now).await {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => {
+                tracing::error!(
+                    "{LOG} could not claim the announce mark for {}: {e}",
+                    approval.key
+                );
+                continue;
+            }
+        }
         let told = announce(deps, approval, &target).await;
         if told.content > 0 {
-            marks.insert(approval.key.clone(), now.clone());
             result.announced += 1;
         } else if told.fact > 0 {
             // Nobody may be told what it says, and the people who can fix that
             // have been told it exists. That IS the announcement for this
-            // approval — mark it, or it repeats every tick — but it is not the
-            // same as somebody who can decide it having heard.
-            marks.insert(approval.key.clone(), now.clone());
+            // approval — the claim stands, or it repeats every tick — but it
+            // is not the same as somebody who can decide it having heard.
             result.fact_only += 1;
         } else {
-            // Deliberately NOT marked: nobody heard, so nothing was announced.
+            // Nobody heard, so nothing was announced: the claim is given
+            // back and the key stays unmarked for the next pass.
+            if let Err(e) = unmark_announced(pg, &approval.key).await {
+                tracing::error!(
+                    "{LOG} could not release the announce mark for {}: {e}",
+                    approval.key
+                );
+            }
             result.unreachable += 1;
         }
     }
@@ -1449,9 +1537,18 @@ pub async fn sweep_unannounced(
     // Only prune against a COMPLETE census — a kind that failed to read this
     // pass looks like a kind with nothing pending, and dropping its marks
     // would re-announce every one of its approvals the moment the table came
-    // back.
+    // back. The parked runs' keys are added whole: a run whose kind this
+    // instance cannot define is absent from the census yet still awaiting,
+    // and pruning its mark would have another instance re-announce it.
     if census.failed_kinds.is_empty() {
-        let live: Vec<String> = census.approvals.iter().map(|a| a.key.clone()).collect();
+        let mut live: Vec<String> = census.approvals.iter().map(|a| a.key.clone()).collect();
+        match awaiting_run_keys(pg).await {
+            Ok(keys) => live.extend(keys),
+            Err(e) => {
+                tracing::error!("{LOG} could not read the parked runs' keys — not pruning: {e}");
+                return result;
+            }
+        }
         if let Err(e) = prune_announced(pg, &live, &now).await {
             tracing::error!("{LOG} could not prune the announce marks: {e}");
         }
@@ -1778,6 +1875,7 @@ mod tests {
             result: serde_json::Value::Null,
             error: None,
             attempt: 0,
+            crashes: 0,
             lease_owner: None,
             lease_expires_at: None,
             approval_key,

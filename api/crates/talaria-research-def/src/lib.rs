@@ -71,6 +71,7 @@
 
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, OnceLock};
+use std::time::Duration;
 
 use futures_util::future::BoxFuture;
 use regex::Regex;
@@ -569,6 +570,12 @@ pub struct ResearchCheckpoint {
     /// OWN retries.
     #[serde(default)]
     pub retries: u64,
+    /// How many times the CURRENT query hit `SEARCH_CALL_BUDGET` and was
+    /// re-entered from this checkpoint. Reset with each query that lands;
+    /// at `MAX_SEARCH_TIMEOUTS` the query is recorded as a failed search
+    /// (one dead query costs one angle) instead of being asked again.
+    #[serde(default)]
+    pub search_timeouts: u64,
     /// What the scope step said the ask IS — the read that was posted to the
     /// discussion on the crisp path, kept so every planning round works against
     /// the amended ask rather than the typed one. `#[serde(default)]` because
@@ -869,6 +876,19 @@ pub struct ResearchRunDeps {
 }
 
 // ── The real model edges ─────────────────────────────────────────────────────
+
+/// ONE QUERY'S BUDGET inside the search step. The step's `max_step_ms` is
+/// eleven minutes and the driver files a step that blows it as an error that
+/// is never retried — yet one search is up to three tool rounds (a model
+/// turn plus tool calls each) and a closing turn, with no bound of its own,
+/// so a slow supplier could realistically exceed the step. Nine minutes
+/// leaves the step room for the round-boundary `enough` judgment and the
+/// checkpoint write; a query that runs past it is cut, checkpointed, and
+/// asked again from the same cursor (bounded by `MAX_SEARCH_TIMEOUTS`), which
+/// is a retry the run survives rather than an error row.
+pub const SEARCH_CALL_BUDGET: Duration = Duration::from_millis(9 * 60_000);
+/// Re-entries of one query after a budget cut before it counts as failed.
+pub const MAX_SEARCH_TIMEOUTS: u64 = 2;
 
 async fn search_stage(state: &AppState, args: SearchArgs) -> Result<SearchHit, String> {
     let sink: SearchSink = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1879,15 +1899,50 @@ async fn advance(
             let mut failed = cp.search_failed;
             let hit = async {
                 stop_if_abandoned(ctx)?;
-                (deps.search)(SearchArgs {
-                    run_id: run_id.clone(),
-                    model: cp.search_model.clone(),
-                    supplier: cp.search_supplier.clone(),
-                    query: query.clone(),
-                })
+                match tokio::time::timeout(
+                    SEARCH_CALL_BUDGET,
+                    (deps.search)(SearchArgs {
+                        run_id: run_id.clone(),
+                        model: cp.search_model.clone(),
+                        supplier: cp.search_supplier.clone(),
+                        query: query.clone(),
+                    }),
+                )
                 .await
+                {
+                    Ok(hit) => hit.map(Some),
+                    // THE BUDGET, not the driver's deadline: the call is
+                    // dropped here, inside the step, so the step still
+                    // returns and checkpoints. (The request already on the
+                    // wire finishes on its own and is billed — that cost is
+                    // the supplier's latency, and this is the cheaper of the
+                    // two ways to pay it.)
+                    Err(_) => Ok(None),
+                }
             }
             .await;
+            let hit = match hit {
+                Ok(Some(hit)) => Ok(hit),
+                Ok(None) if cp.search_timeouts < MAX_SEARCH_TIMEOUTS => {
+                    // Asked again from THIS cursor on the next step — a
+                    // retry the run survives, counted so it cannot loop.
+                    let mut next = cp.clone();
+                    next.search_timeouts = cp.search_timeouts + 1;
+                    return step_next(
+                        &next,
+                        &format!(
+                            "search ({n}) ran past its budget — asking again ({} of {})",
+                            next.search_timeouts, MAX_SEARCH_TIMEOUTS
+                        ),
+                    );
+                }
+                Ok(None) => Err(format!(
+                    "the search ran past its {}s budget {} times",
+                    SEARCH_CALL_BUDGET.as_secs(),
+                    MAX_SEARCH_TIMEOUTS + 1
+                )),
+                Err(e) => Err(e),
+            };
             match hit {
                 Ok(hit) => {
                     note = format!(
@@ -1926,6 +1981,7 @@ async fn advance(
             next.findings.push(note);
             next.sources = registry.list();
             next.search_failed = failed;
+            next.search_timeouts = 0;
             // IS THAT ENOUGH? Asked at a round boundary only, and only with a
             // round still left to spend: on the last round there is nothing to
             // save, and a run with nothing citable yet has no findings for the
@@ -2337,6 +2393,7 @@ async fn begin(
             sources: parent_sources,
             search_failed: false,
             retries: 0,
+            search_timeouts: 0,
             scope_read: None,
             scope_answer: None,
             report: None,
@@ -2883,6 +2940,7 @@ mod tests {
             result: Value::Null,
             error: None,
             attempt: 0,
+            crashes: 0,
             lease_owner: Some("token".into()),
             lease_expires_at: None,
             approval_key: None,

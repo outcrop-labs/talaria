@@ -1089,9 +1089,15 @@ pub fn real_reindex_deps(state: AppState) -> ReindexDeps {
                     ensure_hybrid_collection(&qd, &col.qdrant_name, dim).await?;
                     // Old point ids went with the collection; drop the
                     // bookkeeping so content hashes cannot skip the re-embed.
+                    // QDRANT FIRST, THEN ONE POSTGRES TRANSACTION: the points
+                    // delete and the collection's schema stamp land together
+                    // or not at all, so a crash between them cannot leave a
+                    // collection stamped v2 over bookkeeping that still says
+                    // every document is indexed at a point that is gone.
+                    let mut tx = pg.begin().await.map_err(|e| e.to_string())?;
                     sqlx::query("delete from rag_points where collection_id = $1::uuid")
                         .bind(&col.id)
-                        .execute(&pg)
+                        .execute(&mut *tx)
                         .await
                         .map_err(|e| e.to_string())?;
                     sqlx::query(
@@ -1100,9 +1106,10 @@ pub fn real_reindex_deps(state: AppState) -> ReindexDeps {
                     )
                     .bind(&col.id)
                     .bind(dim)
-                    .execute(&pg)
+                    .execute(&mut *tx)
                     .await
                     .map_err(|e| e.to_string())?;
+                    tx.commit().await.map_err(|e| e.to_string())?;
                     Ok(())
                 })
             })
@@ -1177,11 +1184,46 @@ pub fn reindex_run() -> &'static Arc<RunDefinition> {
 
 // ── Starting one ─────────────────────────────────────────────────────────────
 
+/// SQLSTATE 23505, `unique_violation` — the partial unique index
+/// `runs_one_live_per_kind` refusing a second live repair of this kind. The
+/// read above is a courtesy; this is the guarantee.
+fn is_unique_violation(e: &sqlx::Error) -> bool {
+    e.as_database_error().and_then(|d| d.code()).as_deref() == Some("23505")
+}
+
+/// The two repairs rewrite the same collections, so one of either kind is
+/// the whole budget: a backfill must not start under a reindex that is
+/// dropping the collection it would fill, and the other way round.
+fn sibling_kind(kind: &str) -> &'static str {
+    if kind == REINDEX_KIND {
+        BACKFILL_KIND
+    } else {
+        REINDEX_KIND
+    }
+}
+
 async fn start_once(
     state: &AppState,
     kind: &str,
     def: &'static Arc<RunDefinition>,
 ) -> Result<(), String> {
+    // The sibling first: a live repair of the OTHER kind is as much a reason
+    // to stand down as one of this kind (the index serialises per kind; this
+    // read is what keeps a backfill off a reindex's collections).
+    match active_run_of_kind(&state.pg, sibling_kind(kind)).await {
+        Ok(Some(active)) => {
+            tracing::info!(
+                "{LOG} {kind} not started: {} is already running as {} (\"{}\") and the two \
+                 rewrite the same collections",
+                sibling_kind(kind),
+                active.id,
+                active.phase
+            );
+            return Ok(());
+        }
+        Ok(None) => {}
+        Err(e) => return Err(e.to_string()),
+    }
     match active_run_of_kind(&state.pg, kind).await {
         Ok(Some(active)) => {
             tracing::info!(
@@ -1204,7 +1246,7 @@ async fn start_once(
                 return Err("dispatch not wired".into());
             };
             let deps = build(state.pg.clone(), redis, realtime);
-            enqueue(
+            match enqueue(
                 def,
                 json!({}),
                 EnqueueOptions {
@@ -1218,8 +1260,21 @@ async fn start_once(
                 &deps,
             )
             .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+            {
+                Ok(_) => Ok(()),
+                // THE INDEX SAID NO: another start (a double click, another
+                // instance) landed its row between our read and our insert.
+                // That row is the live repair; this one stands down, which is
+                // the same answer the read above gives a moment later.
+                Err(e) if is_unique_violation(&e) => {
+                    tracing::info!(
+                        "{LOG} {kind} is already running (the one-live-per-kind index refused a \
+                         second) — showing that one rather than starting another"
+                    );
+                    Ok(())
+                }
+                Err(e) => Err(e.to_string()),
+            }
         }
         Err(e) => Err(e.to_string()),
     }
@@ -1265,6 +1320,7 @@ mod tests {
             result: Value::Null,
             error: None,
             attempt: 0,
+            crashes: 0,
             lease_owner: None,
             lease_expires_at: None,
             approval_key: None,
