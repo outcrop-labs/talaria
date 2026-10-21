@@ -376,19 +376,35 @@ pub async fn post(
 
     // A queued/running duplicate of the same question is a double-click —
     // answered by a raw column scan, not the projection's run-aware CASE
-    // (`active_research_on`).
-    let dupe: Option<(String,)> = match sqlx::query_as(
-        "select id::text from research_runs \
-         where question = $1 and status in ('queued', 'running') limit 1",
-    )
-    .bind(&question)
-    .fetch_optional(&state.pg)
-    .await
+    // (`active_research_on`). SCOPED TO WHAT THE CALLER MAY READ, through
+    // the same viewer the list route resolves (a person: themselves; an
+    // agent: its owner, so a general agent sees org runs only): the check
+    // used to run over every run in the org and hand a stranger's run id
+    // back in the 409, which told the caller both that the question was in
+    // flight and where.
+    let dup_viewer = match caller.as_ref() {
+        Some(c) => {
+            match talaria_users::assistant_owner_for(&state.pg, &AgentSubject::Caller(c.clone()))
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    return Ok(internal(
+                        "[research] owner resolve on duplicate check failed",
+                        e,
+                    ));
+                }
+            }
+        }
+        None => owner_user_id.clone(),
+    };
+    let dupe = match research::live_duplicate_question(&state.pg, dup_viewer.as_deref(), &question)
+        .await
     {
         Ok(d) => d,
         Err(e) => return Ok(internal("[research] duplicate check failed", e)),
     };
-    if let Some((id,)) = dupe {
+    if let Some(id) = dupe {
         return Ok((
             StatusCode::CONFLICT,
             Json(json!({ "run": null, "duplicateOf": id, "reason": "question" })),

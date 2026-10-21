@@ -36,12 +36,17 @@ pub struct OutreachConfig {
     pub interval_minutes: i64,
     /// Agent-initiated DMs allowed per agent↔user pair per day.
     pub daily_dm_cap: i64,
+    /// Agent-initiated DMs allowed per agent per day, every recipient
+    /// counted — the pair cap alone let one agent reach every person in the
+    /// org three times a day.
+    pub daily_dm_total_cap: i64,
 }
 
 const DEFAULT_CONFIG: OutreachConfig = OutreachConfig {
     enabled: false,
     interval_minutes: 240,
     daily_dm_cap: 3,
+    daily_dm_total_cap: 20,
 };
 
 /// The stored partial over the defaults.
@@ -63,10 +68,15 @@ fn parse_config(stored: &Value) -> OutreachConfig {
             .and_then(|v| v.as_i64())
             .filter(|c| *c > 0)
             .unwrap_or(DEFAULT_CONFIG.daily_dm_cap),
+        daily_dm_total_cap: stored
+            .get("dailyDmTotalCap")
+            .and_then(|v| v.as_i64())
+            .filter(|c| *c > 0)
+            .unwrap_or(DEFAULT_CONFIG.daily_dm_total_cap),
     }
 }
 
-/// A full-object write of the three knobs.
+/// A full-object write of the four knobs.
 pub async fn set_outreach_config(pg: &PgPool, c: &OutreachConfig) {
     let _ = talaria_gateway::settings::set_setting(
         pg,
@@ -75,6 +85,7 @@ pub async fn set_outreach_config(pg: &PgPool, c: &OutreachConfig) {
             "enabled": c.enabled,
             "intervalMinutes": c.interval_minutes,
             "dailyDmCap": c.daily_dm_cap,
+            "dailyDmTotalCap": c.daily_dm_total_cap,
         }),
     )
     .await;
@@ -190,22 +201,13 @@ pub async fn agent_message_user(
         return MessageUserResult::err("as a personal assistant you can only message your owner");
     }
 
-    let count: i32 = sqlx::query_scalar(
-        "select count(*)::int from outreach_events \
-         where agent_model = $1 and kind = 'dm' and user_id = $2::uuid \
-           and created_at > now() - interval '1 day'",
-    )
-    .bind(agent_model)
-    .bind(target_id)
-    .fetch_one(pg)
-    .await
-    .unwrap_or(0);
-    if i64::from(count) >= cfg.daily_dm_cap {
-        return MessageUserResult::err(&format!(
-            "daily limit reached for messaging this person ({}/day) — try again tomorrow or use a ticket comment",
-            cfg.daily_dm_cap
-        ));
-    }
+    // THE SLOT IS CLAIMED BEFORE THE MESSAGE EXISTS, under the agent's lock,
+    // so two concurrent calls cannot both read "2 of 3" and both land.
+    let slot = match claim_dm_slot(pg, agent_model, target_id, &cfg).await {
+        Ok(Ok(id)) => id,
+        Ok(Err(line)) => return MessageUserResult::err(&line),
+        Err(e) => return MessageUserResult::err(&e.to_string()),
+    };
 
     // Most recent live chat between this pair, else a fresh conversation.
     let existing: Option<(String,)> = sqlx::query_as(
@@ -237,7 +239,7 @@ pub async fn agent_message_user(
         .await
         {
             Ok(id) => id,
-            Err(e) => return MessageUserResult::err(&e.to_string()),
+            Err(e) => return release_dm_slot(pg, &slot, &e.to_string()).await,
         },
     };
 
@@ -253,7 +255,7 @@ pub async fn agent_message_user(
 
     let seq = match talaria_conversations::next_seq(pg, &conv_id).await {
         Ok(seq) => seq,
-        Err(e) => return MessageUserResult::err(&e.to_string()),
+        Err(e) => return release_dm_slot(pg, &slot, &e.to_string()).await,
     };
     let msg_id = match talaria_conversations::insert_streaming_assistant(
         pg,
@@ -264,12 +266,12 @@ pub async fn agent_message_user(
     .await
     {
         Ok(id) => id,
-        Err(e) => return MessageUserResult::err(&e.to_string()),
+        Err(e) => return release_dm_slot(pg, &slot, &e.to_string()).await,
     };
     if let Err(e) =
         talaria_conversations::update_assistant(pg, &msg_id, &body, "", &[], "complete").await
     {
-        return MessageUserResult::err(&e.to_string());
+        return release_dm_slot(pg, &slot, &e.to_string()).await;
     }
     // annotate/strict pin the findings onto the message as metadata the UI
     // renders as a caveat — chat-persist's exact precedent, and safe for the
@@ -322,12 +324,11 @@ pub async fn agent_message_user(
         body
     };
     let note: String = note.chars().take(500).collect();
+    // The slot row was claimed above; this fills in what it was spent on.
     let _ = sqlx::query(
-        "insert into outreach_events (agent_model, kind, user_id, conversation_id, note) \
-         values ($1, 'dm', $2::uuid, $3::uuid, $4)",
+        "update outreach_events set conversation_id = $2::uuid, note = $3 where id = $1::uuid",
     )
-    .bind(agent_model)
-    .bind(target_id)
+    .bind(&slot)
     .bind(&conv_id)
     .bind(&note)
     .execute(pg)
@@ -338,6 +339,88 @@ pub async fn agent_message_user(
         conversation_id: Some(conv_id),
         error: None,
     }
+}
+
+/// How many agent-initiated DMs this agent has sent in the last day: to this
+/// person, and to everyone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmCounts {
+    pub pair: i64,
+    pub total: i64,
+}
+
+/// THE CAP DECISION, pure: the line the agent reads when a DM may not go, or
+/// None when it may. The pair cap is asked first — "this person" is the
+/// more actionable refusal — then the agent's own daily total.
+pub fn dm_cap_refusal(counts: DmCounts, cfg: &OutreachConfig) -> Option<String> {
+    if counts.pair >= cfg.daily_dm_cap {
+        return Some(format!(
+            "daily limit reached for messaging this person ({}/day) — try again tomorrow or use a ticket comment",
+            cfg.daily_dm_cap
+        ));
+    }
+    if counts.total >= cfg.daily_dm_total_cap {
+        return Some(format!(
+            "daily limit reached for direct messages from this agent ({}/day across everyone) — try again tomorrow or use a ticket comment",
+            cfg.daily_dm_total_cap
+        ));
+    }
+    None
+}
+
+/// Count and claim in ONE transaction under an advisory lock keyed on the
+/// agent: the two counts and the insert that moves them cannot interleave
+/// with another call's, so concurrent `message_user` calls serialize at the
+/// cap instead of each reading the same count and all landing. The claimed
+/// row is the event row itself, written before the message exists and
+/// filled in (conversation, note) once it does; a call that fails after
+/// claiming hands the slot back (`release_dm_slot`). Ok(Ok(event id)) when
+/// the DM may go, Ok(Err(line)) when a cap refuses it.
+async fn claim_dm_slot(
+    pg: &PgPool,
+    agent_model: &str,
+    target_id: &str,
+    cfg: &OutreachConfig,
+) -> Result<Result<String, String>, sqlx::Error> {
+    let mut tx = pg.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock(hashtext($1))")
+        .bind(format!("outreach-dm:{agent_model}"))
+        .execute(&mut *tx)
+        .await?;
+    let (pair, total): (i64, i64) = sqlx::query_as(
+        "select count(*) filter (where user_id = $2::uuid), count(*) \
+         from outreach_events \
+         where agent_model = $1 and kind = 'dm' \
+           and created_at > now() - interval '1 day'",
+    )
+    .bind(agent_model)
+    .bind(target_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if let Some(line) = dm_cap_refusal(DmCounts { pair, total }, cfg) {
+        tx.rollback().await?;
+        return Ok(Err(line));
+    }
+    let id: String = sqlx::query_scalar(
+        "insert into outreach_events (agent_model, kind, user_id, conversation_id, note) \
+         values ($1, 'dm', $2::uuid, null, null) returning id::text",
+    )
+    .bind(agent_model)
+    .bind(target_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Ok(id))
+}
+
+/// A claimed slot whose DM never landed goes back — best-effort, and the
+/// failure the caller is owed is the one that stopped the DM, not this one.
+async fn release_dm_slot(pg: &PgPool, slot: &str, line: &str) -> MessageUserResult {
+    let _ = sqlx::query("delete from outreach_events where id = $1::uuid and note is null")
+        .bind(slot)
+        .execute(pg)
+        .await;
+    MessageUserResult::err(line)
 }
 
 async fn log_sweep_event(pg: &PgPool, agent_model: &str, note: &str) -> Result<(), sqlx::Error> {
@@ -610,15 +693,54 @@ mod tests {
 
     #[test]
     fn a_full_stored_config_is_honored() {
-        let c = parse_config(&json!({ "enabled": true, "intervalMinutes": 30, "dailyDmCap": 1 }));
+        let c = parse_config(&json!({
+            "enabled": true, "intervalMinutes": 30, "dailyDmCap": 1, "dailyDmTotalCap": 5
+        }));
         assert_eq!(
             c,
             OutreachConfig {
                 enabled: true,
                 interval_minutes: 30,
-                daily_dm_cap: 1
+                daily_dm_cap: 1,
+                daily_dm_total_cap: 5,
             }
         );
+    }
+
+    #[test]
+    fn a_config_stored_before_the_total_cap_existed_gets_its_default() {
+        let c = parse_config(&json!({ "enabled": true, "intervalMinutes": 30, "dailyDmCap": 1 }));
+        assert_eq!(c.daily_dm_cap, 1);
+        assert_eq!(c.daily_dm_total_cap, 20);
+        assert_eq!(
+            parse_config(&json!({ "dailyDmTotalCap": 0 })).daily_dm_total_cap,
+            20
+        );
+    }
+
+    #[test]
+    fn the_cap_decision_refuses_the_pair_first_then_the_agents_total() {
+        let cfg = OutreachConfig {
+            daily_dm_cap: 3,
+            daily_dm_total_cap: 20,
+            ..DEFAULT_CONFIG
+        };
+        // Under both: it may go.
+        assert_eq!(dm_cap_refusal(DmCounts { pair: 2, total: 19 }, &cfg), None);
+        assert_eq!(dm_cap_refusal(DmCounts { pair: 0, total: 0 }, &cfg), None);
+        // At the pair cap, whatever the total.
+        let pair = dm_cap_refusal(DmCounts { pair: 3, total: 3 }, &cfg).unwrap();
+        assert!(pair.contains("this person (3/day)"), "{pair}");
+        // Under the pair cap but at the agent's total — the hole this closes:
+        // a fresh recipient is not a fresh allowance.
+        let total = dm_cap_refusal(DmCounts { pair: 0, total: 20 }, &cfg).unwrap();
+        assert!(
+            total.contains("from this agent (20/day across everyone)"),
+            "{total}"
+        );
+        // Both exceeded: the pair line, the more actionable one.
+        let both = dm_cap_refusal(DmCounts { pair: 5, total: 40 }, &cfg).unwrap();
+        assert!(both.contains("this person"), "{both}");
     }
 
     #[test]

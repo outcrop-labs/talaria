@@ -21,7 +21,11 @@ export interface Assistant {
   currentModel: string | null
   /** Named tiers the owner can switch between. */
   tiers: AssistantTier[]
+  /** How far it may reach into the owner's own direct messages with people. */
+  dmAccess: AssistantDmAccess
 }
+
+export type AssistantDmAccess = 'none' | 'read' | 'read-write'
 
 export function useAssistant() {
   return createQuery(() => ({
@@ -55,6 +59,8 @@ export async function updateAssistant(patch: {
   personality?: string
   /** A tier name from `tiers` — becomes the default model. */
   model?: string
+  /** The owner's DM reach — applies on its own, no restart. */
+  dmAccess?: AssistantDmAccess
 }): Promise<AssistantResult> {
   try {
     return await patchJson<AssistantResult>('/api/me/assistant', patch)
