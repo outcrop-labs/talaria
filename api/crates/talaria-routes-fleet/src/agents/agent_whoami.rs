@@ -36,12 +36,14 @@ use talaria_users::{assistant_owner_for, is_elevated_assistant};
 /// instead of discovered verb by verb. Mirrored from the enforcing code
 /// (boards_id_tasks, agent_safe_patch, agent_ticket_refusal) — if those
 /// change, this list follows or it lies.
-const GUARDRAILS: [&str; 5] = [
+const GUARDRAILS: [&str; 7] = [
     "agents cannot assign tickets — assignment is a human call",
     "agents cannot take a ticket out of review — a person signs it off",
-    "agents cannot change a closed ticket",
+    "agents cannot move a ticket out of blocked — a person restarts parked work",
+    "agents cannot change a closed ticket (done / failed / cancelled); comments still land there",
     "agents cannot work an archived ticket — a person restores it first",
-    "deleting boards, tickets or members is a human-only route",
+    "an archived board is out of service at every door — not listed, not readable, nothing on it writable, comments included",
+    "deleting boards or tickets is a human-only route (a personal assistant may add or remove board members as its owner)",
 ];
 
 pub async fn get(

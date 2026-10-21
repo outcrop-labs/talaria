@@ -1,18 +1,20 @@
 // POST /api/agent/chips — an agent exposes tools as chips on the turn it is
 // writing. The platform also calls the same landing path when a tool result
-// produces a link or a protected action.
+// produces a link or a protected action. An optional `conversationId` names
+// the turn (the prompt carries it); without one the chips land only while
+// exactly one turn could be meant, and a 409 says so otherwise.
 
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use talaria_agent_auth::require_agent;
 use talaria_body::parse;
-use talaria_chips::surface_tool_chips;
-use talaria_error::{internal, object_or_400};
+use talaria_chips::{Target, conversation_hint, surface_tool_chips_in};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_state::AppState;
 
 // doc: Expose platform tools as chips on the conversation this agent is in.
@@ -46,7 +48,21 @@ pub async fn post(
         }));
     }
     let redis = state.redis().await.ok();
-    match surface_tool_chips(&state.pg, redis, &caller.model, None, chips).await {
+    let hint = conversation_hint(&parsed);
+    match surface_tool_chips_in(
+        &state.pg,
+        redis,
+        &caller.model,
+        None,
+        hint.as_deref(),
+        chips,
+    )
+    .await
+    {
+        Ok(target @ Target::Ambiguous { .. }) => Ok(house_error(
+            StatusCode::CONFLICT,
+            &target.ambiguity().unwrap_or_default(),
+        )),
         Ok(_) => Ok(Json(json!({ "ok": true })).into_response()),
         Err(e) => Ok(internal("[chips] expose failed", e)),
     }
