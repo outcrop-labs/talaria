@@ -6,7 +6,7 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-333 routes across 23 groups.
+334 routes across 23 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
@@ -19,7 +19,7 @@
 | [`brief`](./brief.md) | The personal brief: items, replies, delegation. | 5 |
 | [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 31 |
 | [`files`](./files.md) | Uploads, artifacts, shares, downloads. | 19 |
-| [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 25 |
+| [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 26 |
 | [`inbox`](./inbox.md) | The focus inbox and its command surface. | 7 |
 | [`integrations`](./integrations.md) | Connected accounts — Google Workspace and the rest. | 42 |
 | [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, blueprints, search. | 21 |

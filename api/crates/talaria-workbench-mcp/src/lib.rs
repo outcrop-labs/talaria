@@ -1018,9 +1018,14 @@ async fn call_tool(
                 "Heavy work waits for a human: your plan is on the ticket for approval. Poll job_status — once approved it returns the clone URL. Do NOT begin building."
                     .to_string()
             } else {
+                // The project env is NOT written here: the workdir must be
+                // empty for `git clone <url> <workdir>`, and prepare_env —
+                // which runs on the checkout — is where it lands, beside the
+                // repo's own .talaria/ and excluded from git.
                 format!(
-                    "Clone with the URL above INTO your workdir (mkdir -p {workdir} first). It carries no credential and needs none: your sandbox's git asks Talaria for one when it pushes, so never add a token to a remote URL. One workspace per job: never work outside it. Work ONLY on {branch}; the branch name satisfies this repo's branch rules, so pushes to it are accepted. Commit and push as you go; commits are authored as YOU. Never touch {base}. Once cloned, call prepare_env with this jobId: it installs the repo's toolchains and system packages, so never install them yourself. You are the orchestrator: Oh My Pi (harnesses[0]) is the pair programmer. First turn: jsonRun (or run) with ONE scoped ask, not the whole ticket. Later turns: continueJsonRun / continueRun (`-c`) against sessionDir so the harness keeps context. Read structured results, then steer. Git over https:// just works. Do not override its --model; omp switches between its roles itself. When the change is right, finish_job. Talaria opens the PR.",
+                    "Clone with the URL above INTO your workdir (mkdir -p {workdir} first). It carries no credential and needs none: your sandbox's git asks Talaria for one when it pushes, so never add a token to a remote URL. One workspace per job: never work outside it. Work ONLY on {branch}; the branch name satisfies this repo's branch rules, so pushes to it are accepted. Commit and push as you go; commits are authored as YOU. Never touch {base}. Once cloned, call prepare_env with this jobId: it installs the repo's toolchains and system packages (never install them yourself) and writes this project's env, if it has one, to {workdir}/{env_file} — load it before you build or test. You are the orchestrator: Oh My Pi (harnesses[0]) is the pair programmer. First turn: jsonRun (or run) with ONE scoped ask, not the whole ticket. Later turns: continueJsonRun / continueRun (`-c`) against sessionDir so the harness keeps context. Read structured results, then steer. Git over https:// just works. Do not override its --model; omp switches between its roles itself. When the change is right, finish_job. Talaria opens the PR.",
                     base = created_branch.base,
+                    env_file = devenv::JOB_ENV_FILE,
                 )
             };
             let mut value = Map::new();
@@ -1148,29 +1153,47 @@ async fn call_tool(
             if let Some(error) = bad_job_id(&job_id) {
                 return CallOutcome::Fail(error);
             }
-            let status: Option<String> = match sqlx::query_scalar(
-                "select status from workbench_jobs where id = $1::uuid and agent_id = $2::uuid",
+            let row: Option<(String, String)> = match sqlx::query_as(
+                "select status, repo from workbench_jobs where id = $1::uuid and agent_id = $2::uuid",
             )
             .bind(&job_id)
             .bind(&agent.id)
             .fetch_optional(pg)
             .await
             {
-                Ok(status) => status,
+                Ok(row) => row,
                 Err(e) => return thrown(format!("job read: {e}")),
             };
-            match status.as_deref() {
+            let repo = match row {
                 None => return CallOutcome::Fail("unknown job".into()),
-                Some("started") => {}
-                Some(other) => return CallOutcome::Fail(format!("job is {other}")),
-            }
+                Some((status, repo)) if status == "started" => repo,
+                Some((other, _)) => return CallOutcome::Fail(format!("job is {other}")),
+            };
             let Some(workdir) = teardown::job_workdir(&job_id) else {
                 return CallOutcome::Fail(format!("not a job id: {job_id:?}"));
             };
-            match devenv::prepare_env(pg, &agent.department, &workdir).await {
-                Ok(result) => CallOutcome::Ok(result),
-                Err(e) => CallOutcome::Fail(e),
+            let mut result = match devenv::prepare_env(pg, &agent.department, &workdir).await {
+                Ok(result) => result,
+                Err(e) => return CallOutcome::Fail(e),
+            };
+            // The checkout exists now (the scan just found it), so this is
+            // also where a job that was queued or gated at start_job — and
+            // so had no workdir to write into then — gets its env, and where
+            // a value changed in the store since the start lands.
+            let env_vars =
+                match devenv::deliver_job_env(pg, &deps.sb, &agent.department, &workdir, &repo)
+                    .await
+                {
+                    Ok(vars) => vars,
+                    Err(e) => return thrown(format!("project env: {e}")),
+                };
+            if let Some(obj) = result.as_object_mut() {
+                obj.insert(
+                    "projectEnv".into(),
+                    devenv::job_env_answer(&workdir, env_vars),
+                );
             }
+            CallOutcome::Ok(result)
         }
 
         "request_repo" => {
@@ -1966,6 +1989,63 @@ pub async fn dispatch_workbench_mcp(
     dispatch_jsonrpc(rpc, tools, "talaria-workbench", call).await
 }
 
+/// THE RUN A WORKBENCH LINE BELONGS TO. No plugin reports here and the MCP
+/// door carries no Hermes session id — only the agent and the call — so the
+/// session-keyed read the tool-events door makes (`live_work_session_for`,
+/// by the run id a work-session turn keys its session with) has no key to
+/// ask by. What the call DOES carry is the ticket: `taskId` on `start_job`,
+/// or a `jobId` whose row names its ticket — and a work session is one live
+/// run per ticket+agent, so a call that names its ticket lands on exactly
+/// that run. A call that names none (`doctor`, a bare `list_jobs`) takes the
+/// agent's newest live session: the v1 approximation, kept only for the
+/// calls that cannot say, so an agent driving two tickets never sees one
+/// ticket's job lines in the other's transcript.
+async fn wtool_run_for(pg: &PgPool, model: &str, args: &Map<String, Value>) -> Option<String> {
+    let task_id = match (
+        args.get("taskId").and_then(Value::as_str).map(str::trim),
+        args.get("jobId").and_then(Value::as_str).map(str::trim),
+    ) {
+        (Some(raw), _) if !raw.is_empty() => match resolve_task_id(pg, raw).await {
+            Ok(ResolvedTaskId::One(id)) => Some(id),
+            _ => None,
+        },
+        (_, Some(job)) if uuid::Uuid::parse_str(job).is_ok() => sqlx::query_scalar::<_, String>(
+            "select task_id::text from workbench_jobs where id = $1::uuid and task_id is not null",
+        )
+        .bind(job)
+        .fetch_optional(pg)
+        .await
+        .ok()
+        .flatten(),
+        _ => None,
+    };
+    match task_id {
+        Some(task_id) => sqlx::query_scalar::<_, String>(
+            "select id::text from runs \
+             where kind = 'work-session' and state in ('queued', 'running', 'awaiting') \
+               and input->>'agentModel' = $1 and input->>'taskId' = $2 \
+             order by created_at desc limit 1",
+        )
+        .bind(model)
+        .bind(&task_id)
+        .fetch_optional(pg)
+        .await
+        .ok()
+        .flatten(),
+        None => sqlx::query_scalar::<_, String>(
+            "select id::text from runs \
+             where kind = 'work-session' and state in ('queued', 'running', 'awaiting') \
+               and input->>'agentModel' = $1 \
+             order by created_at desc limit 1",
+        )
+        .bind(model)
+        .fetch_optional(pg)
+        .await
+        .ok()
+        .flatten(),
+    }
+}
+
 async fn log_wtool_line(
     deps: &WorkbenchDeps,
     agent: &AgentSubject,
@@ -1980,16 +2060,7 @@ async fn log_wtool_line(
     let AgentSubject::Model(model) = agent else {
         return;
     };
-    let Ok(Some(run_id)) = sqlx::query_scalar::<_, String>(
-        "select id::text from runs \
-         where kind = 'work-session' and state in ('queued', 'running', 'awaiting') \
-           and input->>'agentModel' = $1 \
-         order by created_at desc limit 1",
-    )
-    .bind(model)
-    .fetch_optional(&deps.pg)
-    .await
-    else {
+    let Some(run_id) = wtool_run_for(&deps.pg, model, args).await else {
         return;
     };
     let args_preview =

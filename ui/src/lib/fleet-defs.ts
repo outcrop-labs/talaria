@@ -170,12 +170,15 @@ export interface FleetDefs {
   canHire: boolean
   /** The toolset vocabulary, published by the server rather than restated
    *  here: `governed` is every Hermes toolset Talaria will accept in a def's
-   *  `disabledToolsets` (alphabetical), and `mandatoryDisabled` is the floor
-   *  the renderer merges on top of any agent's list — off for every agent
-   *  whatever a def says, because Talaria's own versions of those tools are
-   *  the ones a person sees. Optional so a UI built against an older api
-   *  simply renders no toolset grid instead of an empty one. */
-  toolsets?: { governed: string[]; mandatoryDisabled: string[] }
+   *  `disabledToolsets` (alphabetical), and `mandatoryDisabled` is the WHOLE
+   *  floor the renderer merges on top of any agent's list — off for every
+   *  agent whatever a def says: Talaria's own pair (its versions of those
+   *  tools are the ones a person sees) plus whatever an admin closed
+   *  org-wide. `orgDisabled` is that org part alone, so the grid can say an
+   *  admin locked a row rather than Talaria; absent on an older api, which
+   *  publishes the pair and nothing else. Optional so a UI built against an
+   *  older api simply renders no toolset grid instead of an empty one. */
+  toolsets?: { governed: string[]; mandatoryDisabled: string[]; orgDisabled?: string[] }
 }
 
 export function useFleetDefs(enabled: MaybeGetter<boolean>) {
@@ -218,6 +221,71 @@ export interface ReconcileResult {
 export async function reconcileFleet(): Promise<ReconcileResult> {
   try {
     return await postJson<ReconcileResult>('/api/fleet/reconcile')
+  } catch (e) {
+    return { error: errorMessage(e) }
+  }
+}
+
+// ── Rolling the whole fleet ──────────────────────────────────────────────────
+
+/** One agent's place in the roll picture (`GET /api/fleet/roll`). `idle` is
+ *  the word for "no roll on record": the registry keeps outcomes for an hour,
+ *  so `done` and `failed` are recent history, not the steady state. */
+export type FleetRollState = 'rolling' | 'idle' | 'failed' | 'done'
+
+export interface FleetRollRow {
+  slug: string
+  department: string
+  displayName: string
+  state: FleetRollState
+  /** Epoch ms the roll started (or was queued); null when idle. */
+  since: number | null
+  /** The failure sentence, or a progress note ("queued") while rolling. */
+  detail: string | null
+  batch: string | null
+}
+
+export interface FleetRollPicture {
+  ok: boolean
+  /** Whether any department is mid-roll right now. */
+  rolling: boolean
+  /** The most recent batch on record, if any. */
+  batch: string | null
+  rolls: FleetRollRow[]
+  /** False when the other instances' half of the picture (Redis) could not
+   *  be read — this instance's rolls are still exact. */
+  crossInstance: boolean
+}
+
+/** The live roll picture, admin only. Polls every five seconds while anything
+ *  rolls; slower otherwise, so a roll somebody else started (one agent's
+ *  manager, another admin) still shows up without a reload. */
+export function useFleetRoll(enabled: MaybeGetter<boolean>) {
+  return createQuery(() => ({
+    queryKey: ['fleet-roll'],
+    enabled: resolve(enabled),
+    refetchInterval: (query: { state: { data?: FleetRollPicture } }) => (query.state.data?.rolling ? 5_000 : 30_000),
+    queryFn: (): Promise<FleetRollPicture> => getJson<FleetRollPicture>('/api/fleet/roll'),
+  }))
+}
+
+export interface FleetRollStart {
+  ok?: boolean
+  /** Slugs queued to roll, in roster order. */
+  rolling?: string[]
+  /** Slugs left alone, each with the one-phrase reason. */
+  skipped?: { slug: string; why: string }[]
+  batch?: string
+  error?: string
+}
+
+/** Queue a blue/green roll of every running managed agent (`all`: every
+ *  managed enabled agent, stopped ones included). Answers as soon as the
+ *  batch is decided; `useFleetRoll` carries the progress. Failures resolve
+ *  as `{ error }` so the strip can render the sentence in place. */
+export async function rollFleet(all = false): Promise<FleetRollStart> {
+  try {
+    return await postJson<FleetRollStart>('/api/fleet/roll', { all })
   } catch (e) {
     return { error: errorMessage(e) }
   }
@@ -341,6 +409,20 @@ export async function patchAgentMeta(
 ): Promise<{ ok?: boolean; error?: string }> {
   try {
     return await patchJson<{ ok: boolean }>(`/api/fleet/defs/${id}`, patch)
+  } catch (e) {
+    return { error: errorMessage(e) }
+  }
+}
+
+/** Revoke this agent's `tak_` credential and mint a fresh one (its managers,
+ *  and admins). The old secret stops authenticating at once; the fleet is
+ *  re-rendered and, for a managed agent, a roll is queued so the running
+ *  container is recreated on the new key — `rolling` says whether one was.
+ *  The new secret is never in the answer. Failures resolve as `{ error }`
+ *  with the server's sentence, so the modal can show it in place. */
+export async function rotateAgentKey(id: string): Promise<{ ok?: boolean; rolling?: boolean; error?: string }> {
+  try {
+    return await postJson<{ ok: boolean; rolling: boolean }>(`/api/fleet/defs/${id}/rotate-key`)
   } catch (e) {
     return { error: errorMessage(e) }
   }

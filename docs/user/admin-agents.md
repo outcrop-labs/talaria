@@ -30,7 +30,7 @@ Crons · Secrets · MCP · Versions**.
 
 | Tab | What it holds |
 | :--- | :--- |
-| **Summary** | The agent at a glance |
+| **Summary** | The agent at a glance, and its credential |
 | **Config** | Main model, model tiers (aliases), fallbacks, and the **Soul** |
 | **Skills** | What it knows how to do — starter skills and additions |
 | **Memory** | Its own memory volume, kept across conversations |
@@ -38,6 +38,27 @@ Crons · Secrets · MCP · Versions**.
 | **Secrets** | Credentials it can spend without ever reading |
 | **MCP** | Tool servers it carries |
 | **Versions** | Every rendered config, per version |
+
+### Summary
+
+The agent at a glance: role, send address, Google identity, and the switches that shape it.
+At the bottom, for its managers, **Rotate credential**: the key the agent presents to Talaria
+is revoked and a fresh one minted, the answer to a leaked key that is not "retire the agent".
+The confirm says what happens, and it is exact: the old key stops working the moment you
+confirm; the fleet is re-rendered and a running container is rolled onto the new key (a fresh
+one comes up beside it, traffic cuts over once it is healthy); until then the old container is
+locked out, so a toolkit call or a workbench session in flight on the old key fails and has to
+be retried, while conversations carry on in the new container. An agent Talaria does not run
+gets the new key the next time it starts. The new value is never shown; the audit trail records
+who rotated which key. If the roll fails, roll the agent again from the roster, or stop and
+start it.
+
+Admins can roll the whole fleet from the roster: **Roll all** asks first, in the page, then
+rolls every running agent the same zero-downtime way, a couple at a time so the host stays
+responsive (tick *Also start and roll agents that are stopped* to include the stopped ones).
+Each agent's row shows where its roll stands: rolling, rolled, or failed with the reason, and an
+agent mid-roll cannot be rolled again until it finishes. The strip above the roster keeps the
+tally and every failure sentence until you dismiss it.
 
 ### Config
 
@@ -72,6 +93,14 @@ toolkit, attached to every managed agent automatically) or **org registry** (ass
 subsets, and credentials managed on the [MCP](./admin-mcp-observability-apps.md) page). Probe
 states: `Connected` · `Login required` · `Unreachable` · `Error` — with **Test** to re-check.
 
+Below the servers, **Hermes toolsets**: the tools the agent's own harness carries before any
+MCP server (`browser`, `terminal`, `file`, `code_execution`, `web`, …). A box is the toolset
+being on for this agent; clearing one closes it on the next roll, and a new agent starts with
+the shell, code execution, the file tool and self-scheduling closed until a manager opens them.
+Two kinds of row are locked: `todo` and `clarify`, which Talaria's own tools replace for every
+agent, and anything an admin closed org-wide (**Admin → Security → Agent toolsets**, below).
+The row's tooltip says which.
+
 ## Retire an agent
 
 The delete action asks in plain terms: it removes the definition, version history, secrets,
@@ -94,5 +123,14 @@ Three panels in the Admin area's **Agents** tab govern every agent at once:
 | **QA judge** | Run the judge on quality review, **Enforcing** or **Advisory**; each board can override (enforcing / advisory / off), and boards on "inherit" follow this stance |
 | **Confab guard** | Mode — `Off` / `Observe` / `Annotate` / `Strict` — plus minimum confidence, coaching agents from findings, and the findings feed |
 | **Proactive outreach** | Periodic check-ins (every N minutes), a DM cap per day, and which agents are proactive |
+
+One more lives under **Admin → Security → Agent toolsets**: the org-wide toolset floor. It is
+the same checklist the agent editor shows, over the whole fleet: clearing a box closes that
+Hermes toolset for every agent, whatever its managers opened, and managers then see it locked in
+the agent's own editor with "closed org-wide by an admin". `todo` and `clarify` are locked here
+too, for the same reason as everywhere else. Saving rolls nothing: the floor lands on each agent
+at its next render or roll, which is what the panel says when it saves. Names the api's
+environment pins (`TALARIA_MANDATORY_DISABLED_TOOLSETS`) show locked as well, since unticking
+them here would change nothing.
 
 Besides these panels, one rule is stamped into every agent's soul at hire and in every role template, so it holds no matter how the soul is later edited: **agents never do dev work in chat**. Code changes — however small — ship through a ticket and a workbench job; a dev-work request in chat produces (or links) a ticket and moves execution to the workbench, and instructions given in chat are posted to the ticket as comments.

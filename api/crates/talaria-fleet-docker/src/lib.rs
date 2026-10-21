@@ -253,9 +253,29 @@ pub async fn docker_exec_opt(
     input: Option<&str>,
     timeout_ms: u64,
 ) -> Result<(String, String), String> {
+    docker_exec_as(container, None, command, input, timeout_ms).await
+}
+
+/// The same exec with a user: `-u <user>` is how a platform-side step runs
+/// inside the sandbox with the AGENT's rights rather than the container's
+/// root — a scan of files the agent controls, a write into the agent's own
+/// workdir. The user must exist in the image, which the hermes-agent image
+/// guarantees for `hermes` (`BROWSER_SETUP_USER`). `None` is the container's
+/// default user, exactly `docker_exec_opt`.
+pub async fn docker_exec_as(
+    container: &str,
+    user: Option<&str>,
+    command: &[&str],
+    input: Option<&str>,
+    timeout_ms: u64,
+) -> Result<(String, String), String> {
     let mut args: Vec<&str> = vec!["exec"];
     if input.is_some() {
         args.push("-i");
+    }
+    if let Some(user) = user {
+        args.push("-u");
+        args.push(user);
     }
     args.push(container);
     args.extend(command.iter().copied());

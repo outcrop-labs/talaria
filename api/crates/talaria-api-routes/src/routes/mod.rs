@@ -1326,6 +1326,12 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::fleet::fleet_reconcile::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/fleet/roll",
+            get(talaria_routes_fleet::fleet::fleet_roll::get)
+                .post(talaria_routes_fleet::fleet::fleet_roll::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
             "/api/fleet/federate",
             post(talaria_routes_fleet::fleet::fleet_federate::post).fallback(|| async { method_not_allowed("POST") }),
         )

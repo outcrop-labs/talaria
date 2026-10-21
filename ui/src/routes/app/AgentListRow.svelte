@@ -2,10 +2,11 @@
   import AgentItem, { type AgentFrame } from '@/components/fleet/AgentItem.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import { cn } from '@/lib/cn'
-  import type { AgentBrainHealth, AgentContainers, AgentDef, LlmEndpoint } from '@/lib/fleet-defs'
+  import type { AgentBrainHealth, AgentContainers, AgentDef, FleetRollRow, LlmEndpoint } from '@/lib/fleet-defs'
   import AgentDraftChip from './AgentDraftChip.svelte'
   import AgentBrainChip from './AgentBrainChip.svelte'
   import AgentControls from './AgentControls.svelte'
+  import AgentRollChip from './AgentRollChip.svelte'
   import AgentStatusDot from './AgentStatusDot.svelte'
   import { healthOf } from './agents.svelte'
 
@@ -14,20 +15,22 @@
     containers,
     endpoints,
     brain,
+    roll,
     onDuplicate,
   }: {
     def: AgentDef
     containers: AgentContainers | null
     endpoints: LlmEndpoint[]
     brain?: AgentBrainHealth
+    roll?: FleetRollRow
     onDuplicate: () => void
   } = $props()
 </script>
 
-<AgentItem def={d} {containers} {endpoints} {onDuplicate}>
+<AgentItem def={d} {containers} {endpoints} {onDuplicate} {roll}>
   <!-- The frame: div, not li: the roster list renders these directly inside
        Materialize's container (a div carrying the panel frame + divide classes). -->
-  {#snippet frame({ running, openManage, onContextMenu }: AgentFrame)}
+  {#snippet frame({ running, openManage, onContextMenu, rolling }: AgentFrame)}
     <div role="presentation" oncontextmenu={onContextMenu} class={cn('flex items-center gap-3 px-4 py-3 transition-colors dither-fill', !d.enabled && 'opacity-60')}>
       <AgentStatusDot def={d} {containers} />
       <Avatar name={d.displayName} class="h-7 w-7" />
@@ -37,7 +40,9 @@
       </button>
       {#if healthOf(d, containers).health === 'draft'}<AgentDraftChip />{/if}
       <AgentBrainChip {brain} />
-      <AgentControls def={d} {containers} {running} onManage={openManage} {onDuplicate} />
+      <!-- The row has the width for the failure sentence beside the chip. -->
+      <AgentRollChip {roll} sentence />
+      <AgentControls def={d} {containers} {running} {rolling} onManage={openManage} {onDuplicate} />
     </div>
   {/snippet}
 </AgentItem>

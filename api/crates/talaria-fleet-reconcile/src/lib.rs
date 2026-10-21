@@ -6,7 +6,7 @@
 
 use sqlx::PgPool;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use talaria_fleet_docker::Slot;
 use talaria_secretbox::SecretBox;
@@ -63,6 +63,118 @@ fn roll_lock_key(department: &str) -> String {
     format!("fleet-roll:{department}")
 }
 
+// ── The roll registry ────────────────────────────────────────────────────────
+//
+// `ROLLING` above answers one yes/no per department for THIS process. The
+// registry is the story: when each roll started, how it ended, and the
+// sentence it failed with — what `GET /api/fleet/roll` shows and what a
+// second api instance reads back through the Redis hash the sink writes.
+// Recorded by `roll_agent` itself (start, then the verdict) so a roll from
+// any door — the fleet-wide button, one agent's control, an MCP apply —
+// lands on the same page.
+
+/// Finished rolls stay visible this long, then fall off the picture.
+pub const ROLL_OUTCOME_TTL_MS: i64 = 3_600_000;
+
+/// The Redis hash the sink mirrors the registry into, one field per
+/// department, so every api instance answers the same picture.
+pub const ROLL_REGISTRY_KEY: &str = "talaria:fleet-roll:v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RollState {
+    Rolling,
+    Done,
+    Failed,
+    /// Never recorded — the wire word for a department the registry has no
+    /// row for, so the picture can list every agent in one vocabulary.
+    Idle,
+}
+
+/// One department's roll as the registry remembers it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RollRecord {
+    pub department: String,
+    pub state: RollState,
+    /// Epoch ms the roll started (for a queued batch member, when it was
+    /// queued).
+    pub since: i64,
+    /// Epoch ms of the last transition — the newer record wins a merge.
+    pub updated: i64,
+    /// The failure sentence, or a progress note while rolling.
+    pub detail: Option<String>,
+    /// The fleet-wide batch this roll belongs to, if any.
+    pub batch: Option<String>,
+}
+
+impl RollRecord {
+    /// Whether this record has aged past [`ROLL_OUTCOME_TTL_MS`] — only a
+    /// finished roll expires; a roll still marked rolling is kept until its
+    /// verdict overwrites it.
+    pub fn expired(&self, now: i64) -> bool {
+        self.state != RollState::Rolling && now - self.updated > ROLL_OUTCOME_TTL_MS
+    }
+}
+
+static ROLL_REGISTRY: LazyLock<Mutex<HashMap<String, RollRecord>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Where each registry write is mirrored (the Redis hash). Wired by the
+/// routes layer, which owns the connection; unset, the registry is
+/// in-process only and still complete for this instance.
+pub static ROLL_SINK: OnceLock<Arc<dyn Fn(RollRecord) -> BoxFuture<'static, ()> + Send + Sync>> =
+    OnceLock::new();
+
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn record_roll(record: RollRecord) {
+    ROLL_REGISTRY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(record.department.clone(), record.clone());
+    if let Some(sink) = ROLL_SINK.get() {
+        let sink = sink.clone();
+        tokio::spawn(async move { sink(record).await });
+    }
+}
+
+/// This process's view of every roll it recorded, expired outcomes pruned.
+pub fn roll_records() -> Vec<RollRecord> {
+    let now = now_ms();
+    let mut map = ROLL_REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+    map.retain(|_, r| !r.expired(now));
+    let mut out: Vec<RollRecord> = map.values().cloned().collect();
+    out.sort_by(|a, b| a.department.cmp(&b.department));
+    out
+}
+
+/// Fold another instance's records (the Redis hash) into this one's: per
+/// department the newer `updated` wins, expired outcomes drop.
+pub fn merge_roll_records(local: Vec<RollRecord>, remote: Vec<RollRecord>) -> Vec<RollRecord> {
+    let now = now_ms();
+    let mut by_dept: HashMap<String, RollRecord> = HashMap::new();
+    for r in local.into_iter().chain(remote) {
+        if r.expired(now) {
+            continue;
+        }
+        match by_dept.get(&r.department) {
+            Some(have) if have.updated >= r.updated => {}
+            _ => {
+                by_dept.insert(r.department.clone(), r);
+            }
+        }
+    }
+    let mut out: Vec<RollRecord> = by_dept.into_values().collect();
+    out.sort_by(|a, b| a.department.cmp(&b.department));
+    out
+}
+
 /// Overlay: (slug, slot, port) when rolling.
 pub static RENDER_FLEET: OnceLock<
     Arc<
@@ -90,6 +202,17 @@ pub async fn roll_agent(
     sb: &SecretBox,
     department: &str,
 ) -> Result<Option<String>, String> {
+    roll_agent_in_batch(pg, sb, department, None).await
+}
+
+/// [`roll_agent`] with the fleet-wide batch it belongs to stamped on its
+/// registry records, so the live picture can group them.
+pub async fn roll_agent_in_batch(
+    pg: &PgPool,
+    sb: &SecretBox,
+    department: &str,
+    batch: Option<&str>,
+) -> Result<Option<String>, String> {
     // One roll per department at a time. The in-process set answers first
     // (cheap, and what a double-click hits); the Postgres session-level
     // advisory lock serializes across api instances. `try` rather than a
@@ -112,7 +235,32 @@ pub async fn roll_agent(
             "department \"{department}\" is already mid-roll on another api instance — wait for it to finish"
         )));
     }
+    // Both locks held: this is the roll, and the registry says so from here
+    // until the verdict — recorded on every path, so a failed step reaches
+    // the page and not only the log.
+    let since = now_ms();
+    record_roll(RollRecord {
+        department: department.to_string(),
+        state: RollState::Rolling,
+        since,
+        updated: since,
+        detail: None,
+        batch: batch.map(str::to_string),
+    });
     let verdict = roll_agent_locked(pg, sb, department).await;
+    let (state, detail) = match &verdict {
+        Ok(None) => (RollState::Done, None),
+        Ok(Some(soft)) => (RollState::Failed, Some(soft.clone())),
+        Err(thrown) => (RollState::Failed, Some(thrown.clone())),
+    };
+    record_roll(RollRecord {
+        department: department.to_string(),
+        state,
+        since,
+        updated: now_ms(),
+        detail,
+        batch: batch.map(str::to_string),
+    });
     // A session-level advisory lock outlives the statement that took it and
     // would ride back into the pool with the connection: release it on
     // every path, and if the release itself fails, drop the connection so
@@ -368,4 +516,248 @@ pub async fn roll_running_agents(
         }
     }
     Ok((rolled, warnings))
+}
+
+// ── Roll the whole fleet ─────────────────────────────────────────────────────
+
+/// How many departments roll at once. Each roll is a second container
+/// starting beside the first — a fleet of twenty rolling together would
+/// double the host's load in one breath.
+pub fn roll_concurrency() -> usize {
+    std::env::var("TALARIA_FLEET_ROLL_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(2)
+}
+
+/// Why a department was left out of a batch.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RollSkip {
+    pub slug: String,
+    pub why: String,
+}
+
+/// What `start_roll_batch` answers before any roll has moved: the agents it
+/// queued and the ones it left alone.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RollBatch {
+    pub batch: String,
+    pub rolling: Vec<String>,
+    pub skipped: Vec<RollSkip>,
+}
+
+/// One roll of a batch that did not land — handed to the caller's hook, which
+/// is where the audit entry gets written (this crate has no audit of its own).
+#[derive(Debug, Clone)]
+pub struct RollFailure {
+    pub batch: String,
+    pub agent_id: String,
+    pub slug: String,
+    pub department: String,
+    pub display_name: String,
+    pub error: String,
+}
+
+pub type RollFailureHook = Arc<dyn Fn(RollFailure) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// Decide the batch — managed, enabled, currently running (every managed
+/// enabled agent with `all`), minus departments already mid-roll — and return
+/// at once; the rolls themselves run detached, `roll_concurrency()` at a time
+/// in roster order. Each roll goes through `roll_agent_in_batch`, so the
+/// registry carries its start and its verdict, and a failed one also reaches
+/// `on_failed`.
+pub async fn start_roll_batch(
+    pg: &PgPool,
+    sb: &SecretBox,
+    batch: &str,
+    all: bool,
+    on_failed: RollFailureHook,
+) -> Result<RollBatch, String> {
+    let managed: Vec<(String, String, String, String)> = sqlx::query_as(
+        "select id::text, slug, department, display_name from agent_defs \
+         where managed and enabled order by slug",
+    )
+    .fetch_all(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    let running: HashSet<String> = if managed.is_empty() {
+        HashSet::new()
+    } else {
+        talaria_fleet_docker::running_departments(
+            &managed.iter().map(|m| m.2.clone()).collect::<Vec<_>>(),
+        )
+        .await?
+        .into_iter()
+        .collect()
+    };
+    let mut plan = RollBatch {
+        batch: batch.to_string(),
+        rolling: Vec::new(),
+        skipped: Vec::new(),
+    };
+    let mut queue: Vec<(String, String, String, String)> = Vec::new();
+    for (id, slug, department, display_name) in managed {
+        if is_rolling(&department) {
+            plan.skipped.push(RollSkip {
+                slug,
+                why: "already rolling".into(),
+            });
+            continue;
+        }
+        if !all && !running.contains(&department) {
+            plan.skipped.push(RollSkip {
+                slug,
+                why: "not running".into(),
+            });
+            continue;
+        }
+        plan.rolling.push(slug.clone());
+        queue.push((id, slug, department, display_name));
+    }
+    // Queued members show on the page from the moment the batch exists —
+    // "rolling" with a note, since nothing else they could honestly be is
+    // "idle". The roll's own start record replaces the note.
+    let queued_at = now_ms();
+    for (_, _, department, _) in &queue {
+        record_roll(RollRecord {
+            department: department.clone(),
+            state: RollState::Rolling,
+            since: queued_at,
+            updated: queued_at,
+            detail: Some("queued".into()),
+            batch: Some(batch.to_string()),
+        });
+    }
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(roll_concurrency()));
+    for (agent_id, slug, department, display_name) in queue {
+        let pg = pg.clone();
+        let sb = sb.clone();
+        let batch = batch.to_string();
+        let on_failed = on_failed.clone();
+        let semaphore = semaphore.clone();
+        tokio::spawn(async move {
+            // A closed semaphore is impossible here (nobody closes it); a
+            // failed acquire would only mean the runtime is going down.
+            let Ok(_permit) = semaphore.acquire_owned().await else {
+                return;
+            };
+            let error = match roll_agent_in_batch(&pg, &sb, &department, Some(&batch)).await {
+                Ok(None) => return,
+                Ok(Some(soft)) => soft,
+                Err(thrown) => thrown,
+            };
+            tracing::warn!("[fleet] roll of {display_name} ({department}) failed: {error}");
+            on_failed(RollFailure {
+                batch,
+                agent_id,
+                slug,
+                department,
+                display_name,
+                error,
+            })
+            .await;
+        });
+    }
+    Ok(plan)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(department: &str, state: RollState, updated: i64) -> RollRecord {
+        RollRecord {
+            department: department.into(),
+            state,
+            since: updated,
+            updated,
+            detail: None,
+            batch: None,
+        }
+    }
+
+    #[test]
+    fn registry_records_start_and_verdict_and_prunes_old_outcomes() {
+        let now = now_ms();
+        record_roll(rec("reg-a", RollState::Rolling, now));
+        record_roll(RollRecord {
+            detail: Some("x: replacement never became healthy".into()),
+            ..rec("reg-a", RollState::Failed, now)
+        });
+        // An outcome older than the window is gone on the next read; a
+        // roll still in flight is never aged out, however old its start.
+        record_roll(rec(
+            "reg-old",
+            RollState::Done,
+            now - ROLL_OUTCOME_TTL_MS - 1,
+        ));
+        record_roll(rec(
+            "reg-stuck",
+            RollState::Rolling,
+            now - ROLL_OUTCOME_TTL_MS - 1,
+        ));
+        let records = roll_records();
+        let a = records
+            .iter()
+            .find(|r| r.department == "reg-a")
+            .expect("the verdict is recorded");
+        assert_eq!(a.state, RollState::Failed);
+        assert_eq!(
+            a.detail.as_deref(),
+            Some("x: replacement never became healthy")
+        );
+        assert!(!records.iter().any(|r| r.department == "reg-old"));
+        assert!(records.iter().any(|r| r.department == "reg-stuck"));
+    }
+
+    #[test]
+    fn merge_prefers_the_newer_record_per_department() {
+        let now = now_ms();
+        let local = vec![
+            rec("m-a", RollState::Rolling, now - 10),
+            rec("m-b", RollState::Done, now),
+        ];
+        let remote = vec![
+            RollRecord {
+                detail: Some("thrown".into()),
+                ..rec("m-a", RollState::Failed, now)
+            },
+            rec("m-b", RollState::Rolling, now - 500),
+            rec("m-c", RollState::Done, now - ROLL_OUTCOME_TTL_MS - 1),
+        ];
+        let merged = merge_roll_records(local, remote);
+        let states: Vec<(String, RollState)> = merged
+            .iter()
+            .map(|r| (r.department.clone(), r.state))
+            .collect();
+        assert_eq!(
+            states,
+            vec![
+                ("m-a".into(), RollState::Failed),
+                ("m-b".into(), RollState::Done)
+            ]
+        );
+        assert_eq!(merged[0].detail.as_deref(), Some("thrown"));
+    }
+
+    #[test]
+    fn concurrency_defaults_to_two_and_refuses_zero() {
+        // The env var is process-global; this test only pins the parser's
+        // fallback, which `roll_concurrency` reads when the var is unset or
+        // unparseable. The default is what a fleet of twenty is paced by.
+        let parse = |v: &str| {
+            v.trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|n| *n >= 1)
+                .unwrap_or(2)
+        };
+        assert_eq!(parse("0"), 2);
+        assert_eq!(parse("x"), 2);
+        assert_eq!(parse(" 4 "), 4);
+        assert!(roll_concurrency() >= 1);
+    }
 }

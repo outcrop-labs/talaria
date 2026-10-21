@@ -1,9 +1,11 @@
 <script lang="ts">
   import PageSurface from '@/components/app/PageSurface.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { CircleAlert, Import, LayoutGrid, List, Plus } from '@lucide/svelte'
+  import { CircleAlert, Import, LayoutGrid, List, Plus, Repeat } from '@lucide/svelte'
   import { currentDesign } from '@/lib/agent-design.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
+  import CloseButton from '@/components/ui/CloseButton.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Materialize from '@/components/ui/Materialize.svelte'
@@ -23,7 +25,7 @@
   import { useFleet } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { fly, slide, staggerIn } from '@/lib/motion'
-  import { useFleetContainers, useFleetDefs, useFleetHires, type AgentDef } from '@/lib/fleet-defs'
+  import { rollFleet, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import AgentListRow from './AgentListRow.svelte'
@@ -87,6 +89,47 @@
     }
   })
   const byDept = $derived(new Map((containersQuery.data ?? []).map((c) => [c.department, c])))
+
+  // ROLLING THE WHOLE FLEET. The picture is admin-only (so is the route):
+  // one row per managed agent, polled every five seconds while anything
+  // rolls. Every tile and row reads its own line off it — the chip, the
+  // failure sentence, the disabled Roll control — and the strip above the
+  // roster reads the whole.
+  const rollQuery = useFleetRoll(() => isAdmin)
+  const rollByDept = $derived(new Map((rollQuery.data?.rolls ?? []).map((r) => [r.department, r])))
+  const anyRolling = $derived(rollQuery.data?.rolling ?? false)
+  // The confirm step lives in the page, above the roster, not in a dialog:
+  // what is about to happen is visible beside the agents it happens to.
+  let rollConfirming = $state(false)
+  let rollStopped = $state(false)
+  let rollStarting = $state(false)
+  // The batch THIS page started: its answer (what was queued, what was
+  // skipped, or the refusal) stays up until dismissed or the next batch.
+  let rollStart = $state<FleetRollStart | null>(null)
+  const startRollAll = async () => {
+    rollStarting = true
+    try {
+      rollStart = await rollFleet(rollStopped)
+      rollConfirming = false
+      await queryClient.invalidateQueries({ queryKey: ['fleet-roll'] })
+    } finally {
+      rollStarting = false
+    }
+  }
+  // The batch's outcomes, from the live picture: done / failed counts and
+  // the failure sentences, for the rows that belong to the batch this page
+  // started (a manager's single roll keeps its own chip, not this strip).
+  const batchRows = $derived.by(() => {
+    const id = rollStart?.batch
+    if (!id) return []
+    return (rollQuery.data?.rolls ?? []).filter((r) => r.batch === id)
+  })
+  const batchRolling = $derived(batchRows.filter((r) => r.state === 'rolling').length)
+  const batchDone = $derived(batchRows.filter((r) => r.state === 'done').length)
+  const batchFailed = $derived(batchRows.filter((r) => r.state === 'failed'))
+  const runningCount = $derived(
+    (defsQuery.data?.defs ?? []).filter((d) => d.enabled && d.managed && (byDept.get(d.department)?.managed?.state === 'running')).length,
+  )
   // The roster itself renders through QueryState below (a 500 must never read as
   // "no agents"). This copy is only for the create/duplicate modals' template
   // list, where an empty list is a harmless degradation.
@@ -215,6 +258,21 @@
             </Button>
           {/if}
         {/if}
+        {#if isAdmin}
+          <!-- Deploying, so labeled (UI-CONVENTIONS, Controls). Disabled while
+               a batch is in flight: a second one would only find every
+               department already rolling. -->
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={anyRolling || rollConfirming}
+            onclick={() => (rollConfirming = true)}
+            title="Roll every running agent: a fresh container each, the old one finishes its replies first"
+          >
+            <Repeat size={14} />
+            Roll all
+          </Button>
+        {/if}
         {/if}
       {/snippet}
     </ViewHeader>
@@ -247,6 +305,79 @@
           error={containersQuery.error}
           onRetry={() => void containersQuery.refetch()}
         />
+      </div>
+    {/if}
+
+    <!-- ROLL ALL: the confirm step, in the page. Says what will happen and
+         to how many, offers the stopped ones as an opt-in, and nothing moves
+         until the labeled button. -->
+    {#if rollConfirming}
+      <div transition:slide={{ duration: 150 }}>
+        <Panel class="space-y-3 px-4 py-3">
+          <div class="flex items-start gap-3">
+            <Repeat size={16} class="mt-0.5 shrink-0 text-accent" />
+            <div class="min-w-0 flex-1 space-y-1">
+              <p class="font-sans text-sm text-fg">
+                Roll {runningCount === 1 ? 'the one running agent' : `all ${runningCount} running agents`}?
+              </p>
+              <p class="font-sans text-xs text-muted">
+                Each gets a fresh container beside its current one; the old one finishes its replies before it goes. A few roll at a time so the host stays responsive. Agents already mid-roll are skipped.
+              </p>
+            </div>
+            <CloseButton label="Cancel" onClick={() => (rollConfirming = false)} />
+          </div>
+          <div class="flex items-center justify-between gap-3">
+            <Checkbox checked={rollStopped} onChange={(v) => (rollStopped = v)} label="Also start and roll agents that are stopped" />
+            <div class="flex items-center gap-2">
+              <Button variant="ghost" size="sm" onclick={() => (rollConfirming = false)} disabled={rollStarting}>Cancel</Button>
+              <Button size="sm" onclick={() => void startRollAll()} disabled={rollStarting}>
+                {#if rollStarting}<WaitingMark site="fleet/agent-apply" size={12} />{/if}
+                Roll all agents
+              </Button>
+            </div>
+          </div>
+        </Panel>
+      </div>
+    {/if}
+
+    <!-- The batch this page started: progress while it rolls, the tally and
+         every failure sentence once it is done. A refusal (the route's
+         error) lands in the same place. -->
+    {#if rollStart}
+      <div transition:slide={{ duration: 150 }}>
+        <Panel class="space-y-2 px-4 py-3">
+          <div class="flex items-center gap-3">
+            {#if rollStart.error}
+              <CircleAlert size={14} class="shrink-0 text-danger" />
+              <span class="min-w-0 flex-1 truncate font-sans text-sm text-danger" title={rollStart.error}>Could not start the roll: {rollStart.error}</span>
+            {:else if batchRolling > 0}
+              <WaitingMark site="fleet/agent-apply" size={12} class="shrink-0 text-accent" />
+              <span class="min-w-0 flex-1 truncate font-sans text-sm text-muted">
+                Rolling {batchDone + batchFailed.length} of {batchRows.length} done, {batchRolling} to go
+              </span>
+            {:else if (rollStart.rolling?.length ?? 0) === 0}
+              <span class="min-w-0 flex-1 truncate font-sans text-sm text-muted">Nothing to roll.</span>
+            {:else}
+              <span class="min-w-0 flex-1 truncate font-sans text-sm text-fg">
+                Rolled {batchDone} of {batchRows.length || rollStart.rolling?.length || 0}{batchFailed.length > 0 ? `, ${batchFailed.length} failed` : ''}
+              </span>
+            {/if}
+            <span class="ml-auto shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">roll all</span>
+            <CloseButton label="Dismiss" onClick={() => (rollStart = null)} />
+          </div>
+          {#if (rollStart.skipped?.length ?? 0) > 0}
+            <p class="font-sans text-xs text-muted">
+              Skipped: {rollStart.skipped?.map((s) => `${s.slug} (${s.why})`).join(', ')}
+            </p>
+          {/if}
+          {#if batchFailed.length > 0}
+            <ul class="space-y-0.5">
+              {#each batchFailed as f (f.slug)}
+                <li class="truncate font-sans text-xs text-danger" title={f.detail ?? ''}>{f.displayName}: {f.detail ?? 'the roll failed'}</li>
+              {/each}
+            </ul>
+          {/if}
+        </Panel>
       </div>
     {/if}
 
@@ -345,9 +476,9 @@
               {@const brainByAgent = new Map((data.brains ?? []).map((b) => [b.agent, b]))}
               {#each data.defs as d (d.id)}
                 {#if view === 'grid'}
-                  <AgentTile def={d} containers={byDept.get(d.department) ?? null} {endpoints} brain={brainByAgent.get(d.model)} onDuplicate={() => (duplicateFrom = d)} />
+                  <AgentTile def={d} containers={byDept.get(d.department) ?? null} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
                 {:else}
-                  <AgentListRow def={d} containers={byDept.get(d.department) ?? null} {endpoints} brain={brainByAgent.get(d.model)} onDuplicate={() => (duplicateFrom = d)} />
+                  <AgentListRow def={d} containers={byDept.get(d.department) ?? null} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
                 {/if}
               {/each}
             {/snippet}

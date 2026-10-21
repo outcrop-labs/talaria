@@ -14,7 +14,16 @@
 //     mise.local.toml that .git/info/exclude keeps out of commits.
 //   · OS packages through apt, as root, only for names the repo declares in
 //     .talaria/workbench.toml and only from the image's own Debian sources.
-//     The agent itself never gets root.
+//     The agent itself never gets root — and root never reads the repo: the
+//     scan that finds those names runs as the agent's own user, so a marker
+//     file is read with exactly the rights the agent already has (a
+//     symlinked `.talaria/workbench.toml` cannot borrow root's to read
+//     elsewhere; the scan refuses symlinks and anything outside the checkout
+//     outright).
+//   · the project's env store (the repo's `repo_env` rows), unsealed into
+//     THIS job's workdir as `.talaria/env` (0600, the agent's own) here,
+//     once the checkout exists, and removed when the job ends. One job
+//     sees one repo's env; nothing is mounted fleet-wide.
 //   · mise's shims on PATH for every login shell, so `cargo` / `bun` / `go`
 //     resolve to the repo's pinned versions by directory, with no activation
 //     step the agent can forget.
@@ -41,7 +50,11 @@ use sqlx::PgPool;
 use std::sync::OnceLock;
 
 use regex::Regex;
-use talaria_fleet_docker::{docker_exec, docker_exec_opt, managed_container};
+use talaria_fleet_docker::{docker_exec, docker_exec_as, docker_exec_opt, managed_container};
+
+/// The sandbox's unprivileged user — the one the image's init drops to and
+/// the one every job's files belong to. The scan and the env write run as it.
+pub const AGENT_USER: &str = "hermes";
 
 /// Files the scan reads, relative to the repo root. `*/` entries are one
 /// level down, which is where monorepos keep their per-language roots
@@ -90,19 +103,46 @@ const MARKERS: &[&str] = &[
 /// Finds the repo root (the workdir itself, or the one directory under it
 /// that holds .git, depending on how the agent cloned), then dumps each
 /// marker file as `\x1e<path>\n<first 8 KiB>`. $1 = workdir, $2.. = markers.
+///
+/// It runs as the agent's user, never root, and it reads a marker only when
+/// it is a plain file whose real path is inside the checkout: a symlink —
+/// the file itself, a directory on its path, or the checkout dir the glob
+/// found — is reported as `SKIP <path>` in the header and never opened.
+/// The agent controls every byte under the workdir, so the scan can only
+/// ever be allowed to read what the agent could already read itself.
 const SCAN_SH: &str = r#"
 wd="$1"; shift
 root=""
 if [ -d "$wd/.git" ]; then root="$wd"; else
-  for d in "$wd"/*/; do if [ -d "$d.git" ]; then root="${d%/}"; break; fi; done
+  for d in "$wd"/*/; do
+    d="${d%/}"
+    [ -L "$d" ] && continue
+    if [ -d "$d/.git" ]; then root="$d"; break; fi
+  done
 fi
 if [ -z "$root" ]; then echo NOREPO; exit 0; fi
 printf 'ROOT %s\n' "$root"
 printf 'OWNER %s\n' "$(stat -c %U "$root")"
 cd "$root" || exit 1
+real=$(readlink -f -- "$root") || exit 1
+# 0 = a plain file inside the checkout; 1 = a symlink or an escape (reported);
+# 2 = not a file at all (a directory, an unmatched glob: silently nothing).
+inside() {
+  [ -L "$1" ] && return 1
+  [ -f "$1" ] || return 2
+  rp=$(readlink -f -- "$1") || return 1
+  case "$rp" in "$real"/*) return 0 ;; esac
+  return 1
+}
 for pat in "$@"; do
   for f in $pat; do
-    [ -f "$f" ] || continue
+    inside "$f"
+    [ $? -eq 1 ] && printf 'SKIP %s\n' "$f"
+  done
+done
+for pat in "$@"; do
+  for f in $pat; do
+    inside "$f" || continue
     printf '\036%s\n' "$f"
     head -c 8192 "$f"
     printf '\n'
@@ -112,7 +152,9 @@ done
 
 /// Root half: OS packages, and nothing else. Only names the repo declared
 /// and plan_env validated reach it, and a repo that declares none never
-/// runs it. $1.. = apt packages.
+/// runs it. It is the one step that runs as root, and it runs only AFTER the
+/// scan (as the agent) has read the file and `valid_apt` has passed every
+/// name: root touches the package list, never the repo. $1.. = apt packages.
 const ROOT_SH: &str = r#"
 set -e
 missing=""
@@ -584,6 +626,9 @@ pub struct Scan {
     pub root: String,
     pub owner: String,
     pub files: Vec<(String, String)>,
+    /// Markers the scan found but refused: a symlink, or a path that resolves
+    /// outside the checkout. Told back to the agent, never read.
+    pub skipped: Vec<String>,
 }
 
 /// The marker scan on its own, for a caller that wants a repo's policy
@@ -597,10 +642,16 @@ pub async fn scan_repo_files(
     workdir: &str,
 ) -> Option<Vec<(String, String)>> {
     let container = managed_container(pg, department).await;
+    let (out, _) = scan_exec(&container, workdir).await.ok()?;
+    parse_scan(&out).map(|s| s.files)
+}
+
+/// The scan, as the agent's user. Positional args only: the script is
+/// `-c`'s text, the workdir is `$1`, the markers are `$2..`.
+async fn scan_exec(container: &str, workdir: &str) -> Result<(String, String), String> {
     let mut cmd: Vec<&str> = vec!["sh", "-c", SCAN_SH, "sh", workdir];
     cmd.extend(MARKERS.iter().copied());
-    let (out, _) = docker_exec(&container, &cmd, 60_000).await.ok()?;
-    parse_scan(&out).map(|s| s.files)
+    docker_exec_as(container, Some(AGENT_USER), &cmd, None, 60_000).await
 }
 
 /// Parses SCAN_SH's output. None = no git checkout under the workdir yet.
@@ -608,6 +659,7 @@ pub fn parse_scan(out: &str) -> Option<Scan> {
     let (head, rest) = out.split_once('\u{1e}').unwrap_or((out, ""));
     let mut root = None;
     let mut owner = String::new();
+    let mut skipped = Vec::new();
     for line in head.lines() {
         if line.trim() == "NOREPO" {
             return None;
@@ -616,6 +668,8 @@ pub fn parse_scan(out: &str) -> Option<Scan> {
             root = Some(r.to_string());
         } else if let Some(o) = line.strip_prefix("OWNER ") {
             owner = o.to_string();
+        } else if let Some(p) = line.strip_prefix("SKIP ") {
+            skipped.push(p.to_string());
         }
     }
     let files = if rest.is_empty() {
@@ -632,16 +686,119 @@ pub fn parse_scan(out: &str) -> Option<Scan> {
         root: root?,
         owner,
         files,
+        skipped,
     })
+}
+
+// ── The project env: one repo's store, in one job's workdir ────────────────
+//
+// A repo's env store (`repo_env`, sealed at rest) used to be unsealed by the
+// fleet render into `fleet/agents/<slug>/workbench-env/<owner>/<name>.env`
+// on the host — plain files, every granted repo at once — and mounted into
+// the agent's container for the life of the container. That made the
+// "secrets never sit in config files" rule untrue for exactly these values,
+// and let a job on repo A read repo B's env from the same mount. Now the
+// value leaves the database into one place only: `<workdir>/.talaria/env`
+// for the job that is working that repo, written as the agent (0600, owned
+// by it, through stdin — never a shell interpolation) by prepare_env, once
+// the checkout exists (a non-empty workdir would refuse `git clone <url>
+// <workdir>`), and removed by the job's teardown.
+
+/// Where a job finds its repo's env, relative to the job's workdir.
+pub const JOB_ENV_FILE: &str = ".talaria/env";
+
+/// Writes stdin to `$1/.talaria/env`, atomically and 0600. A checkout that
+/// sits at the workdir root would see the file as untracked, so it joins
+/// `.git/info/exclude` there, the way mise.local.toml does: no `git add`
+/// can commit it.
+const JOB_ENV_WRITE_SH: &str = r#"
+set -e
+wd="$1"
+umask 077
+mkdir -p "$wd/.talaria"
+tmp="$wd/.talaria/.env.tmp"
+cat > "$tmp"
+chmod 600 "$tmp"
+mv -f -- "$tmp" "$wd/.talaria/env"
+if [ -d "$wd/.git" ] && ! grep -qx '.talaria/env' "$wd/.git/info/exclude" 2>/dev/null; then
+  mkdir -p "$wd/.git/info"
+  echo '.talaria/env' >> "$wd/.git/info/exclude"
+fi
+"#;
+
+/// The store was emptied (or never existed): a file left from an earlier
+/// write must not outlive the store it mirrored. $1 = workdir.
+const JOB_ENV_REMOVE_SH: &str = r#"rm -f -- "$1/.talaria/env""#;
+
+/// The shell line an agent loads the file with: `set -a` exports every
+/// assignment, which a bare `source` would leave in the shell alone.
+pub fn job_env_source_line(workdir: &str) -> String {
+    format!("set -a; . {workdir}/{JOB_ENV_FILE}; set +a")
+}
+
+/// Materialize `repo`'s env store into the job's workdir, as the agent.
+/// `Ok(Some(n))` — n variables written; `Ok(None)` — the repo has no store
+/// (and any earlier file is gone). The sealed values are opened here and go
+/// straight down the exec's stdin; nothing of them touches the host's disk
+/// or a command line.
+pub async fn deliver_job_env(
+    pg: &PgPool,
+    sb: &talaria_secretbox::SecretBox,
+    department: &str,
+    workdir: &str,
+    repo: &str,
+) -> Result<Option<usize>, String> {
+    let body = talaria_repo_env::env_file(pg, sb, repo).await?;
+    let container = managed_container(pg, department).await;
+    match body {
+        Some(body) => {
+            docker_exec_as(
+                &container,
+                Some(AGENT_USER),
+                &["sh", "-c", JOB_ENV_WRITE_SH, "sh", workdir],
+                Some(&body),
+                30_000,
+            )
+            .await
+            .map_err(|e| format!("writing {workdir}/{JOB_ENV_FILE}: {e}"))?;
+            Ok(Some(body.lines().count()))
+        }
+        None => {
+            docker_exec_as(
+                &container,
+                Some(AGENT_USER),
+                &["sh", "-c", JOB_ENV_REMOVE_SH, "sh", workdir],
+                None,
+                30_000,
+            )
+            .await
+            .map_err(|e| format!("removing {workdir}/{JOB_ENV_FILE}: {e}"))?;
+            Ok(None)
+        }
+    }
+}
+
+/// What start_job and prepare_env tell the agent about its env, in one
+/// shape: the path, the count, and the line that loads it.
+pub fn job_env_answer(workdir: &str, vars: Option<usize>) -> Value {
+    match vars {
+        Some(n) => json!({
+            "path": format!("{workdir}/{JOB_ENV_FILE}"),
+            "vars": n,
+            "load": job_env_source_line(workdir),
+            "note": "This job's project env, owned by you (0600). Load it before you build or test; it is removed when the job ends.",
+        }),
+        None => Value::Null,
+    }
 }
 
 /// The verb's body. `workdir` comes from a validated job id.
 pub async fn prepare_env(pg: &PgPool, department: &str, workdir: &str) -> Result<Value, String> {
     let container = managed_container(pg, department).await;
 
-    let mut scan_cmd: Vec<&str> = vec!["sh", "-c", SCAN_SH, "sh", workdir];
-    scan_cmd.extend(MARKERS.iter().copied());
-    let (out, _) = docker_exec(&container, &scan_cmd, 60_000).await?;
+    // As the agent: the repo is the agent's content, and root reads none of
+    // it. Only the validated apt names (below) ever reach a root step.
+    let (out, _) = scan_exec(&container, workdir).await?;
     let Some(scan) = parse_scan(&out) else {
         return Err(format!(
             "no git checkout in {workdir} yet: clone the repo there first, then call prepare_env again"
@@ -741,6 +898,7 @@ pub async fn prepare_env(pg: &PgPool, department: &str, workdir: &str) -> Result
         "apt": plan.apt,
         "sccache": plan.sccache,
         "rejected": plan.rejected,
+        "skipped": scan.skipped,
         "resolved": resolved,
         "usage": "Toolchains resolve through mise shims by directory in every NEW login shell (bash -l). In a shell opened before this call, run `. ~/.profile` first, or prefix a command with `mise exec --`. Do not install toolchains yourself: add them to the repo's mise.toml or .talaria/workbench.toml and call prepare_env again.",
     }))
@@ -969,12 +1127,192 @@ mod tests {
 
     #[test]
     fn the_scan_output_parses() {
-        let out = "ROOT /opt/data/workbench/jobs/x/repo\nOWNER hermes\n\u{1e}package.json\n{}\n\n\u{1e}api/rust-toolchain.toml\nchannel = \"1\"\n";
+        let out = "ROOT /opt/data/workbench/jobs/x/repo\nOWNER hermes\nSKIP .talaria/workbench.toml\n\u{1e}package.json\n{}\n\n\u{1e}api/rust-toolchain.toml\nchannel = \"1\"\n";
         let scan = parse_scan(out).unwrap();
         assert_eq!(scan.root, "/opt/data/workbench/jobs/x/repo");
         assert_eq!(scan.owner, "hermes");
         assert_eq!(scan.files.len(), 2);
         assert_eq!(scan.files[1].0, "api/rust-toolchain.toml");
+        assert_eq!(scan.skipped, vec![".talaria/workbench.toml"]);
         assert!(parse_scan("NOREPO\n").is_none());
+    }
+
+    /// A throwaway directory for the shell-snippet tests, removed on drop
+    /// so a failing assertion never leaves it behind.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "talaria-devenv-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Runs one of the snippets the way the container does: `sh -c <script>
+    /// sh <args…>`, with stdin when given. Returns (stdout, success).
+    fn run_sh(script: &str, args: &[&str], stdin: Option<&str>) -> (String, bool) {
+        use std::io::Write;
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .arg("sh")
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Some(input) = stdin {
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+        } else {
+            drop(child.stdin.take());
+        }
+        let out = child.wait_with_output().unwrap();
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            out.status.success(),
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_scan_reads_plain_files_inside_the_checkout_and_nothing_else() {
+        use std::os::unix::fs::symlink;
+        let scratch = Scratch::new("scan");
+        let wd = &scratch.0;
+        // The secret a symlink would try to borrow: outside the checkout.
+        let outside = wd.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.toml"), "apt = [\"leaked\"]\n").unwrap();
+        std::fs::write(outside.join("Cargo.toml"), "[package]\nname = \"leaked\"\n").unwrap();
+        // The checkout, one level down the way `git clone <url>` lands it.
+        let repo = wd.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join(".talaria")).unwrap();
+        std::fs::create_dir_all(repo.join("api")).unwrap();
+        std::fs::write(repo.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(repo.join("api/Cargo.toml"), "[package]\n").unwrap();
+        // 1. the marker itself is a symlink to a file outside the checkout
+        symlink(
+            outside.join("secret.toml"),
+            repo.join(".talaria/workbench.toml"),
+        )
+        .unwrap();
+        // 2. the marker is a plain file but a directory on its path is a
+        //    symlink that leaves the checkout (`*/Cargo.toml` finds it)
+        symlink(&outside, repo.join("vendor")).unwrap();
+        // 3. a symlink that stays INSIDE the checkout is fine to follow
+        symlink(repo.join("api"), repo.join("alias")).unwrap();
+        // 4. a dangling symlink is a symlink: skipped, not an error
+        symlink(wd.join("nowhere"), repo.join(".nvmrc")).unwrap();
+        // A symlinked directory beside the real checkout must not be picked
+        // as the root either.
+        symlink(&outside, wd.join("0-first")).unwrap();
+
+        let mut args: Vec<&str> = vec![wd.to_str().unwrap()];
+        args.extend(MARKERS.iter().copied());
+        let (out, ok) = run_sh(SCAN_SH, &args, None);
+        assert!(ok, "{out}");
+        let scan = parse_scan(&out).expect("a checkout was found");
+        assert_eq!(scan.root, repo.display().to_string());
+        let read: Vec<&str> = scan.files.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(read.contains(&"Cargo.toml"), "{read:?}");
+        assert!(read.contains(&"api/Cargo.toml"), "{read:?}");
+        assert!(read.contains(&"alias/Cargo.toml"), "{read:?}");
+        assert!(!read.contains(&".talaria/workbench.toml"), "{read:?}");
+        assert!(!read.contains(&"vendor/Cargo.toml"), "{read:?}");
+        assert!(!read.contains(&".nvmrc"), "{read:?}");
+        // Not one byte of the outside files came back.
+        assert!(!out.contains("leaked"), "{out}");
+        let mut skipped = scan.skipped.clone();
+        skipped.sort();
+        assert_eq!(
+            skipped,
+            vec![".nvmrc", ".talaria/workbench.toml", "vendor/Cargo.toml"]
+        );
+        // And the plan built from it sees no apt names: the leak would have
+        // been the one way for a symlink to put a package on root's list.
+        assert!(plan_env(&scan.files).apt.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_workdir_without_a_checkout_is_norepo() {
+        let scratch = Scratch::new("norepo");
+        let (out, ok) = run_sh(SCAN_SH, &[scratch.0.to_str().unwrap(), "Cargo.toml"], None);
+        assert!(ok);
+        assert!(parse_scan(&out).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_env_file_is_private_git_excluded_and_gone_when_the_store_is() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new("env");
+        let wd = scratch.0.to_str().unwrap();
+        // A fresh job: no workdir contents at all yet.
+        let (_, ok) = run_sh(JOB_ENV_WRITE_SH, &[wd], Some("API_KEY='a'\nDB='x'\n"));
+        assert!(ok);
+        let file = scratch.0.join(JOB_ENV_FILE);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "API_KEY='a'\nDB='x'\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!scratch.0.join(".talaria/.env.tmp").exists());
+        assert!(!scratch.0.join(".git").exists(), "no checkout, no exclude");
+        // A resumed job whose checkout sits at the workdir root: the rewrite
+        // replaces the content and keeps the file out of git — once.
+        std::fs::create_dir_all(scratch.0.join(".git/info")).unwrap();
+        for _ in 0..2 {
+            let (_, ok) = run_sh(JOB_ENV_WRITE_SH, &[wd], Some("API_KEY='b'\n"));
+            assert!(ok);
+        }
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "API_KEY='b'\n");
+        assert_eq!(
+            std::fs::read_to_string(scratch.0.join(".git/info/exclude")).unwrap(),
+            ".talaria/env\n"
+        );
+        // The store emptied: the file goes, and removing twice is fine.
+        for _ in 0..2 {
+            let (_, ok) = run_sh(JOB_ENV_REMOVE_SH, &[wd], None);
+            assert!(ok);
+        }
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn the_env_answer_names_the_path_and_how_to_load_it() {
+        let wd = "/opt/data/workbench/jobs/x";
+        let v = job_env_answer(wd, Some(2));
+        assert_eq!(v["path"], "/opt/data/workbench/jobs/x/.talaria/env");
+        assert_eq!(v["vars"], 2);
+        assert_eq!(
+            v["load"],
+            "set -a; . /opt/data/workbench/jobs/x/.talaria/env; set +a"
+        );
+        assert!(job_env_answer(wd, None).is_null());
     }
 }
