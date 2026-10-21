@@ -20,7 +20,7 @@ use talaria_api_facades::runs::real_decide_deps;
 use talaria_body::{
     array_msg, array_too_big_msg, enum_member, object_msg, optional_boolean_member,
     optional_enum_member, optional_max_string_member, optional_uuid_array_member,
-    optional_uuid_member, string_member, uuid_member, zod_type_name,
+    optional_uuid_member, string_member, string_msg, uuid_member, zod_type_name,
 };
 use talaria_chat_persist::{
     PersistMeta, PlanMeta, TurnMeta, continue_conversation, persist_assistant_stream, pinned_turn,
@@ -51,7 +51,9 @@ use talaria_uploads::{
     UploadViewer, attachment_as_data_url, attachment_text_blocks, can_access_upload, is_image,
     resolve_attachments,
 };
-use talaria_work_mode::WORK_MODE_PROMPT;
+use talaria_work_mode::{
+    FocusKind, PaneFocus, WORK_MODE_PROMPT, clean_focus_title, focus_id_ok, focus_line,
+};
 use talaria_workspace_handles::{HANDLE_TURN_NOTE, mentions_handle};
 
 struct ChatBody {
@@ -65,6 +67,35 @@ struct ChatBody {
     kind: Option<String>, // 'chat' | 'plan' | 'research' | 'ticket' | 'work'
     template_id: Option<String>,
     queue: bool,
+    /// The file open in the teammate's pane (work turns only; validated for
+    /// every kind, read only for `work`). Null and absent both mean none.
+    focus: Option<PaneFocus>,
+}
+
+/// `focus: { kind: 'artifact' | 'google', id, title? } | null`. The kind is
+/// an enum, the id a file id (`focus_id_ok`); the title is cleaned and capped
+/// rather than refused (`clean_focus_title`) — a long or odd file name must
+/// never be what stops a message sending, and it reaches the prompt only in
+/// its cleaned form.
+fn focus_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<PaneFocus>, String> {
+    let f = match obj.get(key) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(v) => v.as_object().ok_or_else(|| object_msg(zod_type_name(v)))?,
+    };
+    let kind = enum_member(f, "kind", &["artifact", "google"])?;
+    let kind = FocusKind::parse(&kind).expect("enum_member admitted only these two");
+    let id = string_member(f, "id", 1, usize::MAX)?;
+    if !focus_id_ok(&id) {
+        return Err("Invalid input: expected focus.id to be a file id".into());
+    }
+    let title = match f.get("title") {
+        None | Some(Value::Null) => None,
+        Some(v) => clean_focus_title(v.as_str().ok_or_else(|| string_msg(zod_type_name(v)))?),
+    };
+    Ok(Some(PaneFocus { kind, id, title }))
 }
 
 fn validate(obj: &serde_json::Map<String, Value>) -> Result<ChatBody, String> {
@@ -100,6 +131,9 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<ChatBody, String> {
     let kind = optional_enum_member(obj, "kind", &["chat", "plan", "research", "ticket", "work"])?;
     let template_id = optional_uuid_member(obj, "templateId")?;
     let queue = optional_boolean_member(obj, "queue")?.unwrap_or(false);
+    // { kind: artifact|google, id, title? } or null — the file open in the
+    // teammate's pane; read on work turns only
+    let focus = focus_member(obj, "focus")?;
     Ok(ChatBody {
         model,
         conversation_id,
@@ -111,6 +145,7 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<ChatBody, String> {
         kind,
         template_id,
         queue,
+        focus,
     })
 }
 
@@ -449,13 +484,13 @@ pub async fn post(
         .clone()
         .or_else(|| user.email.clone())
         .unwrap_or_else(|| "someone".into());
-    // BOTH SHARED SURFACES GET A LIVING DOCUMENT. A landed turn rewrites the
-    // conversation's document from the conversation so far — that is the whole
-    // draw of the Work surface, not a plan-only nicety, so `kind='work'` opts
-    // in here alongside `plan`. The kind rides along because the rewrite prompt
-    // and the template seeding differ: a plan converges on goals and owners, a
-    // work session's document IS the deliverable.
-    let plan_meta = if kind == "plan" || kind == "work" {
+    // ONLY A PLAN HAS A LIVING DOCUMENT. A landed plan turn rewrites the
+    // plan's document from the conversation so far (and its reply feeds the
+    // plan's activity index and @mention notices). A work session has no
+    // such document: its files are the ones the agent creates and edits with
+    // its own tools, and rewriting one of them from the transcript after
+    // every turn would overwrite the agent's work with a summary of the chat.
+    let plan_meta = if kind == "plan" {
         Some(PlanMeta {
             owner_user_id: plan_owner_id.clone(),
             title: plan_title.clone(),
@@ -562,6 +597,17 @@ pub async fn post(
         // just didn't resume anything.
     }
 
+    // A work turn's system lines, computed once: the live turn below pushes
+    // them, and a queued or resumed turn carries them on its metadata so it
+    // speaks to the file that was open when this message was sent.
+    let work_prompts: Vec<String> = if kind == "work" {
+        vec![
+            WORK_MODE_PROMPT.to_string(),
+            focus_line(body.focus.as_ref()),
+        ]
+    } else {
+        Vec::new()
+    };
     if queued {
         // If the stream ended between the client's view and this landing,
         // nothing would pick the message up — chain the next turn ourselves.
@@ -573,6 +619,7 @@ pub async fn post(
                 tier: body.tier.clone(),
                 plan: plan_meta.clone(),
                 research_prompt,
+                work_prompts: work_prompts.clone(),
                 sender: Some(identity.clone()),
             };
             tokio::spawn(async move {
@@ -658,13 +705,17 @@ pub async fn post(
         let block = plan_routing_block(&state.pg).await;
         messages.push(json!({ "role": "system", "content": format!("{PLAN_MODE_PROMPT}{block}") }));
     }
-    // A work turn carries the work-mode harness: the surface, the document
+    // A work turn carries the work-mode harness: the surface, the files pane
     // beside the chat, and — the part that matters — which of its writes
     // happen now and which sit in a queue until a person approves them. The
     // prompt is not the gate (decide_action is); it is what stops the agent
     // telling someone their spreadsheet was updated when it was not.
-    if kind == "work" {
-        messages.push(json!({ "role": "system", "content": WORK_MODE_PROMPT }));
+    //
+    // Then ONE line naming the file open in the teammate's pane (or that none
+    // is), so "this doc" resolves to the tab they are looking at rather than
+    // to the agent's guess.
+    for prompt in &work_prompts {
+        messages.push(json!({ "role": "system", "content": prompt }));
     }
     if kind == "research" {
         messages.push(json!({
@@ -735,6 +786,7 @@ pub async fn post(
         tier: body.tier.clone(),
         plan: plan_meta.clone(),
         research_prompt,
+        work_prompts,
         sender: Some(identity),
         // A live turn is a first attempt — eligible for the one auto-resume.
         resumed: false,

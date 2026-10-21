@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-31 routes.
+32 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -44,6 +44,7 @@
 | [`/api/conversations/{id}`](#apiconversationsid) | DELETE | `session` |
 | [`/api/conversations/{id}/doc`](#apiconversationsiddoc) | GET | `session` |
 | [`/api/conversations/{id}/doc`](#apiconversationsiddoc) | POST | `session` |
+| [`/api/conversations/{id}/files`](#apiconversationsidfiles) | GET | `session` |
 | [`/api/conversations/{id}/members`](#apiconversationsidmembers) | GET | `session` |
 | [`/api/conversations/{id}/members`](#apiconversationsidmembers) | POST | `session` |
 | [`/api/conversations/{id}/members`](#apiconversationsidmembers) | PUT | `session` |
@@ -368,6 +369,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/chat.rs`](../../api/crates/t
 | `kind` | `enum(chat|plan|research|ticket|work)?` |  |
 | `templateId` | `uuid?` |  |
 | `queue` | `bool?` |  |
+| `focus` | `focus` | { kind: artifact|google, id, title? } or null — the file open in the teammate's pane; read on work turns only |
 
 ## `/api/chat/chips/approvals/{id}`
 
@@ -462,13 +464,33 @@ Source: [`api/crates/talaria-routes-boards/src/plans/plans_id_doc.rs`](../../api
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{artifact}` | 200, 404 | — |
-| POST | `session` | [body](#post-apiconversationsiddoc-body) | `{artifactId}` | 200, 400, 403, 404, 502 | — |
+| POST | `session` | [body](#post-apiconversationsiddoc-body) | `{artifactId}` | 200, 400, 403, 404, 409, 502 | — |
+
+**GET** — A plan: its living document, created (from the plan template) on the first read. A work session: the living document a legacy session already has, else 404 "this session has no plan document" — never creates one.
+
+**POST** — A plan: the plan's agent rewrites the document from the conversation so far. A work session: 409 — its files are written by the agent's own tools, and there is no plan document to sync.
 
 ### POST `/api/conversations/{id}/doc` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `tier` | `string? nullish(60)` |  |
+
+## `/api/conversations/{id}/files`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_files.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_files.rs)
+
+> GET /api/conversations/{id}/files — the session's files, for the Work pane.
+>
+> WHAT THE PANE SHOWS. A work session's pane is the files the session has
+> touched: every Talaria document and Google file a chip on one of its
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{kind, files}` | 200, 404 | — |
+
+**GET** — The session's files, oldest first appearance first: every Talaria document and Google file the conversation's chips name (`touched`, with `lastTouchedAt` the newest message naming it), then the teammate's pins (`pinned`), then a legacy work session's living document (`living`). Artifacts the caller cannot read are left out; at most 100 files.
 
 ## `/api/conversations/{id}/members`
 

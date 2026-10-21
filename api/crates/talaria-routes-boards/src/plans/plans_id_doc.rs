@@ -4,6 +4,13 @@
 // plan's agent rewrites it from the conversation so far. Owner or plan
 // collaborator; the document is always OWNED by the plan's owner regardless
 // of who touched it first.
+//
+// A WORK SESSION HAS NO PLAN DOCUMENT. Its pane shows the files the agent
+// creates and opens (`GET /api/conversations/{id}/files`), so opening one
+// creates nothing here: GET answers the living document only for a legacy
+// session that already has one (404 otherwise), and POST — a rewrite of the
+// document from the transcript — is a 409, because a work session's files are
+// written by the agent's own tools, never re-derived from the chat.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -15,10 +22,21 @@ use talaria_body::{nullish_max_string_member, parse};
 use talaria_conversations::accessible_conversation;
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_params::uuid_gate;
-use talaria_plan_doc::{PlanOwner, ensure_plan_doc, sync_plan_doc};
+use talaria_plan_doc::{PlanOwner, ensure_plan_doc, plan_doc_for, sync_plan_doc};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
+/// The 404 a work session without a legacy living document answers.
+const NO_PLAN_DOCUMENT: &str = "this session has no plan document";
+
+/// The 409 a sync on a work session answers.
+const WORK_FILES_ARE_WRITTEN_BY_THE_AGENT: &str =
+    "a work session's files are written by the agent; there is no plan document to sync";
+
+// doc: A plan: its living document, created (from the plan template) on the
+// doc: first read. A work session: the living document a legacy session
+// doc: already has, else 404 "this session has no plan document" — never
+// doc: creates one.
 pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -32,16 +50,21 @@ pub async fn get(
         Ok(c) => c,
         Err(e) => return Ok(internal("[plans] accessible read on GET doc failed", e)),
     };
-    // A chat conversation is reachable through the same helper; the surfaces
-    // with a living document are plans and work sessions.
+    // A chat conversation is reachable through the same helper; the surface
+    // with a living document is a plan. A work session answers here only for
+    // the document a legacy session already has.
     let Some(conv) = conv.filter(|c| c.kind == "plan" || c.kind == "work") else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
-    // A work session's document takes no IMPLICIT plan template (the agent's
-    // binding is plan-only — see sync_plan_doc), but a template the person
-    // picked by name seeds either surface, so the explicit id goes through for
-    // both kinds and only the agent argument stays gated.
-    let is_work = conv.kind == "work";
+    if conv.kind == "work" {
+        // NEVER CREATES. Opening a work session used to mint a "Plan — …"
+        // document nobody asked for; the pane now lists the session's files.
+        return Ok(match plan_doc_for(&state.pg, &id).await {
+            Ok(Some(artifact)) => Json(json!({ "artifact": artifact })).into_response(),
+            Ok(None) => house_error(StatusCode::NOT_FOUND, NO_PLAN_DOCUMENT),
+            Err(e) => internal("[plans] living doc read on GET doc failed", e),
+        });
+    }
     let label = user
         .name
         .clone()
@@ -56,11 +79,7 @@ pub async fn get(
                 label: &label,
             },
             conv.title.as_deref(),
-            if is_work {
-                None
-            } else {
-                Some(&conv.agent_model)
-            },
+            Some(&conv.agent_model),
             conv.plan_template_id.as_deref(),
         )
         .await
@@ -71,6 +90,9 @@ pub async fn get(
     )
 }
 
+// doc: A plan: the plan's agent rewrites the document from the conversation
+// doc: so far. A work session: 409 — its files are written by the agent's own
+// doc: tools, and there is no plan document to sync.
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -88,6 +110,15 @@ pub async fn post(
     let Some(conv) = conv.filter(|c| c.kind == "plan" || c.kind == "work") else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
+    // A work session is found (it is not a 404) but has nothing to sync: its
+    // files are the agent's own writes, and a rewrite from the transcript
+    // would overwrite them with a summary of the chat.
+    if conv.kind == "work" {
+        return Ok(house_error(
+            StatusCode::CONFLICT,
+            WORK_FILES_ARE_WRITTEN_BY_THE_AGENT,
+        ));
+    }
     // The gate checks the plan's OWN agent, so a member who cannot drive this
     // agent cannot spend it rewriting the document either.
     let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
