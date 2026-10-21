@@ -15,6 +15,8 @@ use talaria_body::percent_encode;
 use talaria_state::AppState;
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
+    // A personal connect is the person's own account; the row's user_id is
+    // the record, so only the org and agent flavors audit.
     handle_connect_callback(
         &state,
         &headers,
@@ -24,4 +26,5 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         |status| format!("/settings/connections?google={}", percent_encode(status)),
     )
     .await
+    .0
 }

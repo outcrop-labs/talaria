@@ -27,9 +27,15 @@ use serde_json::json;
 use talaria_agent_auth::agent_caller;
 use talaria_body::{parse, string_member};
 use talaria_error::{house_error, object_or_400};
+use talaria_ratelimit::brake;
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_web_search::search_the_web;
+
+/// Web searches an agent may run per minute. Every call is an upstream
+/// request against engines that rate-limit by IP, so a looping agent would
+/// spend the whole deployment's standing with them.
+const AGENT_SEARCHES_PER_MINUTE: i64 = 60;
 
 pub async fn post(
     State(state): State<AppState>,
@@ -39,6 +45,19 @@ pub async fn post(
     let caller = agent_caller(&state.pg, &headers).await?;
     if caller.is_none()
         && let Err(gate) = require_user(&state, &headers).await
+    {
+        return Ok(gate);
+    }
+    if let Some(caller) = &caller
+        && let Ok(mut redis) = state.redis().await
+        && let Some(gate) = brake(
+            &mut redis,
+            &format!("agent:search:{}", caller.model),
+            AGENT_SEARCHES_PER_MINUTE,
+            60,
+            "too many searches from this agent — wait before searching again",
+        )
+        .await
     {
         return Ok(gate);
     }

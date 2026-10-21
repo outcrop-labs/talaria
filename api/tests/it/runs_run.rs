@@ -141,6 +141,7 @@ fn new_row(id: &str, kind: &str) -> RunRow {
         result: Value::Null,
         error: None,
         attempt: 0,
+        crashes: 0,
         lease_owner: None,
         lease_expires_at: None,
         approval_key: None,
@@ -161,6 +162,7 @@ impl RunStore for FakeStore {
             let full = RunRow {
                 state: RunState::Queued,
                 attempt: 0,
+                crashes: 0,
                 error: None,
                 result: Value::Null,
                 checkpoint: Value::Null,
@@ -228,6 +230,7 @@ impl RunStore for FakeStore {
             let reclaimed = row.state == RunState::Running; // the CTE's `case when prev`
             if reclaimed {
                 row.attempt += 1;
+                row.crashes += 1; // a row still `running` means its driver never released
             }
             row.state = RunState::Running;
             row.lease_owner = Some(token.to_string());
@@ -1081,7 +1084,8 @@ async fn exhausted_attempts_files_the_exact_message() {
     let fx = Fixture::with(definition("exhaust", 5_000, walking_step(1, None)));
     let id = "run-exhaust";
     let mut row = new_row(id, "exhaust");
-    row.attempt = 3; // three drivers died holding this run
+    row.attempt = 5; // five re-entries in all — two of them clean hand-overs…
+    row.crashes = 3; // …and three drivers that died holding this run: the budget
     fx.store.seed(row);
 
     let res = drive(id, &fx.deps).await.unwrap();
@@ -1090,8 +1094,8 @@ async fn exhausted_attempts_files_the_exact_message() {
     assert_eq!(
         fx.store.row(id).error.as_deref(),
         Some(
-            "run gave up after 3 attempt(s): each driver that took it stopped without finishing \
-             or checkpointing"
+            "run gave up after 3 driver crash(es): each driver that took it died holding it, \
+             without releasing or checkpointing"
         )
     );
     let tape = tape_of(&fx.tape);

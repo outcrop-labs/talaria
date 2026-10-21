@@ -273,6 +273,8 @@ pub async fn patch(
         if let Err(e) = updated {
             return Ok(internal("[conversations] restore failed", e));
         }
+        // The schedules the archive paused come back with the thread.
+        talaria_agent_crons::set_jobs_paused_for_conversation(&state.pg, &id, false).await;
     }
     fan(&state, &id).await;
     Ok((StatusCode::OK, Json(OkTrue { ok: true })).into_response())
@@ -312,6 +314,20 @@ pub async fn delete(
         // deleted plan. Older draft rows have no FK — sweep them too.
         if let Err(e) = drop_draft(&state, &id).await {
             return Ok(internal("[conversations] draft cancel failed", e));
+        }
+        // THE THREAD'S CRONS GO BEFORE THE CASCADE. `conversation_schedules`
+        // cascades with the row, but the jobs live in the agent's own
+        // jobs.json and know nothing of it: left behind, each fires forever
+        // (unmetered) into a door that answers 404. Best-effort — a container
+        // that cannot be reached is logged, and the delete still proceeds,
+        // because the person asked for the thread to go, not for its agent
+        // to be reachable.
+        let removed = talaria_agent_crons::remove_jobs_for_conversation(&state.pg, &id).await;
+        if !removed.is_empty() {
+            tracing::info!(
+                "[conversations] {id}: {} scheduled job(s) removed on delete",
+                removed.len()
+            );
         }
         if let Err(e) = sqlx::query("delete from plan_drafts where conversation_id = $1::uuid")
             .bind(&id)
@@ -356,6 +372,10 @@ pub async fn delete(
         {
             return Ok(internal("[conversations] archive failed", e));
         }
+        // An archived thread is one nobody reads: its schedules pause (the
+        // rows stay, so a restore resumes the same set) instead of posting
+        // turns into a thread that is put away.
+        talaria_agent_crons::set_jobs_paused_for_conversation(&state.pg, &id, true).await;
         fan(&state, &id).await;
     }
     Ok((StatusCode::OK, Json(OkTrue { ok: true })).into_response())

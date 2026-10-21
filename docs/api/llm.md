@@ -30,7 +30,7 @@ Source: [`api/crates/talaria-routes-fleet/src/llm/llm_chat.rs`](../../api/crates
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `bearer-key` | — | `…` | 200, 400, 401, 404, 429, 502 | SSE |
+| POST | `bearer-key` | — | `…` | 200, 400, 401, 403, 404, 429, … | SSE |
 
 ## `/api/llm/v1/models`
 

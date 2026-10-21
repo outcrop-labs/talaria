@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-24 routes.
+25 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -36,6 +36,7 @@
 | [`/api/fleet/defs/{id}/managers`](#apifleetdefsidmanagers) | PUT | `session` + `agent-manager` |
 | [`/api/fleet/defs/{id}/mcp`](#apifleetdefsidmcp) | GET | `session` + `agent-reader` |
 | [`/api/fleet/defs/{id}/mcp`](#apifleetdefsidmcp) | POST | `session` + `agent-manager` |
+| [`/api/fleet/defs/{id}/rotate-key`](#apifleetdefsidrotate-key) | POST | `session` + `agent-manager` |
 | [`/api/fleet/defs/{id}/versions`](#apifleetdefsidversions) | GET | `session` + `agent-reader` |
 | [`/api/fleet/defs/{id}/versions`](#apifleetdefsidversions) | POST | `session` + `agent-manager` |
 | [`/api/fleet/endpoints`](#apifleetendpoints) | GET | `admin` |
@@ -72,7 +73,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs`]
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcontrol-body) | `{ok}` | 200, 400, 404, 500 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcontrol-body) | `{ok}` | 200, 400, 404, 409, 500 | audit |
 
 ### POST `/api/fleet/agents/{id}/control` body
 
@@ -301,7 +302,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_google.rs`](..
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `agent-reader` | — | `…` | 200, 404 | — |
-| PUT | `session` + `agent-manager` | [body](#put-apifleetdefsidgoogle-body) | `…` | 200, 400, 404 | audit |
+| PUT | `session` + `agent-manager` | [body](#put-apifleetdefsidgoogle-body) | `…` | 200, 400, 403, 404 | audit |
 | DELETE | `session` + `agent-manager` | — | `…` | 200, 404 | audit |
 
 ### PUT `/api/fleet/defs/{id}/google` body
@@ -368,6 +369,20 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_mcp.rs`](../..
 | `removeLegacy` | `parse_names` | `remove` is the old spelling of `removeLegacy`; both clean raw entries. |
 | `remove` | `parse_names` |  |
 | `apply` | `bool?` |  |
+
+## `/api/fleet/defs/{id}/rotate-key`
+
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_rotate_key.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_rotate_key.rs)
+
+> POST /api/fleet/defs/{id}/rotate-key. Revoke an agent's `tak_` credential
+> and mint a fresh one — the answer to a leaked key that is not "retire the
+> agent". This agent's managers (and admins). The rotation is immediate at
+> the door (`agent_keys` is keyed by agent, so the old secret stops
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` + `agent-manager` | — | `{ok, rolling}` | 200, 404 | audit |
 
 ## `/api/fleet/defs/{id}/versions`
 

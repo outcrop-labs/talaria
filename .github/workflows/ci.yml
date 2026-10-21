@@ -284,8 +284,19 @@ jobs:
           surface desktop 'desktop/*' '.github/workflows/ci.yml' '.github/actions/**'
           surface mobile  'mobile/*' '.github/workflows/ci.yml' '.github/actions/**'
           # The MCP end-to-end suite drives the ui, the stubs and the api's MCP
-          # crates together; a change to any of them can break the story.
-          surface e2e     'ui/*' 'scripts/e2e/*' 'api/crates/talaria-mcp*' 'api/crates/talaria-routes-fleet/*' 'api/Cargo.lock' '.github/workflows/ci.yml' '.github/actions/**'
+          # crates together; a change to any of them can break the story. The
+          # list is every crate the story passes through, not only the ones
+          # named mcp: the agent-side server, the fleet renderer (where the
+          # agent's config.yaml is built), the SSRF guard, route mounting, the
+          # /api/me/mcp account routes, the body validators, the agents.manage
+          # check, and the spend boundary. A required check that this filter
+          # skips still reports success (job-level `if`), so a crate missing
+          # here is a story that silently stops being tested.
+          surface e2e     'ui/*' 'scripts/e2e/*' 'api/crates/talaria-mcp*' 'api/crates/talaria-routes-fleet/*' \
+                          'api/crates/talaria-agent-mcp/*' 'api/crates/talaria-fleet-render/*' 'api/crates/talaria-safe-fetch/*' \
+                          'api/crates/talaria-api-routes/*' 'api/crates/talaria-routes-integrations/*' 'api/crates/talaria-body/*' \
+                          'api/crates/talaria-users/*' 'api/crates/talaria-workspace-secrets/*' \
+                          'api/Cargo.lock' '.github/workflows/ci.yml' '.github/actions/**'
 
   # Deliberately FIRST and deliberately dependency-free: it needs no install,
   # so it reports in well under a minute and a PR that re-introduces a known bug

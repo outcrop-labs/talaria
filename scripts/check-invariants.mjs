@@ -1156,6 +1156,256 @@ for (const rule of CENSUS) {
 }
 
 
+// THE TOOLKIT'S PROSE IS A GATE HERE, NOT ONLY A STARTUP WARNING. mcp/src/index.ts
+// audits its own tool descriptions when it boots (`auditRefusalProse`): a
+// description that names "closed" without archival spends an agent a turn on
+// a 403, and text that teaches an agent to drop a scope argument to get past
+// a refusal widens its own disclosure. That audit is stderr-only, relayed at
+// error level with every other boot line, and nothing in CI read it — the
+// file's own comment said the fatal version belonged here. This is it: the
+// registrations are parsed out of the SOURCE (the fitness crate's reader,
+// ported — the module boots an MCP server on import, so nothing imports it),
+// every `${CONSTANT}` is resolved from the file's own constants so the rule
+// sees the whole sentence, and the SAME regexes (read out of the file, not
+// copied) run over every description and every field's `.describe(...)`.
+//
+// The count lives here too. Three docs stated three different tool counts
+// (51, 62, 84) because a number in prose is updated by nobody; the rule is
+// that no doc states one, and the README names every tool instead.
+{
+  const indexPath = join(ROOT, 'mcp/src/index.ts')
+  const src = existsSync(indexPath) ? readFileSync(indexPath, 'utf8') : ''
+  const chars = [...src]
+
+  /** Read a JS string expression (`'a'`, `"a"`, a template, several joined by
+   *  `+`) starting at char index `from`. Template interpolations are RESOLVED
+   *  through `consts` (an unknown expression becomes `«expr»`), not treated as
+   *  the end of the string: the prose rules are about whole sentences. */
+  const readStringExpr = (from, consts) => {
+    let i = from
+    let out = ''
+    for (;;) {
+      while (i < chars.length && /\s/.test(chars[i])) i++
+      const q = chars[i]
+      if (q !== "'" && q !== '"' && q !== '`') break
+      i++
+      let done = false
+      while (i < chars.length) {
+        const ch = chars[i]
+        if (ch === '\\') {
+          const n = chars[i + 1]
+          out += n === 'n' ? '\n' : n === 't' ? '\t' : n
+          i += 2
+          continue
+        }
+        if (ch === q) {
+          i++
+          done = true
+          break
+        }
+        if (q === '`' && ch === '$' && chars[i + 1] === '{') {
+          const close = chars.indexOf('}', i)
+          if (close < 0) return null
+          const expr = chars.slice(i + 2, close).join('').trim()
+          out += consts.has(expr) ? consts.get(expr) : `«${expr}»`
+          i = close + 1
+          continue
+        }
+        out += ch
+        i++
+      }
+      if (!done) return null
+      let j = i
+      while (j < chars.length && /\s/.test(chars[j])) j++
+      if (chars[j] !== '+') return { text: out, end: i }
+      i = j + 1
+    }
+    return out ? { text: out, end: i } : null
+  }
+
+  // The file's string constants, in source order, each resolved through the
+  // ones before it (LIVE_ONLY interpolates OFF_THE_TABLE).
+  const consts = new Map()
+  for (const m of src.matchAll(/^const ([A-Z][A-Z0-9_]*) =\s*(?:\/\/[^\n]*\n\s*)*/gm)) {
+    const at = [...src.slice(0, m.index + m[0].length)].length
+    const read = readStringExpr(at, consts)
+    if (read) consts.set(m[1], read.text)
+  }
+
+  // The scope-drop patterns, read out of the file so there is ONE list.
+  const scopeRules = []
+  const arrayStart = src.indexOf('const TEACHES_SCOPE_DROP')
+  const arrayEnd = arrayStart < 0 ? -1 : src.indexOf('\n]', arrayStart)
+  if (arrayStart >= 0 && arrayEnd > arrayStart) {
+    for (const m of src.slice(arrayStart, arrayEnd).matchAll(/\[\s*\/((?:\\.|[^/\\])+)\/([a-z]*),\s*'([^']*)'/g)) {
+      try {
+        scopeRules.push([new RegExp(m[1], m[2]), m[3]])
+      } catch {
+        /* reported below as unreadable */
+      }
+    }
+  }
+  const keepTheScope = consts.get('KEEP_THE_SCOPE') ?? ''
+  const refusalGap = (text) => {
+    if (!/\bclosed\b/i.test(text)) return null
+    const archival = /\barchived\b/i.test(text)
+    const board = /archived board/i.test(text)
+    if (archival && board) return null
+    return !archival ? 'names "closed" and nothing about archival' : 'names archival but not an ARCHIVED BOARD'
+  }
+  const scopeGap = (text) => {
+    const t = keepTheScope ? text.split(keepTheScope).join(' ') : text
+    for (const [rx, why] of scopeRules) if (rx.test(t)) return why
+    return null
+  }
+
+  // Every registration: its description, then every `.describe(...)` until
+  // the next registration (the field descriptions — the advice this gate
+  // exists for lived in a field's text the second time).
+  const regs = [...src.matchAll(/^server\.registerTool\(\s*'([a-z_]+)',\s*\{\s*description:\s*/gm)]
+  const refusal = []
+  const scope = []
+  let described = 0
+  for (let r = 0; r < regs.length; r++) {
+    const m = regs[r]
+    const name = m[1]
+    const at = [...src.slice(0, m.index + m[0].length)].length
+    const line = lineOf(src, m.index)
+    const desc = readStringExpr(at, consts)
+    if (!desc) {
+      refusal.push({ path: 'mcp/src/index.ts', line, text: `${name}: description is not a readable string expression` })
+      continue
+    }
+    described++
+    const texts = [['<tool description>', desc.text]]
+    const blockEnd = r + 1 < regs.length ? regs[r + 1].index : src.length
+    const block = src.slice(m.index, blockEnd)
+    for (const d of block.matchAll(/\.describe\(/g)) {
+      const fieldAt = [...src.slice(0, m.index + d.index + d[0].length)].length
+      const field = readStringExpr(fieldAt, consts)
+      if (field) texts.push([`field at line ${lineOf(src, m.index + d.index)}`, field.text])
+    }
+    const why = refusalGap(desc.text)
+    if (why) refusal.push({ path: 'mcp/src/index.ts', line, text: `${name}: ${why}` })
+    for (const [where, text] of texts) {
+      const bad = scopeGap(text)
+      if (bad) scope.push({ path: 'mcp/src/index.ts', line, text: `${name} (${where}): ${bad}` })
+    }
+  }
+  // The prose that teaches people to write agent prompts and skills is held
+  // to the same scope rule: the README taught the trick, in words none of the
+  // patterns caught, a round after the tool text stopped.
+  for (const rel of ['mcp/README.md', 'scripts/skills/talaria-toolkit/SKILL.md']) {
+    const abs = join(ROOT, rel)
+    if (!existsSync(abs)) continue
+    const lines = readFileSync(abs, 'utf8').split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const bad = scopeGap(lines[i])
+      if (bad) scope.push({ path: rel, line: i + 1, text: `${bad}: ${lines[i].trim().slice(0, 120)}` })
+    }
+  }
+
+  if (!src || described < 30 || scopeRules.length < 3 || !consts.has('KEEP_THE_SCOPE') || !src.includes('auditRefusalProse')) {
+    failures.push({
+      id: 'toolkit-prose-audit-unreadable',
+      what: 'the toolkit prose gate could not read mcp/src/index.ts the way it expects to',
+      fix: [
+        `Parsed ${described} registrations, ${scopeRules.length} scope-drop patterns, KEEP_THE_SCOPE ${consts.has('KEEP_THE_SCOPE') ? 'found' : 'MISSING'},`,
+        `auditRefusalProse ${src.includes('auditRefusalProse') ? 'found' : 'MISSING'}. This check reads registrations as`,
+        "`server.registerTool('name', { description: <string>, …` and the patterns out of the",
+        'TEACHES_SCOPE_DROP array (`[/…/flags, \'why\']` per line). If the file changed shape, update the',
+        'reader in scripts/check-invariants.mjs — do NOT delete the check: it is what fails when the',
+        'prose audit quietly stops existing.',
+      ],
+      found: [],
+    })
+  }
+  if (refusal.length) {
+    failures.push({
+      id: 'toolkit-prose-refusal-drift',
+      what: "a tool description names a refusal without all three conditions (closed, archived, archived board)",
+      fix: [
+        `A ticket refuses agent writes when it is ${consts.get('OFF_THE_TABLE') ?? 'closed, archived, or on an archived board'};`,
+        'a description naming only "closed" spends an agent a turn on a 403. Interpolate LIVE_ONLY /',
+        'COMMENT_EXEMPTION / OFF_THE_TABLE in mcp/src/index.ts instead of writing the sentence again.',
+      ],
+      found: refusal,
+    })
+  }
+  if (scope.length) {
+    failures.push({
+      id: 'toolkit-prose-teaches-scope-drop',
+      what: 'tool or playbook text teaches an agent to drop a scope argument to get past a refusal',
+      fix: [
+        "A scope argument (report_gap's taskId, report_problem's) is what binds an agent's free text to",
+        'the people who can see the work it quotes; dropped, that text goes to every admin in the',
+        'workspace. Say KEEP_THE_SCOPE (mcp/src/index.ts) — interpolate it, do not write a version of',
+        'it — and in prose, delete the sentence.',
+      ],
+      found: scope,
+    })
+  }
+
+  // The count: no doc states it. Lines that name a number of tools in the
+  // toolkit's context and do not match the registration count fail.
+  const registered = regs.length
+  const COUNT_DOCS = [
+    'README.md',
+    'AGENTS.md',
+    'CONTRIBUTING.md',
+    'DEVELOPERS.md',
+    'mcp/README.md',
+    'api/crates/talaria-fitness-talaria-tools/src/lib.rs',
+    ...(existsSync(join(ROOT, 'docs'))
+      ? readdirSync(join(ROOT, 'docs'))
+          .filter((f) => f.endsWith('.md'))
+          .map((f) => `docs/${f}`)
+      : []),
+  ]
+  const counts = []
+  for (const rel of COUNT_DOCS) {
+    const abs = join(ROOT, rel)
+    if (!existsSync(abs)) continue
+    const lines = readFileSync(abs, 'utf8').split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const m = /\b(\d+)\s+(?:registered\s+)?tools\b/i.exec(lines[i])
+      if (!m) continue
+      if (!/toolkit|talaria-mcp|index\.ts|registered tools|over MCP/i.test(lines[i])) continue
+      if (Number(m[1]) !== registered) counts.push({ path: rel, line: i + 1, text: `says ${m[1]} tools; mcp/src/index.ts registers ${registered}` })
+    }
+  }
+  // The README names every tool instead of counting them — held complete
+  // here, because a table that lists 33 of 84 is how the count drifted in
+  // the first place.
+  const readmePath = join(ROOT, 'mcp/README.md')
+  const readme = existsSync(readmePath) ? readFileSync(readmePath, 'utf8') : ''
+  const unlisted = regs.map((m) => m[1]).filter((name) => !readme.includes(`\`${name}\``))
+  if (unlisted.length) {
+    failures.push({
+      id: 'toolkit-readme-missing-tools',
+      what: 'mcp/README.md does not name every tool mcp/src/index.ts registers',
+      fix: [
+        'Add a row for each under the family it belongs to in mcp/README.md § Tools (one line,',
+        'the name in backticks). The README is the one place the whole toolkit is listed by name;',
+        'a count in prose is what this replaced.',
+      ],
+      found: unlisted.map((name) => ({ path: 'mcp/README.md', line: 0, text: `\`${name}\` is registered and not listed` })),
+    })
+  }
+  if (counts.length) {
+    failures.push({
+      id: 'toolkit-tool-count-drift',
+      what: 'a doc states a toolkit tool count the source does not have',
+      fix: [
+        'Do not write the number down: it changes with every registration and nobody updates prose.',
+        'Say "the toolkit\'s registered tools" and point at mcp/README.md, which names every tool',
+        `(this check counts \`server.registerTool(\` in mcp/src/index.ts — currently ${registered}).`,
+      ],
+      found: counts,
+    })
+  }
+}
+
 // HERMES BUNDLED SKILLS MUST STAY CLASSIFIED, AND EVERY REPLACED PACK MUST
 // HAVE A TALARIA SIGNPOST occupying the name agents reach for. Hermes adds
 // packs on image updates; a six-line prune array in docker.rs silently let

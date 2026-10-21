@@ -22,7 +22,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_agent_auth::require_agent;
+use talaria_agent_auth::{refuse_legacy, require_agent};
 use talaria_body::truncate_utf16;
 use talaria_error::{house_error, internal};
 use talaria_notify::{NotifyDeps, fan_conversation_event, notify_agent_reply};
@@ -54,6 +54,13 @@ pub async fn post(
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
     let caller = require_agent(&state.pg, &headers).await?;
+    // The turn lands under `caller.model`, in a thread that scheduled THAT
+    // agent's job: an asserted name (the org-wide key) is not enough to
+    // write as it — a shared-key holder naming another agent could post a
+    // fabricated "cron reply" into its listening thread.
+    if let Some(refused) = refuse_legacy(&caller, "posting a cron reply") {
+        return Ok(refused);
+    }
     let parsed: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(_) => return Ok(house_error(StatusCode::BAD_REQUEST, "body must be JSON")),

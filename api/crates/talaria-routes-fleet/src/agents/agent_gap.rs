@@ -13,11 +13,15 @@ use talaria_body::{optional_max_string_member, parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_gaps::{remember_ticket_refusal, report_gap, report_gap::GapInput};
 use talaria_notify::NotifyDeps;
+use talaria_ratelimit::brake;
 use talaria_state::AppState;
 use talaria_tasks::{
     AgentIntent, AgentWriteTarget, ResolvedTaskId, agent_ticket_refusal, get_task, log_activity,
     resolve_task_id,
 };
+
+/// Gap reports an agent may file per hour.
+const GAPS_PER_HOUR: i64 = 10;
 
 pub async fn post(
     State(state): State<AppState>,
@@ -31,6 +35,22 @@ pub async fn post(
     let agent = caller.model.clone();
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
+    // The per-agent budget: a report announces to every admin in its
+    // audience and may spend a decision-model call, so a flood of novel
+    // `kind`s is braked here. Redis-backed and failing open, like every
+    // limiter in this house.
+    if let Ok(mut redis) = state.redis().await
+        && let Some(gate) = brake(
+            &mut redis,
+            &format!("agent:gap:{agent}"),
+            GAPS_PER_HOUR,
+            3600,
+            "too many gap reports from this agent — the ones already filed are in the Studio; continue as best you can",
+        )
+        .await
+    {
+        return Ok(gate);
+    }
     let kind = match string_member(obj, "kind", 2, 80) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),

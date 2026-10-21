@@ -220,22 +220,10 @@ pub async fn start_plan_draft(
         redis,
         realtime,
     );
-    enqueue(
-        plan_draft_run(),
-        input,
-        EnqueueOptions {
-            id: Some(id.clone()),
-            owner_user_id: Some(args.user_id.to_string()),
-            subject_type: Some(PLAN_DRAFT_KIND.into()),
-            subject_id: Some(id.clone()),
-            phase: Some("queued".into()),
-            // The drive is inline: this process is the only runtime, so
-            // enqueue means row + publish + drive.
-            start: Some(true),
-        },
-        &deps,
-    )
-    .await?;
+    // THE DRAFT ROW GOES IN BEFORE THE RUN. `enqueue` spawns the drive at
+    // once, and the step's result save is an UPDATE of this row — a drive
+    // that outran this insert would have nothing to write to. A run that
+    // then fails to enqueue takes its row back out.
     sqlx::query(
         "insert into plan_drafts \
          (id, conversation_id, created_by, source, agent_model, routed_model, tier, board_id, template_id) \
@@ -252,6 +240,34 @@ pub async fn start_plan_draft(
     .bind(args.template_id)
     .execute(&state.pg)
     .await?;
+    if let Err(e) = enqueue(
+        plan_draft_run(),
+        input,
+        EnqueueOptions {
+            id: Some(id.clone()),
+            owner_user_id: Some(args.user_id.to_string()),
+            subject_type: Some(PLAN_DRAFT_KIND.into()),
+            subject_id: Some(id.clone()),
+            phase: Some("queued".into()),
+            // The drive is inline: this process is the only runtime, so
+            // enqueue means row + publish + drive.
+            start: Some(true),
+        },
+        &deps,
+    )
+    .await
+    {
+        if let Err(undo) = sqlx::query("delete from plan_drafts where id = $1::uuid")
+            .bind(&id)
+            .execute(&state.pg)
+            .await
+        {
+            return Err(PlanDraftError::Start(format!(
+                "could not enqueue the plan draft ({e}); its row could not be removed either: {undo}"
+            )));
+        }
+        return Err(e.into());
+    }
     let created = latest_draft_for(&state.pg, args.conversation_id).await?;
     created.ok_or_else(|| PlanDraftError::Start("could not create the plan draft".into()))
 }

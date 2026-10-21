@@ -45,10 +45,14 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Result<R
             }))
             .into_response()
         }
-        // a house-shaped 500 sentence — the raw error never reaches the wire.
-        Err(_) => house_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "render failed — see server logs",
-        ),
+        // a house-shaped 500 sentence — the raw error never reaches the wire,
+        // but it does reach the log the sentence points at.
+        Err(e) => {
+            tracing::error!("[fleet/render] render failed: {e}");
+            house_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "render failed — see server logs",
+            )
+        }
     })
 }

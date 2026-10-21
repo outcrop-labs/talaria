@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use talaria_error::internal;
 use talaria_gateway::provider::http;
 use talaria_google_client::{GoogleClient, resolve_google_client};
-use talaria_google_connections::{SaveConnection, save_connection};
+use talaria_google_connections::{GOOGLE_REQUEST_TIMEOUT, SaveConnection, save_connection};
 use talaria_google_org::{SaveOrgConnection, save_org_connection};
 use talaria_secretbox::SecretBox;
 use talaria_users::Identity;
@@ -189,6 +189,7 @@ pub async fn exchange_google_code(
     let token_res = http()
         .post(TOKEN_ENDPOINT)
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .timeout(GOOGLE_REQUEST_TIMEOUT)
         .body(token_body)
         .send()
         .await
@@ -221,6 +222,7 @@ pub async fn exchange_google_code(
     let info_res = http()
         .get(USERINFO_ENDPOINT)
         .bearer_auth(&access_token)
+        .timeout(GOOGLE_REQUEST_TIMEOUT)
         .send()
         .await
         .map_err(|e| format!("userinfo request: {e}"))?;
@@ -483,6 +485,7 @@ pub async fn exchange_google_tokens(
     let token_res = http()
         .post(TOKEN_ENDPOINT)
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .timeout(GOOGLE_REQUEST_TIMEOUT)
         .body(token_body)
         .send()
         .await
@@ -516,6 +519,7 @@ pub async fn exchange_google_tokens(
     let info_res = http()
         .get(USERINFO_ENDPOINT)
         .bearer_auth(&access_token)
+        .timeout(GOOGLE_REQUEST_TIMEOUT)
         .send()
         .await
         .map_err(|e| format!("userinfo request: {e}"))?;
@@ -637,6 +641,15 @@ pub enum ConnectFlavor {
 /// state cookie, exchange + store, and bounce back with a status flag the
 /// landing page's flash reads. Every bounce clears the one-shot state cookie —
 /// except the /login bounce, which never had one to clear.
+/// What a finished connect dance tells its route beyond the redirect: the
+/// person who connected and the Google address that landed, so the route
+/// can write the audit row the credential swap deserves. `None` on every
+/// bounce that stored nothing.
+pub struct ConnectedAccount {
+    pub user: talaria_session::SessionUser,
+    pub email: Option<String>,
+}
+
 pub async fn handle_connect_callback(
     state: &talaria_state::AppState,
     headers: &HeaderMap,
@@ -644,7 +657,7 @@ pub async fn handle_connect_callback(
     flavor: ConnectFlavor,
     log_tag: &'static str,
     landing: impl Fn(&str) -> String,
-) -> Response {
+) -> (Response, Option<ConnectedAccount>) {
     use axum::response::IntoResponse;
 
     let back = {
@@ -659,7 +672,7 @@ pub async fn handle_connect_callback(
             {
                 res.headers_mut().append(header::SET_COOKIE, v);
             }
-            res
+            (res, None)
         }
     };
 
@@ -678,7 +691,10 @@ pub async fn handle_connect_callback(
             uri,
             &path_and_query,
         ) {
-            return (axum::http::StatusCode::FOUND, [(header::LOCATION, to)]).into_response();
+            return (
+                (axum::http::StatusCode::FOUND, [(header::LOCATION, to)]).into_response(),
+                None,
+            );
         }
     }
 
@@ -688,16 +704,24 @@ pub async fn handle_connect_callback(
     }
     let user = match talaria_session::get_session_user(state, headers).await {
         Ok(u) => u,
-        Err(e) => return internal(&format!("[{log_tag}] session read failed"), e),
+        Err(e) => {
+            return (
+                internal(&format!("[{log_tag}] session read failed"), e),
+                None,
+            );
+        }
     };
     let Some(user) = user else {
         // The bare login bounce — no state cookie was ever set, so there is
         // nothing to clear.
         return (
-            axum::http::StatusCode::FOUND,
-            [(header::LOCATION, "/login")],
-        )
-            .into_response();
+            (
+                axum::http::StatusCode::FOUND,
+                [(header::LOCATION, "/login")],
+            )
+                .into_response(),
+            None,
+        );
     };
     if matches!(flavor, ConnectFlavor::Org) && user.role != "admin" {
         return back("forbidden");
@@ -756,7 +780,10 @@ pub async fn handle_connect_callback(
         }
     };
     match done {
-        Ok(_) => back("connected"),
+        Ok(email) => {
+            let (res, _) = back("connected");
+            (res, Some(ConnectedAccount { user, email }))
+        }
         // The detail names the client or the code; the user sees a fixed
         // status and the log keeps the sentence.
         Err(e) => {

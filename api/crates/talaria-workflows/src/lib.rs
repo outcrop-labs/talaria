@@ -93,7 +93,9 @@ pub async fn create_workflow(
 }
 
 /// The PUT patch — every field Option<"present">, absent fields untouched:
-/// one update statement per present field, in this order, no transaction.
+/// one update statement per present field, in this order, in ONE
+/// transaction — a hook whose skills landed and whose toolkits did not is a
+/// workflow firing with a mismatched pair.
 pub struct WorkflowPatch {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -108,11 +110,12 @@ pub async fn update_workflow(
     id: &str,
     patch: &WorkflowPatch,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pg.begin().await?;
     if let Some(v) = &patch.name {
         sqlx::query("update task_workflows set name = $1, updated_at = now() where id = $2::uuid")
             .bind(v)
             .bind(id)
-            .execute(pg)
+            .execute(&mut *tx)
             .await?;
     }
     if let Some(v) = &patch.description {
@@ -121,7 +124,7 @@ pub async fn update_workflow(
         )
         .bind(v)
         .bind(id)
-        .execute(pg)
+        .execute(&mut *tx)
         .await?;
     }
     if let Some(v) = patch.enabled {
@@ -130,14 +133,14 @@ pub async fn update_workflow(
         )
         .bind(v)
         .bind(id)
-        .execute(pg)
+        .execute(&mut *tx)
         .await?;
     }
     if let Some(v) = &patch.match_v {
         sqlx::query("update task_workflows set match = $1, updated_at = now() where id = $2::uuid")
             .bind(v)
             .bind(id)
-            .execute(pg)
+            .execute(&mut *tx)
             .await?;
     }
     if let Some(v) = &patch.skills {
@@ -146,7 +149,7 @@ pub async fn update_workflow(
         )
         .bind(v)
         .bind(id)
-        .execute(pg)
+        .execute(&mut *tx)
         .await?;
     }
     if let Some(v) = &patch.toolkits {
@@ -155,9 +158,10 @@ pub async fn update_workflow(
         )
         .bind(v)
         .bind(id)
-        .execute(pg)
+        .execute(&mut *tx)
         .await?;
     }
+    tx.commit().await?;
     Ok(())
 }
 

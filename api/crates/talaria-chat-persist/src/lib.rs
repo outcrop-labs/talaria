@@ -354,6 +354,8 @@ pub async fn send_turn(
     messages: &[Value],
     effort: Option<&str>,
 ) -> (ChatStream, usize) {
+    let messages = with_conversation_line(messages, conversation_id);
+    let messages = messages.as_slice();
     if pinned {
         let (system_message, message) = session_turn_parts(messages);
         let prompt_chars = system_message
@@ -361,15 +363,23 @@ pub async fn send_turn(
             .map(|s| s.encode_utf16().count())
             .unwrap_or(0)
             + content_js_length(&message);
-        let upstream = proxy_session_turn(
+        // A conversation with a reply in it was driven through this session
+        // before, so the session must still be there: a fresh one is the
+        // state volume gone, and the turn below takes the full-history arm
+        // instead of answering from an empty room (the transport logs it).
+        let history_expected = messages.iter().any(|m| m["role"] == "assistant");
+        if let Some(upstream) = proxy_session_turn(
             agent_model,
             conversation_id,
             system_message.as_deref(),
             &message,
             None,
+            history_expected,
         )
-        .await;
-        return (upstream, prompt_chars);
+        .await
+        {
+            return (upstream, prompt_chars);
+        }
     }
     let prompt_chars: usize = messages
         .iter()
@@ -381,6 +391,34 @@ pub async fn send_turn(
     )
     .await;
     (upstream, prompt_chars)
+}
+
+/// The line that tells the agent which conversation this turn is: the
+/// doors it reaches back through (`ask`, `todo`, `expose_tools`) take a
+/// `conversationId`, and an agent answering several people at once has no
+/// other way to name the right thread. A system row placed after the
+/// leading system rows — the pinned arm folds it into the ephemeral prompt
+/// with the mode prompt and the sender block, and the completions arm sends
+/// it ahead of the history.
+pub fn conversation_line(conversation_id: &str) -> Value {
+    json!({
+        "role": "system",
+        "content": format!(
+            "THIS CONVERSATION'S ID: {conversation_id}. When a tool takes a conversationId \
+             (ask, todo, expose_tools), pass exactly this value so what you send lands in this \
+             thread and not another one you are also in."
+        ),
+    })
+}
+
+fn with_conversation_line(messages: &[Value], conversation_id: &str) -> Vec<Value> {
+    let mut out = messages.to_vec();
+    let at = out
+        .iter()
+        .position(|m| m["role"] != "system")
+        .unwrap_or(out.len());
+    out.insert(at, conversation_line(conversation_id));
+    out
 }
 
 pub async fn continue_conversation(state: &AppState, conversation_id: &str, meta: &TurnMeta) {
@@ -622,9 +660,15 @@ pub struct PersistMeta {
 // gets a spinner that never ends. So the stream is counted as it goes past, and
 // a pair that keeps coming back earns a word first and the plug second.
 
-/// Identical calls that earn the agent a word, and the count that ends the run.
+/// Identical calls that earn the agent a word, and the count that ends the
+/// run — the defaults, and the settings keys an admin overrides them under.
 const LOOP_WARN_AT: u32 = 3;
 const LOOP_STOP_AT: u32 = 5;
+pub const LOOP_WARN_SETTING: &str = "chat.loop_warn_at";
+pub const LOOP_STOP_SETTING: &str = "chat.loop_stop_at";
+/// The ceiling on either threshold: past it the guard is off in all but
+/// name, and a setting that large is a typo, not a policy.
+const LOOP_MAX: u32 = 1_000;
 
 /// What a repeat count has earned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -635,14 +679,67 @@ pub enum LoopAction {
     Stop,
 }
 
+/// The two counts the guard acts on, as the settings say or as the defaults
+/// stand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoopThresholds {
+    pub warn_at: u32,
+    pub stop_at: u32,
+}
+
+impl Default for LoopThresholds {
+    fn default() -> Self {
+        LoopThresholds {
+            warn_at: LOOP_WARN_AT,
+            stop_at: LOOP_STOP_AT,
+        }
+    }
+}
+
+/// One threshold from its stored value: a number, or a string holding one;
+/// anything else, zero, or past the ceiling is the default. Pure, so the
+/// parsing is provable without a Postgres.
+fn loop_threshold_from(raw: &Value, default: u32) -> u32 {
+    let n = match raw {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.trim().parse::<u64>().ok(),
+        _ => None,
+    };
+    match n {
+        Some(n) if (1..=u64::from(LOOP_MAX)).contains(&n) => n as u32,
+        _ => default,
+    }
+}
+
+/// The thresholds from their two stored values.
+pub fn loop_thresholds_from(warn: &Value, stop: &Value) -> LoopThresholds {
+    LoopThresholds {
+        warn_at: loop_threshold_from(warn, LOOP_WARN_AT),
+        stop_at: loop_threshold_from(stop, LOOP_STOP_AT),
+    }
+}
+
+/// The thresholds as `app_settings` holds them, read once per turn: a
+/// workbench that polls a build every thirty seconds is not a loop, and
+/// the admin who knows that raises the count here rather than in a rebuild.
+pub async fn loop_thresholds(pg: &PgPool) -> LoopThresholds {
+    let warn = talaria_gateway::settings::get_setting(pg, LOOP_WARN_SETTING, Value::Null).await;
+    let stop = talaria_gateway::settings::get_setting(pg, LOOP_STOP_SETTING, Value::Null).await;
+    loop_thresholds_from(&warn, &stop)
+}
+
 /// The guard's whole decision, pure. Each threshold fires on the EXACT count
 /// that reaches it, so a pair stuck at twelve repeats still produces one nudge
-/// and one stop rather than a nudge on every frame after the third.
-pub fn loop_verdict(count: u32) -> Option<LoopAction> {
-    match count {
-        LOOP_WARN_AT => Some(LoopAction::Warn),
-        LOOP_STOP_AT => Some(LoopAction::Stop),
-        _ => None,
+/// and one stop rather than a nudge on every frame after the third. When an
+/// admin sets the two equal, the stop is what fires — a plug and a word at
+/// the same count would be a word nobody can act on.
+pub fn loop_verdict(count: u32, at: LoopThresholds) -> Option<LoopAction> {
+    if count == at.stop_at {
+        Some(LoopAction::Stop)
+    } else if count == at.warn_at {
+        Some(LoopAction::Warn)
+    } else {
+        None
     }
 }
 
@@ -656,27 +753,46 @@ fn label_key(label: &str) -> u64 {
     h.finish()
 }
 
-/// Count one call against this turn's tally and hand back what it earned.
+/// Count one COMPLETED call against this turn's tally and hand back what it
+/// earned.
 ///
-/// The pair is (tool name, label), and the label is the frame's rendering of
-/// the call's own arguments — which is what makes two identical pairs the SAME
-/// call twice rather than the same tool used twice. A call whose frame carried
-/// no label is not counted at all: every unlabelled call of one tool would
-/// collapse into a single pair, and a tool legitimately used five times in a
-/// turn would read as a loop.
+/// The key is (tool name, label, result), where the label is the frame's
+/// rendering of the call's own arguments and the result is what the call
+/// produced — the tool's progress output as the stream carried it. Two
+/// identical calls that produce the SAME answer are the loop: the agent is
+/// asking a question it already has the answer to. The same call producing a
+/// different answer each time is polling — a job status, a log tail, a
+/// clock — and must never be touched. A call whose frame carried no label is
+/// not counted at all: every unlabelled call of one tool would collapse
+/// into a single key, and a tool legitimately used five times in a turn
+/// would read as a loop.
 fn count_repeat(
-    tally: &mut HashMap<(String, String), u32>,
+    tally: &mut HashMap<(String, String, u64), u32>,
     name: &str,
     label: &str,
+    result: &str,
+    at: LoopThresholds,
 ) -> Option<LoopAction> {
     if label.trim().is_empty() {
         return None;
     }
     let n = tally
-        .entry((name.to_string(), label.to_string()))
+        .entry((name.to_string(), label.to_string(), label_key(result)))
         .or_insert(0);
     *n += 1;
-    loop_verdict(*n)
+    loop_verdict(*n, at)
+}
+
+/// A dead stream's reason, appended after whatever prose it had drained
+/// rather than in place of it: the words that arrived are the person's to
+/// keep, and the same rule the stale sweep follows ("a writer that died
+/// mid-prose keeps its prose"). An empty reply is the reason alone.
+fn with_error_line(content: &str, line: &str) -> String {
+    if content.trim().is_empty() {
+        line.to_string()
+    } else {
+        format!("{}\n\n{line}", content.trim_end())
+    }
 }
 
 /// Drain an assistant stream into the reply row.
@@ -710,11 +826,14 @@ pub async fn persist_assistant_stream(
     // inside this loop has to name it, and the row is not where to go looking
     // for something the loop just read.
     let mut hermes_run: Option<String> = None;
-    // Identical (name, label) calls seen in this turn — the doom-loop tally —
-    // and the call ids already counted, so a call is one count however many
-    // progress and completion frames it goes on to send.
-    let mut repeats: HashMap<(String, String), u32> = HashMap::new();
-    let mut seen_calls: HashSet<String> = HashSet::new();
+    // Identical (name, arguments, result) calls seen in this turn — the
+    // doom-loop tally — and the calls still open: their arguments from the
+    // started frame and the output their progress frames carried, so a call
+    // is counted ONCE, at completion, with what it produced. The thresholds
+    // are the settings' at the turn's start.
+    let loop_at = loop_thresholds(&state.pg).await;
+    let mut repeats: HashMap<(String, String, u64), u32> = HashMap::new();
+    let mut open_calls: HashMap<String, (String, String)> = HashMap::new();
     // Set by the guard's stop task once the container ACCEPTED the stop — a
     // run still going is a run that will write more, so the sentence that
     // says why the turn ended is written at landing, under this, after the
@@ -818,23 +937,47 @@ pub async fn persist_assistant_stream(
                         } => {
                             tools =
                                 merge_tool(&tools, id.as_deref(), &name, &label, status.as_deref());
-                            // THE DOOM-LOOP GUARD, counted once per CALL. The
-                            // parser gives every call its own id and sends
-                            // that id again on each progress and completion
-                            // frame, so the first sight of an id is the call
-                            // starting — counting every frame would trip the
-                            // guard on a single chatty call. A frame with no
-                            // id (the completions arm's older shape) is never
-                            // counted. Only this loop counts — the finish loop
-                            // below runs after the body has ended, where there
-                            // is no run left to steer or stop.
-                            let first_sight = id
-                                .as_deref()
-                                .is_some_and(|i| seen_calls.insert(i.to_string()));
-                            if first_sight
-                                && status.as_deref() == Some("running")
-                                && let Some(action) = count_repeat(&mut repeats, &name, &label)
-                            {
+                            // THE DOOM-LOOP GUARD, counted once per CALL, at
+                            // its END. The parser gives every call its own id
+                            // and sends that id again on each progress and
+                            // completion frame: the first sight of an id is
+                            // the call starting (its label is the arguments),
+                            // every running frame after it carries the tool's
+                            // output, and the terminal frame is when the call
+                            // has an answer to compare — the same call with
+                            // the same answer is the loop; with a changing
+                            // answer it is polling. A frame with no id (the
+                            // completions arm's older shape) is never
+                            // counted. Only this loop counts — the finish
+                            // loop below runs after the body has ended, where
+                            // there is no run left to steer or stop.
+                            let verdict = match (id.as_deref(), status.as_deref()) {
+                                (Some(i), Some("running")) => {
+                                    match open_calls.get_mut(i) {
+                                        None => {
+                                            open_calls.insert(
+                                                i.to_string(),
+                                                (label.clone(), String::new()),
+                                            );
+                                        }
+                                        Some((_, out)) if out.len() < 4_000 => {
+                                            out.push_str(&label);
+                                            out.push('\n');
+                                        }
+                                        Some(_) => {}
+                                    }
+                                    None
+                                }
+                                (Some(i), Some("completed" | "error")) => {
+                                    let (args, out) = open_calls
+                                        .remove(i)
+                                        .unwrap_or_else(|| (label.clone(), String::new()));
+                                    count_repeat(&mut repeats, &name, &args, &out, loop_at)
+                                        .map(|action| (action, args))
+                                }
+                                _ => None,
+                            };
+                            if let Some((action, label)) = verdict {
                                 let model = usage_meta.as_ref().map(|m| m.agent_model.clone());
                                 match action {
                                     LoopAction::Warn => {
@@ -855,7 +998,9 @@ pub async fn persist_assistant_stream(
                                                 "label": "Repeating the same call",
                                                 "detail": format!(
                                                     "{name} has been called with the same \
-                                                     arguments {LOOP_WARN_AT} times"
+                                                     arguments {} times and answered the same \
+                                                     way each time",
+                                                    loop_at.warn_at
                                                 ),
                                             })],
                                         )
@@ -869,9 +1014,10 @@ pub async fn persist_assistant_stream(
                                         {
                                             let said = format!(
                                                 "You have called {name} with the same arguments \
-                                                 {LOOP_WARN_AT} times and it is not getting you \
-                                                 further. Change your approach, or stop and say \
-                                                 what is blocking you."
+                                                 {} times and got the same answer each time; it \
+                                                 is not getting you further. Change your \
+                                                 approach, or stop and say what is blocking you.",
+                                                loop_at.warn_at
                                             );
                                             let row = message_id.clone();
                                             let tool = name.clone();
@@ -982,7 +1128,7 @@ pub async fn persist_assistant_stream(
     // empty reply nobody can explain — and the tail chain does not fire:
     // retrying a provider that just refused is the loop this closes.
     if let Some(message) = frame_error {
-        content = format!("(agent error: {message})");
+        content = with_error_line(&content, &format!("(agent error: {message})"));
         flush!("error");
         ledger!();
         return;
@@ -994,7 +1140,7 @@ pub async fn persist_assistant_stream(
     // outliving the API's read on it is exactly the failure the resume
     // covers; a resume that dies again stays down (`resumed` gates it).
     if let Some(died) = death {
-        content = format!("(agent error: {})", died.reason());
+        content = with_error_line(&content, &format!("(agent error: {})", died.reason()));
         flush!("error");
         ledger!();
         if let Some(meta) = usage_meta.filter(|m| !m.resumed) {
@@ -1007,7 +1153,8 @@ pub async fn persist_assistant_stream(
     // run.cancelled, and the reply says why it ends — after its last word.
     if loop_stop_ok.load(Ordering::Relaxed) {
         content.push_str(&format!(
-            "\n\n(stopped: the agent repeated the same call {LOOP_STOP_AT} times)"
+            "\n\n(stopped: the agent repeated the same call {} times with the same result)",
+            loop_at.stop_at
         ));
         stopped = true;
     }
@@ -1479,13 +1626,16 @@ mod tests {
     mod doom_loop {
         use super::*;
 
-        /// A fresh tally, replayed over a list of calls, so the bookkeeping is
-        /// exercised through the verdict rather than beside it.
-        fn replay(calls: &[(&str, &str)]) -> Vec<Option<LoopAction>> {
+        /// A fresh tally at the default thresholds, replayed over a list of
+        /// (tool, arguments, result) calls, so the bookkeeping is exercised
+        /// through the verdict rather than beside it.
+        fn replay(calls: &[(&str, &str, &str)]) -> Vec<Option<LoopAction>> {
             let mut tally = HashMap::new();
             calls
                 .iter()
-                .map(|(name, label)| count_repeat(&mut tally, name, label))
+                .map(|(name, label, out)| {
+                    count_repeat(&mut tally, name, label, out, LoopThresholds::default())
+                })
                 .collect()
         }
 
@@ -1494,20 +1644,56 @@ mod tests {
         /// stuck at a dozen repeats still stops once.
         #[test]
         fn verdict_fires_once_per_threshold() {
-            assert_eq!(loop_verdict(0), None);
-            assert_eq!(loop_verdict(1), None);
-            assert_eq!(loop_verdict(2), None);
-            assert_eq!(loop_verdict(3), Some(LoopAction::Warn));
-            assert_eq!(loop_verdict(4), None);
-            assert_eq!(loop_verdict(5), Some(LoopAction::Stop));
-            assert_eq!(loop_verdict(6), None);
-            assert_eq!(loop_verdict(50), None);
+            let at = LoopThresholds::default();
+            assert_eq!(loop_verdict(0, at), None);
+            assert_eq!(loop_verdict(1, at), None);
+            assert_eq!(loop_verdict(2, at), None);
+            assert_eq!(loop_verdict(3, at), Some(LoopAction::Warn));
+            assert_eq!(loop_verdict(4, at), None);
+            assert_eq!(loop_verdict(5, at), Some(LoopAction::Stop));
+            assert_eq!(loop_verdict(6, at), None);
+            assert_eq!(loop_verdict(50, at), None);
         }
 
-        /// The same call five times: one word, then the plug.
+        /// The thresholds are the settings' when set: numbers, or strings
+        /// holding numbers; zero, nonsense, absence and the absurd fall back
+        /// to the defaults; and a stop set equal to the warn is the stop.
         #[test]
-        fn a_repeating_pair_warns_then_stops() {
-            let calls = [("read_file", "a.rs"); 5];
+        fn thresholds_come_from_the_settings_and_fall_back_to_the_defaults() {
+            let at = loop_thresholds_from(&json!(8), &json!("20"));
+            assert_eq!(
+                at,
+                LoopThresholds {
+                    warn_at: 8,
+                    stop_at: 20
+                }
+            );
+            assert_eq!(loop_verdict(8, at), Some(LoopAction::Warn));
+            assert_eq!(loop_verdict(20, at), Some(LoopAction::Stop));
+            assert_eq!(loop_verdict(3, at), None);
+            assert_eq!(loop_verdict(5, at), None);
+
+            assert_eq!(
+                loop_thresholds_from(&Value::Null, &Value::Null),
+                LoopThresholds::default()
+            );
+            assert_eq!(
+                loop_thresholds_from(&json!(0), &json!("many")),
+                LoopThresholds::default()
+            );
+            assert_eq!(
+                loop_thresholds_from(&json!(-3), &json!(1_000_001)),
+                LoopThresholds::default()
+            );
+            let same = loop_thresholds_from(&json!(4), &json!(4));
+            assert_eq!(loop_verdict(4, same), Some(LoopAction::Stop));
+        }
+
+        /// The same call with the same answer five times: one word, then the
+        /// plug.
+        #[test]
+        fn a_repeating_call_with_one_answer_warns_then_stops() {
+            let calls = [("read_file", "a.rs", "fn main() {}"); 5];
             assert_eq!(
                 replay(&calls),
                 vec![
@@ -1520,31 +1706,54 @@ mod tests {
             );
         }
 
+        /// POLLING IS NOT A LOOP. The same call whose answer keeps changing —
+        /// a job status, a log tail, a clock — is an agent waiting for
+        /// something, and must never be touched.
+        #[test]
+        fn the_same_call_with_a_changing_answer_is_polling() {
+            let verdicts = replay(&[
+                ("job_status", "job-7", "queued"),
+                ("job_status", "job-7", "running 10%"),
+                ("job_status", "job-7", "running 40%"),
+                ("job_status", "job-7", "running 70%"),
+                ("job_status", "job-7", "running 90%"),
+                ("job_status", "job-7", "running 95%"),
+            ]);
+            assert!(verdicts.iter().all(Option::is_none), "{verdicts:?}");
+            // And the moment the answer stops moving, the count starts.
+            let stuck = replay(&[
+                ("job_status", "job-7", "running 95%"),
+                ("job_status", "job-7", "running 95%"),
+                ("job_status", "job-7", "running 95%"),
+            ]);
+            assert_eq!(stuck[2], Some(LoopAction::Warn));
+        }
+
         /// The ARGUMENTS are what make it a loop. One tool used five times on
         /// five different files is an agent working, and must never be touched.
         #[test]
         fn one_tool_on_different_arguments_is_not_a_loop() {
             let verdicts = replay(&[
-                ("read_file", "a.rs"),
-                ("read_file", "b.rs"),
-                ("read_file", "c.rs"),
-                ("read_file", "d.rs"),
-                ("read_file", "e.rs"),
+                ("read_file", "a.rs", ""),
+                ("read_file", "b.rs", ""),
+                ("read_file", "c.rs", ""),
+                ("read_file", "d.rs", ""),
+                ("read_file", "e.rs", ""),
             ]);
             assert!(verdicts.iter().all(Option::is_none));
         }
 
-        /// Two pairs are counted apart: interleaving them does not add up to
-        /// one loop, and the pair that does repeat still reaches its own
+        /// Two keys are counted apart: interleaving them does not add up to
+        /// one loop, and the key that does repeat still reaches its own
         /// threshold.
         #[test]
-        fn pairs_are_counted_separately() {
+        fn keys_are_counted_separately() {
             let verdicts = replay(&[
-                ("grep", "needle"),
-                ("read_file", "a.rs"),
-                ("grep", "needle"),
-                ("read_file", "a.rs"),
-                ("grep", "needle"),
+                ("grep", "needle", "x"),
+                ("read_file", "a.rs", "y"),
+                ("grep", "needle", "x"),
+                ("read_file", "a.rs", "y"),
+                ("grep", "needle", "x"),
             ]);
             assert_eq!(verdicts[4], Some(LoopAction::Warn));
             assert_eq!(verdicts[3], None);
@@ -1552,11 +1761,93 @@ mod tests {
 
         /// An unlabelled frame carries no arguments to compare, so it is not
         /// counted — every such call of one tool would collide into a single
-        /// pair and read as a loop the moment the tool was used three times.
+        /// key and read as a loop the moment the tool was used three times.
         #[test]
         fn unlabelled_calls_are_never_counted() {
-            let verdicts = replay(&[("bash", ""), ("bash", "   "), ("bash", ""), ("bash", "")]);
+            let verdicts = replay(&[
+                ("bash", "", "a"),
+                ("bash", "   ", "a"),
+                ("bash", "", "a"),
+                ("bash", "", "a"),
+            ]);
             assert!(verdicts.iter().all(Option::is_none));
+        }
+    }
+
+    /// A stream that dies mid-prose keeps its prose: the reason lands after
+    /// the words, never instead of them — the same rule the stale sweep
+    /// follows, so the two writers agree about what a dead turn shows.
+    mod dead_stream {
+        use super::*;
+
+        #[test]
+        fn the_reason_follows_the_drained_prose() {
+            assert_eq!(
+                with_error_line("Here is the first half of the ans", "(agent error: reset)"),
+                "Here is the first half of the ans\n\n(agent error: reset)"
+            );
+            assert_eq!(
+                with_error_line("trailing newlines\n\n", "(agent error: reset)"),
+                "trailing newlines\n\n(agent error: reset)"
+            );
+        }
+
+        #[test]
+        fn an_empty_reply_is_the_reason_alone() {
+            assert_eq!(
+                with_error_line("", "(agent error: idle)"),
+                "(agent error: idle)"
+            );
+            assert_eq!(
+                with_error_line("   \n", "(agent error: idle)"),
+                "(agent error: idle)"
+            );
+        }
+    }
+
+    /// The line that names the conversation rides as a system row after the
+    /// leading system rows, so the pinned arm folds it into the ephemeral
+    /// prompt and the completions arm sends it ahead of the history.
+    mod conversation_line {
+        use super::*;
+
+        #[test]
+        fn it_sits_after_the_leading_system_rows_and_folds_into_the_pinned_prompt() {
+            let messages = vec![
+                json!({ "role": "system", "content": "mode prompt" }),
+                json!({ "role": "user", "content": "hi" }),
+            ];
+            let out = with_conversation_line(&messages, "22f1e3a0-0000-4000-8000-000000000001");
+            assert_eq!(out.len(), 3);
+            assert_eq!(out[1]["role"], "system");
+            assert!(
+                out[1]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("22f1e3a0-0000-4000-8000-000000000001")
+            );
+            assert_eq!(out[2]["content"], "hi");
+            let (system, message) = session_turn_parts(&out);
+            assert!(
+                system
+                    .as_deref()
+                    .unwrap_or_default()
+                    .starts_with("mode prompt\n\n")
+            );
+            assert!(
+                system
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("conversationId")
+            );
+            assert_eq!(message, json!("hi"));
+        }
+
+        #[test]
+        fn with_no_system_rows_it_leads() {
+            let out = with_conversation_line(&[json!({ "role": "user", "content": "hi" })], "c1");
+            assert_eq!(out[0]["role"], "system");
+            assert_eq!(out[1]["content"], "hi");
         }
     }
 

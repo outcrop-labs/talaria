@@ -16,6 +16,7 @@ sqlx = { workspace = true }
 talaria-artifacts = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-google-connections = { workspace = true }
+talaria-google-docs = { workspace = true }
 talaria-google-errors = { workspace = true }
 talaria-google-oauth = { workspace = true }
 talaria-google-org = { workspace = true }

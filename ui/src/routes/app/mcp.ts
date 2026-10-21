@@ -283,6 +283,9 @@ export async function installLibraryServer(l: LibraryServerRow, opts: InstallOpt
     package: l.package ?? undefined,
     env: l.package ? opts.env : undefined,
     argValues: l.package ? opts.argValues : undefined,
+    // The person chose "show unreachable" and picked this one: that is the
+    // acknowledgement the api asks for before registering a dead endpoint.
+    force: l.live?.state === 'dead' ? true : undefined,
   })
   const meta = server.oauthMeta
   const oauthApp = needsOauthApp(meta)

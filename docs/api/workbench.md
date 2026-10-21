@@ -275,9 +275,9 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_coding_pin
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{role, model}` | 200 | — |
-| PUT | `session` | [body](#put-apiworkbenchcodingpintaskid-body) | `{accountId, model}` | 200, 400, 404, 409 | — |
-| DELETE | `session` | — | `…` | 200 | — |
+| GET | `session` | — | `{role, model}` | 200, 403, 404 | — |
+| PUT | `session` | [body](#put-apiworkbenchcodingpintaskid-body) | `{accountId, model}` | 200, 400, 403, 404, 409 | — |
+| DELETE | `session` | — | `…` | 200, 403, 404 | — |
 
 **GET** — This ticket's pinned coding plan, the plans its agent could use, and what a job started now would resolve to.
 

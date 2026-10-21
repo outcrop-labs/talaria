@@ -71,9 +71,13 @@ pub async fn active_slot(pg: &PgPool, department: &str) -> Slot {
 /// the same shape rather than a second copy of it.
 pub async fn docker(args: &[&str], timeout: Duration) -> Result<(String, String), String> {
     let out = tokio::time::timeout(timeout, async {
+        // kill_on_drop: a timed-out `docker compose up` or `docker exec`
+        // must die with the future that was waiting on it, not outlive its
+        // own deadline as an orphan CLI process.
         tokio::process::Command::new("docker")
             .args(args)
             .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
             .output()
             .await
             .map_err(|e| format!("docker {} …: {e}", args.first().unwrap_or(&"")))
@@ -265,6 +269,7 @@ pub async fn docker_exec_opt(
             })
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("docker exec {container} …: {e}"))?;
         if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
@@ -518,14 +523,27 @@ pub async fn prune_bundled_skills(department: &str, slot: Slot) -> bool {
 /// which is exactly what the first live run of this feature did.
 pub const BROWSER_SETUP_MARKER: &str = "/opt/data/.talaria-browser-setup";
 
+/// The user the setup runs as. The image starts as root and s6 drops to
+/// `hermes`, which owns `/opt/data` — the volume the install writes to — so
+/// the install runs as that user rather than as root: what it fetches from
+/// the network lands with the runtime user's rights, not the container's
+/// root. `docker exec -u` needs the user to exist in the image, which the
+/// hermes-agent image guarantees (its own init drops to it).
+pub const BROWSER_SETUP_USER: &str = "hermes";
+
 /// The script the setup runs inside the container. The marker is the whole
 /// trick: this fires after EVERY up and roll, so the second call has to cost
 /// nothing. `&&`, never `;`: the marker is written only when the post-setup
-/// hook succeeded, or a failed install would look finished forever.
+/// hook succeeded, or a failed install would look finished forever. The
+/// marker's CONTENT is what got installed — the browser CLI's own version
+/// when it answers, else the Hermes version that installed it — so a later
+/// look at the volume says which build is on it rather than only that one is.
 fn install_browser_script() -> String {
     format!(
         "test -e {BROWSER_SETUP_MARKER} || \
-         (hermes tools post-setup agent_browser && touch {BROWSER_SETUP_MARKER})"
+         (hermes tools post-setup agent_browser && \
+          (agent-browser --version 2>/dev/null || hermes --version 2>/dev/null || echo unknown) \
+          > {BROWSER_SETUP_MARKER})"
     )
 }
 
@@ -549,7 +567,7 @@ pub async fn install_browser(department: &str, slot: Slot) -> bool {
     }
     let script = install_browser_script();
     match docker(
-        &["exec", &name, "sh", "-c", &script],
+        &["exec", "-u", BROWSER_SETUP_USER, &name, "sh", "-c", &script],
         Duration::from_secs(600),
     )
     .await
@@ -601,11 +619,17 @@ mod tests {
             "{script}"
         );
         // The marker is written only after the hook succeeded: `&&`, never
-        // `;`, or a failed install would look finished forever.
+        // `;`, or a failed install would look finished forever — and what it
+        // holds is the installed version, not an empty touch.
+        assert!(script.contains("agent_browser && "), "{script}");
         assert!(
-            script.contains("agent_browser && touch /opt/data/.talaria-browser-setup"),
+            script.ends_with("> /opt/data/.talaria-browser-setup)"),
             "{script}"
         );
+        assert!(script.contains("--version"), "{script}");
+        assert!(!script.contains("; "), "no `;` anywhere: {script}");
+        // The setup runs as the runtime user that owns the volume.
+        assert_eq!(BROWSER_SETUP_USER, "hermes");
         // And nothing here points Playwright away from the image's Chromium.
         assert!(!script.contains("PLAYWRIGHT_BROWSERS_PATH"));
     }

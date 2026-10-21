@@ -25,6 +25,9 @@ pub async fn post(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let artifact = match get_artifact(&state.pg, &id).await {
         Ok(Some(a)) => a,
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),

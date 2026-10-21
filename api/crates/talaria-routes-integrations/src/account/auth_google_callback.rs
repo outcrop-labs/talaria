@@ -106,13 +106,40 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         }
     };
 
+    // The org account's domain is the outer gate. Once a Talaria is wired to
+    // a Google Workspace, Google sign-in is for that workspace's people —
+    // checked BEFORE the claim and the doors below because "only this org" is
+    // a property of the install, not a membership policy an invite can
+    // override. The connected flag (a live refresh token) is part of the
+    // anchor: a dead leftover row must not lock every human out.
+    let org_email = match org_login_email(&state.pg).await {
+        Ok(e) => e,
+        Err(e) => return internal("[auth/google] org_login_email read failed", e),
+    };
+    if !org_login_allowed(org_email.as_deref(), identity.email.as_deref()) {
+        return login_error(
+            &headers,
+            "org_domain",
+            &[(
+                "domain",
+                email_domain_of(org_email.as_deref())
+                    .unwrap_or_default()
+                    .as_str(),
+            )],
+        );
+    }
+
     // An unclaimed instance (zero admins) hands the FIRST Google identity the
-    // keys — no doors apply, by design: nobody exists yet to have invited
-    // them. A lost race (someone claimed between the check and the lock) falls
-    // through to the normal doors for this sign-in. The org-domain gate below
-    // cannot bite here in practice — org connect is admin-only, so an
-    // unclaimed instance has no connection — but the claim precedes it anyway.
+    // keys — the invite and self-join doors do not apply, by design: nobody
+    // exists yet to have invited them. THE OPERATOR'S ALLOW-LIST STILL DOES:
+    // AUTH_ALLOWED_EMAILS / AUTH_ALLOWED_DOMAINS is set in the environment
+    // before the first sign-in, and an instance that handed its keys to the
+    // first Google account to finish OAuth — allow-list or not — was a claim
+    // anybody with the URL could win. A lost race (someone claimed between
+    // the check and the lock) falls through to the normal doors.
+    let allow_listed = is_email_allowed(identity.email.as_deref(), &cfg);
     match instance_claimable(&state.pg).await {
+        Ok(true) if !allow_listed => return login_error(&headers, "not_allowed", &[]),
         Ok(true) => match claim_admin(&state.pg, &identity, None).await {
             Ok(Some(claimed)) => {
                 let (cid, role) = (claimed.0.clone(), claimed.5.clone());
@@ -147,36 +174,13 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Err(e) => return internal("[auth/google] instance_claimable read failed", e),
     }
 
-    // The org account's domain is the outer gate. Once a Talaria is wired to
-    // a Google Workspace, Google sign-in is for that workspace's people —
-    // checked BEFORE the doors below because "only this org" is a property of
-    // the install, not a membership policy an invite can override. The
-    // connected flag (a live refresh token) is part of the anchor: a dead
-    // leftover row must not lock every human out.
-    let org_email = match org_login_email(&state.pg).await {
-        Ok(e) => e,
-        Err(e) => return internal("[auth/google] org_login_email read failed", e),
-    };
-    if !org_login_allowed(org_email.as_deref(), identity.email.as_deref()) {
-        return login_error(
-            &headers,
-            "org_domain",
-            &[(
-                "domain",
-                email_domain_of(org_email.as_deref())
-                    .unwrap_or_default()
-                    .as_str(),
-            )],
-        );
-    }
-
     // Three doors in: the env allow-list, SELF-JOIN (verified email on a
     // DNS-verified org domain), or a live INVITE for this address.
     let invited = match invite_allowed(&state.pg, identity.email.as_deref()).await {
         Ok(v) => v,
         Err(e) => return internal("[auth/google] invite read failed", e),
     };
-    if !is_email_allowed(identity.email.as_deref(), &cfg) {
+    if !allow_listed {
         let self_join = match self_join_allowed(&state.pg, identity.email.as_deref()).await {
             Ok(v) => v,
             Err(e) => return internal("[auth/google] org domain read failed", e),

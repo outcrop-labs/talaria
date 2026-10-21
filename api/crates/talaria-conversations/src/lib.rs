@@ -115,6 +115,14 @@ pub struct PriorMessage {
 ///
 /// A message row a non-array attachments value cannot crash this walk: the
 /// ref/file legs treat it as nothing.
+///
+/// A STEER THE RUN ACCEPTED IS NOT HISTORY TO RE-SEND. The steer route
+/// inserts its row with the next seq while the reply (a lower seq) streams,
+/// so on the following turn it sits in the trailing run of user rows that
+/// the pinned arm folds into the new message — and Hermes consumed those
+/// words mid-run already. The row stays in the thread for readers; it is
+/// left out of the transcript the agent is sent, on both arms, the same way
+/// `unanswered_user_after` leaves it out of the chain.
 pub async fn prior_messages(
     pg: &PgPool,
     sb: &SecretBox,
@@ -142,6 +150,7 @@ pub async fn prior_messages(
          where m.conversation_id = $1::uuid and m.role in ('user','assistant') \
            and (m.content <> '' or m.attachments <> '[]'::jsonb) \
            and ($2::uuid is null or m.id <> $2::uuid) \
+           and not (coalesce(m.metadata, '{}'::jsonb) @> '{\"steer_accepted\": true}'::jsonb) \
          order by m.seq asc",
         )
         .bind(conversation_id)
@@ -1144,23 +1153,54 @@ pub async fn last_user_message_effort(
     Ok((!effort.trim().is_empty()).then(|| effort.to_string()))
 }
 
+/// Whether an insert lost the race for a seq: `UNIQUE (conversation_id, seq)`
+/// refused it because another writer — a second tab, a chain racing a live
+/// turn — took the number between `next_seq` and the insert. The one error
+/// a caller may answer with "try again" rather than "something broke".
+pub fn is_seq_collision(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(db) if db.is_unique_violation())
+}
+
 /// Create the assistant row, status='streaming'; returns its id.
+///
+/// RETRIES THE SEQ ONCE. `next_seq` and this insert are two statements with
+/// no lock between them, so two tabs sending at the same instant can both
+/// compute the same number; the user row that lost is the caller's to refuse
+/// (`is_seq_collision`), but an assistant row that loses AFTER its user row
+/// landed would leave a turn with a question and no reply row — the shape
+/// the chain only notices a turn later. The reply takes the next free
+/// number instead: it still follows its user row, because the collision
+/// means the other writer's row sits between them and nothing else does.
 pub async fn insert_streaming_assistant(
     pg: &PgPool,
     conversation_id: &str,
     seq: i32,
     metadata: &Value,
 ) -> Result<String, sqlx::Error> {
-    let (id,): (String,) = sqlx::query_as(
-        "insert into messages (conversation_id, seq, role, status, metadata) \
-         values ($1::uuid, $2, 'assistant', 'streaming', $3) returning id::text",
-    )
-    .bind(conversation_id)
-    .bind(seq)
-    .bind(metadata)
-    .fetch_one(pg)
-    .await?;
-    Ok(id)
+    async fn insert(
+        pg: &PgPool,
+        conversation_id: &str,
+        seq: i32,
+        metadata: &Value,
+    ) -> Result<String, sqlx::Error> {
+        let (id,): (String,) = sqlx::query_as(
+            "insert into messages (conversation_id, seq, role, status, metadata) \
+             values ($1::uuid, $2, 'assistant', 'streaming', $3) returning id::text",
+        )
+        .bind(conversation_id)
+        .bind(seq)
+        .bind(metadata)
+        .fetch_one(pg)
+        .await?;
+        Ok(id)
+    }
+    match insert(pg, conversation_id, seq, metadata).await {
+        Err(e) if is_seq_collision(&e) => {
+            let fresh = next_seq(pg, conversation_id).await?;
+            insert(pg, conversation_id, fresh, metadata).await
+        }
+        other => other,
+    }
 }
 
 /// Stamp the Hermes run behind a streaming assistant row, the moment the

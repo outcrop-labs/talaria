@@ -20,6 +20,19 @@
 // of the rows the reader can reach, so a chip that arrives ahead of its stamp
 // is an image pointing at a 404 for everyone but the upload's owner — and the
 // chip write is also the realtime nudge that makes a browser go fetch it.
+//
+// ADDRESSED BY CONVERSATION. The plugin stamps the Hermes session id on the
+// POST, and for a pinned agent that id IS the conversation id: the row is
+// resolved inside that conversation and nowhere else. A body with no usable
+// id is served only while the agent has exactly one turn it could mean —
+// several, and the answer is a 409 that says so, never a guess at somebody
+// else's thread.
+//
+// THE TRUST BOUNDARY IS THE AGENT, NOT THE PLUGIN. The key this door takes
+// sits in the container's environment where the model's own terminal can
+// read it, so a model (or an instruction injected into it) can post bytes
+// here as "the page it saw"; the route re-clamps and scrubs, and scopes the
+// landing to the agent's own threads, but cannot tell plugin from model.
 
 use axum::Json;
 use axum::extract::State;
@@ -144,11 +157,18 @@ pub async fn post(
     // a blob nobody will ever open, and the next tool call is one screenshot
     // away — refusing costs the agent nothing. 409, not 400: the body was
     // fine, the moment was not.
-    let conversation = match talaria_chips::live_conversation_id(&state.pg, &caller.model).await {
-        Ok(v) => v,
-        Err(e) => return Ok(internal("[agent-uploads] live turn lookup failed", e)),
-    };
-    let Some(conversation) = conversation else {
+    let hint = talaria_chips::conversation_hint(&parsed);
+    let target =
+        match talaria_chips::landing_target(&state.pg, &caller.model, hint.as_deref()).await {
+            Ok(t) => t,
+            Err(e) => return Ok(internal("[agent-uploads] live turn lookup failed", e)),
+        };
+    if let Some(why) = target.ambiguity() {
+        return Ok(house_error(StatusCode::CONFLICT, &why));
+    }
+    // A channel turn has no conversation row to stamp: `append_message_attachment`
+    // writes `messages`, and a channel message is a different table.
+    let Some(conversation) = target.landed().and_then(|l| l.conversation_id) else {
         return Ok(house_error(
             StatusCode::CONFLICT,
             "no live turn to attach to",
@@ -204,27 +224,28 @@ pub async fn post(
         }
     }
     let redis = state.redis().await.ok();
-    let landed = match talaria_chips::surface_tool_chips(
+    // Addressed to the conversation resolved above, so the chip and the
+    // stamp can never land on opposite sides of two people's turns.
+    let landed = match talaria_chips::surface_tool_chips_in(
         &state.pg,
         redis,
         &caller.model,
         owner.as_deref(),
+        Some(&conversation),
         vec![image_chip(&att.id, &att.filename)],
     )
     .await
     {
-        Ok(landed) => landed,
+        Ok(target) => target.landed(),
         Err(e) => {
             tracing::warn!("[agent-uploads] chip surface failed: {e}");
             None
         }
     };
     // The streaming row is the usual target and the chip lands on it. When
-    // the turn closed between the gate and now, the chip went wherever the
-    // agent is speaking instead — stamp THAT row, so the image and the chip
-    // are never on opposite sides of one answer. Only a conversation row:
-    // `append_message_attachment` writes `messages`, and a channel turn's id
-    // belongs to a different table.
+    // the turn closed between the gate and now, the chip went on the
+    // conversation's newest reply instead — stamp THAT row, so the image and
+    // the chip are never on opposite sides of one answer.
     if !stamped
         && let Some(landed) = &landed
         && landed.conversation_id.is_some()

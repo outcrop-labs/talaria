@@ -26,7 +26,7 @@
 import { db } from './db/pg'
 import { open } from './secretbox'
 import { assistantOwnerFor } from './users'
-import { subjectModel, type AgentSubject } from './agent-auth'
+import { subjectModel, subjectProven, type AgentSubject } from './agent-auth'
 import { oauthTokenFor } from './mcp-oauth'
 import { safeFetch } from './safe-fetch'
 import { MCP_PROTOCOL_VERSION } from './mcp-protocol'
@@ -161,9 +161,16 @@ export async function callMcpTool(serverName: string, tool: string, args: Record
   // A caller with no grant resolves nothing. The reason is reported to the
   // OPERATOR rather than to the model: a caller that learns which names exist
   // has been handed a map of the workspace's credentials.
+  const server = await getMcpServer(serverName)
+  if (!server) throw new Error(`MCP server "${serverName}" is not registered`)
   if (caller) {
     const { resolveHandles } = await import('./workspace-secrets')
-    const resolved = await resolveHandles(JSON.stringify(args), caller)
+    // The destination is the server the value is about to reach — an app
+    // dispatches in process under its own scheme, a remote server is its host
+    // — so an allowlist that names github.com cannot be spent into Notion
+    // because the arguments mention GitHub.
+    const destination = server.appSlug ? `talaria-app://${server.appSlug}` : safeHost(server.url)
+    const resolved = await resolveHandles(JSON.stringify(args), caller, destination)
     if (resolved.used.length > 0 || resolved.unresolved.length > 0) {
       try {
         args = JSON.parse(resolved.text) as Record<string, unknown>
@@ -175,8 +182,6 @@ export async function callMcpTool(serverName: string, tool: string, args: Record
       for (const u of resolved.unresolved) console.warn(`[secrets] ${caller} could not resolve ${u.handle} on ${serverName}.${tool}: ${u.reason}`)
     }
   }
-  const server = await getMcpServer(serverName)
-  if (!server) throw new Error(`MCP server "${serverName}" is not registered`)
   if (!server.enabled) throw new Error(`MCP server "${serverName}" is disabled`)
   if (server.authMode === 'per-user') {
     throw new Error(`MCP server "${serverName}" authenticates per user, so a platform stage cannot call it. Register an org-authenticated server for this.`)
@@ -202,6 +207,16 @@ export async function callMcpTool(serverName: string, tool: string, args: Record
   if (res.status >= 400) throw new Error(`MCP tool "${serverName}.${tool}" answered ${res.status}`)
 
   return readToolResult(res.json, serverName, tool)
+}
+
+/** The host a registered URL reaches, or the URL itself when it does not parse
+ *  (an unparseable destination is never allowlisted, so the spend refuses). */
+function safeHost(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return url
+  }
 }
 
 /** The MCP `tools/call` result shape, flattened. One reader for both the socket
@@ -279,9 +294,36 @@ const intersect = (a: string[] | null, b: string[] | null): string[] | null => {
   return a.filter((t) => bs.has(t))
 }
 
-/** What one AGENT may do on one server: assignment ∩ (for a personal
- *  assistant) its owner's user access — with the owner's credentials on
- *  per-user servers. Null = no access at all.
+/** Union of tool allowlists. `null` = all tools, so it dominates — the twin
+ *  of `union_tools` in api/crates/talaria-mcp/src/registry.rs. */
+const union = (a: string[] | null, b: string[] | null): string[] | null =>
+  a === null || b === null ? null : [...new Set([...a, ...b])]
+/** `union_tool_lists`: no lists at all is "no narrowing", i.e. all tools. */
+const unionAll = (lists: Array<string[] | null>): string[] | null => (lists.length === 0 ? null : lists.reduce(union))
+
+/** The Workbench's registry name (`WORKBENCH_SERVER` in registry.rs). */
+const WORKBENCH_SERVER = 'workbench'
+
+/** What one AGENT may do on one server: assignment ∪ team-agent grants,
+ *  intersected (for a personal assistant) with its owner's user/team access —
+ *  with the owner's credentials on per-user servers. Null = no access at all.
+ *
+ *  THIS IS A TWIN, and the drift it had was the finding: the Rust resolver
+ *  (`effective_mcp_for`, api/crates/talaria-mcp/src/registry.rs) reads
+ *  `mcp_team_access` joined to `team_agents` for the agent and to
+ *  `team_members` for the owner; this copy read neither, so a team granted
+ *  an app-published server got 403 from /api/mcp/gw/app-* while the same
+ *  grant on a remote server worked. The rules below are the Rust ones, in
+ *  order, with the same union/intersect semantics (null = all, [] = nothing):
+ *    · agent side — an assignment row ∪ every ALLOWED team grant for a team
+ *      the agent is on; on a scoped server a team grant counts as assignment;
+ *      all-agents servers carry everyone and rows only narrow.
+ *    · owner side — a person's own deny wins outright; a team deny with no
+ *      allow anywhere (person or team) denies; otherwise the person's allow
+ *      ∪ the allowed team grants is the owner's allowance.
+ *  Rust also answers "granted but not connected" as its own verdict; this
+ *  resident serves only app servers (no upstream account to connect), so
+ *  null stands for every refusal here.
  *
  *  Takes the CALLER wherever the gateway has one. Resolving the acting owner
  *  hands out that human's connected account — on an OAuth server, literally
@@ -294,16 +336,34 @@ export async function effectiveMcpFor(agent: AgentSubject, serverName: string): 
   const server = await getMcpServer(serverName)
   if (!server || !server.enabled) return null
   const sql = await db()
+  // The Workbench is granted by the agent's Developer Agent switch and by
+  // nothing else; the Rust resolver reads that switch. This resident never
+  // serves it (the proxy holds back only app-*), so it is a refusal here
+  // rather than a second reading of agent_defs.developer.
+  if (server.name === WORKBENCH_SERVER) return null
 
   let agentTools: string[] | null = null
   {
     const rows = (await sql`
       select tools from mcp_server_agents where server_id = ${server.id} and agent_model = ${agentModel}
     `) as unknown as Array<{ tools: string[] | null }>
+    const teamRows = (await sql`
+      select a.allowed, a.tools
+      from mcp_team_access a
+      join team_agents t on t.team_id = a.team_id
+      where a.server_id = ${server.id} and t.agent_model = ${agentModel}
+    `) as unknown as Array<{ allowed: boolean; tools: string[] | null }>
+    const teamAllowLists = teamRows.filter((r) => r.allowed).map((r) => r.tools ?? null)
     // All-agents servers carry everyone; assignment rows become per-agent
-    // tool OVERRIDES. Scoped servers require a row outright.
-    if (rows.length === 0 && !server.allAgents) return null
-    agentTools = rows[0]?.tools ?? null
+    // tool OVERRIDES. Scoped servers require a row outright, or an allowed
+    // team grant for a team the agent is on.
+    if (rows.length === 0) {
+      if (server.allAgents) agentTools = null
+      else if (teamAllowLists.length === 0) return null
+      else agentTools = unionAll(teamAllowLists)
+    } else {
+      agentTools = unionAll([rows[0]?.tools ?? null, ...teamAllowLists])
+    }
   }
 
   const owner = await assistantOwnerFor(agent)
@@ -314,7 +374,20 @@ export async function effectiveMcpFor(agent: AgentSubject, serverName: string): 
       select allowed, tools from mcp_user_access where server_id = ${server.id} and user_id = ${owner}
     `) as unknown as Array<{ allowed: boolean; tools: string[] | null }>
     if (access && !access.allowed) return null
-    userTools = access?.tools ?? null
+    const teamRows = (await sql`
+      select a.allowed, a.tools
+      from mcp_team_access a
+      join team_members m on m.team_id = a.team_id
+      where a.server_id = ${server.id} and m.user_id = ${owner}
+    `) as unknown as Array<{ allowed: boolean; tools: string[] | null }>
+    const anyTeamDeny = teamRows.some((r) => !r.allowed)
+    const anyTeamAllow = teamRows.some((r) => r.allowed)
+    const userAllow = access?.allowed === true
+    if (anyTeamDeny && !anyTeamAllow && !userAllow) return null
+    const allowedLists: Array<string[] | null> = []
+    if (userAllow) allowedLists.push(access?.tools ?? null)
+    for (const r of teamRows) if (r.allowed) allowedLists.push(r.tools ?? null)
+    userTools = unionAll(allowedLists)
     if (server.authMode === 'per-user') {
       if (server.oauthEnabled) {
         const bearer = await oauthTokenFor(server.id, owner)
@@ -339,4 +412,79 @@ export async function effectiveMcpFor(agent: AgentSubject, serverName: string): 
   }
 
   return { server, tools: intersect(agentTools, userTools), upstreamHeaders }
+}
+
+// ── The call record ─────────────────────────────────────────────────────────
+// One row in `mcp_tool_calls` per tools/call this resident answers — the same
+// table, columns and rules as the Rust gateway's `CallLog`
+// (api/crates/talaria-mcp/src/calls.rs), because the Observability panel
+// reads that table and "which agent called which app tool" had no answer at
+// all: app calls were the one gateway path that wrote nothing. What a row
+// holds and never does is calls.rs's contract, restated here so the twin
+// cannot quietly say less: who (agent, and the acting human on a personal
+// assistant), where (server id + name), what (the tool NAME, capped), how it
+// went (outcome, status, latency) and — on a failure — one sentence capped at
+// 300 chars. NEVER the arguments, never the result: arguments carry the
+// credential the spend boundary just put there, results carry whatever the
+// tool read. The sentence is scrubbed of the argument strings the agent sent
+// (`scrubArguments` in mcp-jsonrpc.ts) and, on a call that spent a
+// credential, replaced outright (`SPENT_REDACTED`).
+//
+// Fire-and-forget: the hot path never waits on the insert, and a failed
+// insert warns and is gone — losing a log row is the right trade against
+// failing a tool call.
+
+/** The closed set `mcp_tool_calls.outcome` takes (`Outcome::as_str` in calls.rs). */
+export type McpCallOutcome = 'ok' | 'error' | 'denied' | 'not_connected' | 'upstream_error' | 'spend_error' | 'cancelled'
+
+export interface McpCallRecord {
+  /** Known when the server resolved; null on a refusal before resolution,
+   *  and the insert then looks it up by name (and records nothing for a
+   *  name that is not a server, like the Rust twin). */
+  serverId: string | null
+  serverName: string
+  agent: AgentSubject
+  tool: string | null
+  outcome: McpCallOutcome
+  /** The HTTP status this resident answered with. */
+  status: number | null
+  latencyMs: number | null
+  /** Already scrubbed and capped by the caller (see mcp-jsonrpc.ts). */
+  error: string | null
+}
+
+/** The longest error sentence / tool name a row keeps (calls.rs `ERROR_MAX_CHARS`, `TOOL_MAX_CHARS`). */
+export const CALL_ERROR_MAX_CHARS = 300
+export const CALL_TOOL_MAX_CHARS = 200
+
+export function recordMcpToolCall(row: McpCallRecord): void {
+  void (async () => {
+    const sql = await db()
+    // The Rust statement, verbatim in shape: the owner lookup rides inside as
+    // a subquery, and `owner_eligible` (a proven caller, never a legacy
+    // shared-key one) is what lets it run — a legacy caller's name proves
+    // nothing, so no human is attributed to it.
+    await sql.unsafe(
+      `insert into mcp_tool_calls
+         (server_id, server_name, agent, user_id, method, tool, outcome, status, latency_ms, error)
+       select coalesce($1::text, (select s.id::text from mcp_servers s where s.name = $2::text)),
+              $2::text, $3::text,
+              case when $4::bool then (select d.owner_user_id::text from agent_defs d
+                                        where d.model = $3::text and d.owner_user_id is not null
+                                        limit 1) end,
+              'tools/call', $5::text, $6::text, $7::smallint, $8::int4, $9::text
+       where coalesce($1::text, (select s.id::text from mcp_servers s where s.name = $2::text)) is not null`,
+      [
+        row.serverId,
+        row.serverName,
+        subjectModel(row.agent),
+        subjectProven(row.agent),
+        row.tool === null ? null : [...row.tool].slice(0, CALL_TOOL_MAX_CHARS).join(''),
+        row.outcome,
+        row.status,
+        row.latencyMs,
+        row.error === null ? null : [...row.error].slice(0, CALL_ERROR_MAX_CHARS).join(''),
+      ],
+    )
+  })().catch((e) => console.warn(`[mcp/calls] could not record ${row.serverName}.${row.tool ?? '?'}: ${(e as Error).message}`))
 }

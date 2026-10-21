@@ -14,12 +14,19 @@ use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_api_facades::kb::perms::{
     can_read, can_read_agent, granted_item_ids, granted_item_ids_for_agent,
 };
-use talaria_api_facades::kb::{NewSpace, create_space, list_spaces};
+use talaria_api_facades::kb::{NewSpace, create_space, list_spaces, spaces_created_in_last_day};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{optional_max_string_member, parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_perm, require_user, who_of};
 use talaria_state::AppState;
+
+use talaria_ratelimit::too_many_requests;
+
+/// Spaces an agent may create per day. A space is org-visible by default,
+/// so name variants from a looping agent are an org-wide shelf nobody asked
+/// for; twenty a day is more than any honest filing needs.
+const AGENT_SPACES_PER_DAY: i64 = 20;
 
 pub(crate) fn guarded_of(
     space: &talaria_api_facades::kb::KbSpace,
@@ -118,8 +125,44 @@ pub async fn post(
         .into_iter()
         .find(|s| s.name.trim().to_lowercase() == name.trim().to_lowercase());
         if let Some(dup) = dup {
-            // find-or-create: agents retry; duplicates rot the KB.
+            // find-or-create: agents retry; duplicates rot the KB. But the
+            // find half answers ONLY with a space this caller could have
+            // listed — the same read gate GET /api/kb/spaces applies — or
+            // the route hands an agent that guesses a name the full row of
+            // someone's private space (its landing page, its owner). A
+            // collision with a space it cannot read is a 409 and no row.
+            let granted = match granted_item_ids_for_agent(&state.pg, "space", &model).await {
+                Ok(v) => v,
+                Err(e) => return Ok(internal("[kb] grant read failed", e)),
+            };
+            let owner = match talaria_users::assistant_owner_for(
+                &state.pg,
+                &AgentSubject::Caller(caller.clone()),
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return Ok(internal("[kb] owner resolve failed", e)),
+            };
+            let readable = granted.contains(&dup.id)
+                || can_read_agent(&guarded_of(&dup), &model, owner.as_deref(), &[], &[]);
+            if !readable {
+                return Ok(house_error(
+                    StatusCode::CONFLICT,
+                    "a space with that name already exists; pick another name",
+                ));
+            }
             return Ok(Json(json!({ "space": dup })).into_response());
+        }
+        match spaces_created_in_last_day(&state.pg, &model).await {
+            Ok(n) if n >= AGENT_SPACES_PER_DAY => {
+                return Ok(too_many_requests(
+                    24 * 60 * 60,
+                    "this agent has created its day's share of spaces — file into an existing one",
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => return Ok(internal("[kb] space count failed", e)),
         }
         let responsible = match talaria_attribution::responsible_user_for(
             &state.pg,

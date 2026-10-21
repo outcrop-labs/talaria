@@ -7,7 +7,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use talaria_agent_auth::{AgentSubject, agent_caller, require_agent};
+use talaria_agent_auth::{AgentSubject, agent_caller, refuse_legacy, require_agent};
 use talaria_api_facades::gateway::usage::{TokenCounts, UsageInput, record_usage, task_usage};
 use talaria_boards::{board_allows_agent, board_role};
 use talaria_body::{
@@ -88,6 +88,11 @@ pub async fn post(
         Ok(p) => p,
         Err(gate) => return Ok(gate),
     };
+    // Spend is recorded under `poster.model`: an asserted name (the
+    // org-wide key) must not be able to inflate another agent's ticket cost.
+    if let Some(refused) = refuse_legacy(&poster, "logging usage") {
+        return Ok(refused);
+    }
     let name = poster.model.clone();
     let allowed = match board_allows_agent(
         &state.pg,

@@ -769,28 +769,22 @@ pub async fn start_research(
         state.pg.clone(), redis, realtime
     );
     let run_input = serde_json::to_value(&input).expect("ResearchInput is plain data");
-    enqueue(
-        research_run(),
-        run_input,
-        EnqueueOptions {
-            id: Some(id.clone()),
-            owner_user_id: input.owner_user_id.clone(),
-            subject_type: Some("research".into()),
-            subject_id: Some(id.clone()),
-            phase: Some("queued".into()),
-            // The drive is inline — enqueue means row + publish + drive.
-            start: Some(true),
-        },
-        &deps,
-    )
-    .await
-    .map_err(|e| format!("could not enqueue the research run: {e}"))?;
 
-    // THE CONVERSATION GOES IN WITH THE ROW when the caller named one, and
-    // that ordering is the whole mechanism: `ensure_research_conversation`
-    // below returns a conversation the row already has instead of creating
-    // one, so a run told where to report never makes a second thread nobody
-    // reads. The caller proved access to it; this write does not re-check.
+    // THE PROJECTION ROW GOES IN BEFORE THE RUN. `enqueue` spawns the drive
+    // at once, and the run's `begin` step makes no model call — its first
+    // write after the lease is `ensure_row`, an `on conflict do nothing`
+    // insert of this same row WITHOUT the conversation and the dials. When
+    // that landed first the caller-named thread was lost: a second
+    // conversation nobody reads, the scope question posted there, the
+    // one-live-run-per-thread gate blind to it. Written first, the step's
+    // insert is the no-op and this one is the truth. A run that then fails
+    // to enqueue takes its row back out, so nothing points at a run that
+    // does not exist.
+    //
+    // THE CONVERSATION GOES IN WITH THE ROW when the caller named one:
+    // `ensure_research_conversation` below returns a conversation the row
+    // already has instead of creating one. The caller proved access to it;
+    // this write does not re-check.
     //
     // `dials` is the body's three numbers verbatim, or NULL for "the mode's
     // preset" — resolved from the mode wherever it is needed, so the column
@@ -818,6 +812,33 @@ pub async fn start_research(
     .execute(&state.pg)
     .await
     .map_err(|e| e.to_string())?;
+    if let Err(e) = enqueue(
+        research_run(),
+        run_input,
+        EnqueueOptions {
+            id: Some(id.clone()),
+            owner_user_id: input.owner_user_id.clone(),
+            subject_type: Some("research".into()),
+            subject_id: Some(id.clone()),
+            phase: Some("queued".into()),
+            // The drive is inline — enqueue means row + publish + drive.
+            start: Some(true),
+        },
+        &deps,
+    )
+    .await
+    {
+        if let Err(undo) = sqlx::query("delete from research_runs where id = $1::uuid")
+            .bind(&id)
+            .execute(&state.pg)
+            .await
+        {
+            tracing::error!(
+                "[research] run {id} failed to enqueue and its row could not be removed: {undo}"
+            );
+        }
+        return Err(format!("could not enqueue the research run: {e}"));
+    }
     // The discussion thread exists from the first minute: the scope step
     // asks its clarifying question in here, and the surface opens the run
     // straight into the conversation. None for an ownerless run — same rule

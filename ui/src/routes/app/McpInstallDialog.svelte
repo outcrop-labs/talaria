@@ -115,7 +115,7 @@
             {l.tier === 'community'
               ? 'This server is COMMUNITY-BUILT third-party code. Installing it runs its package in a Docker container on your deployment, with the credentials you enter below. Review who published it before continuing.'
               : 'Installing this server runs its package in a Docker container on your deployment, with the credentials you enter below.'}
-            Talaria contains the container (no privileges, capped CPU/memory, no fleet network) — the code inside it is still the publisher's.
+            Talaria contains the container (unprivileged user, read-only filesystem, no host mounts, no privileges, capped CPU/memory, no fleet network) — the code inside it is still the publisher's. Only an admin can install one.
           </span>
         </label>
       </div>

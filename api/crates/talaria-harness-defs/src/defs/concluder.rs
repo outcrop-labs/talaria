@@ -19,6 +19,7 @@ use talaria_harness::define::{
     Output, RenderContext, RoleFloor, Widen, define_harness,
 };
 use talaria_harness_model::{MUSE_CHAIN, ModelSpec};
+use talaria_harness_prompt_rules::UNTRUSTED_INPUT;
 
 // camelCase on the wire (`channelName`) — `conclude_relay` sends this shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -426,7 +427,12 @@ pub fn concluder_harness() -> HarnessDefinition {
                 serde_json::from_value(input.clone()).map_err(|e| e.to_string())?;
             // The render branches on `widened` — the capability-gated
             // attribution ask (see WIDE above).
-            let system = if ctx.widened { WIDE } else { NARROW };
+            // The transcript is a channel's own words — somebody else's
+            // text, so the boundary clause closes the system prompt.
+            let system = format!(
+                "{}\n{UNTRUSTED_INPUT}",
+                if ctx.widened { WIDE } else { NARROW }
+            );
             Ok(vec![
                 Message::system(system),
                 Message::user(format!(

@@ -589,7 +589,13 @@ fn tick_now(name: JobName) {
 ///
 /// The boot path owns the call (`main` reaches it through `jobs::arm`, behind
 /// the kill switch); nothing in a request path arms a schedule.
-pub fn start_scheduler(conn: redis::aio::ConnectionManager) -> Vec<JobName> {
+///
+/// REFUSES TO ARM when a required job is missing: the instance does not get
+/// a schedule with a hole in it. The error names the jobs, and `try_arm`
+/// surfaces it on every retry — which is the documented contract ("a missing
+/// registration fails boot"): an instance whose `run-reclaim` fell out of
+/// the graph must not boot green and strand every reclaimed run.
+pub fn start_scheduler(conn: redis::aio::ConnectionManager) -> Result<Vec<JobName>, String> {
     // BEFORE the kill switch, deliberately. A required job that never
     // registered means its module was not in the runtime graph — a fact about
     // this BUILD, not about whether this instance is allowed to run anything.
@@ -601,24 +607,27 @@ pub fn start_scheduler(conn: redis::aio::ConnectionManager) -> Vec<JobName> {
     let missing = missing_from(&registered_names());
     if !missing.is_empty() {
         let names: Vec<&str> = missing.iter().map(|n| n.as_str()).collect();
-        tracing::error!(
-            "{LOG} MISSING JOBS: {} did not register. Their module was never imported, so that work will NOT run. This is a bug.",
+        let message = format!(
+            "MISSING JOBS: {} did not register. Their module was never imported, so that work \
+             will NOT run and the schedule is not armed. This is a bug in this build.",
             names.join(", ")
         );
+        tracing::error!("{LOG} {message}");
+        return Err(message);
     }
 
     if disabled_by_env(std::env::var("TALARIA_SCHEDULER").ok().as_deref()) {
         tracing::warn!(
             "{LOG} disabled by TALARIA_SCHEDULER=off — no background jobs will run on this instance"
         );
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     {
         let mut ctl = CTL.lock().unwrap_or_else(|p| p.into_inner());
         if ctl.started {
             tracing::warn!("{LOG} start_scheduler() called twice — ignoring the second call");
-            return registered_names();
+            return Ok(registered_names());
         }
         ctl.started = true;
         ctl.stopping = false;
@@ -691,7 +700,7 @@ pub fn start_scheduler(conn: redis::aio::ConnectionManager) -> Vec<JobName> {
         armed.len(),
         summary.join(", ")
     );
-    armed.into_iter().map(|(name, _)| name).collect()
+    Ok(armed.into_iter().map(|(name, _)| name).collect())
 }
 
 fn registered_names() -> Vec<JobName> {

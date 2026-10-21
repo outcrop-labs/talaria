@@ -7,8 +7,28 @@
 use std::sync::Arc;
 use talaria_api::{config, config::Config, db, jobs, scheduler, state::AppState};
 
+fn main() {
+    // THE HIDDEN MODE, before anything else — no runtime, no config, no
+    // tracing. `talaria-api __code-probe` is this same binary re-executed by
+    // the model-fitness code probe to evaluate model-written JavaScript in a
+    // process of its own, under rlimits, so a runaway candidate costs that
+    // process and never the api. Dispatched here, ahead of the tokio
+    // runtime, so the child's address-space ceiling is not spent on worker
+    // threads it will never use.
+    if std::env::args().nth(1).as_deref() == Some(talaria_fitness_code_runner::CHILD_PROBE_ARG) {
+        std::process::exit(talaria_fitness_code_runner::child_main());
+    }
+    // And the other half: this binary answers that mode, so the probe may
+    // use it. Unset in every other process (tests, tools), where grading
+    // stays in-process.
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = talaria_fitness_code_runner::CHILD_PROBE.set(exe);
+    }
+    serve();
+}
+
 #[tokio::main]
-async fn main() {
+async fn serve() {
     // Fail once, with every problem named.
     let cfg = match Config::from_env() {
         Ok(c) => c,

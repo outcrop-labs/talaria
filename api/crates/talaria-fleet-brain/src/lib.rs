@@ -4,9 +4,12 @@
 // the full tool trace), metered in one ledger, and observable in one place.
 //
 // Two halves: the ROUTING half (the model-set question and the config
-// transform) and the PROVISIONING half (ensure_gateway_brain — the two gateway
-// keys minted into the Talaria-owned fleet .env, the two key-list settings,
-// and the LLM_* lines the containers interpolate).
+// transform) and the PROVISIONING half (ensure_gateway_brain — the two
+// fleet-wide gateway keys minted into the Talaria-owned fleet .env, the two
+// key-list settings, and the LLM_* lines the containers interpolate — plus
+// ensure_agent_gateway_keys / set_agent_gateway_models: ONE key per enabled
+// agent, `agent:<slug>`, stamped as LLM_API_KEY_<SLUG> and scoped to the
+// model ids that agent's rendered config asks for).
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -17,10 +20,12 @@ use talaria_gateway::registry::list_endpoints;
 use talaria_gateway::settings::{get_setting, set_setting};
 use talaria_llm_keys::mint_key;
 
-// What a rendered agent config points its model specs at: the gateway, on the
-// PERSONA key — the one the gateway leaves unmetered, because the flow that
-// drove the turn writes the row. Sandbox harnesses get the workbench key
-// instead (workbench-harnesses).
+// What a rendered agent config points its model specs at: the gateway, on
+// `${LLM_API_KEY}` — which Hermes resolves from the CONTAINER's environment,
+// where fleet-render sets it to that agent's own key
+// (`${LLM_API_KEY_<SLUG>}`, see [`agent_llm_key_var`]). The relay leaves an
+// agent key unmetered because the flow that drove the turn writes the row.
+// Sandbox harnesses get the workbench key instead (workbench-harnesses).
 const GATEWAY_BASE_URL: &str = "${LLM_BASE_URL}";
 const GATEWAY_API_KEY: &str = "${LLM_API_KEY}";
 
@@ -127,6 +132,33 @@ pub fn route_config_through_gateway(
         }
     }
     walk(raw, models, &mut warn)
+}
+
+/// Every model id a routed config asks the gateway for — the spec walk
+/// [`route_config_through_gateway`] makes, read back: each spec's `model`,
+/// first-seen order, deduplicated. This is the set the agent's gateway key
+/// is scoped to (the relay refuses anything else on that key), so it is
+/// computed from the SAME shape the config.yaml is emitted from.
+pub fn routed_models(routed: &Value) -> Vec<String> {
+    fn walk(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Array(items) => items.iter().for_each(|i| walk(i, out)),
+            Value::Object(map) => {
+                if is_model_spec(v) {
+                    let m = map["model"].as_str().unwrap_or_default();
+                    if !m.is_empty() && !out.iter().any(|x| x == m) {
+                        out.push(m.to_string());
+                    }
+                } else {
+                    map.values().for_each(|val| walk(val, out));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(routed, &mut out);
+    out
 }
 
 // ── The provisioning half ────────────────────────────────────────────────────
@@ -353,8 +385,10 @@ pub async fn ensure_gateway_brain(pg: &PgPool) -> Result<GatewayBrain, String> {
             "{}\n\n# talaria-managed (gateway brain) — the fleet's default LLM is Talaria's org\n\
              # gateway, so every agent call is guarded, metered, and observable. Configure\n\
              # the real upstream model in-app on /models; don't hand-edit these lines.\n\
-             # LLM_API_KEY is the personas' loop; LLM_WORKBENCH_API_KEY is the sandbox\n\
-             # harnesses' — separate credentials so the ledger can tell them apart.\n",
+             # LLM_API_KEY is the fleet-wide persona key (no container receives it any\n\
+             # more — each agent gets its own LLM_API_KEY_<SLUG> below);\n\
+             # LLM_WORKBENCH_API_KEY is the sandbox harnesses' — separate credentials so\n\
+             # the ledger can tell them apart.\n",
             next.trim_end_matches('\n')
         );
     }
@@ -375,7 +409,10 @@ pub async fn ensure_gateway_brain(pg: &PgPool) -> Result<GatewayBrain, String> {
     }
 
     if next != content {
-        tokio::fs::write(&env_path, &next)
+        // The file holds the fleet's gateway secrets: written private from
+        // the first byte, and never truncated in place — a process killed
+        // mid-write must leave the old file, not an empty one.
+        write_atomic(&env_path, next.as_bytes(), 0o600)
             .await
             .map_err(|e| format!("fleet .env unwritable ({}): {e}", env_path.display()))?;
     }
@@ -388,10 +425,281 @@ pub async fn ensure_gateway_brain(pg: &PgPool) -> Result<GatewayBrain, String> {
     })
 }
 
+// ── Per-agent gateway keys ───────────────────────────────────────────────────
+//
+// One `tlk_` key per enabled agent, named `agent:<slug>`, stamped into the
+// fleet .env as LLM_API_KEY_<SLUG> and interpolated by fleet-render into that
+// agent's service as its LLM_API_KEY. The relay (llm_chat.rs) reads the key
+// name back as the agent: its budget subject is the agent's model id, its
+// model set is what the render scoped it to (gateway_agent_models), and its
+// spend stays unmetered at the relay because the chat flow ledgers the turn.
+//
+// Lifecycle mirrors fleet-render's TALARIA_AGENT_KEY_<SLUG>: the DB is the
+// truth and the line is rewritten every render (a line the file lost comes
+// back identical, never rotating a running container out of its key); a
+// slug that exists nowhere in agent_defs loses both its line and its key
+// (`strip_stale_agent_lines`' rule); a RETIRED agent keeps both, because
+// unretire comes back to them.
+
+const AGENT_LLM_KEY_PREFIX: &str = "LLM_API_KEY_";
+
+/// Compose-interpolation name for an agent's own gateway key — the same
+/// upper-casing rule as `TALARIA_AGENT_KEY_<SLUG>`.
+pub fn agent_llm_key_var(slug: &str) -> String {
+    format!("{AGENT_LLM_KEY_PREFIX}{}", slug.to_uppercase())
+}
+
+/// Drop every `LLM_API_KEY_<SLUG>=` line whose slug (lowercased) is not in
+/// `live`. The fleet-wide `LLM_API_KEY=` has no suffix and is never touched.
+fn strip_stale_agent_llm_lines(content: &str, live: &HashSet<String>) -> String {
+    let re = regex::Regex::new(r"^LLM_API_KEY_([A-Z0-9_]+)=").expect("per-agent llm key pattern");
+    let mut out = String::with_capacity(content.len());
+    for line in content.split_inclusive('\n') {
+        let stale = re
+            .captures(line.trim_end_matches('\n'))
+            .is_some_and(|c| !live.contains(&c[1].to_lowercase()));
+        if stale {
+            tracing::info!(
+                "[fleet] dropping a gateway key line for a slug that no longer exists: {}",
+                line.split('=').next().unwrap_or("").trim()
+            );
+            continue;
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+/// Mint (or keep) one gateway key per enabled agent slug and stamp each
+/// into the fleet .env as LLM_API_KEY_<SLUG>; sweep the lines AND the keys
+/// of slugs that no longer exist. Call only on a MANAGED brain — with a raw
+/// upstream override the containers' LLM_API_KEY is the operator's and no
+/// per-agent key may shadow it. Returns true when any key rotated (the
+/// containers holding the old one need a roll).
+pub async fn ensure_agent_gateway_keys(pg: &PgPool, slugs: &[String]) -> Result<bool, String> {
+    use talaria_gateway::agent_keys::{AGENT_KEY_PREFIX, agent_key_name};
+    let env_path = talaria_fleet_layout::fleet_env();
+    let content = tokio::fs::read_to_string(&env_path)
+        .await
+        .unwrap_or_default();
+
+    let known: Vec<(String,)> = sqlx::query_as("select slug from agent_defs")
+        .fetch_all(pg)
+        .await
+        .map_err(|e| format!("agent slugs unreadable: {e}"))?;
+    let known: HashSet<String> = known.into_iter().map(|(s,)| s).collect();
+
+    // Keys for slugs that exist nowhere: revoked, so a line that escaped the
+    // file (a backup, a copied .env) stops authenticating with the def.
+    let live_keys: Vec<(String,)> =
+        sqlx::query_as("select name from llm_api_keys where name like $1 and revoked_at is null")
+            .bind(format!("{AGENT_KEY_PREFIX}%"))
+            .fetch_all(pg)
+            .await
+            .map_err(|e| format!("agent gateway keys unreadable: {e}"))?;
+    let mut swept = false;
+    for (name,) in live_keys {
+        let Some(slug) = talaria_gateway::agent_keys::agent_slug_of_key(&name) else {
+            continue;
+        };
+        if known.contains(slug) {
+            continue;
+        }
+        sqlx::query(
+            "update llm_api_keys set revoked_at = now() where name = $1 and revoked_at is null",
+        )
+        .bind(&name)
+        .execute(pg)
+        .await
+        .map_err(|e| format!("stale agent gateway key revoke failed: {e}"))?;
+        swept = true;
+    }
+    if swept {
+        talaria_auth::reset_identity_cache();
+    }
+
+    let mut next = strip_stale_agent_llm_lines(&content, &known);
+    let mut rotated = false;
+    let mut append: Vec<String> = Vec::new();
+    for slug in slugs {
+        let var = agent_llm_key_var(slug);
+        let Some(key) = ensure_gateway_key(
+            pg,
+            &agent_key_name(slug),
+            read_env_line(&next, &var).as_deref(),
+        )
+        .await?
+        else {
+            // No user to own a key yet (a fresh install before first login):
+            // nothing to stamp; the next render tries again.
+            continue;
+        };
+        rotated |= key.rotated;
+        if read_env_line(&next, &var).is_some() {
+            next = upsert_env_line(&next, &var, &key.secret);
+        } else {
+            append.push(format!("{var}={}", key.secret));
+        }
+    }
+    if !append.is_empty() {
+        next = format!(
+            "{}\n# per-agent gateway keys — talaria-managed\n{}\n",
+            next.trim_end_matches('\n'),
+            append.join("\n")
+        );
+    }
+    if next != content {
+        if let Some(parent) = env_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("fleet dir unwritable ({}): {e}", parent.display()))?;
+        }
+        write_atomic(&env_path, next.as_bytes(), 0o600)
+            .await
+            .map_err(|e| format!("fleet .env unwritable ({}): {e}", env_path.display()))?;
+    }
+    Ok(rotated)
+}
+
+/// What one agent's gateway key is scoped to, as the render computed it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentGatewayScope {
+    pub slug: String,
+    /// The agent's model id — the ledger namespace and the budget subject.
+    pub model: String,
+    /// The model ids the rendered config asks the gateway for.
+    pub models: Vec<String>,
+}
+
+/// The settings row the relay judges agent keys by, as one JSON object.
+pub fn agent_gateway_models_json(scopes: &[AgentGatewayScope]) -> Value {
+    let mut out = serde_json::Map::new();
+    for s in scopes {
+        out.insert(
+            s.slug.clone(),
+            json!({ "model": s.model, "models": s.models }),
+        );
+    }
+    Value::Object(out)
+}
+
+/// Write every enabled agent's scope to `gateway_agent_models` — the whole
+/// row at once, so a slug that left the render leaves the row. Unchanged
+/// content is not rewritten (the write would drop the relay's hot window
+/// for nothing).
+pub async fn set_agent_gateway_models(
+    pg: &PgPool,
+    scopes: &[AgentGatewayScope],
+) -> Result<(), String> {
+    use talaria_gateway::agent_keys::AGENT_MODELS_SETTING;
+    let next = agent_gateway_models_json(scopes);
+    let current = get_setting(pg, AGENT_MODELS_SETTING, Value::Null).await;
+    if current == next {
+        return Ok(());
+    }
+    set_setting(pg, AGENT_MODELS_SETTING, &next)
+        .await
+        .map_err(|e| format!("{AGENT_MODELS_SETTING} write failed: {e}"))
+}
+
+/// Write a file ATOMICALLY and with its mode set before any byte lands:
+/// the content goes to a sibling temp file opened with `mode`, is flushed,
+/// and is renamed over the target. A reader (docker compose, the chat
+/// proxy's manifest read) sees the old file or the new one, never a
+/// truncated middle, and a process killed between open and write leaves
+/// the old file in place rather than an empty one — the two things a plain
+/// `tokio::fs::write` cannot promise. Lives here because every fleet file
+/// writer can reach this crate (fleet-render depends on it, not the other
+/// way round).
+pub async fn write_atomic(path: &std::path::Path, bytes: &[u8], mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::io::AsyncWriteExt;
+    let dir = path
+        .parent()
+        .ok_or_else(|| format!("{}: no parent directory", path.display()))?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("{}: not a file path", path.display()))?;
+    // Unique per process AND per call: two renders racing on the same file
+    // must not share a temp name, or one's rename carries the other's bytes.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".{name}.{}.{seq}.tmp", std::process::id()));
+    let result: Result<(), String> = async {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&tmp)
+            .await
+            .map_err(|e| format!("{}: {e}", tmp.display()))?;
+        file.write_all(bytes)
+            .await
+            .map_err(|e| format!("{}: {e}", tmp.display()))?;
+        file.sync_all()
+            .await
+            .map_err(|e| format!("{}: {e}", tmp.display()))?;
+        drop(file);
+        // create_new's mode is masked by the umask; the target's mode is a
+        // promise, so set it explicitly before the rename exposes the file.
+        tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))
+            .await
+            .map_err(|e| format!("{}: {e}", tmp.display()))?;
+        tokio::fs::rename(&tmp, path)
+            .await
+            .map_err(|e| format!("{} -> {}: {e}", tmp.display(), path.display()))
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn write_atomic_lands_the_bytes_private_and_leaves_no_temp_behind() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "talaria-write-atomic-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let target = dir.join("fleet.env");
+        tokio::fs::write(&target, "OLD=1\n").await.unwrap();
+        write_atomic(&target, b"NEW=2\n", 0o600).await.unwrap();
+        assert_eq!(tokio::fs::read_to_string(&target).await.unwrap(), "NEW=2\n");
+        let mode = tokio::fs::metadata(&target)
+            .await
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "the target carries the requested mode");
+        let mut entries = tokio::fs::read_dir(&dir).await.unwrap();
+        let mut names = Vec::new();
+        while let Some(e) = entries.next_entry().await.unwrap() {
+            names.push(e.file_name().to_string_lossy().into_owned());
+        }
+        assert_eq!(
+            names,
+            vec!["fleet.env".to_string()],
+            "no temp file survives"
+        );
+        // A missing parent is an error, not a panic, and nothing is created.
+        let orphan = dir.join("missing").join("x");
+        assert!(write_atomic(&orphan, b"x", 0o644).await.is_err());
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
 
     fn models(served: &[&str], fallback: Option<&str>) -> GatewayModels {
         GatewayModels {
@@ -441,6 +749,94 @@ mod tests {
             json!("http://x/talaria")
         );
         assert!(warned.is_empty(), "served models do not warn");
+    }
+
+    #[test]
+    fn routed_models_reads_back_every_spec_once_in_first_seen_order() {
+        let raw = json!({
+            "specs": {
+                "main": {"model": "qwen3:14b", "provider": "ollama"},
+                "fast": {"model": "glm", "base_url": "x"},
+                "mcp_servers": {"talaria": {"url": "http://x/talaria", "headers": {"h": "v"}}}
+            },
+            "nested": [{"model": "qwen3:14b", "base_url": "http://litellm:4000"}],
+            "bare": {"model": "not-a-spec"}
+        });
+        let routed = route_config_through_gateway(
+            &raw,
+            &models(&["qwen3:14b", "z-ai/glm-5.2"], None),
+            |_| {},
+        );
+        assert_eq!(
+            routed_models(&routed),
+            vec!["qwen3:14b".to_string(), "z-ai/glm-5.2".to_string()],
+            "the ROUTED ids — after the legacy remap — deduplicated; a bare `model` key is not a spec"
+        );
+        assert!(routed_models(&json!({"mcp_servers": {}})).is_empty());
+        assert!(routed_models(&json!("x")).is_empty());
+    }
+
+    #[test]
+    fn agent_llm_key_lines_follow_the_agent_key_rule() {
+        assert_eq!(agent_llm_key_var("analyst"), "LLM_API_KEY_ANALYST");
+        assert_eq!(agent_llm_key_var("ops2"), "LLM_API_KEY_OPS2");
+        let live: HashSet<String> = ["analyst".to_string(), "ops2".to_string()]
+            .into_iter()
+            .collect();
+        let content = "LLM_API_KEY=tlk_fleet\n\
+                       # per-agent gateway keys — talaria-managed\n\
+                       LLM_API_KEY_ANALYST=tlk_1\n\
+                       LLM_API_KEY_OLDNAME=tlk_2\n\
+                       LLM_API_KEY_OPS2=tlk_3\n\
+                       TALARIA_AGENT_KEY_OLDNAME=tak_2\n\
+                       LLM_WORKBENCH_API_KEY=tlk_wb\n";
+        let out = strip_stale_agent_llm_lines(content, &live);
+        assert_eq!(
+            out,
+            "LLM_API_KEY=tlk_fleet\n\
+             # per-agent gateway keys — talaria-managed\n\
+             LLM_API_KEY_ANALYST=tlk_1\n\
+             LLM_API_KEY_OPS2=tlk_3\n\
+             TALARIA_AGENT_KEY_OLDNAME=tak_2\n\
+             LLM_WORKBENCH_API_KEY=tlk_wb\n",
+            "only LLM_API_KEY_<SLUG> lines for unknown slugs go; the fleet-wide key, the workbench key and fleet-render's lines stay"
+        );
+        assert_eq!(strip_stale_agent_llm_lines(&out, &live), out, "idempotent");
+        let none = HashSet::new();
+        assert_eq!(
+            strip_stale_agent_llm_lines("A=1\nLLM_API_KEY_X=2\nB=3", &none),
+            "A=1\nB=3",
+            "a last line without a newline is kept as written"
+        );
+    }
+
+    #[test]
+    fn the_scope_row_is_one_object_keyed_by_slug() {
+        let scopes = vec![
+            AgentGatewayScope {
+                slug: "analyst".into(),
+                model: "analyst".into(),
+                models: vec!["qwen3:14b".into()],
+            },
+            AgentGatewayScope {
+                slug: "xeng".into(),
+                model: "x-eng".into(),
+                models: vec![],
+            },
+        ];
+        assert_eq!(
+            agent_gateway_models_json(&scopes),
+            json!({
+                "analyst": { "model": "analyst", "models": ["qwen3:14b"] },
+                "xeng": { "model": "x-eng", "models": [] }
+            })
+        );
+        // What the relay reads back is exactly what the render wrote.
+        let row = agent_gateway_models_json(&scopes);
+        let s = talaria_gateway::agent_keys::scope_of(&row, "xeng").unwrap();
+        assert_eq!(s.model, "x-eng");
+        assert!(s.models.is_empty());
+        assert_eq!(agent_gateway_models_json(&[]), json!({}));
     }
 
     #[test]

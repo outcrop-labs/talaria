@@ -1951,6 +1951,11 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::fleet::fleet_defs_id_edit::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/fleet/defs/{id}/rotate-key",
+            post(talaria_routes_fleet::fleet::fleet_defs_id_rotate_key::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/fleet/defs/{id}/versions",
             get(talaria_routes_fleet::fleet::fleet_defs_id_versions::get)
                 .post(talaria_routes_fleet::fleet::fleet_defs_id_versions::post)

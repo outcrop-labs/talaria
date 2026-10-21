@@ -333,25 +333,27 @@ pub async fn sweep_reclaimable_runs(
         // for the run.
         //
         // The arithmetic mirrors store.claim's, deliberately, because that is
-        // what it is predicting: the claim adds one to `attempt` only when the
-        // previous state was `running` (a reclaim), so this is the count the
-        // driver will be holding when it makes the call.
+        // what it is predicting: the claim adds one to `crashes` only when the
+        // previous state was `running` — a driver that died holding the run,
+        // since a clean release leaves the row `queued` — so this is the count
+        // the driver will be holding when it makes the call.
         let max_attempts = def.max_attempts;
-        let attempt_after_claim = run.attempt + i32::from(run.state == RunState::Running);
-        let spent = attempt_after_claim >= max_attempts as i32;
+        let crashes_after_claim = run.crashes + i32::from(run.state == RunState::Running);
+        let spent = crashes_after_claim >= max_attempts as i32;
 
         if !spent {
             out.driven += 1;
             if run.state == RunState::Running {
                 out.reclaimed += 1;
                 tracing::warn!(
-                    "{LOG} resuming {} ({}) — its driver stopped renewing {} ago at phase \"{}\", \
-                     attempt {} of {}. It re-enters from the last persisted checkpoint.",
+                    "{LOG} resuming {} ({}) — its driver stopped renewing {} ago at phase \"{}\" \
+                     without releasing (crash {} of {}). It re-enters from the last persisted \
+                     checkpoint.",
                     run.id,
                     run.kind,
                     dur(stale_ms),
                     run.phase,
-                    attempt_after_claim,
+                    crashes_after_claim,
                     max_attempts
                 );
             }
@@ -390,14 +392,14 @@ pub async fn sweep_reclaimable_runs(
             Ok(res) if res.stop == DriveStop::Exhausted => {
                 out.given_up += 1;
                 // The row now carries the driver's message, which names the
-                // attempt count and what each of those attempts did (stopped
-                // without finishing or checkpointing). The log line adds what
+                // crash count and what each of those drivers did (died holding
+                // the run, without releasing). The log line adds what
                 // only the SWEEP knew: where it died, how long ago, and whose
                 // it was. Between them a person has the whole story without
                 // opening a database.
                 tracing::error!(
                     "{}",
-                    give_up_line(&run, attempt_after_claim, res.error.as_deref(), now)
+                    give_up_line(&run, crashes_after_claim, res.error.as_deref(), now)
                 );
             }
             Ok(_) => {
@@ -425,9 +427,9 @@ pub async fn sweep_reclaimable_runs(
 /// knew — same reason `describe_sweep` is a function: the sentence is the only
 /// view most people will ever have of a run being abandoned, which makes it
 /// worth a test rather than a format! buried in a match arm.
-fn give_up_line(run: &RunRow, attempt_after_claim: i32, error: Option<&str>, now: i64) -> String {
+fn give_up_line(run: &RunRow, crashes_after_claim: i32, error: Option<&str>, now: i64) -> String {
     let mut line = format!(
-        "{LOG} gave up on {} ({}) after {attempt_after_claim} attempt(s): {} — last progress \"{}\"",
+        "{LOG} gave up on {} ({}) after {crashes_after_claim} driver crash(es): {} — last progress \"{}\"",
         run.id,
         run.kind,
         error.unwrap_or("no message"),
@@ -599,6 +601,7 @@ mod tests {
             result: serde_json::Value::Null,
             error: None,
             attempt: 0,
+            crashes: 0,
             lease_owner: Some("dead-driver-token".into()),
             lease_expires_at: Some(talaria_agent_auth::epoch_ms_to_iso(now - 60_000)),
             approval_key: None,
@@ -616,14 +619,14 @@ mod tests {
             &row(),
             3,
             Some(
-                "run gave up after 3 attempt(s): each driver that took it stopped without finishing \
-                 or checkpointing",
+                "run gave up after 3 driver crash(es): each driver that took it died holding it, \
+                 without releasing or checkpointing",
             ),
             1_700_000_000_000,
         );
         assert!(line.contains("gave up on run-1 (test-kind)"));
-        assert!(line.contains("after 3 attempt(s)"));
-        assert!(line.contains("stopped without finishing or checkpointing"));
+        assert!(line.contains("after 3 driver crash(es)"));
+        assert!(line.contains("died holding it, without releasing or checkpointing"));
         assert!(line.contains("last progress \"reading the sources\""));
         // The sentence this file exists to delete.
         assert!(!line.contains("went stale"));
@@ -637,7 +640,7 @@ mod tests {
         let mut r = row();
         r.owner_user_id = None;
         let line = give_up_line(&r, 1, None, 1_700_000_000_000);
-        assert!(line.contains("attempt(s): no message"));
+        assert!(line.contains("crash(es): no message"));
         assert!(line.ends_with('.'));
         assert!(!line.contains("was waiting on it"));
     }

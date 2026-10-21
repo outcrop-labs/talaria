@@ -14,6 +14,12 @@ const GOOGLE_DOC: &str = "application/vnd.google-apps.document";
 const GOOGLE_NATIVE_PREFIX: &str = "application/vnd.google-apps";
 const MARKDOWN: &str = "text/markdown";
 
+/// What `get_doc_with_token` will pull for a non-native file it reads as
+/// text: the same 25 MiB the upload plane admits (`talaria_uploads::MAX_BYTES`,
+/// which this leaf crate does not depend on). Routes that hand bytes back
+/// pass that limit themselves.
+const DOC_READ_CAP_BYTES: usize = 25 * 1024 * 1024;
+
 /// A Doc Drive just created or replaced, in wire order.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -285,7 +291,7 @@ pub async fn get_doc_with_token(token: &str, file_id: &str) -> Result<DocContent
     let markdown = if mime_type.starts_with(GOOGLE_NATIVE_PREFIX) {
         export_markdown(token, file_id).await?
     } else {
-        let bytes = read_file_media_with_token(token, file_id).await?;
+        let bytes = read_file_media_with_token(token, file_id, DOC_READ_CAP_BYTES).await?;
         String::from_utf8_lossy(&bytes).into_owned()
     };
     Ok(DocContent {
@@ -382,12 +388,18 @@ fn file_hit_of(f: &serde_json::Value) -> FileHit {
     }
 }
 
-/// Raw media bytes (`alt=media`). Non-2xx and network failures are
-/// `GoogleError::Failed` with status and body text when Google answered.
+/// Raw media bytes (`alt=media`), at most `max_bytes` of them. Non-2xx and
+/// network failures are `GoogleError::Failed` with status and body text
+/// when Google answered; a file over the cap — by its `Content-Length`, or
+/// by the bytes actually streamed when Google sent no length — is
+/// `GoogleError::Failed` too, before the whole of it is in memory. The cap
+/// is the caller's: the routes pass the upload limit, so what an agent can
+/// pull out of Drive is what a person can push in.
 #[tracing::instrument(skip(token))]
 pub async fn read_file_media_with_token(
     token: &str,
     file_id: &str,
+    max_bytes: usize,
 ) -> Result<Vec<u8>, GoogleError> {
     let res = http()
         .get(media_url(file_id))
@@ -398,10 +410,116 @@ pub async fn read_file_media_with_token(
     if !res.status().is_success() {
         return Err(failed_status(res, "docs media failed").await);
     }
-    res.bytes()
+    read_capped(res, max_bytes, "docs media").await
+}
+
+/// Export a native file as bytes (`export?mimeType=`), under the same cap.
+/// The Drive import's PDF arm reads through here.
+#[tracing::instrument(skip(token))]
+pub async fn export_file_bytes_with_token(
+    token: &str,
+    file_id: &str,
+    mime_type: &str,
+    max_bytes: usize,
+) -> Result<Vec<u8>, GoogleError> {
+    let res = http()
+        .get(format!(
+            "{FILES_ENDPOINT}/{}/export?mimeType={}",
+            percent_encode(file_id),
+            percent_encode(mime_type)
+        ))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
         .await
-        .map(|b| b.to_vec())
-        .map_err(|e| GoogleError::Failed(format!("docs media body: {e}")))
+        .map_err(|e| GoogleError::Failed(format!("drive export request: {e}")))?;
+    if !res.status().is_success() {
+        return Err(failed_status(res, &format!("drive export({mime_type}) failed")).await);
+    }
+    read_capped(res, max_bytes, "drive export").await
+}
+
+/// The body, streamed under a cap. `Content-Length` refuses early; the
+/// running total refuses a chunked or lying response at the same line. The
+/// one copy: every Google engine that pulls bytes reads through here.
+pub async fn read_capped(
+    mut res: reqwest::Response,
+    max_bytes: usize,
+    what: &str,
+) -> Result<Vec<u8>, GoogleError> {
+    if let Some(len) = res.content_length()
+        && len > max_bytes as u64
+    {
+        return Err(GoogleError::Failed(format!(
+            "{what} too large: {len} bytes, the limit is {max_bytes}"
+        )));
+    }
+    let mut out: Vec<u8> = Vec::new();
+    while let Some(chunk) = res
+        .chunk()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("{what} body: {e}")))?
+    {
+        if out.len() + chunk.len() > max_bytes {
+            return Err(GoogleError::Failed(format!(
+                "{what} too large: more than {max_bytes} bytes"
+            )));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
+/// Who last changed a Drive file, as Drive tells the token holder.
+/// `by_token_holder` is Drive's `lastModifyingUser.me`; `None` when Drive
+/// sent no modifier (a file nobody has edited since creation reports its
+/// creator, so None is rare).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastModifier {
+    pub modified_time: Option<String>,
+    pub by_token_holder: Option<bool>,
+    pub email: Option<String>,
+}
+
+/// `modifiedTime` plus `lastModifyingUser` for one file. The agent-doc
+/// routes ask this before an immediate full-body replace: a doc a human has
+/// edited since is no longer the agent's scratch file.
+#[tracing::instrument(skip(token))]
+pub async fn last_modifier_with_token(
+    token: &str,
+    file_id: &str,
+) -> Result<LastModifier, GoogleError> {
+    let res = http()
+        .get(format!(
+            "{FILES_ENDPOINT}/{}?supportsAllDrives=true&fields=modifiedTime,lastModifyingUser(emailAddress,me)",
+            percent_encode(file_id)
+        ))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("docs modifier request: {e}")))?;
+    if !res.status().is_success() {
+        return Err(failed_status(res, "docs modifier failed").await);
+    }
+    let meta: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("docs modifier body: {e}")))?;
+    Ok(last_modifier_from(&meta))
+}
+
+pub(crate) fn last_modifier_from(meta: &serde_json::Value) -> LastModifier {
+    let user = meta.get("lastModifyingUser");
+    LastModifier {
+        modified_time: meta
+            .get("modifiedTime")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        by_token_holder: user.and_then(|u| u.get("me")).and_then(|v| v.as_bool()),
+        email: user
+            .and_then(|u| u.get("emailAddress"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    }
 }
 
 #[cfg(test)]
@@ -482,5 +600,19 @@ mod tests {
             web_view_or_docs_edit("abc", Some("https://docs.google.com/document/d/abc/edit")),
             "https://docs.google.com/document/d/abc/edit"
         );
+    }
+    #[test]
+    fn the_last_modifier_reads_drives_me_flag() {
+        let human = last_modifier_from(&serde_json::json!({
+            "modifiedTime": "2026-10-20T10:00:00Z",
+            "lastModifyingUser": { "emailAddress": "jon@x.com", "me": false }
+        }));
+        assert_eq!(human.by_token_holder, Some(false));
+        assert_eq!(human.email.as_deref(), Some("jon@x.com"));
+        assert_eq!(human.modified_time.as_deref(), Some("2026-10-20T10:00:00Z"));
+        let me = last_modifier_from(&serde_json::json!({ "lastModifyingUser": { "me": true } }));
+        assert_eq!(me.by_token_holder, Some(true));
+        let unknown = last_modifier_from(&serde_json::json!({}));
+        assert_eq!(unknown.by_token_holder, None);
     }
 }

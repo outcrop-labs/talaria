@@ -59,12 +59,46 @@ multi-account setup path.
   **not** act immediately — they queue a **pending action** a human approves on
   Home (**Needs your approval**). The draft call is not proof it landed: the
   agent confirms with `list_pending_sends` (the same queue) before saying it
-  is ready. On approve it runs; reject drops it.
+  is ready. On approve it runs; reject drops it. An approval is **claimed**
+  before it executes (`status = 'executing'`), so two people — or one person
+  on the chip and the inbox card — approving the same row inside the Google
+  round-trip send once; the second sees it already decided.
 
   - A **personal assistant** reads/drafts on **its owner's** Google — the
     **owner** approves.
   - A **general agent** reads/drafts on the **shared org** Google — an **admin**
     approves (org actions are tagged `org` in the approvals panel).
+  - **The unlock an approval leaves is bounded.** Approving a chip in a chat
+    writes a grant on that conversation (`conversations.unlocked_tools`, one
+    `{tool, expiresAt, usesLeft, recipients}` object per tool): it lasts
+    **30 minutes**, covers **one** further call of that tool, and — for
+    `gmail_send` and `calendar_create` — covers only a draft whose
+    recipients (to/cc/bcc) or attendees are a **subset** of the ones the
+    approved draft named. The next `draft_email` / `draft_calendar_event`
+    from the personal assistant in that conversation spends the grant (one
+    use, under a row lock) and executes, answering *"Sent — the earlier
+    approval covered this one; the next needs its own."*; anything outside
+    the grant — a new recipient, a second call, half an hour later — queues a
+    fresh card. Org drafts never ride an unlock.
+  - **Pending lists are per agent.** `list_pending_sends` /
+    `read_pending_send` show an org agent only the rows it queued itself,
+    never another agent's unsent mail; the admin's queue still shows all of
+    them.
+- **Agent Docs & Drive (what is immediate, what queues):** `create_google_doc`
+  and `create_google_folder` are immediate in the account's own Drive or
+  inside a folder the agent created; inside **any other folder** they queue
+  (`doc_create` / `drive_folder_create`) because the file inherits that
+  folder's sharing. `update_google_doc` on a doc the agent created is
+  immediate until **someone else edits it** (Drive's `lastModifyingUser` is
+  not the token holder); from then on a full-body replace queues like any
+  human-owned doc, and `append_google_doc` stays immediate. `read_drive_file`
+  and `import_drive_file` stop at the upload limit (25 MiB).
+- **Who an agent may act as.** Setting an agent's Google principal to
+  `owner` for a user **other than yourself** is admin-only (an agent's
+  manager can bind it to their own account); the person it names is notified
+  either way, with who did it. Connecting the org account or an agent's own
+  account writes an audit row (`google.org_connect`, `agent.google_connect`)
+  and records who connected it.
 
 ## Security
 
@@ -73,13 +107,21 @@ multi-account setup path.
   store — unlike API keys, where we persist only the env-var *name*.
 - Access tokens are cached (also encrypted) and refreshed transparently; an
   `invalid_grant` clears the connection so the UI prompts a reconnect.
-- Scopes: **`drive.file`** (create/manage only files the app makes — export),
-  **`drive.readonly`** (browse + read for import), **`calendar.events`** (agenda
-  + create), **`gmail.readonly`** (recent mail) + **`gmail.send`** (send).
-  Adding scopes over time means existing users must **reconnect** to grant the
-  new ones; each surface detects a missing scope and prompts a reconnect.
-  `gmail.*` are **restricted** scopes — fine for an internal/Workspace-only app,
-  but public/external distribution would need Google's security assessment.
+- Scopes actually requested (`WORKSPACE_SCOPES` in `talaria-google-oauth`):
+  **`openid`**, **`email`**, full **`drive`** (browse, import, rename, move,
+  trash, create — `drive.file` / `drive.readonly` could not manage the Drive
+  the Files place browses), **`calendar.events`** (agenda + create),
+  **`gmail.modify`** (read **and** organize: labels, mark-read, archive) and
+  **`gmail.send`** (send). The connect URL sets `include_granted_scopes=true`,
+  so a token carries every scope that Google identity granted the app before.
+  The **org** connect asks for more (`ORG_CONNECT_SCOPES`): full
+  **`calendar`** and full **`drive`**, which provisioning needs to create the
+  shared calendar and Shared Drive and their domain shares. Adding scopes over
+  time means existing users must **reconnect** to grant the new ones; each
+  surface detects a missing scope and prompts a reconnect. `gmail.*` are
+  **restricted** scopes and full `drive` is **sensitive** — fine for an
+  internal/Workspace-only app, but public/external distribution would need
+  Google's security assessment.
 - Disconnect best-effort **revokes** the token at Google, then forgets it.
 
 ## Operator setup
@@ -112,9 +154,9 @@ and enable the **Google Drive API**, **Google Calendar API**, and **Gmail API**
 (listed with console links under Admin → Google Workspace · OAuth client;
 **Test** next to the connected org account probes all three live — consent
 succeeds even with the APIs off, so the probe is how you find out). Add the
-`drive.file`, `drive.readonly`, `calendar.events`, `gmail.readonly`, and
-`gmail.send` scopes to the consent screen. `drive.file` is not restricted;
-`drive.readonly` / `calendar.events` are sensitive; `gmail.*` are restricted.
+`drive`, `calendar`, `calendar.events`, `gmail.modify`, and `gmail.send`
+scopes to the consent screen. `drive` / `calendar` / `calendar.events` are
+sensitive; `gmail.*` are restricted.
 For an **Internal** (Workspace-only) OAuth app none of these need a verification
 review; a public/External app would (especially the Gmail scopes).
 

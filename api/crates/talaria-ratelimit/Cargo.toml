@@ -9,5 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+axum = { workspace = true }
 http = { workspace = true }
 redis = { workspace = true }
+talaria-error = { workspace = true }

@@ -10,8 +10,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use std::sync::OnceLock;
 use talaria_agent_defs::{
-    AgentMetaPatch, set_disabled_toolsets, set_max_children, set_pinned_sessions,
-    update_agent_meta, validate_toolsets,
+    AgentMetaPatch, apply_developer_toolsets, set_disabled_toolsets, set_max_children,
+    set_pinned_sessions, update_agent_meta, validate_toolsets,
 };
 use talaria_api_facades::mcp::apply::roll_agent_for_model;
 use talaria_api_facades::workbench::set_developer;
@@ -166,6 +166,18 @@ pub async fn patch(
         },
         None => false,
     };
+    // The switch's toolset half: on opens terminal/file/code_execution (the
+    // closed default keeps them off every other agent), off closes them
+    // again. Applied on a CHANGE only, so re-saving `developer: true` on an
+    // agent whose manager since closed `file` does not reopen it. It is
+    // applied BEFORE an explicit `disabledToolsets` in the same PATCH, so a
+    // caller who sends both gets the list they sent.
+    if developer_changed
+        && let Some(on) = developer
+        && let Err(e) = apply_developer_toolsets(&state.pg, &def_id, on).await
+    {
+        return Ok(internal("[fleet/defs] developer toolsets failed", e));
+    }
     let max_children_changed = match max_children {
         Some(n) => match set_max_children(&state.pg, &def_id, n).await {
             Ok(changed) => changed,

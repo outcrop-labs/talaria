@@ -25,7 +25,7 @@ use talaria_artifacts::{
     AGENT_CATEGORIES, Artifact, SaveArtifactPatch, agent_category_folder, create_artifact,
     list_artifacts, named_root_folder, save_artifact,
 };
-use talaria_audit::{AuditEntry, log_audit};
+use talaria_audit::{AuditEntry, log_audit, spawn_audit};
 use talaria_body::{
     optional_enum_member, optional_max_string_member, parse, too_big_msg, zod_type_name,
 };
@@ -38,11 +38,10 @@ struct Body {
     title: Option<String>,
     body: Option<String>,
     folder: Option<String>,
-    visibility: Option<String>,
 }
 
 fn parse_body(obj: &serde_json::Map<String, Value>) -> Result<Body, String> {
-    Ok(Body {
+    let parsed = Body {
         kind: optional_enum_member(obj, "kind", &["doc", "sheet", "microsite", "file"])?,
         title: optional_max_string_member(obj, "title", 200)?,
         body: optional_max_string_member(obj, "body", 2_000_000)?,
@@ -68,8 +67,16 @@ fn parse_body(obj: &serde_json::Map<String, Value>) -> Result<Body, String> {
                 Some(s)
             }
         },
-        visibility: optional_enum_member(obj, "visibility", &["private", "org", "public"])?,
-    })
+    };
+    // `visibility` is still VALIDATED (a bad enum is the same 400 it always
+    // was, in the same order) and then dropped: no creator on this route gets
+    // to choose it. A personal assistant's output is private to its owner, an
+    // org agent's is org — `public` is a human power behind
+    // `artifacts.publish`, granted on the PUT — and a person's create starts
+    // private under the engine's own default, published later from the Files
+    // browser.
+    optional_enum_member(obj, "visibility", &["private", "org", "public"])?;
+    Ok(parsed)
 }
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
@@ -237,9 +244,15 @@ pub async fn post(
                     ..Default::default()
                 }
             } else {
+                // ALWAYS `org`, whatever the body asked for. Publishing to
+                // the unauthenticated web is a human power behind
+                // `artifacts.publish`; the PUT strips `visibility` from an
+                // agent key for exactly that reason, and a create that
+                // honoured `public` was the one door left open. A person who
+                // wants it public publishes it from the Files browser.
                 SaveArtifactPatch {
                     body: body.body.as_deref(),
-                    visibility: Some(body.visibility.as_deref().unwrap_or("org")),
+                    visibility: Some("org"),
                     edit_policy: Some("org"),
                     ..Default::default()
                 }
@@ -251,6 +264,17 @@ pub async fn post(
             Ok(u) => u,
             Err(e) => return Ok(internal("[artifacts] save failed", e)),
         };
+        // The agent plane audits its creates like the human plane does — a
+        // document an agent wrote into the workspace is a governance event
+        // someone may need to trace back.
+        spawn_audit(
+            &state.pg,
+            format!("agent:{name}"),
+            "artifact.create",
+            "artifact",
+            Some(artifact.id.clone()),
+            Some(json!({ "title": artifact.title, "kind": artifact.kind })),
+        );
         return Ok(Json(json!({ "artifact": updated.unwrap_or(artifact) })).into_response());
     }
 

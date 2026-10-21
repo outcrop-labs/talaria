@@ -1,9 +1,13 @@
 // POST /api/agent/ask — the agent asks the person a question with real
 // options, on the turn it is writing.
 //
-// NO CONVERSATION PARAMETER, the same call `/api/agent/todo` and the research
-// tool make: the agent is mid-turn somewhere and Talaria knows where, so an
-// id it had to pass is an id it could get wrong.
+// AN OPTIONAL `conversationId`, the same shape `/api/agent/todo` takes. The
+// agent is mid-turn somewhere and Talaria usually knows where — but one agent
+// answers several people at once, and "the newest live turn" is then
+// somebody else's. The turn's prompt carries the conversation id; a call that
+// passes it lands there and nowhere else, and a call that does not is served
+// only while exactly one turn could be meant (a 409 says so otherwise). An id
+// naming a thread this agent is not in lands nothing.
 //
 // THE CHIP IS THE WHOLE MECHANISM. There is no question row and no answer
 // endpoint — the chip's buttons send the chosen words through the composer's
@@ -27,7 +31,7 @@ use serde_json::json;
 use talaria_agent_ask::{asked_sentence, chip, question_from};
 use talaria_agent_auth::require_agent;
 use talaria_body::parse;
-use talaria_chips::surface_tool_chips;
+use talaria_chips::{Target, conversation_hint, surface_tool_chips_in};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_state::AppState;
 
@@ -46,16 +50,32 @@ pub async fn post(
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let redis = state.redis().await.ok();
-    match surface_tool_chips(&state.pg, redis, &caller.model, None, vec![chip(&question)]).await {
+    let hint = conversation_hint(&parsed);
+    match surface_tool_chips_in(
+        &state.pg,
+        redis,
+        &caller.model,
+        None,
+        hint.as_deref(),
+        vec![chip(&question)],
+    )
+    .await
+    {
+        // Several turns and no conversation named: nobody was asked, and the
+        // sentence says what would have resolved it.
+        Ok(target @ Target::Ambiguous { .. }) => Ok(house_error(
+            StatusCode::CONFLICT,
+            &target.ambiguity().unwrap_or_default(),
+        )),
         // No landing target means no live turn to hang a question on — a
         // channel reply, or a call from outside a turn. Said plainly: an agent
         // told it has nobody to ask stops reaching for the tool there.
-        Ok(None) => Ok(house_error(
+        Ok(Target::Nowhere) => Ok(house_error(
             StatusCode::CONFLICT,
             "nobody to ask — this tool works inside a chat, plan or work session where somebody \
              is listening, not in a channel or outside a turn",
         )),
-        Ok(Some(_)) => Ok(Json(json!({
+        Ok(Target::Found(_)) => Ok(Json(json!({
             "ok": true,
             "asked": asked_sentence(&question),
         }))

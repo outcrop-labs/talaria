@@ -317,13 +317,41 @@ fn install_tokens() -> &'static TokenCache {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The permissions a REPO-SCOPED token asks for: what a job's git push, a
+/// branch create, a default-branch read and a pull-request open need, and
+/// nothing an installation might also hold (administration, workflows,
+/// secrets, packages). The sandbox's credential helper hands this token to
+/// model-authored code; a permission it does not carry is a permission that
+/// code cannot spend.
+pub const REPO_TOKEN_PERMISSIONS: &str =
+    r#"{"contents":"write","pull_requests":"write","metadata":"read"}"#;
+
+/// The body of an access_tokens request: the one repository, and — on the
+/// first try — the narrowed permissions. GitHub answers 422 when the request
+/// names a permission the installation was never granted, so the caller
+/// retries once without the block and the token falls back to the
+/// installation's own grants (logged, so an operator can see the App is
+/// missing a permission the workbench expects).
+pub fn access_tokens_body(repo: &str, narrowed: bool) -> String {
+    let name = repo.rsplit('/').next().unwrap_or(repo);
+    let repos = serde_json::to_string(&[name]).expect("a repo name serializes");
+    if narrowed {
+        format!(r#"{{"repositories":{repos},"permissions":{REPO_TOKEN_PERMISSIONS}}}"#)
+    } else {
+        format!(r#"{{"repositories":{repos}}}"#)
+    }
+}
+
 /// Mint an installation access token. When `repo` is set the token is scoped
 /// to THAT repository alone — without a body GitHub issues one valid for
 /// EVERY repo in the installation, and this token ends up inside a sandbox
 /// running model-authored code, so an unscoped one made a single leaked
-/// credential equivalent to push access across the whole org. Permissions are
-/// deliberately NOT narrowed (a permission the installation lacks is a hard
-/// 422); the token inherits the installation's grants.
+/// credential equivalent to push access across the whole org. A repo-scoped
+/// token is also narrowed to [`REPO_TOKEN_PERMISSIONS`], with one retry on
+/// the 422 an under-granted installation answers; the installation-wide
+/// token (`repo: None` — listing, repo creation) is not narrowed, because
+/// those callers are the ones that need the App's wider grants and it never
+/// enters a sandbox.
 pub async fn installation_token(
     sb: &SecretBox,
     cfg: &GithubConfig,
@@ -348,25 +376,36 @@ pub async fn installation_token(
         app_jwt(&cfg.app_id, &key)?
     };
 
-    let mut req = http()
-        .post(format!(
-            "{GH}/app/installations/{installation_id}/access_tokens"
-        ))
-        .header("accept", "application/vnd.github+json")
-        .header("x-github-api-version", "2022-11-28")
-        .header("user-agent", "talaria-workbench")
-        .header("authorization", format!("Bearer {jwt}"));
-    // `repositories` takes bare names, not owner/name.
-    if let Some(repo) = repo {
-        let name = repo.rsplit('/').next().unwrap_or(repo);
-        req = req
-            .header("content-type", "application/json")
-            .body(format!(r#"{{"repositories":["{name}"]}}"#));
-    }
-    let res = req
-        .send()
+    let mint = |body: Option<String>| {
+        let mut req = http()
+            .post(format!(
+                "{GH}/app/installations/{installation_id}/access_tokens"
+            ))
+            .header("accept", "application/vnd.github+json")
+            .header("x-github-api-version", "2022-11-28")
+            .header("user-agent", "talaria-workbench")
+            .header("authorization", format!("Bearer {jwt}"));
+        if let Some(body) = body {
+            req = req.header("content-type", "application/json").body(body);
+        }
+        req.send()
+    };
+    let mut res = mint(repo.map(|r| access_tokens_body(r, true)))
         .await
         .map_err(|e| format!("github installation token: {e}"))?;
+    if res.status().as_u16() == 422
+        && let Some(repo) = repo
+    {
+        // The narrowed ask named a permission this installation lacks (or
+        // the repo is not in this installation — the retry answers that
+        // too). Once more on the installation's own grants.
+        tracing::warn!(
+            "[github] narrowed installation token for {repo} was refused (422) —              retrying on the installation's own grants; check the App has              contents, pull_requests and metadata"
+        );
+        res = mint(Some(access_tokens_body(repo, false)))
+            .await
+            .map_err(|e| format!("github installation token: {e}"))?;
+    }
     if !res.status().is_success() {
         // 422 here usually means the repo isn't in THIS installation — worth
         // saying so, because the caller picked the installation by cache
@@ -698,9 +737,28 @@ pub async fn set_repo_rule(pg: &PgPool, agent_id: &str, rule: &RepoRule) -> Resu
     Ok(())
 }
 
+/// Branches no agent pushes under `branches_only`, whatever the rule names
+/// as its base. A repo whose flow base is `rc` (this repository's own model)
+/// still has a `main` that promotion owns; a rule that only refused the
+/// configured base let a push to `main` through. `free` is the operator's
+/// explicit opt-out and keeps its meaning.
+pub const PROTECTED_BRANCHES: [&str; 3] = ["main", "master", "rc"];
+
 /// The decision the pre-push hook and the brief both read. Pure: given the
 /// rule, the repo's resolved default branch (for a null base_branch), and a
 /// ref being pushed, allow or refuse with a sentence for the agent.
+///
+/// Refused under `branches_only`: the configured base, the repo's default
+/// branch (even when a base is configured — the default is where the
+/// repo's own promotion lands), and [`PROTECTED_BRANCHES`].
+///
+/// THIS IS A CLIENT-SIDE GATE. It answers the rendered pre-push hook inside
+/// the sandbox, and git skips a pre-push hook on `--no-verify`. The token
+/// the sandbox holds is narrowed to contents/pull_requests/metadata, but
+/// contents:write is what pushing a branch takes, so the base branch is
+/// only actually safe when the repository's own branch protection says so.
+/// This rule is the agent's instruction and the operator's log line, not
+/// the lock on the door.
 pub fn push_allowed(rule: &RepoRule, default_branch: &str, ref_name: &str) -> Result<(), String> {
     if rule.push_mode == "free" {
         return Ok(());
@@ -710,6 +768,18 @@ pub fn push_allowed(rule: &RepoRule, default_branch: &str, ref_name: &str) -> Re
     if branch == base {
         return Err(format!(
             "{base} is the base branch for {} — your work belongs on your own branch and a human merges it",
+            rule.repo
+        ));
+    }
+    if !default_branch.is_empty() && branch == default_branch {
+        return Err(format!(
+            "{default_branch} is the default branch of {} — your work belongs on your own branch and a human merges it",
+            rule.repo
+        ));
+    }
+    if PROTECTED_BRANCHES.contains(&branch) {
+        return Err(format!(
+            "{branch} is a protected branch of {} — your work belongs on your own branch and a human merges it",
             rule.repo
         ));
     }
@@ -1337,10 +1407,26 @@ mod tests {
         assert!(push_allowed(&d, "main", "refs/heads/agent/thing").is_ok());
         assert!(push_allowed(&d, "main", "refs/heads/main").is_err());
         assert!(push_allowed(&d, "main", "refs/tags/v1").is_ok()); // tags are not branch pushes
-        // A named base wins over the repo default.
+        // A named base is refused — and so is the repo's default, which the
+        // named base used to leave open: a flow based on `release` still
+        // has a `main` that promotion owns.
         let named = rule(Some("release"), "branches_only", None);
-        assert!(push_allowed(&named, "main", "refs/heads/main").is_ok());
+        assert!(push_allowed(&named, "main", "refs/heads/main").is_err());
         assert!(push_allowed(&named, "main", "refs/heads/release").is_err());
+        assert!(push_allowed(&named, "main", "refs/heads/agent/thing").is_ok());
+        // The well-known promotion branches are refused whatever the rule
+        // names: a repo whose flow base is `rc` (this repo's own model)
+        // keeps `main` and `master` closed too.
+        let rc = rule(Some("rc"), "branches_only", None);
+        for b in ["main", "master", "rc"] {
+            assert!(
+                push_allowed(&rc, "develop", &format!("refs/heads/{b}")).is_err(),
+                "{b}"
+            );
+        }
+        assert!(push_allowed(&rc, "develop", "refs/heads/develop").is_err());
+        assert!(push_allowed(&rc, "develop", "refs/heads/main-ish").is_ok());
+        assert!(push_allowed(&rc, "develop", "refs/heads/rc/agent-1").is_ok());
         // A prefix narrows the agent's own branches.
         let pfx = rule(None, "branches_only", Some("agent/"));
         assert!(push_allowed(&pfx, "main", "refs/heads/agent/ticket-1").is_ok());
@@ -1348,6 +1434,30 @@ mod tests {
         // 'free' is the explicit trust: everything goes, base included.
         let free = rule(None, "free", Some("agent/"));
         assert!(push_allowed(&free, "main", "refs/heads/main").is_ok());
+        assert!(push_allowed(&free, "main", "refs/heads/master").is_ok());
+    }
+
+    #[test]
+    fn a_repo_scoped_token_asks_for_three_permissions_and_the_retry_for_none() {
+        use super::access_tokens_body;
+        let narrowed = access_tokens_body("acme/widgets", true);
+        assert_eq!(
+            narrowed,
+            r#"{"repositories":["widgets"],"permissions":{"contents":"write","pull_requests":"write","metadata":"read"}}"#
+        );
+        let v: serde_json::Value = serde_json::from_str(&narrowed).expect("valid JSON");
+        assert_eq!(v["permissions"].as_object().map(|o| o.len()), Some(3));
+        assert!(v["permissions"].get("administration").is_none());
+        assert!(v["permissions"].get("workflows").is_none());
+        // The fallback drops the block and keeps the one-repo scope: a
+        // broad token never comes out of the retry either.
+        assert_eq!(
+            access_tokens_body("acme/widgets", false),
+            r#"{"repositories":["widgets"]}"#
+        );
+        // A name with a quote in it cannot break the body.
+        let odd = access_tokens_body("acme/wid\"gets", false);
+        assert!(serde_json::from_str::<serde_json::Value>(&odd).is_ok());
     }
 
     use super::*;

@@ -622,13 +622,22 @@ pub async fn can_access_upload(pg: &PgPool, upload_id: &str, viewer: UploadViewe
 
     // AssertSqlSafe: the interpolated fragment is boards.rs's
     // board_visibility_sql.
+    //
+    // The conversation leg admits the same readers `accessible_conversation`
+    // does for a shared thread: the owner, and a plan's or work session's
+    // members — by name or through a team. A screenshot an agent stamps on a
+    // work-session turn is a thing every collaborator in that session can see
+    // in the thread, so it is a thing they can open.
     let reach_sql = format!(
         "select 1 as ok where \
          exists(\
            select 1 from messages m join conversations c on c.id = m.conversation_id \
            where m.attachments @> $1::jsonb \
              and (c.user_id = $2::uuid \
-               or (c.kind = 'plan' and exists(select 1 from conversation_members cm where cm.conversation_id = c.id and cm.user_id = $2::uuid)))\
+               or (c.kind in ('plan', 'work') and (\
+                 exists(select 1 from conversation_members cm where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
+                 or exists(select 1 from conversation_teams ct join team_members tm on tm.team_id = ct.team_id \
+                           where ct.conversation_id = c.id and tm.user_id = $2::uuid))))\
          ) \
          or exists(\
            select 1 from channel_messages cm \

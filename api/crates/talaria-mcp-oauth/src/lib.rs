@@ -795,24 +795,53 @@ async fn token_post(url: &str, body: String) -> Option<talaria_safe_fetch::SafeR
     .ok()
 }
 
-/// Exchange the authorization code. Returns where the browser should land.
+/// How long a parked state is honoured at the callback. Sweeping only
+/// happens at the next `start_oauth`, so on a quiet instance a row can sit
+/// for days — the age is checked here, where it matters.
+pub const STATE_MAX_AGE_MS: i64 = 10 * 60 * 1000;
+
+/// Who arrived at the callback: the signed-in person, and whether they may
+/// complete an ORG connection (`agents.manage`). The state row names the
+/// subject the flow was started for; the person completing it must BE that
+/// subject — otherwise a user who started a flow for their own row and
+/// handed the authorize link to somebody else would capture that person's
+/// provider grant under their own connection.
+pub struct CallbackActor<'a> {
+    pub user_id: &'a str,
+    pub may_connect_org: bool,
+}
+
+/// Exchange the authorization code. Returns `(subject, server_id)`.
+///
+/// The state row is consumed FIRST, whatever the verdict — a state the wrong
+/// person arrived with, or one past `STATE_MAX_AGE_MS`, is burned rather
+/// than left for a retry — and the code is exchanged only once the row's
+/// subject is the actor's.
 pub async fn handle_oauth_callback(
     pg: &PgPool,
     sb: &SecretBox,
     state: &str,
     code: &str,
+    actor: &CallbackActor<'_>,
 ) -> Result<(String, String), String> {
-    let row: Option<(String, String, String, String)> = sqlx::query_as(
+    let row: Option<(String, String, String, String, i64)> = sqlx::query_as(
         "delete from mcp_oauth_states where state = $1 \
-         returning server_id::text, subject, verifier, redirect_uri",
+         returning server_id::text, subject, verifier, redirect_uri, \
+                   (trunc(extract(epoch from (now() - created_at)) * 1000))::bigint as age_ms",
     )
     .bind(state)
     .fetch_optional(pg)
     .await
     .map_err(|e| e.to_string())?;
-    let Some((server_id, subject, verifier, redirect_uri)) = row else {
+    let Some((server_id, subject, verifier, redirect_uri, age_ms)) = row else {
         return Err("unknown or expired authorization state".into());
     };
+    if age_ms > STATE_MAX_AGE_MS {
+        return Err("the authorization request is too old; start the connection again".into());
+    }
+    if let Some(refusal) = callback_subject_refusal(&subject, actor) {
+        return Err(refusal.into());
+    }
     let srv: Option<(Option<Value>, String)> =
         sqlx::query_as("select oauth, url from mcp_servers where id::text = $1")
             .bind(&server_id)
@@ -865,6 +894,25 @@ pub async fn handle_oauth_callback(
             .execute(pg)
             .await;
     Ok((subject, server_id))
+}
+
+/// The one rule binding a callback to a person: an `org` state needs a
+/// person who may connect org accounts; any other state names a user id,
+/// and only that user completes it. Pure, so the shape is pinned by tests.
+pub fn callback_subject_refusal(subject: &str, actor: &CallbackActor<'_>) -> Option<&'static str> {
+    if subject == "org" {
+        if actor.may_connect_org {
+            None
+        } else {
+            Some("this authorization connects the workspace's account, which you cannot manage")
+        }
+    } else if subject == actor.user_id {
+        None
+    } else {
+        Some(
+            "this authorization was started by a different account; start the connection from your own",
+        )
+    }
 }
 
 // ── Token use ───────────────────────────────────────────────────────────────
@@ -1194,6 +1242,33 @@ pub async fn oauth_meta(pg: &PgPool, server_id: &str) -> Result<Option<Value>, s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_callback_completes_only_for_the_subject_the_state_names() {
+        let alice = CallbackActor {
+            user_id: "alice",
+            may_connect_org: false,
+        };
+        let admin = CallbackActor {
+            user_id: "root",
+            may_connect_org: true,
+        };
+        // The account-linking shape: a state started for bob, completed by
+        // alice's browser — refused, whoever alice is.
+        assert!(callback_subject_refusal("bob", &alice).is_some());
+        assert!(callback_subject_refusal("bob", &admin).is_some());
+        assert_eq!(callback_subject_refusal("alice", &alice), None);
+        // An org state needs the permission, not a matching id.
+        assert!(callback_subject_refusal("org", &alice).is_some());
+        assert_eq!(callback_subject_refusal("org", &admin), None);
+        // A user literally named "org" cannot pass as the org.
+        let org_user = CallbackActor {
+            user_id: "org",
+            may_connect_org: false,
+        };
+        assert!(callback_subject_refusal("org", &org_user).is_some());
+        assert_eq!(STATE_MAX_AGE_MS, 600_000);
+    }
 
     #[test]
     fn a_grant_is_stale_inside_its_last_minute_and_never_without_an_expiry() {

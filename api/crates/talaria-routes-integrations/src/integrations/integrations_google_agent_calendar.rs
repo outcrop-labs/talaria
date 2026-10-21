@@ -3,6 +3,8 @@
 // calendar.
 // GET  → read upcoming events (free)
 // POST → DRAFT an event; queued for approval (the owner, or an admin for org).
+//        A still-live grant from an earlier approval in the same conversation
+//        covers ONE more event to the same attendees within 30 minutes.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -117,11 +119,11 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let start = match string_member(obj, "start", 4, usize::MAX) {
+    let start = match instant_member(obj, "start") {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let end = match string_member(obj, "end", 4, usize::MAX) {
+    let end = match instant_member(obj, "end") {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
@@ -214,12 +216,24 @@ pub async fn post(
         Ok(q) => q,
         Err(e) => return Ok(internal("[integrations/google/agent] queue failed", e)),
     };
+    // A prior approval in this conversation left a BOUNDED grant for
+    // draft_calendar_event — it expires, it covers one call, and only an
+    // event whose attendees are among the ones the approved event named
+    // (`talaria_chips::tool_unlocked` spends it, once, under a row lock).
+    // The owner is resolved before the grant is spent.
+    let recipients = talaria_chips::normalize_recipients(
+        attendees
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(String::as_str),
+    );
     if !principal.is_org
+        && let Some(owner) = principal.owner_user_id.as_deref()
         && let Ok(Some(conv)) = talaria_chips::live_conversation_id(&state.pg, &agent_model).await
-        && talaria_chips::tool_unlocked(&state.pg, &conv, "draft_calendar_event")
+        && talaria_chips::tool_unlocked(&state.pg, &conv, "draft_calendar_event", &recipients)
             .await
             .unwrap_or(false)
-        && let Some(owner) = principal.owner_user_id.as_deref()
     {
         let sb = state.secretbox().await.unwrap_or_default();
         let id = queued.action.id.clone();
@@ -238,7 +252,7 @@ pub async fn post(
                 Ok(Some(outcome)) => super::integrations_google_agent_queue::answer_executed(
                     &id,
                     &outcome.status,
-                    "Created — this conversation already unlocked draft_calendar_event.",
+                    "Created — the earlier approval covered this one; the next needs its own.",
                     "Unlocked draft_calendar_event did not create the event",
                 ),
                 Ok(None) => house_error(
@@ -339,13 +353,30 @@ pub async fn post_update(
     };
     let mut payload = serde_json::Map::new();
     payload.insert("eventId".into(), json!(event_id));
-    for key in ["summary", "start", "end"] {
-        if let Some(v) = obj.get(key).and_then(Value::as_str) {
-            payload.insert(key.into(), json!(v));
+    // The same bounds the draft route applies: a change the approver's card
+    // shows is validated before it is stored, not when Google refuses it.
+    match optional_max_string_member(obj, "summary", 500) {
+        Ok(Some(v)) => {
+            payload.insert("summary".into(), json!(v));
+        }
+        Ok(None) => {}
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    }
+    for key in ["start", "end"] {
+        match optional_instant_member(obj, key) {
+            Ok(Some(v)) => {
+                payload.insert(key.into(), json!(v));
+            }
+            Ok(None) => {}
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         }
     }
-    if let Some(all_day) = obj.get("allDay").and_then(Value::as_bool) {
-        payload.insert("allDay".into(), json!(all_day));
+    match optional_boolean_member(obj, "allDay") {
+        Ok(Some(all_day)) => {
+            payload.insert("allDay".into(), json!(all_day));
+        }
+        Ok(None) => {}
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     }
     let summary = format!("Update calendar event {event_id}");
     queue_calendar_change(&state, &headers, body, "calendar_update", &summary, payload).await
@@ -381,11 +412,21 @@ pub async fn post_meeting(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let start = match string_member(obj, "start", 4, usize::MAX) {
+    let start = match instant_member(obj, "start") {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let end = match string_member(obj, "end", 4, usize::MAX) {
+    let end = match instant_member(obj, "end") {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    // The agenda becomes a Doc at approve time; the attendees are the same
+    // validated, capped list the draft route takes — an invite is a send.
+    let agenda = match optional_max_string_member(obj, "agenda", 50_000) {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    let attendees = match optional_email_array_member(obj, "attendees", 50) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
@@ -394,12 +435,112 @@ pub async fn post_meeting(
     payload.insert("start".into(), json!(start));
     payload.insert("end".into(), json!(end));
     payload.insert("meet".into(), json!(true));
-    if let Some(agenda) = obj.get("agenda").and_then(Value::as_str) {
+    if let Some(agenda) = agenda {
         payload.insert("agenda".into(), json!(agenda));
     }
-    if let Some(list) = obj.get("attendees").and_then(Value::as_array) {
-        payload.insert("attendees".into(), Value::Array(list.clone()));
+    if let Some(list) = attendees {
+        payload.insert("attendees".into(), json!(list));
     }
     let summary = format!("Meeting: {summary_text} ({start})");
     queue_calendar_change(&state, &headers, body, "meeting_create", &summary, payload).await
+}
+
+/// A calendar instant as Google takes it: an all-day date (`2026-10-20`) or
+/// an RFC 3339 timestamp (`2026-10-20T09:00:00-07:00`, `…Z`). Bounded,
+/// ASCII, and shaped — Calendar rejects anything else at approve time,
+/// which is after the approver already read the card.
+fn calendar_instant_ok(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() < 10 || b.len() > 40 {
+        return false;
+    }
+    let date_ok = b[..10].iter().enumerate().all(|(i, c)| {
+        if i == 4 || i == 7 {
+            *c == b'-'
+        } else {
+            c.is_ascii_digit()
+        }
+    });
+    if !date_ok {
+        return false;
+    }
+    if b.len() == 10 {
+        return true;
+    }
+    b[10] == b'T'
+        && b.len() >= 16
+        && b[11..]
+            .iter()
+            .all(|c| c.is_ascii_digit() || matches!(c, b':' | b'.' | b'+' | b'-' | b'Z'))
+}
+
+fn instant_reason(key: &str) -> String {
+    format!("{key} must be a date (YYYY-MM-DD) or an RFC 3339 timestamp")
+}
+
+fn instant_member(obj: &serde_json::Map<String, Value>, key: &str) -> Result<String, String> {
+    let v = string_member(obj, key, 10, 40)?;
+    if !calendar_instant_ok(&v) {
+        return Err(instant_reason(key));
+    }
+    Ok(v)
+}
+
+fn optional_instant_member(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, String> {
+    match optional_max_string_member(obj, key, 40)? {
+        Some(v) if !calendar_instant_ok(&v) => Err(instant_reason(key)),
+        v => Ok(v),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_calendar_instant_is_a_date_or_an_rfc3339_timestamp() {
+        for ok in [
+            "2026-10-20",
+            "2026-10-20T09:00:00Z",
+            "2026-10-20T09:00:00-07:00",
+            "2026-10-20T09:00:00.000+02:00",
+        ] {
+            assert!(calendar_instant_ok(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "tomorrow",
+            "2026-10-2",
+            "2026/10/20",
+            "2026-10-20 09:00",
+            "2026-10-20T09",
+            "2026-10-20T09:00:00Z; drop table",
+            "2026-10-20T09:00:00Z000000000000000000000000000",
+        ] {
+            assert!(!calendar_instant_ok(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn meeting_and_update_bodies_take_the_draft_bounds() {
+        let obj = json!({
+            "start": "2026-10-20T09:00:00Z",
+            "end": "sometime next week",
+            "short": "soon",
+        });
+        let obj = obj.as_object().unwrap();
+        assert_eq!(
+            instant_member(obj, "start").unwrap(),
+            "2026-10-20T09:00:00Z"
+        );
+        // The length rung answers first (zod's first issue), the shape rung
+        // names the format.
+        assert!(instant_member(obj, "short").is_err());
+        assert!(instant_member(obj, "end").unwrap_err().contains("RFC 3339"));
+        assert!(optional_instant_member(obj, "missing").unwrap().is_none());
+        assert!(optional_instant_member(obj, "end").is_err());
+    }
 }

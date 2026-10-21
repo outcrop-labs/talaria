@@ -90,6 +90,155 @@ pub const GOVERNED_TOOLSETS: &[&str] = &[
 /// they are the floor, not a choice.
 pub const MANDATORY_DISABLED: &[&str] = &["todo", "clarify"];
 
+/// The CLOSED DEFAULT for a new agent: what a fresh def's
+/// `disabled_toolsets` starts as. A hired agent gets no shell, no code
+/// execution, no file tool and no self-scheduling until a manager opens them
+/// one by one — the container env carries the agent's own credential, the
+/// Hermes API key and the fleet gateway key, and an agent that can `env |
+/// curl` on a prompt-injected page needed exactly none of these to do the
+/// job it was hired for. `browser`, `delegation` and `memory` stay on: they
+/// are what an ordinary agent works with. A Developer Agent is the
+/// exception ([`DEVELOPER_TOOLSETS`]): the switch opens the three the
+/// sandbox is for, and turning it off closes them again.
+pub const DEFAULT_DISABLED_FOR_NEW: &[&str] = &["terminal", "code_execution", "file", "cronjob"];
+
+/// What the Developer Agent switch opens and closes — the toolsets a dev
+/// sandbox cannot do without. `cronjob` is NOT among them: a developer still
+/// does not schedule itself unless a manager says so.
+pub const DEVELOPER_TOOLSETS: &[&str] = &["terminal", "file", "code_execution"];
+
+/// Closed by default on an agent that serves MANY people (no
+/// `owner_user_id`): with pinned sessions every conversation of every user
+/// is a Hermes session on the agent's state volume, and `session_search`
+/// would let the agent recall Alice's thread while answering Bob. A personal
+/// assistant works for one person, so its recall is that person's own.
+pub const SHARED_AGENT_DISABLED: &[&str] = &["session_search"];
+
+/// The org-level floor: an `app_settings` row (a JSON array of governed
+/// names) every render merges beside [`MANDATORY_DISABLED`], so an operator
+/// can close a toolset for the whole fleet without visiting each agent. No
+/// admin route writes this key yet (the admin settings PUT takes fixed
+/// fields), so it is set with SQL today; the env var below is the
+/// read-only twin for an install that would rather pin it in the process
+/// environment. Both are read; the union is the floor.
+pub const ORG_FLOOR_SETTING: &str = "agents.mandatory_disabled_toolsets";
+pub const ORG_FLOOR_ENV: &str = "TALARIA_MANDATORY_DISABLED_TOOLSETS";
+
+/// The disabled list a brand-new def starts with: the closed default, plus
+/// `session_search` unless the agent is somebody's personal assistant.
+pub fn default_disabled_for_new(personal: bool) -> Vec<String> {
+    let mut out: Vec<String> = DEFAULT_DISABLED_FOR_NEW
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
+    if !personal {
+        out.extend(SHARED_AGENT_DISABLED.iter().map(|n| n.to_string()));
+    }
+    out
+}
+
+/// The whole floor, pure: [`MANDATORY_DISABLED`], then the stored org list,
+/// then the env list — governed names only (a stranger is logged and
+/// dropped, never rendered for Hermes to ignore in silence), deduped,
+/// floor-first so the rendered config reads the same way every render.
+pub fn merge_org_floor(stored: &Value, env: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = MANDATORY_DISABLED.iter().map(|n| n.to_string()).collect();
+    let stored_names: Vec<String> = stored
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let env_names: Vec<String> = env
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    for raw in stored_names.into_iter().chain(env_names) {
+        let name = raw.trim();
+        if !GOVERNED_TOOLSETS.contains(&name) {
+            tracing::warn!(
+                "[agent-defs] org toolset floor names \"{name}\", which is not a governed toolset — ignored"
+            );
+            continue;
+        }
+        if !out.iter().any(|kept| kept == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// The floor the renderer merges ahead of every agent's own list:
+/// [`MANDATORY_DISABLED`] plus the org floor ([`ORG_FLOOR_SETTING`] and
+/// [`ORG_FLOOR_ENV`]). Never fails — an unreadable setting is the two-name
+/// floor a fresh install has.
+pub async fn mandatory_disabled(pg: &PgPool) -> Vec<String> {
+    let stored = talaria_gateway::settings::get_setting(pg, ORG_FLOOR_SETTING, Value::Null).await;
+    let env = std::env::var(ORG_FLOOR_ENV).ok();
+    merge_org_floor(&stored, env.as_deref())
+}
+
+/// Take names OFF an agent's disabled list (open the toolsets). Returns
+/// whether the stored list changed. The jsonb is rewritten whole so the
+/// column keeps its wire shape (a deduped array of governed names).
+pub async fn open_toolsets(pg: &PgPool, id: &str, names: &[&str]) -> Result<bool, sqlx::Error> {
+    let current = disabled_toolsets_of(pg, id).await?;
+    let next: Vec<String> = current
+        .iter()
+        .filter(|n| !names.contains(&n.as_str()))
+        .cloned()
+        .collect();
+    if next == current {
+        return Ok(false);
+    }
+    set_disabled_toolsets(pg, id, &next).await
+}
+
+/// Put names ON an agent's disabled list (close the toolsets). Returns
+/// whether the stored list changed.
+pub async fn close_toolsets(pg: &PgPool, id: &str, names: &[&str]) -> Result<bool, sqlx::Error> {
+    let current = disabled_toolsets_of(pg, id).await?;
+    let mut next = current.clone();
+    for name in names {
+        if !next.iter().any(|n| n == name) {
+            next.push(name.to_string());
+        }
+    }
+    if next == current {
+        return Ok(false);
+    }
+    set_disabled_toolsets(pg, id, &next).await
+}
+
+/// The Developer Agent switch's toolset half: on opens
+/// [`DEVELOPER_TOOLSETS`], off closes them again. Returns whether the list
+/// changed, for the audit row.
+pub async fn apply_developer_toolsets(
+    pg: &PgPool,
+    id: &str,
+    on: bool,
+) -> Result<bool, sqlx::Error> {
+    if on {
+        open_toolsets(pg, id, DEVELOPER_TOOLSETS).await
+    } else {
+        close_toolsets(pg, id, DEVELOPER_TOOLSETS).await
+    }
+}
+
+async fn disabled_toolsets_of(pg: &PgPool, id: &str) -> Result<Vec<String>, sqlx::Error> {
+    let row: Option<(sqlx::types::Json<Vec<String>>,)> =
+        sqlx::query_as("select disabled_toolsets from agent_defs where id = $1::uuid")
+            .bind(id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.map(|(j,)| j.0).unwrap_or_default())
+}
+
 /// The longest list a caller may hand us. Nothing can legitimately exceed
 /// GOVERNED_TOOLSETS' own length once duplicates are gone, so this is a bound
 /// on the WALK, not on the answer: a request cannot make this validate a
@@ -554,9 +703,14 @@ pub async fn upsert_agent_def(
     input: &UpsertDef<'_>,
 ) -> Result<AgentDefRow, sqlx::Error> {
     let model = format!("{}-{}", input.slug, input.department);
+    // A NEW row starts closed ([`default_disabled_for_new`]); an existing
+    // slug keeps whatever its managers opened — the default is for the
+    // insert only, never a reset on re-import. Nothing here knows whether
+    // the agent will be somebody's assistant, so the shared-agent names ride
+    // along and the personal create path opens them once it marks the owner.
     let row: DefTuple = sqlx::query_as(
-        "insert into agent_defs (slug, department, model, display_name, role, source) \
-         values ($1, $2, $3, $4, $5, $6) \
+        "insert into agent_defs (slug, department, model, display_name, role, source, disabled_toolsets) \
+         values ($1, $2, $3, $4, $5, $6, $7) \
          on conflict (slug) do update set \
            department = excluded.department, model = excluded.model, \
            display_name = excluded.display_name, \
@@ -569,6 +723,7 @@ pub async fn upsert_agent_def(
     .bind(input.display_name)
     .bind(input.role)
     .bind(input.source)
+    .bind(serde_json::json!(default_disabled_for_new(false)))
     .fetch_one(pg)
     .await?;
     Ok(def_row(row))
@@ -955,6 +1110,80 @@ mod tests {
         for name in MANDATORY_DISABLED {
             assert!(GOVERNED_TOOLSETS.contains(name), "{name} is not governed");
         }
+        // And so must every name the closed default, the Developer switch and
+        // the shared-agent default write: a stranger here would be refused
+        // by the PATCH the moment a manager re-saved the list.
+        for name in DEFAULT_DISABLED_FOR_NEW
+            .iter()
+            .chain(DEVELOPER_TOOLSETS)
+            .chain(SHARED_AGENT_DISABLED)
+        {
+            assert!(GOVERNED_TOOLSETS.contains(name), "{name} is not governed");
+        }
+    }
+
+    #[test]
+    fn a_new_agent_starts_closed_and_a_personal_one_keeps_its_recall() {
+        let shared = default_disabled_for_new(false);
+        for name in [
+            "terminal",
+            "code_execution",
+            "file",
+            "cronjob",
+            "session_search",
+        ] {
+            assert!(
+                shared.iter().any(|n| n == name),
+                "{name} should start closed"
+            );
+        }
+        for name in ["browser", "delegation", "memory"] {
+            assert!(
+                !shared.iter().any(|n| n == name),
+                "{name} should start open"
+            );
+        }
+        let personal = default_disabled_for_new(true);
+        assert!(
+            !personal.iter().any(|n| n == "session_search"),
+            "a personal assistant recalls its own person's threads"
+        );
+        assert!(personal.iter().any(|n| n == "terminal"));
+        // The Developer switch opens exactly the sandbox trio and nothing the
+        // closed default also carries beyond it.
+        assert!(
+            DEVELOPER_TOOLSETS
+                .iter()
+                .all(|n| DEFAULT_DISABLED_FOR_NEW.contains(n))
+        );
+        assert!(!DEVELOPER_TOOLSETS.contains(&"cronjob"));
+    }
+
+    #[test]
+    fn the_org_floor_merges_governed_names_behind_the_mandatory_pair() {
+        // Nothing stored, nothing in the env: the two-name floor.
+        assert_eq!(
+            merge_org_floor(&Value::Null, None),
+            vec!["todo".to_string(), "clarify".to_string()]
+        );
+        // Stored and env names land after the pair, deduped against it and
+        // each other; a stranger and a blank are dropped, not rendered.
+        let stored = serde_json::json!(["terminal", "todo", "brower", " browser "]);
+        assert_eq!(
+            merge_org_floor(&stored, Some("web, terminal,, nope")),
+            vec![
+                "todo".to_string(),
+                "clarify".to_string(),
+                "terminal".to_string(),
+                "browser".to_string(),
+                "web".to_string()
+            ]
+        );
+        // A stored value that is not an array is the same as none.
+        assert_eq!(
+            merge_org_floor(&serde_json::json!("terminal"), None),
+            vec!["todo".to_string(), "clarify".to_string()]
+        );
     }
 
     #[test]

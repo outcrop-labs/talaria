@@ -4758,6 +4758,7 @@ name = "talaria-fitness-code-runner"
 version = "0.1.0"
 dependencies = [
  "boa_engine",
+ "libc",
  "regex",
  "serde",
  "serde_json",
@@ -5186,6 +5187,7 @@ dependencies = [
  "talaria-body",
  "talaria-gateway",
  "talaria-google-connections",
+ "talaria-google-docs",
  "talaria-google-errors",
  "talaria-google-oauth",
  "talaria-google-org",
@@ -6295,8 +6297,10 @@ dependencies = [
 name = "talaria-ratelimit"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "http",
  "redis",
+ "talaria-error",
 ]
 
 [[package]]
@@ -6658,6 +6662,7 @@ dependencies = [
  "talaria-api-facades",
  "talaria-artifacts",
  "talaria-audit",
+ "talaria-boards",
  "talaria-body",
  "talaria-channel-replies",
  "talaria-channels",
@@ -6680,6 +6685,7 @@ dependencies = [
  "talaria-plan-doc",
  "talaria-plan-drafts",
  "talaria-push",
+ "talaria-ratelimit",
  "talaria-realtime-watch",
  "talaria-refs",
  "talaria-research",
@@ -6756,6 +6762,7 @@ dependencies = [
  "talaria-safe-fetch",
  "talaria-secretbox",
  "talaria-session",
+ "talaria-settings",
  "talaria-skill-access",
  "talaria-skills-marketplace",
  "talaria-state",
@@ -6844,6 +6851,7 @@ dependencies = [
  "talaria-params",
  "talaria-permissions",
  "talaria-personal-agent",
+ "talaria-ratelimit",
  "talaria-session",
  "talaria-state",
  "talaria-teams",

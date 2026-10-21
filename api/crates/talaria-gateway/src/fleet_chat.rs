@@ -120,7 +120,13 @@ pub async fn proxy_chat(payload: &Value, wait_ms: Option<u64>) -> ChatStream {
     }
     report_sealed(&vault, &model);
 
-    hold_for_agent(&model, AgentRequest::ChatCompletions { payload }, wait_ms).await
+    match hold_for_agent(&model, AgentRequest::ChatCompletions { payload }, wait_ms).await {
+        Ok(stream) => stream,
+        // The completions arm names no session, so it has none to lose; the
+        // canned sentence is the honest answer if the type ever says
+        // otherwise.
+        Err(SessionLost) => canned_chat_stream(&unavailable_reply(&model), "hold"),
+    }
 }
 
 /// Send one turn on a Hermes SESSION — the arm for an agent that keeps its own
@@ -137,13 +143,22 @@ pub async fn proxy_chat(payload: &Value, wait_ms: Option<u64>) -> ChatStream {
 /// manifest row at all is mock mode. `message` is a string or OpenAI content
 /// parts; `system_message` is the per-turn prompt Hermes calls ephemeral. Both
 /// are sealed through a per-call vault before they leave the process.
+///
+/// `history_expected` says the conversation has been driven through this
+/// session before, so the session MUST already exist in the container: a
+/// create that answers 201 then means the state volume was lost (a re-hire
+/// on the same slug, a swapped volume, a host restore) and Hermes would
+/// answer from an empty room while the transcript on screen says otherwise.
+/// That turn is `None` — the caller sends the full history instead — rather
+/// than a stream from a session that knows nothing.
 pub async fn proxy_session_turn(
     agent_model: &str,
     conversation_id: &str,
     system_message: Option<&str>,
     message: &Value,
     wait_ms: Option<u64>,
-) -> ChatStream {
+    history_expected: bool,
+) -> Option<ChatStream> {
     let mut vault = SecretVault::default();
     let body = session_turn_body(message, system_message, &mut vault);
     report_sealed(&vault, agent_model);
@@ -153,10 +168,12 @@ pub async fn proxy_session_turn(
         AgentRequest::SessionTurn {
             conversation_id: conversation_id.to_string(),
             body,
+            history_expected,
         },
         wait_ms,
     )
     .await
+    .ok()
 }
 
 /// The session turn's request body, sealed. The system prompt goes through the
@@ -197,13 +214,33 @@ enum AgentRequest {
     SessionTurn {
         conversation_id: String,
         body: Value,
+        /// The conversation was driven through this session before, so the
+        /// session must already be there: a fresh create is a lost volume,
+        /// not a first turn.
+        history_expected: bool,
     },
 }
 
+/// The pinned session this turn expected to find is gone: the container
+/// answered the create with a fresh session where a transcript should have
+/// been. Not a hold and not a canned reply — the caller has the full history
+/// in hand and sends it the other way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionLost;
+
+/// One attempt's answer, for the hold loop.
+enum Opened {
+    Stream(ChatStream),
+    /// Not serving yet — back off and try again until the deadline.
+    NotYet,
+    Lost,
+}
+
 impl AgentRequest {
-    /// One attempt against this agent's own gateway. `None` means "not serving
-    /// yet" — the hold loop backs off and tries again until its deadline.
-    async fn open(&self, entry: &ManifestEntry) -> Option<ChatStream> {
+    /// One attempt against this agent's own gateway. `NotYet` means "not
+    /// serving yet" — the hold loop backs off and tries again until its
+    /// deadline.
+    async fn open(&self, entry: &ManifestEntry) -> Opened {
         match self {
             AgentRequest::ChatCompletions { payload } => {
                 let mut request = payload.clone();
@@ -211,21 +248,42 @@ impl AgentRequest {
                 // ledger (gateways that don't support it just ignore the option).
                 request["stream"] = json!(true);
                 request["stream_options"] = json!({ "include_usage": true });
-                open_stream(agent_post(entry, "/v1/chat/completions"), &request).await
+                match open_stream(agent_post(entry, "/v1/chat/completions"), &request).await {
+                    Some(stream) => Opened::Stream(stream),
+                    None => Opened::NotYet,
+                }
             }
             AgentRequest::SessionTurn {
                 conversation_id,
                 body,
+                history_expected,
             } => {
                 // The session must exist before a turn can land on it, and the
                 // create is the only place we can learn that it doesn't. A
                 // refusal here is treated exactly like a gateway that isn't
                 // serving yet — on a container that is still booting that is
                 // precisely what it is.
-                if !ensure_session(entry, conversation_id).await {
-                    return None;
+                match ensure_session(entry, conversation_id).await {
+                    SessionCreate::NotReady => return Opened::NotYet,
+                    SessionCreate::Existing => {}
+                    // A fresh session where a transcript was expected is the
+                    // state-volume loss M5 names; said once per conversation,
+                    // because the caller will come back this way every turn
+                    // until the history is rebuilt.
+                    SessionCreate::Fresh if *history_expected => {
+                        if lost_sessions_first_sight(conversation_id) {
+                            tracing::warn!(
+                                "[fleet] {}: session {conversation_id} was created fresh where a \
+                                 transcript was expected — the Hermes state volume was lost; this \
+                                 conversation is sent with its full history instead",
+                                entry.url
+                            );
+                        }
+                        return Opened::Lost;
+                    }
+                    SessionCreate::Fresh => {}
                 }
-                open_stream(
+                match open_stream(
                     agent_post(
                         entry,
                         &format!("/api/sessions/{conversation_id}/chat/stream"),
@@ -233,16 +291,38 @@ impl AgentRequest {
                     body,
                 )
                 .await
+                {
+                    Some(stream) => Opened::Stream(stream),
+                    None => Opened::NotYet,
+                }
             }
         }
     }
+}
+
+/// Conversations whose pinned session was found lost, so the warning above
+/// is said once per process rather than once per turn.
+static LOST_SESSIONS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+fn lost_sessions_first_sight(conversation_id: &str) -> bool {
+    LOST_SESSIONS
+        .lock()
+        .map(|mut set| set.insert(conversation_id.to_string()))
+        .unwrap_or(true)
 }
 
 /// The hold: retry while the agent's gateway is coming up (502/503/504,
 /// backoff capped at 5s) and never wait past the window — past the deadline
 /// the reply is the honest canned sentence, so history shows what happened
 /// rather than a silent failure. `wait_ms` None is the two-minute default.
-async fn hold_for_agent(model: &str, request: AgentRequest, wait_ms: Option<u64>) -> ChatStream {
+/// `Err(SessionLost)` is the session arm's one way out that is not a stream:
+/// the room it expected is gone, and the caller decides what to send instead.
+async fn hold_for_agent(
+    model: &str,
+    request: AgentRequest,
+    wait_ms: Option<u64>,
+) -> Result<ChatStream, SessionLost> {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms.unwrap_or(120_000));
     let mut attempt: u32 = 0;
     loop {
@@ -251,17 +331,19 @@ async fn hold_for_agent(model: &str, request: AgentRequest, wait_ms: Option<u64>
         // Two strikes with no manifest row at all → mock mode: no agents are
         // rendered yet, and the reply says so instead of hanging.
         if entry.is_none() && attempt >= 2 {
-            return canned_chat_stream(&mock_reply(model), "mock");
+            return Ok(canned_chat_stream(&mock_reply(model), "mock"));
         }
 
-        if let Some(entry) = entry
-            && let Some(stream) = request.open(entry).await
-        {
-            return stream;
+        if let Some(entry) = entry {
+            match request.open(entry).await {
+                Opened::Stream(stream) => return Ok(stream),
+                Opened::Lost => return Err(SessionLost),
+                Opened::NotYet => {}
+            }
         }
 
         if tokio::time::Instant::now() >= deadline {
-            return canned_chat_stream(&unavailable_reply(model), "hold");
+            return Ok(canned_chat_stream(&unavailable_reply(model), "hold"));
         }
         attempt += 1;
         tokio::time::sleep(Duration::from_millis(
@@ -310,17 +392,38 @@ fn with_bearer(entry: &ManifestEntry, req: reqwest::RequestBuilder) -> reqwest::
 /// turn runs; only silence ends it. What still needs a bound here is the wait
 /// for the response's HEADERS — a container that accepted the request and
 /// never opened the stream — because connect_timeout covers TCP only.
+///
+/// `None` MEANS "NOTHING WAS DELIVERED": the connection was refused or reset
+/// before any byte of a response, which is the one case a re-POST cannot
+/// double — the container is restarting. Everything else is an answer. A
+/// 502/503/504 or a response whose headers never arrive inside the window
+/// comes AFTER the request was sent and possibly accepted: the agent may be
+/// executing the turn, and sending the same body again would put a second
+/// copy of it into the session, invisibly to the step's checkpoint. Those
+/// come back as the error they are (the upstream status as-is, or a
+/// synthesized 504 for the silent one) and the caller fails the turn.
 async fn open_stream(req: reqwest::RequestBuilder, body: &Value) -> Option<ChatStream> {
-    let sent = tokio::time::timeout(HEADERS_WINDOW, req.json(body).send()).await;
-    let Ok(Ok(upstream)) = sent else {
-        return None;
+    let upstream = match tokio::time::timeout(HEADERS_WINDOW, req.json(body).send()).await {
+        Ok(Ok(upstream)) => upstream,
+        Ok(Err(e)) if failed_before_any_byte(&e) => return None,
+        Ok(Err(e)) => {
+            return Some(error_stream(
+                502,
+                format!("the agent gateway failed after the request was sent: {e}"),
+            ));
+        }
+        Err(_) => {
+            return Some(error_stream(
+                504,
+                format!(
+                    "the agent gateway accepted the request and sent no response headers within \
+                     {}s",
+                    HEADERS_WINDOW.as_secs()
+                ),
+            ));
+        }
     };
     let status = upstream.status().as_u16();
-    // 502/503/504 = the gateway process is up but not serving yet — keep
-    // waiting. Any other answer (including a real error status) is the reply.
-    if [502, 503, 504].contains(&status) {
-        return None;
-    }
     let content_type = upstream
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -335,11 +438,64 @@ async fn open_stream(req: reqwest::RequestBuilder, body: &Value) -> Option<ChatS
     })
 }
 
+/// What the session create answered — the two successes are kept apart
+/// because they mean different things to a turn that expected a transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionCreate {
+    /// 2xx: the container made the session just now.
+    Fresh,
+    /// 409 `session_exists`: an earlier turn made it — the steady state.
+    Existing,
+    /// Anything else: not serving yet, or a container refusing the room.
+    NotReady,
+}
+
+/// A transport error that proves no byte of the request reached a serving
+/// process: connect refused, or the peer closing the connection before any
+/// response (hyper's "connection closed before message completed" / "reset"
+/// — the shape a container gives while it restarts). Anything else may have
+/// been accepted.
+fn failed_before_any_byte(e: &reqwest::Error) -> bool {
+    if e.is_connect() {
+        return true;
+    }
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(err) = source {
+        let text = err.to_string().to_ascii_lowercase();
+        if text.contains("connection reset")
+            || text.contains("connection refused")
+            || text.contains("connection closed before message completed")
+        {
+            return true;
+        }
+        source = err.source();
+    }
+    false
+}
+
+/// A non-200 reply synthesized on this side of the wire, for the two
+/// failures that happen after the request was sent. Not canned: a canned
+/// stream is a 200 the harness unwraps, and these must read as the error
+/// status they are.
+fn error_stream(status: u16, text: String) -> ChatStream {
+    ChatStream {
+        status,
+        content_type: "text/plain".into(),
+        body: futures_util::stream::once(
+            async move { Ok::<Bytes, reqwest::Error>(Bytes::from(text)) },
+        )
+        .boxed(),
+        canned: None,
+    }
+}
+
 /// Create the Hermes session this turn lands on, idempotently: a success is a
 /// fresh session, and 409 `session_exists` is the one an earlier turn made —
 /// the normal answer for every turn but the first. Anything else (including a
 /// transport error) reads as "this container is not ready", which is the same
-/// answer the stream itself gives while a container boots.
+/// answer the stream itself gives while a container boots. Fresh and existing
+/// are reported apart: the caller knows whether a transcript should have
+/// been there, and a fresh room where one was expected is not a success.
 ///
 /// The session carries no `system_prompt` of its own on purpose: every turn
 /// sends its own ephemeral one, so there is no stored prompt here to go stale
@@ -347,7 +503,7 @@ async fn open_stream(req: reqwest::RequestBuilder, body: &Value) -> Option<ChatS
 /// one the stream uses — a create that answers at all answers in milliseconds,
 /// and the bound exists for the container that accepts TCP and then says
 /// nothing.
-async fn ensure_session(entry: &ManifestEntry, conversation_id: &str) -> bool {
+async fn ensure_session(entry: &ManifestEntry, conversation_id: &str) -> SessionCreate {
     let body = json!({ "id": conversation_id });
     let sent = tokio::time::timeout(
         HEADERS_WINDOW,
@@ -355,18 +511,22 @@ async fn ensure_session(entry: &ManifestEntry, conversation_id: &str) -> bool {
     )
     .await;
     let Ok(Ok(res)) = sent else {
-        return false;
+        return SessionCreate::NotReady;
     };
     let status = res.status();
     if status.is_success() {
-        return true;
+        return SessionCreate::Fresh;
     }
     // A 409 is "exists" only when it says so: any other conflict is a
     // container refusing the session, and the stream POST would then be
     // talking to a room that was never made.
     if status == reqwest::StatusCode::CONFLICT {
         let body: Value = res.json().await.unwrap_or(Value::Null);
-        return body["error"]["code"] == "session_exists";
+        return if body["error"]["code"] == "session_exists" {
+            SessionCreate::Existing
+        } else {
+            SessionCreate::NotReady
+        };
     }
     // A Hermes without the session API at all. The hold below treats it as
     // a container still booting, which is the one thing it is not — so the
@@ -377,7 +537,7 @@ async fn ensure_session(entry: &ManifestEntry, conversation_id: &str) -> bool {
             entry.url
         );
     }
-    false
+    SessionCreate::NotReady
 }
 
 /// The agent stayed down past the hold window: say so honestly, streamed as a

@@ -11,7 +11,10 @@
 // platform can use it and the agent's newest live work session otherwise —
 // a documented v1 approximation (turns serialize through one persona, so
 // the newest live run is almost always the right one; exact session pinning
-// is the follow-up).
+// is the follow-up). The CHIPS are not approximated: they land in the
+// conversation the session id names (for a pinned agent the Hermes session
+// id is the conversation id), and without one only while exactly one turn
+// could be meant.
 
 use axum::Json;
 use axum::extract::State;
@@ -100,19 +103,29 @@ pub async fn post(
             .ok()
             .and_then(|principal| principal.owner_user_id);
             let agent = &caller.model;
-            match talaria_chips::surface_tool_chips(
+            let hint = talaria_chips::conversation_hint(&parsed);
+            match talaria_chips::surface_tool_chips_in(
                 &state.pg,
                 redis,
                 &caller.model,
                 owner.as_deref(),
+                hint.as_deref(),
                 chips,
             )
             .await
             {
-                Ok(Some(_)) => {}
+                Ok(talaria_chips::Target::Found(_)) => {}
+                // Several turns and no session named: the chips are dropped
+                // rather than guessed onto somebody else's thread. The event
+                // itself still lands below — the watch frame is keyed by the
+                // run, not the conversation.
+                Ok(talaria_chips::Target::Ambiguous { turns }) => tracing::warn!(
+                    "[tool-events] chips from {tool} for {agent}: {turns} turns live and no \
+                     session named — dropped"
+                ),
                 // Chips computed but nowhere to land: no streaming turn and
                 // nothing recent — a silent drop without this line.
-                Ok(None) => tracing::warn!(
+                Ok(talaria_chips::Target::Nowhere) => tracing::warn!(
                     "[tool-events] chips from {tool} for {agent} had no turn to land on — dropped"
                 ),
                 Err(e) => tracing::warn!("[tool-events] chip surface failed: {e}"),

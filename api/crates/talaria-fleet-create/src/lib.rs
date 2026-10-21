@@ -223,11 +223,34 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
     )
     .await
     .map_err(|e| e.to_string())?;
+    // MANAGED AND MANAGED-BY, IN ONE TRANSACTION, STRAIGHT AFTER THE ROW.
+    // The def now exists under a slug that any later `create` will see as
+    // taken; the ownership stamp has to land with it, or a process death
+    // between the two leaves an agent the hirer does not manage — and the
+    // resume path below (which adopts only a def the hirer manages) could
+    // never pick it back up. The manager insert is `add_manager`'s own
+    // statement, written here because that helper takes a pool, not a
+    // transaction. (The version write that follows is idempotent on resume:
+    // `add_version_if_changed` adds nothing a prior pass already wrote.)
+    let manager = input.manager_user_id.as_deref().filter(|m| !m.is_empty());
+    let mut tx = pg.begin().await.map_err(|e| e.to_string())?;
     sqlx::query("update agent_defs set managed = true, updated_at = now() where id = $1::uuid")
         .bind(&def.id)
-        .execute(pg)
+        .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
+    if let Some(manager) = manager {
+        sqlx::query(
+            "insert into agent_managers (agent_id, user_id, added_by) \
+             values ($1::uuid, $2::uuid, $2::uuid) on conflict do nothing",
+        )
+        .bind(&def.id)
+        .bind(manager)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
     def.managed = true;
 
     add_version_if_changed(
@@ -246,21 +269,25 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
     .await
     .map_err(|e| e.to_string())?;
 
-    // The agent now belongs to somebody. Written here rather than at the
-    // call sites so every create path — the hire run, a personal assistant —
-    // lands with a manager and none of them can forget.
-    if let Some(manager) = input.manager_user_id.as_deref().filter(|m| !m.is_empty()) {
-        talaria_agent_managers::add_manager(pg, &def.id, manager, Some(manager))
-            .await
-            .map_err(|e| e.to_string())?;
-    }
+    // The agent belongs to somebody from the transaction above — written in
+    // this function rather than at the call sites so every create path (the
+    // hire run, a personal assistant) lands with a manager and none of them
+    // can forget.
     Ok(CreatedAgent { def, key_created })
 }
 
 /// The "already exists" resume: a re-entered `create` stage finds the def the
-/// previous driver already wrote and hands it back instead of erroring. The
-/// slug is the identity a person chose; two hires racing on the same slug
-/// still collide honestly at the route's pre-check.
+/// previous driver already wrote and hands it back instead of erroring.
+///
+/// ONLY A DEF THIS HIRE WROTE. The slug is the identity a person chose, and
+/// "a def with this slug exists" is also what a hire racing another manager's
+/// hire sees — adopting that one would write this hire's skills and
+/// department onto somebody else's agent and report success, with the hirer
+/// never added as a manager. The create transaction stamps the hirer as
+/// manager in the same write as the row, so "did THIS hire write it" is
+/// "is the hirer among its managers, and is it managed": anything else is
+/// the honest conflict. A hire with no traceable manager cannot prove
+/// authorship and does not adopt either.
 pub async fn create_or_resume(
     pg: &PgPool,
     input: &CreateAgentInput,
@@ -271,15 +298,33 @@ pub async fn create_or_resume(
             let def = agent_def_by_slug(pg, &input.slug)
                 .await
                 .map_err(|e| e.to_string())?;
-            match def {
-                Some(def) => Ok(CreatedAgent {
-                    def,
-                    key_created: false,
-                }),
+            let Some(def) = def else {
                 // The row never appeared — the exists error was about
                 // something else wearing this text, so rethrow the original.
-                None => Err(e),
+                return Err(e);
+            };
+            let Some(manager) = input.manager_user_id.as_deref().filter(|m| !m.is_empty()) else {
+                return Err(format!(
+                    "agent \"{}\" already exists and this hire has no manager to claim it by",
+                    input.slug
+                ));
+            };
+            let ours = def.managed
+                && talaria_agent_managers::list_managers(pg, &def.id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .iter()
+                    .any(|m| m.user_id == manager);
+            if !ours {
+                return Err(format!(
+                    "agent \"{}\" already exists and belongs to someone else",
+                    input.slug
+                ));
             }
+            Ok(CreatedAgent {
+                def,
+                key_created: false,
+            })
         }
         Err(e) => Err(e),
     }
