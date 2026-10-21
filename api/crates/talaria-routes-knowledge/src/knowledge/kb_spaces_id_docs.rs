@@ -18,7 +18,9 @@ use talaria_api_facades::kb::perms::{
     ITEM_SPACE, can_read, can_read_agent, granted_item_ids, granted_item_ids_for_agent,
     list_editors,
 };
-use talaria_api_facades::kb::{NewDoc, create_doc, get_space, list_docs, save_doc};
+use talaria_api_facades::kb::{
+    NewDoc, create_doc, get_space, list_docs, parent_placement_refusal, save_doc,
+};
 use talaria_api_facades::retrieval::{embed, qdrant};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{optional_max_string_member, optional_uuid_member, parse};
@@ -176,6 +178,16 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // A parent is a doc of THIS space — the move route's rule, asked on
+    // create too, before either caller's gate so the sentence is the same
+    // for both. (A new doc has no descendants, so no cycle walk.)
+    if let Some(parent) = parent_id.as_deref() {
+        match parent_placement_refusal(&state.pg, &id, None, parent).await {
+            Ok(None) => {}
+            Ok(Some(why)) => return Ok(house_error(StatusCode::BAD_REQUEST, why)),
+            Err(e) => return Ok(internal("[kb] parent read failed", e)),
+        }
+    }
 
     // Agents (over MCP) create docs in spaces they can read. Agent docs start
     // as drafts — they never ground the org brain until a human officializes

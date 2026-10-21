@@ -24,6 +24,7 @@ talaria-notify = { workspace = true }
 talaria-office = { workspace = true }
 talaria-params = { workspace = true }
 talaria-permissions = { workspace = true }
+talaria-ratelimit = { workspace = true }
 talaria-personal-agent = { workspace = true }
 talaria-session = { workspace = true }
 talaria-state = { workspace = true }

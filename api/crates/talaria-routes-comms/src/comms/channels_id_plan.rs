@@ -19,6 +19,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_api_facades::fleet::{routed_model_for, usable_agent_gate};
 use talaria_api_facades::runs::defs::plan_draft::StoredProposal;
+use talaria_boards::{board_role, can_edit};
 use talaria_body::{
     NumKind, array_msg, array_too_big_msg, boolean_member, enum_member, enum_msg,
     nullable_number_member, object_msg, optional_max_string_member, optional_string_array_member,
@@ -253,6 +254,28 @@ pub async fn post(
         Ok(b) => b,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // THE BOARD IS A BODY FIELD, SO IT IS GATED HERE — the plan twin's rule.
+    // The run reads that board's open tickets, labels and members as a
+    // service identity, so a channel member may only name a board they could
+    // edit themselves; the board routes refuse a stranger and this door must
+    // too.
+    if let Some(board_id) = start.board_id.as_deref() {
+        match board_role(&state.pg, &user.id, board_id).await {
+            Ok(role) if can_edit(role.as_deref()) => {}
+            Ok(_) => {
+                return Ok(house_error(
+                    StatusCode::FORBIDDEN,
+                    "forbidden: no edit access to that board",
+                ));
+            }
+            Err(e) => {
+                return Ok(internal(
+                    "[channels] board role read on POST plan failed",
+                    e,
+                ));
+            }
+        }
+    }
     // validate_start(_, true) always sets it; unwrap_or_default only keeps
     // the compiler from proving what the boolean switch already guarantees.
     let agent_model = start.agent_model.clone().unwrap_or_default();

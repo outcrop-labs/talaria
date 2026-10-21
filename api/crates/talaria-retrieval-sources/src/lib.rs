@@ -178,9 +178,20 @@ pub async fn unindex_org_kb(
 // A doc lives in exactly one RAG collection, decided by its visibility:
 //   private              → the owner's personal collection (owner + their agent only)
 //   org/public + official → the org brain (grounds everyone)
+//   org/public + official, in a space bound to a custom brain → that brain
 //   org/public draft     → nowhere (readable in the UI, not auto-grounding)
+//   explicit per-doc routing (an owner's call) → that brain, official or not
 // Every save/visibility/official change re-runs this, removing the doc from
 // the collections it no longer belongs to — so nothing leaks or goes stale.
+//
+// THE OFFICIAL GATE HOLDS FOR THE SPACE'S BRAIN TOO. "A draft grounds no
+// agent until a human marks it official" is the promise the KB tools make,
+// and it held only for the org brain: a space whose default brain was a
+// custom collection indexed every save, so any agent that could read the
+// space could plant a draft straight into a brain bound to other agents and
+// rotate it at will. The space default now asks the same question the org
+// arm asks. An EXPLICIT per-doc assignment is different — only the doc's
+// owner can set it, agents cannot — so it keeps meaning what it says.
 
 #[derive(Debug, Clone)]
 pub struct KbDocSync {
@@ -244,20 +255,29 @@ pub async fn sync_kb_doc(
             .await
             .map_err(|e| e.to_string())?;
     let route = routing.unwrap_or_else(|| "auto".into());
-    let brain = if route != "auto" && route != "none" {
-        sqlx::query_scalar::<_, String>(
-            "select id::text from rag_collections where id = $1::uuid and kind = 'custom'",
-        )
-        .bind(&route)
-        .fetch_optional(pg)
-        .await
-        .map_err(|e| e.to_string())?
-    } else if route == "auto" {
-        space_brain(pg, doc.space_id.as_deref())
+    // `space_default` says which arm chose the brain: an explicit per-doc
+    // assignment stands as written; the space's default brain takes only
+    // official docs (the gate below).
+    let (brain, space_default) = if route != "auto" && route != "none" {
+        (
+            sqlx::query_scalar::<_, String>(
+                "select id::text from rag_collections where id = $1::uuid and kind = 'custom'",
+            )
+            .bind(&route)
+            .fetch_optional(pg)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?,
+            false,
+        )
+    } else if route == "auto" {
+        (
+            space_brain(pg, doc.space_id.as_deref())
+                .await
+                .map_err(|e| e.to_string())?,
+            true,
+        )
     } else {
-        None
+        (None, false)
     };
 
     // Clear from every possible home first (idempotent), then place it. Custom
@@ -309,9 +329,14 @@ pub async fn sync_kb_doc(
             let _ = index_document(pg, qd, ed, &p.id, &idx).await;
         }
     } else if let Some(brain) = &brain {
-        // Explicit assignment (doc- or space-level) — access governed by the
-        // brain's own bindings.
-        let _ = index_document(pg, qd, ed, brain, &idx).await;
+        // Access is governed by the brain's own bindings. The SPACE default
+        // takes official docs only — the same gate as the org brain below —
+        // so a draft (an agent's, or anyone's) grounds nothing until a human
+        // marks it. An explicit per-doc assignment is the owner's own call
+        // and indexes as written.
+        if !space_default || doc.official {
+            let _ = index_document(pg, qd, ed, brain, &idx).await;
+        }
     } else if doc.official
         && let Some(org) = &org_id
     {

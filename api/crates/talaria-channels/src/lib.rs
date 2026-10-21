@@ -968,6 +968,17 @@ pub async fn agent_may_access_channel(
     if !is_channel_id(channel_id) {
         return Ok(false);
     }
+    // An ARCHIVED channel is closed to agents on every arm — the listing
+    // never shows one, and a seat left on its roster must not keep a door
+    // open the person who archived it believes is shut.
+    let live: Option<(i32,)> =
+        sqlx::query_as("select 1 from channels where id = $1::uuid and archived_at is null")
+            .bind(channel_id)
+            .fetch_optional(pg)
+            .await?;
+    if live.is_none() {
+        return Ok(false);
+    }
     if list_channel_agents(pg, channel_id)
         .await?
         .iter()

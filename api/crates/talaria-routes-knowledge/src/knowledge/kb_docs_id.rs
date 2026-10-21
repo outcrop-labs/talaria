@@ -26,7 +26,8 @@ use talaria_api_facades::kb::perms::{
     can_read_agent, set_editors,
 };
 use talaria_api_facades::kb::{
-    DocPatch, delete_doc, effective_doc_perms, get_doc, save_doc, set_doc_routing, set_official,
+    DocPatch, delete_doc, effective_doc_perms, get_doc, parent_placement_refusal, save_doc,
+    set_doc_routing, set_official,
 };
 use talaria_api_facades::retrieval::{embed, qdrant};
 use talaria_audit::{AuditEntry, log_audit};
@@ -284,6 +285,17 @@ pub async fn put(
     if agent.is_some() {
         body.rag_routing = None;
     }
+    // A new parent passes the move route's two checks — same space, no
+    // cycle — whoever sends it. The PUT used to write `parentId` unchecked,
+    // which let a doc be filed under itself (a loop for every tree builder)
+    // or under a doc in another space (gone from its own tree).
+    if let Some(Some(parent)) = &body.parent_id {
+        match parent_placement_refusal(&state.pg, &doc.space_id, Some(&id), parent).await {
+            Ok(None) => {}
+            Ok(Some(why)) => return Ok(house_error(StatusCode::BAD_REQUEST, why)),
+            Err(e) => return Ok(internal("[kb] parent read failed", e)),
+        }
+    }
 
     if owner {
         if body.perms_inherited == Some(true) {
@@ -409,6 +421,9 @@ pub async fn delete(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let doc = match get_doc(&state.pg, &id).await {
         Ok(d) => d,
         Err(e) => return Ok(internal("[kb] doc read failed", e)),

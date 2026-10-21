@@ -335,6 +335,43 @@ pub async fn mark_brief_stale(deps: &NotifyDeps, user_ids: &[String]) -> Result<
 /// request; it must not wait on, or fail with, an SMTP timeout. Everything on
 /// this path is a database write on a connection it was going to use anyway
 /// plus a push into the outbox below.
+/// `add_notification` behind a per-recipient DAILY cap on one `kind`: the
+/// row is written only while the recipient holds fewer than `daily_cap` rows
+/// of that kind from the last 24 hours, and the answer says whether it was.
+///
+/// WHY A CAP BY KIND AND RECIPIENT rather than a source column: the table
+/// records who is told, not who caused it, and the kinds an agent can
+/// originate (`mention` from an agent post, `agent-problem`, `gap_reported`)
+/// are already their own kinds. A cap on the kind is the cap on the flood —
+/// 1000 agent posts saying `@jon ping` become fifty rows in Jon's inbox and
+/// fifty pushes, not a thousand of each. Read-then-insert, deliberately: two
+/// concurrent writes may land one row past the cap, which is the right trade
+/// for a brake whose job is "thousands become dozens".
+pub async fn add_notification_capped(
+    deps: &NotifyDeps,
+    user_id: &str,
+    n: &NotificationInput<'_>,
+    daily_cap: i64,
+) -> Result<bool, sqlx::Error> {
+    let (count,): (i64,) = sqlx::query_as(
+        "select count(*) from notifications \
+         where user_id = $1::uuid and kind = $2 and created_at > now() - interval '1 day'",
+    )
+    .bind(user_id)
+    .bind(n.kind)
+    .fetch_one(&deps.pg)
+    .await?;
+    if count >= daily_cap {
+        tracing::warn!(
+            "[notifications] daily cap of {daily_cap} on kind {:?} reached for {user_id}; dropped",
+            n.kind
+        );
+        return Ok(false);
+    }
+    add_notification(deps, user_id, n).await?;
+    Ok(true)
+}
+
 pub async fn add_notification(
     deps: &NotifyDeps,
     user_id: &str,

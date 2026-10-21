@@ -491,10 +491,21 @@ pub async fn get_doc(pg: &PgPool, id: &str) -> Result<Option<KbDoc>, sqlx::Error
 
 /// The public read by slug. The route projects only title/body/updatedAt —
 /// routing and every other internal column stay off the public wire.
+///
+/// EFFECTIVE visibility, not the raw column: a doc that inherits its perms
+/// reads its folder's visibility (the rule `effective_doc_perms` and the RAG
+/// sync both apply), so a doc published once and then filed under — or left
+/// inside — a space a person made private is no longer public here either.
+/// The slug stays on the row; the door just answers "not found" until the
+/// effective audience is public again.
 pub async fn get_public_doc(pg: &PgPool, slug: &str) -> Result<Option<KbDoc>, sqlx::Error> {
     // AssertSqlSafe: the interpolation is this crate's DOC_COLS column list.
-    let sql =
-        format!("select {DOC_COLS} from kb_docs where public_slug = $1 and visibility = 'public'");
+    let sql = format!(
+        "select {DOC_COLS} from kb_docs where public_slug = $1 \
+           and (case when perms_inherited \
+                  then coalesce((select s.visibility from kb_spaces s where s.id = kb_docs.space_id), visibility) \
+                  else visibility end) = 'public'"
+    );
     let row: Option<DocRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(slug)
         .fetch_optional(pg)
@@ -805,6 +816,65 @@ pub async fn sync_user_private_docs(
     Ok(())
 }
 
+/// Where a doc may be filed. `parent_id` must be a doc of the SAME space —
+/// a cross-space parent drags the doc under a folder whose audience never
+/// vetted it, and drops it from its own tree — and, for an existing doc, it
+/// must be neither the doc itself nor one of its descendants, which would
+/// loop every recursive tree builder that opens the space. These are the
+/// two checks the move route has always run; create and PUT ask them here so
+/// a `parentId` on either lands under the same rule. `Ok(None)` is the pass,
+/// `Ok(Some(sentence))` the 400 to answer with.
+pub async fn parent_placement_refusal(
+    pg: &PgPool,
+    space_id: &str,
+    doc_id: Option<&str>,
+    parent_id: &str,
+) -> Result<Option<&'static str>, sqlx::Error> {
+    if doc_id == Some(parent_id) {
+        return Ok(Some("a doc cannot be its own parent"));
+    }
+    let parent: Option<(String,)> =
+        sqlx::query_as("select space_id::text from kb_docs where id = $1::uuid")
+            .bind(parent_id)
+            .fetch_optional(pg)
+            .await?;
+    match parent {
+        Some((sid,)) if sid == space_id => {}
+        _ => return Ok(Some("parent must live in the same space")),
+    }
+    if let Some(id) = doc_id {
+        // Walk up from the proposed parent; reaching `id` is a cycle.
+        let mut cur = Some(parent_id.to_string());
+        for _ in 0..100 {
+            let Some(node) = cur else { break };
+            if node == id {
+                return Ok(Some("a doc cannot be nested under its own descendant"));
+            }
+            let rows: Option<(Option<String>,)> =
+                sqlx::query_as("select parent_id::text from kb_docs where id = $1::uuid")
+                    .bind(&node)
+                    .fetch_optional(pg)
+                    .await?;
+            cur = rows.and_then(|(pid,)| pid);
+        }
+    }
+    Ok(None)
+}
+
+/// How many spaces `created_by` made in the last day — the agent create
+/// cap's count. Durable (the table, not a counter) so a restart does not
+/// hand the budget back.
+pub async fn spaces_created_in_last_day(pg: &PgPool, created_by: &str) -> Result<i64, sqlx::Error> {
+    let (n,): (i64,) = sqlx::query_as(
+        "select count(*) from kb_spaces \
+         where created_by = $1 and created_at > now() - interval '1 day'",
+    )
+    .bind(created_by)
+    .fetch_one(pg)
+    .await?;
+    Ok(n)
+}
+
 /// Reparent + reorder a doc within its space (the sidebar tree drag target).
 /// A doc can't be nested under itself or a descendant — None is the reject.
 pub async fn move_doc(
@@ -921,6 +991,14 @@ pub struct KbSearchHit {
 // the whole snippet here, and only then turn the sentinels into <b>. Escaping
 // lives in this module so every consumer of KbSearchHit.snippet is safe, not
 // just the one that renders today.
+/// Rows the ranked SQL union hands the ACL filter. The filter runs AFTER the
+/// SQL limit, so the page has to be wide enough that a viewer whose readable
+/// hits rank below a wall of private ones still gets them: at 60 a member
+/// could search a word the org's private spaces used sixty times and see
+/// nothing, with their own readable doc at rank 61. The per-row ACL stops at
+/// 20 accepted hits, so a wide page costs only on the rows it refuses.
+const SEARCH_OVERFETCH: i64 = 300;
+
 const HL_START: &str = "\u{2}hl\u{2}";
 const HL_STOP: &str = "\u{2}/hl\u{2}";
 const HEADLINE_OPTS: &str = "MaxWords=24, MinWords=8, ShortWord=3, MaxFragments=1, \
@@ -940,8 +1018,8 @@ pub fn safe_snippet(raw: Option<&str>) -> String {
 /// top-level space overviews (a space is itself a document), honoring the
 /// EFFECTIVE permission model — a doc inside a private space is private even
 /// when its own row says 'org' (inheritance), and explicit kb_editors grants
-/// admit their grantees. Over-fetch (60), then filter with the same canRead
-/// the read routes use, capping at 20.
+/// admit their grantees. Over-fetch (SEARCH_OVERFETCH), then filter with the
+/// same canRead the read routes use, capping at 20.
 pub async fn search_docs(
     pg: &PgPool,
     query: &str,
@@ -975,10 +1053,11 @@ pub async fn search_docs(
            from kb_spaces s \
            where to_tsvector('english', coalesce(s.name,'') || ' ' || coalesce(s.body,'')) \
                  @@ plainto_tsquery('english', $1) \
-         ) hits order by rank_f desc limit 60",
+         ) hits order by rank_f desc limit $3",
     )
     .bind(q)
     .bind(HEADLINE_OPTS)
+    .bind(SEARCH_OVERFETCH)
     .fetch_all(pg)
     .await?;
 
