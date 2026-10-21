@@ -1,20 +1,26 @@
 // /api/mcp/oauth/callback.
-// The OAuth redirect target. No session requirement — identity was bound to
-// the state row when the flow started; the state is single-use and expiring.
+// The OAuth redirect target. The state row bound the SUBJECT when the flow
+// started; this route binds the PERSON: it needs a session, and the signed-in
+// user must be the subject the state names (or hold agents.manage for an
+// `org` state). Without that, a user who started a flow for their own row
+// could hand the provider's authorize link to somebody else and capture that
+// person's grant under their own connection. The state is single-use and
+// refused past ten minutes.
 
 use axum::extract::{Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use talaria_api_facades::mcp::apply::{roll_agent_for_user, roll_agents_for_server};
-use talaria_api_facades::mcp::oauth::handle_oauth_callback;
+use talaria_api_facades::mcp::oauth::{CallbackActor, handle_oauth_callback};
 use talaria_audit::{AuditEntry, log_audit};
+use talaria_session::require_user;
 use talaria_state::AppState;
 
 /// Both interpolations carry attacker-reachable text (the provider's
-/// error_description, a thrown message), and this page is unauthenticated by
-/// design and built to be opened from the app — so escape them, and pin a CSP
-/// that allows nothing but the inline script/style this page is built from.
+/// error_description, a thrown message), and this page is built to be opened
+/// from the app — so escape them, and pin a CSP that allows nothing but the
+/// inline script/style this page is built from.
 fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -64,7 +70,11 @@ pub struct CallbackQuery {
     code: Option<String>,
 }
 
-pub async fn get(State(state): State<AppState>, Query(q): Query<CallbackQuery>) -> Response {
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<CallbackQuery>,
+) -> Response {
     if let Some(err) = &q.error {
         return page(
             "Connection failed",
@@ -77,11 +87,27 @@ pub async fn get(State(state): State<AppState>, Query(q): Query<CallbackQuery>) 
     let (Some(state_param), Some(code)) = (q.state.as_deref(), q.code.as_deref()) else {
         return page("Connection failed", "Missing code or state.");
     };
+    // The person completing the flow — the browser the provider redirected
+    // carries the Talaria session cookie. No session, no exchange: the state
+    // stays parked for its ten minutes, the code is the provider's to expire.
+    let Ok(user) = require_user(&state, &headers).await else {
+        return page(
+            "Connection failed",
+            "Sign in to Talaria in this browser, then start the connection again.",
+        );
+    };
+    let may_connect_org = talaria_users::has_perm(&state.pg, &user.id, &user.role, "agents.manage")
+        .await
+        .unwrap_or(false);
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
         Err(e) => return page("Connection failed", &e),
     };
-    let handled = handle_oauth_callback(&state.pg, &sb, state_param, code).await;
+    let actor = CallbackActor {
+        user_id: &user.id,
+        may_connect_org,
+    };
+    let handled = handle_oauth_callback(&state.pg, &sb, state_param, code, &actor).await;
     let (subject, server_id) = match handled {
         Ok(pair) => pair,
         Err(e) => return page("Connection failed", &e),

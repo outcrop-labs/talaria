@@ -88,6 +88,28 @@ async fn reachable() -> bool {
     }
 }
 
+/// The variables the toolkit child inherits, by name. `index.ts` reads
+/// `TALARIA_URL`, `TALARIA_AGENT_KEY`, `TALARIA_AGENT_NAME` (the stdio
+/// mode's own identity; HTTP mode verifies each caller's key against the
+/// api instead), `MCP_HTTP_PORT`, `MCP_HTTP_HOST` and
+/// `TALARIA_MCP_VERIFY_PATH`; the runtime needs `PATH` and `HOME`, and
+/// honours `TMPDIR`, `TZ`, the `SSL_CERT_*` pair and every `NODE_*` knob
+/// (added by prefix at spawn). `MCP_HTTP_PORT` and `TALARIA_URL` are set
+/// explicitly after these, so the api's answer wins.
+const INHERITED_ENV: &[&str] = &[
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "TZ",
+    "LANG",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "TALARIA_AGENT_KEY",
+    "TALARIA_AGENT_NAME",
+    "TALARIA_MCP_VERIFY_PATH",
+    "MCP_HTTP_HOST",
+];
+
 /// Which JS runtime spawns the child (see the header note).
 fn js_runtime() -> String {
     std::env::var("TALARIA_JS_RUNTIME").unwrap_or_else(|_| "node".into())
@@ -106,7 +128,21 @@ async fn spawn_child() {
         st.last_spawn_ms = now_ms() as u64;
     }
     let upstream = toolkit_api_url(api_port());
-    let mut child = tokio::process::Command::new(js_runtime())
+    let mut cmd = tokio::process::Command::new(js_runtime());
+    // The child's environment is built, not inherited: the api's own holds
+    // the database URL, the secretbox key and every provider credential,
+    // none of which the toolkit reads. It gets what `mcp/src/index.ts`
+    // reads (`process.env.*`), the runtime's own knobs, and nothing else.
+    cmd.env_clear();
+    for key in INHERITED_ENV {
+        if let Ok(v) = std::env::var(key) {
+            cmd.env(key, v);
+        }
+    }
+    for (key, v) in std::env::vars().filter(|(k, _)| k.starts_with("NODE_")) {
+        cmd.env(key, v);
+    }
+    let mut child = cmd
         .arg(&entry)
         .env("MCP_HTTP_PORT", mcp_port().to_string())
         .env("TALARIA_URL", &upstream)

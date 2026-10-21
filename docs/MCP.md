@@ -26,7 +26,9 @@ listener on 5280. The fleet key + agent name identify the caller, and the gatewa
 
 - resolves **effective access** = the agent's assignment ∩ (for personal assistants) the owner's
   allowance;
-- **filters `tools/list`** down to the allowed set and **rejects `tools/call`** outside it;
+- **filters `tools/list`** down to the allowed set and **rejects `tools/call`** outside it; an
+  agent holding a tool subset is also refused `resources/*`, `prompts/*` and `completion/*`
+  (JSON-RPC `-32601`, recorded as denied), while an agent with no subset relays them as before;
 - injects the right credentials upstream (org headers, org OAuth token, or the acting user's
   connected account) — a hand-edited agent config can never exceed what the registry granted;
 - tells **"no access"** from **"not connected"**. A server the agent may not use answers 403

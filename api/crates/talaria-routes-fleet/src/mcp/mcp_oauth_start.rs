@@ -8,11 +8,25 @@ use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use talaria_api_facades::mcp::oauth::start_oauth;
-use talaria_api_facades::mcp::registry::get_mcp_server;
+use talaria_api_facades::mcp::registry::{McpServer, get_mcp_server};
 use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_session::secretbox_or_500;
 use talaria_state::AppState;
+
+/// Why a `scope=me` start is refused on this server, or None when the server
+/// takes a personal connection. Pure, so the rule is pinned without a stack.
+fn me_scope_refusal(server: &McpServer) -> Option<&'static str> {
+    if !server.enabled {
+        Some("this server is disabled")
+    } else if server.builtin || server.app_slug.is_some() {
+        Some("this server has no account to connect")
+    } else if server.auth_mode != "per-user" {
+        Some("this server uses the workspace's connection, not a personal one")
+    } else {
+        None
+    }
+}
 
 #[derive(Deserialize)]
 pub struct StartQuery {
@@ -46,6 +60,29 @@ pub async fn get(
             .unwrap_or(false)
     {
         return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    // A personal connection only makes sense on a server that takes one:
+    // enabled, per-user, and a real upstream (the builtin toolkit and an
+    // app's in-process server have no account to connect). Anything else
+    // is refused before this route discovers or registers anything against
+    // the server's URL on the caller's say-so.
+    if scope == "me"
+        && let Some(why) = me_scope_refusal(&server)
+    {
+        return Ok(house_error(StatusCode::FORBIDDEN, why));
+    }
+    // A person denied the server (their own row, or a team deny with no
+    // allow) cannot connect an account to it either — the connection would
+    // be a credential the gateway never lets their assistant present.
+    if scope == "me"
+        && talaria_api_facades::mcp::registry::owner_denied(&state.pg, &server.id, &user.id)
+            .await
+            .map_err(|e| internal("[mcp/oauth] allowance read failed", e))?
+    {
+        return Ok(house_error(
+            StatusCode::FORBIDDEN,
+            "your access to this server is denied, so there is no account to connect",
+        ));
     }
     let sb = secretbox_or_500(&state, "[mcp/oauth] secretbox unavailable").await?;
     // A verified hosting domain gives every OAuth app ONE stable callback

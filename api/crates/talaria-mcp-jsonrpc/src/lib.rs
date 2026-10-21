@@ -18,6 +18,22 @@ use serde_json::{Map as JsonMap, Value, json};
 /// direction; bumping it is a protocol decision).
 pub const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
 
+/// The MCP revisions every in-process surface here is valid under — each one
+/// whose initialize / tools/list / tools/call shapes this envelope speaks. A
+/// client naming one of these gets it back (it is ours too); any other
+/// revision is negotiated down to the one Talaria pins, as the spec requires
+/// of a server that does not speak what the client asked for.
+pub const SPOKEN_REVISIONS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
+
+/// The revision an `initialize` answers with: the client's when it is one we
+/// speak, else the pinned one. Never an echo — a dispatcher that repeats
+/// `"9999-01-01"` claims a revision it does not have.
+pub fn negotiated_revision(requested: Option<&str>) -> &'static str {
+    requested
+        .and_then(|r| SPOKEN_REVISIONS.iter().copied().find(|v| *v == r))
+        .unwrap_or(MCP_PROTOCOL_VERSION)
+}
+
 /// `result(id, res)` — the id echoes whatever the caller sent, or null when
 /// absent (an explicit null stays null; a JSON-RPC notification's missing id
 /// becomes null).
@@ -79,10 +95,7 @@ pub async fn dispatch_jsonrpc(
     let pobj = params.as_object().cloned().unwrap_or_default();
     match method {
         "initialize" => {
-            let protocol = pobj
-                .get("protocolVersion")
-                .and_then(Value::as_str)
-                .unwrap_or(MCP_PROTOCOL_VERSION);
+            let protocol = negotiated_revision(pobj.get("protocolVersion").and_then(Value::as_str));
             (
                 StatusCode::OK,
                 Some(result(
@@ -209,15 +222,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initialize_echoes_the_callers_protocol_else_the_pinned_one() {
+    async fn initialize_negotiates_the_callers_protocol_never_echoes_it() {
         let rpc = json!({ "jsonrpc": "2.0", "id": 7, "method": "initialize", "params": { "protocolVersion": "2025-06-18" } });
         let (status, body) =
             dispatch_jsonrpc(&rpc, tools(), "talaria-workbench", never_call()).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             body.unwrap()["result"]["protocolVersion"],
-            json!("2025-06-18")
+            json!("2025-06-18"),
+            "a revision we speak is answered back"
         );
+
+        // A revision nobody speaks — or an empty one — is negotiated down to
+        // the pinned revision rather than repeated.
+        for asked in ["9999-01-01", ""] {
+            let rpc = json!({ "jsonrpc": "2.0", "id": 7, "method": "initialize", "params": { "protocolVersion": asked } });
+            let (_, body) = dispatch_jsonrpc(&rpc, tools(), "s", never_call()).await;
+            assert_eq!(
+                body.unwrap()["result"]["protocolVersion"],
+                json!(MCP_PROTOCOL_VERSION),
+                "{asked:?} is not a revision this server speaks"
+            );
+        }
+        assert_eq!(negotiated_revision(Some("2024-11-05")), "2024-11-05");
+        assert_eq!(negotiated_revision(None), MCP_PROTOCOL_VERSION);
 
         let rpc = json!({ "jsonrpc": "2.0", "id": 7, "method": "initialize" });
         let (_, body) = dispatch_jsonrpc(&rpc, tools(), "talaria-workbench", never_call()).await;

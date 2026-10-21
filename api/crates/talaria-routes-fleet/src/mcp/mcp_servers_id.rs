@@ -4,7 +4,10 @@
 // / tool refresh / OAuth client (`oauthClient` with optional `scopes`) /
 // `redetectAuth` (re-run OAuth discovery against the live server) in one
 // idempotent surface; DELETE unregisters (assignments, user access, and
-// connected accounts cascade). Fleet re-renders after mutations.
+// connected accounts cascade). Fleet re-renders after mutations. A `url`
+// that moves to another host drops every credential the old host was
+// trusted with (org headers, OAuth discovery, every connected account) and
+// re-discovers against the new one.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -21,6 +24,7 @@ use talaria_api_facades::mcp::oauth::{
 use talaria_api_facades::mcp::registry::{
     ServerPatch, WORKBENCH_SERVER, delete_mcp_server, get_mcp_server, refresh_mcp_tools,
     remove_assignment, set_assignment, set_team_access, set_user_access, update_mcp_server,
+    url_host_changed,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
@@ -131,6 +135,7 @@ pub async fn put(
     }
 
     let mut audit_after = Map::new(); // `{...config, headers: keys?}` in schema order
+    let mut repointed_tools: Option<Vec<Value>> = None;
     let config_touched = patch.label.is_some()
         || patch.description.is_some()
         || patch.url.is_some()
@@ -168,6 +173,31 @@ pub async fn put(
         // serve, and an idle one still holds sealed credentials in its env.
         if patch.enabled == Some(false) && server.package.is_some() {
             talaria_api_facades::mcp::pkg::stop_pkg(&server.name).await;
+        }
+        // A repointed server (the registry dropped its tokens, discovery
+        // and org headers under us) is a new server from here: ask the new
+        // host what auth it wants and what tools it has, now, so the card
+        // and the not-connected answer never read an empty catalog as
+        // "every assigned tool is missing". Best-effort — the URL is saved
+        // either way, and an unreachable host is the card's problem to show.
+        if let Some(new_url) = &patch.url
+            && discoverable
+            && new_url.starts_with("http")
+            && url_host_changed(&server.url, new_url)
+        {
+            if let Err(e) = ensure_oauth_config(&state.pg, &server.id, new_url).await {
+                tracing::warn!(
+                    "[mcp] {}: auth discovery at the new host failed: {e}",
+                    server.name
+                );
+            }
+            match refresh_mcp_tools(&state.pg, &sb, &server.id).await {
+                Ok(list) => repointed_tools = Some(list),
+                Err(e) => tracing::warn!(
+                    "[mcp] {}: tool discovery at the new host failed: {e}",
+                    server.name
+                ),
+            }
         }
         if let Some(label) = &patch.label {
             audit_after.insert("label".into(), json!(label));
@@ -345,7 +375,7 @@ pub async fn put(
         )
         .await;
     }
-    let mut tools: Option<Vec<Value>> = None;
+    let mut tools: Option<Vec<Value>> = repointed_tools;
     if patch.refresh_tools {
         match refresh_mcp_tools(&state.pg, &sb, &server.id).await {
             Ok(list) => tools = Some(list),
@@ -360,9 +390,12 @@ pub async fn put(
     spawn_render(&state.pg, &sb);
     // Live cutover for the agents this change touches: a running Hermes
     // only wires MCP servers at start, so carriers roll blue/green. Rolls
-    // are fire-and-forget — never awaited, never the caller's problem.
-    let touched_access =
-        patch.enabled.is_some() || patch.all_agents.is_some() || patch.auth_mode.is_some();
+    // are fire-and-forget — never awaited, never the caller's problem. The
+    // timeout rides config.yaml (`timeout`), so it rolls like access does.
+    let touched_access = patch.enabled.is_some()
+        || patch.all_agents.is_some()
+        || patch.auth_mode.is_some()
+        || patch.timeout_secs.is_some();
     if touched_access {
         let (pg, sb_, id) = (state.pg.clone(), sb.clone(), server.id.clone());
         spawn_roll(async move {

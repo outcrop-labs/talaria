@@ -3,6 +3,11 @@
 // (admin/agents.manage view). POST → register a server. Every mutation
 // re-renders the fleet so configs pick the change up (Hermes re-reads on
 // mtime — no restarts).
+//
+// Two things `agents.manage` does NOT buy on the POST: a `package` (third-
+// party code run as a container on this deployment — an admin installs it,
+// 403 otherwise) and a URL the library's liveness job found dead (400
+// unless the body says `force: true`).
 
 use std::collections::HashMap;
 
@@ -21,8 +26,8 @@ use talaria_api_facades::mcp::registry::{
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
     NumKind, array_msg, array_too_big_msg, nullable_number_member, nullish_max_string_member,
-    object_msg, optional_enum_member, optional_max_string_member, parse, record_msg, string_msg,
-    too_big_msg, url_member, utf16_len, zod_type_name,
+    object_msg, optional_boolean_member, optional_enum_member, optional_max_string_member, parse,
+    record_msg, string_msg, too_big_msg, url_member, utf16_len, zod_type_name,
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_secretbox::SecretBox;
@@ -254,12 +259,15 @@ fn package_member(obj: &Map<String, Value>) -> Result<Option<Value>, String> {
                     .as_object()
                     .ok_or_else(|| object_msg(zod_type_name(arg)))?;
                 if m.get("type").and_then(Value::as_str) == Some("named") {
+                    // Name AND the declared value (its default, else its
+                    // literal) — the same rule pkg_argv applies at spawn; the
+                    // admin's fills are checked against it once parsed.
                     let flag = m.get("name").and_then(Value::as_str).unwrap_or_default();
-                    if !talaria_api_facades::mcp::pkg::ALLOWED_FLAGS.contains(&flag) {
-                        return Err(format!(
-                            "this package asks for the docker flag \"{flag}\", which is not allowed (volumes, env, mounts, hosts and ports only)"
-                        ));
-                    }
+                    let declared = m
+                        .get("default")
+                        .and_then(Value::as_str)
+                        .or_else(|| m.get("value").and_then(Value::as_str));
+                    talaria_api_facades::mcp::pkg::check_run_flag(flag, declared)?;
                 }
             }
             a.clone()
@@ -304,6 +312,28 @@ fn arg_values_member(obj: &Map<String, Value>) -> Result<Option<HashMap<usize, S
         out.insert(idx, s.to_string());
     }
     Ok(Some(out))
+}
+
+/// Every fill for a NAMED run flag passes `check_run_flag` with the fill as
+/// its value. Fills for positionals (and for indexes that declare nothing)
+/// are the package's own arguments — not docker's — and pass through.
+fn check_arg_fills(package: &Value, fills: &HashMap<usize, String>) -> Result<(), String> {
+    let args = package
+        .get("runArgs")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for (idx, fill) in fills {
+        let Some(arg) = args.get(*idx) else {
+            continue;
+        };
+        if arg.get("type").and_then(Value::as_str) != Some("named") {
+            continue;
+        }
+        let flag = arg.get("name").and_then(Value::as_str).unwrap_or_default();
+        talaria_api_facades::mcp::pkg::check_run_flag(flag, Some(fill))?;
+    }
+    Ok(())
 }
 
 fn required_headers_member(
@@ -467,6 +497,16 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // A package is third-party code started as a container on this
+    // deployment, by the hourly health pass and the first tool call alike —
+    // no human after the install. `agents.manage` governs the registry; the
+    // deployment is an admin's.
+    if package.is_some() && user.role != "admin" {
+        return Ok(house_error(
+            StatusCode::FORBIDDEN,
+            "installing a package server runs third-party code on this deployment — only an admin can do that",
+        ));
+    }
     // A package install has no endpoint to name — the routing token derives
     // from the server name; a custom endpoint still requires its URL.
     let url = match (&package, obj.get("url")) {
@@ -476,6 +516,30 @@ pub async fn post(
             Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         },
     };
+    // The library's liveness job found this endpoint dead: say so rather
+    // than register a server no agent will ever reach. `force` is the
+    // operator's "I know".
+    let force = match optional_boolean_member(obj, "force") {
+        Ok(v) => v.unwrap_or(false),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    if package.is_none()
+        && !force
+        && let Some((registry_name, detail)) =
+            talaria_api_facades::mcp::library::catalog::dead_entry_for_url(&state.pg, &url).await
+    {
+        let why = if detail.is_empty() {
+            String::new()
+        } else {
+            format!(" ({detail})")
+        };
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            &format!(
+                "the library's last liveness check found {registry_name} unreachable{why}; send force: true to register it anyway"
+            ),
+        ));
+    }
     let headers_in = match optional_headers_member(obj, "headers") {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
@@ -490,6 +554,13 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // The fills ride the same gate as the declarations: a `-v` placeholder
+    // filled with a host path fails here, not at the first call.
+    if let (Some(doc), Some(fills)) = (&package, &arg_values)
+        && let Err(msg) = check_arg_fills(doc, fills)
+    {
+        return Ok(house_error(StatusCode::BAD_REQUEST, &msg));
+    }
     let timeout_secs = match nullish_positive_int_member(obj, "timeoutSecs", 3600.0) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
@@ -567,8 +638,8 @@ pub async fn post(
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
-            Some("pypi") => "ghcr.io/astral-sh/uv:python3.12-bookworm-slim".into(),
-            _ => "node:22-slim".into(),
+            Some(kind) => talaria_api_facades::mcp::pkg::runtime_image(kind).to_string(),
+            None => String::new(),
         };
         if !image.is_empty() {
             tokio::spawn(async move {

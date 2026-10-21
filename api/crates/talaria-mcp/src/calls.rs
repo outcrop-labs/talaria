@@ -421,6 +421,10 @@ pub struct CallLog {
     subject: AgentSubject,
     server_name: String,
     server_id: Option<String>,
+    /// The JSON-RPC method the row records: `tools/call` for every call the
+    /// record keeps, or the method of a request the gateway refused by name
+    /// (`begin_refused_method`).
+    method: String,
     tool: Option<String>,
     id: Option<Value>,
     /// The argument strings as the agent SENT them (before the spend
@@ -451,9 +455,39 @@ impl CallLog {
             subject: subject.clone(),
             server_name: server_name.to_string(),
             server_id: None,
+            method: "tools/call".to_string(),
             tool: tool_of(rpc),
             id: rpc.and_then(|r| r.get("id")).cloned(),
             args: Arc::new(argument_strings(rpc)),
+            spent: false,
+            started,
+        })
+    }
+
+    /// The log for a single request the gateway REFUSES BY METHOD — a
+    /// `resources/*`, `prompts/*` or `completion/*` request from an agent
+    /// holding a tool subset. Such a request is not a tools/call and is
+    /// never recorded when it relays; the refusal is, under the request's
+    /// own method, so an admin narrowing an agent to one tool can see what
+    /// else it reached for. None for a batch, a non-object, or a request
+    /// naming no method.
+    pub fn begin_refused_method(
+        pg: &PgPool,
+        subject: &AgentSubject,
+        server_name: &str,
+        rpc: &Value,
+        started: Instant,
+    ) -> Option<CallLog> {
+        let method = method_of(Some(rpc))?;
+        Some(CallLog {
+            pg: pg.clone(),
+            subject: subject.clone(),
+            server_name: server_name.to_string(),
+            server_id: None,
+            method: truncate_chars(method, TOOL_MAX_CHARS),
+            tool: None,
+            id: rpc.get("id").cloned(),
+            args: Arc::new(Vec::new()),
             spent: false,
             started,
         })
@@ -489,6 +523,7 @@ impl CallLog {
         let row = CallRow {
             server_id: self.server_id.clone(),
             server_name: self.server_name.clone(),
+            method: self.method.clone(),
             agent: subject_model(&self.subject).to_string(),
             // A legacy shared-key caller is identified but not proven to BE
             // that assistant, so it never names an owner (the same rule
@@ -542,6 +577,7 @@ static QUEUED: AtomicUsize = AtomicUsize::new(0);
 struct CallRow {
     server_id: Option<String>,
     server_name: String,
+    method: String,
     agent: String,
     owner_eligible: bool,
     tool: Option<String>,
@@ -564,7 +600,7 @@ async fn insert(pg: &PgPool, row: CallRow) -> Result<(), sqlx::Error> {
                 case when $4::bool then (select d.owner_user_id::text from agent_defs d \
                                           where d.model = $3::text and d.owner_user_id is not null \
                                           limit 1) end, \
-                'tools/call', $5::text, $6::text, $7::smallint, $8::int4, $9::text \
+                $10::text, $5::text, $6::text, $7::smallint, $8::int4, $9::text \
          where coalesce($1::text, (select s.id::text from mcp_servers s where s.name = $2::text)) is not null",
     )
     .bind(&row.server_id)
@@ -576,6 +612,7 @@ async fn insert(pg: &PgPool, row: CallRow) -> Result<(), sqlx::Error> {
     .bind(row.status)
     .bind(row.latency_ms)
     .bind(&row.error)
+    .bind(&row.method)
     .execute(pg)
     .await?;
     Ok(())
@@ -1409,6 +1446,47 @@ mod tests {
             ),
             (Outcome::Ok, None)
         );
+    }
+
+    #[tokio::test]
+    async fn a_refused_method_begins_a_log_under_its_own_method() {
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://calls-test@localhost:1/none")
+            .expect("a lazy pool connects to nothing");
+        let subject = AgentSubject::Model("a-b".into());
+        let read = json!({ "jsonrpc": "2.0", "id": 4, "method": "resources/read", "params": { "uri": "x://y" } });
+        let log = CallLog::begin_refused_method(&pg, &subject, "srv", &read, Instant::now())
+            .expect("a named method begins a log");
+        assert_eq!(log.method, "resources/read");
+        assert_eq!(log.tool, None);
+        assert_eq!(log.rpc_id(), Some(&json!(4)));
+        // Not a tools/call, so the ordinary record never keeps it…
+        assert!(CallLog::begin(&pg, &subject, "srv", Some(&read), Instant::now()).is_none());
+        // …and the ordinary record still says tools/call.
+        let call =
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "t" } });
+        let log = CallLog::begin(&pg, &subject, "srv", Some(&call), Instant::now()).unwrap();
+        assert_eq!(log.method, "tools/call");
+        // A batch or a method-less body has nothing to record.
+        assert!(
+            CallLog::begin_refused_method(&pg, &subject, "srv", &json!([]), Instant::now())
+                .is_none()
+        );
+        assert!(
+            CallLog::begin_refused_method(
+                &pg,
+                &subject,
+                "srv",
+                &json!({ "id": 1 }),
+                Instant::now()
+            )
+            .is_none()
+        );
+        // A method of absurd length is capped like a tool name.
+        let long = json!({ "id": 1, "method": "resources/".to_string() + &"x".repeat(5000) });
+        let log =
+            CallLog::begin_refused_method(&pg, &subject, "srv", &long, Instant::now()).unwrap();
+        assert_eq!(log.method.chars().count(), TOOL_MAX_CHARS);
     }
 
     #[tokio::test]

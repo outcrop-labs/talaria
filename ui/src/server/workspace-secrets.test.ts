@@ -375,15 +375,92 @@ describe('spending a handle inside an MCP tool call', () => {
   it('substitutes into the arguments of a granted caller', async () => {
     await createSecretDoc({ name: 'push', title: 'Push', entries: [{ key: 'pat', label: 'GitHub token' }].map((e) => ({ ...e, value: PAT })), grantTo: ['engineer-engineering'] })
     const rpc = { method: 'tools/call', params: { name: 'run', arguments: { cmd: 'git push https://«secret:push.pat»@github.com/o/r' } } }
-    const out = await spendHandlesInToolCall(rpc, 'engineer-engineering')
+    const out = await spendHandlesInToolCall(rpc, 'engineer-engineering', 'talaria-app://shell')
     expect(out.changed).toBe(true)
     expect(rpc.params.arguments.cmd).toContain(PAT)
     expect(out.used[0]?.label).toBe('GitHub token')
   })
 
+  it('substitutes into nested strings, intact, whatever the value contains', async () => {
+    // A service-account blob (quotes, newlines) and a password with a
+    // backslash: substituted into the parsed tree, not spliced into
+    // serialized text, so the document stays well-formed and the value
+    // arrives byte for byte. A one-shot written twice is spent once.
+    const blob = '{"type":"service_account","private_key":"-----BEGIN\nMIIE\\n-----END"}'
+    await createSecretDoc({ name: 'gcp', title: 'GCP', entries: [{ key: 'sa', label: 'Service account', value: blob }], grantTo: ['engineer-engineering'] })
+    await createSecretDoc({ name: 'dbpw', title: 'DB', kind: 'relay', entries: [{ key: 'v', label: 'Password', value: 'p@ss\\word"quoted"' }], grantTo: ['engineer-engineering'] })
+    const rpc = {
+      method: 'tools/call',
+      params: {
+        name: 'run',
+        arguments: {
+          env: { GOOGLE_CREDS: '«secret:gcp.sa»', PW: 'pw=«secret:dbpw» again «secret:dbpw»' },
+          argv: ['--token', '«secret:gcp.sa»', 3, null, { deep: ['«secret:gcp.sa»'] }],
+          '«secret:gcp.sa»': 'a key is never substituted',
+        },
+      },
+    }
+    const out = await spendHandlesInToolCall(rpc, 'engineer-engineering', 'talaria-app://shell')
+    expect(out.changed).toBe(true)
+    expect(out.used.map((u) => u.name)).toEqual(['gcp', 'dbpw'])
+    const args = rpc.params.arguments as Record<string, unknown>
+    expect((args.env as Record<string, string>).GOOGLE_CREDS).toBe(blob)
+    expect((args.env as Record<string, string>).PW).toBe('pw=p@ss\\word"quoted" again p@ss\\word"quoted"')
+    expect((args.argv as unknown[])[1]).toBe(blob)
+    expect(((args.argv as unknown[])[4] as { deep: string[] }).deep[0]).toBe(blob)
+    expect((args.argv as unknown[])[2]).toBe(3)
+    expect(args['«secret:gcp.sa»']).toBe('a key is never substituted')
+    expect(JSON.parse(JSON.stringify(args))).toEqual(args)
+    // The one-shot was spent exactly once by the two mentions.
+    expect((await resolveHandles('«secret:dbpw»', 'engineer-engineering')).unresolved[0]?.reason).toBe('spent')
+  })
+
+  it('refuses a restricted secret whose destination is not the server, whatever the arguments mention', async () => {
+    // The H4 shape: `allowed_hosts = [github.com]`, the call goes to a
+    // Notion-like server, the arguments mention github.com. The server is
+    // where the value goes, so that is what the list must cover.
+    await createSecretDoc({
+      name: 'ghonly',
+      title: 'GitHub only',
+      entries: [{ key: 'pat', label: 'GitHub token', value: 'ghp_only_github' }],
+      grantTo: ['engineer-engineering'],
+      allowedHosts: ['github.com', 'talaria-app://gh-tools'],
+    })
+    const rpc = () => ({ method: 'tools/call', params: { name: 'create_page', arguments: { title: 'https://github.com/org/repo', body: '«secret:ghonly.pat»' } } })
+    const elsewhere = rpc()
+    const out = await spendHandlesInToolCall(elsewhere, 'engineer-engineering', 'mcp.notion.com')
+    expect(out.changed).toBe(false)
+    expect(elsewhere.params.arguments.body).toBe('«secret:ghonly.pat»')
+    expect(out.unresolved).toEqual([{ handle: '«secret:ghonly.pat»', reason: 'destination', host: 'mcp.notion.com' }])
+    // Covered destinations: the host itself, a subdomain, or a token the
+    // list names verbatim.
+    for (const dest of ['api.github.com', 'talaria-app://gh-tools', 'GitHub.com']) {
+      const ok = rpc()
+      expect((await spendHandlesInToolCall(ok, 'engineer-engineering', dest)).changed).toBe(true)
+      expect(ok.params.arguments.body).toBe('ghp_only_github')
+    }
+    // A token the list does not name is refused like any other host.
+    expect((await spendHandlesInToolCall(rpc(), 'engineer-engineering', 'talaria-app://other')).unresolved[0]?.host).toBe('talaria-app://other')
+    // Each spend's audit row names its destination, lowercased; a refusal
+    // writes none.
+    const rows = audited.filter((a) => a.action === 'secrets.spend' && a.targetId === 'ghonly')
+    expect(rows.map((r) => (r.after as { destination: string }).destination)).toEqual(['api.github.com', 'talaria-app://gh-tools', 'github.com'])
+  })
+
+  it('spends nothing for an unproven caller', async () => {
+    // A legacy shared-key caller is identified, not proven: it gets no
+    // credential, and the operator sees why.
+    const rpc = { method: 'tools/call', params: { name: 'run', arguments: { cmd: '«secret:push.pat»' } } }
+    const out = await spendHandlesInToolCall(rpc, 'engineer-engineering', 'talaria-app://shell', false)
+    expect(out.changed).toBe(false)
+    expect(out.used).toEqual([])
+    expect(out.unresolved).toEqual([{ handle: '«secret:push.pat»', reason: 'unproven-caller' }])
+    expect(rpc.params.arguments.cmd).toBe('«secret:push.pat»')
+  })
+
   it('leaves the call untouched for a caller with no grant', async () => {
     const rpc = { method: 'tools/call', params: { name: 'run', arguments: { cmd: '«secret:push.pat»' } } }
-    const out = await spendHandlesInToolCall(rpc, 'assistant-operations')
+    const out = await spendHandlesInToolCall(rpc, 'assistant-operations', 'talaria-app://shell')
     expect(out.changed).toBe(false)
     expect(rpc.params.arguments.cmd).toBe('«secret:push.pat»')
     // The reason goes to the operator, not into the arguments the model sees.
@@ -398,11 +475,11 @@ describe('spending a handle inside an MCP tool call', () => {
       { method: 'initialize', params: { name: 'x', arguments: { cmd: '«secret:push.pat»' } } },
       null,
     ]) {
-      const out = await spendHandlesInToolCall(rpc, 'engineer-engineering')
+      const out = await spendHandlesInToolCall(rpc, 'engineer-engineering', 'talaria-app://shell')
       expect(out.changed).toBe(false)
       expect(out.used).toEqual([])
     }
-    expect((await spendHandlesInToolCall({ method: 'tools/call', params: { name: 'run' } }, 'engineer-engineering')).changed).toBe(false)
+    expect((await spendHandlesInToolCall({ method: 'tools/call', params: { name: 'run' } }, 'engineer-engineering', 'talaria-app://shell')).changed).toBe(false)
   })
 })
 

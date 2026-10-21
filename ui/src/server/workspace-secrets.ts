@@ -260,7 +260,7 @@ export async function deleteSecretDoc(name: string): Promise<void> {
  *  or "not yours". */
 export interface UnresolvedHandle {
   handle: string
-  reason: 'unknown' | 'not-granted' | 'expired' | 'spent' | 'ambiguous' | 'destination'
+  reason: 'unknown' | 'not-granted' | 'expired' | 'spent' | 'ambiguous' | 'destination' | 'unproven-caller'
   /** For `destination`: where it was about to be spent. Named so an operator
    *  reading the log learns which host to add — or which attack just failed. */
   host?: string
@@ -344,22 +344,54 @@ export interface Resolution {
  *  A RELAY IS SPENT HERE. `uses_remaining` decrements atomically in the same
  *  statement that reads it, so two concurrent tool calls cannot both spend the
  *  last use of a one-shot. */
-export async function resolveHandles(text: string, caller: string): Promise<Resolution> {
-  const found = [...text.matchAll(HANDLE)]
+export async function resolveHandles(text: string, caller: string, destination?: string): Promise<Resolution> {
+  const found = handlesIn(text)
   if (found.length === 0) return { text, used: [], unresolved: [], hosts: [] }
-
-  const sql = await db()
-  const used: Resolution['used'] = []
-  const unresolved: UnresolvedHandle[] = []
   // Read ONCE, off the text the model wrote — before any substitution, so a
   // credential that happens to contain a dot cannot invent a destination.
   const hosts = hostsIn(text)
+  const { values, used, unresolved } = await resolveEach(found, hosts, caller, destination)
   let out = text
+  for (const [handle, value] of values) out = out.split(handle).join(value)
+  return { text: out, used, unresolved, hosts }
+}
 
-  for (const m of found) {
-    const handle = m[0]
-    const docName = (m[1] ?? '').toLowerCase()
-    const entryKey = m[2]?.toLowerCase() ?? null
+/** Every handle this text names, in first-mention order, each spelling once:
+ *  one spelling resolves — and spends — once however many times it is
+ *  written, which is what a one-shot written twice into one command needs. */
+function handlesIn(text: string): Array<{ handle: string; docName: string; entryKey: string | null }> {
+  const out: Array<{ handle: string; docName: string; entryKey: string | null }> = []
+  for (const m of text.matchAll(HANDLE)) {
+    if (out.some((h) => h.handle === m[0])) continue
+    out.push({ handle: m[0], docName: (m[1] ?? '').toLowerCase(), entryKey: m[2]?.toLowerCase() ?? null })
+  }
+  return out
+}
+
+/** THE RULES FOR EACH HANDLE — grant, expiry, destination, entry, spend —
+ *  shared by the text boundary (`resolveHandles`) and the tool-call boundary
+ *  (`spendHandlesInToolCall`), so the two cannot drift. Answers the VALUE per
+ *  handle; the caller substitutes it where the handle sits.
+ *
+ *  `hosts` are the destinations read off the text; `destination` is where the
+ *  boundary is actually sending it — the server host, or a `talaria-…://`
+ *  token for a server this process answers itself. A non-empty allowlist must
+ *  cover the destination AND every host the text mentions; a boundary that
+ *  cannot name its destination falls back to the text's hosts, and refuses when
+ *  it sees none. */
+async function resolveEach(
+  found: Array<{ handle: string; docName: string; entryKey: string | null }>,
+  hosts: string[],
+  caller: string,
+  destination?: string,
+): Promise<{ values: Map<string, string>; used: Resolution['used']; unresolved: UnresolvedHandle[] }> {
+  const sql = await db()
+  const used: Resolution['used'] = []
+  const unresolved: UnresolvedHandle[] = []
+  const values = new Map<string, string>()
+  const dest = destination?.trim().toLowerCase()
+
+  for (const { handle, docName, entryKey } of found) {
 
     const rows = (await sql`
       select s.id, s.name, s.kind, s.expires_at as "expiresAt", s.uses_remaining as "usesRemaining",
@@ -417,14 +449,22 @@ export async function resolveHandles(text: string, caller: string): Promise<Reso
     // the exfiltration unusually walk straight past the check. An unverifiable
     // destination is not a verified one, and the operator who locked this
     // credential down asked for exactly this answer.
+    //
+    // THE SERVER THAT RECEIVES THE CREDENTIAL must be on the list — a host
+    // merely mentioned in the arguments is not where the value is going. A
+    // `talaria-…://` token admits only when the list names it.
     const allowed = doc.allowedHosts ?? []
     if (allowed.length > 0) {
+      if (dest !== undefined && !hostAllowed(dest, allowed)) {
+        unresolved.push({ handle, reason: 'destination', host: dest })
+        continue
+      }
       const bad = hosts.find((h) => !hostAllowed(h, allowed))
       if (bad !== undefined) {
         unresolved.push({ handle, reason: 'destination', host: bad })
         continue
       }
-      if (hosts.length === 0) {
+      if (dest === undefined && hosts.length === 0) {
         unresolved.push({ handle, reason: 'destination' })
         continue
       }
@@ -438,6 +478,16 @@ export async function resolveHandles(text: string, caller: string): Promise<Reso
     const entry = entryKey ? entries.find((e) => e.key.toLowerCase() === entryKey) : entries.length === 1 ? entries[0] : undefined
     if (!entry) {
       unresolved.push({ handle, reason: entryKey ? 'unknown' : 'ambiguous' })
+      continue
+    }
+
+    // Key material changed under us: refusing is the only safe answer — and it
+    // is asked BEFORE the spend, so it costs no use.
+    let value: string
+    try {
+      value = open(entry.cipher)
+    } catch {
+      unresolved.push({ handle, reason: 'unknown' })
       continue
     }
 
@@ -460,16 +510,7 @@ export async function resolveHandles(text: string, caller: string): Promise<Reso
       await sql`update workspace_secrets set last_used_at = now() where id = ${doc.id}`
     }
 
-    let value: string
-    try {
-      value = open(entry.cipher)
-    } catch {
-      // Key material changed under us. Refusing is the only safe answer — a
-      // half-decrypted credential is worse than none.
-      unresolved.push({ handle, reason: 'unknown' })
-      continue
-    }
-    out = out.split(handle).join(value)
+    values.set(handle, value)
 
     // A CREDENTIAL WITH NO USES LEFT IS DESTROYED, NOT RETAINED. `uses_remaining`
     // already refuses to resolve it, so keeping the ciphertext buys nothing and
@@ -503,11 +544,37 @@ export async function resolveHandles(text: string, caller: string): Promise<Reso
       targetType: 'secret',
       targetId: doc.name,
       targetLabel: entry.label,
-      after: { key: entry.key, hosts, kind: doc.kind, exhausted, restricted: allowed.length > 0 },
+      after: { key: entry.key, destination: dest ?? null, hosts, kind: doc.kind, exhausted, restricted: allowed.length > 0 },
     })
   }
 
-  return { text: out, used, unresolved, hosts }
+  return { values, used, unresolved }
+}
+
+/** Every string leaf of a JSON value, in document order — the only places a
+ *  handle can sit in a tools/call's arguments. Keys are never substituted. */
+function stringsIn(value: unknown, out: string[]): void {
+  if (typeof value === 'string') out.push(value)
+  else if (Array.isArray(value)) for (const v of value) stringsIn(v, out)
+  else if (value && typeof value === 'object') for (const v of Object.values(value as Record<string, unknown>)) stringsIn(v, out)
+}
+
+/** Replace `handle` with `value` inside every string leaf of the tree, in
+ *  place. On the STRING, never on serialized text, so a value carrying a
+ *  quote, a backslash or a newline lands intact and the document stays
+ *  well-formed — the serializer escapes it on the way out. */
+function replaceInStrings(value: unknown, handle: string, withValue: string): unknown {
+  if (typeof value === 'string') return value.includes(handle) ? value.split(handle).join(withValue) : value
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) value[i] = replaceInStrings(value[i], handle, withValue)
+    return value
+  }
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    for (const k of Object.keys(obj)) obj[k] = replaceInStrings(obj[k], handle, withValue)
+    return value
+  }
+  return value
 }
 
 /** A JSON-RPC envelope, as much of one as spending a credential needs to know. */
@@ -538,20 +605,35 @@ export interface ToolCallRpc {
  *  something was actually spent. Every other call forwards byte-for-byte as
  *  before, so a re-serialization round trip is not something a working tool has
  *  to survive. */
-export async function spendHandlesInToolCall(rpc: ToolCallRpc | null, caller: string): Promise<{ changed: boolean; used: Resolution['used']; unresolved: UnresolvedHandle[] }> {
+export async function spendHandlesInToolCall(
+  rpc: ToolCallRpc | null,
+  caller: string,
+  /** Where the call is going — the server's host, or a `talaria-…://` token
+   *  for a server this process answers (`talaria-app://<slug>` here). A
+   *  secret's `allowed_hosts` must cover it, not just the hosts the arguments
+   *  mention. */
+  destination: string,
+  /** `!caller.legacy`: a legacy shared-key caller is identified, not proven,
+   *  so it spends nothing — every handle it wrote is reported `unproven-caller`
+   *  and forwarded as the literal text it is. */
+  proven = true,
+): Promise<{ changed: boolean; used: Resolution['used']; unresolved: UnresolvedHandle[] }> {
   const none = { changed: false, used: [], unresolved: [] }
   if (rpc?.method !== 'tools/call' || !rpc.params?.arguments) return none
-  const resolved = await resolveHandles(JSON.stringify(rpc.params.arguments), caller)
-  if (resolved.used.length === 0) return { ...none, unresolved: resolved.unresolved }
-  try {
-    rpc.params.arguments = JSON.parse(resolved.text) as Record<string, unknown>
-  } catch {
-    // A credential containing something that broke the round trip. Forward the
-    // call unresolved rather than a malformed body and let the tool refuse —
-    // but still report the spend, because it happened.
-    return { changed: false, used: resolved.used, unresolved: resolved.unresolved }
-  }
-  return { changed: true, used: resolved.used, unresolved: resolved.unresolved }
+  const leaves: string[] = []
+  stringsIn(rpc.params.arguments, leaves)
+  const found = handlesIn(leaves.join('\n'))
+  if (found.length === 0) return none
+  if (!proven) return { ...none, unresolved: found.map(({ handle }) => ({ handle, reason: 'unproven-caller' })) }
+  // The hosts the arguments name, read off the same serialization the call
+  // goes out as, before any substitution.
+  const hosts = hostsIn(JSON.stringify(rpc.params.arguments))
+  const { values, used, unresolved } = await resolveEach(found, hosts, caller, destination)
+  // The substitution walks the parsed tree, string by string, so there is no
+  // serialization round trip for a value to break: a credential that was
+  // spent is a credential that was substituted.
+  for (const [handle, value] of values) replaceInStrings(rpc.params.arguments, handle, value)
+  return { changed: used.length > 0, used, unresolved }
 }
 
 // ── WORKING SECRETS: read, share, unshare ────────────────────────────────────

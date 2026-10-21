@@ -505,6 +505,32 @@ fn safe_client() -> reqwest::Client {
         .clone()
 }
 
+/// The client for a relay whose response may be an endless stream — the
+/// MCP gateway's hop to a registered upstream, where `safe_fetch`'s body
+/// cap would buffer and kill a streamable-HTTP SSE answer. It keeps the two
+/// guarantees that live on the client rather than on the body: it NEVER
+/// follows a redirect (`Policy::none` — a hop the caller did not validate is
+/// a hop it does not make, so the caller treats any 3xx as an error), and it
+/// dials through `ValidatingResolver`, so the address the socket actually
+/// uses is re-checked against the blocked table, not just the pre-flight
+/// one. The connect phase is bounded like the provider client's; the
+/// per-request timeout belongs to the caller. Validate the URL with
+/// `assert_fetchable_url` before the hop as before — this client refuses
+/// what resolution reveals, it does not pre-check the name.
+pub fn relay_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .dns_resolver(Arc::new(ValidatingResolver))
+                .connect_timeout(Duration::from_secs(10))
+                .build()
+                .expect("relay client builds")
+        })
+        .clone()
+}
+
 async fn cap_body(mut res: reqwest::Response, max_bytes: u64) -> Result<SafeResponse, SafeError> {
     if let Some(declared) = res.content_length()
         && declared > max_bytes
@@ -846,6 +872,53 @@ mod tests {
         assert!(headers.get("authorization").is_none());
         assert!(headers.get("x-api-key").is_none());
         assert_eq!(headers.get("content-type").unwrap(), "application/json");
+    }
+
+    /// The relay client hands a redirect BACK instead of following it: one
+    /// request reaches the listener, the 302 and its Location come back to
+    /// the caller, and the Location is never dialled. (A loopback literal is
+    /// what the listener binds, and an IP literal is dialled without the
+    /// resolver, which is why the blocked table does not interfere here —
+    /// the resolver's own refusals are pinned by the name tests above.)
+    #[tokio::test]
+    async fn the_relay_client_returns_a_redirect_rather_than_following_it() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback listener binds");
+        let port = listener.local_addr().unwrap().port();
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = hits.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = [0u8; 2048];
+                let _ = sock.read(&mut buf).await;
+                let reply = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = sock.write_all(reply.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        let res = relay_client()
+            .post(format!("http://127.0.0.1:{port}/mcp"))
+            .body("{}")
+            .send()
+            .await
+            .expect("the hop itself succeeds");
+        assert_eq!(res.status().as_u16(), 302, "the redirect comes back as-is");
+        assert_eq!(
+            res.headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
+            Some(format!("http://127.0.0.1:{port}/elsewhere").as_str())
+        );
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the Location was never dialled"
+        );
     }
 
     #[test]
