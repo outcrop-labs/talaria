@@ -112,9 +112,14 @@ pub struct RunRow {
     pub input: Value,
     pub result: Value,
     pub error: Option<String>,
-    /// How many times a driver has ENTERED this run. Incremented on RECLAIM
-    /// only — see `max_attempts`.
+    /// How many times a driver has RE-ENTERED this run after another driver
+    /// held it: a crash reclaim or a clean hand-over (a drain, a lost lease)
+    /// alike. A step reads it as "was I interrupted since this checkpoint".
     pub attempt: i32,
+    /// How many drivers DIED holding this run — re-entries where the previous
+    /// driver never released. The subset of `attempt` that `max_attempts`
+    /// bounds: a clean hand-over costs nothing here.
+    pub crashes: i32,
     /// The driver token that currently owns it, and until when. Mirrored
     /// from the Redis lease so the reclaim sweep is a plain indexed SQL scan:
     /// Redis has no index over "every run whose lease expired".

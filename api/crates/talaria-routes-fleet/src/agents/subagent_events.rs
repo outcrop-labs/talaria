@@ -21,6 +21,18 @@
 // a child whose start never arrived still lands: the start is best-effort
 // observability and can be dropped under queue pressure, and a result with
 // no beginning is far better than a child that silently never finished.
+//
+// ADDRESSED BY CONVERSATION. Both hooks carry `parentSessionId`, and for a
+// pinned agent that session id IS the conversation the parent is speaking
+// in; the chip lands there and nowhere else. A body without one is served
+// only while exactly one turn could be meant — otherwise a 409 that says so.
+//
+// THE TRUST BOUNDARY IS THE AGENT, NOT THE PLUGIN: the key this door takes
+// is readable from the container's own terminal, so a model can post a
+// "reviewer · done — approved" chip here itself. The route re-clamps and
+// scrubs, and the landing is scoped to the agent's own threads; it cannot
+// tell plugin from model, and nothing downstream should treat a chip as
+// proof that a child ran.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -189,20 +201,30 @@ pub async fn post(
             .ok()
             .and_then(|principal| principal.owner_user_id);
     let redis = state.redis().await.ok();
-    match talaria_chips::surface_tool_chips(
+    let hint = talaria_chips::conversation_hint(&parsed);
+    match talaria_chips::surface_tool_chips_in(
         &state.pg,
         redis,
         &caller.model,
         owner.as_deref(),
+        hint.as_deref(),
         vec![chip(&event)],
     )
     .await
     {
+        // Several turns and no parent session named: refused rather than
+        // guessed, and the sentence says what would have resolved it.
+        Ok(target @ talaria_chips::Target::Ambiguous { .. }) => Ok(house_error(
+            StatusCode::CONFLICT,
+            &target.ambiguity().unwrap_or_default(),
+        )),
         // No live turn and nothing recent: the chip has nowhere correct to
         // land. Said on the wire rather than only in a log, because the
         // plugin's own contract is fire-and-forget and `landed` is the one
         // place this is visible at all.
-        Ok(landed) => Ok(Json(json!({ "ok": true, "landed": landed.is_some() })).into_response()),
+        Ok(target) => {
+            Ok(Json(json!({ "ok": true, "landed": target.landed().is_some() })).into_response())
+        }
         Err(e) => Ok(internal("[subagent-events] chip surface failed", e)),
     }
 }

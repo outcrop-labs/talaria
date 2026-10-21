@@ -10,6 +10,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use talaria_audit::{AuditEntry, log_audit};
+use talaria_auth_config::{get_auth_config, is_email_allowed};
 use talaria_body::{optional_string_member, parse, preprocessed_email_member, string_member};
 use talaria_claim::claim_admin;
 use talaria_error::{house_error, internal, object_or_400};
@@ -46,6 +47,19 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+
+    // THE OPERATOR'S ALLOW-LIST GATES THE CLAIM. AUTH_ALLOWED_EMAILS /
+    // AUTH_ALLOWED_DOMAINS is set in the environment before the first
+    // sign-in; "whoever deploys, owns" means whoever the deployer allowed,
+    // not whoever reached the form first. No allow-list configured keeps the
+    // open claim. (The Google org-domain gate has no analogue here: an org
+    // connection is admin-only, so an unclaimed instance cannot have one.)
+    if !is_email_allowed(Some(&email), &get_auth_config()) {
+        return Ok(house_error(
+            StatusCode::FORBIDDEN,
+            "This address is not on the sign-in allow-list.",
+        ));
+    }
 
     let ip_key = format!("claim:ip:{}", client_ip(&headers));
     if let Ok(mut redis) = state.redis().await {

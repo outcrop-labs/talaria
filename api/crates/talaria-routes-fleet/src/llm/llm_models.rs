@@ -7,6 +7,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use talaria_api_facades::gateway::agent_keys::{agent_key_scope, agent_slug_of_key};
 use talaria_api_facades::gateway::models::{EndpointModels, catalog_of};
 use talaria_auth::{authenticate_key, bearer_secret};
 use talaria_error::{internal, openai_error};
@@ -79,8 +80,15 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Err(e) => return internal("[llm/v1/models] catalog query failed", e),
     };
 
+    // An agent's key lists what the chat relay would let it ask for — the
+    // ids its rendered config routes to — so the list and the 403 agree.
+    let scope = match agent_slug_of_key(&identity.key_name) {
+        Some(slug) => agent_key_scope(&state.pg, slug).await,
+        None => None,
+    };
     let data = catalog_of(&eps)
         .into_iter()
+        .filter(|m| scope.as_ref().is_none_or(|s| s.models.contains(&m.id)))
         .map(|m| ModelEntry {
             id: m.id,
             object: "model",

@@ -1134,6 +1134,68 @@ pub async fn save_artifact(
     Ok(next)
 }
 
+/// What a save carrying a version precondition did.
+#[derive(Debug)]
+pub enum ConditionalSave {
+    /// The body landed; the re-read row (boxed: the row is large and the
+    /// other arms are empty).
+    Saved(Box<Artifact>),
+    /// The row's `updated_at` was no longer the one the caller read — someone
+    /// else saved in between, and nothing was written.
+    Moved,
+    /// No such artifact.
+    Missing,
+}
+
+/// Save a body ONLY IF the artifact is still the version the caller read:
+/// `expected_updated_at` is the `updated_at` the caller's `Artifact` carried
+/// (the wire's ISO form), and the write is `where updated_at = that`, at the
+/// millisecond the wire can express. The surgical edit route reads, applies
+/// an edit to its copy and saves; without this precondition the window
+/// between its read and its save was a last-writer-wins replace of the whole
+/// body, and a paragraph a person typed in that window vanished silently.
+///
+/// Snapshot and official re-mirror follow the unconditional save's rule —
+/// every content change versions.
+pub async fn save_artifact_body_if_unchanged(
+    pg: &PgPool,
+    id: &str,
+    body: &str,
+    actor: &str,
+    expected_updated_at: &str,
+) -> Result<ConditionalSave, sqlx::Error> {
+    let done = sqlx::query(
+        "update artifacts set body = $2, updated_by = $3::text, updated_at = now() \
+         where id = $1::uuid \
+           and date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', $4::timestamptz)",
+    )
+    .bind(id)
+    .bind(body)
+    .bind(actor)
+    .bind(expected_updated_at)
+    .execute(pg)
+    .await?;
+    if done.rows_affected() == 0 {
+        return Ok(match get_artifact(pg, id).await? {
+            Some(_) => ConditionalSave::Moved,
+            None => ConditionalSave::Missing,
+        });
+    }
+    let Some(a) = get_artifact(pg, id).await? else {
+        return Ok(ConditionalSave::Missing);
+    };
+    let _ = talaria_internal_history::snapshot(
+        pg,
+        "artifact",
+        &a.id,
+        &format!("# {}\n\n{}", a.title, a.body),
+        Some(actor),
+    )
+    .await;
+    let _ = remirror_if_official(pg, &a, actor).await;
+    Ok(ConditionalSave::Saved(Box::new(a)))
+}
+
 /// Delete — the KB mirror dies with the artifact (its RAG copy goes
 /// via delete_doc's unindex), then the row.
 pub async fn delete_artifact(

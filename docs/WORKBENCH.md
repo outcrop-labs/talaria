@@ -101,6 +101,26 @@ credential could grant itself a subscription.
 A volume reset cannot lose these, and nothing OAuth-shaped ever reaches an
 agent's config files.
 
+### What the sandbox can see
+
+Be plain about the other side of that: **code running in a Developer Agent's
+sandbox can read the attached account's access token — or, for an API-key
+account, the key itself — through the broker**, exactly as omp does. The
+broker is scoped by the agent's key, and anything running as that agent (the
+harness, a tool it calls, a script the job checks out and runs) holds that
+key. The refresh token never leaves the api, so an OAuth access token that
+leaks is a short-lived one the provider expires on its own and Talaria alone
+can renew. An API key has no such clock: it is a **long-lived secret the
+sandbox can exfiltrate**, and nothing here can take it back once it is out.
+Attach only keys you can rotate, and rotate one the moment a job you do not
+trust has run against it.
+
+Every read of an account's credential by the sandbox writes an audit row —
+`coding.snapshot_read`, actor the agent, target the account id, never a
+value — rated to one row per account per ten minutes, so an operator can see
+*when* the sandbox could read a credential without the long-polling harness
+flooding `Admin → Audit`.
+
 ### Which plan runs a job, and on which model
 
 A **plan** is either one of the agent's coding accounts or the Talaria gateway.
@@ -141,18 +161,20 @@ Admin → Org → **GitHub · Workbench**: connect via a **GitHub App** (recomme
 
 Connecting grants nothing by itself. **Repo access is an explicit per-agent grant** (toggle chips on the agent), validated against the connection's reachable pool. Per-repo **flow** config sets which branch PRs land on (blank = the repo's default). Talaria's job ends at the pull request: how that branch is then reviewed, promoted or merged belongs to the repository's own branch protection and CI, not to anything Talaria assumes.
 
+**Branch protection on every granted repo is required, not optional.** The per-repo rule (`branches_only`, the base branch, an optional prefix) is asked by a `pre-push` hook rendered into the sandbox, and it refuses the configured base, the repo's default branch and `main`/`master`/`rc` with the rule's own sentence. That is a client-side hook: git skips it on `--no-verify`, and the installation token the sandbox's credential helper hands git — scoped to the one repo and narrowed to `contents: write`, `pull_requests: write`, `metadata: read` — is still a token that can push. The rule tells the agent what the law is and logs the attempt; the repository's own protected-branch settings are what make a base-branch push impossible. A repo a free plan cannot protect is a repo whose base branch a prompt-injected job could reach; grant such repos knowing that.
+
 ## The job lifecycle (why git never gets messy)
 
 Agents **never run raw git against origin**. The workbench MCP (a Talaria-owned server in the MCP registry, granted by the Developer Agent switch) owns the lifecycle:
 
 - `doctor`: end-to-end self-diagnosis: the Oh My Pi harness (+ a probe command to verify the binary), GitHub, repo grants, omp's model roles, config paths.
 - `list_repos`: the agent's granted repos + omp's model roles.
-- `start_job(repo, taskId, effort, plan)`: Talaria cuts `talaria/<ticket-ref>-<slug>` (or, when the repo grant carries a configured branch prefix, `<prefix>/<ticket-ref>-<slug>`, named to satisfy the repo's own branch rules so its pushes are accepted) from the flow's base branch, records the job (one live job per ticket), and returns a short-lived authenticated clone URL, a **per-job workspace** (`/opt/data/workbench/jobs/<id>`, so concurrent jobs never collide), omp's model roles, and the Oh My Pi invocation lines (default model filled in). Effort decides planning and how much RAM the job reserves, not the model. **Plans are required for standard/heavy effort**, post to the ticket as a comment *and* as a markdown artifact, and **heavy jobs wait for human approval** from the ticket's workbench strip before any clone URL exists.
+- `start_job(repo, taskId, effort, plan)`: Talaria cuts `talaria/<ticket-ref>-<slug>` (or, when the repo grant carries a configured branch prefix, `<prefix>/<ticket-ref>-<slug>`, named to satisfy the repo's own branch rules so its pushes are accepted) from the flow's base branch, records the job (one live job per ticket — started, queued or awaiting approval), and returns the repo's plain `https://github.com/<owner>/<repo>.git` clone URL (no credential in it: git asks the sandbox's credential helper at push time), a **per-job workspace** (`/opt/data/workbench/jobs/<id>`, so concurrent jobs never collide), omp's model roles, and the Oh My Pi invocation lines (default model filled in). Effort decides planning and how much RAM the job reserves, not the model. **Plans are required for standard/heavy effort**, post to the ticket as a comment *and* as a markdown artifact, and **heavy jobs wait for human approval** from the ticket's workbench strip before any clone URL exists.
 - `prepare_env(jobId)`: sets up the job's dev environment after the clone (see "Dev environments" below).
-- `job_status` — jobs with fresh clone URLs (tokens expire by design).
+- `job_status` — your jobs, each with its branch, workdir and clone URL.
 - `finish_job(jobId, summary)` — verifies the branch has real commits, then opens the PR with a templated ticket-linked body (title from the ticket ref, plan + summary inside, the acting agent named). `abandon: true` closes out a dead job from any live state.
 
-**Teardown is the platform's, not the agent's.** When `finish_job` opens the PR, Talaria stops every process still running in the job's workdir (the checkout stays for a revise bounce). Abandoning removes the workdir outright. The `workbench-job-sweep` (every 10 minutes) covers what never calls a verb: a `started` or awaiting-approval job whose ticket reached a done column or was archived is abandoned, and it and any `pr_open` job on a closed ticket lose their workdir. Jobs with no ticket are left alone. `workspace_cleared_at` marks a job whose workdir is gone.
+**Teardown is the platform's, not the agent's.** When `finish_job` opens the PR, Talaria stops every process still running in the job's workdir and removes the job's `.talaria/env` (the checkout stays for a revise bounce; the project env comes back with the `prepare_env` that follows the resume). Abandoning removes the workdir outright. The `workbench-job-sweep` (every 10 minutes) covers what never calls a verb: a `started` or awaiting-approval job whose ticket reached a done column or was archived is abandoned, and it and any `pr_open` job on a closed ticket lose their workdir. A job with no ticket has no ticket to close it, so time does: `started` or awaiting-approval and untouched for seven days is abandoned and removed; a job still `queued` after a day is abandoned (it never had a workdir). `workspace_cleared_at` marks a job whose workdir is gone.
 
 A cap refusal and a "no commits yet" refusal name the job id, branch, and workdir — finish or push there; retrying the same call does not change the answer. `jobId` is the uuid `start_job` returned, not a ticket ref. Omitting `effort` means `standard`, and `standard`/`heavy` are refused without `plan`.
 
@@ -167,7 +189,8 @@ Git in a job workdir asks Talaria for a credential. A checkout outside that work
 Agents run unprivileged in a stock image, so the platform sets up each job's toolchain rather than leaving the agent to hand-install rustup and linkers into its home. `prepare_env(jobId)`, called right after the clone:
 
 - **Toolchains through [mise](https://mise.jdx.dev)**, in user space on the persistent volume, so a department's agents share one download of each version. A repo's own `mise.toml` / `.tool-versions` is used as is. Otherwise the versions come from the files each ecosystem already keeps: `rust-toolchain.toml` (plus mold when `.cargo/config.toml` links with it), `.nvmrc` / `.node-version` / `package.json` (node, and bun or pnpm from `packageManager` or the lockfile), `go.mod`, `.python-version` / `pyproject.toml` / `uv.lock`, `.ruby-version`, at the repo root or one directory down. Detected tools go to a `mise.local.toml` that `.git/info/exclude` keeps out of commits.
-- **OS packages through apt, as root**, only for names the repo lists in `.talaria/workbench.toml`, and only from the image's Debian sources. The agent itself never gets root.
+- **OS packages through apt, as root**, only for names the repo lists in `.talaria/workbench.toml`, and only from the image's Debian sources. The agent itself never gets root — and root never reads the repo: the scan that finds those names runs as the agent's own user, reads only plain files whose real path is inside the checkout (a symlink anywhere on the path, or a checkout that is itself a symlink, is reported under `skipped` and never opened), and the apt step runs only after every name has passed validation.
+- **The project's env, per job.** A granted repo can carry an env store (KEY/value pairs set beside its branch rules in the workbench admin; values are write-only through the API and sealed at rest like every other secret). It reaches the sandbox in exactly one place: `<workdir>/.talaria/env` for the job working that repo, written as the agent (0600, its own file, piped through the exec's stdin, never a host file or a shell line) by `prepare_env` once the checkout exists (an env file written earlier would leave the workdir non-empty and refuse the clone), and removed when the job ends — `finish_job`, abandon, and the sweep all take it; a resumed job gets it again from its next `prepare_env`. `start_job`'s rules say so, and `prepare_env`'s answer carries `projectEnv` (the path, the count, and the `set -a; . <workdir>/.talaria/env; set +a` line that loads it). A checkout at the workdir root gets `.talaria/env` added to `.git/info/exclude`, so no `git add` can commit it. A job on repo A never sees repo B's env, and nothing is mounted fleet-wide. Values a model must never read belong in workspace secrets, not here: a project env is, by design, what the agent's build reads.
 - **mise's shims on PATH** in the agent's login shells, so `cargo`, `bun`, `go` and the rest resolve to the repo's pinned versions by directory.
 - **A shared Rust compile cache.** For any repo with a `Cargo.toml`, sccache becomes cargo's compiler wrapper, with one cache per department at `/opt/data/workbench/harness/sccache` (20 GiB cap). Every job still starts from an empty `target/`, but a dependency any job already compiled comes out of the cache instead of being rebuilt, so only the first job after a dependency change pays for the full graph. It's scoped to the repo through `mise.local.toml`'s `[env]`, never set globally. Opt out with `sccache = false` in `.talaria/workbench.toml`.
 

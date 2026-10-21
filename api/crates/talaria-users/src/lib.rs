@@ -1113,11 +1113,127 @@ pub async fn assistant_owner_for(
         .cloned())
 }
 
+// ── The assistant's reach into its owner's DMs ──────────────────────────────
+//
+// The identity-proxy view above hands a personal assistant its owner's
+// channels, DMs included — the briefing chat's subject is the owner's whole
+// attention state. Whether a human↔human DM is part of that view is the
+// OWNER'S choice: this setting is theirs, kept per user (it outlives the
+// assistant's handle, model and container), and read by the channels crate at
+// the listing and at the access predicate. The default keeps today's reach,
+// so an owner who never looks at the switch sees nothing change.
+
+/// How far a personal assistant may reach into its owner's direct messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssistantDmAccess {
+    /// DMs are not listed and cannot be read or posted in.
+    None,
+    /// DMs are listed and readable; the assistant may not post in them.
+    Read,
+    /// The owner's own view: read and post (the default).
+    ReadWrite,
+}
+
+/// The wire vocabulary, in catalog order — the PATCH body's enum and the
+/// stored value share it.
+pub const ASSISTANT_DM_ACCESS_OPTIONS: [&str; 3] = ["none", "read", "read-write"];
+
+impl AssistantDmAccess {
+    pub const DEFAULT: AssistantDmAccess = AssistantDmAccess::ReadWrite;
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AssistantDmAccess::None => "none",
+            AssistantDmAccess::Read => "read",
+            AssistantDmAccess::ReadWrite => "read-write",
+        }
+    }
+
+    /// The stored/wire spelling, or None for anything else — a hand-edited
+    /// row falls to the default rather than to the widest reach by accident.
+    pub fn parse(s: &str) -> Option<AssistantDmAccess> {
+        match s {
+            "none" => Some(AssistantDmAccess::None),
+            "read" => Some(AssistantDmAccess::Read),
+            "read-write" => Some(AssistantDmAccess::ReadWrite),
+            _ => None,
+        }
+    }
+
+    pub fn may_read(self) -> bool {
+        self != AssistantDmAccess::None
+    }
+
+    pub fn may_post(self) -> bool {
+        self == AssistantDmAccess::ReadWrite
+    }
+}
+
+fn assistant_dm_access_key(owner_user_id: &str) -> String {
+    format!("assistant_dm_access:{owner_user_id}")
+}
+
+/// The owner's choice, or the default when they never made one (or the
+/// stored value is not one of the three).
+pub async fn assistant_dm_access(pg: &PgPool, owner_user_id: &str) -> AssistantDmAccess {
+    get_setting(
+        pg,
+        &assistant_dm_access_key(owner_user_id),
+        serde_json::Value::Null,
+    )
+    .await
+    .as_str()
+    .and_then(AssistantDmAccess::parse)
+    .unwrap_or(AssistantDmAccess::DEFAULT)
+}
+
+pub async fn set_assistant_dm_access(
+    pg: &PgPool,
+    owner_user_id: &str,
+    access: AssistantDmAccess,
+) -> Result<(), sqlx::Error> {
+    talaria_gateway::settings::set_setting(
+        pg,
+        &assistant_dm_access_key(owner_user_id),
+        &serde_json::Value::String(access.as_str().to_string()),
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const UID: &str = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
+
+    #[test]
+    fn assistant_dm_access_round_trips_its_three_spellings_and_defaults_the_rest() {
+        for (s, want) in [
+            ("none", AssistantDmAccess::None),
+            ("read", AssistantDmAccess::Read),
+            ("read-write", AssistantDmAccess::ReadWrite),
+        ] {
+            assert_eq!(AssistantDmAccess::parse(s), Some(want));
+            assert_eq!(want.as_str(), s);
+        }
+        assert_eq!(AssistantDmAccess::parse("readwrite"), None);
+        assert_eq!(AssistantDmAccess::parse(""), None);
+        assert_eq!(AssistantDmAccess::DEFAULT, AssistantDmAccess::ReadWrite);
+        assert_eq!(
+            ASSISTANT_DM_ACCESS_OPTIONS.map(|o| AssistantDmAccess::parse(o).map(|a| a.as_str())),
+            [Some("none"), Some("read"), Some("read-write")]
+        );
+    }
+
+    #[test]
+    fn assistant_dm_access_read_and_post_are_ordered() {
+        assert!(!AssistantDmAccess::None.may_read());
+        assert!(!AssistantDmAccess::None.may_post());
+        assert!(AssistantDmAccess::Read.may_read());
+        assert!(!AssistantDmAccess::Read.may_post());
+        assert!(AssistantDmAccess::ReadWrite.may_read());
+        assert!(AssistantDmAccess::ReadWrite.may_post());
+    }
     const UPLOAD: &str = "a1b2c3d4-0000-4000-8000-000000000001";
 
     #[test]

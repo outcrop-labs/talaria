@@ -24,6 +24,7 @@ use sqlx::Row;
 
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_agent_auth::now_ms;
+use talaria_agent_auth::{AgentSubject, subject_model, subject_proven};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_secretbox::SecretBox;
 
@@ -244,52 +245,73 @@ pub struct Resolution {
     pub hosts: Vec<String>,
 }
 
-/// SUBSTITUTE HANDLES FOR VALUES, at an outbound boundary and nowhere else.
-/// `caller` is the agent model asking; a handle it has not been granted does
-/// not resolve, and the difference between "no such secret" and "not yours"
-/// goes to the operator, not the model.
+/// Every handle this text names, in first-mention order, each spelling once:
+/// `(handle as written, doc name lowercased, entry key lowercased)`. One
+/// spelling resolves — and spends — once however many times it is written,
+/// which is what a one-shot written twice into one command needs.
+fn handles_in(text: &str) -> Vec<(String, String, Option<String>)> {
+    let mut out: Vec<(String, String, Option<String>)> = Vec::new();
+    for c in handle_re().captures_iter(text) {
+        let handle = c.get(0).map(|m| m.as_str().to_string()).unwrap_or_default();
+        if out.iter().any(|(h, _, _)| *h == handle) {
+            continue;
+        }
+        out.push((
+            handle,
+            c.get(1)
+                .map(|m| m.as_str().to_lowercase())
+                .unwrap_or_default(),
+            c.get(2).map(|m| m.as_str().to_lowercase()),
+        ));
+    }
+    out
+}
+
+/// What one handle came to: the value to substitute and the names the audit
+/// keeps, or why it did not resolve.
+enum HandleOutcome {
+    Resolved { value: String, used: UsedEntry },
+    Unresolved(UnresolvedHandle),
+}
+
+/// THE RULES FOR ONE HANDLE — grant, expiry, destination, entry, spend —
+/// shared by the text boundary (`resolve_handles`) and the tool-call
+/// boundary (`spend_handles_in_tool_call`), so the two cannot drift.
+///
+/// `hosts` are the destinations read off the text the handle sits in;
+/// `destination` is where the boundary is actually sending it — the server
+/// host, or a `talaria-…://` token for a server this process answers itself.
+/// A non-empty allowlist must cover the destination AND every host the text
+/// mentions; a boundary that cannot name its destination (None) falls back
+/// to the text's hosts, and refuses when it sees none, because an
+/// unverifiable destination is not a verified one.
 ///
 /// A RELAY IS SPENT HERE: `uses_remaining` decrements atomically in the same
-/// statement that reads it, so two concurrent tool calls cannot both spend the
-/// last use of a one-shot. The destination check runs BEFORE the spend — a
-/// refusal must not consume a use; an attacker who could burn a relay by naming
-/// a bad host would have a denial-of-service on every credential in the
-/// workspace. And when a non-empty allowlist cannot see ANY host, that refuses
-/// too: an unverifiable destination is not a verified one.
-pub async fn resolve_handles(
+/// statement that reads it, so two concurrent calls cannot both spend the
+/// last use. The destination check runs BEFORE the spend — a refusal must
+/// not consume a use — and the value is opened before it too, so a seal the
+/// instance cannot read refuses without burning the use. Substituting the
+/// returned value into a string can never fail, which is what keeps "spent"
+/// and "substituted" the same event; a one-shot's ciphertext is destroyed
+/// only once the value is in hand.
+#[allow(clippy::too_many_arguments)] // the boundary's facts, named one by one
+async fn resolve_one(
     pg: &PgPool,
     sb: &SecretBox,
-    text: &str,
+    handle: String,
+    doc_name: &str,
+    entry_key: Option<&str>,
     caller: &str,
-) -> Result<Resolution, String> {
-    let found: Vec<(String, String, Option<String>)> = handle_re()
-        .captures_iter(text)
-        .map(|c| {
-            (
-                c.get(0).map(|m| m.as_str().to_string()).unwrap_or_default(),
-                c.get(1)
-                    .map(|m| m.as_str().to_lowercase())
-                    .unwrap_or_default(),
-                c.get(2).map(|m| m.as_str().to_lowercase()),
-            )
-        })
-        .collect();
-    if found.is_empty() {
-        return Ok(Resolution {
-            text: text.to_string(),
-            used: Vec::new(),
-            unresolved: Vec::new(),
-            hosts: Vec::new(),
-        });
-    }
-
-    let mut used: Vec<UsedEntry> = Vec::new();
-    let mut unresolved: Vec<UnresolvedHandle> = Vec::new();
-    // Read ONCE, off the text the model wrote — before any substitution, so a
-    // credential that happens to contain a dot cannot invent a destination.
-    let hosts = hosts_in(text);
-    let mut out = text.to_string();
-
+    hosts: &[String],
+    destination: Option<&str>,
+) -> Result<HandleOutcome, String> {
+    let unresolved = |handle: String, reason: &'static str, host: Option<String>| {
+        Ok(HandleOutcome::Unresolved(UnresolvedHandle {
+            handle,
+            reason,
+            host,
+        }))
+    };
     // `granted` is the count of the caller's DIRECT grant plus its grant
     // through the folder the doc sits in — resolved at read time so a
     // credential added to a shared folder next week is covered without anybody
@@ -301,173 +323,193 @@ pub async fn resolve_handles(
         ((select count(*) from workspace_secret_grants g where g.secret_id = s.id and g.agent_model = $1) \
          + (select count(*) from secret_folder_grants fg where fg.folder_id = s.secret_folder_id and fg.agent_model = $1)) as granted \
        from workspace_secrets s where lower(s.name) = $2";
+    let rows = sqlx::query(resolve_sql)
+        .bind(caller)
+        .bind(doc_name)
+        .fetch_all(pg)
+        .await
+        .map_err(|e| format!("secrets resolve read: {e}"))?;
+    let Some(doc) = rows.first() else {
+        return unresolved(handle, "unknown", None);
+    };
+    let doc_id = cell_str(doc, "id");
+    let doc_name = cell_str(doc, "name");
+    let doc_kind = cell_str(doc, "kind");
+    if cell_opt_i64(doc, "granted").unwrap_or(0) == 0 {
+        return unresolved(handle, "not-granted", None);
+    }
+    // An absent expiry is not an expired one — None means "no bound".
+    if cell_opt_i64(doc, "expires_ms").is_some_and(|t| t <= now_ms()) {
+        return unresolved(handle, "expired", None);
+    }
 
-    for (handle, doc_name, entry_key) in found {
-        let rows = sqlx::query(resolve_sql)
-            .bind(caller)
-            .bind(&doc_name)
-            .fetch_all(pg)
-            .await
-            .map_err(|e| format!("secrets resolve read: {e}"))?;
-        let Some(doc) = rows.first() else {
-            unresolved.push(UnresolvedHandle {
-                handle,
-                reason: "unknown",
-                host: None,
-            });
-            continue;
-        };
-        let doc_id = cell_str(doc, "id");
-        let doc_name = cell_str(doc, "name");
-        let doc_kind = cell_str(doc, "kind");
-        if cell_opt_i64(doc, "granted").unwrap_or(0) == 0 {
-            unresolved.push(UnresolvedHandle {
-                handle,
-                reason: "not-granted",
-                host: None,
-            });
-            continue;
+    let allowed = cell_hosts(doc, "allowed_hosts");
+    let destination = destination.map(|d| d.trim().to_lowercase());
+    if !allowed.is_empty() {
+        // THE SERVER THAT RECEIVES THE CREDENTIAL must be on the list — a
+        // host merely mentioned in the arguments is not where the value is
+        // going. A `talaria-…://` token admits only when the list names it.
+        if let Some(dest) = &destination
+            && !host_allowed(dest, &allowed)
+        {
+            return unresolved(handle, "destination", Some(dest.clone()));
         }
-        // An absent expiry is not an expired one — None means "no bound".
-        if cell_opt_i64(doc, "expires_ms").is_some_and(|t| t <= now_ms()) {
-            unresolved.push(UnresolvedHandle {
-                handle,
-                reason: "expired",
-                host: None,
-            });
-            continue;
+        if let Some(bad) = hosts.iter().find(|h| !host_allowed(h, &allowed)) {
+            return unresolved(handle, "destination", Some(bad.clone()));
         }
+        if destination.is_none() && hosts.is_empty() {
+            return unresolved(handle, "destination", None);
+        }
+    }
 
-        let allowed = cell_hosts(doc, "allowed_hosts");
-        if !allowed.is_empty() {
-            if let Some(bad) = hosts.iter().find(|h| !host_allowed(h, &allowed)) {
-                unresolved.push(UnresolvedHandle {
-                    handle,
-                    reason: "destination",
-                    host: Some(bad.clone()),
-                });
-                continue;
-            }
-            if hosts.is_empty() {
-                unresolved.push(UnresolvedHandle {
-                    handle,
-                    reason: "destination",
-                    host: None,
-                });
-                continue;
+    let entries = cipher_entries(pg, &doc_id).await?;
+    // The doc-only form is only unambiguous when there is one entry.
+    // Guessing which of four credentials was meant is how the wrong one
+    // gets spent.
+    let entry = match entry_key {
+        Some(k) => entries.iter().find(|e| e.key.to_lowercase() == k),
+        None => {
+            if entries.len() == 1 {
+                entries.first()
+            } else {
+                None
             }
         }
+    };
+    let Some(entry) = entry else {
+        return unresolved(
+            handle,
+            if entry_key.is_some() {
+                "unknown"
+            } else {
+                "ambiguous"
+            },
+            None,
+        );
+    };
+    // Key material changed under us: refusing is the only safe answer — and
+    // it is asked BEFORE the spend, so it costs no use.
+    let Ok(value) = sb.open(&entry.cipher) else {
+        return unresolved(handle, "unknown", None);
+    };
+    let uses_remaining = cell_opt_i64(doc, "uses_remaining");
 
-        let entries = cipher_entries(pg, &doc_id).await?;
-        // The doc-only form is only unambiguous when there is one entry.
-        // Guessing which of four credentials was meant is how the wrong one
-        // gets spent.
-        let entry = match &entry_key {
-            Some(k) => entries.iter().find(|e| e.key.to_lowercase() == *k),
-            None => {
-                if entries.len() == 1 {
-                    entries.first()
-                } else {
-                    None
-                }
-            }
-        };
-        let Some(entry) = entry else {
-            unresolved.push(UnresolvedHandle {
-                handle,
-                reason: if entry_key.is_some() {
-                    "unknown"
-                } else {
-                    "ambiguous"
-                },
-                host: None,
-            });
-            continue;
-        };
-        let uses_remaining = cell_opt_i64(doc, "uses_remaining");
-
-        // SPEND IT IN THE SAME STATEMENT THAT CHECKS IT.
-        let exhausted;
-        if uses_remaining.is_some() {
-            let spent = sqlx::query(
-                "update workspace_secrets set uses_remaining = uses_remaining - 1, last_used_at = now() \
-                  where id = $1::uuid and uses_remaining > 0 returning id::text",
-            )
-            .bind(&doc_id)
-            .fetch_all(pg)
-            .await
-            .map_err(|e| format!("secrets spend: {e}"))?;
-            if spent.is_empty() {
-                unresolved.push(UnresolvedHandle {
-                    handle,
-                    reason: "spent",
-                    host: None,
-                });
-                continue;
-            }
-            exhausted = uses_remaining.unwrap_or(0) - 1 <= 0;
-        } else {
-            sqlx::query("update workspace_secrets set last_used_at = now() where id = $1::uuid")
-                .bind(&doc_id)
-                .execute(pg)
-                .await
-                .map_err(|e| format!("secrets touch: {e}"))?;
-            exhausted = false;
+    // SPEND IT IN THE SAME STATEMENT THAT CHECKS IT.
+    let exhausted;
+    if uses_remaining.is_some() {
+        let spent = sqlx::query(
+            "update workspace_secrets set uses_remaining = uses_remaining - 1, last_used_at = now() \
+              where id = $1::uuid and uses_remaining > 0 returning id::text",
+        )
+        .bind(&doc_id)
+        .fetch_all(pg)
+        .await
+        .map_err(|e| format!("secrets spend: {e}"))?;
+        if spent.is_empty() {
+            return unresolved(handle, "spent", None);
         }
-
-        // Key material changed under us: refusing is the only safe answer.
-        let value = match sb.open(&entry.cipher) {
-            Ok(v) => v,
-            Err(_) => {
-                unresolved.push(UnresolvedHandle {
-                    handle,
-                    reason: "unknown",
-                    host: None,
-                });
-                continue;
-            }
-        };
-        out = out.replace(&handle, &value);
-
-        // A credential with no uses left is DESTROYED, not retained — emptied
-        // rather than deleted so the audit trail survives with the row. A
-        // one-shot somebody pasted into chat this morning should not still be
-        // recoverable from a database dump tonight.
-        if exhausted {
-            sqlx::query(
-                "update workspace_secret_entries set value_cipher = '' where secret_id = $1::uuid",
-            )
+        exhausted = uses_remaining.unwrap_or(0) - 1 <= 0;
+    } else {
+        sqlx::query("update workspace_secrets set last_used_at = now() where id = $1::uuid")
             .bind(&doc_id)
             .execute(pg)
             .await
-            .map_err(|e| format!("secrets destroy: {e}"))?;
-        }
-        used.push(UsedEntry {
-            name: doc_name.clone(),
-            key: entry.key.clone(),
-            label: entry.label.clone(),
-        });
-
-        // THE ONE EVENT WORTH AUDITING — the spend is the only moment a
-        // credential actually MOVES, and it is recorded here rather than at the
-        // call sites so the boundaries cannot drift. Names, kinds and
-        // destinations; never a value, and never the text it was substituted
-        // into, which by definition now contains one.
-        audit_spend(
-            pg,
-            caller,
-            &doc_name,
-            &entry.label,
-            serde_json::json!({
-                "key": entry.key,
-                "hosts": hosts,
-                "kind": doc_kind,
-                "exhausted": exhausted,
-                "restricted": !allowed.is_empty(),
-            }),
-        );
+            .map_err(|e| format!("secrets touch: {e}"))?;
+        exhausted = false;
     }
 
+    // A credential with no uses left is DESTROYED, not retained — emptied
+    // rather than deleted so the audit trail survives with the row. A
+    // one-shot somebody pasted into chat this morning should not still be
+    // recoverable from a database dump tonight.
+    if exhausted {
+        sqlx::query(
+            "update workspace_secret_entries set value_cipher = '' where secret_id = $1::uuid",
+        )
+        .bind(&doc_id)
+        .execute(pg)
+        .await
+        .map_err(|e| format!("secrets destroy: {e}"))?;
+    }
+
+    // THE ONE EVENT WORTH AUDITING — the spend is the only moment a
+    // credential actually MOVES, and it is recorded here rather than at the
+    // call sites so the boundaries cannot drift. Names, kinds and
+    // destinations — the server it went to and the hosts the text named;
+    // never a value, and never the text it was substituted into, which by
+    // definition now contains one.
+    audit_spend(
+        pg,
+        caller,
+        &doc_name,
+        &entry.label,
+        serde_json::json!({
+            "key": entry.key,
+            "destination": destination,
+            "hosts": hosts,
+            "kind": doc_kind,
+            "exhausted": exhausted,
+            "restricted": !allowed.is_empty(),
+        }),
+    );
+    Ok(HandleOutcome::Resolved {
+        value,
+        used: UsedEntry {
+            name: doc_name,
+            key: entry.key.clone(),
+            label: entry.label.clone(),
+        },
+    })
+}
+
+/// SUBSTITUTE HANDLES FOR VALUES, at an outbound boundary and nowhere else.
+/// `caller` is the agent model asking; a handle it has not been granted does
+/// not resolve, and the difference between "no such secret" and "not yours"
+/// goes to the operator, not the model. `destination` is the host the
+/// boundary is sending the text to, when it knows one; the rules are
+/// `resolve_one`'s.
+pub async fn resolve_handles(
+    pg: &PgPool,
+    sb: &SecretBox,
+    text: &str,
+    caller: &str,
+    destination: Option<&str>,
+) -> Result<Resolution, String> {
+    let found = handles_in(text);
+    if found.is_empty() {
+        return Ok(Resolution {
+            text: text.to_string(),
+            used: Vec::new(),
+            unresolved: Vec::new(),
+            hosts: Vec::new(),
+        });
+    }
+    let mut used: Vec<UsedEntry> = Vec::new();
+    let mut unresolved: Vec<UnresolvedHandle> = Vec::new();
+    // Read ONCE, off the text the model wrote — before any substitution, so a
+    // credential that happens to contain a dot cannot invent a destination.
+    let hosts = hosts_in(text);
+    let mut out = text.to_string();
+    for (handle, doc_name, entry_key) in found {
+        match resolve_one(
+            pg,
+            sb,
+            handle.clone(),
+            &doc_name,
+            entry_key.as_deref(),
+            caller,
+            &hosts,
+            destination,
+        )
+        .await?
+        {
+            HandleOutcome::Resolved { value, used: u } => {
+                out = out.replace(&handle, &value);
+                used.push(u);
+            }
+            HandleOutcome::Unresolved(u) => unresolved.push(u),
+        }
+    }
     Ok(Resolution {
         text: out,
         used,
@@ -548,21 +590,63 @@ pub struct SpendOutcome {
     pub unresolved: Vec<UnresolvedHandle>,
 }
 
+/// Every string leaf of a JSON value, in document order — the only places a
+/// handle can sit in a tools/call's arguments. Keys are not values and are
+/// never substituted into.
+fn strings_in(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(s) => out.push(s.clone()),
+        Value::Array(items) => items.iter().for_each(|v| strings_in(v, out)),
+        Value::Object(map) => map.values().for_each(|v| strings_in(v, out)),
+        _ => {}
+    }
+}
+
+/// Replace `handle` with `value` inside every string leaf of the tree. The
+/// substitution is on the STRING, never on serialized text, so a value
+/// carrying a quote, a backslash or a newline lands intact and the document
+/// stays well-formed — the serializer escapes it on the way out.
+fn replace_in_strings(value: &mut Value, handle: &str, with: &str) {
+    match value {
+        Value::String(s) => {
+            if s.contains(handle) {
+                *s = s.replace(handle, with);
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|v| replace_in_strings(v, handle, with)),
+        Value::Object(map) => map
+            .values_mut()
+            .for_each(|v| replace_in_strings(v, handle, with)),
+        _ => {}
+    }
+}
+
 /// Resolve handle mentions INSIDE a gateway `tools/call` arguments object,
 /// rewriting `rpc.params.arguments` in place. The gateway's one spend
-/// boundary: a credential is spent exactly when it rides
-/// an outbound tool call, and the report (`used`, names never values) is what
-/// the relay route logs.
+/// boundary: a credential is spent exactly when it rides an outbound tool
+/// call, and the report (`used`, names never values) is what the relay route
+/// logs.
+///
+/// `subject` is the caller as agent-auth resolved it. A LEGACY shared-key
+/// caller is identified, not proven, so it spends nothing: every handle it
+/// wrote is reported `unproven-caller` and forwarded as the literal text it
+/// is. `destination` is where the call is going — the server's host, or a
+/// `talaria-…://` token for a server this process answers — and a secret's
+/// `allowed_hosts` must cover it (see `resolve_one`).
 ///
 /// Non-`tools/call` rpcs and rpcs without an `arguments` object are returned
-/// untouched — a notification or a tools/list cannot spend anything. A value
-/// that breaks the JSON round trip forwards the call UNRESOLVED (the tool will
-/// refuse the raw handle) but still reports the spend, because it happened.
+/// untouched — a notification or a tools/list cannot spend anything. The
+/// substitution walks the parsed tree, string by string, so there is no
+/// serialization round trip for a value to break: a credential that was
+/// spent is a credential that was substituted.
 pub async fn spend_handles_in_tool_call(
     pg: &PgPool,
     sb: &SecretBox,
     rpc: &mut Value,
-    caller: &str,
+    subject: &AgentSubject,
+    destination: &str,
 ) -> Result<SpendOutcome, String> {
     if rpc.get("method").and_then(Value::as_str) != Some("tools/call") {
         return Ok(SpendOutcome::default());
@@ -583,41 +667,61 @@ pub async fn spend_handles_in_tool_call(
     else {
         return Ok(SpendOutcome::default());
     };
-    let payload = arguments.to_string();
-    let resolved = resolve_handles(pg, sb, &payload, caller).await?;
-    let used = resolved
-        .used
-        .iter()
-        .map(|u| SpendEntry {
-            name: u.name.clone(),
-            key: u.key.clone(),
-            label: u.label.clone(),
-        })
-        .collect();
-    if resolved.used.is_empty() {
+    let mut leaves = Vec::new();
+    strings_in(arguments, &mut leaves);
+    let found = handles_in(&leaves.join("\n"));
+    if found.is_empty() {
+        return Ok(SpendOutcome::default());
+    }
+    if !subject_proven(subject) {
         return Ok(SpendOutcome {
             changed: false,
-            used,
-            unresolved: resolved.unresolved,
+            used: Vec::new(),
+            unresolved: found
+                .into_iter()
+                .map(|(handle, _, _)| UnresolvedHandle {
+                    handle,
+                    reason: "unproven-caller",
+                    host: None,
+                })
+                .collect(),
         });
     }
-    // The rewritten arguments are whatever parses back, not necessarily an
-    // object.
-    match serde_json::from_str::<Value>(&resolved.text) {
-        Ok(next) => {
-            *arguments = next;
-            Ok(SpendOutcome {
-                changed: true,
-                used,
-                unresolved: resolved.unresolved,
-            })
+    let caller = subject_model(subject);
+    // The hosts the arguments name, read off the same serialization the
+    // call goes out as, before any substitution.
+    let hosts = hosts_in(&arguments.to_string());
+    let mut used: Vec<SpendEntry> = Vec::new();
+    let mut unresolved: Vec<UnresolvedHandle> = Vec::new();
+    for (handle, doc_name, entry_key) in found {
+        match resolve_one(
+            pg,
+            sb,
+            handle.clone(),
+            &doc_name,
+            entry_key.as_deref(),
+            caller,
+            &hosts,
+            Some(destination),
+        )
+        .await?
+        {
+            HandleOutcome::Resolved { value, used: u } => {
+                replace_in_strings(arguments, &handle, &value);
+                used.push(SpendEntry {
+                    name: u.name,
+                    key: u.key,
+                    label: u.label,
+                });
+            }
+            HandleOutcome::Unresolved(u) => unresolved.push(u),
         }
-        Err(_) => Ok(SpendOutcome {
-            changed: false,
-            used,
-            unresolved: resolved.unresolved,
-        }),
     }
+    Ok(SpendOutcome {
+        changed: !used.is_empty(),
+        used,
+        unresolved,
+    })
 }
 
 // ── WORKING SECRETS: read, share, unshare ────────────────────────────────────
@@ -1582,6 +1686,7 @@ pub async fn credential_for_host(
             handle_for(&doc_name, Some(&pass_entry.key))
         ),
         agent_model,
+        Some(&lower),
     )
     .await?;
     if spent.used.is_empty() {
@@ -1653,6 +1758,59 @@ mod tests {
         assert!(host_allowed("x.dev", &[" .x.dev ".to_string()]));
         // An empty entry covers nothing.
         assert!(!host_allowed("x.dev", &["".to_string()]));
+    }
+
+    #[test]
+    fn handles_in_lists_each_spelling_once_in_order() {
+        let found = handles_in("«secret:deploy.pat» then «secret:reg» then «secret:deploy.pat»");
+        assert_eq!(found.len(), 2, "a handle written twice resolves once");
+        assert_eq!(found[0].0, "«secret:deploy.pat»");
+        assert_eq!(found[0].1, "deploy");
+        assert_eq!(found[0].2.as_deref(), Some("pat"));
+        assert_eq!(found[1].0, "«secret:reg»");
+        assert_eq!(found[1].2, None);
+        assert!(handles_in("nothing here").is_empty());
+    }
+
+    #[test]
+    fn a_value_with_quotes_and_backslashes_lands_intact_in_the_tree() {
+        // The M3 shape: a service-account blob (quotes) and a password with a
+        // backslash. Substituted into the parsed tree, both survive the
+        // serializer, and the document is still well-formed JSON.
+        let mut args = serde_json::json!({
+            "env": { "GOOGLE_CREDS": "«secret:gcp.sa»", "PW": "pw=«secret:db.pass»" },
+            "argv": ["--token", "«secret:gcp.sa»"],
+            "n": 1,
+            "«secret:gcp.sa»": "a key is never substituted"
+        });
+        let blob = r#"{"type":"service_account","private_key":"-----BEGIN\nMIIE\\n-----END"}"#;
+        replace_in_strings(&mut args, "«secret:gcp.sa»", blob);
+        replace_in_strings(&mut args, "«secret:db.pass»", r#"p@ss\word"quoted""#);
+        assert_eq!(args["env"]["GOOGLE_CREDS"], blob);
+        assert_eq!(args["argv"][1], blob);
+        assert_eq!(args["env"]["PW"], r#"pw=p@ss\word"quoted""#);
+        assert_eq!(args["n"], 1);
+        assert!(
+            args.get("«secret:gcp.sa»").is_some(),
+            "object keys are not substitution targets"
+        );
+        let wire = serde_json::to_string(&args).expect("serializes");
+        let back: Value = serde_json::from_str(&wire).expect("the wire form parses back");
+        assert_eq!(back, args, "the round trip is exact");
+        let mut after = Vec::new();
+        strings_in(&args, &mut after);
+        assert!(
+            after.iter().all(|s| !s.contains("«secret:")),
+            "no handle text is left in any value: {after:?}"
+        );
+
+        // Discovery walks the same leaves, in order, and skips non-strings.
+        let mut leaves = Vec::new();
+        strings_in(
+            &serde_json::json!({ "a": ["x", 2, { "b": "y" }], "c": true, "d": "z" }),
+            &mut leaves,
+        );
+        assert_eq!(leaves, vec!["x", "y", "z"]);
     }
 
     #[test]

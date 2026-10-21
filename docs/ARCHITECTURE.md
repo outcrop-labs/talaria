@@ -166,7 +166,12 @@ app reads to dial each agent's persona gateway directly on its published port. N
 multiplexer.
 
 - Every model spec in a rendered config routes through the app's LLM gateway, so agents have
-  exactly one upstream — guarded, metered, attributed.
+  exactly one upstream — guarded, metered, attributed. Each agent reaches it on **its own**
+  gateway key (`agent:<slug>`, stamped as `LLM_API_KEY_<SLUG>` and interpolated into that
+  service alone as `LLM_API_KEY`): the relay budgets it as the agent (`llm_budgets.perAgent`
+  / `agents{<model>}`, on the same `agent_model` window its chat turns land in) and refuses
+  any model outside the set its rendered config routes to (`gateway_agent_models`, written
+  by the render). No container holds a fleet-wide gateway secret.
 - Each agent presents its own `tak_` key; the renderer rewrites `fleet/.env` from the DB
   every render (0600 in a 0700 dir).
 - **Blue/green rolls** (api/src/fleet/reconcile.rs): the incoming slot comes up on a fresh port,
@@ -175,17 +180,31 @@ multiplexer.
   traffic shifts on the next manifest read — a drain window (default 45s), then the old slot
   is removed. `proxyChat` re-reads the manifest per attempt and holds a turn up to two
   minutes across a restart.
+- **Rolling the whole fleet** (`POST /api/fleet/roll`, admin): every running managed agent
+  is queued through the same blue/green roll, `TALARIA_FLEET_ROLL_CONCURRENCY` (default 2)
+  departments at a time so twenty agents never double the host's load at once; departments
+  already mid-roll are skipped and named. The request answers at once; the live picture
+  (`GET /api/fleet/roll`: rolling / idle / failed / done per agent, with each failure's
+  sentence) comes from the roll registry `roll_agent` writes at start and verdict — in
+  process, mirrored into the Redis hash `talaria:fleet-roll:v1` so every api instance
+  answers the same, outcomes kept an hour. A single agent's roll lands on the same page.
 - **Preflight probes from where the agent stands**: a throwaway container on the fleet
   network probes the gateway/MCP base URLs (api/src/fleet/preflight.rs) — the host's view proves
   nothing.
 - **Crons live in the agent**, not in Talaria: Hermes' own scheduler ticks inside the
   container; Talaria reads it for truth and mutates through `docker exec`
-  (api/src/agent_crons.rs).
+  (api/src/agent_crons.rs). Their spend is metered at the relay: a turn Talaria drives is
+  ledgered once by the flow that drove it, so the chat transport counts each such turn in
+  Redis (`talaria:turn:v1:<agent model>`) while it is open, and a call on an agent's key with
+  no turn counted — a cron — is booked by the relay under the agent as `unattended`, into the
+  same window its budget is judged on.
 
 ## Agent work and the guardrails
 
-The MCP toolkit (`mcp/src/index.ts`) is **51 registered tools** — tickets, documents, KB,
-channels, Google calendar/mail, research, web search, board membership. The guardrail that
+The MCP toolkit (`mcp/src/index.ts`) is the fleet's registered tools — tickets, documents, KB,
+channels, Google calendar/mail, research, board membership — and no document states the count:
+it changes with every registration, and `bun run check` (`toolkit-tool-count-drift`) fails any doc
+that writes a number the source does not have; `mcp/README.md` lists every tool by name. The guardrail that
 actually holds is server-side and narrow: **agents cannot write assignees and cannot make a
 terminal status move** — the final sign-off is structurally a human's. The refusal predicate
 lives once in `server/tasks.ts` (`agentSafePatch`); a second definition anywhere fails the
@@ -233,7 +252,7 @@ Rust api's (`api/src/jobs.rs`), `off` arms nobody (the kill switch; `rust` is
 the retired coexistence-era value and reads as unset). Registered jobs with
 named intervals, **exactly-once via a Redis lease**
 — one run per interval fleet-wide; unreachable Redis skips the tick rather than running
-unguarded. The first eight jobs are required: a missing registration fails boot. The api
+unguarded. The first nine jobs are required: a missing registration refuses to arm the schedule, and the arm loop says which job is missing on every retry (boot never reports the schedule armed). The api
 arms in every posture that serves — `talaria dev`'s child included, so background jobs
 fire locally exactly as in prod; a bare `vite dev` with no api is the one posture that
 never arms them, which is why "my background job never fires locally" usually means the

@@ -11,12 +11,16 @@
     def: d,
     containers,
     running,
+    rolling = false,
     onManage,
     onDuplicate,
   }: {
     def: AgentDef
     containers: AgentContainers | null
     running: boolean
+    /** Mid-roll (this agent's own, or the fleet-wide batch): the Roll control
+     *  stays visible and disabled — the route would answer 409 anyway. */
+    rolling?: boolean
     onManage: () => void
     onDuplicate: () => void
   } = $props()
@@ -73,7 +77,8 @@
           onclick={() => void controls.act('restart', 'restarting', RESTART_CONFIRM)}
         ><RotateCw size={14} /></IconButton>
         <IconButton
-          title="Roll (zero-downtime replacement: fresh container, old one finishes its replies)"
+          title={rolling ? 'Rolling now' : 'Roll (zero-downtime replacement: fresh container, old one finishes its replies)'}
+          disabled={rolling}
           onclick={() => void controls.act('roll', 'rolling')}
         ><Repeat size={14} /></IconButton>
       {:else if draft}

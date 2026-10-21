@@ -26,16 +26,17 @@ failure behavior — it *declares* them, and `run_harness` honors the declaratio
 
 | File | What it owns |
 | --- | --- |
-| `api/src/harness/define.rs` | The contract. Types and one identity function — no DB, no gateway, no settings, so a definition can be built and enumerated without booting Talaria. |
-| `api/src/harness/run.rs` | `run_harness` / the streamed variant. The only code that talks to a model. |
-| `api/src/harness/json.rs` | The one structured-output parser and the one repair wording. |
-| `api/src/harness/text.rs` | The one first-line extractor for text harnesses. |
-| `api/src/harness_model.rs` | The resolution chain, expressed once. |
-| `api/src/capability.rs` | What a model can actually do, and who says so. |
-| `api/src/harness/transport.rs` | The gateway and fleet-persona transports (blocking + streaming), the request that reaches them, and the refusals a transport raises rather than dropping a field it cannot honor. |
-| `api/src/harness/registry.rs` | The builtin layer: 39 shipped harnesses (`DEFS` → `BUILTINS`). |
-| `api/src/harness/defs/*.rs` | The definitions themselves — one module per family, eval fixtures inline. |
-| `api/src/harness/recorded.rs` | Run any harness against written-down replies: no gateway, no fleet, no DB, no clock. |
+| `api/crates/talaria-harness/src/define.rs` | The contract. Types and one identity function — no DB, no gateway, no settings, so a definition can be built and enumerated without booting Talaria. |
+| `api/crates/talaria-harness/src/run.rs` | `run_harness` / the streamed variant. The only code that talks to a model. |
+| `api/crates/talaria-harness-json/src/lib.rs` | The one structured-output parser and the one repair wording. |
+| `api/crates/talaria-harness-text/src/lib.rs` | The one first-line extractor for text harnesses. |
+| `api/crates/talaria-harness-model/src/lib.rs` | The resolution chain, expressed once. |
+| `api/crates/talaria-capability/src/lib.rs` | What a model can actually do, and who says so. |
+| `api/crates/talaria-harness/src/transport.rs` | The gateway and fleet-persona transports (blocking + streaming), the request that reaches them, and the refusals a transport raises rather than dropping a field it cannot honor. |
+| `api/crates/talaria-harness-defs/src/registry.rs` | The builtin layer: 40 shipped harnesses (`DEFS` → `BUILTINS`; the `EXPECTED_IDS` test pins the list). |
+| `api/crates/talaria-harness-defs/src/defs/*.rs` | The definitions themselves — one module per family, eval fixtures inline. |
+| `api/crates/talaria-harness/src/recorded.rs` | Run any harness against written-down replies: no gateway, no fleet, no DB, no clock. |
+| `api/crates/talaria-harness-prompt-rules/src/lib.rs` | The prompt clauses more than one harness states — the untrusted-input boundary, and the list of harnesses that carry it. |
 
 The TS twin of the layer (`ui/src/server/harness/`) is the **app-author plane**: `ui/sdk/server.ts`
 re-exports its types as `@talaria/sdk`'s server contract, and app-shipped harnesses are TS by the
@@ -94,8 +95,8 @@ escaped error.
 
 ## The contract, field by field
 
-The contract is `api/src/harness/define.rs`. The smallest harness in the product, abridged
-(`api/src/harness/defs/titler.rs`), is the shape of one:
+The contract is `api/crates/talaria-harness/src/define.rs`. The smallest harness in the product, abridged
+(`api/crates/talaria-harness-defs/src/defs/titler.rs`), is the shape of one:
 
 ```rust
 let mut d = define_harness(HarnessDefinition::new(
@@ -145,7 +146,7 @@ Two harnesses refuse today, and both are cases where degrading silently is worse
 `refuseBelow` is true**. The runner only ever reads it when the harness refuses, so a populated list
 on a non-refusing floor is inert while reading to the next author as a hard requirement — which is
 how two spellings of "needs JSON, runs anyway" shipped once, and why this is a rule now. The
-registry's unit tests (`api/src/harness/registry.rs`) enforce both.
+registry's unit tests (`api/crates/talaria-harness-defs/src/registry.rs`) enforce both.
 
 `note` is one sentence written for the admin choosing a model, not for the developer reading the
 file. It is shown next to the model picker and printed in the refusal.
@@ -195,10 +196,10 @@ Output::Json { schema: Schema, preprocess: Option<PreFn>, repair: Option<u32>, v
 ```
 
 `Output::Json` puts the runner in structured mode; the schema is the zod-shaped DSL in
-`api/src/harness/schema.rs`, which collects issues in declaration order — the same sentences the
+`api/crates/talaria-harness-schema/src/lib.rs`, which collects issues in declaration order — the same sentences the
 repair turn quotes back to the model. `Output::Text` with no `clean` means the value is the string
 by construction; `clean` is where a text harness narrows, and a `None` out of it fails the contract.
-Unwrapping a reply the model wrapped is `first_meaningful_line` (`api/src/harness/text.rs`), shared by
+Unwrapping a reply the model wrapped is `first_meaningful_line` (`api/crates/talaria-harness-text/src/lib.rs`), shared by
 the titler and the summarizer — which shipped the same eight lines with a one-character difference,
 and between them stored a bare ` ``` `, a trailing `**` and a "Here's the summary:" lead-in as if
 those were answers. A `clean` should hold what is true of *its* output and nothing else.
@@ -353,13 +354,13 @@ item's whole action list and a regex-bound one a single id, and "did it stay ins
 offered" is unanswerable without that.
 
 Keep it cheap and pure: it runs on every attempt of every run, including the redaction re-check, and
-`define` imports no database by construction (both spellings — `api/src/harness/define.rs` and the
+`define` imports no database by construction (both spellings — `api/crates/talaria-harness/src/define.rs` and the
 TS twin). A check that needs to ask the database whether an id
 exists belongs to the caller, not to the contract.
 
 ## The capability model
 
-The capability record (`api/src/capability.rs`) is a type the tree went years without, and two live
+The capability record (`api/crates/talaria-capability/src/lib.rs`) is a type the tree went years without, and two live
 bugs shared its absence as their root cause: role assignments were validated for *routability* and
 nothing else (so an admin
 could point `research-recon` at a model with no web search and get a confident, uncited brief), and
@@ -426,7 +427,7 @@ case runs: the Inbox command harness runs on the owner's personal assistant.
 A worked example: a "release-notes" harness that turns a list of merged PR titles into a short
 changelog entry.
 
-**1. Write the definition** in `api/src/harness/defs/release_notes.rs`. Keep it pure — types,
+**1. Write the definition** in `api/crates/talaria-harness-defs/src/defs/release_notes.rs`. Keep it pure — types,
 prompts, a `clean`/`schema`, and fixtures. It must be constructible without a database.
 
 ```rust
@@ -476,7 +477,7 @@ pub fn release_notes_harness() -> HarnessDefinition {
 }
 ```
 
-**2. Register it** in `api/src/harness/registry.rs` — the constructor joins the `DEFS` table that
+**2. Register it** in `api/crates/talaria-harness-defs/src/registry.rs` — the constructor joins the `DEFS` table that
 `BUILTINS` is built from. Registration is part of writing the harness, not a follow-up: a harness
 that is not in `DEFS` is invisible in the two ways that matter most — the fitness suite cannot
 replay its fixtures, so every assertion its author wrote is dead code, and the admin panel cannot
@@ -494,7 +495,7 @@ let run = run_harness(
 .await?;   // OnFailure::Null — a null value means the caller keeps the draft it had
 ```
 
-**4. Test it against recorded replies.** `api/src/harness/recorded.rs` runs any harness with no
+**4. Test it against recorded replies.** `api/crates/talaria-harness/src/recorded.rs` runs any harness with no
 gateway, no fleet, no database and no clock — the transport is scripted, but the parser, the guard
 rules and the persona resolver are real, so an assertion about the runner stays an assertion about the
 runner. Include at least one reply in the shape a 14B model actually emits (a preamble, then the
@@ -743,7 +744,7 @@ names the harness and, where a fixture failed, the fixture's own sentence verbat
 the **worst of its harnesses' bands**, decided per harness.
 
 `ready` requires positive evidence, and this is the one place the suite is deliberately stricter than
-`api/src/capability.rs`. "Unknown is not false" is a rule about *running*; a verdict exists to say what has
+`api/crates/talaria-capability/src/lib.rs`. "Unknown is not false" is a rule about *running*; a verdict exists to say what has
 been *measured*, so an unmeasured required capability, or a sweep with the guard switched off, caps a
 slot at `workable` with a reason naming the button to press. Neither ever pushes a slot to `unfit`:
 absence of evidence is not evidence of absence in that direction either.

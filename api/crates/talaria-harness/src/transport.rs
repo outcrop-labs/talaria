@@ -6,7 +6,10 @@
 // gateway pieces the chat relay runs on (`resolve_route`, `build_upstream`,
 // `fetch_upstream`, `record_gateway_usage`). The FLEET half (the persona
 // turn, the persona stream pump, and the `transport_kind` rule) lives at the
-// bottom of the file, over `proxy_chat` and `list_agents`.
+// bottom of the file, over `proxy_chat`, `proxy_session_turn` and
+// `list_agents` — two doors into one persona: the stateless completions
+// arm, and the Hermes SESSION arm a caller keys when the turn must be
+// attributable from the container's side (`PersonaSession`).
 //
 // WHY THE REQUEST TYPE HAS EVERY SLOT IT HAS — each one is an ask a call
 // site once had to serve by hand-writing its own copy of the fleet transport,
@@ -25,7 +28,7 @@
 // here, and a transport that genuinely CANNOT honor a field says so by
 // failing the call rather than by ignoring it.
 
-use super::define::Message;
+use super::define::{Message, Role};
 use serde_json::{Map, Value};
 use talaria_harness_json_schema::WireSchema;
 
@@ -375,6 +378,92 @@ pub fn persona_payload(req: &TransportRequest) -> Value {
         payload.insert("reasoning_effort".into(), Value::String(e.clone()));
     }
     Value::Object(payload)
+}
+
+/// A Hermes SESSION the persona turn lands on, instead of the stateless
+/// completions arm — the fleet transport's other door, chosen by the CALLER
+/// and not by the request, because it is an attribution key and not a model
+/// parameter: the container keeps the transcript under this id, and the
+/// agent's talaria-events plugin reports every tool frame against it. A work
+/// session keys it by its RUN id, so a frame says which run it belongs to and
+/// the thrash brake can never abort the wrong one; a pinned chat keys it by
+/// the conversation id (the chat path's own call, in `talaria-chat-persist`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersonaSession {
+    /// The session id as the container knows it — the `{"id"}` of
+    /// `POST /api/sessions`, created on first use and resumed after.
+    pub id: String,
+    /// A turn has gone through this session before, so it MUST still be in
+    /// the container: a fresh create then means the state volume was lost
+    /// (a re-hire on the same slug, a swapped volume, a host restore), and
+    /// the turn takes the completions arm rather than answering from an
+    /// empty room — `proxy_session_turn`'s `history_expected`.
+    pub resumed: bool,
+}
+
+/// The session arm's body, cut from the request's messages — THE ONE MAPPING
+/// for that door, the way `persona_payload` is for the other. The system
+/// rows fold into the turn's ephemeral system prompt (Hermes takes one per
+/// turn), and the trailing run of user rows is the message, joined with
+/// blank lines (two prompts queued behind one another are both unanswered).
+///
+/// `None` when the request carries HISTORY — an assistant or tool row ahead
+/// of the trailing user run, or no user row at all. A session turn sends
+/// only the new message and the container holds the transcript, so a request
+/// that brought its own transcript has nowhere to put it: the caller sends
+/// that request the completions way, where the whole array travels. The
+/// chat path applies the same rule per conversation (`pinned_history_fits`);
+/// this is it per request.
+pub fn session_turn_parts(messages: &[Message]) -> Option<(Option<String>, String)> {
+    let tail_len = messages
+        .iter()
+        .rev()
+        .take_while(|m| m.role == Role::User)
+        .count();
+    let (head, tail) = messages.split_at(messages.len() - tail_len);
+    if tail.is_empty() || head.iter().any(|m| m.role != Role::System) {
+        return None;
+    }
+    let system: Vec<&str> = head
+        .iter()
+        .map(|m| m.content.as_str())
+        .filter(|c| !c.trim().is_empty())
+        .collect();
+    let message = tail
+        .iter()
+        .map(|m| m.content.as_str())
+        .filter(|c| !c.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if message.is_empty() {
+        return None;
+    }
+    Some(((!system.is_empty()).then(|| system.join("\n\n")), message))
+}
+
+/// What a session turn CANNOT carry, named. The body is a message and an
+/// ephemeral system prompt — Hermes samples at the persona's own settings
+/// and runs its own loop — so a request that declared `temperature`, asked
+/// for structured output, or asked the tools suppressed fails the call, by
+/// the rule at the top of this file: a field that cannot be honored is an
+/// error, never a quiet drop. `effort` is the documented exception (a dial,
+/// not a contract) and travels nowhere on this arm. `None` means the request
+/// fits the door.
+pub fn session_turn_refusal(req: &TransportRequest) -> Option<String> {
+    let field = if req.temperature.is_some() {
+        "temperature"
+    } else if req.json_mode || req.json_schema.is_some() {
+        "response_format"
+    } else if tool_policy_of(req) == ToolPolicy::None {
+        "tools: none"
+    } else {
+        return None;
+    };
+    Some(format!(
+        "harness turn on \"{}\" declared {field} on a Hermes SESSION turn, which carries only the message and its \
+         ephemeral system prompt. Declare the field away, or run the turn on the completions arm.",
+        req.model
+    ))
 }
 
 // ── The refusal sentences ─────────────────────────────────────────────────────
@@ -1081,7 +1170,9 @@ pub async fn gateway_stream(
 // ── The FLEET half — a persona turn through the agent's own gateway ──────────
 
 use talaria_fleet_agents::list_agents;
-use talaria_gateway::fleet_chat::{AgentStreamEvent, AgentStreamParser, ByteStream, proxy_chat};
+use talaria_gateway::fleet_chat::{
+    AgentStreamEvent, AgentStreamParser, ByteStream, ChatStream, proxy_chat, proxy_session_turn,
+};
 use talaria_gateway::usage::{UsageInput, record_usage};
 use talaria_me::gateway_models;
 
@@ -1267,10 +1358,63 @@ async fn meter_persona_turn(pg: &sqlx::PgPool, req: &TransportRequest, turn: &Pe
     .await;
 }
 
+/// Open the persona's stream through the door the caller chose: the
+/// completions arm when no session is keyed, the Hermes session arm when one
+/// is — created on first use, resumed after. Two ways back onto the
+/// completions arm from the session one, both logged, neither an error: a
+/// request carrying history a session cannot hold (`session_turn_parts`),
+/// and a RESUMED session the container no longer has (`proxy_session_turn`
+/// answers `None` — the state volume was lost, and the chat path takes the
+/// same way out). The turn still happens; only its continuity does not.
+async fn open_persona_turn(
+    req: &TransportRequest,
+    session: Option<&PersonaSession>,
+) -> Result<ChatStream, String> {
+    let Some(session) = session else {
+        return Ok(proxy_chat(&persona_payload(req), req.hold_ms).await);
+    };
+    if let Some(refusal) = session_turn_refusal(req) {
+        return Err(refusal);
+    }
+    let Some((system_message, message)) = session_turn_parts(&req.messages) else {
+        tracing::warn!(
+            "[transport] {} ({}): the request carries history a session turn cannot hold — \
+             sent as a completion instead of on session {}",
+            req.model,
+            req.caller,
+            session.id
+        );
+        return Ok(proxy_chat(&persona_payload(req), req.hold_ms).await);
+    };
+    match proxy_session_turn(
+        &req.model,
+        &session.id,
+        system_message.as_deref(),
+        &Value::String(message),
+        req.hold_ms,
+        session.resumed,
+    )
+    .await
+    {
+        Some(stream) => Ok(stream),
+        None => {
+            tracing::warn!(
+                "[transport] {} ({}): session {} was expected to exist and did not — this turn \
+                 is sent as a completion with its full prompt instead",
+                req.model,
+                req.caller,
+                session.id
+            );
+            Ok(proxy_chat(&persona_payload(req), req.hold_ms).await)
+        }
+    }
+}
+
 async fn persona_turn(
     state: &AppState,
     req: &TransportRequest,
     emit: Option<&mut (dyn FnMut(&str) + Send)>,
+    session: Option<&PersonaSession>,
 ) -> Result<TransportReply, String> {
     // See `fleet_tool_defs_refusal`: the loop on the other side of the proxy
     // is the agent's, so a definition we send is neither guaranteed to arrive
@@ -1280,7 +1424,7 @@ async fn persona_turn(
     if !tool_defs_of(req).is_empty() {
         return Err(fleet_tool_defs_refusal(&req.model));
     }
-    let upstream = proxy_chat(&persona_payload(req), req.hold_ms).await;
+    let upstream = open_persona_turn(req, session).await?;
     if !upstream.ok() {
         return Err(format!("persona gateway {}", upstream.status));
     }
@@ -1355,7 +1499,19 @@ pub async fn fleet_transport(
     state: &AppState,
     req: &TransportRequest,
 ) -> Result<TransportReply, String> {
-    persona_turn(state, req, None).await
+    persona_turn(state, req, None, None).await
+}
+
+/// The blocking fleet side, on a Hermes SESSION the caller keys. The same
+/// pump, the same meter, the same guard-visible reply as `fleet_transport`;
+/// only the door differs — see `PersonaSession` for why a caller wants it
+/// and `open_persona_turn` for the two ways it falls back to the other one.
+pub async fn fleet_session_transport(
+    state: &AppState,
+    req: &TransportRequest,
+    session: &PersonaSession,
+) -> Result<TransportReply, String> {
+    persona_turn(state, req, None, Some(session)).await
 }
 
 /// The same call, with each delta handed on as it lands — the briefing
@@ -1367,7 +1523,7 @@ pub async fn fleet_stream(
     emit: impl FnMut(&str) + Send,
 ) -> Result<TransportReply, String> {
     let mut emit = emit;
-    persona_turn(state, req, Some(&mut emit)).await
+    persona_turn(state, req, Some(&mut emit), None).await
 }
 
 /// Which side of the house a model lives on. The rule, stated once:
@@ -1423,6 +1579,27 @@ pub async fn dispatch_transport(
 ) -> Result<TransportReply, String> {
     match transport_kind(state, &req.model).await {
         TransportKind::Fleet => fleet_transport(state, req).await,
+        TransportKind::Gateway => gateway_transport(state, req).await,
+    }
+}
+
+/// The same picker for a caller that KEYS THE PERSONA'S SESSION. The fleet
+/// side lands on that session; the gateway side runs exactly as it always
+/// does, because the session is an attribution key for a CONTAINER — the
+/// transcript Hermes keeps, the plugin that reports against it — and a
+/// gateway model has neither: its ledger row is written by the gateway
+/// itself and there is no plugin whose frames could be misattributed. (A
+/// harness that reaches here with `tools: own` on a gateway model is refused
+/// by `gateway_transport` as it always was.) Reached through a dep override
+/// rather than a request slot so the one place that keys a session — a work
+/// session, by its run id — is the one place that says so.
+pub async fn dispatch_session_transport(
+    state: &AppState,
+    req: &TransportRequest,
+    session: &PersonaSession,
+) -> Result<TransportReply, String> {
+    match transport_kind(state, &req.model).await {
+        TransportKind::Fleet => fleet_session_transport(state, req, session).await,
         TransportKind::Gateway => gateway_transport(state, req).await,
     }
 }
@@ -1653,6 +1830,84 @@ mod tests {
             liveness: None,
             watch: None,
         }
+    }
+
+    /// THE SESSION ARM'S ONE MAPPING: system rows become the ephemeral
+    /// prompt, the trailing user run becomes the message, and a request
+    /// that carries history — the one thing a session turn cannot send —
+    /// is handed back to the completions arm rather than sent with its
+    /// transcript cut off.
+    #[test]
+    fn session_turn_parts_cut_the_prompt_and_refuse_history() {
+        // The work session's shape: one user message, no system row.
+        let one = session_turn_parts(&[Message::user("turn 3: continue")]);
+        assert_eq!(one, Some((None, "turn 3: continue".into())));
+
+        // System rows fold into one prompt; two queued user rows are one
+        // message with a blank line between them.
+        let folded = session_turn_parts(&[
+            Message::system("mode prompt"),
+            Message::system("   "),
+            Message::system("sender block"),
+            Message::user("first"),
+            Message::user("second"),
+        ]);
+        assert_eq!(
+            folded,
+            Some((
+                Some("mode prompt\n\nsender block".into()),
+                "first\n\nsecond".into()
+            ))
+        );
+
+        // An assistant row ahead of the trailing run is history the
+        // container would not have: not a session turn.
+        let mut history = vec![Message::system("s"), Message::user("q")];
+        history.push(Message {
+            role: Role::Assistant,
+            content: "a".into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        });
+        history.push(Message::user("q2"));
+        assert_eq!(session_turn_parts(&history), None);
+        // So is a request with nothing to say.
+        assert_eq!(session_turn_parts(&[Message::system("s")]), None);
+        assert_eq!(session_turn_parts(&[Message::user("  ")]), None);
+    }
+
+    /// A field the session body cannot carry fails the call, by name —
+    /// never a quiet drop — and the work session's own shape (no
+    /// temperature, text output, its own tools) passes.
+    #[test]
+    fn a_session_turn_refuses_what_its_body_cannot_carry() {
+        let mut r = req(false);
+        r.temperature = None;
+        r.tools = Some(ToolPolicy::Own);
+        assert_eq!(session_turn_refusal(&r), None);
+
+        let mut t = r.clone();
+        t.temperature = Some(0.0);
+        assert!(
+            session_turn_refusal(&t)
+                .unwrap()
+                .contains("declared temperature on a Hermes SESSION turn")
+        );
+        let mut j = r.clone();
+        j.json_mode = true;
+        assert!(
+            session_turn_refusal(&j)
+                .unwrap()
+                .contains("response_format")
+        );
+        let mut n = r.clone();
+        n.tools = None;
+        assert!(session_turn_refusal(&n).unwrap().contains("tools: none"));
+        // Effort is the documented dial: it travels nowhere on this arm and
+        // refuses nothing.
+        let mut e = r.clone();
+        e.effort = Some("high".into());
+        assert_eq!(session_turn_refusal(&e), None);
     }
 
     #[test]

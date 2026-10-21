@@ -7,6 +7,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 
+use serde_json::json;
 use talaria_agent_auth::now_ms;
 use talaria_api_facades::google::agent::{
     PrincipalKind, SaveAgentConnection, save_agent_connection, take_agent_oauth_state,
@@ -16,9 +17,12 @@ use talaria_api_facades::google::oauth::{
     WORKSPACE_SCOPES, exchange_google_tokens, google_agent_connect_redirect_uri,
     google_integration_enabled, oauth_relocation, query_pairs,
 };
+use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::percent_encode;
 use talaria_error::internal;
-use talaria_session::{STATE_COOKIE, require_agent_manager_by_model, require_user, state_matches};
+use talaria_session::{
+    STATE_COOKIE, actor_of, require_agent_manager_by_model, require_user, state_matches,
+};
 use talaria_state::AppState;
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
@@ -91,12 +95,10 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     // Now the agent is known: the same gate the connect start applied. The
     // state row is already spent, which is right — a refused callback must
     // not leave a replayable one behind.
-    if require_agent_manager_by_model(&state, &headers, &agent_model)
-        .await
-        .is_err()
-    {
-        return back("forbidden");
-    }
+    let manager = match require_agent_manager_by_model(&state, &headers, &agent_model).await {
+        Ok(user) => user,
+        Err(_) => return back("forbidden"),
+    };
 
     let public_url = talaria_auth_config::get_auth_config().public_url;
     let redirect_uri = google_agent_connect_redirect_uri(public_url.as_deref(), &headers, &uri);
@@ -127,7 +129,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             refresh_token: ex.refresh_token.as_deref(),
             access_token: ex.access_token.as_deref(),
             expires_in_seconds: ex.expires_in,
-            connected_by: None,
+            connected_by: Some(&manager.id),
             now_ms: now_ms(),
         },
     )
@@ -136,5 +138,20 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         tracing::error!("[integrations/google/agent] connection save failed: {e}");
         return back("exchange_failed");
     }
+    // A credential swap on an agent is a governance mutation like the
+    // principal PUT beside it: who tied which Google account to which agent.
+    log_audit(
+        &state.pg,
+        AuditEntry {
+            actor: &actor_of(&manager),
+            action: "agent.google_connect",
+            target_type: "agent",
+            target_id: Some(&agent_model),
+            target_label: Some(&agent_model),
+            before: None,
+            after: Some(json!({ "principalKind": "agent", "email": ex.email })),
+        },
+    )
+    .await;
     back("connected")
 }

@@ -7,11 +7,20 @@
 // Agent-authenticated, never session-authenticated (the same door as the
 // git-credential routes). The platform does NOT trust the plugin's clamps:
 // everything is re-clamped and secret-scrubbed HERE, at the boundary, before
-// it touches the tail. Correlation is the plugin's session_id where the
-// platform can use it and the agent's newest live work session otherwise —
-// a documented v1 approximation (turns serialize through one persona, so
-// the newest live run is almost always the right one; exact session pinning
-// is the follow-up).
+// it touches the tail. Correlation is the plugin's `sessionId`: a work
+// session sends every turn on a Hermes session keyed by its RUN id
+// (`session_for_turn`), so the id the plugin reports IS the run, and
+// `live_work_session_for` lands the frame on exactly that run — never on
+// the newest one, which was the wrong one whenever an agent drove two
+// tickets (the thrash brake aborted the wrong run; transcripts mixed). A
+// frame whose session id names no live run of this agent (a chat
+// conversation's id, a finished run) lands nowhere; only a frame that names
+// no key at all — an older plugin, or a session the container minted for a
+// completions turn — takes the newest live session, the v1 approximation
+// kept for the frames that cannot say. The CHIPS follow the same key: they
+// land in the conversation the session id names (for a pinned agent the
+// Hermes session id is the conversation id), and without one only while
+// exactly one turn could be meant.
 
 use axum::Json;
 use axum::extract::State;
@@ -20,7 +29,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::require_agent;
 use talaria_body::truncate_utf16;
-use talaria_error::{house_error, internal};
+use talaria_error::house_error;
 use talaria_state::AppState;
 
 const MAX_FIELD: usize = 2_000;
@@ -34,6 +43,18 @@ fn clamp_field(v: Option<&serde_json::Value>) -> Option<String> {
 /// of the plugin's payload go through.
 fn scrub(text: &str) -> String {
     talaria_api_facades::runs::defs::work_session::scrub_secrets(text)
+}
+
+/// The session the plugin named, when it is a key Talaria could have minted:
+/// a UUID — a work session's run id, or a pinned chat's conversation id.
+/// Anything else (blank, or an id the container made up for a completions
+/// turn) is "the frame cannot say", and the caller falls back to its
+/// newest-session read for it rather than asking the database to cast it.
+fn named_session(body: &serde_json::Value) -> Option<&str> {
+    body.get("sessionId")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| uuid::Uuid::parse_str(s).is_ok())
 }
 
 /// The chips one completed tool call implies — read from SCRUBBED text.
@@ -100,19 +121,29 @@ pub async fn post(
             .ok()
             .and_then(|principal| principal.owner_user_id);
             let agent = &caller.model;
-            match talaria_chips::surface_tool_chips(
+            let hint = talaria_chips::conversation_hint(&parsed);
+            match talaria_chips::surface_tool_chips_in(
                 &state.pg,
                 redis,
                 &caller.model,
                 owner.as_deref(),
+                hint.as_deref(),
                 chips,
             )
             .await
             {
-                Ok(Some(_)) => {}
+                Ok(talaria_chips::Target::Found(_)) => {}
+                // Several turns and no session named: the chips are dropped
+                // rather than guessed onto somebody else's thread. The event
+                // itself still lands below — the watch frame is keyed by the
+                // run, not the conversation.
+                Ok(talaria_chips::Target::Ambiguous { turns }) => tracing::warn!(
+                    "[tool-events] chips from {tool} for {agent}: {turns} turns live and no \
+                     session named — dropped"
+                ),
                 // Chips computed but nowhere to land: no streaming turn and
                 // nothing recent — a silent drop without this line.
-                Ok(None) => tracing::warn!(
+                Ok(talaria_chips::Target::Nowhere) => tracing::warn!(
                     "[tool-events] chips from {tool} for {agent} had no turn to land on — dropped"
                 ),
                 Err(e) => tracing::warn!("[tool-events] chip surface failed: {e}"),
@@ -147,22 +178,39 @@ pub async fn post(
                 .await;
         }
     }
-    // The newest LIVE work session for this agent — the run whose tail this
-    // frame joins. None live: the frame has nowhere to land (the session
-    // ended); dropped quietly, same as the plugin's own failure contract.
-    let run_id: Option<String> = match sqlx::query_scalar(
-        "select id::text from runs \
-         where kind = 'work-session' and state in ('queued', 'running', 'awaiting') \
-           and input->>'agentModel' = $1 \
-         order by created_at desc limit 1",
-    )
-    .bind(&caller.model)
-    .fetch_optional(&state.pg)
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => return Ok(internal("[tool-events] run lookup failed", e)),
-    };
+    // THE RUN WHOSE TAIL THIS FRAME JOINS. By the session the plugin named
+    // when it named one — exact, and `None` when that session is not a live
+    // work session of this agent (a chat's frames stay out of the run) — and
+    // only for a frame that could not say, the agent's newest live session.
+    // None either way: the frame has nowhere to land (the session ended);
+    // dropped quietly, same as the plugin's own failure contract.
+    let run_id: Option<String> = match named_session(&parsed) {
+        Some(session_id) => {
+            talaria_api_facades::runs::defs::work_session::live_work_session_for(
+                &state.pg,
+                &caller.model,
+                session_id,
+            )
+            .await
+        }
+        None => {
+            sqlx::query_scalar(
+                "select id::text from runs \
+                 where kind = 'work-session' and state in ('queued', 'running', 'awaiting') \
+                   and input->>'agentModel' = $1 \
+                 order by created_at desc limit 1",
+            )
+            .bind(&caller.model)
+            .fetch_optional(&state.pg)
+            .await
+        }
+    }
+    .unwrap_or_else(|e| {
+        // A lookup that failed is a frame that cannot land, not a 500 at a
+        // door whose contract is fire-and-forget; the line says why.
+        tracing::warn!("[tool-events] run lookup failed: {e}");
+        None
+    });
     let Some(run_id) = run_id else {
         return Ok(Json(json!({ "ok": true, "landed": false })).into_response());
     };
@@ -207,6 +255,25 @@ pub async fn post(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE FRAME NAMES ITS RUN. A session id Talaria minted — a work
+    /// session's run id — is the key the lookup asks by, exactly as sent;
+    /// whatever the container minted for a turn Talaria did not key, or
+    /// nothing at all, is "cannot say" and takes the newest-session read.
+    #[test]
+    fn a_frame_is_keyed_by_the_session_it_names_and_only_a_minted_key_counts() {
+        let run = "7b1e4c1a-9f8d-8a1b-9c2d-3e4f5a6b7c8d";
+        let named = json!({ "sessionId": format!("  {run} "), "toolName": "terminal" });
+        assert_eq!(named_session(&named), Some(run));
+        for cannot_say in [
+            json!({ "toolName": "terminal" }),
+            json!({ "sessionId": "", "toolName": "terminal" }),
+            json!({ "sessionId": "api-7f3a", "toolName": "terminal" }),
+            json!({ "sessionId": 42, "toolName": "terminal" }),
+        ] {
+            assert_eq!(named_session(&cannot_say), None, "{cannot_say}");
+        }
+    }
 
     /// A KEY THE AGENT ECHOED NEVER REACHES A CHIP. The chip is the
     /// persisting half of this door — it is written onto the message row and

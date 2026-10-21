@@ -6,9 +6,14 @@
 //     connected-account headers on per-user servers)
 //   · FILTERS tools/list down to the allowed set
 //   · REJECTS tools/call outside it
-//   · ANSWERS a brace-led body that isn't valid JSON with JSON-RPC -32700,
-//     so a malformed tools/call cannot ride the raw pass-through around
-//     the two gates above
+//   · ANSWERS any body that isn't valid JSON with JSON-RPC -32700 (a leading
+//     UTF-8 BOM is stripped first), so nothing unparsed is ever forwarded
+//     with credentials attached around the two gates above
+//   · REFUSES resources/*, prompts/* and completion/* for an agent holding a
+//     tool subset (-32601, recorded): a subset is a statement about what the
+//     agent may reach, and those surfaces reach past it
+//   · relays through a client that never follows a redirect and re-checks
+//     the address it dials; a 3xx from upstream is a 502, not a hop
 //   · ANSWERS IN-HOUSE for a granted server nobody connected yet: a real
 //     handshake, the cached catalog, and -32001 with the one sentence that
 //     says who connects it and where (registry `McpAccess::NotConnected`,
@@ -20,6 +25,12 @@
 //     members included — as one row in mcp_tool_calls (who, which server and
 //     tool, outcome, latency, the error sentence scrubbed of the arguments;
 //     never arguments or results), off the hot path (mcp::calls)
+//   · BINDS an upstream session to the agent it was minted for: the
+//     `mcp-session-id` an `initialize` answer carries is recorded against the
+//     caller (Redis, 24 h, refreshed on use), and a later request presenting
+//     a session recorded for ANOTHER agent is refused (-32602) rather than
+//     relayed — two agents sharing an org credential cannot ride each
+//     other's sessions; a session the gateway never saw passes through
 // so a hand-edited agent config can never exceed what the registry granted.
 
 use axum::Json;
@@ -27,6 +38,7 @@ use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
+use redis::AsyncCommands;
 use serde_json::{Value, json};
 use talaria_agent_auth::{AgentSubject, presented, require_agent, subject_model};
 use talaria_api_facades::mcp::calls::{
@@ -35,7 +47,9 @@ use talaria_api_facades::mcp::calls::{
 };
 use talaria_api_facades::mcp::jsonrpc::rpc_error;
 use talaria_api_facades::mcp::not_connected::{NotConnected, browser_base, house_answer};
-use talaria_api_facades::mcp::registry::{McpAccess, effective_mcp_for, parse_mcp_response};
+use talaria_api_facades::mcp::registry::{
+    McpAccess, McpServer, effective_mcp_for, parse_mcp_response,
+};
 use talaria_error::{house_error, internal, upstream_error_message};
 use talaria_session::secretbox_or_500;
 use talaria_state::AppState;
@@ -78,6 +92,74 @@ fn gate(rpc: Option<&Value>, tools: Option<&Vec<String>>) -> Option<Response> {
     )
 }
 
+/// The surfaces a tool SUBSET keeps closed: resources, prompts and
+/// completion relay with the injected credential and carry no tool name
+/// for the gate to read, so an admin who narrowed an agent to one tool would
+/// otherwise have opened every resource on the server to it. An agent with
+/// no subset keeps today's relay; everything else (initialize, ping,
+/// notifications, logging) is protocol and passes.
+fn method_gate(rpc: Option<&Value>, tools: Option<&Vec<String>>) -> Option<Response> {
+    tools?;
+    let method = rpc?.get("method").and_then(Value::as_str)?;
+    if !method_closed_by_subset(method) {
+        return None;
+    }
+    let id = rpc
+        .and_then(|r| r.get("id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    Some(
+        (
+            StatusCode::OK,
+            Json(rpc_error(&id, -32601, &method_refusal(method))),
+        )
+            .into_response(),
+    )
+}
+
+fn method_closed_by_subset(method: &str) -> bool {
+    method.starts_with("resources/")
+        || method.starts_with("prompts/")
+        || method.starts_with("completion/")
+}
+
+fn method_refusal(method: &str) -> String {
+    format!("method \"{method}\" is not available to this agent here (it holds a tool subset)")
+}
+
+/// Where a spent credential is about to go, as a secret's `allowed_hosts`
+/// sees it: the upstream URL's host for a remote server, or a scheme token
+/// for a server this process answers itself — `talaria-builtin://`,
+/// `talaria-workbench://`, `talaria-pkg://<name>`, `talaria-app://<slug>` —
+/// which an allowlist names verbatim to admit. A URL with no readable host
+/// yields the URL itself, which no allowlist entry matches: fail closed.
+fn spend_destination(server: &McpServer) -> String {
+    if server.builtin {
+        return "talaria-builtin://".into();
+    }
+    if let Some(slug) = &server.app_slug {
+        return format!("talaria-app://{}", slug.to_lowercase());
+    }
+    if server.package.is_some() {
+        return format!("talaria-pkg://{}", server.name.to_lowercase());
+    }
+    if server.url.starts_with("talaria-workbench://") {
+        return "talaria-workbench://".into();
+    }
+    reqwest::Url::parse(&server.url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.trim_end_matches('.').to_lowercase()))
+        .unwrap_or_else(|| server.url.to_lowercase())
+}
+
+/// A leading UTF-8 byte-order mark is not JSON, but a well-formed body
+/// behind one is; strip it so the body parses — and so a BOM can never be
+/// the thing that makes a body "unparseable" and skip the gates.
+fn strip_bom(body: &[u8]) -> &[u8] {
+    body.strip_prefix(b"\xEF\xBB\xBF".as_slice())
+        .unwrap_or(body)
+}
+
 /// The in-house answer for a granted server whose account is not connected,
 /// framed the way `gate` frames its refusal — a JSON-RPC body over HTTP 200,
 /// which every MCP client hands to the model as the call's error — and a 202
@@ -98,43 +180,33 @@ fn not_connected_reply(nc: &NotConnected, rpc: Option<&Value>, base: &str) -> Re
     }
 }
 
-/// A body that starts (ignoring whitespace) with an opening brace is a
-/// JSON-RPC attempt; one that failed to parse is a syntax error in that
-/// attempt, and forwarding it verbatim would carry a malformed tools/call
-/// straight past the tool gate and the spend boundary below. Answer it
-/// here instead, as a JSON-RPC parse error over HTTP 200 — the same shape
-/// the tool gate answers with — and log a bounded diagnostic. Every other
-/// unparseable shape (an empty body, SSE framing, a `[`-led batch, a
-/// ping) keeps the pass-through untouched, so `None` means exactly
-/// "forward as before". `server_name` only names the log line; tests
-/// drive the rest with the raw bytes and serde's own error.
-fn parse_error_response(
-    body: &[u8],
-    err: &serde_json::Error,
-    server_name: &str,
-) -> Option<Response> {
-    if !body.trim_ascii().starts_with(b"{".as_slice()) {
-        return None;
-    }
+/// A body that failed to parse is answered here, never forwarded: only a
+/// parsed body (an object or an array) runs the tool gate, the spend
+/// boundary and the list filter, so forwarding anything else verbatim would
+/// carry a malformed — or merely BOM-prefixed — tools/call past all three
+/// with the credentials attached. The answer is a JSON-RPC parse error over
+/// HTTP 200, the same shape the tool gate answers with, plus a bounded
+/// diagnostic in the log. An empty body is a parse error too. `server_name`
+/// only names the log line; tests drive the rest with the raw bytes and
+/// serde's own error.
+fn parse_error_response(body: &[u8], err: &serde_json::Error, server_name: &str) -> Response {
     let len = body.len();
     let diagnostic = parse_diagnostic(body, err);
     tracing::warn!("[mcp/gw:{server_name}] unparseable body ({len} bytes): {err} | {diagnostic}");
-    Some(
-        (
-            StatusCode::OK,
-            Json(rpc_error(
-                &Value::Null,
-                -32700,
-                &format!(
-                    "request body is not valid JSON: {err}. The call was refused here, not \
-                     forwarded: the hexdump below is what the caller sent, so the fix is on the \
-                     sender's serialization (nested tool arguments need one \\ escape per JSON \
-                     layer). {diagnostic}"
-                ),
-            )),
-        )
-            .into_response(),
+    (
+        StatusCode::OK,
+        Json(rpc_error(
+            &Value::Null,
+            -32700,
+            &format!(
+                "request body is not valid JSON: {err}. The call was refused here, not \
+                 forwarded: the hexdump below is what the caller sent, so the fix is on the \
+                 sender's serialization (nested tool arguments need one \\ escape per JSON \
+                 layer). {diagnostic}"
+            ),
+        )),
     )
+        .into_response()
 }
 
 /// The bounded diagnostic for a JSON parse failure: the byte offset of the
@@ -220,6 +292,122 @@ fn batch_refusal(rpc: Option<&Value>) -> Option<Response> {
     Some((StatusCode::OK, Json(body)).into_response())
 }
 
+// ── Session binding ─────────────────────────────────────────────────────────
+
+/// How long a recorded session binding lives without being used — longer
+/// than any upstream keeps an idle session, so the binding never expires
+/// before the session it guards.
+const SESSION_TTL_SECONDS: u64 = 24 * 60 * 60;
+/// A session id longer than this is never recorded (an upstream mints
+/// opaque tokens, not documents) and never looked up, so it cannot be used
+/// to grow keys without bound.
+const SESSION_ID_MAX: usize = 512;
+/// The refusal a foreign session earns — the agent's words, not the other
+/// agent's name.
+const SESSION_FOREIGN: &str = "this session belongs to another agent";
+
+fn session_key(server_name: &str, session_id: &str) -> String {
+    format!("talaria:mcp-session:v1:{server_name}:{session_id}")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionVerdict {
+    /// Nothing recorded: an upstream can mint a session out of band, so an
+    /// unknown id passes through as it always did.
+    Unknown,
+    /// Recorded for this very agent.
+    Own,
+    /// Recorded for another agent: refused.
+    Foreign,
+}
+
+/// THE BINDING RULE, pure: what the record says against who is asking.
+fn session_verdict(recorded: Option<&str>, caller: &str) -> SessionVerdict {
+    match recorded {
+        None => SessionVerdict::Unknown,
+        Some(owner) if owner == caller => SessionVerdict::Own,
+        Some(_) => SessionVerdict::Foreign,
+    }
+}
+
+/// Whether the session id a request presents belongs to the caller. A
+/// session of the caller's own has its binding refreshed on the way. Redis
+/// out of reach reads as Unknown — failing open like every Redis-backed
+/// gate in this house, and said so in the log.
+async fn presented_session_verdict(
+    state: &AppState,
+    server_name: &str,
+    session_id: &str,
+    caller: &str,
+) -> SessionVerdict {
+    if session_id.is_empty() || session_id.len() > SESSION_ID_MAX {
+        return SessionVerdict::Unknown;
+    }
+    let mut redis = match state.redis().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("[mcp/gw:{server_name}] session binding unavailable (redis): {e}");
+            return SessionVerdict::Unknown;
+        }
+    };
+    let key = session_key(server_name, session_id);
+    let recorded: Option<String> = match redis.get(&key).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("[mcp/gw:{server_name}] session binding unavailable (redis): {e}");
+            return SessionVerdict::Unknown;
+        }
+    };
+    let verdict = session_verdict(recorded.as_deref(), caller);
+    if verdict == SessionVerdict::Own {
+        let _: Result<bool, _> = redis.expire(&key, SESSION_TTL_SECONDS as i64).await;
+    }
+    verdict
+}
+
+/// Record the session an upstream `initialize` answer minted for this
+/// caller. A failure to record leaves the session unknown, which passes.
+async fn bind_session(state: &AppState, server_name: &str, session_id: &str, caller: &str) {
+    if session_id.is_empty() || session_id.len() > SESSION_ID_MAX {
+        return;
+    }
+    match state.redis().await {
+        Ok(mut redis) => {
+            if let Err(e) = redis
+                .set_ex::<_, _, ()>(
+                    session_key(server_name, session_id),
+                    caller,
+                    SESSION_TTL_SECONDS,
+                )
+                .await
+            {
+                tracing::warn!("[mcp/gw:{server_name}] session binding not recorded (redis): {e}");
+            }
+        }
+        Err(e) => {
+            tracing::warn!("[mcp/gw:{server_name}] session binding not recorded (redis): {e}");
+        }
+    }
+}
+
+/// The refusal for a session recorded for another agent, framed like the
+/// tool gate's: JSON-RPC -32602 over HTTP 200 with the request's own id.
+fn foreign_session_response(rpc: Option<&Value>) -> Response {
+    let id = rpc
+        .and_then(|r| r.get("id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    (
+        StatusCode::OK,
+        Json(rpc_error(&id, -32602, SESSION_FOREIGN)),
+    )
+        .into_response()
+}
+
+fn is_initialize(rpc: Option<&Value>) -> bool {
+    rpc.and_then(|r| r.get("method")).and_then(Value::as_str) == Some("initialize")
+}
+
 pub async fn post(
     State(state): State<AppState>,
     Path(server_name): Path<String>,
@@ -240,7 +428,8 @@ pub async fn post(
     let name = caller.model.clone();
     // Parsed ONCE: the record, the in-house answer and the gate below all
     // read this. A failure is kept for the parse-error answer further down.
-    let parsed = serde_json::from_slice::<Value>(&body);
+    let body = strip_bom(&body);
+    let parsed = serde_json::from_slice::<Value>(body);
     // One log per tools/call the body carries — the body itself, or each
     // tools/call member of a batch.
     let members = recorded_members(parsed.as_ref().ok());
@@ -337,18 +526,34 @@ pub async fn post(
     // From here the body is at most one tools/call.
     let mut call: Option<CallLog> = logs.into_iter().next();
 
-    // A body that parses runs the gate and the spend boundary below. One
-    // that doesn't still passes through verbatim — EXCEPT a brace-led body,
-    // a JSON-RPC attempt with a syntax error in it, which must not skip
-    // them: it is answered as a JSON-RPC parse error instead (above).
+    // Only a body that parsed goes any further: it runs the gate and the
+    // spend boundary below. One that didn't is answered as a JSON-RPC parse
+    // error (above) — forwarding it verbatim is how a malformed tools/call
+    // used to skip both.
     let mut rpc: Option<Value> = match parsed {
         Ok(v) => Some(v),
-        Err(err) => match parse_error_response(&body, &err, &server_name) {
-            Some(resp) => return Ok(resp),
-            None => None,
-        },
+        Err(err) => return Ok(parse_error_response(body, &err, &server_name)),
     };
-    let mut body_text = String::from_utf8_lossy(&body).into_owned();
+    let mut body_text = String::from_utf8_lossy(body).into_owned();
+
+    // The session gate: a session id this gateway recorded for another
+    // agent is refused before anything is relayed on it. Agents sharing an
+    // org credential look alike to the upstream; only the gateway knows
+    // which of them the session was minted for.
+    let presented_session = headers
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    if let Some(sid) = presented_session.as_deref()
+        && presented_session_verdict(&state, &server_name, sid, &name).await
+            == SessionVerdict::Foreign
+    {
+        tracing::warn!(
+            "[mcp/gw:{server_name}] {name} presented a session bound to another agent; refused"
+        );
+        note(&call, Outcome::Denied, 200, Some(SESSION_FOREIGN));
+        return Ok(foreign_session_response(rpc.as_ref()));
+    }
 
     // The call gate: reject disallowed tools before the upstream ever
     // hears about them.
@@ -364,6 +569,23 @@ pub async fn post(
         );
         return Ok(resp);
     }
+    // The method gate: a tool subset closes the resource, prompt and
+    // completion surfaces too. Recorded under the request's own method, so
+    // the record shows what a narrowed agent reached for.
+    if let Some(resp) = method_gate(rpc.as_ref(), eff.tools.as_ref()) {
+        if let Some(r) = rpc.as_ref()
+            && let Some(method) = r.get("method").and_then(Value::as_str)
+            && let Some(c) =
+                CallLog::begin_refused_method(&state.pg, &subject, &server_name, r, started)
+        {
+            c.with_server(&eff.server.id).finish(
+                Outcome::Denied,
+                Some(200),
+                Some(&method_refusal(method)),
+            );
+        }
+        return Ok(resp);
+    }
 
     // THE BOUNDARY THAT SPENDS A CREDENTIAL. An agent holds
     // `«secret:deploy.github_pat»` and passes it wherever the value would go;
@@ -376,20 +598,26 @@ pub async fn post(
     // re-serializes, and only when something was actually spent. An
     // unresolved handle is reported to the OPERATOR and never back to the
     // model: a caller that learns which names exist has been handed a map of
-    // the workspace's credentials.
+    // the workspace's credentials. The boundary takes the SUBJECT (a legacy
+    // shared-key caller spends nothing) and the DESTINATION (a secret's
+    // allowlist must cover the server the value is going to, not just the
+    // hosts the arguments mention).
     if let Some(rpc_mut) = rpc.as_mut() {
-        let spend = match spend_handles_in_tool_call(&state.pg, &sb, rpc_mut, &name).await {
-            Ok(s) => s,
-            Err(e) => {
-                note(
-                    &call,
-                    Outcome::SpendError,
-                    500,
-                    Some("the credential spend boundary failed; the call was not forwarded"),
-                );
-                return Ok(internal("[mcp/gw] spend boundary failed", e));
-            }
-        };
+        let destination = spend_destination(&eff.server);
+        let spend =
+            match spend_handles_in_tool_call(&state.pg, &sb, rpc_mut, &subject, &destination).await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    note(
+                        &call,
+                        Outcome::SpendError,
+                        500,
+                        Some("the credential spend boundary failed; the call was not forwarded"),
+                    );
+                    return Ok(internal("[mcp/gw] spend boundary failed", e));
+                }
+            };
         let tool = called_tool(Some(rpc_mut));
         for u in &spend.used {
             tracing::warn!(
@@ -532,12 +760,16 @@ pub async fn post(
 
     // Upstream URLs are admin-entered, not first-party: validate the hop
     // through the same door every other registry URL walks (mcp-registry's
-    // session path uses safeFetch). The relay itself stays a raw pass-through
+    // session path uses safeFetch). The relay itself stays a streaming
     // fetch — a streamable-HTTP response can be an endless SSE stream, which
-    // safeFetch's response cap would buffer and kill — so the URL is checked
-    // BEFORE the hop and the response streamed as before. The BUILTIN toolkit
-    // is this process's own loopback listener and skips the check (loopback is
-    // exactly what it refuses).
+    // safeFetch's response cap would buffer and kill — but it goes out on
+    // the RELAY client: redirects are never followed (a 3xx is a 502 below,
+    // so a compromised upstream cannot bounce the api onto the metadata
+    // service or a loopback port and have the answer relayed to the model)
+    // and the address dialled is re-checked at connect time. The BUILTIN
+    // toolkit is this process's own loopback listener and a package server
+    // its container: both skip the check and keep the first-party client
+    // (loopback and container DNS are exactly what the guard refuses).
     if !eff.server.builtin
         && eff.server.package.is_none()
         && talaria_safe_fetch::assert_fetchable_url(&eff.server.url)
@@ -560,11 +792,12 @@ pub async fn post(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
     };
-    let mut req = talaria_api_facades::gateway::provider::http()
-        .post(&eff.server.url)
-        .timeout(std::time::Duration::from_millis(
-            (eff.server.timeout_secs.unwrap_or(120) as u64) * 1000,
-        ));
+    let mut req =
+        relay_http(&eff.server)
+            .post(&eff.server.url)
+            .timeout(std::time::Duration::from_millis(
+                (eff.server.timeout_secs.unwrap_or(120) as u64) * 1000,
+            ));
     req = req.header(
         "content-type",
         hdr("content-type").unwrap_or_else(|| "application/json".into()),
@@ -604,6 +837,16 @@ pub async fn post(
             return Ok(house_error(StatusCode::BAD_GATEWAY, "upstream unreachable"));
         }
     };
+    // The session an initialize answer minted is this caller's from here on.
+    if is_initialize(rpc.as_ref())
+        && upstream.status().is_success()
+        && let Some(sid) = upstream
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+    {
+        bind_session(&state, &server_name, sid, &name).await;
+    }
     Ok(relay(
         upstream,
         rpc.as_ref(),
@@ -695,12 +938,19 @@ pub async fn get(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
     };
-    let mut req = talaria_api_facades::gateway::provider::http().get(&eff.server.url);
+    let mut req = relay_http(&eff.server).get(&eff.server.url);
     req = req.header(
         "accept",
         hdr("accept").unwrap_or_else(|| "text/event-stream".into()),
     );
     if let Some(session) = hdr("mcp-session-id") {
+        // Same session gate as POST; a stream has no JSON-RPC envelope to
+        // answer in, so the refusal is the HTTP one.
+        if presented_session_verdict(&state, &server_name, &session, subject_model(&subject)).await
+            == SessionVerdict::Foreign
+        {
+            return Ok(house_error(StatusCode::FORBIDDEN, SESSION_FOREIGN));
+        }
         req = req.header("mcp-session-id", session);
     }
     for (k, v) in &eff.upstream_headers {
@@ -722,8 +972,15 @@ pub async fn get(
         }
     };
     // A failed notification-stream hop relays the same way as POST: fixed
-    // sentence, verbatim to the log. Only a live 200 SSE stream passes.
+    // sentence, verbatim to the log. Only a live 200 SSE stream passes; a
+    // redirect is a hop this gateway does not make.
     let status = upstream.status().as_u16();
+    if (300..400).contains(&status) {
+        tracing::warn!(
+            "[mcp-gw-get:{server_name}] upstream answered {status} with a redirect; refused"
+        );
+        return Ok(house_error(StatusCode::BAD_GATEWAY, REDIRECT_REFUSED));
+    }
     if !(200..300).contains(&status) {
         let text = upstream.text().await.unwrap_or_default();
         talaria_error::log_upstream_error(&format!("mcp-gw-get:{server_name}"), status, &text);
@@ -745,6 +1002,24 @@ pub async fn get(
         .unwrap_or_else(|e| internal("[fleet] response build failed", e)))
 }
 
+/// The sentence a redirecting upstream earns. Neither relay client follows
+/// one; the first-party client would, but the builtin toolkit and a package
+/// container never answer with one.
+const REDIRECT_REFUSED: &str =
+    "upstream answered with a redirect, which the gateway does not follow";
+
+/// The client a relay hop goes out on: the first-party client for this
+/// process's own builtin toolkit and a package server's container (loopback
+/// and container DNS, which the guard refuses), the guarded relay client —
+/// no redirects, connect-time address checks — for every registered URL.
+fn relay_http(server: &McpServer) -> reqwest::Client {
+    if server.builtin || server.package.is_some() {
+        talaria_api_facades::gateway::provider::http()
+    } else {
+        talaria_safe_fetch::relay_client()
+    }
+}
+
 /// `call` is the tools/call's record, when this is one: a failed hop writes it
 /// here, and a 2xx answer carries it inside the streamed body, which writes it
 /// when the stream ends — the relay itself still never buffers.
@@ -756,6 +1031,17 @@ async fn relay(
     call: Option<CallLog>,
 ) -> Response {
     let status = upstream.status().as_u16();
+    // A redirect is not followed and not relayed: the Location is a hop the
+    // guard never validated, and the body of a 3xx is nothing to a model.
+    if (300..400).contains(&status) {
+        tracing::warn!(
+            "[mcp-gw:{server_name}] upstream answered {status} with a redirect; refused"
+        );
+        if let Some(c) = &call {
+            c.finish(Outcome::UpstreamError, Some(502), Some(REDIRECT_REFUSED));
+        }
+        return house_error(StatusCode::BAD_GATEWAY, REDIRECT_REFUSED);
+    }
     // HTTP-level failures never relay verbatim: their bodies are written by
     // whatever proxy or server answered, not by the MCP protocol. One check
     // here covers every relay below (tools/list filter, its fallback, the
@@ -820,11 +1106,14 @@ async fn relay(
         .unwrap_or_else(|e| internal("[fleet] response build failed", e))
 }
 
-/// The tools/list filter over JSON or SSE-framed text: `data:` lines are
-/// parsed, filtered, and re-serialized in place (`data: ${JSON.stringify(...)}` with
-/// the single-space separator); anything unparseable passes through
-/// untouched, and a non-SSE body is parsed whole — or passed verbatim when
-/// it isn't parseable either.
+/// The tools/list filter over JSON or SSE-framed text. An SSE body is read
+/// event by event (events end at a blank line): the event's `data:` lines
+/// are joined with newlines as the SSE spec reads them — a server may split
+/// one JSON message over several — parsed, filtered, and re-serialized as
+/// one `data: ${JSON.stringify(...)}` line in place of the originals, the
+/// event's other lines kept; an event whose data does not parse passes
+/// through untouched. A non-SSE body is parsed whole — or passed verbatim
+/// when it isn't parseable either.
 fn filter_bodies(text: &str, allowed: &[String], content_type: &str) -> String {
     fn filter_msg(msg: &mut Value, allowed: &[String]) {
         if let Some(tools) = msg
@@ -840,19 +1129,10 @@ fn filter_bodies(text: &str, allowed: &[String], content_type: &str) -> String {
     }
     if content_type.contains("text/event-stream") {
         return text
-            .split('\n')
-            .map(|line| {
-                let rest = line.strip_prefix("data:");
-                match rest.and_then(|r| serde_json::from_str::<Value>(r.trim()).ok()) {
-                    Some(mut msg) => {
-                        filter_msg(&mut msg, allowed);
-                        format!("data: {msg}")
-                    }
-                    None => line.to_string(),
-                }
-            })
+            .split("\n\n")
+            .map(|event| filter_sse_event(event, allowed, filter_msg))
             .collect::<Vec<_>>()
-            .join("\n");
+            .join("\n\n");
     }
     match parse_mcp_response(text) {
         Some(mut msg) => {
@@ -861,6 +1141,41 @@ fn filter_bodies(text: &str, allowed: &[String], content_type: &str) -> String {
         }
         None => text.to_string(),
     }
+}
+
+/// One SSE event's lines with its `data:` lines joined, parsed and filtered;
+/// the event verbatim when they do not parse as one JSON message.
+fn filter_sse_event(
+    event: &str,
+    allowed: &[String],
+    filter_msg: fn(&mut Value, &[String]),
+) -> String {
+    let lines: Vec<&str> = event.split('\n').collect();
+    let data: Vec<&str> = lines
+        .iter()
+        .filter_map(|l| l.strip_prefix("data:"))
+        .map(|d| d.strip_prefix(' ').unwrap_or(d))
+        .collect();
+    if data.is_empty() {
+        return event.to_string();
+    }
+    let Ok(mut msg) = serde_json::from_str::<Value>(data.join("\n").trim()) else {
+        return event.to_string();
+    };
+    filter_msg(&mut msg, allowed);
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut written = false;
+    for line in lines {
+        if line.starts_with("data:") {
+            if !written {
+                out.push(format!("data: {msg}"));
+                written = true;
+            }
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    out.join("\n")
 }
 
 #[cfg(test)]
@@ -920,6 +1235,52 @@ mod tests {
             },
             tools: None,
         }
+    }
+
+    /// The binding rule: nothing recorded passes (an upstream can mint a
+    /// session out of band), the agent's own session passes, anyone
+    /// else's is refused — and the refusal is framed like the tool
+    /// gate's, with the request's own id and never the owner's name.
+    #[tokio::test]
+    async fn a_session_belongs_to_the_agent_it_was_minted_for() {
+        assert_eq!(session_verdict(None, "research"), SessionVerdict::Unknown);
+        assert_eq!(
+            session_verdict(Some("research"), "research"),
+            SessionVerdict::Own
+        );
+        assert_eq!(
+            session_verdict(Some("research"), "helpdesk"),
+            SessionVerdict::Foreign
+        );
+        // Exact: a prefix or a case change is another agent.
+        assert_eq!(
+            session_verdict(Some("research"), "research-2"),
+            SessionVerdict::Foreign
+        );
+        assert_eq!(
+            session_verdict(Some("Research"), "research"),
+            SessionVerdict::Foreign
+        );
+        assert_eq!(
+            session_key("linear", "abc123"),
+            "talaria:mcp-session:v1:linear:abc123"
+        );
+
+        let rpc = json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": { "name": "search", "arguments": {} } });
+        let v = jsonrpc_of(foreign_session_response(Some(&rpc))).await;
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["error"]["code"], -32602);
+        assert_eq!(v["error"]["message"], SESSION_FOREIGN);
+        assert!(!v.to_string().contains("research"));
+        let v = jsonrpc_of(foreign_session_response(None)).await;
+        assert_eq!(v["id"], Value::Null);
+
+        assert!(is_initialize(Some(
+            &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize" })
+        )));
+        assert!(!is_initialize(Some(&rpc)));
+        assert!(!is_initialize(None));
     }
 
     #[tokio::test]
@@ -1035,8 +1396,7 @@ mod tests {
         body.extend_from_slice(b"b\"}}");
         let err = serde_json::from_slice::<Value>(&body).expect_err("the raw 0x0a is rejected");
 
-        let resp = parse_error_response(&body, &err, "srv")
-            .expect("a brace-led body that fails to parse is answered, not forwarded");
+        let resp = parse_error_response(&body, &err, "srv");
         let v = jsonrpc_of(resp).await;
         assert_eq!(v.pointer("/error/code"), Some(&json!(-32700)));
         assert_eq!(v.pointer("/id"), Some(&Value::Null));
@@ -1056,8 +1416,7 @@ mod tests {
     async fn three_braces_report_the_offset_and_a_bounded_dump() {
         let body = b"{{{";
         let err = serde_json::from_slice::<Value>(body).expect_err("{{{ does not parse");
-        let resp = parse_error_response(body, &err, "srv")
-            .expect("a JSON-RPC attempt with a syntax error is answered");
+        let resp = parse_error_response(body, &err, "srv");
         let v = jsonrpc_of(resp).await;
         assert_eq!(v.pointer("/error/code"), Some(&json!(-32700)));
         let message = v.pointer("/error/message").and_then(Value::as_str).unwrap();
@@ -1074,14 +1433,165 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_empty_body_passes_through_unanswered() {
-        // No brace → not a JSON-RPC attempt → the pass-through stands, so
-        // the batch/ping posture is preserved untouched.
-        let err = serde_json::from_slice::<Value>(&[]).expect_err("an empty body is not JSON");
-        assert!(
-            parse_error_response(&[], &err, "srv").is_none(),
-            "an empty body must not produce a -32700; it forwards as before"
+    async fn an_empty_body_is_a_parse_error_not_a_pass_through() {
+        // Nothing unparsed is forwarded any more: an empty body, a bare
+        // word, SSE framing — each is a -32700 over HTTP 200, never a hop
+        // with credentials attached.
+        for body in [&b""[..], b"ping", b"data: {}\n\n", b"  \n"] {
+            let err = serde_json::from_slice::<Value>(body).expect_err("does not parse");
+            let v = jsonrpc_of(parse_error_response(body, &err, "srv")).await;
+            assert_eq!(v.pointer("/error/code"), Some(&json!(-32700)), "{body:?}");
+            assert_eq!(v.pointer("/id"), Some(&Value::Null));
+        }
+    }
+
+    #[test]
+    fn a_bom_is_stripped_so_a_well_formed_body_parses_and_a_bad_one_is_refused() {
+        // The H3 shape: EF BB BF before the brace. serde refuses a BOM and
+        // trim_ascii does not strip it, so without the strip the body was
+        // "unparseable" and rode the pass-through around the gate.
+        let mut body = b"\xEF\xBB\xBF".to_vec();
+        body.extend_from_slice(
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_everything"}}"#,
         );
+        assert!(
+            serde_json::from_slice::<Value>(&body).is_err(),
+            "serde does not accept a BOM on its own"
+        );
+        let rpc = serde_json::from_slice::<Value>(strip_bom(&body)).expect("parses once stripped");
+        assert_eq!(
+            rpc.pointer("/params/name"),
+            Some(&json!("delete_everything"))
+        );
+        // …and the gate now sees it.
+        let tools = Some(vec!["search".to_string()]);
+        assert!(gate(Some(&rpc), tools.as_ref()).is_some());
+        // A BOM in front of garbage is still garbage; nothing else is touched.
+        assert!(serde_json::from_slice::<Value>(strip_bom(b"\xEF\xBB\xBF{{{")).is_err());
+        assert_eq!(strip_bom(b"{}"), b"{}");
+        assert_eq!(strip_bom(b"\xEF\xBB"), b"\xEF\xBB");
+    }
+
+    #[tokio::test]
+    async fn a_tool_subset_closes_resources_prompts_and_completion() {
+        let subset = Some(vec!["search".to_string()]);
+        for method in [
+            "resources/read",
+            "resources/list",
+            "resources/templates/list",
+            "prompts/get",
+            "prompts/list",
+            "completion/complete",
+        ] {
+            let rpc = json!({ "jsonrpc": "2.0", "id": 3, "method": method, "params": {} });
+            let resp = method_gate(Some(&rpc), subset.as_ref())
+                .unwrap_or_else(|| panic!("{method} is refused under a subset"));
+            assert_eq!(resp.status(), StatusCode::OK);
+            let v = jsonrpc_of(resp).await;
+            assert_eq!(v.pointer("/error/code"), Some(&json!(-32601)));
+            assert_eq!(v.pointer("/id"), Some(&json!(3)));
+            assert_eq!(
+                v.pointer("/error/message").and_then(Value::as_str),
+                Some(method_refusal(method).as_str())
+            );
+            // No subset: today's relay.
+            assert!(
+                method_gate(Some(&rpc), None).is_none(),
+                "{method} relays without a subset"
+            );
+        }
+        // Protocol chatter passes under a subset; so do the tool methods
+        // (which have their own gate and filter).
+        for method in [
+            "initialize",
+            "ping",
+            "notifications/initialized",
+            "logging/setLevel",
+            "tools/list",
+            "tools/call",
+        ] {
+            let rpc = json!({ "jsonrpc": "2.0", "id": 1, "method": method });
+            assert!(
+                method_gate(Some(&rpc), subset.as_ref()).is_none(),
+                "{method}"
+            );
+        }
+        assert!(method_gate(None, subset.as_ref()).is_none());
+        assert!(method_gate(Some(&json!([])), subset.as_ref()).is_none());
+    }
+
+    #[test]
+    fn the_spend_destination_is_the_host_or_a_first_party_token() {
+        let nc = not_connected(talaria_api_facades::mcp::not_connected::ConnectScope::PerUser);
+        let remote = nc.server.clone();
+        assert_eq!(spend_destination(&remote), "mcp.notion.com");
+        let mut odd = remote.clone();
+        odd.url = "https://API.Example.COM.:8443/mcp".into();
+        assert_eq!(spend_destination(&odd), "api.example.com");
+        let mut builtin = remote.clone();
+        builtin.builtin = true;
+        assert_eq!(spend_destination(&builtin), "talaria-builtin://");
+        let mut app = remote.clone();
+        app.app_slug = Some("CRM".into());
+        assert_eq!(spend_destination(&app), "talaria-app://crm");
+        let mut pkg = remote.clone();
+        pkg.package = Some(json!({ "kind": "npm" }));
+        pkg.name = "GitHub-MCP".into();
+        assert_eq!(spend_destination(&pkg), "talaria-pkg://github-mcp");
+        let mut wb = remote.clone();
+        wb.url = "talaria-workbench://".into();
+        assert_eq!(spend_destination(&wb), "talaria-workbench://");
+        // No readable host: the URL itself, which no allowlist entry matches.
+        let mut broken = remote.clone();
+        broken.url = "not a url".into();
+        assert_eq!(spend_destination(&broken), "not a url");
+        // A token admits only when the allowlist names it verbatim.
+        use talaria_workspace_secrets::host_allowed;
+        let allowed = vec![
+            "github.com".to_string(),
+            "talaria-pkg://github-mcp".to_string(),
+        ];
+        assert!(host_allowed("talaria-pkg://github-mcp", &allowed));
+        assert!(!host_allowed("talaria-pkg://other", &allowed));
+        assert!(!host_allowed("mcp.notion.com", &allowed));
+    }
+
+    #[test]
+    fn the_list_filter_reads_multi_line_sse_data_frames() {
+        let allowed = vec!["search".to_string()];
+        let reply = json!({ "jsonrpc": "2.0", "id": 1, "result": { "tools": [
+            { "name": "search" }, { "name": "delete_everything" }
+        ] } });
+        // One event, its JSON split over two data: lines (legal SSE) — the
+        // shape that used to leave the whole catalog unfiltered.
+        let pretty = serde_json::to_string_pretty(&reply).unwrap();
+        let framed: String = pretty
+            .lines()
+            .map(|l| format!("data: {l}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = format!("event: message\nid: 7\n{framed}\n\n");
+        let out = filter_bodies(&body, &allowed, "text/event-stream");
+        assert!(out.starts_with("event: message\nid: 7\ndata: "), "{out}");
+        assert!(!out.contains("delete_everything"), "{out}");
+        assert!(out.contains("\"search\""), "{out}");
+        assert_eq!(
+            out.matches("data:").count(),
+            1,
+            "one data line replaces the split ones: {out}"
+        );
+        assert!(
+            out.ends_with("\n\n"),
+            "the event terminator survives: {out}"
+        );
+        // A single-line frame and an unparseable event behave as before.
+        let single = format!("data: {reply}\n\ndata: not json\n\n");
+        let out = filter_bodies(&single, &allowed, "text/event-stream");
+        assert!(!out.contains("delete_everything"));
+        assert!(out.contains("data: not json"));
+        // A plain JSON body is filtered whole.
+        let out = filter_bodies(&reply.to_string(), &allowed, "application/json");
+        assert!(!out.contains("delete_everything"));
     }
 
     #[tokio::test]
@@ -1125,8 +1635,7 @@ mod tests {
             err.to_string().contains("control character"),
             "the failure is the control character: {err}"
         );
-        let resp = parse_error_response(&body, &err, "srv")
-            .expect("a brace-led JSON-RPC attempt is answered, not forwarded");
+        let resp = parse_error_response(&body, &err, "srv");
         let v = jsonrpc_of(resp).await;
         assert_eq!(v.pointer("/error/code"), Some(&json!(-32700)));
         let message = v.pointer("/error/message").and_then(Value::as_str).unwrap();
@@ -1164,8 +1673,7 @@ mod tests {
             err.to_string().contains("control character"),
             "the failure is the control character, not the unicode: {err}"
         );
-        let resp = parse_error_response(&body, &err, "srv")
-            .expect("a brace-led JSON-RPC attempt is answered, not forwarded");
+        let resp = parse_error_response(&body, &err, "srv");
         let v = jsonrpc_of(resp).await;
         assert_eq!(v.pointer("/error/code"), Some(&json!(-32700)));
         let message = v.pointer("/error/message").and_then(Value::as_str).unwrap();
@@ -1190,8 +1698,7 @@ mod tests {
 
         let err = serde_json::from_slice::<Value>(body.as_bytes())
             .expect_err("an unterminated object does not parse");
-        let resp = parse_error_response(body.as_bytes(), &err, "srv")
-            .expect("a brace-led attempt is answered");
+        let resp = parse_error_response(body.as_bytes(), &err, "srv");
         let v = jsonrpc_of(resp).await;
         assert_eq!(v.pointer("/error/code"), Some(&json!(-32700)));
         let message = v.pointer("/error/message").and_then(Value::as_str).unwrap();
@@ -1217,8 +1724,7 @@ mod tests {
         let body = b"{\"a\":1,\n\"b\":2,,}";
         let err =
             serde_json::from_slice::<Value>(&body[..]).expect_err("a doubled comma is refused");
-        let resp =
-            parse_error_response(&body[..], &err, "srv").expect("a brace-led attempt is answered");
+        let resp = parse_error_response(&body[..], &err, "srv");
         let v = jsonrpc_of(resp).await;
         let message = v.pointer("/error/message").and_then(Value::as_str).unwrap();
         assert_eq!(v.pointer("/error/code"), Some(&json!(-32700)));

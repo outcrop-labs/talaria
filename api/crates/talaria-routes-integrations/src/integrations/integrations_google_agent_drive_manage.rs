@@ -1,5 +1,8 @@
-// Agent Drive management. Creating a folder is immediate — cheap and
-// reversible. Moving or renaming mutates the human's Drive, so those queue.
+// Agent Drive management. Creating a folder in the account's own Drive, or
+// inside a folder this agent created, is immediate — cheap and reversible.
+// Creating one inside anybody else's folder queues a `drive_folder_create`:
+// it inherits that folder's sharing, which a person approves. Moving or
+// renaming mutates the human's Drive, so those queue.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -13,7 +16,9 @@ use talaria_agent_auth::{AgentSubject, refuse_legacy, require_agent};
 use talaria_api_facades::google::agent::{resolve_agent_google, resolve_agent_principal};
 use talaria_api_facades::google::drive::create_drive_folder_with_token;
 use talaria_api_facades::google::errors::google_fail;
-use talaria_api_facades::google::pending_actions::{QueueAction, queue_action};
+use talaria_api_facades::google::pending_actions::{
+    QueueAction, queue_action, record_agent_created,
+};
 use talaria_body::{optional_max_string_member, parse, string_member};
 use talaria_error::{house_error, house_error_msg, internal, object_or_400};
 use talaria_realtime_watch::RealtimeDeps;
@@ -46,6 +51,72 @@ pub async fn post_folder(
     {
         return Ok(denied);
     }
+    let parent = parent.filter(|s| !s.is_empty());
+    let needs_approval = match super::integrations_google_agent_docs::parent_needs_approval(
+        &state.pg,
+        &agent_model,
+        parent.as_deref(),
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(internal(
+                "[integrations/google/agent/drive] parent ownership read failed",
+                e,
+            ));
+        }
+    };
+    if needs_approval {
+        let principal = match resolve_agent_principal(&state.pg, &agent_model).await {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(internal(
+                    "[integrations/google/agent/drive] principal read failed",
+                    e,
+                ));
+            }
+        };
+        let mut payload = serde_json::Map::new();
+        payload.insert("name".into(), json!(name));
+        payload.insert("parentId".into(), json!(parent));
+        let summary = format!(
+            "Create Drive folder \"{name}\" in folder {}",
+            parent.as_deref().unwrap_or("")
+        );
+        let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
+        let queued = match queue_action(
+            &state.pg,
+            realtime,
+            &QueueAction {
+                kind: "drive_folder_create",
+                summary: &summary,
+                payload: &Value::Object(payload),
+                agent_model: &agent_model,
+                owner_user_id: principal.owner_user_id.as_deref(),
+                is_org: principal.is_org,
+                principal_kind: principal.kind.as_str(),
+            },
+        )
+        .await
+        {
+            Ok(q) => q,
+            Err(e) => {
+                return Ok(internal(
+                    "[integrations/google/agent/drive] queue failed",
+                    e,
+                ));
+            }
+        };
+        return Ok(super::integrations_google_agent_queue::answer_queued(
+            &state.pg,
+            queued,
+            "A folder in this parent is already waiting for approval — nothing new queued.",
+            "Queued — that parent folder is not this agent's, so the owner approves before the folder is created there.",
+            "Queued — that parent folder is not this agent's, so an admin approves before the folder is created there.",
+        )
+        .await);
+    }
     let sb = state.secretbox().await.unwrap_or_default();
     let Some(google) =
         resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
@@ -56,20 +127,24 @@ pub async fn post_folder(
             "No Google account is connected for this agent (its owner, or the org account).",
         ));
     };
-    match create_drive_folder_with_token(
-        &google.token,
-        &name,
-        parent.as_deref().filter(|s| !s.is_empty()),
-    )
-    .await
-    {
-        Ok(folder) => Ok(Json(json!({
-            "id": folder.id,
-            "name": folder.name,
-            "url": folder.web_view_link,
-            "message": "Created the folder. It can be moved or renamed later, with approval.",
-        }))
-        .into_response()),
+    match create_drive_folder_with_token(&google.token, &name, parent.as_deref()).await {
+        Ok(folder) => {
+            // The agent's own folder: files it creates inside later need no
+            // card, which is what the record says.
+            if let Err(e) = record_agent_created(&state.pg, &agent_model, &folder.id).await {
+                return Ok(internal(
+                    "[integrations/google/agent/drive] created-folder record failed",
+                    e,
+                ));
+            }
+            Ok(Json(json!({
+                "id": folder.id,
+                "name": folder.name,
+                "url": folder.web_view_link,
+                "message": "Created the folder. It can be moved or renamed later, with approval.",
+            }))
+            .into_response())
+        }
         Err(e) => Ok(google_fail(e, "Drive")),
     }
 }

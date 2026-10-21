@@ -25,6 +25,23 @@
 // board — which is the whole workspace, by design — can read the details
 // there. That is a PULL surface someone chose to open, not a push into an
 // inbox and a mailbox.
+//
+// THE BOARD IS RESOLVED BY ITS STORED ID, NEVER BY NAME, AND NEVER REWRITTEN.
+// The old find-by-name path matched ANY live board called "Helpdesk" — a
+// support lead's private team board included — and on every call made it
+// org-wide, moved it to the Talaria team, joined every user as editor and
+// reset its agent policy. An agent key must not be able to re-share a board
+// a person owns, and even the system's own board must keep the membership
+// removals and agent restrictions an admin made. So: the id lives in
+// `app_settings` (`helpdesk_board_id`), the board is created exactly once —
+// org-wide, on the Talaria team, open to every agent — and a stored board
+// that has since been archived or deleted is replaced by a fresh one rather
+// than un-archived.
+//
+// BRAKED AND DEDUPED. Each call files a ticket and notifies every admin, so
+// an agent gets a per-hour budget, and the same (agent, summary) within a
+// day is acknowledged without filing or notifying again — the posture
+// `report_gap` has always had.
 
 use axum::Json;
 use axum::extract::State;
@@ -35,13 +52,13 @@ use talaria_agent_auth::{AgentSubject, require_agent};
 use talaria_api_facades::fleet::describe_agent;
 use talaria_api_facades::runs::define::Authority;
 use talaria_approvals::audience_for;
-use talaria_boards::{
-    create_board, join_everyone_to_board, list_all_boards, set_board_agent_config,
-};
+use talaria_boards::{board_info, create_board, join_everyone_to_board, set_board_agent_config};
 use talaria_body::{optional_max_string_member, parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_gaps::{agent_text_authority, remember_ticket_refusal};
 use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_ratelimit::{brake, rate_limit};
+use talaria_settings::{get_setting, set_setting};
 use talaria_state::AppState;
 use talaria_tasks::{
     AgentIntent, AgentWriteTarget, NewTask, ResolvedTaskId, TaskDeps, agent_ticket_refusal,
@@ -51,8 +68,42 @@ use talaria_teams::create_team;
 
 const HELPDESK: &str = "Helpdesk";
 const TALARIA: &str = "Talaria";
+/// Where the Helpdesk board's id is kept — written once, on creation.
+const HELPDESK_BOARD_KEY: &str = "helpdesk_board_id";
+/// Problem reports an agent may file per hour.
+const PROBLEMS_PER_HOUR: i64 = 10;
+/// The window one (agent, summary) is acknowledged without a second ticket.
+const DEDUPE_WINDOW_SECONDS: i64 = 24 * 60 * 60;
 
+/// The dedupe atom for a summary: lowercase, alphanumerics only, so
+/// punctuation and spacing differences land on the same key.
+fn summary_key(summary: &str) -> String {
+    summary
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .take(200)
+        .collect()
+}
+
+/// The Helpdesk board's id: the stored one when it is still a live board,
+/// else a board created once and remembered. An EXISTING board is never
+/// written to here — not its sharing, not its team, not its members, not
+/// its agent policy.
 async fn helpdesk_board(pg: &sqlx::PgPool) -> Option<String> {
+    let stored = get_setting(pg, HELPDESK_BOARD_KEY, Value::Null).await;
+    if let Some(id) = stored.as_str().filter(|s| !s.trim().is_empty()) {
+        match board_info(pg, id).await {
+            Ok(info) if info.exists && info.archived_at.is_none() => return Some(id.to_string()),
+            // Archived or deleted: a person retired it, so a new one is
+            // created below rather than the old one resurrected.
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!("[agent.problem] helpdesk board read failed: {e}");
+                return None;
+            }
+        }
+    }
     let admin: Option<(String,)> = sqlx::query_as(
         "select id::text from users order by (role = 'admin') desc, created_at asc limit 1",
     )
@@ -75,31 +126,24 @@ async fn helpdesk_board(pg: &sqlx::PgPool) -> Option<String> {
         Some((id,)) => id,
         None => create_team(pg, &admin_id, TALARIA).await.ok()?.0,
     };
-    let existing = list_all_boards(pg)
+    let board = create_board(pg, &admin_id, HELPDESK, Some(&team_id))
         .await
-        .ok()?
-        .into_iter()
-        .find(|b| b.name.to_lowercase() == HELPDESK.to_lowercase());
-    let board_id = match existing {
-        Some(b) => b.id,
-        None => {
-            create_board(pg, &admin_id, HELPDESK, Some(&team_id))
-                .await
-                .ok()?
-                .id
-        }
-    };
-    sqlx::query("update boards set org_wide = true, team_id = $2::uuid where id = $1::uuid")
-        .bind(&board_id)
-        .bind(&team_id)
+        .ok()?;
+    // Org-wide, everyone an editor, every agent allowed — set ONCE, at
+    // creation. From here on an admin's changes to the board stand.
+    sqlx::query("update boards set org_wide = true where id = $1::uuid")
+        .bind(&board.id)
         .execute(pg)
         .await
         .ok()?;
-    join_everyone_to_board(pg, &board_id).await.ok()?;
-    set_board_agent_config(pg, &board_id, true, &[])
+    join_everyone_to_board(pg, &board.id).await.ok()?;
+    set_board_agent_config(pg, &board.id, true, &[])
         .await
         .ok()?;
-    Some(board_id)
+    if let Err(e) = set_setting(pg, HELPDESK_BOARD_KEY, &json!(board.id)).await {
+        tracing::error!("[agent.problem] helpdesk board id could not be stored: {e}");
+    }
+    Some(board.id)
 }
 
 pub async fn post(
@@ -128,6 +172,21 @@ pub async fn post(
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let label = describe_agent(&agent).label;
+    // The per-agent budget. Redis-backed and failing open, like every
+    // limiter in this house.
+    let mut redis = state.redis().await.ok();
+    if let Some(r) = redis.as_mut()
+        && let Some(gate) = brake(
+            r,
+            &format!("agent:problem:{agent}"),
+            PROBLEMS_PER_HOUR,
+            3600,
+            "too many problem reports from this agent — the ones already filed are with the admins; try again later",
+        )
+        .await
+    {
+        return Ok(gate);
+    }
     // the ticket the agent was working when it broke
     let named = match optional_max_string_member(obj, "taskId", 200) {
         Ok(v) => v,
@@ -196,6 +255,29 @@ pub async fn post(
                 return Ok(resp);
             }
             Err(e) => return Ok(internal("[agent.problem] ticket refusal read failed", e)),
+        }
+    }
+
+    // A repeat of the same (agent, summary) within the window is acknowledged
+    // and nothing more: no second ticket, no second round of notifications.
+    // The key is consumed only on an AUTHORISED report, so a refusal above
+    // never spends the honest retry's turn.
+    if let Some(r) = redis.as_mut() {
+        let dup = rate_limit(
+            r,
+            &format!("agent:problem:dup:{agent}:{}", summary_key(&summary)),
+            1,
+            DEDUPE_WINDOW_SECONDS,
+        )
+        .await;
+        if !dup.ok {
+            return Ok(Json(json!({
+                "ok": true,
+                "ticket": Value::Null,
+                "duplicate": true,
+                "relay": "This problem was already reported to the workspace admin in the last day — no action needed on your side.",
+            }))
+            .into_response());
         }
     }
 

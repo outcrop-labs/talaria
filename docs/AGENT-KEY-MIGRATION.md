@@ -4,6 +4,20 @@ Every agent authenticates with **its own** `tak_` secret (minted per `agent_defs
 `agent_keys`, stamped into that agent's container as `TALARIA_AGENT_KEY` by fleet-render). The
 org-wide `TALARIA_AGENT_KEY` names nobody, so it is being retired. `agent-auth.ts` owns both sides.
 
+## The second per-agent credential: the gateway key
+
+The `tak_` key is how an agent speaks to Talaria's API. The same render mints a second,
+separate credential for how it speaks to Talaria's **LLM gateway**: a `tlk_` key named
+`agent:<slug>` (fleet-brain, `ensure_agent_gateway_keys`), stamped into `fleet/.env` as
+`LLM_API_KEY_<SLUG>` and interpolated into that agent's compose service as `LLM_API_KEY` — the
+variable every rendered model spec reads. The fleet-wide `LLM_API_KEY` (`fleet-gateway`) is
+still minted into the file but reaches no container. Same lifecycle as `TALARIA_AGENT_KEY_<SLUG>`:
+rewritten from the DB every render, kept for a retired agent, stripped (and the key revoked) for a
+slug that no longer exists in `agent_defs`. A rotation is reported as a render warning — roll the
+container to pick the new key up. The relay reads the key name as the agent: budgets it under the
+agent's model id, refuses any model outside its rendered set (`gateway_agent_models`), and leaves
+its spend unmetered there because the chat flow ledgers the turn.
+
 ## What a legacy caller is, and is not
 
 A caller presenting the org-wide key resolves `legacy: true`. It is **identified but untrusted**:
@@ -295,7 +309,21 @@ after `deleteAgentForever` (stale line, no `agent_keys` row → the container pr
 and 401s with no diagnostic), and a DB restore against a preserved `.env`. Deleting an agent now
 strips both `HERMES_KEY_<SLUG>` and `TALARIA_AGENT_KEY_<SLUG>`.
 
-## Known gap
+## Rotating a leaked credential
 
-There is no revocation UI: `rotateAgentApiKey` exists and has no caller, so a leaked credential has
-to be rotated by hand (rotate → render → roll). Wiring it to the agents console is the follow-up.
+`POST /api/fleet/defs/{id}/rotate-key` — this agent's managers, and admins. It calls
+`rotate_agent_api_key` (the old secret stops authenticating the moment the `agent_keys` row is
+replaced), re-renders the fleet (the new secret is stamped into `fleet/.env`), and queues a roll
+so the running container is recreated on it. The response is `{ ok: true, rolling: <bool> }`;
+the audit trail carries `agent.key_rotate` with the env variable's NAME, never the value. Between
+the rotate and the roll's cutover the container presents a dead key and its toolkit calls 401 —
+that window is the roll's health wait, the same one step 3 above describes. A roll that fails
+leaves the agent on the dead key: roll it again (`control` → `roll`), or `stop` + `up`.
+
+```sh
+curl -sS -b /tmp/talaria.cookies -X POST \
+  http://127.0.0.1:5273/api/fleet/defs/<AGENT_ID>/rotate-key
+```
+
+The console surface is **Rotate credential** at the bottom of the agent's Summary tab (its managers,
+and admins): an in-place confirm that says the above, then the result in the same place.

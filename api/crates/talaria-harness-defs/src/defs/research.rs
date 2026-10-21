@@ -900,8 +900,11 @@ pub struct SynthesisInput {
 const NOTES_CAP: usize = 80_000;
 
 fn synth_system(mode: ResearchDepth) -> String {
+    // The findings and the source registry are web text somebody else
+    // wrote; the boundary clause is the sentence that keeps an instruction
+    // planted in a search result from becoming the document.
     format!(
-        "You are writing a research document in your domain. Requirements:\n- Start with a \"# \" title as your very first characters. No lead-in, no code fences.\n- EVERY factual claim carries an inline citation marker like [3] referring to the numbered source list you were given. Never invent a number; never cite a source the findings don't support. Uncited claims are defects.\n- Write {}.\n- Do NOT append a sources section \u{2014} it is added mechanically from the registry.",
+        "You are writing a research document in your domain. Requirements:\n- Start with a \"# \" title as your very first characters. No lead-in, no code fences.\n- EVERY factual claim carries an inline citation marker like [3] referring to the numbered source list you were given. Never invent a number; never cite a source the findings don't support. Uncited claims are defects.\n- Write {}.\n- Do NOT append a sources section \u{2014} it is added mechanically from the registry.\n{UNTRUSTED_INPUT}",
         mode.line()
     )
 }
@@ -2294,9 +2297,12 @@ const FINAL_ANSWER_ASK: &str = "That is all the searching there is time for. Wri
 /// The system prompt the tool loop replaces the request's with. REPLACED, not
 /// appended to: the stage's question is the only thing this turn is for.
 fn tool_search_system(tool: &str) -> String {
+    // What the tool returns is live web text: the boundary clause covers
+    // the results as they come back, not only the question.
     format!(
         "You research one question using the `{tool}` tool, which searches the live web.\n\
-         You have NO current knowledge of your own: your training data is stale and the question may be about something that changed yesterday. Call `{tool}` before you answer — always, even when you think you know."
+         You have NO current knowledge of your own: your training data is stale and the question may be about something that changed yesterday. Call `{tool}` before you answer — always, even when you think you know.\n\
+         {UNTRUSTED_INPUT}"
     )
 }
 
@@ -2612,16 +2618,31 @@ pub fn tool_search_transport(
                             Value::String(truncate_utf16(&query, 400).to_string()),
                         );
                     }
-                    // THE CALL GOES TO THE SUPPLIER'S SERVER under the name the
-                    // model actually used — and a failure is a tool RESULT, not
-                    // a failed stage: the model is told, the run survives, the
-                    // sources list stays honest.
-                    let out = match (call_tool)(&supplier.server, &c.name, args).await {
-                        Ok(o) => o,
-                        Err(msg) => ToolOutput {
-                            text: format!("The search tool failed: {msg}"),
+                    // THE CALL GOES TO THE SUPPLIER'S SERVER under the ONE
+                    // tool this loop offered — never under the name the model
+                    // used. The supplier is a whole MCP server with the org's
+                    // credential; the model was given `supplier.tool` and
+                    // nothing else, and a planted search result that talks it
+                    // into naming another tool gets an error result, not a
+                    // dispatch. A failure is a tool RESULT, not a failed
+                    // stage: the model is told, the run survives, the sources
+                    // list stays honest.
+                    let out = if c.name != supplier.tool {
+                        ToolOutput {
+                            text: format!(
+                                "The search tool failed: `{}` is not a tool you have; the only tool is `{}`",
+                                c.name, supplier.tool
+                            ),
                             structured: None,
-                        },
+                        }
+                    } else {
+                        match (call_tool)(&supplier.server, &supplier.tool, args).await {
+                            Ok(o) => o,
+                            Err(msg) => ToolOutput {
+                                text: format!("The search tool failed: {msg}"),
+                                structured: None,
+                            },
+                        }
                     };
                     // `structured ?? text`: a plain-string payload yields
                     // nothing from the walker (it descends objects and arrays
@@ -3672,6 +3693,64 @@ mod tests {
         let id = assistant_wire["tool_calls"][0]["id"].as_str().unwrap();
         assert!(!id.is_empty());
         assert_eq!(result_wire["tool_call_id"].as_str().unwrap(), id);
+    }
+
+    #[tokio::test]
+    async fn a_call_under_another_tools_name_is_refused_never_dispatched() {
+        // The supplier is a whole MCP server with the org's credential, and
+        // the model was offered ONE tool on it. A planted result that talks
+        // the model into naming another tool must land as an error result
+        // the model reads — not as a call on that server.
+        let (base, seen) = scripted_base(vec![
+            call_reply(
+                "",
+                vec![ToolCall {
+                    name: "delete_everything".into(),
+                    id: Some("c1".into()),
+                    args: r#"{"query":"x"}"#.into(),
+                }],
+            ),
+            text_reply("answered"),
+        ]);
+        let dispatched: Arc<std::sync::Mutex<Vec<(String, String)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder: CallToolFn = {
+            let dispatched = dispatched.clone();
+            Arc::new(move |server: &str, tool: &str, _args: Map<String, Value>| {
+                dispatched
+                    .lock()
+                    .unwrap()
+                    .push((server.to_string(), tool.to_string()));
+                Box::pin(async move {
+                    Ok(ToolOutput {
+                        text: "should never be read".into(),
+                        structured: None,
+                    })
+                })
+            })
+        };
+        let transport = tool_transport(sink(), base, recorder);
+        transport(turn_req("sonnet", vec![msg(Role::User, "q")]))
+            .await
+            .unwrap();
+        assert!(
+            dispatched.lock().unwrap().is_empty(),
+            "nothing reached the supplier: {:?}",
+            dispatched.lock().unwrap()
+        );
+        let replay = seen.lock().unwrap()[1].messages.clone();
+        let result = replay.iter().find(|m| m.role.is_tool()).unwrap();
+        assert!(
+            result
+                .content
+                .contains("`delete_everything` is not a tool you have")
+                && result.content.contains("`web_search`"),
+            "{}",
+            result.content
+        );
+        // And the system prompt the loop substitutes carries the boundary.
+        let system = replay.iter().find(|m| m.role == Role::System).unwrap();
+        assert!(system.content.contains(UNTRUSTED_INPUT));
     }
 
     #[tokio::test]

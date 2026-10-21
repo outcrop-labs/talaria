@@ -1,12 +1,13 @@
 // /api/admin/settings. App settings (admin). GET → current values. PUT →
-// update. Grows as more app-wide settings land; audit retention is the
-// first.
+// update. Grows as more app-wide settings land; audit retention was the
+// first, the org-wide toolset floor the latest.
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
+use talaria_agent_defs::{GOVERNED_TOOLSETS, MANDATORY_DISABLED, ORG_FLOOR_ENV, ORG_FLOOR_SETTING};
 use talaria_api_facades::gateway::settings::{get_setting, set_setting};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, utf16_len, zod_type_name};
@@ -35,8 +36,96 @@ pub async fn get(
             .await
             .as_i64()
             .unwrap_or(5),
+        "mandatoryDisabledToolsets": org_toolset_floor(&state.pg).await,
+        "toolsets": toolset_vocabulary(),
     }))
     .into_response())
+}
+
+/// The org-wide toolset floor as the panel edits it: the stored
+/// [`ORG_FLOOR_SETTING`] list, governed names only, without the mandatory
+/// pair (implied on every render, never stored), deduped and sorted. A
+/// stranger that reached the row by SQL is dropped on the read the same way
+/// the renderer drops it, so the panel never shows a box it cannot save.
+async fn org_toolset_floor(pg: &sqlx::PgPool) -> Vec<String> {
+    let stored = get_setting(pg, ORG_FLOOR_SETTING, Value::Null).await;
+    let names: Vec<String> = stored
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    split_org_floor(&names).0
+}
+
+/// The names [`ORG_FLOOR_ENV`] pins closed for this process — the read-only
+/// twin of the stored list, shown locked on the panel because unticking one
+/// here would change nothing.
+fn env_toolset_floor() -> Vec<String> {
+    let raw = std::env::var(ORG_FLOOR_ENV).unwrap_or_default();
+    let names: Vec<String> = raw.split(',').map(|s| s.trim().to_string()).collect();
+    split_org_floor(&names).0
+}
+
+/// What the panel paints its checklist from: every governed name
+/// (alphabetical, the editor's reading order), the pair Talaria closes for
+/// good, and the names the environment pins. Read from the constants the
+/// write path validates against, so the checklist cannot offer a name the
+/// PUT would refuse.
+fn toolset_vocabulary() -> Value {
+    let mut governed: Vec<&str> = GOVERNED_TOOLSETS.to_vec();
+    governed.sort_unstable();
+    serde_json::json!({
+        "governed": governed,
+        "builtin": MANDATORY_DISABLED,
+        "env": env_toolset_floor(),
+    })
+}
+
+/// Sort a floor edit into the names it may store and the names it may not:
+/// trimmed, the mandatory pair dropped (it is the floor's floor — implied,
+/// not a choice), the rest deduped and sorted so two admins reaching one set
+/// write one row; and beside it every stranger, in the order written, each
+/// once. The PUT refuses on a non-empty second half; the reads ignore it.
+fn split_org_floor(names: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut kept: Vec<String> = Vec::new();
+    let mut strangers: Vec<String> = Vec::new();
+    for raw in names {
+        let name = raw.trim();
+        if name.is_empty() || MANDATORY_DISABLED.contains(&name) {
+            continue;
+        }
+        if !GOVERNED_TOOLSETS.contains(&name) {
+            if !strangers.iter().any(|s| s == name) {
+                strangers.push(name.to_string());
+            }
+            continue;
+        }
+        if !kept.iter().any(|k| k == name) {
+            kept.push(name.to_string());
+        }
+    }
+    kept.sort_unstable();
+    (kept, strangers)
+}
+
+/// The floor edit the PUT stores, or the 400 that names EVERY unknown name
+/// in it: an admin who mistyped two of eight needs both, not the first and
+/// another round trip.
+fn clean_org_floor(names: &[String]) -> Result<Vec<String>, String> {
+    let (kept, strangers) = split_org_floor(names);
+    if strangers.is_empty() {
+        return Ok(kept);
+    }
+    let quoted: Vec<String> = strangers.iter().map(|s| format!("\"{s}\"")).collect();
+    Err(if quoted.len() == 1 {
+        format!("unknown toolset {}", quoted[0])
+    } else {
+        format!("unknown toolsets {}", quoted.join(", "))
+    })
 }
 
 async fn audit_retention_days(pg: &sqlx::PgPool) -> i64 {
@@ -48,10 +137,10 @@ async fn audit_retention_days(pg: &sqlx::PgPool) -> i64 {
         .unwrap_or(90)
 }
 
-/// The PUT body's five independent writes, in apply order (budgets first —
-/// the governance control — then cron floor, retention, member models,
-/// org). Every bound REJECTS: a present-but-wrong field is a 400, never a
-/// silent skip.
+/// The PUT body's six independent writes, in apply order (budgets first —
+/// the governance control — then cron floor, retention, member models, the
+/// toolset floor, org). Every bound REJECTS: a present-but-wrong field is a
+/// 400, never a silent skip.
 struct PutBody {
     audit_retention_days: Option<i64>,
     org_present: bool,
@@ -61,6 +150,9 @@ struct PutBody {
     llm_budgets: Option<Value>,
     llm_budgets_after: Option<Value>,
     cron_min_interval_minutes: Option<i64>,
+    /// The org-wide toolset floor, already cleaned: governed names, sorted,
+    /// without the mandatory pair. `Some(vec![])` lifts the floor.
+    mandatory_disabled_toolsets: Option<Vec<String>>,
 }
 
 /// A budget-limits block: tokens (int 0..1e12) and usd (number 0..1e9),
@@ -120,7 +212,7 @@ fn budget_limits(v: Option<&Value>) -> Result<Option<Value>, String> {
 fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, String> {
     use talaria_body::{
         NumKind, array_msg, array_too_big_msg, number_member, object_msg, optional_number_member,
-        string_msg, too_big_msg, too_small_msg, zod_type_name,
+        optional_string_array_member, string_msg, too_big_msg, too_small_msg, zod_type_name,
     };
     // Keys in the schema's order — the FIRST key's issue is the answer.
     let audit_retention_days =
@@ -232,6 +324,15 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
     let cron_min_interval_minutes =
         optional_number_member(obj, "cronMinIntervalMinutes", NumKind::Int, 0.0, 1440.0)?
             .map(|f| f as i64);
+    // The org-wide toolset floor: a list of governed names. The bound on the
+    // walk is the PATCH's (40 — more than the vocabulary once deduped); the
+    // names themselves are checked against the vocabulary, every stranger
+    // named in the one refusal.
+    let mandatory_disabled_toolsets =
+        match optional_string_array_member(obj, "mandatoryDisabledToolsets", 1, 64, 40)? {
+            None => None,
+            Some(names) => Some(clean_org_floor(&names)?),
+        };
     Ok(PutBody {
         audit_retention_days,
         org_present,
@@ -241,6 +342,7 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
         llm_budgets,
         llm_budgets_after: llm_after,
         cron_min_interval_minutes,
+        mandatory_disabled_toolsets,
     })
 }
 
@@ -347,6 +449,31 @@ pub async fn put(
         .await;
     }
 
+    if let Some(names) = &body.mandatory_disabled_toolsets {
+        // A toolset closed for the whole fleet is a governance control: who
+        // moved it, and from what. The write rolls NOTHING — the renderer
+        // reads this key on every render, so the floor lands on each agent's
+        // next render or roll, and the panel says so. A roll from here would
+        // restart every container for an edit that may be a single checkbox.
+        let before = org_toolset_floor(&state.pg).await;
+        if let Err(e) = set_setting(&state.pg, ORG_FLOOR_SETTING, &serde_json::json!(names)).await {
+            return Ok(internal("[admin/settings] toolset floor write failed", e));
+        }
+        log_audit(
+            &state.pg,
+            AuditEntry {
+                actor: &actor,
+                action: "settings.toolset_floor",
+                target_type: "settings",
+                target_id: None,
+                target_label: None,
+                before: Some(serde_json::json!({ "mandatoryDisabledToolsets": before })),
+                after: Some(serde_json::json!({ "mandatoryDisabledToolsets": names })),
+            },
+        )
+        .await;
+    }
+
     if body.org_present {
         talaria_org::set_org_profile(
             &state.pg,
@@ -389,4 +516,107 @@ pub async fn put(
         .await;
     }
     Ok(Json(serde_json::json!({ "ok": true })).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn floor(v: Value) -> Result<Option<Vec<String>>, String> {
+        parse_put_body(v.as_object().unwrap()).map(|b| b.mandatory_disabled_toolsets)
+    }
+
+    #[test]
+    fn the_toolset_floor_stores_governed_names_sorted_without_the_pair() {
+        // Absent is "leave it alone"; an empty list LIFTS the floor.
+        assert_eq!(floor(json!({})).unwrap(), None);
+        assert_eq!(
+            floor(json!({ "mandatoryDisabledToolsets": [] })).unwrap(),
+            Some(vec![])
+        );
+        // Trimmed, deduped, sorted; the pair is implied and never stored, so a
+        // list that names it means the same as one that does not.
+        assert_eq!(
+            floor(json!({ "mandatoryDisabledToolsets": [" web ", "terminal", "web", "todo", "clarify", "browser"] }))
+                .unwrap(),
+            Some(vec!["browser".into(), "terminal".into(), "web".into()])
+        );
+        assert_eq!(
+            floor(json!({ "mandatoryDisabledToolsets": ["todo", "clarify"] })).unwrap(),
+            Some(vec![])
+        );
+    }
+
+    #[test]
+    fn a_stranger_is_refused_and_every_stranger_is_named() {
+        // One typo, one name; two typos, both — an admin who mistyped two of
+        // eight should not learn about the second on the next round trip.
+        assert_eq!(
+            floor(json!({ "mandatoryDisabledToolsets": ["brower"] })).unwrap_err(),
+            "unknown toolset \"brower\""
+        );
+        assert_eq!(
+            floor(
+                json!({ "mandatoryDisabledToolsets": ["brower", "terminal", "discord", "brower"] })
+            )
+            .unwrap_err(),
+            "unknown toolsets \"brower\", \"discord\""
+        );
+        // Hermes' platform toolsets are real names Talaria still refuses,
+        // exactly as the per-agent PATCH does.
+        assert!(floor(json!({ "mandatoryDisabledToolsets": ["discord"] })).is_err());
+    }
+
+    #[test]
+    fn the_floor_field_keeps_the_body_grammar() {
+        // The member vocabulary's own sentences, so a wrong shape reads like
+        // every other field's refusal.
+        assert_eq!(
+            floor(json!({ "mandatoryDisabledToolsets": "terminal" })).unwrap_err(),
+            "Invalid input: expected array, received string"
+        );
+        assert_eq!(
+            floor(json!({ "mandatoryDisabledToolsets": [3] })).unwrap_err(),
+            "Invalid input: expected string, received number"
+        );
+        let many: Vec<&str> = std::iter::repeat_n("terminal", 41).collect();
+        assert_eq!(
+            floor(json!({ "mandatoryDisabledToolsets": many })).unwrap_err(),
+            "Too big: expected array to have <=40 items"
+        );
+        // The earlier keys still answer first: a bad cron floor is the error
+        // even when the toolset list is bad too.
+        assert!(
+            floor(json!({ "cronMinIntervalMinutes": -1, "mandatoryDisabledToolsets": ["brower"] }))
+                .unwrap_err()
+                .starts_with("Too small")
+        );
+    }
+
+    #[test]
+    fn the_vocabulary_is_the_governed_list_with_the_pair_inside_it() {
+        let v = toolset_vocabulary();
+        let governed: Vec<&str> = v["governed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n.as_str().unwrap())
+            .collect();
+        assert_eq!(governed.len(), GOVERNED_TOOLSETS.len());
+        let mut sorted = governed.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            governed, sorted,
+            "alphabetical, the checklist's reading order"
+        );
+        for name in v["builtin"].as_array().unwrap() {
+            assert!(governed.contains(&name.as_str().unwrap()));
+        }
+        // The read side drops a stranger instead of refusing: a row set by
+        // SQL must not break the panel.
+        let (kept, strangers) = split_org_floor(&["terminal".into(), "nope".into()]);
+        assert_eq!(kept, vec!["terminal".to_string()]);
+        assert_eq!(strangers, vec!["nope".to_string()]);
+    }
 }

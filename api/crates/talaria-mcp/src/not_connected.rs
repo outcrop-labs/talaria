@@ -20,7 +20,7 @@
 // base URL (it owns the request) and frames the HTTP answer.
 
 use serde_json::{Map, Value, json};
-use talaria_mcp_jsonrpc::{MCP_PROTOCOL_VERSION, result, rpc_error};
+use talaria_mcp_jsonrpc::{negotiated_revision, result, rpc_error};
 
 use crate::registry::McpServer;
 
@@ -162,19 +162,6 @@ pub fn listed_tools(catalog: &Value, allowed: Option<&[String]>, message: &str) 
     out
 }
 
-/// The MCP revisions the in-house answer is valid under — every one whose
-/// initialize / tools/list / tools/call shapes this module speaks. A client
-/// naming one of these gets it back (it is ours too); any other revision is
-/// negotiated down to the one Talaria pins, as the spec requires of a server
-/// that does not speak what the client asked for.
-const SPOKEN_REVISIONS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
-
-fn negotiated_revision(requested: Option<&str>) -> &'static str {
-    requested
-        .and_then(|r| SPOKEN_REVISIONS.iter().copied().find(|v| *v == r))
-        .unwrap_or(MCP_PROTOCOL_VERSION)
-}
-
 /// The whole in-house answer for one request: the HTTP status and the body
 /// (None = a 202 notification ack). `rpc` is the parsed body, None when it
 /// did not parse.
@@ -293,6 +280,7 @@ pub fn browser_base(base: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use talaria_mcp_jsonrpc::MCP_PROTOCOL_VERSION;
 
     fn server(label: &str, tools: Value) -> McpServer {
         McpServer {

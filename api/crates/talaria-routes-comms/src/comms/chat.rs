@@ -28,8 +28,8 @@ use talaria_chat_persist::{
 };
 use talaria_conversations::{
     accessible_conversation, active_streaming_assistant, create_conversation,
-    insert_streaming_assistant, insert_user_message, list_plan_members, next_seq, prior_messages,
-    title_from, touch_conversation,
+    insert_streaming_assistant, insert_user_message, is_seq_collision, list_plan_members, next_seq,
+    prior_messages, title_from, touch_conversation,
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::{NotifyDeps, fan_conversation_event};
@@ -44,11 +44,12 @@ use talaria_research::{
 };
 use talaria_research_origin::mark_agent_turn;
 use talaria_sender_identity::{SenderIdentity, sender_identity_message};
-use talaria_session::require_user;
 use talaria_session::secretbox_or_500;
+use talaria_session::{require_user, who_of};
 use talaria_state::AppState;
 use talaria_uploads::{
-    attachment_as_data_url, attachment_text_blocks, is_image, resolve_attachments,
+    UploadViewer, attachment_as_data_url, attachment_text_blocks, can_access_upload, is_image,
+    resolve_attachments,
 };
 use talaria_work_mode::WORK_MODE_PROMPT;
 use talaria_workspace_handles::{HANDLE_TURN_NOTE, mentions_handle};
@@ -261,6 +262,29 @@ pub async fn post(
 
     // Validate attachments belong to real uploads before stamping them;
     // knowledge/artifact refs resolve to content-carrying chips.
+    //
+    // THE SENDER MUST BE ABLE TO SEE WHAT THEY SEND. An id is not a grant:
+    // an upload seen once in a channel the person has since left, or in a
+    // ticket, would otherwise be read to the agent here and then stamped on
+    // this person's own row — after which `can_access_upload`'s containment
+    // probe answers yes for them forever. So every id passes the same reach
+    // check the serve route asks before any of it is read, and a refusal
+    // names the id so a client can drop the one attachment that is not
+    // theirs.
+    let who = who_of(&user);
+    for id in body.attachment_ids.as_deref().unwrap_or(&[]) {
+        let viewer = UploadViewer::Human {
+            user_id: &user.id,
+            who: who.as_deref(),
+            is_admin: user.role == "admin",
+        };
+        if !can_access_upload(&state.pg, id, viewer).await {
+            return Ok(house_error(
+                StatusCode::FORBIDDEN,
+                &format!("attachment {id} is not one you can read"),
+            ));
+        }
+    }
     let uploads = resolve_attachments(&state.pg, body.attachment_ids.as_deref().unwrap_or(&[]))
         .await
         .unwrap_or_default();
@@ -405,6 +429,15 @@ pub async fn post(
     .await
     {
         Ok(id) => id,
+        // Two tabs sent at the same instant and this one lost the seq: the
+        // message did not land, which is a thing the sender can act on (send
+        // it again), not a fault of the server's.
+        Err(e) if is_seq_collision(&e) => {
+            return Ok(house_error(
+                StatusCode::CONFLICT,
+                "another message landed at the same moment — send this one again",
+            ));
+        }
         Err(e) => return Ok(internal("[chat] user turn persist failed", e)),
     };
     let _ = touch_conversation(&state.pg, &conv_id, Some(&title)).await;

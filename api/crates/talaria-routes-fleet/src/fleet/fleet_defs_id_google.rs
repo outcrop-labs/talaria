@@ -3,6 +3,8 @@
 //
 // GET    → the registry row (or the legacy fallback) plus connection face
 // PUT    → set principal_kind. The whole body validates before any write.
+//          `owner` for someone other than the caller is admin-only, and the
+//          person it names is notified either way.
 // DELETE → drop the agent's own Google connection
 // GET …/connect → begin the OAuth dance that stores that connection
 
@@ -24,6 +26,7 @@ use talaria_api_facades::google::oauth::{
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{enum_member, parse};
 use talaria_error::{house_error, internal, object_or_400};
+use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
 use talaria_session::{
     actor_of, random_token, require_agent_manager, require_agent_reader, state_cookie_for,
 };
@@ -123,7 +126,19 @@ pub async fn put(
     let Some((def_id, model, display_name)) = agent_model(&state, &id).await? else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
+    // `owner` makes the agent act AS that person on Google — their mail,
+    // calendar and Drive, through whatever token they connected for
+    // themselves. Managing an agent is not consent from the person it is
+    // pointed at: a manager may bind an agent to their OWN account; binding
+    // it to anyone else's is an admin's call, and either way the person is
+    // told who did it (below), so the audit row is not the only trace.
     if let Some(uid) = user_id.as_deref() {
+        if uid != user.id && user.role != "admin" {
+            return Ok(house_error(
+                StatusCode::FORBIDDEN,
+                "only an admin can point an agent at another person's Google account",
+            ));
+        }
         let exists: Option<(i32,)> = match sqlx::query_as("select 1 from users where id = $1::uuid")
             .bind(uid)
             .fetch_optional(&state.pg)
@@ -141,6 +156,30 @@ pub async fn put(
     }
     if let Err(e) = upsert_principal(&state.pg, &model, kind, user_id.as_deref()).await {
         return Ok(internal("[fleet/defs/google] principal write failed", e));
+    }
+    if let Some(uid) = user_id.as_deref() {
+        let by = actor_of(&user);
+        let title = format!("{display_name} now acts as you on Google");
+        let body = format!(
+            "{by} pointed the agent {display_name} ({model}) at your Google account. It reads your mail, calendar and Drive through the account you connected, and its outbound drafts wait for your approval. If that is not what you want, ask an admin to change the agent's Google principal, or disconnect Google in Settings → Connected accounts."
+        );
+        let deps = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+        if let Err(e) = add_notification(
+            &deps,
+            uid,
+            &NotificationInput {
+                kind: "agent_google_principal",
+                title: &title,
+                body: Some(&body),
+                href: Some("/settings/connections"),
+            },
+        )
+        .await
+        {
+            tracing::error!(
+                "[fleet/defs/google] could not notify {uid} of the principal change: {e}"
+            );
+        }
     }
     log_audit(
         &state.pg,

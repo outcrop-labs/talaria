@@ -20,7 +20,9 @@ use talaria_google_calendar::{
 };
 use talaria_google_connections::get_access_token;
 use talaria_google_docs::{create_doc_with_token, update_doc_with_token};
-use talaria_google_drive::{move_drive_file_with_token, rename_drive_file_with_token};
+use talaria_google_drive::{
+    create_drive_folder_with_token, move_drive_file_with_token, rename_drive_file_with_token,
+};
 use talaria_google_gmail::{SendInput, send_message_with_token};
 use talaria_google_org::{get_org_access_token, get_org_email, get_org_targets};
 use talaria_google_sheets::update_sheet_with_token;
@@ -534,6 +536,37 @@ pub async fn decide_action(
             message: None,
         })); // already decided
     }
+    // CLAIM before anything runs. Two approvals of one row inside the Google
+    // round-trip — two admins on an org send, one owner on the chip and the
+    // inbox card — both used to read `pending` and both sent. The claim is
+    // one conditional update: whoever flips the row to `executing` runs it,
+    // and the other sees the row already decided. A claim older than ten
+    // minutes is a process that died mid-send; it may be taken over.
+    let claimed: Option<(String,)> = sqlx::query_as(
+        "update google_pending_actions \
+         set status = 'executing', decided_by = $2::uuid, decided_at = now() \
+         where id = $1::uuid \
+           and (status = 'pending' \
+                or (status = 'executing' and decided_at < now() - interval '10 minutes')) \
+         returning status",
+    )
+    .bind(action_id)
+    .bind(actor_id)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| format!("google pending action claim: {e}"))?;
+    if claimed.is_none() {
+        let now: Option<String> =
+            sqlx::query_scalar("select status from google_pending_actions where id = $1::uuid")
+                .bind(action_id)
+                .fetch_optional(pg)
+                .await
+                .map_err(|e| format!("google pending action re-read: {e}"))?;
+        return Ok(now.map(|status| DecideOutcome {
+            status,
+            message: None,
+        })); // decided (or claimed) by someone else between the read and here
+    }
 
     // A terminal decision resolves the approval line on the owner's (and the
     // decider's) brief. Detached and silent: the decider is waiting on this
@@ -552,9 +585,11 @@ pub async fn decide_action(
         .collect();
 
     if decision == "reject" {
+        // The claim above already moved the row to `executing` under this
+        // actor; a reject lands on that claim and nothing else.
         sqlx::query(
             "update google_pending_actions set status = 'rejected', decided_at = now(), decided_by = $2::uuid \
-             where id = $1::uuid",
+             where id = $1::uuid and status = 'executing'",
         )
         .bind(action_id)
         .bind(actor_id)
@@ -597,6 +632,16 @@ pub async fn decide_action(
             .map_err(|e| e.to_string())?,
     };
     let Some(token) = token else {
+        // Nothing ran: hand the row back so the same approval works once the
+        // account is reconnected.
+        sqlx::query(
+            "update google_pending_actions set status = 'pending', decided_by = null, decided_at = null \
+             where id = $1::uuid and status = 'executing'",
+        )
+        .bind(action_id)
+        .execute(pg)
+        .await
+        .map_err(|e| format!("google pending action release: {e}"))?;
         return Ok(Some(DecideOutcome {
             status: "not_connected".into(),
             message: Some(
@@ -684,7 +729,7 @@ pub async fn decide_action(
         if file_id.is_empty() {
             Err("doc_update missing fileId".into())
         } else {
-            update_doc_with_token(
+            match update_doc_with_token(
                 &token,
                 file_id,
                 payload
@@ -694,8 +739,20 @@ pub async fn decide_action(
                 payload.get("title").and_then(Value::as_str),
             )
             .await
-            .map(|doc| json!({ "id": doc.id, "url": doc.url, "name": doc.name }))
-            .map_err(|e| e.to_string())
+            {
+                Ok(doc) => {
+                    // The agent's token wrote the body: stamp it, so the
+                    // write itself is not mistaken for a person's edit next
+                    // time (a no-op unless the agent still owns the file).
+                    if let Some(agent) = agent_model.as_deref() {
+                        stamp_agent_write(pg, agent, file_id)
+                            .await
+                            .map_err(|e| format!("agent write stamp: {e}"))?;
+                    }
+                    Ok(json!({ "id": doc.id, "url": doc.url, "name": doc.name }))
+                }
+                Err(e) => Err(e.to_string()),
+            }
         }
     } else if kind == "slides_update" {
         let file_id = payload
@@ -921,6 +978,50 @@ pub async fn decide_action(
             }
             Err(e) => Err(e.to_string()),
         }
+    } else if kind == "doc_create" {
+        let s = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or_default();
+        match create_doc_with_token(
+            &token,
+            s("title"),
+            s("markdown"),
+            Some(s("folderId")).filter(|f| !f.is_empty()),
+        )
+        .await
+        {
+            Ok(doc) => {
+                // The approved doc is the agent's to edit, like one it made
+                // without a parent — the record is what `update_google_doc`
+                // asks.
+                if let Some(agent) = agent_model.as_deref() {
+                    record_agent_created(pg, agent, &doc.id)
+                        .await
+                        .map_err(|e| format!("agent-created doc record: {e}"))?;
+                }
+                Ok(
+                    json!({ "id": doc.id, "url": doc.url, "name": doc.name, "mimeType": doc.mime_type }),
+                )
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    } else if kind == "drive_folder_create" {
+        let s = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or_default();
+        match create_drive_folder_with_token(
+            &token,
+            s("name"),
+            Some(s("parentId")).filter(|p| !p.is_empty()),
+        )
+        .await
+        {
+            Ok(folder) => {
+                if let Some(agent) = agent_model.as_deref() {
+                    record_agent_created(pg, agent, &folder.id)
+                        .await
+                        .map_err(|e| format!("agent-created folder record: {e}"))?;
+                }
+                Ok(json!({ "id": folder.id, "name": folder.name, "url": folder.web_view_link }))
+            }
+            Err(e) => Err(e.to_string()),
+        }
     } else {
         Err(format!("unknown action kind: {kind}"))
     };
@@ -930,7 +1031,7 @@ pub async fn decide_action(
             sqlx::query(
                 "update google_pending_actions \
                  set status = 'executed', result = $2, decided_at = now(), decided_by = $3::uuid \
-                 where id = $1::uuid",
+                 where id = $1::uuid and status = 'executing'",
             )
             .bind(action_id)
             .bind(&result)
@@ -948,7 +1049,7 @@ pub async fn decide_action(
             sqlx::query(
                 "update google_pending_actions \
                  set status = 'failed', result = $2, decided_at = now(), decided_by = $3::uuid \
-                 where id = $1::uuid",
+                 where id = $1::uuid and status = 'executing'",
             )
             .bind(action_id)
             .bind(json!({ "error": message }))
@@ -963,6 +1064,105 @@ pub async fn decide_action(
             }))
         }
     }
+}
+
+/// A Drive file this agent brought into being — a Doc or a folder — which it
+/// may then edit, or create inside, without another card. The file id is
+/// Drive's; on conflict the first creator is kept, and only that creator's
+/// own re-record moves the write stamp. Creating is the first agent write,
+/// so the row is born stamped.
+pub async fn record_agent_created(
+    pg: &PgPool,
+    agent_model: &str,
+    file_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into agent_created_google_docs (file_id, agent_model, last_agent_write_at) \
+         values ($1, $2, now()) \
+         on conflict (file_id) do update set last_agent_write_at = now() \
+         where agent_created_google_docs.agent_model = excluded.agent_model",
+    )
+    .bind(file_id)
+    .bind(agent_model)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// The agent wrote the file's body just now. Every path that puts the
+/// agent's token to a Doc it created calls this after Drive answered, so the
+/// stamp is never earlier than the revision it describes; the next replace
+/// compares Drive's `modifiedTime` against it. A no-op for a file this agent
+/// does not own.
+pub async fn stamp_agent_write(
+    pg: &PgPool,
+    agent_model: &str,
+    file_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update agent_created_google_docs set last_agent_write_at = now() \
+         where file_id = $1 and agent_model = $2",
+    )
+    .bind(file_id)
+    .bind(agent_model)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// What is known about a Drive file this agent created.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentCreated {
+    /// The agent's last write, epoch milliseconds; `None` on a row recorded
+    /// before the stamp existed and not written since.
+    pub last_agent_write_ms: Option<i64>,
+}
+
+/// The agent-created record for a Drive file, or `None` when this agent did
+/// not create it (or a person has since taken it over).
+pub async fn agent_created_record(
+    pg: &PgPool,
+    agent_model: &str,
+    file_id: &str,
+) -> Result<Option<AgentCreated>, sqlx::Error> {
+    let row: Option<(Option<f64>,)> = sqlx::query_as(
+        "select extract(epoch from last_agent_write_at) * 1000 \
+         from agent_created_google_docs where file_id = $1 and agent_model = $2",
+    )
+    .bind(file_id)
+    .bind(agent_model)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.map(|(ms,)| AgentCreated {
+        last_agent_write_ms: ms.map(|v| v as i64),
+    }))
+}
+
+/// Whether this agent created the Drive file (a Doc, or a folder it may
+/// place files in).
+pub async fn agent_created(
+    pg: &PgPool,
+    agent_model: &str,
+    file_id: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(agent_created_record(pg, agent_model, file_id)
+        .await?
+        .is_some())
+}
+
+/// A human took the file over: the agent's standing to edit it without a
+/// card ends here, and the next edit queues like any other.
+pub async fn forget_agent_created(
+    pg: &PgPool,
+    agent_model: &str,
+    file_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("delete from agent_created_google_docs where file_id = $1 and agent_model = $2")
+        .bind(file_id)
+        .bind(agent_model)
+        .execute(pg)
+        .await?;
+    Ok(())
 }
 
 // ── Org agent addressing (the send-path half) ─────────────────────────────────

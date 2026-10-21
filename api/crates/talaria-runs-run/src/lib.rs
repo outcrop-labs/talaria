@@ -47,8 +47,8 @@ use talaria_runs_define::{
     is_drivable, run_definition as registry_definition,
 };
 use talaria_runs_lease::{
-    LeaseResult, LeaseToken, RedisLeases, RunClaim, acquire_run_lease, release_run_lease,
-    renew_lease, run_lease_key,
+    LeaseBackend, LeaseResult, LeaseToken, RedisLeases, RunClaim, acquire_run_lease, lease_key,
+    release_run_lease, renew_lease, run_lease_key,
 };
 use talaria_runs_store::{CancelOutcome, ClaimOutcome, NewRun, RunStore, WriteFailure};
 use tokio::sync::watch;
@@ -94,6 +94,34 @@ pub trait RunLease: Send + Sync {
     /// Compare-and-delete. A lease released by anyone but its owner would be a
     /// lease that a slow driver deletes out from under its successor.
     fn release<'a>(&'a self, run_id: &'a str, token: &'a str) -> BoxFuture<'a, ()>;
+    /// THE CANCEL RELAY. A cancel is a row flip plus a process-local abort,
+    /// and a driver on another instance hears neither until its next step
+    /// boundary — tens of minutes into a work session's turn. The flag is a
+    /// short-lived Redis key the renewal loop polls every few seconds, so a
+    /// stop pressed anywhere lands on the driving instance within one poll.
+    /// Best effort: the row remains the truth, and a relay that cannot be
+    /// written only means the boundary read catches it instead. Default is
+    /// the no-op a test lease wants.
+    fn flag_cancel<'a>(&'a self, _run_id: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
+    /// Has somebody flagged this run cancelled since the drive began? Default
+    /// false, for the same test leases.
+    fn cancel_flagged<'a>(&'a self, _run_id: &'a str) -> BoxFuture<'a, bool> {
+        Box::pin(async { false })
+    }
+}
+
+/// How often a driving instance asks Redis whether somebody else cancelled
+/// its run — the bound on how long a cross-instance stop takes to land.
+pub const CANCEL_POLL_MS: u64 = 5_000;
+/// How long the relay flag outlives the cancel. Longer than any lease TTL,
+/// so a driver mid-step at the moment of the cancel cannot outlast it; short
+/// enough that the keys are not a ledger.
+const CANCEL_FLAG_TTL_MS: u64 = 30 * 60_000;
+
+fn run_cancel_key(run_id: &str) -> String {
+    lease_key("run-cancel", run_id)
 }
 
 /// The real lease over the shared primitive. `ConnectionManager` clones per
@@ -155,6 +183,32 @@ impl RunLease for RedisRunLease {
             if let LeaseResult::Unavailable(e) = release_run_lease(&mut backend, &tok).await {
                 tracing::error!("{LOG} could not release the lease for {run_id}: {e}");
             }
+        }
+        .boxed()
+    }
+
+    fn flag_cancel<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, ()> {
+        async move {
+            let mut backend = RedisLeases::new(self.conn.clone());
+            // NX: a second cancel of the same run is a no-op, and the first
+            // flag's TTL is the one that counts.
+            if let Err(e) = backend
+                .set_nx_px(&run_cancel_key(run_id), "1", CANCEL_FLAG_TTL_MS)
+                .await
+            {
+                tracing::warn!(
+                    "{LOG} could not relay the cancel of {run_id} over Redis ({e}) — a driver on \
+                     another instance stops at its next step boundary instead"
+                );
+            }
+        }
+        .boxed()
+    }
+
+    fn cancel_flagged<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, bool> {
+        async move {
+            let mut backend = RedisLeases::new(self.conn.clone());
+            matches!(backend.get(&run_cancel_key(run_id)).await, Ok(Some(_)))
         }
         .boxed()
     }
@@ -529,15 +583,18 @@ pub async fn drive(run_id: &str, deps: &RunDeps) -> Result<DriveResult, sqlx::Er
     };
     let max_attempts = def.max_attempts.max(1);
 
-    // `attempt` counts ENTRIES that followed a crash, so this is "how many
-    // drivers has this run killed". A run over the line is filed as an error
-    // with the count in the message: it is a bug report, and a bug report that
-    // reads 'failed' with no number is one nobody can act on.
-    if row.attempt >= max_attempts as i32 {
+    // `crashes` counts ENTRIES that followed a driver DYING with the run — a
+    // claim that found the row still `running`, never released — so this is
+    // "how many drivers has this run killed". A clean hand-over (a drain, a
+    // lost lease) leaves the row `queued` and costs nothing here. A run over
+    // the line is filed as an error with the count in the message: it is a
+    // bug report, and a bug report that reads 'failed' with no number is one
+    // nobody can act on.
+    if row.crashes >= max_attempts as i32 {
         let message = format!(
-            "run gave up after {} attempt(s): each driver that took it stopped without finishing \
-             or checkpointing",
-            row.attempt
+            "run gave up after {} driver crash(es): each driver that took it died holding it, \
+             without releasing or checkpointing",
+            row.crashes
         );
         tracing::error!("{LOG} {run_id} ({}): {message}", row.kind);
         let write = deps.store.fail(run_id, &token, message.clone()).await?;
@@ -555,11 +612,11 @@ pub async fn drive(run_id: &str, deps: &RunDeps) -> Result<DriveResult, sqlx::Er
 
     if reclaimed {
         tracing::warn!(
-            "{LOG} {run_id} ({}) reclaimed at attempt {} of {max_attempts}, phase \"{}\" — the \
-             previous driver stopped without releasing. Its last step re-runs from the persisted \
+            "{LOG} {run_id} ({}) reclaimed after crash {} of {max_attempts}, phase \"{}\" — the \
+             previous driver died without releasing. Its last step re-runs from the persisted \
              checkpoint.",
             row.kind,
-            row.attempt,
+            row.crashes,
             row.phase
         );
     }
@@ -572,11 +629,19 @@ pub async fn drive(run_id: &str, deps: &RunDeps) -> Result<DriveResult, sqlx::Er
     // instead of the lease module's heartbeat — that heartbeat pumps Redis,
     // correctly, and knows nothing about the row that has to agree with it.
     //
-    // Any beat that does not come back ok aborts the step and stops the drive.
-    // A renewal that cannot REACH Redis has not necessarily lost the lease,
-    // but it can no longer prove it holds one, and continuing to write on a
-    // lease we cannot verify is the one thing that turns a blip into two
-    // drivers.
+    // Any beat that does not come back ok aborts the step and stops the drive
+    // — with ONE exception. A renewal that cannot REACH Redis has not
+    // necessarily lost the lease; the beat is a third of the TTL, so a single
+    // unreachable beat still leaves two more before the lease lapses (the
+    // lease module's own sizing argument). One such beat is tolerated and
+    // logged; a second in a row means we can no longer prove we hold the
+    // lease, and continuing to write on a lease we cannot verify is the one
+    // thing that turns a blip into two drivers.
+    //
+    // The same loop is where a cross-instance cancel lands: every
+    // CANCEL_POLL_MS it asks the lease's relay whether somebody flagged this
+    // run, so a stop pressed on another instance interrupts the step in
+    // seconds rather than at the step's end.
     let lost = Arc::new(AtomicBool::new(false));
     let (abort_tx, _abort_rx) = watch::channel(false);
     // Registered for the life of the drive so shutdown can abort this step
@@ -595,28 +660,76 @@ pub async fn drive(run_id: &str, deps: &RunDeps) -> Result<DriveResult, sqlx::Er
             let mut tick = tokio::time::interval(renew_every);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             tick.tick().await; // the interval fires immediately once by contract
+            let mut cancel_tick = tokio::time::interval(Duration::from_millis(CANCEL_POLL_MS));
+            cancel_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            cancel_tick.tick().await;
+            let mut unavailable_beats: u32 = 0;
             loop {
-                tick.tick().await;
-                match deps.lease.renew(&run_id, &token, lease_ms).await {
-                    LeaseRenewal::Ok => {
-                        if let Err(reason) = deps.store.heartbeat(&run_id, &token, lease_ms).await {
-                            // The Redis lease is still ours but the row will
-                            // not confirm it. The honest reading: stop
-                            // persisting, let
-                            // a sweep decide from the checkpoint.
-                            tracing::error!(
-                                "{LOG} {run_id}: heartbeat refused ({reason:?}) — stopping the \
-                                 drive"
+                tokio::select! {
+                    _ = cancel_tick.tick() => {
+                        if deps.lease.cancel_flagged(&run_id).await {
+                            // Not `lost`: the row says cancelled, and the
+                            // step boundary (or the interrupt's own re-read)
+                            // reports it as such.
+                            tracing::info!(
+                                "{LOG} {run_id}: cancel relayed from another instance — \
+                                 interrupting the step"
                             );
-                            lost.store(true, Ordering::SeqCst);
                             abort_tx.send(true).ok();
                             break;
                         }
+                        continue;
+                    }
+                    _ = tick.tick() => {}
+                }
+                match deps.lease.renew(&run_id, &token, lease_ms).await {
+                    LeaseRenewal::Ok => {
+                        unavailable_beats = 0;
+                        match deps.store.heartbeat(&run_id, &token, lease_ms).await {
+                            Ok(Ok(())) => {}
+                            // The Redis lease is still ours but the row will
+                            // not confirm it: cancelled from anywhere, taken
+                            // by another driver, or gone. A refused
+                            // compare-and-set is `Ok(Err(..))`, and matching
+                            // only the transport error here once let a
+                            // cancelled run keep its driver working to the
+                            // end of the step. The honest reading: stop
+                            // persisting, let the boundary (or a sweep)
+                            // decide from the row.
+                            Ok(Err(reason)) => {
+                                tracing::warn!(
+                                    "{LOG} {run_id}: heartbeat refused ({reason:?}) — stopping \
+                                     the drive"
+                                );
+                                if !matches!(reason, WriteFailure::Cancelled) {
+                                    lost.store(true, Ordering::SeqCst);
+                                }
+                                abort_tx.send(true).ok();
+                                break;
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "{LOG} {run_id}: heartbeat could not be written ({e}) — \
+                                     stopping the drive"
+                                );
+                                lost.store(true, Ordering::SeqCst);
+                                abort_tx.send(true).ok();
+                                break;
+                            }
+                        }
                     }
                     LeaseRenewal::Unavailable => {
+                        unavailable_beats += 1;
+                        if unavailable_beats < 2 {
+                            tracing::warn!(
+                                "{LOG} {run_id}: could not renew the lease (Redis unreachable) — \
+                                 one beat tolerated, the lease still has two thirds of its TTL"
+                            );
+                            continue;
+                        }
                         tracing::error!(
-                            "{LOG} {run_id}: could not renew the lease (Redis unreachable) — \
-                             stopping; a later sweep resumes the run"
+                            "{LOG} {run_id}: could not renew the lease twice in a row (Redis \
+                             unreachable) — stopping; a later sweep resumes the run"
                         );
                         lost.store(true, Ordering::SeqCst);
                         abort_tx.send(true).ok();
@@ -914,6 +1027,26 @@ async fn drive_loop(
                 });
             }
             StepRace::Interrupted(StepInterrupt::LeaseLost) => {
+                // The abort fires for a lost lease AND for a cancel relayed
+                // from another instance; the row says which. Nothing is
+                // written either way — a cancelled row is already terminal,
+                // and a lost one belongs to somebody else.
+                if !lost.load(Ordering::SeqCst)
+                    && let Ok(Some(fresh)) = deps.store.get(run_id).await
+                    && fresh.state == RunState::Cancelled
+                {
+                    tracing::info!(
+                        "{LOG} {run_id} ({}): cancelled while a step was running — the step was \
+                         interrupted and its result discarded",
+                        row.kind
+                    );
+                    return Ok(DriveResult::stop(
+                        run_id,
+                        DriveStop::Cancelled,
+                        *steps,
+                        Some(RunState::Cancelled),
+                    ));
+                }
                 return Ok(DriveResult::stop(
                     run_id,
                     DriveStop::LeaseLost,
@@ -1151,10 +1284,12 @@ pub async fn cancel_run(
         // driver in this process mid-send — a step that can legitimately
         // stream for hours — and the person who pressed stop watches
         // nothing happen until the step's own idle clock gives up. The
-        // abort ends the in-flight call at its next await; a driver on
-        // another instance (or none at all) simply misses the signal, and
-        // the row state remains the truth.
+        // abort ends the in-flight call at its next await. A driver on
+        // another instance hears it through the lease's relay flag, which
+        // its renewal loop polls every CANCEL_POLL_MS; the row state remains
+        // the truth either way.
         talaria_runs_drivers::fire(run_id);
+        deps.lease.flag_cancel(run_id).await;
         if let Some(run) = deps.store.get(run_id).await? {
             (deps.publish)(
                 RunEvent::transition(&run.id, &run.kind, run.state, &run.phase),

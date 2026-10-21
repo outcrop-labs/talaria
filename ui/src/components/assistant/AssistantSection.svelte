@@ -9,6 +9,8 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
+  import Segmented from '@/components/ui/Segmented.svelte'
+  import type { SegmentedOption } from '@/components/ui/segmented'
   import AssistantWizard from './AssistantWizard.svelte'
   import AssistantPanels from './AssistantPanels.svelte'
   import AssistantGoogleCard from './AssistantGoogleCard.svelte'
@@ -16,7 +18,7 @@
   import { cn } from '@/lib/cn'
   import { errorMessage, postJson } from '@/lib/fetch-json'
   import { focusGold } from '@/components/chat/chat-chrome'
-  import { HANDLE_RE, updateAssistant, useAssistant } from '@/lib/assistant'
+  import { HANDLE_RE, updateAssistant, useAssistant, type AssistantDmAccess } from '@/lib/assistant'
   import { slide } from '@/lib/motion'
   import { p } from '@/router'
 
@@ -40,6 +42,22 @@
   let busy = $state(false)
   let saved = $state(false)
   let error = $state<string | null>(null)
+
+  // The owner's DM reach: whether the assistant sees the owner's direct
+  // messages with people at all, reads them, or reads and posts in them.
+  // Autosave on change (it is a setting, not a deploy): the API applies it
+  // without a version or a restart.
+  const DM_ACCESS: ReadonlyArray<SegmentedOption<AssistantDmAccess>> = [
+    { id: 'none', label: 'None', title: 'Your DMs with people are not listed, read, or posted in' },
+    { id: 'read', label: 'Read', title: 'It can read your DMs with people but never post in them' },
+    { id: 'read-write', label: 'Read & post', title: 'Your own view: it can read and post in your DMs with people' },
+  ]
+  const setDmAccess = async (dmAccess: AssistantDmAccess) => {
+    error = null
+    const r = await updateAssistant({ dmAccess })
+    if (!r.assistant) error = r.error ?? 'could not save'
+    await qc.invalidateQueries({ queryKey: ['my-assistant'] })
+  }
 
   $effect(() => {
     const a = query.data
@@ -213,6 +231,14 @@
         </div>
       </div>
     {/if}
+
+    <div class="mb-4">
+      <span class={fieldLabel}>Your DMs</span>
+      <div class="flex flex-wrap items-center gap-3">
+        <Segmented options={DM_ACCESS} value={assistant.dmAccess} onChange={(id) => void setDmAccess(id)} />
+        <span class="text-xs text-muted">Direct messages between you and other people. Channels follow your membership either way.</span>
+      </div>
+    </div>
 
     <div class="mb-1 flex items-center">
       <span class={cn(fieldLabel, 'mb-0')}>Personality</span>

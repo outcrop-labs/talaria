@@ -7,7 +7,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{NumKind, array_too_big_msg, boolean_member, number_member, parse};
+use talaria_body::{
+    NumKind, array_too_big_msg, boolean_member, number_member, optional_number_member, parse,
+};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_outreach::{
     OutreachConfig, get_outreach_config, recent_outreach_events, set_outreach_config,
@@ -46,6 +48,7 @@ pub async fn get(
             "enabled": c.enabled,
             "intervalMinutes": c.interval_minutes,
             "dailyDmCap": c.daily_dm_cap,
+            "dailyDmTotalCap": c.daily_dm_total_cap,
         },
         "agents": agents,
         "events": recent_outreach_events(&state.pg, 30).await,
@@ -63,7 +66,8 @@ pub async fn put(
     let obj = object_or_400(&parsed)?;
     // Keys in schema order, rejections in the schema's own words: enabled
     // (bool), intervalMinutes (int 15..1440), dailyDmCap (int 1..20),
-    // proactiveAgents (strings, at most 100).
+    // dailyDmTotalCap (int 1..500, optional — a client that predates it keeps
+    // the stored value), proactiveAgents (strings, at most 100).
     let enabled = match boolean_member(obj, "enabled") {
         Ok(e) => e,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
@@ -74,6 +78,10 @@ pub async fn put(
     };
     let cap = match number_member(obj, "dailyDmCap", NumKind::Int, 1.0, 20.0) {
         Ok(n) => n as i64,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    let total_cap = match optional_number_member(obj, "dailyDmTotalCap", NumKind::Int, 1.0, 500.0) {
+        Ok(n) => n.map(|n| n as i64),
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let proactive = match obj.get("proactiveAgents") {
@@ -112,12 +120,17 @@ pub async fn put(
         },
     };
 
+    let daily_dm_total_cap = match total_cap {
+        Some(n) => n,
+        None => get_outreach_config(&state.pg).await.daily_dm_total_cap,
+    };
     set_outreach_config(
         &state.pg,
         &OutreachConfig {
             enabled,
             interval_minutes: interval,
             daily_dm_cap: cap,
+            daily_dm_total_cap,
         },
     )
     .await;

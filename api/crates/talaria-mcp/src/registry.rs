@@ -748,13 +748,13 @@ pub async fn update_mcp_server(
     id: &str,
     patch: &ServerPatch,
 ) -> Result<(), String> {
-    let row: Option<(bool, Option<String>)> =
-        sqlx::query_as("select builtin, app_slug::text from mcp_servers where id::text = $1")
+    let row: Option<(bool, Option<String>, String)> =
+        sqlx::query_as("select builtin, app_slug::text, url from mcp_servers where id::text = $1")
             .bind(id)
             .fetch_optional(pg)
             .await
             .map_err(|e| e.to_string())?;
-    let Some((builtin, app_slug)) = row else {
+    let Some((builtin, app_slug, old_url)) = row else {
         return Ok(()); // updates below match zero rows — a no-op
     };
     if builtin
@@ -808,20 +808,36 @@ pub async fn update_mcp_server(
         .await
         .map_err(|e| e.to_string())?;
     }
+    // A URL that names a different host is a different server: nothing the
+    // old one was trusted with may follow — see `url_host_changed`.
+    let host_changed = patch
+        .url
+        .as_deref()
+        .is_some_and(|new_url| url_host_changed(&old_url, new_url));
     if let Some(url) = &patch.url {
         // A repointed server's cached catalog is stale by definition.
         sqlx::query("update mcp_servers set url = $2, tools = '[]', tools_refreshed_at = null, updated_at = now() where id::text = $1")
             .bind(id).bind(url).execute(pg).await.map_err(|e| e.to_string())?;
     }
+    if host_changed {
+        drop_credentials_for_new_host(pg, id).await?;
+    }
     // Replace and/or merge, opened and re-sealed under the row lock. A
     // changed credential invalidates nothing else — the catalog stays; the
-    // next discovery re-proves it.
+    // next discovery re-proves it. A changed host starts from NO headers
+    // unless this very patch names the new ones.
+    let empty = Map::new();
+    let replace = match (&patch.headers, host_changed) {
+        (Some(h), _) => Some(h),
+        (None, true) => Some(&empty),
+        (None, false) => None,
+    };
     crate::org_headers::write_headers(
         pg,
         sb,
         id,
         &crate::org_headers::HeaderWrite {
-            replace: patch.headers.as_ref(),
+            replace,
             merge: patch.merge_headers.as_ref(),
         },
     )
@@ -853,6 +869,46 @@ pub async fn update_mcp_server(
         .execute(pg)
         .await
         .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Does `new_url` name a different upstream than `old_url`? The authority —
+/// host and port, case-folded — decides; a changed path or scheme on the
+/// same host is the same operator. An unparseable side counts as changed:
+/// the package placeholder (`talaria-pkg://name`) or garbage on either side
+/// is never "the same host" as a real endpoint. Pure.
+pub fn url_host_changed(old_url: &str, new_url: &str) -> bool {
+    fn authority(u: &str) -> Option<(String, Option<u16>)> {
+        let parsed = url::Url::parse(u).ok()?;
+        let host = parsed.host_str()?.to_ascii_lowercase();
+        Some((host, parsed.port_or_known_default()))
+    }
+    match (authority(old_url), authority(new_url)) {
+        (Some(a), Some(b)) => a != b,
+        _ => true,
+    }
+}
+
+/// What a repointed server loses: every OAuth token the gateway would have
+/// spoken to the new host (the org's and every person's), the in-flight
+/// authorization states and reconnect flags that name the old provider, and
+/// the stored OAuth discovery (so the next `ensure_oauth_config` asks the
+/// NEW host what it wants rather than reusing the old answer). The org
+/// headers are cleared by the caller's header write. The catalog is already
+/// empty by now.
+async fn drop_credentials_for_new_host(pg: &PgPool, id: &str) -> Result<(), String> {
+    for sql in [
+        "delete from mcp_oauth_tokens where server_id::text = $1",
+        "delete from mcp_oauth_states where server_id::text = $1",
+        "delete from mcp_oauth_reconnect where server_id::text = $1",
+        "update mcp_servers set oauth = null, updated_at = now() where id::text = $1",
+    ] {
+        sqlx::query(sql)
+            .bind(id)
+            .execute(pg)
+            .await
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -1200,9 +1256,12 @@ pub async fn effective_mcp_for(
     // nothing else. Assignment and team rows for it are ignored, so the
     // switch and the tools can never disagree.
     let agent_tools = if server.name == WORKBENCH_SERVER {
-        if !agent_is_developer(pg, agent_model)
-            .await
-            .map_err(|e| e.to_string())?
+        // A legacy shared-key caller is identified, not proven: it never
+        // drives the Workbench as the agent it names.
+        if !talaria_agent_auth::subject_proven(subject)
+            || !agent_is_developer(pg, agent_model)
+                .await
+                .map_err(|e| e.to_string())?
         {
             return Ok(McpAccess::Denied);
         }
@@ -1332,8 +1391,13 @@ pub async fn effective_mcp_for(
             speak_as.extend(crate::org_headers::header_pairs(&creds));
         }
     }
-    // Org-auth OAuth servers speak with the shared org connection.
+    // Org-auth OAuth servers speak with the shared org connection — never
+    // for a legacy shared-key caller, whose identity is asserted, not
+    // proven (subject_proven's contract: no OAuth tokens).
     if server.auth_mode == "org" && server.oauth_enabled {
+        if !talaria_agent_auth::subject_proven(subject) {
+            return Ok(McpAccess::Denied);
+        }
         let Some(bearer) = talaria_mcp_oauth::oauth_token_for(pg, sb, &server.id, "org").await?
         else {
             return Ok(McpAccess::NotConnected(NotConnected {
@@ -1395,6 +1459,14 @@ pub async fn refresh_mcp_tools(
     // the pump (the cached handshake answers initialize); oci-http packages
     // relay like remotes, against the container's resolved URL — shadow the
     // row and fall through to the ordinary conversation below.
+    // A package row whose spec does not parse yet is one the install's
+    // background pull has not pinned — it must not fall through to the
+    // in-process branch below and come back wearing another server's catalog.
+    if server.package.is_some()
+        && crate::pkg::PkgSpec::of(server.package.as_ref().unwrap_or(&Value::Null)).is_none()
+    {
+        return Err("the package is still being pulled and pinned; ask again shortly".into());
+    }
     if let Some(spec) = server.package.as_ref().and_then(crate::pkg::PkgSpec::of) {
         if spec.transport == "http" {
             let url = crate::pkg::ensure_http(sb, &server, &spec).await?;
@@ -1456,6 +1528,14 @@ pub async fn refresh_mcp_tools(
     let non_http = !server.url.to_lowercase().starts_with("http://")
         && !server.url.to_lowercase().starts_with("https://");
     if non_http {
+        // Only the Workbench answers from the module; any other non-http URL
+        // is a routing token this path does not know how to ask.
+        if server.name != WORKBENCH_SERVER {
+            return Err(format!(
+                "\"{}\" is not an endpoint this registry can ask for a catalog",
+                server.url
+            ));
+        }
         let tools = workbench_catalog();
         store_catalog(pg, id, &tools).await?;
         return Ok(tools.as_array().cloned().unwrap_or_default());
@@ -1584,13 +1664,66 @@ pub(crate) async fn converse_catalog(
                     let mut e = Map::new();
                     e.insert("name".into(), t.get("name").cloned().unwrap_or(Value::Null));
                     if let Some(d) = t.get("description").and_then(Value::as_str) {
-                        e.insert("description".into(), Value::String(utf16_slice(d, 300)));
+                        e.insert("description".into(), Value::String(d.to_string()));
                     }
                     Value::Object(e)
                 })
                 .collect()
         })
+        .map(|tools| bound_catalog(&Value::Array(tools)))
         .unwrap_or_default())
+}
+
+/// The most a cached tool name may run to, in UTF-16 units (what the UI
+/// measures in); an entry whose name is empty, missing, not a string or
+/// over this is not a tool this registry will offer.
+pub(crate) const TOOL_NAME_MAX: usize = 200;
+/// The most of a tool's description the cache keeps.
+pub(crate) const TOOL_DESCRIPTION_MAX: usize = 300;
+/// The most of a tool's `inputSchema` the cache keeps, in serialized bytes;
+/// a larger one is replaced by the permissive object schema plus
+/// `inputSchemaTruncated: true`, so the catalog stays a list of valid tools
+/// without carrying a document an upstream chose the size of.
+pub(crate) const TOOL_SCHEMA_MAX_BYTES: usize = 32 * 1024;
+
+/// THE CATALOG BOUND — every tool list an upstream answered, whichever path
+/// asked (hosted, package, Workbench), passes through here before it is
+/// stored: a name over `TOOL_NAME_MAX` or empty drops the entry, a
+/// description is clipped to `TOOL_DESCRIPTION_MAX`, an `inputSchema` over
+/// `TOOL_SCHEMA_MAX_BYTES` becomes the marker. Every other field an entry
+/// carries is kept as it came. Anything that is not an array of objects
+/// bounds to an empty catalog. Pure, pinned by tests.
+pub(crate) fn bound_catalog(tools: &Value) -> Vec<Value> {
+    let Some(entries) = tools.as_array() else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|t| {
+            let obj = t.as_object()?;
+            let name = obj.get("name").and_then(Value::as_str)?;
+            if name.is_empty() || name.encode_utf16().count() > TOOL_NAME_MAX {
+                return None;
+            }
+            let mut e = obj.clone();
+            if let Some(d) = obj.get("description").and_then(Value::as_str) {
+                e.insert(
+                    "description".into(),
+                    Value::String(utf16_slice(d, TOOL_DESCRIPTION_MAX)),
+                );
+            }
+            if let Some(schema) = obj.get("inputSchema")
+                && schema.to_string().len() > TOOL_SCHEMA_MAX_BYTES
+            {
+                e.insert(
+                    "inputSchema".into(),
+                    serde_json::json!({ "type": "object" }),
+                );
+                e.insert("inputSchemaTruncated".into(), Value::Bool(true));
+            }
+            Some(Value::Object(e))
+        })
+        .collect()
 }
 
 /// The handshake alone — `(status, WWW-Authenticate)` or the transport
@@ -1693,12 +1826,15 @@ pub(crate) async fn auth_required_message(
     }
 }
 
+/// Write a server's catalog — bounded first (`bound_catalog`), whatever
+/// path hands it in.
 pub(crate) async fn store_catalog(pg: &PgPool, id: &str, tools: &Value) -> Result<(), String> {
+    let tools = Value::Array(bound_catalog(tools));
     sqlx::query(
         "update mcp_servers set tools = $2, tools_refreshed_at = now(), updated_at = now() where id::text = $1",
     )
     .bind(id)
-    .bind(tools)
+    .bind(&tools)
     .execute(pg)
     .await
     .map_err(|e| e.to_string())?;
@@ -1811,7 +1947,7 @@ pub async fn servers_for_agent(
 
 /// The owner-side deny `effective_mcp_for` applies: an explicit person deny,
 /// or a team deny with no allow (person or team) beside it.
-async fn owner_denied(pg: &PgPool, server_id: &str, owner: &str) -> Result<bool, sqlx::Error> {
+pub async fn owner_denied(pg: &PgPool, server_id: &str, owner: &str) -> Result<bool, sqlx::Error> {
     let access: Option<(bool,)> = sqlx::query_as(
         "select allowed from mcp_user_access where server_id::text = $1 and user_id::text = $2",
     )
@@ -1841,6 +1977,97 @@ async fn owner_denied(pg: &PgPool, server_id: &str, owner: &str) -> Result<bool,
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The repoint rule: a different host or port is a different server and
+    /// loses every credential; a different path, scheme or case on the same
+    /// authority is the same one. The DB side (`drop_credentials_for_new_host`
+    /// and the header clear in `update_mcp_server`) hangs off this answer.
+    #[test]
+    fn a_url_change_is_a_host_change_only_when_the_authority_moves() {
+        // Same operator: path, scheme, case, explicit default port.
+        assert!(!url_host_changed(
+            "https://mcp.linear.app/mcp",
+            "https://mcp.linear.app/sse"
+        ));
+        assert!(!url_host_changed(
+            "https://mcp.linear.app/mcp",
+            "https://MCP.Linear.app:443/mcp"
+        ));
+        assert!(!url_host_changed(
+            "http://localhost:8080/mcp",
+            "http://localhost:8080/v2"
+        ));
+        // Moved: host, subdomain, port, scheme-implied port.
+        assert!(url_host_changed(
+            "https://mcp.linear.app/mcp",
+            "https://alice.example/mcp"
+        ));
+        assert!(url_host_changed(
+            "https://mcp.linear.app/mcp",
+            "https://evil.mcp.linear.app/mcp"
+        ));
+        assert!(url_host_changed(
+            "http://localhost:8080/mcp",
+            "http://localhost:8081/mcp"
+        ));
+        assert!(url_host_changed(
+            "https://mcp.linear.app/mcp",
+            "http://mcp.linear.app/mcp"
+        ));
+        // Unparseable on either side is never "the same host".
+        assert!(url_host_changed("talaria-pkg://x", "https://a.example/mcp"));
+        assert!(url_host_changed("https://a.example/mcp", "not a url"));
+        assert!(url_host_changed("", ""));
+    }
+
+    /// The catalog bound, on the shapes upstreams answer with: a name over
+    /// the cap or missing drops the entry, a long description is clipped
+    /// in UTF-16 units, a huge schema becomes the marker, and every other
+    /// field rides through untouched.
+    #[test]
+    fn the_catalog_bound_drops_caps_and_marks_but_keeps_the_rest() {
+        let long_name = "n".repeat(TOOL_NAME_MAX + 1);
+        let edge_name = "n".repeat(TOOL_NAME_MAX);
+        let long_desc = "d".repeat(TOOL_DESCRIPTION_MAX + 50);
+        let big_schema = json!({ "type": "object", "properties": {
+            "blob": { "type": "string", "description": "x".repeat(TOOL_SCHEMA_MAX_BYTES) } } });
+        let small_schema = json!({ "type": "object", "properties": { "q": { "type": "string" } } });
+        let tools = json!([
+            { "name": "search", "description": long_desc, "inputSchema": small_schema,
+              "annotations": { "readOnlyHint": true } },
+            { "name": "", "description": "empty name" },
+            { "name": long_name, "description": "too long" },
+            { "name": 42 },
+            { "description": "no name" },
+            "not an object",
+            { "name": edge_name },
+            { "name": "dump", "inputSchema": big_schema },
+            { "name": "emoji", "description": "😀".repeat(200) },
+        ]);
+        let out = bound_catalog(&tools);
+        assert_eq!(out.len(), 4, "{out:?}");
+        assert_eq!(out[0]["name"], "search");
+        assert_eq!(
+            out[0]["description"]
+                .as_str()
+                .unwrap()
+                .encode_utf16()
+                .count(),
+            TOOL_DESCRIPTION_MAX
+        );
+        assert_eq!(out[0]["inputSchema"], small_schema);
+        assert_eq!(out[0]["annotations"]["readOnlyHint"], true);
+        assert!(out[0].get("inputSchemaTruncated").is_none());
+        assert_eq!(out[1]["name"].as_str().unwrap().len(), TOOL_NAME_MAX);
+        assert_eq!(out[2]["name"], "dump");
+        assert_eq!(out[2]["inputSchema"], json!({ "type": "object" }));
+        assert_eq!(out[2]["inputSchemaTruncated"], true);
+        // A 200-emoji description is 400 UTF-16 units: clipped to 150 emoji.
+        assert_eq!(out[3]["description"].as_str().unwrap().chars().count(), 150);
+        // Not a list at all: nothing, never a panic.
+        assert!(bound_catalog(&json!(null)).is_empty());
+        assert!(bound_catalog(&json!({ "name": "x" })).is_empty());
+    }
 
     #[test]
     fn parse_reads_json_objects_arrays_and_the_last_sse_frame() {

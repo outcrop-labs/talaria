@@ -40,6 +40,73 @@ export async function worktreeSlot(
   return null
 }
 
+/** Every key the generated block below writes. The copy of main's ui/.env is
+ *  filtered by THIS list — not a hand-kept one — because envValue returns the
+ *  FIRST match, so any of these inherited from the source env shadows the line
+ *  appended for this stack. Twice that was a hand-kept list one key short:
+ *  TALARIA_API_PORT (the api stayed on the shared :5274), then
+ *  TALARIA_RUST_API_URL (the port moved, the url the proxy dials did not, and
+ *  the app sent every /api/* to the primary's api). A devbox's ui/.env carries
+ *  TALARIA_GATEWAY_SELF_URL and TALARIA_FLEET_PROJECT too, so a worktree cut
+ *  from inside a box would have handed its agents to the box's app the same
+ *  way. Deriving the filter from what is written closes the class. */
+export const WORKTREE_ENV_KEYS = [
+  'TALARIA_WORKTREE',
+  'DATABASE_URL',
+  'REDIS_URL',
+  'PORT',
+  'TALARIA_API_PORT',
+  'TALARIA_RUST_API_URL',
+  'TALARIA_GATEWAY_SELF_URL',
+  'TALARIA_FLEET_PROJECT',
+] as const
+
+/** Main's ui/.env with every line this stack rewrites removed. */
+export function stripOwnKeys(uiEnv: string): string {
+  return uiEnv
+    .split('\n')
+    .filter((l) => !WORKTREE_ENV_KEYS.some((k) => l.startsWith(`${k}=`)))
+    .join('\n')
+}
+
+/** The fleet config plane for a checkout, as `talaria setup` seeds it for the
+ *  primary: the three dirs the renderer writes into, `fleet/chassis.yml` from
+ *  the template, and a `fleet/.env` for the per-agent keys. The chassis is
+ *  user-owned config, so an existing one is kept. `fleet/` is gitignored, so a
+ *  fresh checkout never has it — and without the chassis the first
+ *  `POST /api/fleet/render` 500s with "fleet chassis missing" until someone
+ *  copies the template by hand, which is what this step replaces. */
+export function seedFleetPlane(ctx: Ctx, templateRoot: string, dir: string): void {
+  for (const d of ['fleet/skills', 'fleet/hooks', 'fleet/agents']) mkdirSync(join(dir, d), { recursive: true })
+  const chassisTemplate = join(templateRoot, 'scripts/chassis.template.yml')
+  const chassisPath = join(dir, 'fleet/chassis.yml')
+  if (existsSync(chassisPath)) {
+    ctx.log.skip('fleet/chassis.yml (exists, kept)')
+  } else if (existsSync(chassisTemplate)) {
+    copyFileSync(chassisTemplate, chassisPath)
+    ctx.log.ok('fleet/chassis.yml (from template)')
+  } else {
+    // Say so rather than skip silently: a missing chassis is the exact 500
+    // this step exists to prevent, and the template is tracked in the
+    // checkout this ran from.
+    ctx.log.warn(`no ${chassisTemplate} — fleet/chassis.yml not seeded; renders will fail until it exists`)
+  }
+  const fleetEnvPath = join(dir, 'fleet/.env')
+  if (!existsSync(fleetEnvPath)) {
+    writeFileSync(
+      fleetEnvPath,
+      `# Fleet env — compose interpolation + per-agent HERMES_KEY_* (Talaria appends
+# those automatically when you create agents). The gateway brain is
+# provisioned here by the first render.
+LLM_BASE_URL=
+LLM_API_KEY=
+LLM_MODEL=
+`,
+      { mode: 0o600 },
+    )
+  }
+}
+
 export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promise<number> {
   const root = ctx.root
   if (!NAME_RE.test(name)) ctx.log.die('name must be lowercase-kebab')
@@ -152,21 +219,9 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   // so the seeded (encrypted) secrets decrypt in this stack. AUTH_SECRET too.
   const uiEnv = readFileSync(join(root, 'ui/.env'), 'utf8')
   const secretKey = envValue(uiEnv, 'TALARIA_SECRET_KEY')
-  const kept = uiEnv
-    .split('\n')
-    // TALARIA_API_PORT joins the stripped set because envValue returns the
-    // FIRST match: leaving main's line in place would shadow the one appended
-    // below, and the worktree would silently go back to sharing :5274.
-    //
-    // TALARIA_RUST_API_URL joins it for the same reason ONE STEP LATER, and
-    // the miss cost a worktree's whole api. `talaria dev` derives the url from
-    // TALARIA_API_PORT only when nothing else names it — and main's ui/.env
-    // names it, hardcoded to :5274 by `talaria setup`. So the derivation never
-    // fired, the app proxied /api/* to the primary stack's api, and the
-    // worktree's own api sat on its port with nobody talking to it. The port
-    // line below is not enough on its own; the url has to be written too.
-    .filter((l) => !/^(DATABASE_URL|REDIS_URL|PORT|TALARIA_API_PORT|TALARIA_RUST_API_URL)=/.test(l))
-    .join('\n')
+  // Every key the block below writes is stripped first — WORKTREE_ENV_KEYS
+  // says why, and why the list is derived rather than kept by hand.
+  const kept = stripOwnKeys(uiEnv)
   const note = secretKey
     ? ''
     : '\n# NOTE: main ui/.env has no TALARIA_SECRET_KEY — the KEK falls back to AUTH_SECRET (shared here, so seeded secrets decrypt).'
@@ -208,27 +263,9 @@ TALARIA_FLEET_PROJECT=${project}-fleet
 
   // The fleet config plane, as `talaria setup` seeds it for the primary
   // checkout: the renderer writes into it, and a hire against a missing
-  // fleet/.env fails honestly rather than inventing one. The chassis is
-  // user-owned config, so an existing one is kept.
+  // fleet/.env fails honestly rather than inventing one.
   ctx.log.say('Fleet config plane (fleet/)')
-  for (const d of ['fleet/skills', 'fleet/hooks', 'fleet/agents']) mkdirSync(join(wt, d), { recursive: true })
-  const chassisTemplate = join(root, 'scripts/chassis.template.yml')
-  if (!existsSync(join(wt, 'fleet/chassis.yml')) && existsSync(chassisTemplate)) {
-    copyFileSync(chassisTemplate, join(wt, 'fleet/chassis.yml'))
-  }
-  if (!existsSync(join(wt, 'fleet/.env'))) {
-    writeFileSync(
-      join(wt, 'fleet/.env'),
-      `# Fleet env — compose interpolation + per-agent HERMES_KEY_* (Talaria appends
-# those automatically when you create agents). The gateway brain is
-# provisioned here by the first render.
-LLM_BASE_URL=
-LLM_API_KEY=
-LLM_MODEL=
-`,
-      { mode: 0o600 },
-    )
-  }
+  seedFleetPlane(ctx, root, wt)
   ctx.log.ok('fleet/ seeded')
 
   ctx.log.say('Sharing node_modules')

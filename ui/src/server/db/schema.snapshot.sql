@@ -82,7 +82,8 @@ CREATE TABLE public.agent_coding_roles (
 CREATE TABLE public.agent_created_google_docs (
     file_id text NOT NULL,
     agent_model text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_agent_write_at timestamp with time zone
 );
 CREATE TABLE public.agent_defs (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1123,7 +1124,8 @@ CREATE TABLE public.runs (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     started_at timestamp with time zone,
-    finished_at timestamp with time zone
+    finished_at timestamp with time zone,
+    crashes integer DEFAULT 0 NOT NULL
 );
 CREATE TABLE public.schema_migrations (
     id integer NOT NULL,
@@ -1191,7 +1193,8 @@ CREATE TABLE public.task_workchain_edges (
     workchain_id uuid NOT NULL,
     from_step uuid NOT NULL,
     to_step uuid NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT task_workchain_edges_no_self_check CHECK ((from_step <> to_step))
 );
 CREATE TABLE public.task_workchain_steps (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1363,6 +1366,12 @@ CREATE TABLE public.users (
     status_emoji text,
     status_text text,
     title text
+);
+CREATE TABLE public.work_dispatch_blocks (
+    task_id uuid NOT NULL,
+    agent_model text NOT NULL,
+    blocked_by text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE public.work_wait (
     task_id uuid NOT NULL,
@@ -1783,6 +1792,8 @@ ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_sub_key UNIQUE (sub);
+ALTER TABLE ONLY public.work_dispatch_blocks
+    ADD CONSTRAINT work_dispatch_blocks_pkey PRIMARY KEY (task_id, agent_model);
 ALTER TABLE ONLY public.work_wait
     ADD CONSTRAINT work_wait_pkey PRIMARY KEY (task_id);
 ALTER TABLE ONLY public.workbench_harness_defs
@@ -1877,6 +1888,7 @@ CREATE INDEX research_runs_conversation_idx ON public.research_runs USING btree 
 CREATE INDEX research_runs_created_idx ON public.research_runs USING btree (created_at DESC);
 CREATE INDEX research_runs_parent_idx ON public.research_runs USING btree (parent_run_id);
 CREATE UNIQUE INDEX runs_approval_key_idx ON public.runs USING btree (approval_key) WHERE (approval_key IS NOT NULL);
+CREATE UNIQUE INDEX runs_one_live_per_kind ON public.runs USING btree (kind) WHERE ((state = ANY (ARRAY['queued'::text, 'running'::text, 'awaiting'::text])) AND (kind = ANY (ARRAY['rag-reindex'::text, 'rag-backfill'::text])));
 CREATE INDEX runs_owner_active_idx ON public.runs USING btree (owner_user_id, state, updated_at DESC) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text, 'awaiting'::text]));
 CREATE INDEX runs_reclaim_idx ON public.runs USING btree (lease_expires_at NULLS FIRST, created_at) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text]));
 CREATE INDEX task_activity_task_idx ON public.task_activity USING btree (task_id, created_at DESC);
@@ -2221,6 +2233,8 @@ ALTER TABLE ONLY public.user_permissions
     ADD CONSTRAINT user_permissions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_avatar_upload_id_fkey FOREIGN KEY (avatar_upload_id) REFERENCES public.uploads(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.work_dispatch_blocks
+    ADD CONSTRAINT work_dispatch_blocks_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.work_wait
     ADD CONSTRAINT work_wait_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workbench_jobs

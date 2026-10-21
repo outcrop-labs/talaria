@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use talaria_api_facades::mcp::apply::roll_agent_for_user;
 use talaria_api_facades::mcp::oauth::{drop_oauth_tokens, has_oauth_tokens};
 use talaria_api_facades::mcp::registry::{
-    has_user_credentials, list_mcp_servers, set_user_credentials,
+    get_mcp_server, has_user_credentials, list_mcp_servers, set_user_credentials,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, record_msg, string_msg, too_big_msg, uuid_member, zod_type_name};
@@ -61,6 +61,72 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
     Ok(Json(json!({ "servers": out })).into_response())
 }
 
+/// Names a connected account may never set, whatever the server declares:
+/// the framing and hop-by-hop headers (the relay owns those), the upstream
+/// session id, and cookies. `authorization` is the one credential name that
+/// is allowed WITHOUT a declaration — a server declaring nothing takes a
+/// bearer, which is what the connect form offers — but it is refused when
+/// the server declares a different set.
+const NEVER_HEADER_NAMES: &[&str] = &[
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "te",
+    "trailer",
+    "upgrade",
+    "proxy-connection",
+    "proxy-authorization",
+    "mcp-session-id",
+    "cookie",
+];
+
+/// Why this header name is refused for a personal connection, or None when
+/// it may be stored. `declared` is the server's `requiredHeaders` names;
+/// when it names any, only those names are taken (case-insensitively), so a
+/// person connects what the card asked for and nothing else. Pure, so the
+/// rule is pinned without a stack.
+fn header_name_refusal(name: &str, declared: &[String]) -> Option<String> {
+    let lower = name.trim().to_lowercase();
+    if lower.is_empty() || axum::http::HeaderName::from_bytes(lower.as_bytes()).is_err() {
+        return Some(format!("\"{name}\" is not a valid header name"));
+    }
+    if NEVER_HEADER_NAMES.contains(&lower.as_str()) {
+        return Some(format!(
+            "the \"{name}\" header cannot be set by a connected account"
+        ));
+    }
+    if declared.is_empty() {
+        return None;
+    }
+    if declared
+        .iter()
+        .any(|d| d.trim().eq_ignore_ascii_case(&lower))
+    {
+        None
+    } else {
+        Some(format!(
+            "the \"{name}\" header is not one this server asks for ({})",
+            declared.join(", ")
+        ))
+    }
+}
+
+/// The header names a server declares, from its `requiredHeaders` entries.
+fn declared_header_names(required_headers: &Value) -> Vec<String> {
+    required_headers
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|h| h.get("name").and_then(Value::as_str))
+                .filter(|n| !n.trim().is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub async fn put(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -105,6 +171,31 @@ pub async fn put(
         }
     };
 
+    // The server the credentials are for: it has to exist, and a WRITE only
+    // lands on a server that takes a personal connection — enabled and
+    // per-user — and only under the header names it declares. A disconnect
+    // is allowed on any existing server, so a person can always clear a
+    // credential they stored.
+    let server = match get_mcp_server(&state.pg, &server_id).await {
+        Ok(Some(s)) => s,
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[me/mcp] server read failed", e)),
+    };
+    if let Some(m) = &creds {
+        if !server.enabled || server.auth_mode != "per-user" {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "this server does not take a personal connection",
+            ));
+        }
+        let declared = declared_header_names(&server.required_headers);
+        for name in m.keys() {
+            if let Some(why) = header_name_refusal(name, &declared) {
+                return Ok(house_error(StatusCode::BAD_REQUEST, &why));
+            }
+        }
+    }
+
     let sb = secretbox_or_500(&state, "[me/mcp] secretbox unavailable").await?;
     if let Err(e) = set_user_credentials(&state.pg, &sb, &server_id, &user.id, creds.as_ref()).await
     {
@@ -144,4 +235,61 @@ pub async fn put(
         roll_agent_for_user(&pg, &sb_, &user_id).await;
     });
     Ok(Json(json!({ "ok": true })).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hop_by_hop_and_framing_names_are_always_refused() {
+        let none: Vec<String> = Vec::new();
+        for name in [
+            "host",
+            "Host",
+            "content-length",
+            "Transfer-Encoding",
+            "connection",
+            "mcp-session-id",
+            "Cookie",
+            "proxy-authorization",
+        ] {
+            assert!(
+                header_name_refusal(name, &none).is_some(),
+                "{name} must be refused even when nothing is declared"
+            );
+            assert!(
+                header_name_refusal(name, &[name.to_string()]).is_some(),
+                "{name} must be refused even when declared"
+            );
+        }
+        // Not a header name at all.
+        assert!(header_name_refusal("", &none).is_some());
+        assert!(header_name_refusal("x y", &none).is_some());
+        assert!(header_name_refusal("bad\nname", &none).is_some());
+    }
+
+    #[test]
+    fn a_declared_set_admits_exactly_those_names_and_authorization_stands_in_for_none() {
+        let none: Vec<String> = Vec::new();
+        // Nothing declared: a bearer (the connect form's default) and any
+        // ordinary credential header are taken.
+        assert_eq!(header_name_refusal("Authorization", &none), None);
+        assert_eq!(header_name_refusal("X-Api-Key", &none), None);
+        // Declared: only the declared names, case-insensitively.
+        let declared = vec!["X-Api-Key".to_string(), "X-Org".to_string()];
+        assert_eq!(header_name_refusal("x-api-key", &declared), None);
+        assert_eq!(header_name_refusal("X-ORG", &declared), None);
+        let why = header_name_refusal("Authorization", &declared).expect("undeclared");
+        assert!(why.contains("X-Api-Key, X-Org"), "{why}");
+        assert!(header_name_refusal("X-Other", &declared).is_some());
+        // Declared names come off the registry's entry shape.
+        assert_eq!(
+            declared_header_names(
+                &json!([{ "name": "X-Api-Key" }, { "name": " " }, { "nope": 1 }])
+            ),
+            vec!["X-Api-Key".to_string()]
+        );
+        assert!(declared_header_names(&json!(null)).is_empty());
+    }
 }

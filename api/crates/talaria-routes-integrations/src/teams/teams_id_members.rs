@@ -3,6 +3,8 @@
 // email rides the audit row exactly as sent). DELETE { userId } → remove
 // (owner; the last owner is refused, everyone else goes). Non-uuid {id} →
 // the house 500. Gate order: uuid bind, then the role check, then the body.
+// Both writes re-render and roll the person's personal assistant: a PA's
+// rendered MCP set follows its owner's team access.
 
 use super::owner_gate;
 use axum::Json;
@@ -69,6 +71,20 @@ pub async fn post(
         Ok(Some(sentence)) => return Ok(house_error(StatusCode::BAD_REQUEST, &sentence)),
         Err(e) => return Ok(internal("[teams] member add failed", e)),
     }
+    // The add resolved the email to a user; this roll needs the id. A
+    // lookup that fails leaves the row written and the PA on its old
+    // render — logged, not a 500 for a membership that landed.
+    match sqlx::query_scalar::<_, String>(
+        "select id::text from users where lower(email) = lower($1)",
+    )
+    .bind(&email)
+    .fetch_optional(&state.pg)
+    .await
+    {
+        Ok(Some(user_id)) => super::render_and_roll(&state, super::Rolls::User(user_id)),
+        Ok(None) => {}
+        Err(e) => tracing::warn!("[teams] member added but the user read for the roll failed: {e}"),
+    }
     log_audit(
         &state.pg,
         AuditEntry {
@@ -109,6 +125,7 @@ pub async fn delete(
         Ok(Some(msg)) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         Err(e) => return Ok(internal("[teams] member remove failed", e)),
     }
+    super::render_and_roll(&state, super::Rolls::User(user_id.clone()));
     log_audit(
         &state.pg,
         AuditEntry {

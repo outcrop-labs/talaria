@@ -18,7 +18,12 @@
 //      targets, and each redirect hop re-validated), and
 //   2. every discovered URL is PINNED to the registrable domain of the server
 //      URL an admin configured — so a server can send us to its own auth
-//      infrastructure and nowhere else.
+//      infrastructure and nowhere else — and must be https: the token POST
+//      carries a client secret and an authorization code, and a plain-http
+//      endpoint on the right domain would hand them to whoever sits on the
+//      path. The one exception is a loopback host the operator admitted
+//      through TALARIA_FETCH_ALLOW_HOSTS (a local stub), where there is no
+//      path to sit on.
 //
 // The config lives in mcp_servers.oauth as the raw jsonb Value: pg owns its
 // key order (canonical on write), so a typed struct re-serializing in
@@ -81,7 +86,8 @@ struct Pinned {
 }
 
 impl Pinned {
-    /// Err carries the same sentence the route answers with.
+    /// Err carries the same sentence the route answers with. Two refusals:
+    /// off the server's domain, and not https (`plain_http_refusal`).
     fn check(&self, url: &str, what: &str) -> Result<String, String> {
         let Ok(parsed) = reqwest::Url::parse(url) else {
             return Err(format!("{what} is not a valid URL"));
@@ -93,8 +99,61 @@ impl Pinned {
                 self.base
             ));
         }
+        if let Some(refusal) = plain_http_refusal(&parsed, what, operator_admits_host) {
+            return Err(refusal);
+        }
         Ok(url.to_string())
     }
+}
+
+/// Does TALARIA_FETCH_ALLOW_HOSTS admit this host by name? The guard's own
+/// hostname question (`host_allowed`: exact names and `*.` suffixes), plus
+/// an address spelled verbatim in the spec — the guard files an address
+/// under its CIDR table, which has no name lookup, and `127.0.0.1` is how
+/// the end-to-end stub is admitted.
+fn operator_admits_host(host: &str) -> bool {
+    talaria_safe_fetch::host_allowed(host)
+        || std::env::var("TALARIA_FETCH_ALLOW_HOSTS")
+            .unwrap_or_default()
+            .split([',', ' ', '\t'])
+            .any(|entry| {
+                entry
+                    .trim()
+                    .eq_ignore_ascii_case(host.trim_end_matches('.'))
+            })
+}
+
+/// The https rule: an endpoint that is not `https://` is refused with a
+/// sentence naming it — unless it is a loopback host (`localhost`,
+/// 127.0.0.0/8, `::1`) the operator has admitted through
+/// TALARIA_FETCH_ALLOW_HOSTS, which is how an end-to-end stub on the same
+/// machine registers; `allowed` is that allowlist's hostname question,
+/// handed in so the rule is pure for the tests.
+fn plain_http_refusal(
+    url: &reqwest::Url,
+    what: &str,
+    allowed: impl Fn(&str) -> bool,
+) -> Option<String> {
+    if url.scheme() == "https" {
+        return None;
+    }
+    let host = url
+        .host_str()
+        .unwrap_or_default()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let loopback = match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        None => false,
+    };
+    if loopback && allowed(host) {
+        return None;
+    }
+    Some(format!(
+        "{what} is {url}, which is not https, so it is refused (a credential would cross in the clear)"
+    ))
 }
 
 fn pin_to(server_url: &str) -> Result<Pinned, String> {
@@ -795,24 +854,53 @@ async fn token_post(url: &str, body: String) -> Option<talaria_safe_fetch::SafeR
     .ok()
 }
 
-/// Exchange the authorization code. Returns where the browser should land.
+/// How long a parked state is honoured at the callback. Sweeping only
+/// happens at the next `start_oauth`, so on a quiet instance a row can sit
+/// for days — the age is checked here, where it matters.
+pub const STATE_MAX_AGE_MS: i64 = 10 * 60 * 1000;
+
+/// Who arrived at the callback: the signed-in person, and whether they may
+/// complete an ORG connection (`agents.manage`). The state row names the
+/// subject the flow was started for; the person completing it must BE that
+/// subject — otherwise a user who started a flow for their own row and
+/// handed the authorize link to somebody else would capture that person's
+/// provider grant under their own connection.
+pub struct CallbackActor<'a> {
+    pub user_id: &'a str,
+    pub may_connect_org: bool,
+}
+
+/// Exchange the authorization code. Returns `(subject, server_id)`.
+///
+/// The state row is consumed FIRST, whatever the verdict — a state the wrong
+/// person arrived with, or one past `STATE_MAX_AGE_MS`, is burned rather
+/// than left for a retry — and the code is exchanged only once the row's
+/// subject is the actor's.
 pub async fn handle_oauth_callback(
     pg: &PgPool,
     sb: &SecretBox,
     state: &str,
     code: &str,
+    actor: &CallbackActor<'_>,
 ) -> Result<(String, String), String> {
-    let row: Option<(String, String, String, String)> = sqlx::query_as(
+    let row: Option<(String, String, String, String, i64)> = sqlx::query_as(
         "delete from mcp_oauth_states where state = $1 \
-         returning server_id::text, subject, verifier, redirect_uri",
+         returning server_id::text, subject, verifier, redirect_uri, \
+                   (trunc(extract(epoch from (now() - created_at)) * 1000))::bigint as age_ms",
     )
     .bind(state)
     .fetch_optional(pg)
     .await
     .map_err(|e| e.to_string())?;
-    let Some((server_id, subject, verifier, redirect_uri)) = row else {
+    let Some((server_id, subject, verifier, redirect_uri, age_ms)) = row else {
         return Err("unknown or expired authorization state".into());
     };
+    if age_ms > STATE_MAX_AGE_MS {
+        return Err("the authorization request is too old; start the connection again".into());
+    }
+    if let Some(refusal) = callback_subject_refusal(&subject, actor) {
+        return Err(refusal.into());
+    }
     let srv: Option<(Option<Value>, String)> =
         sqlx::query_as("select oauth, url from mcp_servers where id::text = $1")
             .bind(&server_id)
@@ -865,6 +953,25 @@ pub async fn handle_oauth_callback(
             .execute(pg)
             .await;
     Ok((subject, server_id))
+}
+
+/// The one rule binding a callback to a person: an `org` state needs a
+/// person who may connect org accounts; any other state names a user id,
+/// and only that user completes it. Pure, so the shape is pinned by tests.
+pub fn callback_subject_refusal(subject: &str, actor: &CallbackActor<'_>) -> Option<&'static str> {
+    if subject == "org" {
+        if actor.may_connect_org {
+            None
+        } else {
+            Some("this authorization connects the workspace's account, which you cannot manage")
+        }
+    } else if subject == actor.user_id {
+        None
+    } else {
+        Some(
+            "this authorization was started by a different account; start the connection from your own",
+        )
+    }
 }
 
 // ── Token use ───────────────────────────────────────────────────────────────
@@ -1196,6 +1303,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_callback_completes_only_for_the_subject_the_state_names() {
+        let alice = CallbackActor {
+            user_id: "alice",
+            may_connect_org: false,
+        };
+        let admin = CallbackActor {
+            user_id: "root",
+            may_connect_org: true,
+        };
+        // The account-linking shape: a state started for bob, completed by
+        // alice's browser — refused, whoever alice is.
+        assert!(callback_subject_refusal("bob", &alice).is_some());
+        assert!(callback_subject_refusal("bob", &admin).is_some());
+        assert_eq!(callback_subject_refusal("alice", &alice), None);
+        // An org state needs the permission, not a matching id.
+        assert!(callback_subject_refusal("org", &alice).is_some());
+        assert_eq!(callback_subject_refusal("org", &admin), None);
+        // A user literally named "org" cannot pass as the org.
+        let org_user = CallbackActor {
+            user_id: "org",
+            may_connect_org: false,
+        };
+        assert!(callback_subject_refusal("org", &org_user).is_some());
+        assert_eq!(STATE_MAX_AGE_MS, 600_000);
+    }
+
+    #[test]
     fn a_grant_is_stale_inside_its_last_minute_and_never_without_an_expiry() {
         let now = 1_000_000;
         assert!(!is_stale(0, now), "no expiry named: never refreshed");
@@ -1251,6 +1385,67 @@ mod tests {
             gh.check("https://github.com/login/oauth/authorize", "x")
                 .is_ok()
         );
+    }
+
+    /// The https rule: a plain-http endpoint on the RIGHT domain is still
+    /// refused, with a sentence naming the endpoint; only a loopback host
+    /// the operator admitted is let through, and an admitted host that is
+    /// not loopback is not (the allowlist says reachable, not trusted).
+    #[test]
+    fn pinning_refuses_plain_http_except_an_admitted_loopback_stub() {
+        let pin = pin_to("https://mcp.linear.app/").unwrap();
+        let err = pin
+            .check("http://linear.app/oauth/token", "the token endpoint")
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "the token endpoint is http://linear.app/oauth/token, which is not https, so it is refused (a credential would cross in the clear)"
+        );
+        // Off-domain is named first: the domain sentence, not the scheme one.
+        assert!(
+            pin.check("http://evil.app/oauth", "the token endpoint")
+                .unwrap_err()
+                .contains("outside this server's own domain")
+        );
+
+        let what = "the client registration endpoint";
+        let url = |u: &str| reqwest::Url::parse(u).unwrap();
+        let none = |_: &str| false;
+        let stub = |h: &str| h == "127.0.0.1" || h == "localhost" || h == "::1";
+        assert_eq!(
+            plain_http_refusal(&url("https://linear.app/x"), what, none),
+            None
+        );
+        assert!(plain_http_refusal(&url("http://linear.app/x"), what, none).is_some());
+        // Loopback, admitted: passes in every spelling.
+        for u in [
+            "http://127.0.0.1:5390/oauth/register",
+            "http://localhost:5390/oauth/register",
+            "http://[::1]:5390/oauth/register",
+            "http://127.0.0.2/oauth/register",
+        ] {
+            assert_eq!(
+                plain_http_refusal(&url(u), what, |h| stub(h) || h == "127.0.0.2"),
+                None,
+                "{u}"
+            );
+        }
+        // Loopback, not admitted: refused.
+        assert!(plain_http_refusal(&url("http://127.0.0.1:5390/x"), what, none).is_some());
+        // Admitted but not loopback: refused — a LAN host is a path to sit on.
+        assert!(
+            plain_http_refusal(&url("http://mcp.corp.example/x"), what, |h| h
+                == "mcp.corp.example")
+            .is_some()
+        );
+        // The pinned path puts the stub through the env-backed question: a
+        // loopback stub on the server's own authority, admitted by name.
+        let local = pin_to("http://127.0.0.1:5390/oauth/mcp").unwrap();
+        let verdict = local.check("http://127.0.0.1:5390/oauth/token", "the token endpoint");
+        let admitted = std::env::var("TALARIA_FETCH_ALLOW_HOSTS")
+            .unwrap_or_default()
+            .contains("127.0.0.1");
+        assert_eq!(verdict.is_ok(), admitted, "{verdict:?}");
     }
 
     #[test]

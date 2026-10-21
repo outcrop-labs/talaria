@@ -4,13 +4,16 @@
 // jobs.json for truth and drives the `hermes cron` CLI for mutations through
 // the running container (docker exec). Requires the container to be up.
 //
-// METERING CAVEAT: a cron fires the agent's own
-// loop on the agent's own config, i.e. the PERSONA gateway key, which the
-// gateway leaves unmetered because a Talaria flow normally writes that turn's
-// ledger row. A cron has no flow, so its spend reaches no ledger. Not fixable
-// from here: `hermes cron create` takes no model/provider/credential, and the
-// scheduler runs inside the single `hermes gateway run` process — so at the
-// gateway a cron turn is byte-identical to a persona turn.
+// METERING: a cron fires the agent's own loop on the agent's own config,
+// i.e. the agent's own gateway key — the same key a chat turn uses, and at
+// the gateway a cron turn is byte-identical to a persona turn (`hermes cron
+// create` takes no model/provider/credential, and the scheduler runs inside
+// the single `hermes gateway run` process). The gateway relay tells them
+// apart by the turn register (talaria-gateway usage.rs): the chat transport
+// counts every turn Talaria drives while it is open, and a call on the
+// agent's key with no turn counted is metered at the relay, under the agent,
+// source `unattended` — so cron spend reaches the ledger and the agent's
+// budget. A cron firing while a chat turn is open is the known double-skip.
 
 use sqlx::PgPool;
 
@@ -334,23 +337,30 @@ pub async fn edit_cron_job(
     }
     let (department, _) = agent_for(pg, def_id).await?;
     let mut args: Vec<String> = vec!["hermes".into(), "cron".into(), "edit".into(), job_id.into()];
+    // TRIM, THEN GUARD — the same order as `create_cron_job`. The value that
+    // reaches argv is the trimmed one, so the guard has to look at it: a
+    // prompt of " --schedule=* * * * *" passed the leading-dash check on
+    // its untrimmed self and reached Hermes as an option.
     if let Some(name) = name {
+        let name = name.trim();
         assert_safe(name, "name")?;
         args.push("--name".into());
-        args.push(name.trim().to_string());
+        args.push(name.to_string());
     }
     if let Some(schedule) = schedule {
+        let schedule = schedule.trim();
         assert_safe(schedule, "schedule")?;
         assert_schedule_allowed(pg, schedule).await?;
         args.push("--schedule".into());
-        args.push(schedule.trim().to_string());
+        args.push(schedule.to_string());
     }
     if let Some(prompt) = prompt {
+        let prompt = prompt.trim();
         if prompt.starts_with('-') {
             return Err("prompt cannot start with \"-\"".to_string());
         }
         args.push("--prompt".into());
-        args.push(prompt.trim().to_string());
+        args.push(prompt.to_string());
     }
     if args.len() == 4 {
         return Err("nothing to edit".to_string());
@@ -625,21 +635,149 @@ pub async fn unschedule_from_conversation(
     Ok(())
 }
 
+/// Take every job a thread scheduled out of its agent's scheduler — the
+/// hard-delete / archive counterpart of `schedule_from_conversation`. A
+/// `conversation_schedules` row cascades away with its conversation, but
+/// the job it points at lives in the container's jobs.json and would keep
+/// firing forever: unmetered spend that reaches the cron-output door, finds
+/// no listener and is dropped. Best-effort per job, like the create path's
+/// undo: a container that cannot be reached is logged and the next job is
+/// still tried. Returns the job ids that were removed. Call it BEFORE the
+/// row delete (the rows are how the jobs are found); the rows themselves
+/// are the caller's to delete or cascade.
+///
+/// Call site (owned elsewhere): `talaria-routes-comms`'s conversation
+/// DELETE, before `delete_conversation` / `archive_conversation`.
+pub async fn remove_jobs_for_conversation(pg: &PgPool, conversation_id: &str) -> Vec<String> {
+    let rows: Vec<(String, String)> = match sqlx::query_as(
+        "select agent_model, job_id from conversation_schedules \
+         where conversation_id = $1::uuid",
+    )
+    .bind(conversation_id)
+    .fetch_all(pg)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(
+                "[crons] {conversation_id}: schedules could not be read, jobs stay: {e}"
+            );
+            return Vec::new();
+        }
+    };
+    let mut removed = Vec::new();
+    for (model, job_id) in rows {
+        let def_id = match managed_def_for_model(pg, &model).await {
+            Ok(Some(id)) => id,
+            Ok(None) => {
+                tracing::warn!(
+                    "[crons] {conversation_id}: job {job_id} on {model} stays — not a running managed agent"
+                );
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!("[crons] {conversation_id}: job {job_id} on {model} stays: {e}");
+                continue;
+            }
+        };
+        match remove_cron_job(pg, &def_id, &job_id).await {
+            Ok(()) => removed.push(job_id),
+            Err(e) => tracing::warn!(
+                "[crons] {conversation_id}: job {job_id} stays in the container: {e}"
+            ),
+        }
+    }
+    removed
+}
+
+/// Pause (or resume) every schedule a thread owns, for archive and restore:
+/// an archived thread is one nobody reads, so its jobs stop spending until
+/// it comes back. The rows stay — the schedule list still shows them, and a
+/// restore resumes exactly the set that was paused. Best-effort per job,
+/// like the removal above. Returns how many jobs the container took the
+/// change for.
+pub async fn set_jobs_paused_for_conversation(
+    pg: &PgPool,
+    conversation_id: &str,
+    paused: bool,
+) -> usize {
+    let rows = match schedules_for_conversation(pg, conversation_id).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("[crons] {conversation_id}: schedules read failed: {e}");
+            return 0;
+        }
+    };
+    let mut changed = 0;
+    for row in rows {
+        let model: Option<String> = sqlx::query_scalar(
+            "select agent_model from conversation_schedules \
+             where conversation_id = $1::uuid and job_id = $2",
+        )
+        .bind(conversation_id)
+        .bind(&row.job_id)
+        .fetch_optional(pg)
+        .await
+        .ok()
+        .flatten();
+        let def_id = match model {
+            Some(model) => managed_def_for_model(pg, &model).await.ok().flatten(),
+            None => None,
+        };
+        let Some(def_id) = def_id else {
+            tracing::warn!(
+                "[crons] {conversation_id}: job {} has no running managed agent to pause",
+                row.job_id
+            );
+            continue;
+        };
+        let done = if paused {
+            pause_cron_job(pg, &def_id, &row.job_id).await
+        } else {
+            resume_cron_job(pg, &def_id, &row.job_id).await
+        };
+        match done {
+            Ok(()) => changed += 1,
+            Err(e) => tracing::warn!(
+                "[crons] {conversation_id}: job {} could not be {}: {e}",
+                row.job_id,
+                if paused { "paused" } else { "resumed" }
+            ),
+        }
+    }
+    changed
+}
+
+/// The thread listening to a job, and the person who set the job up — the
+/// one who asked for the output, and so the one a landed turn answers to.
+#[derive(Debug, Clone)]
+pub struct JobListener {
+    pub conversation_id: String,
+    /// `conversation_schedules.created_by`: None only for a row written
+    /// before the column was stamped.
+    pub created_by: Option<String>,
+}
+
 /// Which conversation, if any, is listening to this agent's job — the lookup
-/// the agent's own call back makes, keyed the way the row is keyed.
+/// the agent's own call back makes, keyed the way the row is keyed — and who
+/// scheduled it.
 pub async fn conversation_for_job(
     pg: &PgPool,
     agent_model: &str,
     job_id: &str,
-) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "select conversation_id::text from conversation_schedules \
+) -> Result<Option<JobListener>, sqlx::Error> {
+    let row: Option<(String, Option<String>)> = sqlx::query_as(
+        "select conversation_id::text, created_by::text from conversation_schedules \
          where agent_model = $1 and job_id = $2",
     )
     .bind(agent_model)
     .bind(job_id)
     .fetch_optional(pg)
-    .await
+    .await?;
+    Ok(row.map(|(conversation_id, created_by)| JobListener {
+        conversation_id,
+        created_by,
+    }))
 }
 
 /// What this thread has scheduled, oldest first.

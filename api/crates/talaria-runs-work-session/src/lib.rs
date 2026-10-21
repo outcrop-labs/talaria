@@ -40,6 +40,13 @@
 // `lastTail`, `notBefore`) is fixed: rows written by earlier deploys must
 // keep resuming, and a renamed field would reset every live session
 // mid-work. Pinned by round-trip tests.
+//
+// THE SESSION IS THE RUN. Every turn reaches the agent as a Hermes SESSION
+// turn whose id is this run's id (`session_for_turn`): the container keeps
+// the transcript across turns, and the agent's plugin reports each tool
+// frame against that id, which is what lets the tool-events door land a
+// frame on THIS run rather than on the agent's newest one. A session the
+// container has lost falls back to a full-prompt completion for that turn.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, OnceLock};
@@ -53,8 +60,8 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
 use talaria_agent_auth::now_ms as wall_ms;
-use talaria_harness::run::{RunContext, RunLedger, run_harness};
-use talaria_harness::transport::LedgerSource;
+use talaria_harness::run::{RunContext, RunLedger, real_deps, run_harness};
+use talaria_harness::transport::{LedgerSource, PersonaSession, dispatch_session_transport};
 use talaria_harness_defs::defs::work_session::{
     dispatch_prompt as dispatch_brief, work_session_harness,
 };
@@ -334,6 +341,8 @@ pub type SkillNamesFn = Arc<
     dyn Fn(PgPool, String) -> BoxFuture<'static, Result<HashSet<String>, String>> + Send + Sync,
 >;
 /// ONE TURN = ONE HARNESS RUN. Err when the turn produced nothing usable.
+/// The trailing pair is the run id and the turn number: together they key
+/// the persona's session (`session_for_turn`).
 pub type TurnFn = Arc<
     dyn Fn(
             AppState,
@@ -342,6 +351,7 @@ pub type TurnFn = Arc<
             String,
             LivenessTap,
             String,
+            i64,
         ) -> BoxFuture<'static, Result<TurnOutput, String>>
         + Send
         + Sync,
@@ -422,16 +432,19 @@ pub fn real_work_session_deps(state: AppState) -> WorkSessionDeps {
             }
         }),
         skill_names: Arc::new(|pg, agent_model| Box::pin(real_skill_names(pg, agent_model))),
-        turn: Arc::new(|state, agent_model, task_id, prompt, liveness, run_id| {
-            Box::pin(real_turn(
-                state,
-                agent_model,
-                task_id,
-                prompt,
-                liveness,
-                run_id,
-            ))
-        }),
+        turn: Arc::new(
+            |state, agent_model, task_id, prompt, liveness, run_id, turn| {
+                Box::pin(real_turn(
+                    state,
+                    agent_model,
+                    task_id,
+                    prompt,
+                    liveness,
+                    run_id,
+                    turn,
+                ))
+            },
+        ),
         log_activity: Arc::new(|pg, task_id, actor, kind, description| {
             Box::pin(async move {
                 tasks::log_activity(&pg, &task_id, &actor, &kind, &description)
@@ -546,6 +559,31 @@ async fn add_skill_dir_names(root: &std::path::Path, names: &mut HashSet<String>
     }
 }
 
+/// THE PERSONA'S SESSION FOR ONE TURN, keyed by the run. A work-session turn
+/// goes to the agent as a Hermes SESSION turn whose id IS the run id: the
+/// container keeps the session's transcript, so turn N remembers what turns
+/// 1..N-1 did instead of starting cold from the ticket's state — and the
+/// agent's talaria-events plugin reports every tool frame against that same
+/// id, so the tool-events door attributes a frame to THIS run and not to
+/// whichever of the agent's sessions is newest (audit 05-F13.3: two sessions
+/// on one agent, the thrash brake aborting the wrong one, transcripts
+/// mixing). A new generation is a new run id, so a ticket that comes back to
+/// the same agent next week starts a fresh session.
+///
+/// `resumed` is the first turn's complement: turn 1 creates the session;
+/// every later turn expects to find it, and a container that answers a
+/// later turn with a FRESH session has lost its state volume — that turn is
+/// sent as a full-prompt completion (today's shape) rather than on an empty
+/// room, the way a pinned chat does. The next turn lands on the session the
+/// miss created, so continuity resumes from there; a reclaimed run keeps the
+/// same id, so a retired turn's successor rejoins the session it left.
+pub fn session_for_turn(run_id: &str, turn: i64) -> PersonaSession {
+    PersonaSession {
+        id: run_id.to_string(),
+        resumed: turn > 1,
+    }
+}
+
 async fn real_turn(
     state: AppState,
     agent_model: String,
@@ -553,6 +591,7 @@ async fn real_turn(
     prompt: String,
     liveness: LivenessTap,
     run_id: String,
+    turn: i64,
 ) -> Result<TurnOutput, String> {
     // THE WATCH TEE: this turn's stream events are published to
     // run-watch:<id> and appended to its tail, which the watch route replays
@@ -583,11 +622,20 @@ async fn real_turn(
     // drops the harness future mid-await — the same interrupt a stop or a
     // driver death produces (the persona sees the stream go away and stops
     // its task).
+    // The same subscriber is the turn's second LIVENESS source: the persona's
+    // HTTP chunks ping the tap from the transport, but a tool call that
+    // streams nothing (a build, a test run) is silent on that wire for its
+    // whole duration while the plugin's toolfull frames keep arriving here.
+    // Every frame on the watch channel is the agent working, so every frame
+    // pings — without this, a twelve-minute silent tool call hit the
+    // ten-minute idle deadline, the run was filed as an error, and the
+    // sweep opened a second session on an agent still mid-turn.
     let (breach_tx, mut breach_rx) = tokio::sync::oneshot::channel::<u32>();
     let thrash_watcher = {
         let state = state.clone();
         let channel = watch.clone();
-        tokio::spawn(async move {
+        let liveness = liveness.clone();
+        AbortOnDrop(tokio::spawn(async move {
             // A dedicated subscriber connection, the realtime crate's law:
             // pubsub owns the connection. Any failure here only disables
             // the brake for this turn — the session still runs, silence
@@ -605,6 +653,9 @@ async fn real_turn(
             let mut messages = pubsub.on_message();
             let mut streak = 0u32;
             while let Some(msg) = messages.next().await {
+                if let Some(ping) = liveness.as_ref() {
+                    ping();
+                }
                 let Ok(payload) = msg.get_payload::<String>() else {
                     continue;
                 };
@@ -613,10 +664,26 @@ async fn real_turn(
                     return;
                 }
             }
-        })
+        }))
     };
     let turn_harness = work_session_harness();
     let turn_payload = json!({ "prompt": prompt });
+    // THE SESSION DOOR. The real deps, with the transport pointed at the
+    // persona's session for this run (`session_for_turn`) — the one place
+    // in the product that keys a session by a run, saying so here rather
+    // than through a request slot every single-shot harness would carry
+    // empty. Everything else about the turn (the pump, the meter, the watch
+    // tee, the guard pass) is the same transport it always was.
+    let session = session_for_turn(&run_id, turn);
+    let mut deps = real_deps(&state);
+    deps.transport = {
+        let state = state.clone();
+        Arc::new(move |req| {
+            let state = state.clone();
+            let session = session.clone();
+            Box::pin(async move { dispatch_session_transport(&state, &req, &session).await })
+        })
+    };
     let turn_ctx = RunContext {
         caller: format!("ticket:{task_id}"),
         user_id: None,
@@ -629,13 +696,13 @@ async fn real_turn(
             ref_id: Some(task_id.clone()),
             task_id: Some(task_id.clone()),
         }),
-        deps: None,
+        deps: Some(Arc::new(deps)),
         liveness,
         watch: Some(watch.clone()),
     };
     let run = tokio::select! {
         r = run_harness(&state, &turn_harness, &turn_payload, turn_ctx) => {
-            thrash_watcher.abort();
+            drop(thrash_watcher);
             r
         }
         Ok(n) = &mut breach_rx => {
@@ -678,6 +745,52 @@ async fn real_turn(
         text,
         findings: run.findings,
     })
+}
+
+/// A spawned task that ends when its handle does. A dropped `JoinHandle`
+/// DETACHES its task, and this turn's future is dropped from outside on an
+/// idle deadline, a lost lease, a cancel or a shutdown — every interrupted
+/// turn used to leave its watcher subscribed to a channel a dead run never
+/// writes to again: one leaked task and one leaked Redis connection per
+/// interruption, for the life of the process.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// THE RUN A TOOL FRAME BELONGS TO, by the session the plugin names. The
+/// tool-events route used to attribute a frame to the agent's NEWEST live
+/// session, which is the wrong one whenever an agent drives two tickets (or
+/// one ticket and a chat): the thrash brake then aborted the wrong run and
+/// the older session's transcript lost its tail. Every turn now goes to the
+/// agent as a session turn keyed by its run id (`session_for_turn`), so the
+/// plugin's `sessionId` IS the run id, and a frame that names it is
+/// attributed exactly: this answers a live work session of this agent whose
+/// run id is that session id, and `None` for anything else — a chat
+/// conversation's id, a finished run, another agent's run — so a caller
+/// falls back to its newest-session read only when the frame cannot say
+/// (an older plugin, or a session id that is not a key Talaria minted).
+pub async fn live_work_session_for(
+    pg: &PgPool,
+    agent_model: &str,
+    session_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    if uuid::Uuid::parse_str(session_id).is_err() {
+        return Ok(None);
+    }
+    sqlx::query_scalar(
+        "select id::text from runs \
+         where kind = 'work-session' and id = $2::uuid \
+           and state in ('queued', 'running', 'awaiting') \
+           and input->>'agentModel' = $1",
+    )
+    .bind(agent_model)
+    .bind(session_id)
+    .fetch_optional(pg)
+    .await
 }
 
 // ── The transcript artifact ──────────────────────────────────────────────────
@@ -1086,14 +1199,14 @@ async fn hygiene_step(pg: &PgPool, agent_id: &str) -> Option<String> {
     for r in &rules {
         let base = r.base_branch.as_deref().unwrap_or("the default branch");
         // The project's env, when one exists: name the PATH, never the
-        // values — the agent sources the file the way a developer would.
+        // values — start_job writes it into the job's own workdir and the
+        // agent loads the file the way a developer would.
         let env_note = env_keys
             .get(&r.repo)
             .map(|keys| {
                 format!(
-                    " (project env with {} var(s): source /opt/workbench-env/{}.env)",
-                    keys.len(),
-                    r.repo
+                    " (project env with {} var(s): prepare_env writes it to <workdir>/.talaria/env — `set -a; . <workdir>/.talaria/env; set +a` before you build)",
+                    keys.len()
                 )
             })
             .unwrap_or_default();
@@ -1488,6 +1601,7 @@ pub async fn work_session_step(
             prompt,
             Some(ctx.activity.as_ping()),
             ctx.run.id.clone(),
+            *turn,
         )
         .await
         {
@@ -1794,6 +1908,51 @@ mod tests {
         );
     }
 
+    /// THE SESSION IS THE RUN. Turn 1 creates it; every later turn — a
+    /// continuation, a reconcile, the successor of a retired turn on a
+    /// reclaimed driver — expects to resume it, and the id never changes
+    /// across the run, which is what lets the tool-events door hand a frame
+    /// to exactly this run.
+    #[test]
+    fn a_turn_keys_the_persona_session_by_its_run_and_resumes_after_the_first() {
+        let run = session_run_id("t-1", "engineer-engineering", 0);
+        let first = session_for_turn(&run, 1);
+        assert_eq!(first.id, run);
+        assert!(!first.resumed, "turn 1 creates the session");
+        for turn in [2, 7, MAX_SESSION_TURNS] {
+            let later = session_for_turn(&run, turn);
+            assert_eq!(later.id, run, "the id is the run's for the whole session");
+            assert!(later.resumed, "turn {turn} expects the session to be there");
+        }
+        // A new generation is a new run and so a new session.
+        assert_ne!(
+            session_for_turn(&session_run_id("t-1", "engineer-engineering", 1), 1).id,
+            run
+        );
+    }
+
+    /// THE SESSION-KEYED RESOLUTION refuses to ask the database about an id
+    /// that cannot be a run — the plugin's session id on a turn Talaria did
+    /// not key is whatever the container minted, and a query cast to uuid
+    /// would 500 the door. The pool is lazy and dials nothing; a query
+    /// against it would fail, so an `Ok(None)` here proves none ran.
+    #[tokio::test]
+    async fn a_session_id_that_is_not_a_run_id_resolves_to_nothing_without_a_query() {
+        let state = test_state();
+        for not_a_key in [
+            "",
+            "sess-abc123",
+            "api-7f3a",
+            "PLAT-118",
+            "not a uuid at all",
+        ] {
+            let got = live_work_session_for(&state.pg, "engineer-engineering", not_a_key)
+                .await
+                .expect("no query runs for a non-uuid");
+            assert_eq!(got, None, "{not_a_key:?}");
+        }
+    }
+
     #[test]
     fn registration_carries_the_real_metadata_once() {
         let def = work_session_run();
@@ -1993,14 +2152,16 @@ mod tests {
             }),
             workflows_for_task: Arc::new(|_pg, _t| Box::pin(async { Ok(vec![]) })),
             skill_names: Arc::new(|_pg, _a| Box::pin(async { Ok(HashSet::new()) })),
-            turn: Arc::new(move |_state, _agent, _task, _prompt, _liveness, _run| {
-                Box::pin(async {
-                    Ok(TurnOutput {
-                        text: turn_text.to_string(),
-                        findings: vec![],
+            turn: Arc::new(
+                move |_state, _agent, _task, _prompt, _liveness, _run, _turn| {
+                    Box::pin(async {
+                        Ok(TurnOutput {
+                            text: turn_text.to_string(),
+                            findings: vec![],
+                        })
                     })
-                })
-            }),
+                },
+            ),
             log_activity: Arc::new(move |_pg, task_id, actor, _kind, description| {
                 // An `Fn` dep cannot hand its capture to the future — clone
                 // the Arc into it, the same way the real deps move their
@@ -2059,6 +2220,7 @@ mod tests {
             result: serde_json::Value::Null,
             error: None,
             attempt: 0,
+            crashes: 0,
             lease_owner: None,
             lease_expires_at: None,
             approval_key: None,
@@ -2328,7 +2490,7 @@ mod tests {
     #[tokio::test]
     async fn a_turn_that_answers_nothing_fails_through_a_checkpoint() {
         let (mut deps, _rec) = recording_deps("unused");
-        deps.turn = Arc::new(|_s, _a, _t, _p, _l, _r| {
+        deps.turn = Arc::new(|_s, _a, _t, _p, _l, _r, _n| {
             Box::pin(async { Err("gateway completion 429: rate limited".to_string()) })
         });
         let cp = json!({"stage":"send","turn":2,"stageAttempt":0,"lastTail":""});

@@ -1,5 +1,9 @@
 // /api/teams/{id}/agents. GET → agent members (any team member).
-// POST { model } → add (owner). DELETE { model } → remove (owner).
+// POST { model } → add (owner). DELETE { model } → remove (owner). Both
+// writes re-render and ROLL the agent: a team's MCP grants ride on
+// `team_agents` (`servers_for_agent`), and a running Hermes wires its MCP
+// servers at start — without the roll the container keeps the old server
+// set and the config on disk keeps advertising the old one.
 
 use super::owner_gate;
 use axum::Json;
@@ -55,6 +59,7 @@ pub async fn post(
         Ok(Some(sentence)) => return Ok(house_error(StatusCode::BAD_REQUEST, &sentence)),
         Err(e) => return Ok(internal("[teams] agent add failed", e)),
     }
+    super::render_and_roll(&state, super::Rolls::Models(vec![model.clone()]));
     log_audit(
         &state.pg,
         AuditEntry {
@@ -93,6 +98,7 @@ pub async fn delete(
     if let Err(e) = remove_team_agent(&state.pg, &id, &model).await {
         return Ok(internal("[teams] agent remove failed", e));
     }
+    super::render_and_roll(&state, super::Rolls::Models(vec![model.clone()]));
     log_audit(
         &state.pg,
         AuditEntry {

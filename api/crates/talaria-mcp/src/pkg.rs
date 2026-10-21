@@ -15,11 +15,21 @@
 // real credentials. The container gets the Hermes chassis's shape minus its
 // cap_adds (those exist for s6-overlay boot; stock node/uv images need
 // none, so packages run strictly stricter): no-new-privileges, cap-drop
-// ALL, pids/memory/cpus ceilings, pinned DNS, default bridge network —
-// outbound for npx/uvx, no path to the fleet network or postgres, no
-// docker socket. Runtime arguments arrive from the registry as LITERAL
-// `docker run` flags, so an allowlist (volumes/env/mounts/add-host/publish)
-// is the gate, never verbatim appends.
+// ALL, pids/memory/cpus ceilings, pinned DNS, an unprivileged uid
+// (65534, so nothing inside is root anywhere), a read-only root with one
+// tmpfs at /tmp (HOME — npx and uv keep their caches there, so a respawn
+// re-downloads; a bind mount for a cache would be the hole this closes),
+// no docker socket. NETWORK: stdio packages sit on the default bridge
+// (outbound only — nothing dials in); oci-http packages get their own
+// `talaria-mcp-<instance>` bridge network, which this api joins on demand
+// when it runs in-image, so the relay reaches them by container DNS and
+// they still have no path to the fleet network, postgres, redis or any
+// other `*_internal` service. Runtime arguments arrive from the registry as
+// LITERAL `docker run` flags, so an allowlist is the gate, never verbatim
+// appends — and the allowlist checks VALUES, not just names: a volume may
+// only be a `talaria-mcp-*` named volume (never a host path, never the
+// socket), a publish may only bind loopback, and `--mount`/`--add-host`
+// are refused outright (`check_run_flag`).
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -34,19 +44,98 @@ use talaria_mcp_jsonrpc::MCP_PROTOCOL_VERSION;
 use talaria_secretbox::SecretBox;
 
 /// Named `docker run` flags a registry package may ask for. Anything else —
-/// `--privileged`, `--pid=host`, `--network=host` are all expressible in a
-/// package's runtimeArguments — is refused at install (the POST parser
-/// checks the declaration; pkg_argv re-checks at spawn — defense in depth).
-pub const ALLOWED_FLAGS: &[&str] = &[
-    "-v",
-    "--volume",
-    "-e",
-    "--env",
-    "--mount",
-    "--add-host",
-    "-p",
-    "--publish",
-];
+/// `--privileged`, `--pid=host`, `--network=host`, `--mount`, `--add-host`
+/// are all expressible in a package's runtimeArguments — is refused at
+/// install (the POST parser checks the declaration; pkg_argv re-checks at
+/// spawn — defense in depth). The name is half the gate: `check_run_flag`
+/// is the whole of it, value included.
+pub const ALLOWED_FLAGS: &[&str] = &["-v", "--volume", "-e", "--env", "-p", "--publish"];
+
+/// The sentence every refusal of a flag NAME carries.
+fn flag_refused(flag: &str) -> String {
+    format!(
+        "this package asks for the docker flag \"{flag}\", which is not allowed (named volumes, env and loopback ports only)"
+    )
+}
+
+/// A named volume a package may mount: the instance-scoped prefix, then
+/// `[a-z0-9-]`. No `/` (a host path), no `.` (`./here`), no `:` — so the
+/// source can only ever be a docker-managed volume, never the host
+/// filesystem or the docker socket.
+fn named_volume_ok(src: &str) -> bool {
+    src.strip_prefix("talaria-mcp-").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    })
+}
+
+/// The gate for one declared run flag and the value it would carry. `None`
+/// = the declaration carries no value yet (an unfilled placeholder) — the
+/// name alone is checked; the fill is checked again when it exists. Pure;
+/// the POST parser and `pkg_argv` share it.
+pub fn check_run_flag(flag: &str, value: Option<&str>) -> Result<(), String> {
+    if !ALLOWED_FLAGS.contains(&flag) {
+        return Err(flag_refused(flag));
+    }
+    let Some(value) = value else {
+        return Ok(());
+    };
+    match flag {
+        "-v" | "--volume" => {
+            // `source:destination[:options]` — the source is a named volume,
+            // the destination an absolute container path, the options the
+            // documented read/write and SELinux words only.
+            let parts: Vec<&str> = value.split(':').collect();
+            let ok = matches!(parts.len(), 2 | 3)
+                && named_volume_ok(parts[0])
+                && parts[1].starts_with('/')
+                && parts.get(2).is_none_or(|opts| {
+                    !opts.is_empty()
+                        && opts
+                            .split(',')
+                            .all(|o| matches!(o, "ro" | "rw" | "z" | "Z" | "nocopy"))
+                });
+            if !ok {
+                return Err(format!(
+                    "this package asks to mount \"{value}\", which is not allowed (only a talaria-mcp-* named volume may be mounted — never a host path)"
+                ));
+            }
+        }
+        "-p" | "--publish" => {
+            // Loopback only: `127.0.0.1:host:container[/proto]` or
+            // `127.0.0.1::container[/proto]` — digits, colons, a port range's
+            // dash, and the protocol word.
+            let bound_to_loopback = value.strip_prefix("127.0.0.1:").is_some_and(|rest| {
+                let ports = rest
+                    .strip_suffix("/tcp")
+                    .or_else(|| rest.strip_suffix("/udp"))
+                    .unwrap_or(rest);
+                !ports.is_empty()
+                    && ports
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || b == b':' || b == b'-')
+            });
+            if !bound_to_loopback {
+                return Err(format!(
+                    "this package asks to publish \"{value}\", which is not allowed (ports bind 127.0.0.1 only)"
+                ));
+            }
+        }
+        _ => {} // -e/--env: a KEY=VALUE pair is the container's own business
+    }
+    Ok(())
+}
+
+/// The stock image an npm or pypi package runs in; an oci package brings its
+/// own. One table, read by the spec parser and by the install's pull.
+pub fn runtime_image(kind: &str) -> &'static str {
+    match kind {
+        "pypi" => "ghcr.io/astral-sh/uv:python3.12-bookworm-slim",
+        _ => "node:22-slim",
+    }
+}
 
 /// Pending-request bound: a package server that busy-loops its caller gets
 /// refused past this many concurrent calls rather than buffered forever.
@@ -72,37 +161,74 @@ pub fn container_name(server_name: &str) -> String {
 }
 
 /// Is THIS api running inside the product image? In-image, published
-/// loopback ports are unreachable (they bind the host); the app-db answer
-/// applies: join the api's own network and dial by container DNS.
+/// loopback ports are unreachable (they bind the host), so the api joins
+/// the package network and dials by container DNS.
 fn in_image() -> bool {
     std::env::var("TALARIA_INSTALL").ok().as_deref() == Some("image")
         || std::env::var("TALARIA_RUNTIME").ok().as_deref() == Some("prod-server")
 }
 
-async fn api_network() -> Option<String> {
-    if !in_image() {
-        return None;
+/// The bridge network oci-http package containers live on — theirs alone,
+/// per instance. Never the api's own `*_internal` network: that one carries
+/// postgres, redis, qdrant and the rest, several without authentication,
+/// and a package is third-party code.
+pub fn pkg_network() -> String {
+    format!("talaria-mcp-{}", instance())
+}
+
+/// Create the package network if it is missing, and — when this api runs
+/// in-image — join it, so container DNS resolves the package from here.
+/// The join is idempotent (`inspect` first; a lost race on `connect` is
+/// re-checked the same way). On the host nothing joins: the relay dials
+/// the loopback-published port.
+async fn ensure_pkg_network() -> Result<String, String> {
+    let name = pkg_network();
+    let inspect = || async {
+        talaria_fleet_docker::docker(&["network", "inspect", &name], Duration::from_secs(10)).await
+    };
+    if inspect().await.is_err() {
+        // A create that loses a race fails; the re-inspect says which.
+        let created = talaria_fleet_docker::docker(
+            &["network", "create", "--driver", "bridge", &name],
+            Duration::from_secs(10),
+        )
+        .await;
+        if created.is_err() {
+            inspect()
+                .await
+                .map_err(|e| format!("package network {name} unavailable: {e}"))?;
+        }
     }
-    if let Ok(named) = std::env::var("TALARIA_APP_DB_NETWORK") {
-        return Some(named);
+    if in_image() {
+        let self_id = std::env::var("HOSTNAME").map_err(|_| "HOSTNAME unset in-image")?;
+        let joined = || async {
+            talaria_fleet_docker::docker(
+                &[
+                    "inspect",
+                    "-f",
+                    "{{range $k,$v := .NetworkSettings.Networks}}{{$k}}\n{{end}}",
+                    &self_id,
+                ],
+                Duration::from_secs(10),
+            )
+            .await
+            .is_ok_and(|(out, _)| out.lines().map(str::trim).any(|n| n == name))
+        };
+        if !joined().await {
+            let connected = talaria_fleet_docker::docker(
+                &["network", "connect", &name, &self_id],
+                Duration::from_secs(30),
+            )
+            .await;
+            if connected.is_err() && !joined().await {
+                return Err(format!(
+                    "this api could not join the package network {name}: {}",
+                    connected.err().unwrap_or_default()
+                ));
+            }
+        }
     }
-    let self_id = std::env::var("HOSTNAME").ok()?;
-    let (out, _) = talaria_fleet_docker::docker(
-        &[
-            "inspect",
-            "-f",
-            "{{range $k,$v := .NetworkSettings.Networks}}{{$k}}\n{{end}}",
-            &self_id,
-        ],
-        Duration::from_secs(10),
-    )
-    .await
-    .ok()?;
-    out.lines()
-        .map(str::trim)
-        .find(|n| n.ends_with("_internal") || *n == "internal")
-        .or_else(|| out.lines().map(str::trim).find(|n| !n.is_empty()))
-        .map(str::to_string)
+    Ok(name)
 }
 
 // ── the spec (typed view over the row's `package` jsonb) ────────────────────
@@ -147,7 +273,16 @@ impl PkgSpec {
                 .get("transportPath")
                 .and_then(Value::as_str)
                 .map(str::to_string),
-            image: obj.get("image")?.as_str()?.to_string(),
+            image: match obj.get("image").and_then(Value::as_str) {
+                Some(i) if !i.is_empty() => i.to_string(),
+                // npm and pypi packages run in the stock runtime image; only
+                // an oci package names its own, and without one it is not a
+                // spec at all.
+                _ => match obj.get("kind").and_then(Value::as_str) {
+                    Some("oci") | None => return None,
+                    Some(kind) => runtime_image(kind).to_string(),
+                },
+            },
             image_digest: obj
                 .get("imageDigest")
                 .and_then(Value::as_str)
@@ -246,11 +381,34 @@ async fn pinned_dns() -> Vec<String> {
     ]
 }
 
+/// The unprivileged uid:gid every package runs as — `nobody` on every stock
+/// image; not root anywhere, so a volume or a kernel surface the container
+/// reaches is reached as nobody.
+const PKG_USER: &str = "65534:65534";
+
+/// The one writable path: HOME, where npx (`~/.npm`, `~/.npm/_npx`) and uv
+/// (`~/.cache/uv`, `~/.local/share/uv/tools`) keep what they download.
+/// Memory-backed and gone with the container — a cache that survives a
+/// respawn would need a volume owned by uid 65534, which `docker volume`
+/// cannot promise; a slower respawn is the price of a read-only root. Sized
+/// under the memory ceiling (tmpfs pages count against it); `exec` stays
+/// allowed because uv's tool venvs and npm's native binaries run from here.
+const PKG_TMPFS: &str = "/tmp:rw,exec,nosuid,nodev,size=768m";
+
 fn hardening(argv: &mut Vec<String>, dns: &[String]) {
     argv.push("--security-opt".into());
     argv.push("no-new-privileges:true".into());
     argv.push("--cap-drop".into());
     argv.push("ALL".into());
+    argv.push("--user".into());
+    argv.push(PKG_USER.into());
+    argv.push("--read-only".into());
+    argv.push("--tmpfs".into());
+    argv.push(PKG_TMPFS.into());
+    // Before the sealed env, so a package that declares its own HOME wins
+    // (docker keeps the last spelling of a repeated -e).
+    argv.push("-e".into());
+    argv.push("HOME=/tmp".into());
     argv.push("--pids-limit".into());
     argv.push("256".into());
     argv.push("--memory".into());
@@ -284,40 +442,23 @@ pub fn pkg_argv(
         argv.push("-i".into());
     }
     hardening(&mut argv, dns);
-    // npx/uvx re-download their package on EVERY spawn without these — the
-    // named volumes make the second spawn instant and the first the only
-    // slow one.
-    match spec.kind.as_str() {
-        "npm" => {
-            argv.push("-v".into());
-            argv.push(format!("talaria-mcp-npm-cache-{}:/root/.npm", instance()));
-        }
-        "pypi" => {
-            argv.push("-v".into());
-            argv.push(format!(
-                "talaria-mcp-uv-cache-{}:/root/.cache/uv",
-                instance()
-            ));
-        }
-        _ => {}
-    }
+    // npx/uv download their package into HOME (the tmpfs) on every spawn —
+    // see PKG_TMPFS for why there is no cache volume.
     for (k, v) in &sealed.env {
         argv.push("-e".into());
         argv.push(format!("{k}={v}"));
     }
-    // The registry's declared run flags — allowlisted NAMED flags only;
-    // positionals are appended after the image below.
+    // The registry's declared run flags — allowlisted NAMED flags with
+    // allowlisted VALUES only (the admin's fill included); positionals are
+    // appended after the image below.
     for (i, arg) in spec.run_args.iter().enumerate() {
         if arg.get("type").and_then(Value::as_str) != Some("named") {
             continue;
         }
         let flag = arg.get("name").and_then(Value::as_str).unwrap_or_default();
-        if !ALLOWED_FLAGS.contains(&flag) {
-            return Err(format!(
-                "this package asks for the docker flag \"{flag}\", which is not allowed (volumes, env, mounts, hosts and ports only)"
-            ));
-        }
-        let Some(v) = arg_value(arg, sealed, i) else {
+        let value = arg_value(arg, sealed, i);
+        check_run_flag(flag, value.as_deref())?;
+        let Some(v) = value else {
             continue; // declared but unfilled and unfillable — skip
         };
         argv.push(flag.to_string());
@@ -336,7 +477,7 @@ pub fn pkg_argv(
     // an explicit --entrypoint override rather than a prepended argv word.
     match spec.kind.as_str() {
         "npm" => {
-            argv.push("node:22-slim".into());
+            argv.push(runtime_image("npm").into());
             argv.push("npx".into());
             argv.push("-y".into());
             argv.push(match spec.version.as_deref() {
@@ -350,7 +491,7 @@ pub fn pkg_argv(
             // python-hinted package runs as `uv run pkg`.
             argv.push("--entrypoint".into());
             argv.push("/usr/local/bin/uv".into());
-            argv.push("ghcr.io/astral-sh/uv:python3.12-bookworm-slim".into());
+            argv.push(runtime_image("pypi").into());
             let target = match spec.version.as_deref() {
                 Some(v) => format!("{}=={}", spec.identifier, v),
                 None => spec.identifier.clone(),
@@ -708,8 +849,9 @@ pub async fn pkg_call(
 
 // ── oci-http: detached container + resolved URL ─────────────────────────────
 
-/// Ensure the detached oci-http container runs and return the URL this api
-/// relays to (container DNS in-image, loopback publish on the host).
+/// Ensure the detached oci-http container runs — on the package network —
+/// and return the URL this api relays to (container DNS in-image, loopback
+/// publish on the host).
 pub async fn ensure_http(
     sb: &SecretBox,
     server: &McpServer,
@@ -734,10 +876,9 @@ pub async fn ensure_http(
         };
         let dns = pinned_dns().await;
         let mut argv = pkg_argv(spec, &sealed, &container, &dns, true)?;
-        if let Some(net) = api_network().await {
-            argv.push("--network".into());
-            argv.push(net);
-        }
+        // Its own network, never the api's internal one (see the header).
+        argv.push("--network".into());
+        argv.push(ensure_pkg_network().await?);
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
         talaria_fleet_docker::docker(&argv_refs, Duration::from_secs(120)).await?;
     }
@@ -968,7 +1109,7 @@ mod tests {
     const DNS: &[String] = &[];
 
     #[test]
-    fn npm_argv_runs_npx_in_a_hardened_child_with_cache_volume() {
+    fn npm_argv_runs_npx_in_a_hardened_child() {
         let spec = PkgSpec::of(&spec_json("npm", "stdio")).unwrap();
         let argv = pkg_argv(
             &spec,
@@ -991,15 +1132,24 @@ mod tests {
         assert!(argv.windows(2).any(|w| w == ["--cap-drop", "ALL"]));
         assert!(argv.windows(2).any(|w| w == ["--memory", "1g"]));
         assert!(argv.windows(2).any(|w| w == ["-e", "API_KEY=sk-1"]));
-        let cache = format!("talaria-mcp-npm-cache-{}:/root/.npm", instance());
-        assert!(argv.windows(2).any(|w| w[0] == "-v" && w[1] == cache));
+        // Not root, read-only root, HOME on the one tmpfs — and no volume at
+        // all: the cache lives in HOME and dies with the container.
+        assert!(argv.windows(2).any(|w| w == ["--user", "65534:65534"]));
+        assert!(argv.contains(&"--read-only".to_string()));
+        assert!(argv.windows(2).any(|w| w == ["--tmpfs", PKG_TMPFS]));
+        assert!(argv.windows(2).any(|w| w == ["-e", "HOME=/tmp"]));
+        assert!(
+            !argv
+                .iter()
+                .any(|a| a == "-v" || a == "--volume" || a == "--mount")
+        );
         let at = argv.iter().position(|a| a == "node:22-slim").unwrap();
         assert_eq!(argv[at + 1], "npx");
         assert_eq!(argv[at + 3], "example-srv@1.2.3");
     }
 
     #[test]
-    fn pypi_argv_pins_version_with_double_equals_and_caches_uv() {
+    fn pypi_argv_pins_version_with_double_equals() {
         let spec = PkgSpec::of(&spec_json("pypi", "stdio")).unwrap();
         let argv = pkg_argv(&spec, &SealedDoc::default(), "c", DNS, false).unwrap();
         // The uv image ships only `uv`, so uvx runs as `uv tool run`.
@@ -1012,8 +1162,8 @@ mod tests {
         assert_eq!(argv[ep + 3], "tool");
         assert_eq!(argv[ep + 4], "run");
         assert_eq!(argv[ep + 5], "example-srv==1.2.3");
-        let cache = format!("talaria-mcp-uv-cache-{}:/root/.cache/uv", instance());
-        assert!(argv.windows(2).any(|w| w[0] == "-v" && w[1] == cache));
+        assert!(argv.windows(2).any(|w| w == ["--user", "65534:65534"]));
+        assert!(!argv.iter().any(|a| a == "-v" || a == "--volume"));
     }
 
     #[test]
@@ -1040,7 +1190,7 @@ mod tests {
             "kind": "oci", "identifier": "ghcr.io/x/y:v1", "transport": "stdio",
             "image": "ghcr.io/x/y", "runArgs": [
                 { "type": "named", "name": "--privileged" },
-                { "type": "named", "name": "-v", "default": "/cfg:/cfg:ro" },
+                { "type": "named", "name": "-v", "default": "talaria-mcp-cfg:/cfg:ro" },
                 { "type": "positional", "value": "--stdio" },
             ],
             "pull": { "state": "ready" },
@@ -1050,11 +1200,84 @@ mod tests {
         assert!(err.contains("--privileged"), "{err}");
         doc["runArgs"].as_array_mut().unwrap().remove(0);
         let spec = PkgSpec::of(&doc).unwrap();
-        let argv = pkg_argv(&spec, &SealedDoc::default(), "c", DNS, false).unwrap();
-        assert!(argv.windows(2).any(|w| w == ["-v", "/cfg:/cfg:ro"]));
+        let argv = pkg_argv(&spec, &sealed(&[]), "c", DNS, false).unwrap();
+        assert!(
+            argv.windows(2)
+                .any(|w| w == ["-v", "talaria-mcp-cfg:/cfg:ro"])
+        );
         // The positional lands after the image, which is argv's last element
         // when no other positionals follow.
         assert_eq!(argv.last().unwrap(), "--stdio");
+    }
+
+    /// The rule, value by value: a volume is a `talaria-mcp-*` named volume
+    /// or nothing; a publish binds loopback or nothing; `--mount` and
+    /// `--add-host` have no allowed value at all.
+    #[test]
+    fn run_flag_values_are_gated_not_just_names() {
+        // Volumes: named, instance-prefixed, absolute destination, known options.
+        assert!(check_run_flag("-v", Some("talaria-mcp-data:/data")).is_ok());
+        assert!(check_run_flag("--volume", Some("talaria-mcp-x-1:/x:ro,z")).is_ok());
+        for bad in [
+            "/:/host",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            "./here:/x",
+            "~/.ssh:/x",
+            "talaria-mcp-:/x",
+            "talaria-mcp-X:/x",
+            "talaria-mcp-a:relative",
+            "talaria-mcp-a:/x:exec",
+            "talaria-mcp-a:/x:",
+            "data:/data",
+            "talaria-mcp-a",
+            "talaria-mcp-a:/x:ro:extra",
+        ] {
+            let err = check_run_flag("-v", Some(bad)).unwrap_err();
+            assert!(err.contains("not allowed"), "{bad} → {err}");
+            assert!(check_run_flag("--volume", Some(bad)).is_err(), "{bad}");
+        }
+        // Mounts and hosts: refused by name, whatever the value.
+        assert!(check_run_flag("--mount", Some("type=volume,src=talaria-mcp-a,dst=/a")).is_err());
+        assert!(check_run_flag("--mount", None).is_err());
+        assert!(check_run_flag("--add-host", Some("host.docker.internal:host-gateway")).is_err());
+        assert!(check_run_flag("--network", Some("host")).is_err());
+        // Ports: loopback only.
+        assert!(check_run_flag("-p", Some("127.0.0.1:9999:80")).is_ok());
+        assert!(check_run_flag("--publish", Some("127.0.0.1::8080/tcp")).is_ok());
+        assert!(check_run_flag("-p", Some("127.0.0.1:9000-9001:9000-9001")).is_ok());
+        for bad in [
+            "9999:80",
+            "0.0.0.0:2222:2222",
+            "127.0.0.1:",
+            "127.0.0.1:x:80",
+            "127.0.0.1:80/sctp",
+            "[::1]:80:80",
+        ] {
+            assert!(check_run_flag("-p", Some(bad)).is_err(), "{bad}");
+        }
+        // Env: any pair; an unfilled declaration passes on its name alone.
+        assert!(check_run_flag("-e", Some("KEY=value")).is_ok());
+        assert!(check_run_flag("-v", None).is_ok());
+        // The fill is gated like the declaration: an admin's value for a
+        // volume placeholder cannot reach the host either.
+        let doc = json!({
+            "kind": "oci", "identifier": "ghcr.io/x/y:v1", "transport": "stdio",
+            "image": "ghcr.io/x/y", "runArgs": [
+                { "type": "named", "name": "-v", "placeholder": "the data volume" },
+            ],
+            "pull": { "state": "ready" },
+        });
+        let spec = PkgSpec::of(&doc).unwrap();
+        let mut filled = SealedDoc::default();
+        filled.args.insert(0, "/etc:/etc".to_string());
+        let err = pkg_argv(&spec, &filled, "c", DNS, false).unwrap_err();
+        assert!(err.contains("/etc:/etc"), "{err}");
+        filled.args.insert(0, "talaria-mcp-data:/data".to_string());
+        let argv = pkg_argv(&spec, &filled, "c", DNS, false).unwrap();
+        assert!(
+            argv.windows(2)
+                .any(|w| w == ["-v", "talaria-mcp-data:/data"])
+        );
     }
 
     #[test]
@@ -1062,7 +1285,7 @@ mod tests {
         let doc = json!({
             "kind": "oci", "identifier": "ghcr.io/x/y:v1", "transport": "stdio",
             "image": "ghcr.io/x/y", "runArgs": [
-                { "type": "named", "name": "-p", "default": "9999:80" },
+                { "type": "named", "name": "-p", "default": "127.0.0.1:9999:80" },
                 { "type": "positional", "value": "serve" },
                 { "type": "positional", "placeholder": "the mount" },
             ],
@@ -1072,7 +1295,7 @@ mod tests {
         let mut sealed_doc = SealedDoc::default();
         sealed_doc.args.insert(2, "/data:/data".to_string());
         let argv = pkg_argv(&spec, &sealed_doc, "c", DNS, false).unwrap();
-        assert!(argv.windows(2).any(|w| w == ["-p", "9999:80"]));
+        assert!(argv.windows(2).any(|w| w == ["-p", "127.0.0.1:9999:80"]));
         let image_at = argv.iter().position(|a| a == "ghcr.io/x/y").unwrap();
         assert_eq!(argv[image_at + 1], "serve");
         assert_eq!(argv[image_at + 2], "/data:/data");

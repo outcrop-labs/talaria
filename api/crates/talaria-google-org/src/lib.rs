@@ -362,6 +362,7 @@ pub async fn disconnect_org(pg: &PgPool, sb: &SecretBox) {
                 axum::http::header::CONTENT_TYPE,
                 "application/x-www-form-urlencoded",
             )
+            .timeout(talaria_google_connections::GOOGLE_REQUEST_TIMEOUT)
             .body(body)
             .send()
             .await;

@@ -56,6 +56,8 @@ pub fn is_google_action(kind: &str) -> bool {
             | "slides_update"
             | "drive_move"
             | "drive_rename"
+            | "doc_create"
+            | "drive_folder_create"
     )
 }
 
@@ -63,11 +65,14 @@ pub fn is_google_action(kind: &str) -> bool {
 /// fallback wording. EVERY tool whose route answers through `answer_queued`
 /// belongs here: the queue is not the surface, the chip is, and a queued
 /// write with no chip is one the person only finds by asking the agent to
-/// list pending sends. Immediate tools (`create_google_doc`,
-/// `create_google_folder`, `import_drive_file`) are deliberately absent —
-/// they never queue.
+/// list pending sends. `import_drive_file` is deliberately absent — it never
+/// queues; `create_google_doc` / `create_google_folder` queue only when the
+/// caller named a parent folder the agent did not create (a file placed in
+/// someone's shared folder is a share), so they are here for that case.
 fn google_approval_for(tool: &str) -> Option<(&'static str, &'static str)> {
     Some(match tool {
+        "create_google_doc" => ("doc_create", "Create a Google Doc in a folder"),
+        "create_google_folder" => ("drive_folder_create", "Create a Drive folder in a folder"),
         "draft_email" => ("gmail_send", "Send email"),
         "draft_calendar_event" => ("calendar_create", "Create event"),
         "update_google_event" => ("calendar_update", "Change an event"),
@@ -974,77 +979,221 @@ pub struct ApprovalRow {
     pub agent_model: Option<String>,
 }
 
-/// Where an agent's chips should land, in tier order: the conversation turn
-/// it is streaming, else the channel turn it is streaming, else its newest
-/// channel message of the last 15 minutes regardless of status, else its
-/// newest assistant conversation message of the last 15 minutes regardless
-/// of status. None when no tier hits — the agent has no live turn, and
-/// chips with nowhere correct to land are dropped.
-async fn speaking_target(pg: &PgPool, agent: &str) -> Result<Option<Landed>, sqlx::Error> {
-    let conv: Option<(String, String)> = sqlx::query_as(
+/// Where a door's chip lands — or why it cannot.
+///
+/// THE DOORS ARE CONVERSATION-ADDRESSED. One agent answers several people at
+/// once (Hermes runs sessions concurrently, and nothing serialises turns per
+/// agent), so "the agent's newest live turn" is the wrong row for every other
+/// person's turn — a screenshot taken for Alice would be stamped on Bob's
+/// reply. A door that names the conversation lands there and nowhere else;
+/// a door that cannot name it is served only while the answer is
+/// unambiguous.
+#[derive(Debug, Clone)]
+pub enum Target {
+    Found(Landed),
+    /// No live turn and nothing recent: the agent is not speaking anywhere.
+    Nowhere,
+    /// Several turns and no conversation named — nothing to choose by, and
+    /// guessing is the cross-conversation leak this type exists to close.
+    Ambiguous {
+        turns: usize,
+    },
+}
+
+impl Target {
+    /// The landing row, when there is one.
+    pub fn landed(self) -> Option<Landed> {
+        match self {
+            Target::Found(landed) => Some(landed),
+            _ => None,
+        }
+    }
+
+    /// The sentence a door answers 409 with when the target is an
+    /// ambiguity — it names the count and the field that resolves it, because
+    /// the reader is a model that can act on exactly that.
+    pub fn ambiguity(&self) -> Option<String> {
+        match self {
+            Target::Ambiguous { turns } => Some(format!(
+                "this agent is speaking in {turns} places at once and the request named none of \
+                 them — send conversationId (your prompt's conversation line carries it)"
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// The conversation a door's body addresses, if it addresses one: the
+/// `conversationId` the MCP tools pass, else the Hermes `sessionId` the
+/// plugin stamps on every event (for a pinned agent that session id IS the
+/// conversation id), else a subagent hook's `parentSessionId`. Only a UUID
+/// counts: a Hermes session on the completions arm carries the harness's own
+/// id, which names no conversation and must not be mistaken for an address.
+pub fn conversation_hint(body: &Value) -> Option<String> {
+    ["conversationId", "sessionId", "parentSessionId"]
+        .iter()
+        .filter_map(|key| body.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|s| is_uuid(s))
+        .map(str::to_string)
+}
+
+/// The rule, pure: one candidate is the target, several are an ambiguity,
+/// none is "look further". Live rows are asked first and only when nothing
+/// is live does the recent tier count — a turn that closed a moment before
+/// its chip arrived is still the right row, but only when it is the only one.
+fn unaddressed(live: Vec<Landed>, recent: Vec<Landed>) -> Target {
+    fn only_one(mut candidates: Vec<Landed>) -> Option<Target> {
+        match candidates.len() {
+            0 => None,
+            1 => Some(Target::Found(candidates.remove(0))),
+            turns => Some(Target::Ambiguous { turns }),
+        }
+    }
+    only_one(live)
+        .or_else(|| only_one(recent))
+        .unwrap_or(Target::Nowhere)
+}
+
+/// The row a door addressed by conversation lands on: the reply the agent is
+/// streaming in THAT conversation, else its newest reply there within the
+/// last 15 minutes (the chip that arrives a beat after the turn closed), else
+/// nowhere. The conversation must be this agent's own — an id naming another
+/// agent's thread, or no thread, lands nothing rather than falling back to a
+/// guess.
+async fn addressed_target(
+    pg: &PgPool,
+    agent: &str,
+    conversation_id: &str,
+) -> Result<Target, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "select m.id::text \
+         from messages m join conversations c on c.id = m.conversation_id \
+         where c.id = $2::uuid and c.agent_model = $1 and m.role = 'assistant' \
+           and ((m.status = 'streaming' and m.streamed_at > now() - interval '15 minutes') \
+             or m.created_at > now() - interval '15 minutes') \
+         order by (m.status = 'streaming') desc, m.seq desc limit 1",
+    )
+    .bind(agent)
+    .bind(conversation_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(match row {
+        Some((message_id,)) => Target::Found(Landed {
+            conversation_id: Some(conversation_id.to_string()),
+            channel_id: None,
+            message_id,
+        }),
+        None => Target::Nowhere,
+    })
+}
+
+/// Where an agent's chips land. With a conversation named, that
+/// conversation's own turn (`addressed_target`). Without one: the agent's
+/// live streaming rows — conversation turns and channel turns alike — when
+/// there is exactly one; else its rows of the last 15 minutes regardless of
+/// status, when there is exactly one; else `Ambiguous` when several could be
+/// meant, and `Nowhere` when none could. Two rows are read per tier rather
+/// than one so "several" is observable without counting the table.
+pub async fn landing_target(
+    pg: &PgPool,
+    agent: &str,
+    conversation_id: Option<&str>,
+) -> Result<Target, sqlx::Error> {
+    if let Some(id) = conversation_id.map(str::trim).filter(|s| is_uuid(s)) {
+        return addressed_target(pg, agent, id).await;
+    }
+    let mut live: Vec<Landed> = sqlx::query_as::<_, (String, String)>(
         "select m.id::text, m.conversation_id::text \
          from messages m join conversations c on c.id = m.conversation_id \
          where c.agent_model = $1 and m.role = 'assistant' and m.status = 'streaming' \
            and m.streamed_at > now() - interval '15 minutes' \
-         order by m.streamed_at desc limit 1",
+         order by m.streamed_at desc limit 2",
     )
     .bind(agent)
-    .fetch_optional(pg)
-    .await?;
-    if let Some((message_id, conversation_id)) = conv {
-        return Ok(Some(Landed {
-            conversation_id: Some(conversation_id),
-            channel_id: None,
-            message_id,
-        }));
-    }
-    let channel: Option<(String, String)> = sqlx::query_as(
-        "select id::text, channel_id::text from channel_messages \
-         where author_type = 'agent' and author = $1 and status = 'streaming' \
-           and created_at > now() - interval '15 minutes' \
-         order by created_at desc limit 1",
-    )
-    .bind(agent)
-    .fetch_optional(pg)
-    .await?;
-    if let Some((message_id, channel_id)) = channel {
-        return Ok(Some(Landed {
-            conversation_id: None,
-            channel_id: Some(channel_id),
-            message_id,
-        }));
-    }
-    let channel_recent: Option<(String, String)> = sqlx::query_as(
-        "select id::text, channel_id::text from channel_messages \
-         where author_type = 'agent' and author = $1 \
-           and created_at > now() - interval '15 minutes' \
-         order by created_at desc limit 1",
-    )
-    .bind(agent)
-    .fetch_optional(pg)
-    .await?;
-    if let Some((message_id, channel_id)) = channel_recent {
-        return Ok(Some(Landed {
-            conversation_id: None,
-            channel_id: Some(channel_id),
-            message_id,
-        }));
-    }
-    let latest: Option<(String, String)> = sqlx::query_as(
-        "select m.id::text, m.conversation_id::text \
-         from messages m join conversations c on c.id = m.conversation_id \
-         where c.agent_model = $1 and m.role = 'assistant' \
-           and m.created_at > now() - interval '15 minutes' \
-         order by m.created_at desc limit 1",
-    )
-    .bind(agent)
-    .fetch_optional(pg)
-    .await?;
-    Ok(latest.map(|(message_id, conversation_id)| Landed {
+    .fetch_all(pg)
+    .await?
+    .into_iter()
+    .map(|(message_id, conversation_id)| Landed {
         conversation_id: Some(conversation_id),
         channel_id: None,
         message_id,
-    }))
+    })
+    .collect();
+    live.extend(
+        sqlx::query_as::<_, (String, String)>(
+            "select id::text, channel_id::text from channel_messages \
+             where author_type = 'agent' and author = $1 and status = 'streaming' \
+               and created_at > now() - interval '15 minutes' \
+             order by created_at desc limit 2",
+        )
+        .bind(agent)
+        .fetch_all(pg)
+        .await?
+        .into_iter()
+        .map(|(message_id, channel_id)| Landed {
+            conversation_id: None,
+            channel_id: Some(channel_id),
+            message_id,
+        }),
+    );
+    if !live.is_empty() {
+        return Ok(unaddressed(live, Vec::new()));
+    }
+    // Recent: one candidate per THREAD, not per row — a 15-minute chat has
+    // several replies in it, and they are one place, not several.
+    let mut recent: Vec<Landed> = sqlx::query_as::<_, (String, String)>(
+        "select (array_agg(id::text order by created_at desc))[1], channel_id::text \
+         from channel_messages \
+         where author_type = 'agent' and author = $1 \
+           and created_at > now() - interval '15 minutes' \
+         group by channel_id order by max(created_at) desc limit 2",
+    )
+    .bind(agent)
+    .fetch_all(pg)
+    .await?
+    .into_iter()
+    .map(|(message_id, channel_id)| Landed {
+        conversation_id: None,
+        channel_id: Some(channel_id),
+        message_id,
+    })
+    .collect();
+    recent.extend(
+        sqlx::query_as::<_, (String, String)>(
+            "select (array_agg(m.id::text order by m.created_at desc))[1], \
+                    m.conversation_id::text \
+             from messages m join conversations c on c.id = m.conversation_id \
+             where c.agent_model = $1 and m.role = 'assistant' \
+               and m.created_at > now() - interval '15 minutes' \
+             group by m.conversation_id order by max(m.created_at) desc limit 2",
+        )
+        .bind(agent)
+        .fetch_all(pg)
+        .await?
+        .into_iter()
+        .map(|(message_id, conversation_id)| Landed {
+            conversation_id: Some(conversation_id),
+            channel_id: None,
+            message_id,
+        }),
+    );
+    Ok(unaddressed(Vec::new(), recent))
+}
+
+/// The unaddressed resolver as an Option, for the callers that have no
+/// conversation to name: an ambiguity is a dropped chip, logged — never a
+/// guess at somebody else's thread.
+async fn speaking_target(pg: &PgPool, agent: &str) -> Result<Option<Landed>, sqlx::Error> {
+    let target = landing_target(pg, agent, None).await?;
+    if let Target::Ambiguous { turns } = &target {
+        // The crate carries no logger; the fleet transport says its piece
+        // the same way.
+        eprintln!(
+            "[chips] {agent} is speaking in {turns} places and the caller named none — dropped"
+        );
+    }
+    Ok(target.landed())
 }
 
 /// The chips the write below is allowed to REPLACE rather than skip: the
@@ -1296,6 +1445,175 @@ pub async fn mark_approval(
     Ok(())
 }
 
+// ── Bounded unlocks ──────────────────────────────────────────────────────────
+//
+// An approval leaves a GRANT on the conversation, not a standing permission.
+// `conversations.unlocked_tools` is a jsonb array of
+//   { "tool": "draft_email", "expiresAt": <epoch ms>, "usesLeft": 1,
+//     "recipients": ["bob@example.com"] | null }
+// — one per tool, written by `merge_unlocked` when the person approves, and
+// CONSUMED (one use, under a row lock) by `tool_unlocked` when the agent's
+// next call of that tool arrives. A grant lasts `UNLOCK_TTL_MS`, covers
+// `UNLOCK_USES` later calls, and — where the approved kind names people — only
+// a call whose recipients are a subset of the ones the person approved. A
+// bare string in the array (the pre-bounded shape) grants nothing and is
+// dropped on the next merge.
+
+/// How long one approval stays usable.
+pub const UNLOCK_TTL_MS: i64 = 30 * 60 * 1000;
+/// How many later calls one approval covers.
+pub const UNLOCK_USES: i64 = 1;
+
+/// Lower-cased, trimmed, deduped addresses out of free-form recipient text:
+/// `Bob <bob@x.com>, carol@x.com; dan@x.com` → the three bare addresses.
+pub fn normalize_recipients<'a>(raw: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut out: Vec<String> = raw
+        .into_iter()
+        .flat_map(|s| s.split([',', ';']))
+        .filter_map(|piece| {
+            let piece = piece.trim();
+            if piece.is_empty() {
+                return None;
+            }
+            let addr = match (piece.rfind('<'), piece.ends_with('>')) {
+                (Some(open), true) => &piece[open + 1..piece.len() - 1],
+                _ => piece,
+            };
+            let addr = addr.trim().to_ascii_lowercase();
+            (!addr.is_empty()).then_some(addr)
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The people an approval kind binds its unlock to, read from the approved
+/// action's payload. `None` for a kind that names nobody — its grant is not
+/// recipient-bound.
+pub fn approval_recipients(kind: &str, payload: &Value) -> Option<Vec<String>> {
+    let s = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or("");
+    match kind {
+        "gmail_send" => Some(normalize_recipients([s("to"), s("cc"), s("bcc")])),
+        "calendar_create" | "meeting_create" => Some(normalize_recipients(
+            payload
+                .get("attendees")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        )),
+        _ => None,
+    }
+}
+
+/// One grant, as stored.
+pub fn unlock_grant(tool: &str, recipients: Option<&[String]>, now_ms: i64) -> Value {
+    json!({
+        "tool": tool,
+        "expiresAt": now_ms + UNLOCK_TTL_MS,
+        "usesLeft": UNLOCK_USES,
+        "recipients": recipients,
+    })
+}
+
+/// Whether a stored grant covers a call of `tool` to `recipients` at
+/// `now_ms`: unexpired, uses left, and — when bound — every recipient of
+/// the call among the approved ones. A legacy string entry never matches.
+pub fn grant_allows(grant: &Value, tool: &str, recipients: &[String], now_ms: i64) -> bool {
+    let Some(obj) = grant.as_object() else {
+        return false;
+    };
+    if obj.get("tool").and_then(Value::as_str) != Some(tool) {
+        return false;
+    }
+    let expires = obj.get("expiresAt").and_then(Value::as_i64).unwrap_or(0);
+    let uses = obj.get("usesLeft").and_then(Value::as_i64).unwrap_or(0);
+    if expires <= now_ms || uses <= 0 {
+        return false;
+    }
+    match obj.get("recipients") {
+        None | Some(Value::Null) => true,
+        Some(bound) => {
+            let approved: Vec<&str> = bound
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            recipients
+                .iter()
+                .all(|r| approved.iter().any(|a| a.eq_ignore_ascii_case(r)))
+        }
+    }
+}
+
+/// The array after one use of the first matching grant — `None` when no
+/// grant covers the call, so nothing is written. Expired and legacy entries
+/// fall out on the way through; a grant spent to zero is dropped too.
+pub fn consume_grant(
+    stored: &Value,
+    tool: &str,
+    recipients: &[String],
+    now_ms: i64,
+) -> Option<Value> {
+    let entries = stored.as_array()?;
+    let hit = entries
+        .iter()
+        .position(|g| grant_allows(g, tool, recipients, now_ms))?;
+    let next: Vec<Value> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, g)| {
+            let obj = g.as_object()?;
+            let expires = obj.get("expiresAt").and_then(Value::as_i64).unwrap_or(0);
+            let mut uses = obj.get("usesLeft").and_then(Value::as_i64).unwrap_or(0);
+            if i == hit {
+                uses -= 1;
+            }
+            if expires <= now_ms || uses <= 0 {
+                return None;
+            }
+            let mut kept = obj.clone();
+            kept.insert("usesLeft".into(), json!(uses));
+            Some(Value::Object(kept))
+        })
+        .collect();
+    Some(Value::Array(next))
+}
+
+/// The merged array: every live grant for another tool kept, the incoming
+/// grants replacing any for the same tool, expired and legacy entries gone.
+pub fn merge_grants(stored: &Value, incoming: &[Value], now_ms: i64) -> Value {
+    let incoming_tools: Vec<&str> = incoming
+        .iter()
+        .filter_map(|g| g.get("tool").and_then(Value::as_str))
+        .collect();
+    let mut next: Vec<Value> = stored
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|g| {
+                    let Some(obj) = g.as_object() else {
+                        return false;
+                    };
+                    let tool = obj.get("tool").and_then(Value::as_str).unwrap_or("");
+                    let expires = obj.get("expiresAt").and_then(Value::as_i64).unwrap_or(0);
+                    let uses = obj.get("usesLeft").and_then(Value::as_i64).unwrap_or(0);
+                    expires > now_ms && uses > 0 && !incoming_tools.contains(&tool)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    next.extend(incoming.iter().cloned());
+    Value::Array(next)
+}
+
+/// Leave a bounded grant for `tools` on the conversation, bound to the
+/// people the approval just decided named. The approval row is the newest
+/// APPROVED `chat_approvals` row in this conversation whose kind unlocks
+/// these tools (the chip route marks it approved before calling this); the
+/// recipients come from the Google pending action it executed. A tool whose
+/// approval cannot be found gets no grant — an unlock nobody approved is
+/// the thing this shape exists to prevent.
 pub async fn merge_unlocked(
     pg: &PgPool,
     conversation_id: &str,
@@ -1304,37 +1622,112 @@ pub async fn merge_unlocked(
     if tools.is_empty() {
         return Ok(());
     }
-    let incoming = json!(tools);
-    sqlx::query(
-        "update conversations set unlocked_tools = ( \
-           select coalesce(jsonb_agg(distinct t), '[]'::jsonb) from ( \
-             select t from jsonb_array_elements_text(unlocked_tools) t \
-             union all \
-             select t from jsonb_array_elements_text($2::jsonb) t \
-           ) s \
-         ) where id = $1::uuid",
+    let now_ms = talaria_now_ms();
+    let mut incoming: Vec<Value> = Vec::with_capacity(tools.len());
+    for tool in tools {
+        let kinds: Vec<&str> = KINDS_WITH_UNLOCKS
+            .iter()
+            .copied()
+            .filter(|k| tools_unlocked(k).contains(tool))
+            .collect();
+        let row: Option<(String, Option<Value>)> = sqlx::query_as(
+            "select a.kind, g.payload \
+             from chat_approvals a \
+             left join google_pending_actions g on g.id::text = a.external_id \
+             where a.conversation_id = $1::uuid and a.status = 'approved' \
+               and a.kind = any($2) \
+             order by a.decided_at desc nulls last limit 1",
+        )
+        .bind(conversation_id)
+        .bind(&kinds)
+        .fetch_optional(pg)
+        .await?;
+        let Some((kind, payload)) = row else {
+            continue;
+        };
+        let recipients = approval_recipients(&kind, &payload.unwrap_or(Value::Null));
+        incoming.push(unlock_grant(tool, recipients.as_deref(), now_ms));
+    }
+    if incoming.is_empty() {
+        return Ok(());
+    }
+    let mut tx = pg.begin().await?;
+    let stored: Option<Value> = sqlx::query_scalar(
+        "select unlocked_tools from conversations where id = $1::uuid for update",
     )
     .bind(conversation_id)
-    .bind(&incoming)
-    .execute(pg)
+    .fetch_optional(&mut *tx)
     .await?;
-    Ok(())
+    let Some(stored) = stored else {
+        return Ok(());
+    };
+    sqlx::query("update conversations set unlocked_tools = $2 where id = $1::uuid")
+        .bind(conversation_id)
+        .bind(merge_grants(&stored, &incoming, now_ms))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await
 }
 
+/// Spend one use of the conversation's grant for `tool`, for a call to
+/// `recipients`. True exactly once per use: the row is locked for the
+/// read-decide-write, so two concurrent calls cannot both ride one approval.
 pub async fn tool_unlocked(
     pg: &PgPool,
     conversation_id: &str,
     tool: &str,
+    recipients: &[String],
 ) -> Result<bool, sqlx::Error> {
-    let hit: Option<bool> =
-        sqlx::query_scalar("select unlocked_tools ? $2 from conversations where id = $1::uuid")
-            .bind(conversation_id)
-            .bind(tool)
-            .fetch_optional(pg)
-            .await?;
-    Ok(hit.unwrap_or(false))
+    let now_ms = talaria_now_ms();
+    let mut tx = pg.begin().await?;
+    let stored: Option<Value> = sqlx::query_scalar(
+        "select unlocked_tools from conversations where id = $1::uuid for update",
+    )
+    .bind(conversation_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(stored) = stored else {
+        return Ok(false);
+    };
+    let Some(next) = consume_grant(&stored, tool, recipients, now_ms) else {
+        return Ok(false);
+    };
+    sqlx::query("update conversations set unlocked_tools = $2 where id = $1::uuid")
+        .bind(conversation_id)
+        .bind(next)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
+/// Every approval kind that unlocks a tool — the reverse index of
+/// `tools_unlocked`, so a grant can find the approval that earned it.
+const KINDS_WITH_UNLOCKS: &[&str] = &[
+    "gmail_send",
+    "calendar_create",
+    "calendar_update",
+    "calendar_cancel",
+    "meeting_create",
+    "doc_update",
+    "sheet_update",
+    "slides_update",
+    "drive_move",
+    "drive_rename",
+    "ticket_move",
+    "board_access",
+];
+
+fn talaria_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// The conversation an agent is speaking in, for callers with no id of
+/// their own: served only while exactly one turn could be meant (the
+/// `landing_target` rule); an ambiguity is None, never a guess.
 pub async fn live_conversation_id(pg: &PgPool, agent: &str) -> Result<Option<String>, sqlx::Error> {
     Ok(speaking_target(pg, agent)
         .await?
@@ -1344,17 +1737,47 @@ pub async fn live_conversation_id(pg: &PgPool, agent: &str) -> Result<Option<Str
 /// Rewrite approval chips so their actionId is the chat_approvals row, then
 /// land them. Callers that already queued a google action pass that id as
 /// the chip's actionId; this function makes the decide endpoint one door.
+/// The unaddressed form: an ambiguity is a dropped landing (see
+/// `speaking_target`); doors that can name their conversation use
+/// `surface_tool_chips_in`.
 pub async fn surface_tool_chips(
     pg: &PgPool,
     redis: Option<redis::aio::ConnectionManager>,
     agent: &str,
     owner_user_id: Option<&str>,
-    mut chips: Vec<Value>,
+    chips: Vec<Value>,
 ) -> Result<Option<Landed>, sqlx::Error> {
-    if chips.is_empty() {
-        return Ok(None);
+    let target = surface_tool_chips_in(pg, redis, agent, owner_user_id, None, chips).await?;
+    if let Target::Ambiguous { turns } = &target {
+        eprintln!(
+            "[chips] {agent} is speaking in {turns} places and the caller named none — dropped"
+        );
     }
-    let landed = speaking_target(pg, agent).await?;
+    Ok(target.landed())
+}
+
+/// `surface_tool_chips`, addressed: `conversation_id` is where the chips
+/// land when the caller knows it, and the answer says `Ambiguous` instead of
+/// guessing when it does not and several turns could be meant. The chips
+/// are written only on `Found`; the approval rows are ensured either way,
+/// because an approval that was queued exists whether or not its chip has a
+/// row to sit on.
+pub async fn surface_tool_chips_in(
+    pg: &PgPool,
+    redis: Option<redis::aio::ConnectionManager>,
+    agent: &str,
+    owner_user_id: Option<&str>,
+    conversation_id: Option<&str>,
+    mut chips: Vec<Value>,
+) -> Result<Target, sqlx::Error> {
+    if chips.is_empty() {
+        return Ok(Target::Nowhere);
+    }
+    let target = landing_target(pg, agent, conversation_id).await?;
+    let landed = match &target {
+        Target::Found(landed) => Some(landed.clone()),
+        _ => None,
+    };
     for chip in &mut chips {
         if chip.get("kind").and_then(Value::as_str) != Some("approval") {
             continue;
@@ -1398,11 +1821,11 @@ pub async fn surface_tool_chips(
         }
     }
     let Some(landed) = landed else {
-        return Ok(None);
+        return Ok(target);
     };
     write_chips(pg, &landed, &chips).await?;
     fan(pg, redis, &landed);
-    Ok(Some(landed))
+    Ok(Target::Found(landed))
 }
 
 #[derive(Debug, Clone)]
@@ -1525,6 +1948,105 @@ async fn lookup_title(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where an unaddressed door lands — the rule that keeps one agent's
+    /// several conversations apart.
+    mod landing {
+        use super::*;
+
+        fn row(id: &str) -> Landed {
+            Landed {
+                conversation_id: Some(format!("conv-{id}")),
+                channel_id: None,
+                message_id: id.to_string(),
+            }
+        }
+
+        fn found(target: Target) -> String {
+            match target {
+                Target::Found(l) => l.message_id,
+                other => panic!("expected a landing, got {other:?}"),
+            }
+        }
+
+        /// Exactly one live turn is the turn; the recent tier is not even
+        /// looked at while something is live.
+        #[test]
+        fn one_live_row_is_the_target() {
+            assert_eq!(found(unaddressed(vec![row("a")], vec![row("old")])), "a");
+        }
+
+        /// Two live turns and no id: an ambiguity, not the newest one —
+        /// that guess is the cross-conversation leak.
+        #[test]
+        fn several_live_rows_are_an_ambiguity_whatever_the_recent_tier_says() {
+            match unaddressed(vec![row("a"), row("b")], vec![row("old")]) {
+                Target::Ambiguous { turns } => assert_eq!(turns, 2),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        /// Nothing live: the one recent thread catches the chip that arrived
+        /// a beat after its turn closed; several recent threads do not.
+        #[test]
+        fn the_recent_tier_counts_only_when_nothing_is_live_and_by_the_same_rule() {
+            assert_eq!(found(unaddressed(Vec::new(), vec![row("old")])), "old");
+            assert!(matches!(
+                unaddressed(Vec::new(), vec![row("x"), row("y")]),
+                Target::Ambiguous { turns: 2 }
+            ));
+            assert!(matches!(
+                unaddressed(Vec::new(), Vec::new()),
+                Target::Nowhere
+            ));
+        }
+
+        /// The ambiguity names the count and the field that resolves it; a
+        /// landing and a nowhere have no sentence.
+        #[test]
+        fn only_an_ambiguity_has_a_refusal_sentence() {
+            let said = Target::Ambiguous { turns: 3 }
+                .ambiguity()
+                .expect("a sentence");
+            assert!(said.contains('3'), "{said}");
+            assert!(said.contains("conversationId"), "{said}");
+            assert!(Target::Nowhere.ambiguity().is_none());
+            assert!(Target::Found(row("a")).ambiguity().is_none());
+        }
+
+        /// A body is addressed by the first UUID among the three keys the
+        /// doors know; a Hermes session id that is not a conversation (the
+        /// completions arm's own naming) is no address at all.
+        #[test]
+        fn the_hint_is_a_uuid_from_any_of_the_three_keys_or_nothing() {
+            let id = "22f1e3a0-0000-4000-8000-000000000001";
+            assert_eq!(
+                conversation_hint(&json!({ "conversationId": format!("  {id} ") })).as_deref(),
+                Some(id)
+            );
+            assert_eq!(
+                conversation_hint(&json!({ "sessionId": id })).as_deref(),
+                Some(id)
+            );
+            assert_eq!(
+                conversation_hint(&json!({ "parentSessionId": id })).as_deref(),
+                Some(id)
+            );
+            // conversationId wins over a session id when both are sent.
+            let other = "22f1e3a0-0000-4000-8000-000000000002";
+            assert_eq!(
+                conversation_hint(&json!({ "sessionId": other, "conversationId": id })).as_deref(),
+                Some(id)
+            );
+            assert_eq!(
+                conversation_hint(&json!({ "sessionId": "20261020_143500_ab12" })),
+                None
+            );
+            assert_eq!(conversation_hint(&json!({ "sessionId": "" })), None);
+            assert_eq!(conversation_hint(&json!({ "sessionId": 42 })), None);
+            assert_eq!(conversation_hint(&json!({})), None);
+        }
+    }
 
     #[test]
     fn a_plan_chip_is_replaced_in_place_and_an_approval_is_not() {
@@ -1717,6 +2239,128 @@ mod tests {
         assert_eq!(tools_unlocked("ticket_move"), ["triage_ticket"]);
         assert!(tools_unlocked("nope").is_empty());
         assert_eq!(unlock_chip("a-1", "gmail_send")["tools"][0], "draft_email");
+    }
+
+    #[test]
+    fn every_unlocking_kind_is_in_the_reverse_index() {
+        for kind in KINDS_WITH_UNLOCKS {
+            assert!(!tools_unlocked(kind).is_empty(), "{kind} unlocks nothing");
+        }
+        for kind in [
+            "gmail_send",
+            "calendar_create",
+            "doc_update",
+            "ticket_move",
+            "board_access",
+        ] {
+            assert!(KINDS_WITH_UNLOCKS.contains(&kind), "{kind} missing");
+        }
+    }
+
+    #[test]
+    fn a_grant_is_the_bounded_shape() {
+        let g = unlock_grant("draft_email", Some(&["bob@x.com".to_string()]), 1_000);
+        assert_eq!(g["tool"], "draft_email");
+        assert_eq!(g["expiresAt"], 1_000 + UNLOCK_TTL_MS);
+        assert_eq!(g["usesLeft"], UNLOCK_USES);
+        assert_eq!(g["recipients"], json!(["bob@x.com"]));
+        let unbound = unlock_grant("triage_ticket", None, 1_000);
+        assert!(unbound["recipients"].is_null());
+    }
+
+    #[test]
+    fn recipients_normalize_to_bare_lowercase_addresses() {
+        let got =
+            normalize_recipients(["Bob <Bob@X.com>, carol@x.com; dan@x.com", " ", "bob@x.com"]);
+        assert_eq!(got, ["bob@x.com", "carol@x.com", "dan@x.com"]);
+        let mail = approval_recipients(
+            "gmail_send",
+            &json!({ "to": "a@x.com", "cc": "B@x.com", "bcc": "" }),
+        )
+        .expect("bound");
+        assert_eq!(mail, ["a@x.com", "b@x.com"]);
+        let event = approval_recipients(
+            "calendar_create",
+            &json!({ "attendees": ["C@x.com", "d@x.com"] }),
+        )
+        .expect("bound");
+        assert_eq!(event, ["c@x.com", "d@x.com"]);
+        assert!(approval_recipients("ticket_move", &json!({})).is_none());
+    }
+
+    #[test]
+    fn a_grant_covers_a_subset_of_the_approved_recipients_and_nothing_more() {
+        let g = unlock_grant(
+            "draft_email",
+            Some(&["bob@x.com".to_string(), "carol@x.com".to_string()]),
+            1_000,
+        );
+        let now = 2_000;
+        assert!(grant_allows(&g, "draft_email", &["bob@x.com".into()], now));
+        assert!(grant_allows(&g, "draft_email", &["BOB@x.com".into()], now));
+        assert!(grant_allows(&g, "draft_email", &[], now));
+        assert!(!grant_allows(
+            &g,
+            "draft_email",
+            &["bob@x.com".into(), "attacker@evil.com".into()],
+            now
+        ));
+        assert!(!grant_allows(&g, "draft_calendar_event", &[], now));
+        // Expired, spent, or the pre-bounded bare string: no grant.
+        assert!(!grant_allows(&g, "draft_email", &[], 1_000 + UNLOCK_TTL_MS));
+        let mut spent = g.clone();
+        spent["usesLeft"] = json!(0);
+        assert!(!grant_allows(&spent, "draft_email", &[], now));
+        assert!(!grant_allows(
+            &json!("draft_email"),
+            "draft_email",
+            &[],
+            now
+        ));
+        // An unbound grant covers any recipients.
+        let unbound = unlock_grant("triage_ticket", None, 1_000);
+        assert!(grant_allows(
+            &unbound,
+            "triage_ticket",
+            &["x@y.z".into()],
+            now
+        ));
+    }
+
+    #[test]
+    fn consuming_spends_one_use_and_drops_what_is_spent_or_stale() {
+        let bob = vec!["bob@x.com".to_string()];
+        let stored = json!([
+            "draft_email",
+            unlock_grant("draft_email", Some(&bob), 1_000),
+            unlock_grant("draft_calendar_event", Some(&bob), 1_000),
+            { "tool": "update_google_doc", "expiresAt": 1, "usesLeft": 5, "recipients": null },
+        ]);
+        let next = consume_grant(&stored, "draft_email", &bob, 2_000).expect("covered");
+        let arr = next.as_array().unwrap();
+        // One use was all it had, so the spent grant is gone; the legacy
+        // string and the expired doc grant fell out; the calendar one stays.
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["tool"], "draft_calendar_event");
+        assert!(consume_grant(&next, "draft_email", &bob, 2_000).is_none());
+        assert!(consume_grant(&stored, "draft_email", &["eve@x.com".into()], 2_000).is_none());
+        assert!(consume_grant(&json!([]), "draft_email", &[], 2_000).is_none());
+    }
+
+    #[test]
+    fn merging_replaces_the_same_tool_and_keeps_the_rest() {
+        let stored = json!([
+            "draft_email",
+            unlock_grant("draft_email", None, 1_000),
+            unlock_grant("draft_calendar_event", None, 1_000),
+            { "tool": "update_google_doc", "expiresAt": 1, "usesLeft": 5 },
+        ]);
+        let fresh = unlock_grant("draft_email", Some(&["bob@x.com".to_string()]), 5_000);
+        let merged = merge_grants(&stored, std::slice::from_ref(&fresh), 5_000);
+        let arr = merged.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["tool"], "draft_calendar_event");
+        assert_eq!(arr[1], fresh);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MANDATORY_DISABLED, normalizeToolsets, sameToolsets, toggleToolset, toolsetRows } from './toolsets'
+import { MANDATORY_DISABLED, builtinFloor, normalizeToolsets, sameToolsets, toggleToolset, toolsetRows } from './toolsets'
 
 // The governed list as the server publishes it, trimmed to the names these
 // cases need. Alphabetical, because that is the contract the grid relies on
@@ -20,7 +20,7 @@ describe('toolsetRows: the checkbox is the toolset, the list is its absence', ()
 
   it('turns a disabled name off without touching its neighbours', () => {
     const rows = toolsetRows(GOVERNED, FLOOR, ['browser'])
-    expect(rows.find((r) => r.name === 'browser')).toEqual({ name: 'browser', on: false, forced: false })
+    expect(rows.find((r) => r.name === 'browser')).toEqual({ name: 'browser', on: false, forced: false, orgClosed: false })
     expect(rows.find((r) => r.name === 'web')?.on).toBe(true)
   })
 
@@ -43,6 +43,38 @@ describe('toolsetRows: the checkbox is the toolset, the list is its absence', ()
     const rows = toolsetRows(GOVERNED, [], [])
     expect(rows.some((r) => r.forced)).toBe(false)
     expect(rows.every((r) => r.on)).toBe(true)
+  })
+
+  it('locks an org-closed name with its own reason, whether or not the floor repeats it', () => {
+    // The server's floor carries the org part inside it…
+    const inside = toolsetRows(GOVERNED, [...FLOOR, 'browser'], [], ['browser'])
+    expect(inside.find((r) => r.name === 'browser')).toEqual({ name: 'browser', on: false, forced: true, orgClosed: true })
+    // …and the pair is forced for Talaria's reason, not the admin's.
+    expect(inside.find((r) => r.name === 'todo')).toEqual({ name: 'todo', on: false, forced: true, orgClosed: false })
+    // A floor that did not repeat the org name locks it all the same.
+    expect(toolsetRows(GOVERNED, FLOOR, [], ['browser']).find((r) => r.name === 'browser')?.forced).toBe(true)
+    // A def that closed it itself renders the same as one that did not: the
+    // rendered config is identical while the floor stands.
+    expect(toolsetRows(GOVERNED, FLOOR, ['browser'], ['browser'])).toEqual(toolsetRows(GOVERNED, FLOOR, [], ['browser']))
+  })
+})
+
+describe('builtinFloor: what is never stored', () => {
+  it('is the pair with the org part taken out', () => {
+    expect(builtinFloor({ mandatoryDisabled: ['todo', 'clarify', 'terminal'], orgDisabled: ['terminal'] })).toEqual(['todo', 'clarify'])
+  })
+
+  it('is the whole floor on an api that publishes no org part, and the pair with no vocabulary at all', () => {
+    expect(builtinFloor({ mandatoryDisabled: ['todo', 'clarify'] })).toEqual(['todo', 'clarify'])
+    expect(builtinFloor(undefined)).toEqual(MANDATORY_DISABLED)
+  })
+
+  it('keeps an org-closed name in the stored list, so lifting the floor restores what a manager chose', () => {
+    const builtin = builtinFloor({ mandatoryDisabled: ['todo', 'clarify', 'terminal'], orgDisabled: ['terminal'] })
+    // A manager closed terminal before the admin did; an unrelated Apply
+    // must not rewrite the list without it.
+    expect(toggleToolset(['terminal'], 'browser', false, builtin)).toEqual(['browser', 'terminal'])
+    expect(normalizeToolsets(['terminal', 'todo'], builtin)).toEqual(['terminal'])
   })
 })
 

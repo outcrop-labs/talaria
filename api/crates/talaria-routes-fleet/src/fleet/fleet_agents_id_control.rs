@@ -126,6 +126,22 @@ pub async fn post(
             if !def.managed {
                 return Ok(house_error(StatusCode::BAD_REQUEST, "not a managed agent"));
             }
+            // One roll per department at a time: `roll_agent` holds the
+            // lock itself (in-process set + Postgres advisory lock), so a
+            // second click lands as its soft refusal in the audit trail —
+            // but a caller who can be told now is told now.
+            if talaria_api_facades::fleet::reconcile::is_rolling(&def.department) {
+                return Ok(house_error(
+                    StatusCode::CONFLICT,
+                    "this agent is already rolling — wait for it to finish",
+                ));
+            }
+            // The roll records itself in the fleet-wide registry (start and
+            // verdict), which is what /api/fleet/roll shows; the Redis
+            // mirror behind it is wired here as well as there, so a
+            // manager's roll on an instance nobody pressed "roll all" on
+            // still reaches every other instance's picture.
+            super::fleet_roll::wire_roll_sink(&state);
             if let Ok(sb) = state.secretbox().await {
                 let pg = state.pg.clone();
                 let dept = def.department.clone();

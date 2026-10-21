@@ -32,6 +32,7 @@ use talaria_body::{
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_user, who_of};
 use talaria_state::AppState;
+use talaria_uploads::{UploadViewer, can_access_upload};
 use talaria_users::is_elevated_assistant;
 
 struct PutBody {
@@ -369,6 +370,19 @@ pub async fn put(
         body.editors = None;
         body.official = None;
         body.rag_routing = None;
+        // RE-POINTING THE FILE is a read of that upload by everyone who can
+        // read this artifact: the upload ACL grants on "referenced by a
+        // non-private artifact". So an agent may only point at an upload it
+        // can already read itself — a ticket attachment on a board it
+        // works, a message in a channel it sits in, its own save.
+        if let Some(Some(upload_id)) = &body.storage_ref
+            && !can_access_upload(&state.pg, upload_id, UploadViewer::Agent { model: &actor }).await
+        {
+            return Ok(house_error(
+                StatusCode::FORBIDDEN,
+                "storageRef is not an upload this agent can read",
+            ));
+        }
     }
 
     if !owner {
@@ -500,6 +514,9 @@ pub async fn delete(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let artifact = match get_artifact(&state.pg, &id).await {
         Ok(a) => a,
         Err(e) => {

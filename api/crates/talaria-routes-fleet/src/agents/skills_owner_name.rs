@@ -1,5 +1,8 @@
-// /api/skills/{owner}/{name}. One skill's SKILL.md. GET → content + file list (any member — the library
-// is org work material). PUT → save (creates the skill if new). DELETE →
+// /api/skills/{owner}/{name}. One skill's SKILL.md. GET → content + file list
+// (any member for the shared root and for an org agent's skills — the
+// library is org work material; a PERSONAL assistant's skills are its
+// owner's, its managers' and the fleet readers' to read, nobody else's).
+// PUT → save (creates the skill if new). DELETE →
 // remove the whole skill dir. Writes go through canEditSkill(s): admin /
 // agents.manage everywhere; personal-assistant owners and explicit
 // user_agent_access grantees for that agent's own skills. Edits are LIVE
@@ -58,12 +61,48 @@ enum Op {
     },
 }
 
+/// The READ gate for an owner's skills. The shared root and an org agent's
+/// skills are org work material — any member reads them. A personal
+/// assistant's skills are prompts a person wrote for their own agent: its
+/// owner and managers (`manages_agent_slug` reads both), and whoever reads
+/// the whole fleet. Everyone else is refused, the way the versions and
+/// Google routes refuse a non-reader. An unknown slug reads as refusable
+/// too — the 404 the read itself answers is for callers the gate let past.
+async fn can_read_skills(
+    pg: &sqlx::PgPool,
+    user_id: &str,
+    role: &str,
+    owner: &str,
+) -> Result<bool, sqlx::Error> {
+    if owner == talaria_agent_skills::SHARED || role == "admin" {
+        return Ok(true);
+    }
+    let personal: Option<(bool,)> =
+        sqlx::query_as("select owner_user_id is not null from agent_defs where slug = $1")
+            .bind(owner)
+            .fetch_optional(pg)
+            .await?;
+    match personal {
+        Some((false,)) => Ok(true),
+        Some((true,)) => Ok(
+            talaria_agent_managers::manages_agent_slug(pg, user_id, role, owner).await?
+                || talaria_agent_managers::reads_whole_fleet(pg, user_id, role).await?,
+        ),
+        None => Ok(false),
+    }
+}
+
 pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
 ) -> Result<Response, Response> {
-    require_user(&state, &headers).await?;
+    let user = require_user(&state, &headers).await?;
+    match can_read_skills(&state.pg, &user.id, &user.role, &owner).await {
+        Ok(true) => {}
+        Ok(false) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[skills] read gate failed", e)),
+    }
     Ok(match read_skill(&state.pg, &owner, &name).await {
         Ok((content, files)) => Json(json!({ "content": content, "files": files })).into_response(),
         Err(e) => house_error(StatusCode::NOT_FOUND, &e),

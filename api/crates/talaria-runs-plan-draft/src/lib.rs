@@ -184,17 +184,27 @@ pub fn real_plan_draft_deps(state: AppState) -> PlanDraftDeps {
                 let id = id.to_string();
                 Box::pin(async move {
                     let json = serde_json::to_value(&proposals).map_err(|e| e.to_string())?;
-                    sqlx::query(
-                    "update plan_drafts set proposals = $1::jsonb, note = $2, updated_at = now() \
-                     where id = $3::uuid",
-                )
-                .bind(json)
-                .bind(note)
-                .bind(id)
-                .execute(&pg)
-                .await
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+                    // RETURNING, so a save that matched no row is an error
+                    // the run carries rather than a draft that silently
+                    // never fills: the row is written before the run is
+                    // enqueued, so zero rows here means it was discarded.
+                    let saved: Option<(String,)> = sqlx::query_as(
+                        "update plan_drafts set proposals = $1::jsonb, note = $2, \
+                           updated_at = now() \
+                         where id = $3::uuid returning id::text",
+                    )
+                    .bind(json)
+                    .bind(note)
+                    .bind(&id)
+                    .fetch_optional(&pg)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    match saved {
+                        Some(_) => Ok(()),
+                        None => Err(format!(
+                            "plan draft {id} is gone — the proposals had no row to land in"
+                        )),
+                    }
                 })
             },
         ),
@@ -310,6 +320,7 @@ mod tests {
             result: serde_json::Value::Null,
             error: None,
             attempt: 0,
+            crashes: 0,
             lease_owner: None,
             lease_expires_at: None,
             approval_key: None,

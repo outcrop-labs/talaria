@@ -63,6 +63,10 @@ export function useAgentControls(def: () => AgentDef): AgentControlsState {
       await controlAgent(def().id, action)
       await qc.invalidateQueries({ queryKey: ['fleet-containers'] })
       await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+      // A roll lands in the fleet-wide roll picture too (the registry the
+      // control route and "roll all" share): ask for it now rather than on
+      // the next slow poll, so this agent's chip flips at once.
+      if (action === 'roll') await qc.invalidateQueries({ queryKey: ['fleet-roll'] })
     } finally {
       pending = null
     }
@@ -94,6 +98,9 @@ export function useAgentMenu(
   running: () => boolean,
   onManage: () => void,
   onDuplicate: () => void,
+  /** The department is mid-roll (its own, or the fleet-wide batch): Roll is
+   *  offered but disabled, the same answer the control route gives (409). */
+  rolling: () => boolean = () => false,
 ): AgentMenu {
   const controls = useAgentControls(def)
   const menu = useContextMenu()
@@ -137,7 +144,12 @@ export function useAgentMenu(
               ? ([
                   { label: 'Stop', icon: [Square, { size: 13, fill: 'currentColor' }], onSelect: () => void act('stop', 'stopping') },
                   { label: 'Restart', icon: [RotateCw, { size: 13 }], onSelect: () => void act('restart', 'restarting', RESTART_CONFIRM) },
-                  { label: 'Roll', icon: [Repeat, { size: 13 }], onSelect: () => void act('roll', 'rolling') },
+                  {
+                    label: rolling() ? 'Rolling now' : 'Roll',
+                    icon: [Repeat, { size: 13 }],
+                    disabled: rolling(),
+                    onSelect: () => void act('roll', 'rolling'),
+                  },
                 ] as ContextMenuEntry[])
               : ([
                   { label: 'Start', icon: [Play, { size: 13, fill: 'currentColor' }], onSelect: () => void act('up', 'starting') },

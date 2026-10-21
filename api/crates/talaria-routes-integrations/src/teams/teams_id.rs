@@ -134,9 +134,21 @@ pub async fn delete(
     if let Some(gate) = owner_gate(&state, &user.id, &id, "DELETE").await {
         return Ok(gate);
     }
+    // The team's agents lose every MCP grant the team carried the moment
+    // the rows cascade: captured BEFORE the delete (the rows are how they
+    // are found), rolled after it — the same shape mcp_servers_id uses for
+    // a deleted server's carriers.
+    let agents = match list_team_agents(&state.pg, &id).await {
+        Ok(a) => a,
+        Err(e) => return Ok(internal("[teams] agent list on DELETE failed", e)),
+    };
     if let Err(e) = delete_team(&state.pg, &id).await {
         return Ok(internal("[teams] delete failed", e));
     }
+    super::render_and_roll(
+        &state,
+        super::Rolls::Models(agents.into_iter().map(|a| a.agent_model).collect()),
+    );
     log_audit(
         &state.pg,
         AuditEntry {

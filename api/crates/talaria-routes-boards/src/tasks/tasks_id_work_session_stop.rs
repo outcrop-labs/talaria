@@ -14,10 +14,18 @@
 // looks like work that finished (nobody signs off on a stop), and it
 // never vanishes.
 //
-// GATED LIKE THE WORK-SESSION READ (board membership): stop is a safety
-// action, so every member who can see the work may end it — viewer
-// included. `{id}` is the row uuid or the ticket ref, same as the read.
-// Idempotent: a ticket with no live session stops fine and still says ok.
+// GATED LIKE EVERY OTHER WRITE TO THE TICKET: owner or editor. A stop ends
+// an agent's work and holds the ticket off the dispatcher until a person
+// moves it — a board viewer may watch that work, not end it. `{id}` is the
+// row uuid or the ticket ref, same as the read. Idempotent: a ticket with
+// no live session stops fine and still says ok.
+//
+// THE STOP IS DURABLE. Cancelling the live sessions alone left nothing the
+// redispatch sweep could read, so it opened a fresh session on the same
+// agent five minutes later, and after every stop, up to the generation
+// cap. One `work_dispatch_blocks` row per (ticket, agent) now says a person
+// stopped this pair; the dispatcher refuses the pair until a human moves the
+// ticket's status, which clears it.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -25,7 +33,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use talaria_boards::board_role;
+use talaria_boards::{board_role, can_edit};
 use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -50,8 +58,8 @@ pub async fn post(
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     match board_role(&state.pg, &user.id, &board_id).await {
-        Ok(Some(_)) => {}
-        Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Ok(role) if can_edit(role.as_deref()) => {}
+        Ok(_) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
         Err(e) => return Ok(internal("[work-session/stop] role read failed", e)),
     }
 
@@ -60,8 +68,8 @@ pub async fn post(
     // only granularity the person has ever had. `subject_id` is TEXT: the
     // bind stays untyped exactly like the work-session read's, because a
     // $1::uuid against a text column is a 500 (the bind-cast trap).
-    let live: Result<Vec<(String,)>, sqlx::Error> = sqlx::query_as(
-        "select id::text from runs \
+    let live: Result<Vec<(String, Option<String>)>, sqlx::Error> = sqlx::query_as(
+        "select id::text, input->>'agentModel' from runs \
          where kind = 'work-session' and subject_id = $1 \
            and state in ('queued', 'running', 'awaiting') \
          order by created_at",
@@ -92,7 +100,26 @@ pub async fn post(
         };
         let realtime = talaria_realtime_watch::RealtimeDeps::publish_only(Some(redis.clone()));
         let deps = talaria_api_facades::runs::real_run_deps(state.pg.clone(), redis, realtime);
-        for (run_id,) in &live {
+        // THE MARK FIRST, so a stop that then fails to cancel still holds
+        // the dispatcher off — the sweep must not re-open what a person
+        // just asked to end.
+        for agent_model in live.iter().filter_map(|(_, agent)| agent.as_deref()) {
+            if let Err(e) = sqlx::query(
+                "insert into work_dispatch_blocks (task_id, agent_model, blocked_by) \
+                 values ($1::uuid, $2, $3) \
+                 on conflict (task_id, agent_model) do update \
+                   set blocked_by = excluded.blocked_by, created_at = now()",
+            )
+            .bind(&id)
+            .bind(agent_model)
+            .bind(&who)
+            .execute(&state.pg)
+            .await
+            {
+                return Ok(internal("[work-session/stop] stop mark write failed", e));
+            }
+        }
+        for (run_id, _) in &live {
             if let Err(e) = talaria_api_facades::runs::run::cancel_run(
                 run_id,
                 Some(format!("stopped by {who}")),

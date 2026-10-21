@@ -366,6 +366,13 @@ pub async fn create_personal_agent(
         .execute(pg)
         .await
         .map_err(|e| e.to_string())?;
+    // A personal assistant works for ONE person, so the recall the closed
+    // default keeps off a shared agent (`session_search`) is this person's
+    // own: open it now that the owner is marked. The create path could not
+    // know — it writes the shared-agent default for every new def.
+    talaria_agent_defs::open_toolsets(pg, &def.id, talaria_agent_defs::SHARED_AGENT_DISABLED)
+        .await
+        .map_err(|e| e.to_string())?;
     sqlx::query(
         "insert into user_agent_access (user_id, agent_model) values ($1::uuid, $2) \
          on conflict do nothing",
@@ -448,14 +455,13 @@ async fn rename_agent_slug(
     }
     let new_model = format!("{new_slug}-{}", def.department);
     ensure_agent_key(new_slug).await?;
-    // Created agents keep their skills under fleet/agents/<slug>/ — carry them.
-    let from = talaria_fleet_layout::fleet_dir()
-        .join("agents")
-        .join(&def.slug);
-    let to = talaria_fleet_layout::fleet_dir()
-        .join("agents")
-        .join(new_slug);
-    let _ = tokio::fs::rename(&from, &to).await;
+    // ONE TRANSACTION: the def's slug and every table keyed on its model
+    // move together or not at all — a rename that landed on agent_defs and
+    // died on conversations would leave threads, grants and schedules
+    // pointing at a model that no longer exists. The skills directory
+    // moves after the commit (best-effort, as before): a directory that
+    // stayed under the old slug is a missing skill, not a split identity.
+    let mut tx = pg.begin().await.map_err(|e| e.to_string())?;
     for (sql, bind) in [
         (
             "update agent_defs set slug = $1, model = $2, updated_at = now() where id = $3::uuid",
@@ -506,8 +512,20 @@ async fn rename_agent_slug(
         for b in bind {
             q = q.bind(b);
         }
-        q.execute(pg).await.map_err(|e| e.to_string())?;
+        q.execute(&mut *tx).await.map_err(|e| e.to_string())?;
     }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    // Created agents keep their skills under fleet/agents/<slug>/ — carry them.
+    let from = talaria_fleet_layout::fleet_dir()
+        .join("agents")
+        .join(&def.slug);
+    let to = talaria_fleet_layout::fleet_dir()
+        .join("agents")
+        .join(new_slug);
+    let _ = tokio::fs::rename(&from, &to).await;
+    // The old slug's HERMES_KEY_<OLD> / TALARIA_AGENT_KEY_<OLD> lines are
+    // stripped by the next render's `ensure_agent_env_keys`, which drops
+    // every per-agent line whose slug is no longer in agent_defs.
     Ok(new_model)
 }
 

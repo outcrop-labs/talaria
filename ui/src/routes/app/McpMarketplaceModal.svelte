@@ -309,7 +309,7 @@
                     </span>
                     {#if l.package}
                       <span
-                        title="Ships as a package (npm/pypi/docker) — Talaria runs it in a hardened container"
+                        title="Ships as a package (npm/pypi/docker) — Talaria runs it in a hardened container (unprivileged, read-only, no host mounts); admins install these"
                         class="shrink-0 rounded border border-line-subtle px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim"
                       >
                         pkg

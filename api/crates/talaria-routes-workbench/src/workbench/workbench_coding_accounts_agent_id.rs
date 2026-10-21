@@ -148,6 +148,11 @@ pub async fn put(
                     Ok(m) => m,
                     Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
                 };
+                // The pick lands on the harness's invocation line, so it is
+                // a model id or nothing — never a string a shell could read.
+                if !ca::valid_model_id(&model) {
+                    return Ok(house_error(StatusCode::BAD_REQUEST, ca::MODEL_ID_RULE));
+                }
                 picks.push((role.to_string(), model));
             }
             // A role this product does not have is a typo worth saying out

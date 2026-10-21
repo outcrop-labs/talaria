@@ -32,9 +32,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use sqlx::PgPool;
-use talaria_runs_define::is_terminal;
+use talaria_agent_auth::now_ms as wall_ms;
+use talaria_runs_define::{RunState, is_terminal};
 use talaria_runs_run::{EnqueueOptions, RunDeps, enqueue};
-use talaria_runs_work_session::{session_run_id, work_session_run};
+use talaria_runs_work_session::{INTERRUPTED_TURN_SETTLE_MS, session_run_id, work_session_run};
 use talaria_statuses as statuses;
 use talaria_tasks as tasks;
 use talaria_tasks_types::DispatchTicket;
@@ -105,6 +106,23 @@ pub async fn dispatch_ticket_work(
         match existing {
             // A live (or parked) run at this generation IS the session.
             Some(row) if !is_terminal(row.state) => return true,
+            // ERRED JUST NOW: the step that failed may still be running —
+            // an idle deadline fires on SILENCE, and the persona's tool loop
+            // can be mid-build with the stream gone. The next generation
+            // waits the same settle a reclaimed turn gets before its next
+            // prompt; the sweep re-offers the ticket every minute.
+            Some(row)
+                if row.state == RunState::Error
+                    && talaria_agent_auth::iso_to_epoch_ms(&row.updated_at)
+                        .is_some_and(|at| wall_ms() - at < INTERRUPTED_TURN_SETTLE_MS) =>
+            {
+                tracing::debug!(
+                    "{LOG} {}: the last session with {agent_model} erred moments ago — letting \
+                     its turn settle before a new one",
+                    task.id
+                );
+                return false;
+            }
             // Finished: that session is over, the next generation may start
             // a new one.
             Some(_) => continue,
@@ -220,8 +238,8 @@ pub async fn maybe_dispatch_ticket(
         // design, because the sweep re-offers every sixty seconds — the skip
         // IS the queue. A def or count we cannot read is a dispatch we do not
         // make (same law as the claim read below).
-        let developer: Option<bool> =
-            match sqlx::query_scalar("select developer from agent_defs where model = $1")
+        let def_row: Option<(bool, bool)> =
+            match sqlx::query_as("select developer, enabled from agent_defs where model = $1")
                 .bind(&agent)
                 .fetch_optional(pg)
                 .await
@@ -235,6 +253,38 @@ pub async fn maybe_dispatch_ticket(
                     continue;
                 }
             };
+        // A DISABLED AGENT GETS NO SESSION. Its persona answers a canned
+        // stream, the turn fails, and the sweep would restart it every five
+        // minutes until the generation cap — twenty-five failed sessions for
+        // a switch somebody turned off.
+        if let Some((_, false)) = def_row {
+            tracing::debug!("{LOG} {}: {agent} is disabled, not dispatching", task.id);
+            continue;
+        }
+        // A PERSON STOPPED THIS PAIR. The stop button cancels the live
+        // session and leaves the ticket where it is; without a durable mark
+        // the sweep re-offered the same ticket to the same agent five
+        // minutes later, and after every stop. The mark holds until a human
+        // moves the ticket's status, which is the triage the stop asked for.
+        match dispatch_block(pg, &task.id, &agent).await {
+            Ok(None) => {}
+            Ok(Some(by)) => {
+                tracing::debug!(
+                    "{LOG} {}: {agent} was stopped on this ticket by {by} — not dispatching \
+                     until a person moves it",
+                    task.id
+                );
+                continue;
+            }
+            Err(e) => {
+                tracing::error!(
+                    "{LOG} {}: could not read the stop mark for {agent}, not dispatching: {e}",
+                    task.id
+                );
+                continue;
+            }
+        }
+        let developer = def_row.map(|(developer, _)| developer);
         // No def row (an unmanaged name) is nothing this gate knows how to
         // classify; dispatch proceeds and the refusal walk below decides.
         let capped = match developer {
@@ -268,6 +318,46 @@ pub async fn maybe_dispatch_ticket(
                 tracing::error!("{LOG} {}: dispatch to {agent} threw: {e}", task.id);
             }
         }
+    }
+}
+
+/// The durable stop mark for one (ticket, agent), or `None` when there is
+/// none — or when there WAS one and a person has moved the ticket's status
+/// since, in which case the mark is cleared here and the pair is free again.
+/// "A person" is an actor that is a user id: the agent's own status moves
+/// (and Talaria's lines) do not lift a stop a human placed.
+async fn dispatch_block(
+    pg: &PgPool,
+    task_id: &str,
+    agent_model: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let block: Option<(String, bool)> = sqlx::query_as(
+        "select b.blocked_by, exists ( \
+           select 1 from task_activity a \
+           where a.task_id = b.task_id and a.type = 'status' \
+             and a.created_at > b.created_at \
+             and a.actor ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
+         ) as moved \
+         from work_dispatch_blocks b \
+         where b.task_id = $1::uuid and b.agent_model = $2",
+    )
+    .bind(task_id)
+    .bind(agent_model)
+    .fetch_optional(pg)
+    .await?;
+    match block {
+        None => Ok(None),
+        Some((_, true)) => {
+            sqlx::query(
+                "delete from work_dispatch_blocks where task_id = $1::uuid and agent_model = $2",
+            )
+            .bind(task_id)
+            .bind(agent_model)
+            .execute(pg)
+            .await?;
+            Ok(None)
+        }
+        Some((by, false)) => Ok(Some(by)),
     }
 }
 
@@ -688,6 +778,7 @@ mod tests {
             result: serde_json::Value::Null,
             error: None,
             attempt: 0,
+            crashes: 0,
             lease_owner: None,
             lease_expires_at: None,
             approval_key: None,

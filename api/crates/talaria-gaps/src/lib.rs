@@ -384,12 +384,16 @@ pub async fn report_gap(
         None => signature_of(board_id.as_deref(), input.kind),
     };
     let (id, seen_count, first): (String, i32, bool) = sqlx::query_as(
+        // A repeat bumps the count and the last-seen stamp and NOTHING else:
+        // a gap a person dismissed stays dismissed. Flipping it back to open
+        // on every repeat let an agent (or an injected one) re-open a
+        // decision a human made, as often as it liked. The count still
+        // climbs, so the Studio can see a dismissed shape is still being hit.
         "insert into capability_gaps (signature, kind, board_id, agent_model, missing, needs, example_task_id) \
          values ($1, $2, $3::uuid, $4, $5, $6, $7::uuid) \
          on conflict (signature) do update set \
            seen_count = capability_gaps.seen_count + 1, \
            last_seen = now(), \
-           status = case when capability_gaps.status = 'dismissed' then 'open' else capability_gaps.status end, \
            example_task_id = coalesce(capability_gaps.example_task_id, excluded.example_task_id) \
          returning id::text, seen_count, (seen_count = 1) as first",
     )

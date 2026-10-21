@@ -651,6 +651,24 @@ async fn upsert(
     Ok(())
 }
 
+/// The liveness verdict on a mirrored endpoint, for the install gate: `Some`
+/// (the registry name and the probe's detail) when some entry names this
+/// exact URL and the job's last word on it was `dead`. An URL the mirror
+/// does not know — a custom endpoint, a package — is `None`: nothing to
+/// refuse on.
+pub async fn dead_entry_for_url(pg: &PgPool, url: &str) -> Option<(String, String)> {
+    sqlx::query_as::<_, (String, Option<String>)>(
+        "select registry_name, live_detail from mcp_library_entries \
+         where live_state = 'dead' and entry->>'url' = $1 limit 1",
+    )
+    .bind(url)
+    .fetch_optional(pg)
+    .await
+    .ok()
+    .flatten()
+    .map(|(name, detail)| (name, detail.unwrap_or_default()))
+}
+
 /// One page of raw entries → the mirror: active+installable entries upsert,
 /// deleted (or no-longer-installable) ones drop. Returns (upserted, dropped).
 async fn apply_page(pg: &PgPool, entries: &[Value]) -> Result<(usize, usize), String> {
@@ -957,7 +975,14 @@ async fn run_sync(pg: &PgPool, lib: &Library) -> Result<String, String> {
                 break;
             }
         }
-        st.since = Some(next_since);
+        // The window moves forward only once every page of it landed. A
+        // budget cut mid-walk (a catch-up after an outage) keeps `since`
+        // where it was, so the next run re-asks the same window from its
+        // first page — the upsert is idempotent, a skipped page is not.
+        let paused = cursor.is_some();
+        if !paused {
+            st.since = Some(next_since);
+        }
         let mut publishers = 0;
         let edited = st.publishers_config.as_deref()
             != Some(config_mark(&featured::load(pg).await).as_str());
@@ -968,8 +993,13 @@ async fn run_sync(pg: &PgPool, lib: &Library) -> Result<String, String> {
         {
             publishers = run_publishers(pg, lib, &mut st).await;
         }
+        let resume = if paused {
+            " — paused mid-window, re-asked next run"
+        } else {
+            ""
+        };
         Ok(format!(
-            "incremental since {since}: {pages} page(s), {upserted} upserted, {dropped} dropped, {publishers} publisher stand-in(s)"
+            "incremental since {since}: {pages} page(s), {upserted} upserted, {dropped} dropped, {publishers} publisher stand-in(s){resume}"
         ))
     };
     finish(pg, st, report).await

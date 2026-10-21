@@ -20,15 +20,23 @@ use talaria_body::{
 };
 use talaria_channel_replies::{notify_dm_message, notify_user_mentions, trigger_agent_replies};
 use talaria_channels::{
-    agent_may_access_channel, channel_role, get_channel_message, insert_channel_message,
-    inserted_wire, list_channel_messages, list_thread_messages,
+    ChannelIntent, agent_may_access_channel, channel_role, get_channel_message,
+    insert_channel_message, inserted_wire, list_channel_messages, list_thread_messages,
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::NotifyDeps;
+use talaria_ratelimit::brake;
 use talaria_refs::{MessageRef, RefUser, resolve_refs};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_uploads::resolve_attachments;
+
+/// Posts an agent may make per minute, across every channel it is in. Each
+/// post fans out to the channel, the brief, the activity index, an embedding
+/// call and every @mentioned member's inbox — so a loop (or an injected
+/// agent) gets a budget, not a free run. The cap is per AGENT rather than
+/// per channel because the fan-out it brakes is per post.
+const AGENT_POSTS_PER_MINUTE: i64 = 30;
 
 pub async fn get(
     State(state): State<AppState>,
@@ -67,7 +75,14 @@ pub async fn get(
         Ok(None) => return get_as_user(&state, &headers, &id, since, thread).await,
         Err(resp) => return Err(resp),
     };
-    let may = match agent_may_access_channel(&state.pg, &id, &AgentSubject::Caller(caller)).await {
+    let may = match agent_may_access_channel(
+        &state.pg,
+        &id,
+        &AgentSubject::Caller(caller),
+        ChannelIntent::Read,
+    )
+    .await
+    {
         Ok(v) => v,
         Err(e) => return Ok(internal("[channels] agent access read failed", e)),
     };
@@ -241,7 +256,14 @@ pub async fn post(
     };
     let name = caller.model.clone();
     // The CALLER, not `name`: elevation buys org-wide posting rights.
-    let may = match agent_may_access_channel(&state.pg, &id, &AgentSubject::Caller(caller)).await {
+    let may = match agent_may_access_channel(
+        &state.pg,
+        &id,
+        &AgentSubject::Caller(caller),
+        ChannelIntent::Post,
+    )
+    .await
+    {
         Ok(v) => v,
         Err(e) => return Ok(internal("[channels] agent access read on POST failed", e)),
     };
@@ -250,6 +272,33 @@ pub async fn post(
     }
     if body.content.trim().is_empty() {
         return Ok(house_error(StatusCode::BAD_REQUEST, "bad request"));
+    }
+    if let Ok(mut redis) = state.redis().await
+        && let Some(gate) = brake(
+            &mut redis,
+            &format!("agent:channel-post:{name}"),
+            AGENT_POSTS_PER_MINUTE,
+            60,
+            "too many posts from this agent — wait before posting again",
+        )
+        .await
+    {
+        return Ok(gate);
+    }
+    // A thread reply hangs off a ROOT in this channel, resolved exactly as
+    // a person's is below (replying to a reply re-roots onto its thread).
+    // The MCP tool promises `threadId` threads the post; dropping it here
+    // left the asker's thread unanswered and the agent reposting top-level.
+    let mut thread_root_id: Option<String> = None;
+    if let Some(root_id) = &body.thread_root_id {
+        let root = match get_channel_message(&state.pg, &id, root_id).await {
+            Ok(r) => r,
+            Err(e) => return Ok(internal("[channels] thread root read failed", e)),
+        };
+        let Some(root) = root else {
+            return Ok(house_error(StatusCode::BAD_REQUEST, "no such thread"));
+        };
+        thread_root_id = Some(root.thread_root_id.unwrap_or(root.id));
     }
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     let msg = match insert_channel_message(
@@ -260,7 +309,7 @@ pub async fn post(
         &body.content,
         "complete",
         &json!([]),
-        None,
+        thread_root_id.as_deref(),
     )
     .await
     {
@@ -306,15 +355,18 @@ pub async fn post(
         );
     }
     // An agent @mentioning a human notifies exactly like a human would.
+    // An empty sender id is how the mention engine knows the sender is not
+    // a person — that is what puts the agent-originated cap on these rows.
     let mention_deps = notify.clone();
     let mention_name = name.clone();
     let mention_content = msg.content.clone();
+    let mention_channel = nm.clone();
     let channel_id = id.clone();
     tokio::spawn(async move {
         notify_user_mentions(
             &mention_deps,
             &channel_id,
-            &mention_name,
+            &mention_channel,
             "",
             &describe_agent(&mention_name).label,
             &mention_content,

@@ -18,6 +18,7 @@ talaria-agent-defs = { workspace = true }
 talaria-alerts = { workspace = true }
 talaria-artifacts = { workspace = true }
 talaria-audit = { workspace = true }
+talaria-boards = { workspace = true }
 talaria-body = { workspace = true }
 talaria-channel-replies = { workspace = true }
 talaria-channels = { workspace = true }
@@ -41,6 +42,7 @@ talaria-plan-doc = { workspace = true }
 talaria-work-mode = { workspace = true }
 talaria-plan-drafts = { workspace = true }
 talaria-push = { workspace = true }
+talaria-ratelimit = { workspace = true }
 talaria-realtime-watch = { workspace = true }
 talaria-refs = { workspace = true }
 talaria-research = { workspace = true }

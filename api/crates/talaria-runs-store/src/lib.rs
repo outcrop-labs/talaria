@@ -210,7 +210,7 @@ pub struct PgRunStore {
 /// opinion about what a run row is.
 pub const COLS: &str = "id::text, kind, \
      owner_user_id::text, subject_type, subject_id, state, phase, checkpoint, input, result, \
-     error, attempt, lease_owner, \
+     error, attempt, crashes, lease_owner, \
      (trunc(extract(epoch from lease_expires_at) * 1000))::bigint as lease_expires_ms, \
      approval_key, decision, \
      (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
@@ -273,6 +273,7 @@ pub fn hydrate(row: &PgRow) -> Result<RunRow, sqlx::Error> {
             .unwrap_or(Value::Null),
         error: row.try_get("error")?,
         attempt: row.try_get("attempt")?,
+        crashes: row.try_get("crashes")?,
         lease_owner: row.try_get("lease_owner")?,
         lease_expires_at: row
             .try_get::<Option<i64>, _>("lease_expires_ms")?
@@ -418,6 +419,7 @@ impl RunStore for PgRunStore {
                  update runs set \
                    state = 'running', \
                    attempt = runs.attempt + case when prev.prev_state = 'running' then 1 else 0 end, \
+                   crashes = runs.crashes + case when prev.prev_state = 'running' then 1 else 0 end, \
                    lease_owner = $2, \
                    lease_expires_at = now() + make_interval(secs => $3::float8), \
                    started_at = coalesce(runs.started_at, now()), \
@@ -657,8 +659,19 @@ impl RunStore for PgRunStore {
             // Only from `running`: a run this driver parked, deferred or
             // finished has already had its lease dealt with, and clearing it
             // again would strip the deferral wait off a `retry`.
+            //
+            // A CLEAN HAND-OVER, SAID SO. The row goes back to `queued` with
+            // `attempt` bumped HERE: the next claim then sees a queued row
+            // and charges no crash — a drained driver released, it did not
+            // die — while a step that was mid-flight still reads a higher
+            // `attempt` than its checkpoint recorded (the work session's
+            // "a turn was owed" signal). A row left `running` with a null
+            // lease would be indistinguishable from a crash at the next
+            // claim, which is exactly what used to exhaust `max_attempts`
+            // over three rolling deploys.
             sqlx::query(
-                "update runs set lease_owner = null, lease_expires_at = null \
+                "update runs set state = 'queued', attempt = attempt + 1, \
+                   lease_owner = null, lease_expires_at = null, updated_at = now() \
                  where id = $1::uuid and lease_owner = $2 and state = 'running'",
             )
             .bind(id)
@@ -697,24 +710,32 @@ impl RunStore for PgRunStore {
                     });
                 }
             };
+            let request_key = request.key.clone();
             let decision = decision_value(&RunDecision {
                 request,
                 answer: Some(answer),
             })?;
+            // THE KEY IS IN THE PREDICATE, not only in the read above: between
+            // that read and this write the run can be answered by somebody
+            // else, resume, and park again on a DIFFERENT question — and a
+            // stale writer whose UPDATE matched on state alone would
+            // overwrite the new question with the old request and answer.
             let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
                 "update runs set \
                    state = 'queued', decision = $2, \
                    lease_owner = null, lease_expires_at = null, updated_at = now() \
                  where id = $1::uuid and state = 'awaiting' \
+                   and decision -> 'request' ->> 'key' = $3 \
                  returning {COLS}"
             )))
             .bind(id)
             .bind(decision)
+            .bind(&request_key)
             .fetch_all(&self.pg)
             .await?;
-            // Lost a race with another answer of the same question. Not an
-            // error worth raising to the person: somebody answered it, which
-            // is what they wanted.
+            // Lost a race with another answer of the same question (or the
+            // run moved on to another question). Not an error worth raising
+            // to the person: somebody answered it, which is what they wanted.
             match rows.first() {
                 Some(row) => Ok(AnswerOutcome::Answered(Box::new(hydrate(row)?))),
                 None => Ok(AnswerOutcome::NotAwaiting { state: None }),

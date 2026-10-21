@@ -3,7 +3,14 @@
 // mentions are surfaced separately by each surface (channels trigger replies;
 // comments pull the agent's attention).
 
-use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_notify::{NotificationInput, NotifyDeps, add_notification, add_notification_capped};
+
+/// Mention notifications one person receives from AGENTS per day. An agent
+/// post that @mentions a member notifies exactly like a human's would, but a
+/// human cannot post a thousand times a minute and an agent can — so the
+/// agent-originated kind carries a per-recipient daily ceiling and the human
+/// one does not.
+pub const AGENT_MENTION_DAILY_CAP: i64 = 50;
 
 /// Tokens a person answers to: email localpart, dashed full name, first name.
 fn user_mention_tokens(name: Option<&str>, email: Option<&str>) -> Vec<String> {
@@ -84,6 +91,11 @@ pub struct Mentionee {
 /// Per-person notification failures are swallowed (logged) — one person's
 /// failed row never costs the rest theirs, the same posture
 /// notify_task_users takes.
+///
+/// `sender_user_id` EMPTY means the sender is not a person — every agent
+/// call site (an agent's channel post, a streamed agent reply) passes `""`
+/// because an agent has no user id — and those mentions are the ones the
+/// per-recipient daily cap applies to.
 pub async fn notify_mentions(
     notify: &NotifyDeps,
     members: &[Mentionee],
@@ -117,7 +129,14 @@ pub async fn notify_mentions(
             body: Some(&body),
             href: Some(href),
         };
-        if let Err(e) = add_notification(notify, &m.user_id, &input).await {
+        let written = if sender_user_id.is_empty() {
+            add_notification_capped(notify, &m.user_id, &input, AGENT_MENTION_DAILY_CAP).await
+        } else {
+            add_notification(notify, &m.user_id, &input)
+                .await
+                .map(|()| true)
+        };
+        if let Err(e) = written {
             tracing::error!("[mentions] notification for {} failed: {e}", m.user_id);
         }
     }

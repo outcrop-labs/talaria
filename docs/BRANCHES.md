@@ -165,6 +165,7 @@ gh api -X PUT "repos/outcrop-labs/talaria/branches/main/protection" \
       "fmt + clippy + test + typecheck (desktop)",
       "test + assemble (mobile)",
       "compile + link (mobile ios)",
+      "mcp end-to-end (playwright)",
       "pr target (main takes rc only)",
       "promotion gate (rc verified)"
     ]
@@ -199,7 +200,8 @@ gh api -X PUT "repos/outcrop-labs/talaria/branches/rc/protection" \
       "fmt + clippy + test (api)",
       "fmt + clippy + test + typecheck (desktop)",
       "test + assemble (mobile)",
-      "compile + link (mobile ios)"
+      "compile + link (mobile ios)",
+      "mcp end-to-end (playwright)"
     ]
   },
   "enforce_admins": true,
@@ -240,6 +242,14 @@ Things about that list that are easy to get wrong:
   put a merge on `rc` that changes nothing. What makes a promotion safe is not
   being tested against main's tip (it adds no content of its own); it is the gate
   reading CI's and the deploy's runs for the head commit.
+- **`mcp end-to-end (playwright)` is on both lists, and that is a change an admin has to
+  apply by hand.** Branch protection lives in the repository, not the tree: adding the
+  context here changes nothing until the two `gh api` recipes above are re-run. Until then
+  a red e2e run does not block a merge — which is how it was from the suite's first day
+  (`changelog/2026-10-16-mcp-e2e.md`) until this entry. It is safe to require because the
+  job skips per *job* (`needs: [changes]` + a job-level `if`, like every other check on
+  the list), and a job skipped that way reports success; the `changes` filter names every
+  crate the MCP story passes through, so the skip is honest.
 - **`migrations` is deliberately NOT in either list.** Its workflow is filtered
   by `paths:`, and a required check whose workflow never starts reports nothing
   at all — which branch protection reads as "pending" and blocks the merge with.

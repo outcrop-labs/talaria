@@ -99,8 +99,8 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 | `summary` | `string(1, 500)` |  |
 | `description` | `string?(8000)` |  |
 | `location` | `string?(500)` |  |
-| `start` | `string(4)` |  |
-| `end` | `string(4)` |  |
+| `start` | `instant` |  |
+| `end` | `instant` |  |
 | `allDay` | `bool?` |  |
 | `attendees` | `email[]?` |  |
 
@@ -143,8 +143,10 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `summary` | `string(1, 500)` |  |
-| `start` | `string(4)` |  |
-| `end` | `string(4)` |  |
+| `start` | `instant` |  |
+| `end` | `instant` |  |
+| `agenda` | `string?(50000)` | The agenda becomes a Doc at approve time; the attendees are the same validated, capped list the draft route takes — an invite is a send. |
+| `attendees` | `email[]?` |  |
 
 ## `/api/integrations/google/agent/calendar/update`
 
@@ -165,6 +167,8 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `eventId` | `string(1, 200)` |  |
+| `summary` | `string?(500)` | The same bounds the draft route applies: a change the approver's card shows is validated before it is stored, not when Google refuses it. |
+| `allDay` | `bool?` |  |
 
 ## `/api/integrations/google/agent/callback`
 
@@ -177,16 +181,16 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `agent-manager` | — | `…` | 302 | — |
+| GET | `session` + `agent-manager` | — | `…` | 200, 302 | audit |
 
 ## `/api/integrations/google/agent/docs`
 
 Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs)
 
-> Agent Google Docs. Reads are free. Creating a new doc is immediate — it
-> destroys nothing. Updating a doc the agent did not create queues a
-> `doc_update` for a human. Updating one this agent created is immediate.
->
+> Agent Google Docs. Reads are free. Creating a new doc is immediate when it
+> lands in the account's own Drive or in a folder this agent created — it
+> destroys nothing and shows nobody anything. Creating one inside any other
+> folder queues a `doc_create`: a file placed in a shared folder inherits
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -205,10 +209,10 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 
 Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs)
 
-> Agent Google Docs. Reads are free. Creating a new doc is immediate — it
-> destroys nothing. Updating a doc the agent did not create queues a
-> `doc_update` for a human. Updating one this agent created is immediate.
->
+> Agent Google Docs. Reads are free. Creating a new doc is immediate when it
+> lands in the account's own Drive or in a folder this agent created — it
+> destroys nothing and shows nobody anything. Creating one inside any other
+> folder queues a `doc_create`: a file placed in a shared folder inherits
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -241,8 +245,11 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 
 Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive_manage.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive_manage.rs)
 
-> Agent Drive management. Creating a folder is immediate — cheap and
-> reversible. Moving or renaming mutates the human's Drive, so those queue.
+> Agent Drive management. Creating a folder in the account's own Drive, or
+> inside a folder this agent created, is immediate — cheap and reversible.
+> Creating one inside anybody else's folder queues a `drive_folder_create`:
+> it inherits that folder's sharing, which a person approves. Moving or
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -277,8 +284,11 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 
 Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive_manage.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive_manage.rs)
 
-> Agent Drive management. Creating a folder is immediate — cheap and
-> reversible. Moving or renaming mutates the human's Drive, so those queue.
+> Agent Drive management. Creating a folder in the account's own Drive, or
+> inside a folder this agent created, is immediate — cheap and reversible.
+> Creating one inside anybody else's folder queues a `drive_folder_create`:
+> it inherits that folder's sharing, which a person approves. Moving or
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -295,8 +305,11 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 
 Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive_manage.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive_manage.rs)
 
-> Agent Drive management. Creating a folder is immediate — cheap and
-> reversible. Moving or renaming mutates the human's Drive, so those queue.
+> Agent Drive management. Creating a folder in the account's own Drive, or
+> inside a folder this agent created, is immediate — cheap and reversible.
+> Creating one inside anybody else's folder queues a `drive_folder_create`:
+> it inherits that folder's sharing, which a person approves. Moving or
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -313,10 +326,10 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 
 Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs)
 
-> Agent Google Docs. Reads are free. Creating a new doc is immediate — it
-> destroys nothing. Updating a doc the agent did not create queues a
-> `doc_update` for a human. Updating one this agent created is immediate.
->
+> Agent Google Docs. Reads are free. Creating a new doc is immediate when it
+> lands in the account's own Drive or in a folder this agent created — it
+> destroys nothing and shows nobody anything. Creating one inside any other
+> folder queues a `doc_create`: a file placed in a shared folder inherits
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -327,10 +340,10 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 
 Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs)
 
-> Agent Google Docs. Reads are free. Creating a new doc is immediate — it
-> destroys nothing. Updating a doc the agent did not create queues a
-> `doc_update` for a human. Updating one this agent created is immediate.
->
+> Agent Google Docs. Reads are free. Creating a new doc is immediate when it
+> lands in the account's own Drive or in a folder this agent created — it
+> destroys nothing and shows nobody anything. Creating one inside any other
+> folder queues a `doc_create`: a file placed in a shared folder inherits
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -424,8 +437,8 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 
 > /api/integrations/google/agent/pending — the confirm-sends queue the
 > calling agent's approver actually opens. Personal assistant → its owner's
-> personal queue (admin arm off). General agent → the org arm an admin sees.
->
+> personal queue (admin arm off). General agent → the org arm an admin sees,
+> narrowed to the rows THIS agent queued.
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -438,8 +451,8 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 
 > /api/integrations/google/agent/pending — the confirm-sends queue the
 > calling agent's approver actually opens. Personal assistant → its owner's
-> personal queue (admin arm off). General agent → the org arm an admin sees.
->
+> personal queue (admin arm off). General agent → the org arm an admin sees,
+> narrowed to the rows THIS agent queued.
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -722,10 +735,11 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 > connection. The shared connect body plus the org's two differences: only an
 > admin may tie the org's containers to a Google account, and the landing
 > page is the admin panel whose googleOrg flash reads the status param.
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `public` | — | `…` | — | — |
+| GET | `public` | — | `…` | 200 | audit |
 
 ## `/api/integrations/google/org/connect`
 

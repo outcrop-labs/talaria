@@ -10,7 +10,9 @@ use talaria_agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
 use talaria_agent_writes::{WriteAuthor, guard_agent_write};
 use talaria_notify::{NotifyDeps, briefs_follow_message, fan_channel_event};
 use talaria_realtime::{ChannelEvent, publish_channel};
-use talaria_users::{assistant_owner_for, is_elevated_assistant};
+use talaria_users::{
+    AssistantDmAccess, assistant_dm_access, assistant_owner_for, is_elevated_assistant,
+};
 
 /// Exactly the hyphenated uuid shape, hex in either
 /// case. Hand-rolled rather than `Uuid::parse_str` because the crate's parser
@@ -899,9 +901,14 @@ pub async fn list_channels_for_agent(
     if let Some(owner) = assistant_owner_for(pg, subject).await? {
         // The owner's member view carries role/unread/peer the agent view
         // doesn't — reduce to the bare columns the agent listing serves.
+        // Their human↔human DMs ride along only as far as the owner's own
+        // setting allows (`assistant_dm_allows`): an owner who keeps the
+        // assistant out of their DMs gets a listing with none in it.
+        let dm_access = assistant_dm_access(pg, &owner).await;
         return Ok(list_channels(pg, &owner)
             .await?
             .into_iter()
+            .filter(|c| assistant_dm_allows(dm_access, &c.kind, ChannelIntent::Read))
             .map(|c| AgentChannel {
                 id: c.id,
                 name: c.name,
@@ -952,6 +959,28 @@ fn channel_of_row(
     }
 }
 
+/// What an agent is about to do in a channel — the two halves the owner's
+/// DM setting tells apart. Reactions are a write, so they ask as a post.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelIntent {
+    Read,
+    Post,
+}
+
+/// The owner's DM setting applied to one channel: a non-DM is never its
+/// business; a DM is listed and readable from `read` up, and posted in only
+/// at `read-write`. Pure, so the listing filter and the access predicate
+/// cannot drift from each other — or from this test.
+pub fn assistant_dm_allows(access: AssistantDmAccess, kind: &str, intent: ChannelIntent) -> bool {
+    if kind != "dm" {
+        return true;
+    }
+    match intent {
+        ChannelIntent::Read => access.may_read(),
+        ChannelIntent::Post => access.may_post(),
+    }
+}
+
 /// May this agent read/post in this channel? Membership — or org-wide
 /// elevation, which still never reaches DMs. Takes the SUBJECT, not its
 /// model: elevation is only for a proven identity.
@@ -959,15 +988,30 @@ fn channel_of_row(
 /// A personal assistant may read/post where its OWNER is a member — same
 /// identity-proxy reach as `list_channels_for_agent`. Posts stay attributed
 /// to the agent, so this grants the assistant its owner's VIEW, not the
-/// ability to speak as its owner.
+/// ability to speak as its owner. The owner's human↔human DMs are the one
+/// part of that view the owner sets the depth of (`assistant_dm_allows`),
+/// which is why the predicate takes the INTENT: the same DM can be readable
+/// and not postable.
 pub async fn agent_may_access_channel(
     pg: &PgPool,
     channel_id: &str,
     subject: &AgentSubject,
+    intent: ChannelIntent,
 ) -> Result<bool, sqlx::Error> {
     if !is_channel_id(channel_id) {
         return Ok(false);
     }
+    // An ARCHIVED channel is closed to agents on every arm — the listing
+    // never shows one, and a seat left on its roster must not keep a door
+    // open the person who archived it believes is shut.
+    let live: Option<(String,)> =
+        sqlx::query_as("select kind from channels where id = $1::uuid and archived_at is null")
+            .bind(channel_id)
+            .fetch_optional(pg)
+            .await?;
+    let Some((kind,)) = live else {
+        return Ok(false);
+    };
     if list_channel_agents(pg, channel_id)
         .await?
         .iter()
@@ -991,7 +1035,16 @@ pub async fn agent_may_access_channel(
         return Ok(row.is_some());
     }
     match assistant_owner_for(pg, subject).await? {
-        Some(owner) => Ok(channel_role(pg, &owner, channel_id).await?.is_some()),
+        Some(owner) => {
+            if channel_role(pg, &owner, channel_id).await?.is_none() {
+                return Ok(false);
+            }
+            Ok(assistant_dm_allows(
+                assistant_dm_access(pg, &owner).await,
+                &kind,
+                intent,
+            ))
+        }
         None => Ok(false),
     }
 }
@@ -2048,6 +2101,29 @@ pub async fn update_channel_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_owners_dm_setting_gates_dms_only_and_tells_read_from_post() {
+        use AssistantDmAccess::{None as Off, Read, ReadWrite};
+        use ChannelIntent::{Post, Read as Look};
+        // A channel or relay is never the setting's business.
+        for access in [Off, Read, ReadWrite] {
+            for kind in ["channel", "relay"] {
+                assert!(assistant_dm_allows(access, kind, Look));
+                assert!(assistant_dm_allows(access, kind, Post));
+            }
+        }
+        // none: out of the listing and out of the door, both ways.
+        assert!(!assistant_dm_allows(Off, "dm", Look));
+        assert!(!assistant_dm_allows(Off, "dm", Post));
+        // read: listed and readable, never posted in.
+        assert!(assistant_dm_allows(Read, "dm", Look));
+        assert!(!assistant_dm_allows(Read, "dm", Post));
+        // read-write (the default): the owner's own view.
+        assert!(assistant_dm_allows(ReadWrite, "dm", Look));
+        assert!(assistant_dm_allows(ReadWrite, "dm", Post));
+        assert!(assistant_dm_allows(AssistantDmAccess::DEFAULT, "dm", Post));
+    }
 
     #[test]
     fn shared_conversations_merge_newest_first_and_wire_in_order() {

@@ -19,6 +19,7 @@ use talaria_error::{house_error, internal, object_or_400};
 use talaria_permissions::has_perm;
 use talaria_session::require_user;
 use talaria_state::AppState;
+use talaria_statuses::list_statuses;
 use talaria_teams::team_role;
 use talaria_users::{assistant_owner_for, is_elevated_assistant};
 
@@ -58,7 +59,14 @@ pub async fn get(
         Err(e) => return Ok(internal("[boards] owner lookup failed", e)),
     };
     let Some(owner_id) = owner_id else {
-        return Ok(Json(json!({ "boards": policy_boards })).into_response());
+        let mut boards: Vec<Value> = policy_boards
+            .iter()
+            .map(|b| serde_json::to_value(b).unwrap_or(Value::Null))
+            .collect();
+        if let Err(e) = attach_statuses(&state.pg, &mut boards).await {
+            return Ok(internal("[boards] status listing failed", e));
+        }
+        return Ok(Json(json!({ "boards": boards })).into_response());
     };
     let owner_boards = match list_boards(&state.pg, &owner_id, false).await {
         Ok(v) => v,
@@ -101,7 +109,41 @@ pub async fn get(
         };
         boards.push(v.unwrap_or(Value::Null));
     }
+    // Each row carries the board's own status keys, because an agent's
+    // status moves are keyed by them: a board that renamed its columns has
+    // keys nothing else on this listing names, and a move with the default
+    // key 400s there. The agent reads the key, the label, the category and
+    // whether the column is an agent-start gate — never the id or the colour.
+    if let Err(e) = attach_statuses(&state.pg, &mut boards).await {
+        return Ok(internal("[boards] status listing failed", e));
+    }
     Ok(Json(json!({ "boards": boards })).into_response())
+}
+
+/// `statuses: [{key, label, category, agentStart}]` on every listed board,
+/// in the board's own order (blocked included, as `list_statuses` places it).
+async fn attach_statuses(pg: &sqlx::PgPool, boards: &mut [Value]) -> Result<(), sqlx::Error> {
+    for row in boards.iter_mut() {
+        let Some(id) = row.get("id").and_then(Value::as_str).map(str::to_string) else {
+            continue;
+        };
+        let statuses: Vec<Value> = list_statuses(pg, &id)
+            .await?
+            .into_iter()
+            .map(|s| {
+                json!({
+                    "key": s.key,
+                    "label": s.label,
+                    "category": s.category,
+                    "agentStart": s.agent_start,
+                })
+            })
+            .collect();
+        if let Some(obj) = row.as_object_mut() {
+            obj.insert("statuses".into(), Value::Array(statuses));
+        }
+    }
+    Ok(())
 }
 
 async fn get_as_user(

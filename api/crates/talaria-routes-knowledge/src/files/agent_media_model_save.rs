@@ -21,6 +21,7 @@ use talaria_artifacts::{
     SaveArtifactPatch, agent_category_folder, create_artifact, create_folder, list_folders,
     save_artifact,
 };
+use talaria_audit::spawn_audit;
 use talaria_body::{
     optional_uuid_member, parse, string_member, string_msg, too_big_msg, zod_type_name,
 };
@@ -227,5 +228,17 @@ pub async fn post(
         Ok(a) => a,
         Err(e) => return Ok(internal("[agent-media] artifact save failed", e)),
     };
+    // An agent's own save is audited like a human's artifact create: the
+    // file plane keeps a trace of what the agent plane put into the workspace.
+    if agent_actor {
+        spawn_audit(
+            &state.pg,
+            format!("agent:{actor}"),
+            "artifact.create",
+            "artifact",
+            Some(created.id.clone()),
+            Some(json!({ "title": created.title, "kind": "file", "uploadId": upload.id })),
+        );
+    }
     Ok(Json(json!({ "artifact": saved.unwrap_or(created) })).into_response())
 }

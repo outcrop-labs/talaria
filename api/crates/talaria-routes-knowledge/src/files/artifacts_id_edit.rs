@@ -16,6 +16,16 @@
 // it is — read it again". The sentence from `talaria_doc_edit` rides along,
 // because it is written to be read by the model that has to recover.
 //
+// THE SAVE CARRIES A VERSION PRECONDITION. Read → apply → save is a window,
+// and a PUT from the living-document pane that lands inside it used to be
+// overwritten by the agent's whole-body save — "whatever a person typed while
+// the agent was thinking" was fixed only for the model-thinking window, not
+// for this one. The save now binds the `updated_at` the read carried and
+// writes only if the row still has it; when it has moved, the route re-reads
+// and re-applies once (the match-once rule makes that safe), and if it moves
+// again it answers 409 with the sentence this route already speaks: the
+// document is not what you think it is — read it again.
+//
 // AUTHORITY AND INDEXING ARE THE PUT'S, deliberately — `body_editor` and
 // `reindex_content` are shared with it. Two answers to "may this caller
 // rewrite this artifact" is how the tool plane and the UI come to disagree,
@@ -41,7 +51,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use crate::files::artifacts_id::{body_editor, reindex_content};
-use talaria_artifacts::{SaveArtifactPatch, get_artifact, save_artifact};
+use talaria_artifacts::{ConditionalSave, get_artifact, save_artifact_body_if_unchanged};
 use talaria_body::parse;
 use talaria_doc_edit::{apply, wire::edits_from};
 use talaria_error::{house_error, internal, object_or_400};
@@ -91,39 +101,60 @@ pub async fn post(
         }
     }
     let editor = body_editor(&state, &headers, &artifact).await?;
-    let applied = match apply(&artifact.body, &edits) {
-        Ok(a) => a,
-        // The document's state is the reason, so the status says conflict and
-        // the body carries the engine's own sentence.
-        Err(e) => return Ok(house_error(StatusCode::CONFLICT, &e.to_string())),
-    };
-    // NO SAVE WHEN NOTHING MOVED. Every content change snapshots a version, so
-    // an edit whose replacement equals what was already there would spend a
-    // version to record that nothing happened — and the history is what a
-    // person reads to see what the agent did.
-    let changes = changes_json(&applied.changes);
-    if applied.body == artifact.body {
-        return Ok(Json(json!({
-            "changes": changes,
-            "artifact": slim(&artifact),
-            "unchanged": true,
-        }))
-        .into_response());
-    }
-    let updated = match save_artifact(
-        &state.pg,
-        &id,
-        SaveArtifactPatch {
-            body: Some(applied.body.as_str()),
-            ..Default::default()
-        },
-        &editor.actor,
-    )
-    .await
-    {
-        Ok(Some(a)) => a,
-        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
-        Err(e) => return Ok(internal("[artifacts] save failed on edit", e)),
+    let mut artifact = artifact;
+    let mut moved_once = false;
+    let (updated, changes) = loop {
+        let applied = match apply(&artifact.body, &edits) {
+            Ok(a) => a,
+            // The document's state is the reason, so the status says conflict
+            // and the body carries the engine's own sentence.
+            Err(e) => return Ok(house_error(StatusCode::CONFLICT, &e.to_string())),
+        };
+        // NO SAVE WHEN NOTHING MOVED. Every content change snapshots a
+        // version, so an edit whose replacement equals what was already there
+        // would spend a version to record that nothing happened — and the
+        // history is what a person reads to see what the agent did.
+        let changes = changes_json(&applied.changes);
+        if applied.body == artifact.body {
+            return Ok(Json(json!({
+                "changes": changes,
+                "artifact": slim(&artifact),
+                "unchanged": true,
+            }))
+            .into_response());
+        }
+        match save_artifact_body_if_unchanged(
+            &state.pg,
+            &id,
+            &applied.body,
+            &editor.actor,
+            &artifact.updated_at,
+        )
+        .await
+        {
+            Ok(ConditionalSave::Saved(a)) => break (*a, changes),
+            Ok(ConditionalSave::Missing) => {
+                return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
+            }
+            Ok(ConditionalSave::Moved) if !moved_once => {
+                // Someone saved between the read and this write. Re-read and
+                // re-apply once: the edit is anchored, not positional, so it
+                // lands on the new body or refuses honestly.
+                moved_once = true;
+                artifact = match get_artifact(&state.pg, &id).await {
+                    Ok(Some(a)) => a,
+                    Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+                    Err(e) => return Ok(internal("[artifacts] re-read failed on edit", e)),
+                };
+            }
+            Ok(ConditionalSave::Moved) => {
+                return Ok(house_error(
+                    StatusCode::CONFLICT,
+                    "the document moved while this edit was being applied — read it again and retry",
+                ));
+            }
+            Err(e) => return Ok(internal("[artifacts] save failed on edit", e)),
+        }
     };
     reindex_content(&state, &id, &updated);
     land_document_chip(&state, &editor, &updated, &changes);

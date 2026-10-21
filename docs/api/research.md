@@ -38,7 +38,7 @@ Source: [`api/crates/talaria-routes-workbench/src/research/research.rs`](../../a
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `{runs, modes}` | 200 | — |
-| POST | `dual` | [body](#post-apiresearch-body) | `{run}` | 200, 400, 403, 404, 409 | — |
+| POST | `dual` | [body](#post-apiresearch-body) | `{run}` | 200, 400, 403, 404, 409, 429 | — |
 
 ### POST `/api/research` body
 

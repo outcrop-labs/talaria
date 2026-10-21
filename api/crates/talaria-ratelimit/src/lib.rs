@@ -4,10 +4,14 @@
 // limit across a window boundary, which is the right trade for a brake whose
 // goal is "thousands become dozens", not exact accounting.
 //
-// Wired into the chat-completions route's rpm brake.
+// Wired into the chat-completions route's rpm brake, the login/claim/join
+// doors, and the agent write doors (`brake` below).
 
+use axum::http::StatusCode;
+use axum::response::Response;
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
+use talaria_error::house_error;
 
 pub struct RateLimitResult {
     /// False when the caller should be refused.
@@ -54,6 +58,31 @@ pub async fn rate_limit(
             retry_after: 0,
         },
     }
+}
+
+/// The house 429: the house error shape with the limiter's Retry-After
+/// beside it. One body, here, because every door that refuses on a budget
+/// needs exactly this and a copy per route crate is a copy that drifts.
+pub fn too_many_requests(retry_after: i64, message: &str) -> Response {
+    let mut resp = house_error(StatusCode::TOO_MANY_REQUESTS, message);
+    if let Ok(v) = http::HeaderValue::from_str(&retry_after.to_string()) {
+        resp.headers_mut().insert(http::header::RETRY_AFTER, v);
+    }
+    resp
+}
+
+/// Count one hit for `key` against a budget; `Some(429)` when it is spent,
+/// carrying `message`. The agent write doors' one-liner — the caller holds
+/// the Redis handle (and skips the brake, failing open, when it has none).
+pub async fn brake(
+    redis: &mut ConnectionManager,
+    key: &str,
+    limit: i64,
+    window_seconds: i64,
+    message: &str,
+) -> Option<Response> {
+    let hit = rate_limit(redis, key, limit, window_seconds).await;
+    (!hit.ok).then(|| too_many_requests(hit.retry_after, message))
 }
 
 /// Drop the counter for `key` (a success shouldn't leave the budget spent).

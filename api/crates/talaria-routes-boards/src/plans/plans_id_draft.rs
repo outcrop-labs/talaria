@@ -22,6 +22,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use sqlx::PgPool;
 use talaria_api_facades::fleet::{routed_model_for, usable_agent_gate};
+use talaria_boards::{board_role, can_edit};
 use talaria_body::parse;
 use talaria_conversations::{accessible_conversation_agent, conversation_accessible};
 use talaria_error::{house_error, internal, object_or_400};
@@ -126,6 +127,24 @@ pub async fn post(
         Ok(b) => b,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // THE BOARD IS A BODY FIELD, SO IT IS GATED HERE. The run reads that
+    // board's open tickets, labels and members as a service identity and
+    // the proposals come back naming them — so a caller may only point the
+    // drafter at a board they could edit themselves (the draft's whole
+    // purpose is tickets on it). The board routes refuse a stranger; this
+    // door must too.
+    if let Some(board_id) = start.board_id.as_deref() {
+        match board_role(&state.pg, &user.id, board_id).await {
+            Ok(role) if can_edit(role.as_deref()) => {}
+            Ok(_) => {
+                return Ok(house_error(
+                    StatusCode::FORBIDDEN,
+                    "forbidden: no edit access to that board",
+                ));
+            }
+            Err(e) => return Ok(internal("[plans] board role read on POST draft failed", e)),
+        }
+    }
     // Same routing posture as the channel twin: a blank tier never asks, a
     // failed read or unknown tier falls back to the base agent.
     let routed = match start.tier.as_deref() {

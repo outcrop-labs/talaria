@@ -12,7 +12,9 @@
 // to mean one of those two surfaces, and they have different sizes, different
 // callers and different failure modes.
 //
-//     hermes      62 tools, over MCP, inside the agent container   THIS FILE
+//     hermes      the toolkit's registered tools, over MCP, inside the
+//                 agent container — the count is whatever mcp/src/index.ts
+//                 registers (checked by `bun run check`)    THIS FILE
 //     native      `web_search` — Hermes's OWN tool inside the agent (its
 //                 web-search provider registry, keyless tiers included), and
 //                 the research harness's platform tool; never over MCP, so
@@ -275,6 +277,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                         "description": "The answers to offer, 2 to 6. Each must read differently from the others.",
                         "items": { "type": "string" },
                     }),
+                    "conversationId": str_schema("The conversation you are in — your prompt's conversation line carries it. Pass it so this lands in this thread and not another one you are also in."),
                 },
                 "required": ["question", "options"],
             }),
@@ -301,6 +304,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                             "required": ["text"],
                         },
                     }),
+                    "conversationId": str_schema("The conversation you are in — your prompt's conversation line carries it. Pass it so this lands in this thread and not another one you are also in."),
                 },
                 "required": ["items"],
             }),
@@ -334,7 +338,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             caller: ToolCaller::Hermes,
             group: ToolGroup::Comms,
             description: "Show platform tools in the current chat as chips the person can open and run. Use this when they should see a tool and its inputs without you calling it yourself. Pass the tool names you want on screen, and any inputs you already know.",
-            parameters: json!({ "type": "object", "properties": { "tools": str_schema("Platform tool name, e.g. create_ticket") }, "required": ["tools"] }),
+            parameters: json!({ "type": "object", "properties": { "tools": str_schema("Platform tool name, e.g. create_ticket"), "conversationId": str_schema("The conversation you are in — your prompt's conversation line carries it. Pass it so this lands in this thread and not another one you are also in.") }, "required": ["tools"] }),
             assistant_only: false,
             needs_google: false,
         },

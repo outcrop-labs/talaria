@@ -88,6 +88,64 @@ fn dials_member(
     .map(Some)
 }
 
+/// How many research runs one agent may have in flight, and how many it may
+/// start in a rolling day. The human leg has no such cap — a person pressing
+/// the button twenty times is a person, and `research.run` is their gate.
+pub const AGENT_LIVE_RESEARCH_CAP: i64 = 2;
+pub const AGENT_DAILY_RESEARCH_CAP: i64 = 20;
+
+/// The agent leg's rate gate: `Some(429)` when either cap is spent, `None`
+/// when the run may start. A count the store cannot answer is a 500, never a
+/// pass — the cap is the whole point of this leg.
+async fn agent_research_caps(pg: &sqlx::PgPool, agent_model: &str) -> Option<Response> {
+    let live: Result<i64, sqlx::Error> = sqlx::query_scalar(
+        "select count(*) from research_runs \
+         where agent_model = $1 and status in ('queued', 'running', 'awaiting')",
+    )
+    .bind(agent_model)
+    .fetch_one(pg)
+    .await;
+    match live {
+        Ok(n) if n >= AGENT_LIVE_RESEARCH_CAP => {
+            return Some(house_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                &format!(
+                    "this agent already has {AGENT_LIVE_RESEARCH_CAP} research runs in flight — \
+                     wait for one to finish"
+                ),
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Some(internal(
+                "[research] live-count read on agent start failed",
+                e,
+            ));
+        }
+    }
+    let today: Result<i64, sqlx::Error> = sqlx::query_scalar(
+        "select count(*) from research_runs \
+         where agent_model = $1 and created_at > now() - interval '1 day'",
+    )
+    .bind(agent_model)
+    .fetch_one(pg)
+    .await;
+    match today {
+        Ok(n) if n >= AGENT_DAILY_RESEARCH_CAP => Some(house_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            &format!(
+                "this agent has started {AGENT_DAILY_RESEARCH_CAP} research runs in the last day — \
+                 the daily cap"
+            ),
+        )),
+        Ok(_) => None,
+        Err(e) => Some(internal(
+            "[research] daily-count read on agent start failed",
+            e,
+        )),
+    }
+}
+
 /// The mode catalog the picker renders: [{mode, blurb}].
 fn modes_json() -> serde_json::Value {
     json!(
@@ -182,6 +240,40 @@ pub async fn post(
             Ok(v) => v,
             Err(e) => return Ok(internal("[research] owner resolve on start failed", e)),
         };
+        // THE AGENT LEG IS GATED LIKE THE HUMAN LEG. An agent researches on
+        // behalf of the person the attribution ladder names, so that person
+        // must hold `research.run` — the same permission a human needs to
+        // press the button. An agent with nobody behind it has no permission
+        // to borrow: no run. Without this, every agent key (the MCP toolkit
+        // hands `research` to all of them) could start an expedition that
+        // the humans around it were never allowed to start.
+        let Some(responsible) = owner.as_deref() else {
+            return Ok(house_error(
+                StatusCode::FORBIDDEN,
+                "no responsible user for this agent — research needs a person who may run it",
+            ));
+        };
+        let role = match talaria_users::get_user_role(&state.pg, responsible).await {
+            Ok(r) => r,
+            Err(e) => return Ok(internal("[research] role read on agent start failed", e)),
+        };
+        match has_perm(&state.pg, responsible, &role, "research.run").await {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(house_error(
+                    StatusCode::FORBIDDEN,
+                    "the agent's responsible user has no permission to run research",
+                ));
+            }
+            Err(e) => return Ok(internal("[research] perm read on agent start failed", e)),
+        }
+        // THE CAPS, agent leg only. A looping or prompt-injected agent is the
+        // threat here, and a human on the page is not: two live runs per
+        // agent at a time, twenty a day, answered 429 so the toolkit's caller
+        // reads "slow down" rather than "forbidden".
+        if let Some(resp) = agent_research_caps(&state.pg, &caller.model).await {
+            return Ok(resp);
+        }
         (caller.model.clone(), owner, caller.model.clone())
     } else {
         let user = require_user(&state, &headers).await?;
@@ -284,19 +376,35 @@ pub async fn post(
 
     // A queued/running duplicate of the same question is a double-click —
     // answered by a raw column scan, not the projection's run-aware CASE
-    // (`active_research_on`).
-    let dupe: Option<(String,)> = match sqlx::query_as(
-        "select id::text from research_runs \
-         where question = $1 and status in ('queued', 'running') limit 1",
-    )
-    .bind(&question)
-    .fetch_optional(&state.pg)
-    .await
+    // (`active_research_on`). SCOPED TO WHAT THE CALLER MAY READ, through
+    // the same viewer the list route resolves (a person: themselves; an
+    // agent: its owner, so a general agent sees org runs only): the check
+    // used to run over every run in the org and hand a stranger's run id
+    // back in the 409, which told the caller both that the question was in
+    // flight and where.
+    let dup_viewer = match caller.as_ref() {
+        Some(c) => {
+            match talaria_users::assistant_owner_for(&state.pg, &AgentSubject::Caller(c.clone()))
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    return Ok(internal(
+                        "[research] owner resolve on duplicate check failed",
+                        e,
+                    ));
+                }
+            }
+        }
+        None => owner_user_id.clone(),
+    };
+    let dupe = match research::live_duplicate_question(&state.pg, dup_viewer.as_deref(), &question)
+        .await
     {
         Ok(d) => d,
         Err(e) => return Ok(internal("[research] duplicate check failed", e)),
     };
-    if let Some((id,)) = dupe {
+    if let Some(id) = dupe {
         return Ok((
             StatusCode::CONFLICT,
             Json(json!({ "run": null, "duplicateOf": id, "reason": "question" })),

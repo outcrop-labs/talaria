@@ -144,6 +144,28 @@ jobs:
           count=$(git rev-list --count "origin/main..origin/rc")
           logs=$(git log --oneline --no-decorate "origin/main..origin/rc" | head -40)
 
+          # What is going in, as the changelog says it: every entry file rc
+          # added over main, reduced to its bold lead sentence. The changelog
+          # is the record a reader has (CONTRIBUTING.md), so the promotion
+          # lists the same sentences release notes will carry — one line per
+          # change, newest file last. An entry without a bold lead falls back
+          # to its file name so nothing going in is silent.
+          whats_in=$(
+            git diff --name-only --diff-filter=A "origin/main..origin/rc" -- 'changelog/*.md' \
+              | sort \
+              | while IFS= read -r f; do
+                  # The entry's first paragraph as one line (leads wrap), then
+                  # its first bold span; a bare label like **Fixed:** takes the
+                  # first sentence after it.
+                  para=$(git show "origin/rc:$f" | awk 'NF==0{exit} {printf "%s ", $0}' | sed -E 's/^- //; s/  +/ /g')
+                  lead=$(printf '%s' "$para" | perl -ne 'if (/\*\*(.+?)\*\*\s*(.*)/) { my ($b, $r) = ($1, $2); if ($b =~ /:$/) { $r =~ s/([.!?])(\s|$).*/$1/; print "$b $r" } else { print $b } }')
+                  [ -n "$lead" ] || lead=$(basename "$f" .md)
+                  printf -- '- %s\n' "$lead"
+                done
+          )
+          whats_in_count=$(printf '%s\n' "$whats_in" | grep -c '^- ' || true)
+          [ -n "$whats_in" ] || whats_in='- (no changelog entries between main and rc)'
+
           # The evidence, read from the Actions API rather than inferred from
           # this run's inputs — the promotion gate's query, verbatim. The latest
           # SUCCESSFUL run per workflow, so a re-run after a flake is what the
@@ -183,10 +205,20 @@ jobs:
           - CI on that commit: $ci
           - Staging deploy: $deploy
           - Commits in this promotion: **$count**
+          - Changelog entries in this promotion: **$whats_in_count**
+
+          ### What is going in
+
+          $whats_in
+
+          <details>
+          <summary>Commits (first 40)</summary>
 
           \`\`\`
           $logs
           \`\`\`
+
+          </details>
 
           The model, and the settings that hold it:
           [\`docs/BRANCHES.md\`](https://github.com/$REPO/blob/main/docs/BRANCHES.md).
