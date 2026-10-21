@@ -85,6 +85,25 @@ service:
   environment:
     # Talaria's org gateway (provisioned into fleet/.env). The default keeps the
     # fleet pointed at the gateway even before the first render writes the .env.
+    #
+    # WHAT A CONTAINER'S ENVIRONMENT EXPOSES, and why each line is still here.
+    # Every service gets: LLM_API_KEY — the line below is the chassis's
+    # fallback only; the render overrides it per service with THAT agent's
+    # own gateway key (`${LLM_API_KEY_<SLUG>}`, fleet-brain), because every
+    # model spec in the rendered config.yaml reads `${LLM_API_KEY}` and Hermes
+    # resolves it from the env. The fleet-wide key reaches no container on a
+    # managed brain; only an operator's raw-upstream override (LLM_BASE_URL
+    # pointed off the gateway) leaves this fallback in force. API_SERVER_KEY —
+    # this agent's own Hermes API bearer, the one Talaria dials it with.
+    # TALARIA_AGENT_KEY — this agent's own `tak_` credential, by design. A
+    # Developer Agent ALSO gets LLM_WORKBENCH_API_KEY as OPENAI_API_KEY (the
+    # sandbox harnesses' key — workbench-harnesses) and, with a coding account,
+    # OMP_AUTH_BROKER_TOKEN (= its own agent key). No other service carries the
+    # workbench key. The closed toolset default (no terminal, file, code
+    # execution or self-scheduling on a new agent — talaria-agent-defs
+    # DEFAULT_DISABLED_FOR_NEW) is what keeps this environment out of a
+    # prompt-injected `env | curl`; an agent whose manager opens a shell is an
+    # agent whose manager accepted that its env is readable from it.
     LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:5273/api/llm/v1}
     LLM_API_KEY: ${LLM_API_KEY:-}
     LLM_MODEL: ${LLM_MODEL:-}

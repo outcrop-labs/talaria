@@ -33,8 +33,11 @@ use talaria_gateway::settings::{get_setting, set_setting};
 
 const KEY: &str = "fleet_preflight";
 /// Small, always present locally (the fleet pulls far larger images), and it has
-/// a shell with a TCP-capable builtin — no python, no curl assumed.
-const PROBE_IMAGE: &str = "busybox:latest";
+/// a shell with a TCP-capable builtin — no python, no curl assumed. PINNED to
+/// a release tag, never `latest`: when the image is absent locally docker
+/// pulls whatever Hub serves under the tag, and a probe that runs on the
+/// fleet network with host-gateway access should run a known image.
+const PROBE_IMAGE: &str = "busybox:1.37";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreflightResult {
@@ -47,11 +50,15 @@ pub struct PreflightResult {
 
 async fn exec_ok(bin: &str, args: &[&str], timeout: Duration) -> bool {
     let run = tokio::time::timeout(timeout, async {
+        // kill_on_drop: the timeout drops this future, and without it the
+        // `docker run` (and the probe container it started) would keep
+        // going on a wedged daemon — one orphan per preflight, forever.
         tokio::process::Command::new(bin)
             .args(args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
             .output()
             .await
     });

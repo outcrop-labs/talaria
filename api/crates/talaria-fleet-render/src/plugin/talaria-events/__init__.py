@@ -270,12 +270,14 @@ def _fresh_shot_path(tool_name: str, args: Any, result: Any) -> str | None:
     return best[1]
 
 
-def _screenshot_event(result: Any, path: str | None = None) -> dict | None:
+def _screenshot_event(result: Any, path: str | None = None, session_id: str = "") -> dict | None:
     """The uploads POST for a screenshot tool's PNG, or None. The bytes have
     to travel because the file does not: it lives in this container, and the
     container is thrown away on the next roll. Bounded by the door's own
     ceiling, and every failure to read is a dropped image rather than a raised
-    exception inside the agent's tool loop."""
+    exception inside the agent's tool loop. The session id rides with it: for
+    a pinned agent it is the conversation the screenshot belongs to, and the
+    door lands the image there rather than on whichever turn is newest."""
     path = path or _shot_path(result)
     if not path:
         return None
@@ -290,6 +292,7 @@ def _screenshot_event(result: Any, path: str | None = None) -> dict | None:
         return None
     return {
         "url": _door(_UPLOADS_PATH),
+        "sessionId": session_id,
         "filename": os.path.basename(path) or "screenshot.png",
         "mime": "image/png",
         "dataBase64": base64.b64encode(raw).decode("ascii"),
@@ -334,9 +337,11 @@ def on_post_tool_call(
     # must never be the thing standing in front of it in the queue.
     if status == "completed" and tool_name.startswith("browser_"):
         if tool_name == _VISION_TOOL:
-            shot = _screenshot_event(result)
+            shot = _screenshot_event(result, session_id=session_id)
         else:
-            shot = _screenshot_event(result, _fresh_shot_path(tool_name, args, result))
+            shot = _screenshot_event(
+                result, _fresh_shot_path(tool_name, args, result), session_id=session_id
+            )
         if shot is not None:
             _enqueue(shot)
 
@@ -381,7 +386,10 @@ def on_subagent_start(
     # THE CHILD'S SESSION ID IS THE CHIP'S IDENTITY. The subagent ids are the
     # delegation tool's own handles and the stop hook does not carry one, so
     # the session id is the only key both halves of a child's life share —
-    # and the chip's whole point is that the stop replaces the start.
+    # and the chip's whole point is that the stop replaces the start. The
+    # PARENT'S session id is the chip's address: for a pinned agent it is the
+    # conversation the delegating turn belongs to, and the door lands the chip
+    # there rather than on whichever of the agent's turns is newest.
     if not child_session_id:
         return
     _enqueue(

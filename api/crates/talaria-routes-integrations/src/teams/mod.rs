@@ -30,6 +30,46 @@ pub(crate) async fn reader_gate(
     }
 }
 
+/// Who a membership write re-renders and rolls: the agents named (a
+/// `team_agents` change — a team's MCP grants ride on that table, so the
+/// agent's rendered server set changed), or one person's personal assistant
+/// (a `team_members` change — a PA's rendered set skips the servers its
+/// owner's teams deny, `servers_for_agent`).
+pub(crate) enum Rolls {
+    Models(Vec<String>),
+    User(String),
+}
+
+/// Config truth first (the render), then the live cutover (the roll) — the
+/// same two strokes `me/mcp` makes when a person's connection changes. A
+/// running Hermes wires its MCP servers at start, so without the roll the
+/// container keeps the old server set while the registry says otherwise.
+/// Detached, never the caller's problem: the membership row is already
+/// written, and a roll that fails lands in the audit trail.
+pub(crate) fn render_and_roll(state: &AppState, rolls: Rolls) {
+    let (pg, state) = (state.pg.clone(), state.clone());
+    tokio::spawn(async move {
+        let sb = match state.secretbox().await {
+            Ok(sb) => sb,
+            Err(e) => {
+                tracing::warn!("[teams] membership stored but the roll could not start: {e}");
+                return;
+            }
+        };
+        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb, None).await;
+        match rolls {
+            Rolls::Models(models) => {
+                for model in &models {
+                    talaria_api_facades::mcp::apply::roll_agent_for_model(&pg, &sb, model).await;
+                }
+            }
+            Rolls::User(user_id) => {
+                talaria_api_facades::mcp::apply::roll_agent_for_user(&pg, &sb, &user_id).await;
+            }
+        }
+    });
+}
+
 /// Owner-only. Same three-line read as reader_gate above, same refusal.
 pub(crate) async fn owner_gate(
     state: &AppState,

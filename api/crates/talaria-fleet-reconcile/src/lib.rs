@@ -12,8 +12,56 @@ use talaria_fleet_docker::Slot;
 use talaria_secretbox::SecretBox;
 
 use futures_util::future::BoxFuture;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use talaria_update_layout::roll_drain_ms;
+
+/// The departments THIS process is mid-roll on. A roll reads `active_slot`,
+/// takes `max(gateway_port)+1`, renders an overlay, cuts over and removes
+/// the old slot, and none of that is written back until the cutover — so
+/// two rolls of one department interleave into each other's slot and port,
+/// and the second removes the container the first just made live. Same
+/// guard shape as chat-persist's `CONTINUING`: the set closes the in-process
+/// window; the advisory lock below is the cross-instance one.
+static ROLLING: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Whether a roll of this department is in flight in this process — what
+/// the control route answers 409 with, and what `reconcile_fleet` skips.
+pub fn is_rolling(department: &str) -> bool {
+    ROLLING
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .contains(department)
+}
+
+/// Holds the department in `ROLLING` for exactly as long as it lives.
+struct RollGuard(String);
+
+impl RollGuard {
+    fn take(department: &str) -> Option<RollGuard> {
+        let mut set = ROLLING.lock().unwrap_or_else(|p| p.into_inner());
+        if set.contains(department) {
+            return None;
+        }
+        set.insert(department.to_string());
+        Some(RollGuard(department.to_string()))
+    }
+}
+
+impl Drop for RollGuard {
+    fn drop(&mut self) {
+        ROLLING
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// The advisory-lock key for a department's roll — `hashtext` of a
+/// namespaced string, so it cannot collide with the migration lock or any
+/// other advisory key the app takes.
+fn roll_lock_key(department: &str) -> String {
+    format!("fleet-roll:{department}")
+}
 
 /// Overlay: (slug, slot, port) when rolling.
 pub static RENDER_FLEET: OnceLock<
@@ -38,6 +86,49 @@ pub static NEXT_FREE_PORT: OnceLock<
 /// Everything a running agent's config bakes in at process start — MCP
 /// servers above all — becomes live only through this.
 pub async fn roll_agent(
+    pg: &PgPool,
+    sb: &SecretBox,
+    department: &str,
+) -> Result<Option<String>, String> {
+    // One roll per department at a time. The in-process set answers first
+    // (cheap, and what a double-click hits); the Postgres session-level
+    // advisory lock serializes across api instances. `try` rather than a
+    // blocking wait: a second roll queued behind the first would only roll
+    // the fresh container again, so "already rolling" is the honest verdict.
+    let Some(_guard) = RollGuard::take(department) else {
+        return Ok(Some(format!(
+            "department \"{department}\" is already mid-roll — wait for it to finish"
+        )));
+    };
+    let mut conn = pg.acquire().await.map_err(|e| e.to_string())?;
+    let key = roll_lock_key(department);
+    let locked: (bool,) = sqlx::query_as("select pg_try_advisory_lock(hashtext($1))")
+        .bind(&key)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !locked.0 {
+        return Ok(Some(format!(
+            "department \"{department}\" is already mid-roll on another api instance — wait for it to finish"
+        )));
+    }
+    let verdict = roll_agent_locked(pg, sb, department).await;
+    // A session-level advisory lock outlives the statement that took it and
+    // would ride back into the pool with the connection: release it on
+    // every path, and if the release itself fails, drop the connection so
+    // the pool never hands the held lock to the next checkout.
+    let unlocked = sqlx::query("select pg_advisory_unlock(hashtext($1))")
+        .bind(&key)
+        .execute(&mut *conn)
+        .await;
+    if let Err(e) = unlocked {
+        tracing::warn!("[fleet] roll lock for {department} could not be released: {e}");
+        let _ = conn.close().await;
+    }
+    verdict
+}
+
+async fn roll_agent_locked(
     pg: &PgPool,
     sb: &SecretBox,
     department: &str,
@@ -192,6 +283,13 @@ pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileRes
     let mut already_running = Vec::new();
     let mut warnings = render.1.clone();
     for (department, display_name) in &managed {
+        // Mid-roll, the department has an incoming slot the roll is still
+        // waiting on; starting its steady-state service here would race
+        // the cutover. The roll's own re-render covers it.
+        if is_rolling(department) {
+            already_running.push(display_name.clone());
+            continue;
+        }
         if running(department) {
             already_running.push(display_name.clone());
             continue;

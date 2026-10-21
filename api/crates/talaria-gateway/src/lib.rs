@@ -1,5 +1,6 @@
 // LLM gateway — the route groups of /api/llm/v1/*.
 
+pub mod agent_keys;
 pub mod budget;
 pub mod fleet_chat;
 pub mod guard;

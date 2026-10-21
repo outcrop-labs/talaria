@@ -126,6 +126,16 @@ pub async fn post(
             if !def.managed {
                 return Ok(house_error(StatusCode::BAD_REQUEST, "not a managed agent"));
             }
+            // One roll per department at a time: `roll_agent` holds the
+            // lock itself (in-process set + Postgres advisory lock), so a
+            // second click lands as its soft refusal in the audit trail —
+            // but a caller who can be told now is told now.
+            if talaria_api_facades::fleet::reconcile::is_rolling(&def.department) {
+                return Ok(house_error(
+                    StatusCode::CONFLICT,
+                    "this agent is already rolling — wait for it to finish",
+                ));
+            }
             if let Ok(sb) = state.secretbox().await {
                 let pg = state.pg.clone();
                 let dept = def.department.clone();
