@@ -7730,6 +7730,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-secrets",
  "talaria-approvals",
  "talaria-artifacts",
  "talaria-attribution",

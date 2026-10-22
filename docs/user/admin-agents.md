@@ -83,7 +83,12 @@ version*, so history never has a hole.
 
 Grant the agent a **workspace credential** (sealed in Admin → Secrets — it gets a handle to
 spend, never the value) or add its own env-var-style entries (`FIGMA_TOKEN` — the value is
-write-only). Nothing entered? *"Everything it needs comes from the shared platform env."*
+write-only). An entry reaches the agent's terminal and its code execution. Names Talaria or
+the agent's runtime use themselves are refused with the reason — `TALARIA_*`, `LLM_*`,
+`HERMES_*`, `TERMINAL_*`, and Hermes's own provider and platform names such as
+`OPENAI_API_KEY`, `GITHUB_TOKEN` or `TELEGRAM_BOT_TOKEN`, which Hermes strips from every
+command the agent runs; give the credential a name of its own instead. Nothing entered?
+*"Everything it needs comes from the shared platform env."*
 Which secrets an agent may spend is admin-only; members see **Admins only.**
 
 ### MCP
