@@ -9,6 +9,10 @@ is created.
 It is not a calendar — there are no dates or milestones here. The output of a plan is
 tickets on a board.
 
+The living document belongs to plans only. A **work session** — where you and an agent do
+the work itself — has no plan document: its pane shows the session's files instead (see
+[Work sessions](#work-sessions-the-sessions-files) below).
+
 Open: **Work → Plan** in the sidebar. Admins can hide Plan from individual people
 (Admin → People).
 
@@ -40,6 +44,24 @@ them.
 
 The agent plans, it doesn't act: inside a plan it creates nothing — no tickets, no files.
 Turning the plan into tickets is your move.
+
+## Work sessions: the session's files
+
+A work session's right-hand pane is **the files you and the agent are working on**, one tab
+each. Opening a session creates nothing.
+
+| What | How it behaves |
+| :--- | :--- |
+| A file the agent makes or opens | Every Talaria document, sheet or page and every Google file the agent creates, reads or edits in the session appears as a tab and takes the pane — the newest one it touched comes forward |
+| A file you open | **New document** starts a blank one; **Open a Google file** takes a pasted Docs/Sheets/Slides/Drive link. Both stay in the session's list |
+| "This doc" | Every message tells the agent which tab you have open, so "this doc" or "the sheet" means the file in front of you. With nothing open, ask for a document, sheet or page and the agent creates one — it opens in the pane by itself |
+| Closing a tab | Hides that file for you in this session. It comes back when the agent touches it again, or reopen it from **All files (N)** at the end of the tab strip |
+| Coming back later | The session reopens on the tab you were reading, else the file touched most recently. The list is the session's own record, so a reload loses nothing |
+
+There is no **Sync from chat** in a work session: its files are written by the agent's own
+tools, never re-derived from the conversation. A session started before files had a pane
+still shows its old living document, as one more tab. Files you can't open — someone's
+private document linked in a turn — are left out of your list.
 
 ## Who can do what
 

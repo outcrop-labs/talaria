@@ -24,7 +24,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { slide } from '@/lib/motion'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { queueChatMessage, steerChat, stopChat, streamChat, type ChatKind } from '@/lib/chat'
+  import { queueChatMessage, steerChat, stopChat, streamChat, type ChatFocus, type ChatKind } from '@/lib/chat'
   import { HttpError } from '@/lib/fetch-json'
   import { mergeTool } from '@/lib/sse-parse'
   import {
@@ -64,6 +64,7 @@
     onTurnComplete,
     onToolDone,
     onDocumentTouched,
+    focus = null,
     minimal = false,
     tier = $bindable(''),
   }: {
@@ -105,6 +106,10 @@
      *  mid-stream — which is why the live refresh above is a separate signal
      *  and not this one. */
     onDocumentTouched?: (artifactId: string) => void
+    /** The file open in the host's pane right now, sent with every `work` turn
+     *  so the agent knows which file "this doc" is. Null when nothing is open.
+     *  Other kinds never send it — the server only reads it for work turns. */
+    focus?: ChatFocus | null
     /** The view OWNS the conversation partner: the surface's sidebar picks the
      *  agent, its chrome picks the harness/model. So the composer rail drops
      *  the relay/emoji affordances — the surface is left with exactly attach,
@@ -581,6 +586,12 @@
     }
   }
 
+  /** The send body's `focus`, read at SEND time so it names the tab that is
+   *  open when Enter is pressed. A spread rather than a key, so no other kind
+   *  of turn carries the field at all. */
+  const focusField = (): { focus?: ChatFocus } =>
+    kind === 'work' && focus ? { focus: { kind: focus.kind, id: focus.id, ...(focus.title ? { title: focus.title } : {}) } } : {}
+
   /** Queue one message into the streaming turn. Never throws — a failed queue
    *  is a surfaced error, not a broken submit. */
   const enqueue = async (text: string, atts: Attachment[]) => {
@@ -593,6 +604,7 @@
         effort: effort || undefined,
         ...splitAttachments(atts),
         kind,
+        ...focusField(),
       })
     } catch (e) {
       error = (e as Error).message
@@ -649,7 +661,7 @@
     abortCtrl = ctrl
     try {
       for await (const ev of streamChat(
-        { model: agentModel, conversationId: convId ?? undefined, content: text, tier: tier || undefined, effort: effort || undefined, ...splitAttachments(atts), kind, templateId },
+        { model: agentModel, conversationId: convId ?? undefined, content: text, tier: tier || undefined, effort: effort || undefined, ...splitAttachments(atts), kind, templateId, ...focusField() },
         (meta) => {
           if (!convId) {
             convId = meta.conversationId

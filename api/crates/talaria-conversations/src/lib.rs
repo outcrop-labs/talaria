@@ -858,6 +858,40 @@ pub async fn list_plan_members(
         .collect())
 }
 
+/// What the Work pane's file list is derived from: every message that carries
+/// chips, in conversation order, as `(created_at ISO, chips)`, and the
+/// conversation's `pinned_files`. Rows with no chips are skipped in the
+/// query — most of a long thread carries none. The caller has already been
+/// access-checked; this only reads.
+pub async fn conversation_file_trail(
+    pg: &PgPool,
+    conversation_id: &str,
+) -> Result<(Vec<(String, Value)>, Value), sqlx::Error> {
+    let rows: Vec<(i64, Value)> = sqlx::query_as(
+        "select (trunc(extract(epoch from created_at) * 1000))::bigint, chips \
+         from messages \
+         where conversation_id = $1::uuid \
+           and chips <> '[]'::jsonb \
+         order by seq asc",
+    )
+    .bind(conversation_id)
+    .fetch_all(pg)
+    .await?;
+    let pinned: Option<(Value,)> =
+        sqlx::query_as("select pinned_files from conversations where id = $1::uuid")
+            .bind(conversation_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok((
+        rows.into_iter()
+            .map(|(ms, chips)| (epoch_ms_to_iso(ms), chips))
+            .collect(),
+        pinned
+            .map(|(p,)| p)
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+    ))
+}
+
 /// Replace the conversation's pinned files — the document pane's memory.
 /// Whole-array, not a patch: the pane's order is part of what is stored, and a
 /// per-entry API would have to describe moves as well as adds. The caller has

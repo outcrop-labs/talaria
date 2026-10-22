@@ -29,6 +29,7 @@
     onClose,
     basePath = '/api/kb/docs',
     queryKey = 'kb-comments',
+    fill = false,
   }: {
     docId: string
     comments: KbComment[]
@@ -50,6 +51,10 @@
     /** The caller owns the READ, so it also owns the cache key this panel
      *  invalidates after a write. */
     queryKey?: string
+    /** Take the whole box instead of standing as a 20rem rail beside a doc —
+     *  for a host whose column is too narrow to split (the work pane, where
+     *  comments swap in for the document rather than sitting beside it). */
+    fill?: boolean
   } = $props()
 
   const qc = useQueryClient()
@@ -165,8 +170,8 @@
      KbDocEditor mounts this whole component per toggle, so local legs on the
      component root never play (the |global rule). Inner wrapper pinned to the
      resting width so comment text clips instead of rewrapping. -->
-<aside transition:slide|global={GROW_X} class="shrink-0 border-l border-line-subtle">
-<div class="flex h-full w-80 flex-col">
+<aside transition:slide|global={GROW_X} class={fill ? 'flex min-h-0 min-w-0 flex-1' : 'shrink-0 border-l border-line-subtle'}>
+<div class={cn('flex h-full flex-col', fill ? 'min-h-0 w-full' : 'w-80')}>
   <!-- §8 section header row: mono uppercase dim + right-aligned mono meta. -->
   <div class="flex items-center gap-2 border-b border-line-subtle px-3 py-2">
     <MessageSquareText size={13} class="text-muted" />

@@ -1,6 +1,6 @@
 // THE WORK-SESSION TURN, on the Work surface — a person and an agent working on
-// one document together, the chat on the left and the file in a pane on the
-// right.
+// files together, the chat on the left and the session's files in a pane on
+// the right.
 //
 // NOT `defs/work_session.rs`. That file is the reply that says a TICKET is done
 // and lives on the board's run kind; this one is the conversational turn on the
@@ -31,7 +31,11 @@
 //
 // The system prompt is IMPORTED from `talaria-work-mode` rather than restated,
 // so the def can never grade a prompt the product has stopped sending. A copy
-// here would pass forever while the surface drifted underneath it.
+// here would pass forever while the surface drifted underneath it. So is the
+// pane's focus line that rides right after it: the fixtures render the
+// nothing-open-yet variant, because none of them names a file the teammate
+// has open — the agent finds or creates the file itself, as it would in a
+// fresh session.
 
 use std::sync::Arc;
 
@@ -44,7 +48,7 @@ use talaria_harness::define::{
 };
 use talaria_harness::transport::ToolPolicy;
 use talaria_harness_model::ModelSpec;
-use talaria_work_mode::WORK_MODE_PROMPT;
+use talaria_work_mode::{WORK_MODE_PROMPT, focus_line};
 
 // ── The shapes ───────────────────────────────────────────────────────────────
 
@@ -291,7 +295,7 @@ pub fn work_mode_harness() -> HarnessDefinition {
     let mut d = define_harness(HarnessDefinition::new(
         "hermes:work",
         "Hermes agent — a work session",
-        "A workspace agent working on one document beside the person who asked for it, on the Work surface.",
+        "A workspace agent working on the session's files beside the person who asked for it, on the Work surface.",
         // Pinned to the candidate by the sweep, like every Hermes-family
         // harness: the model in the conversation IS the subject. An empty
         // chain rather than a fallback, so a silent substitution cannot file
@@ -307,9 +311,11 @@ pub fn work_mode_harness() -> HarnessDefinition {
                 serde_json::from_value(input.clone()).map_err(|e| e.to_string())?;
             // THE PRODUCT'S OWN PROMPT, imported rather than restated — see the
             // file header. If the surface stops sending this, these fixtures
-            // stop being about the surface.
+            // stop being about the surface. The focus line follows it exactly
+            // as /api/chat sends it on a turn with no file open.
             Ok(vec![
                 Message::system(WORK_MODE_PROMPT),
+                Message::system(focus_line(None)),
                 Message::user(wi.prompt),
             ])
         }),
@@ -425,11 +431,14 @@ mod tests {
             },
         )
         .expect("the render succeeds");
-        let system = rendered
+        let system: Vec<&str> = rendered
             .iter()
-            .find(|m| m.role == Role::System)
-            .expect("a system message");
-        assert_eq!(system.content, WORK_MODE_PROMPT);
+            .filter(|m| m.role == Role::System)
+            .map(|m| m.content.as_str())
+            .collect();
+        // The mode prompt, then the pane's focus line — the order /api/chat
+        // pushes them in on a work turn.
+        assert_eq!(system, vec![WORK_MODE_PROMPT, focus_line(None).as_str()]);
     }
 
     #[test]

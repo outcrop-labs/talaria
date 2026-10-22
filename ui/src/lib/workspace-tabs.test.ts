@@ -5,6 +5,7 @@ import {
   isClosable,
   labelTab,
   openTab,
+  seedTabs,
   selectTab,
   syncTouched,
   tabsFor,
@@ -88,19 +89,84 @@ test('closing the tab you are reading lands on the neighbour', () => {
   assert.equal(tabsFor(s).activeId, 'doc')
 })
 
-test('the doc tab stays — there is no closing it', () => {
+test('every tab closes — the plan document too, and the last one leaves an empty strip', () => {
+  // A work session has no unclosable document any more: its pane is its
+  // files. A plan's document re-opens itself when the strip empties, and that
+  // is the harness's rule rather than the store's.
   const s = nextSession()
   openTab(s, DOC)
   openTab(s, { id: 'r1', kind: 'report', label: 'Run report' })
   closeTab(s, 'doc')
-  assert.deepEqual(ids(s), ['doc', 'r1'], 'the call is refused, not just the affordance withheld')
+  assert.deepEqual(ids(s), ['r1'])
+  assert.equal(tabsFor(s).activeId, 'r1')
 
   closeTab(s, 'r1')
-  assert.deepEqual(ids(s), ['doc'])
-  assert.equal(tabsFor(s).activeId, 'doc', 'which is why the pane always has a body to render')
+  assert.deepEqual(ids(s), [])
+  assert.equal(tabsFor(s).active, null)
 
-  assert.equal(isClosable(DOC), false)
-  assert.equal(isClosable({ id: 'r1', kind: 'report', label: 'Run report' }), true)
+  for (const kind of ['doc', 'artifact', 'google', 'report', 'drafts'] as const) {
+    assert.equal(isClosable({ id: kind, kind, label: kind }), true, kind)
+  }
+})
+
+test('seeding puts a session\'s files on the strip in order, landing on the focus it names', () => {
+  const s = nextSession()
+  seedTabs(
+    s,
+    [
+      { id: 'artifact:a', kind: 'artifact', label: 'A', glyph: 'doc' },
+      { id: 'artifact:b', kind: 'artifact', label: 'B', glyph: 'sheet' },
+      { id: 'google:g', kind: 'google', label: 'G', glyph: 'google-doc' },
+    ],
+    'artifact:b',
+  )
+  assert.deepEqual(ids(s), ['artifact:a', 'artifact:b', 'google:g'])
+  assert.equal(tabsFor(s).activeId, 'artifact:b')
+  assert.equal(tabsFor(s).tabs[1]?.glyph, 'sheet')
+})
+
+test('seeding never moves somebody\'s reading, and merges the fresher fields', () => {
+  const s = nextSession()
+  seedTabs(s, [{ id: 'artifact:a', kind: 'artifact', label: 'A' }], 'artifact:a')
+  selectTab(s, 'artifact:a')
+  // A later seed (the report tab opened first, a remount) appends and renames,
+  // and its focus is ignored because the session already has an active tab.
+  seedTabs(
+    s,
+    [
+      { id: 'artifact:a', kind: 'artifact', label: 'A renamed' },
+      { id: 'artifact:c', kind: 'artifact', label: 'C' },
+    ],
+    'artifact:c',
+  )
+  assert.deepEqual(ids(s), ['artifact:a', 'artifact:c'])
+  assert.equal(tabsFor(s).activeId, 'artifact:a')
+  assert.equal(tabsFor(s).active?.label, 'A renamed')
+})
+
+test('seeding with no focus, or a focus not on the strip, lands on the first tab', () => {
+  const s = nextSession()
+  seedTabs(s, [{ id: 'x', kind: 'artifact', label: 'X' }, { id: 'y', kind: 'artifact', label: 'Y' }], 'nope')
+  assert.equal(tabsFor(s).activeId, 'x')
+})
+
+test('the remembered tab outranks the seeded focus — and the agent\'s touch outranks both', () => {
+  const map = installLocalStorage()
+  const s = nextSession()
+  map.set(STORE_KEY, JSON.stringify({ [s]: 'artifact:old' }))
+  seedTabs(
+    s,
+    [
+      { id: 'artifact:old', kind: 'artifact', label: 'Old' },
+      { id: 'artifact:new', kind: 'artifact', label: 'Newest touched' },
+    ],
+    'artifact:new',
+  )
+  assert.equal(tabsFor(s).activeId, 'artifact:old', 'remembered > newest touched')
+
+  syncTouched(s, { id: 'artifact:made', kind: 'artifact', label: 'Just made', glyph: 'page' })
+  assert.equal(tabsFor(s).activeId, 'artifact:made', 'a file the agent just touched takes the pane')
+  assert.deepEqual(stored(map), { [s]: 'artifact:made' })
 })
 
 test('no localStorage: the strip opens, focuses and closes all the same', () => {

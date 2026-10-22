@@ -478,6 +478,14 @@ pub fn router(state: AppState) -> Router {
                 .delete(talaria_routes_comms::comms::conversations_id::delete)
                 .fallback(|| async { method_not_allowed("GET, PATCH, DELETE") }),
         )
+        // The session's files — what the Work pane lists as tabs, derived
+        // from the conversation's chips, its pins and (for a legacy work
+        // session) its living document. Same gate as the conversation.
+        .route(
+            "/api/conversations/{id}/files",
+            get(talaria_routes_comms::comms::conversations_id_files::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
         .route(
             "/api/conversations/{id}/messages/{msgId}/reactions",
             post(talaria_routes_comms::comms::conversations_id_messages_msgid_reactions::post)
@@ -1868,9 +1876,9 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         // The living document at a kind-agnostic address — same handlers.
-        // Plans and work sessions both have one; only the prompt and the
-        // template seeding differ, and those are decided from the
-        // conversation's own kind inside.
+        // A plan has one; a work session answers only for the one a legacy
+        // session already has (GET 404s otherwise, never creating), and its
+        // sync is a 409 — its files are the agent's own writes.
         .route(
             "/api/conversations/{id}/doc",
             get(talaria_routes_boards::plans::plans_id_doc::get)

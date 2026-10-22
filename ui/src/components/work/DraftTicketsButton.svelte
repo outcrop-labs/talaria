@@ -9,17 +9,23 @@
   import PlanModal from '@/components/chat/PlanModal.svelte'
   import { hydratePlanDraft, planDraft } from '@/components/chat/plan-drafts.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import { cn } from '@/lib/cn'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { useAgents } from '@/lib/agents'
   import { loadConversation } from '@/lib/conversations.svelte'
 
   let {
     conversationId,
+    variant = 'primary',
   }: {
     /** The conversation the drafts pair to. Null is a real state — nothing is
      *  selected, or the first turn has not saved a conversation yet — and it
      *  is the button's disabled reading, with the title saying why. */
     conversationId: string | null
+    /** `primary` where drafting tickets is what the surface is FOR — a plan,
+     *  and the drafts pane. `quiet` in a work session's header, where it is
+     *  one session-level action among several and must not outrank them. */
+    variant?: 'primary' | 'quiet'
   } = $props()
 
   let open = $state(false)
@@ -52,12 +58,17 @@
   const job = $derived(conversationId ? planDraft(conversationId) : undefined)
   const draftTitle = $derived(
     !conversationId
-      ? 'Start a plan first. Tickets draft from its conversation.'
+      ? 'Start a session first. Tickets draft from its conversation.'
       : job?.status === 'drafting'
         ? 'Drafting continues in the background. Reopen to watch.'
         : job?.status === 'ready'
           ? 'The drafted tickets are waiting for your review'
-          : 'Turn this plan into tickets to review',
+          : 'Turn this session into tickets to review',
+  )
+
+  // No trailing ellipsis (UI-CONVENTIONS): the waiting mark says "still going".
+  const label = $derived(
+    job?.status === 'drafting' ? 'Drafting' : job?.status === 'ready' ? 'Review drafts' : 'Draft tickets',
   )
 
   // Drafts pair to the conversation SERVER-side: arriving at one asks what is
@@ -79,18 +90,35 @@
      disabled; hover falls through to the span, which is what keeps the "why is
      it waiting" copy reachable. -->
 <span class="inline-flex" title={draftTitle}>
-  <Button size="sm" disabled={!conversationId} onclick={() => (open = true)}>
-    {#if job?.status === 'drafting'}
-      <WaitingMark site="plan/draft" size={13} class="text-[color:var(--theme-bg)]" />
-      Drafting…
-    {:else if job?.status === 'ready'}
-      <ListChecks size={14} />
-      Review drafts
-    {:else}
-      <ListChecks size={14} />
-      Draft tickets
-    {/if}
-  </Button>
+  {#if variant === 'quiet'}
+    <!-- The header's quiet register: icon + mono label, the label giving way
+         below `xl` so the row holds on a laptop. A batch waiting on a person
+         is the one state that reads in the accent, because that IS news. -->
+    <Button
+      variant="ghost"
+      size="xs"
+      class={cn('gap-1', job?.status === 'ready' && 'text-accent')}
+      disabled={!conversationId}
+      aria-label={label}
+      onclick={() => (open = true)}
+    >
+      {#if job?.status === 'drafting'}
+        <WaitingMark site="plan/draft" size={13} />
+      {:else}
+        <ListChecks size={13} />
+      {/if}
+      <span class="hidden xl:inline">{label}</span>
+    </Button>
+  {:else}
+    <Button size="sm" disabled={!conversationId} onclick={() => (open = true)}>
+      {#if job?.status === 'drafting'}
+        <WaitingMark site="plan/draft" size={13} class="text-[color:var(--theme-bg)]" />
+      {:else}
+        <ListChecks size={14} />
+      {/if}
+      {label}
+    </Button>
+  {/if}
 </span>
 
 {#if conversationId && agent && open}

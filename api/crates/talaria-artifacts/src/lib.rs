@@ -180,6 +180,58 @@ pub fn guarded(a: &Artifact) -> Guarded {
     }
 }
 
+/// What a list needs of an artifact without its body: identity, kind, title
+/// and the four columns the read check asks (`guarded`'s view of the row).
+#[derive(Debug, Clone)]
+pub struct ArtifactHead {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub guarded: Guarded,
+}
+
+/// The heads of the artifacts among `ids` that still exist, in no particular
+/// order — one read for a whole list, and no bodies. Ids must be uuids (the
+/// caller filters); a deleted artifact is simply absent from the answer.
+pub async fn artifact_heads(pg: &PgPool, ids: &[String]) -> Result<Vec<ArtifactHead>, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    type HeadRow = (
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+    );
+    let rows: Vec<HeadRow> = sqlx::query_as(
+        "select id::text, kind, title, owner_user_id::text, created_by::text, \
+                visibility, edit_policy \
+         from artifacts where id = any($1::uuid[])",
+    )
+    .bind(ids)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, kind, title, owner_user_id, created_by, visibility, edit_policy)| ArtifactHead {
+                id,
+                kind,
+                title,
+                guarded: Guarded {
+                    owner_user_id,
+                    created_by,
+                    visibility,
+                    edit_policy,
+                },
+            },
+        )
+        .collect())
+}
+
 pub async fn get_artifact(pg: &PgPool, id: &str) -> Result<Option<Artifact>, sqlx::Error> {
     // AssertSqlSafe: the interpolation is this crate's COLS column list.
     let sql = format!("select {COLS} from artifacts where id = $1::uuid");

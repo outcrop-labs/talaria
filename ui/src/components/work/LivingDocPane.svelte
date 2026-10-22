@@ -1,5 +1,5 @@
 <script lang="ts">
-  // THE LIVING DOCUMENT AS A PANE — the document half of a plan or work stage,
+  // THE LIVING DOCUMENT AS A PANE — the document half of a plan session's stage,
   // with the plumbing the surface used to keep around it. The document itself
   // is LivingDoc (and the doc id lookup is its own business); what moved out
   // here is what stood AROUND it on the Plan surface: the skeleton that holds
@@ -7,10 +7,9 @@
   // conversation stands here, the turn signal that asks for a fresh body when
   // an agent turn lands, and the resolved document id handed back out.
   //
-  // IT FILLS THE BOX IT IS GIVEN, the same way ArtifactPane does: the caller
-  // owns the column — how wide it is, which breakpoint it appears at, whether
-  // it carries a divider — and LivingDoc brings its own left hairline, so a
-  // host column should not draw a second one.
+  // IT FILLS THE BOX IT IS GIVEN, the same way FilePane does: the caller owns
+  // the column — how wide it is, which breakpoint it appears at, and the
+  // divider beside it.
   import LivingDoc from '@/components/chat/LivingDoc.svelte'
   import PlanDocSkeleton from '@/components/chat/PlanDocSkeleton.svelte'
 

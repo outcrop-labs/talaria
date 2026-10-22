@@ -11,6 +11,11 @@ use talaria_body::clip_chars;
 use talaria_notify::{NotifyDeps, fan_channel_event, fan_conversation_event};
 use talaria_realtime::{ChannelEvent, RealtimeDeps, publish_channel};
 
+mod google_file;
+pub mod session_files;
+
+pub use google_file::{GoogleFile, GoogleType, google_id_ok, parse_google_file_url};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformLink {
     pub href: String,
@@ -502,6 +507,75 @@ fn source_chip(url: &str, title: Option<&str>, snippet: Option<&str>) -> Value {
     chip
 }
 
+/// The Google tools that work ON ONE FILE, and the type of file their `id`
+/// names. A search (`find_google_files`, `search_drive`) is absent on
+/// purpose: a list of hits is not a file the agent opened, and landing ten of
+/// them would fill the Work pane with files nobody looked at. So are the
+/// queued Drive moves and renames — those manage a file, they do not work in
+/// it.
+fn google_file_tool(tool: &str) -> Option<GoogleType> {
+    Some(match tool {
+        "create_google_doc" | "read_google_doc" | "update_google_doc" | "append_google_doc" => {
+            GoogleType::Document
+        }
+        "read_google_sheet" | "update_google_sheet" => GoogleType::Spreadsheet,
+        "read_google_slides" | "update_google_slides" => GoogleType::Presentation,
+        "read_drive_file" => GoogleType::Drive,
+        _ => return None,
+    })
+}
+
+/// The Google file one of those tools touched: the URL the result returned
+/// when it parses (Google's own link knows the type exactly), else the id —
+/// the result's, then the argument's — under the type the tool implies.
+///
+/// NOTHING FOR A FAILED CALL, and nothing for a create that QUEUED: a
+/// `create_google_doc` into somebody's folder answers `{ pending }`, and
+/// until a person approves it there is no file to point at. A queued EDIT
+/// still names a file that exists, so it lands one.
+fn google_file_from(tool: &str, args_v: &Value, result_v: &Value) -> Option<GoogleFile> {
+    let kind = google_file_tool(tool)?;
+    if result_v.get("error").is_some() {
+        return None;
+    }
+    if tool == "create_google_doc" && result_v.get("pending").is_some() {
+        return None;
+    }
+    if let Some(file) = str_field(result_v, "url").and_then(parse_google_file_url) {
+        return Some(file);
+    }
+    let id = str_field(result_v, "id").or_else(|| str_field(args_v, "id"))?;
+    google_id_ok(id).then(|| GoogleFile {
+        id: id.to_string(),
+        kind,
+    })
+}
+
+/// A Google file as a chip: a `source` — an off-platform link with a label,
+/// which is exactly how a reader should meet a Google file in the transcript
+/// (a pill that opens it in a new tab) — at the file's CANONICAL URL, so every
+/// tool that touches the same file lands the same chip id and the row keeps
+/// one. `title` rides beside the label only when the tool knew it; the label
+/// falls back to what the file is ("Google Doc"), never to a bare host.
+pub fn google_file_chip(file: &GoogleFile, title: Option<&str>) -> Value {
+    let url = file.url();
+    let title = title
+        .map(|t| clip_chars(t.trim(), LABEL))
+        .filter(|t| !t.is_empty());
+    let mut chip = json!({
+        "id": format!("source:{}", source_id(&url)),
+        "kind": "source",
+        "label": title.clone().unwrap_or_else(|| file.kind.noun().to_string()),
+        "href": url,
+    });
+    if let Some(t) = title
+        && let Some(obj) = chip.as_object_mut()
+    {
+        obj.insert("title".into(), json!(t));
+    }
+    chip
+}
+
 /// Pages in a structured result, however the tool shaped them: any object
 /// carrying a `url`/`link`/`href` string is a hit, with `title`/`name` and
 /// `snippet`/`description`/`content` beside it when they are there.
@@ -731,6 +805,9 @@ pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
         | "create_sheet"
         | "create_page"
         | "save_image_artifact"
+        // The import answers `{ artifact, message }`: a NEW Talaria file,
+        // and the session that asked for it should see it like any other.
+        | "import_drive_file"
         | "update_document"
         // A surgical edit lands the same chip as a full rewrite: what the
         // reader wants is a way into the document that just changed, and how
@@ -839,6 +916,16 @@ pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
             }
         }
         _ => {}
+    }
+    // THE FILE A GOOGLE TOOL WORKED ON, beside whatever card it produced. It
+    // is how the Work pane learns the session touched a Google file (the
+    // pane lists the files a conversation's chips name), and how a reader of
+    // the transcript gets back to it.
+    //
+    // The title is the RESULT's only: a queued edit's `title` argument is a
+    // rename nobody has approved yet, not what the file is called.
+    if let Some(file) = google_file_from(tool, &args_v, &result_v) {
+        out.push(google_file_chip(&file, first_title(&result_v)));
     }
     dedupe(out)
 }
@@ -2743,5 +2830,174 @@ mod tests {
         assert_eq!(chips[0]["actionKind"], "board_access");
         assert_eq!(chips[0]["actionId"], "board:b-9");
         assert_eq!(chips[0]["payload"], json!({ "boardId": "b-9" }));
+    }
+
+    // ── Google files the agent worked on ────────────────────────────────────
+
+    fn google_chips(chips: &[Value]) -> Vec<&Value> {
+        chips
+            .iter()
+            .filter(|c| {
+                c["kind"] == "source"
+                    && c["href"].as_str().and_then(parse_google_file_url).is_some()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_created_google_doc_lands_one_chip_at_its_canonical_url() {
+        let chips = chips_from_tool(
+            "create_google_doc",
+            r#"{"title":"Cutover runbook"}"#,
+            r#"{"id":"1AbCdoc","url":"https://docs.google.com/document/d/1AbCdoc/edit?usp=drivesdk","name":"Cutover runbook","mimeType":"application/vnd.google-apps.document","createdByAgent":true}"#,
+        );
+        let g = google_chips(&chips);
+        assert_eq!(g.len(), 1, "{chips:?}");
+        assert_eq!(
+            g[0]["href"],
+            "https://docs.google.com/document/d/1AbCdoc/edit"
+        );
+        assert_eq!(g[0]["label"], "Cutover runbook");
+        assert_eq!(g[0]["title"], "Cutover runbook");
+        assert!(
+            g[0]["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("source:")),
+            "{}",
+            g[0]
+        );
+        assert!(chips.iter().all(|c| c["kind"] != "approval"));
+    }
+
+    #[test]
+    fn a_create_that_queued_names_no_file_yet() {
+        // Into somebody's folder: a card, and no file until it is approved.
+        let chips = chips_from_tool(
+            "create_google_doc",
+            r#"{"title":"Plan","folderId":"f1"}"#,
+            r#"{"pending":{"id":"p-7","status":"pending","kind":"doc_create"},"message":"Queued"}"#,
+        );
+        assert_eq!(chips.len(), 1, "{chips:?}");
+        assert_eq!(chips[0]["kind"], "approval");
+        assert!(google_chips(&chips).is_empty());
+    }
+
+    #[test]
+    fn a_queued_edit_keeps_its_card_and_names_the_file_from_the_argument() {
+        let chips = chips_from_tool(
+            "update_google_doc",
+            r#"{"id":"1theirs","body":"x","title":"An unapproved rename"}"#,
+            r#"{"pending":{"id":"p-8","status":"pending","kind":"doc_update"},"message":"Waiting"}"#,
+        );
+        assert!(chips.iter().any(|c| c["kind"] == "approval"));
+        let g = google_chips(&chips);
+        assert_eq!(g.len(), 1, "{chips:?}");
+        assert_eq!(
+            g[0]["href"],
+            "https://docs.google.com/document/d/1theirs/edit"
+        );
+        // A rename nobody approved is not what the file is called.
+        assert_eq!(g[0]["label"], "Google Doc");
+        assert!(g[0].get("title").is_none(), "{}", g[0]);
+    }
+
+    #[test]
+    fn a_read_names_the_file_by_the_tools_type_when_the_url_was_clamped_away() {
+        // The plugin cuts a result at 4000 chars, and a long markdown body
+        // can take the url with it — the argument id still names the file.
+        let clamped = format!(r#"{{"id":"1sheet","markdown":"{}"#, "x".repeat(50));
+        let chips = chips_from_tool("read_google_sheet", r#"{"id":"1sheet"}"#, &clamped);
+        let g = google_chips(&chips);
+        assert_eq!(g.len(), 1, "{chips:?}");
+        assert_eq!(
+            g[0]["href"],
+            "https://docs.google.com/spreadsheets/d/1sheet/edit"
+        );
+        assert_eq!(g[0]["label"], "Google Sheet");
+
+        let deck = chips_from_tool(
+            "read_google_slides",
+            r#"{"id":"1deck"}"#,
+            r#"{"id":"1deck","title":"Board deck","slides":[]}"#,
+        );
+        let g = google_chips(&deck);
+        assert_eq!(
+            g[0]["href"],
+            "https://docs.google.com/presentation/d/1deck/edit"
+        );
+        assert_eq!(g[0]["title"], "Board deck");
+
+        let file = chips_from_tool(
+            "read_drive_file",
+            r#"{"id":"1pdf"}"#,
+            r#"{"id":"1pdf","encoding":"base64","text":"JVBERi0"}"#,
+        );
+        assert_eq!(
+            google_chips(&file)[0]["href"],
+            "https://drive.google.com/file/d/1pdf/view"
+        );
+    }
+
+    #[test]
+    fn a_failed_google_call_and_a_search_land_no_file() {
+        assert!(
+            google_chips(&chips_from_tool(
+                "read_google_doc",
+                r#"{"id":"1x"}"#,
+                r#"{"error":"Google is not connected"}"#,
+            ))
+            .is_empty()
+        );
+        // A list of hits is not a file the agent opened.
+        assert!(
+            google_chips(&chips_from_tool(
+                "find_google_files",
+                r#"{"q":"plan"}"#,
+                r#"{"files":[{"id":"1a","name":"Plan","url":"https://docs.google.com/document/d/1a/edit"}]}"#,
+            ))
+            .is_empty()
+        );
+        // An id outside the Drive alphabet is not trusted into a URL.
+        assert!(
+            google_chips(&chips_from_tool(
+                "read_google_doc",
+                r#"{"id":"../../etc"}"#,
+                "{}",
+            ))
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn two_tools_on_one_file_land_one_chip_id() {
+        let read = chips_from_tool(
+            "read_google_doc",
+            r#"{"id":"1same"}"#,
+            r#"{"id":"1same","title":"Spec","url":"https://docs.google.com/document/d/1same/edit?usp=drivesdk"}"#,
+        );
+        let edit = chips_from_tool(
+            "append_google_doc",
+            r#"{"id":"1same","body":"more"}"#,
+            r#"{"id":"1same","url":"https://docs.google.com/document/d/1same/edit","name":"Spec","createdByAgent":true}"#,
+        );
+        assert_eq!(google_chips(&read)[0]["id"], google_chips(&edit)[0]["id"]);
+    }
+
+    #[test]
+    fn an_imported_drive_file_becomes_a_document_chip() {
+        let chips = chips_from_tool(
+            "import_drive_file",
+            r#"{"fileId":"1src"}"#,
+            r#"{"artifact":{"id":"9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2","kind":"doc","title":"Imported plan","url":"https://docs.google.com/document/d/1src/edit"},"message":"Imported."}"#,
+        );
+        let doc = chips
+            .iter()
+            .find(|c| c["entity"] == "document")
+            .expect("the imported artifact is a document chip");
+        assert_eq!(
+            doc["href"],
+            "/artifacts?a=9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2"
+        );
+        assert_eq!(doc["title"], "Imported plan");
     }
 }
