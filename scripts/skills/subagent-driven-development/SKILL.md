@@ -1,7 +1,7 @@
 ---
 name: subagent-driven-development
 description: "Execute a multi-task implementation plan through one workbench job: a fresh subagent per task driving the coding harness, with two-stage review (spec, then quality) after every task."
-version: 2.0.0
+version: 2.0.1
 author: Talaria (structure adapted from obra/superpowers via Hermes Agent)
 license: MIT
 platforms: [linux, macos, windows]
@@ -24,8 +24,8 @@ workbench's coding harness** for its task, with a systematic two-stage review af
 **This is Talaria.** Nobody in this flow writes source files — not you, not a subagent. Code is
 written by Oh My Pi inside a workbench job (`start_job` → the harness runs in the `workdir` →
 `finish_job`); the **workbench-driving** skill is the discipline and the **oh-my-pi** skill is the
-harness. A subagent here is a *driver* of that harness for one task, never an editor with a file
-tool. Developer Agents only: an agent without the workbench server has no job to start, and a
+harness. A subagent here is a *driver* of that harness for one task, never an editor — even
+though it inherits your file tool. Developer Agents only: an agent without the workbench server has no job to start, and a
 coding ask is `report_gap`, not something to do by hand.
 
 ## When to Use
@@ -75,8 +75,12 @@ For EACH task in the plan:
 
 #### Step 1: Dispatch an Implementer Subagent — a harness driver
 
-Use `delegate_task` with complete context. The subagent gets the terminal because the harness is
-a command line; it does **not** get a file tool, because it does not write files:
+Use `delegate_task` with complete context. A subagent inherits YOUR toolsets — `delegate_task`
+takes no per-child toolset, so the implementer has the same terminal, file and patch tools you
+have. Not writing files is an instruction in its brief, not a fence; the brief has to say it,
+and you check `git diff` for anything the harness did not do. (A child does inherit what is
+switched OFF for you, so the only real fence is an agent whose own toolsets leave `file` closed —
+an admin's setting, not something a brief can ask for.)
 
 ```python
 delegate_task(
@@ -111,8 +115,7 @@ delegate_task(
 
     REPORT BACK: what the harness changed (file list), the test command and its
     result verbatim, the commit hash, and any question you could not answer.
-    """,
-    toolsets=['terminal']
+    """
 )
 ```
 
@@ -123,7 +126,8 @@ with no setup; never `gh`, never a token in a URL.
 #### Step 2: Dispatch a Spec Compliance Reviewer
 
 After the implementer reports, verify against the original task text. Reviewers read; they do
-not change anything:
+not change anything. Like the implementer, a reviewer holds every tool you hold, so "read-only"
+is the first line of its brief, not a setting:
 
 ```python
 delegate_task(
@@ -143,8 +147,7 @@ delegate_task(
     - [ ] Nothing extra added (no scope creep)?
 
     OUTPUT: PASS, or the specific spec gaps to fix.
-    """,
-    toolsets=['file']
+    """
 )
 ```
 
@@ -177,8 +180,7 @@ delegate_task(
     - Important Issues: [should fix]
     - Minor Issues: [optional]
     - Verdict: APPROVED or REQUEST_CHANGES
-    """,
-    toolsets=['file']
+    """
 )
 ```
 
@@ -205,8 +207,8 @@ git diff <base>..HEAD --stat        # only what the ticket asked for
 <the repo's test command>           # green, run by you
 ```
 
-Anything with a front end: drive it in a real browser (`npx playwright`) and keep the
-screenshot for the ticket. Then `finish_job` with a summary that says what changed, how you
+Anything with a front end: drive it with your browser tools (`browser_navigate` to the dev
+server on localhost, click through, `browser_vision`) and keep the screenshot for the ticket. Then `finish_job` with a summary that says what changed, how you
 verified it, and what the reviewer should look at hardest — Talaria checks the branch and opens
 the pull request. A job that produced nothing is `finish_job` with `abandon:true`, never a
 hand-written substitute.
@@ -228,7 +230,8 @@ hand-written substitute.
 ## Red Flags — Never Do These
 
 - Start without a job (`start_job`) or without the plan it requires
-- Give an implementer subagent a file tool, or let one edit a file "just this once"
+- Let an implementer subagent edit a file "just this once" — it holds your file tool, so its
+  brief is the only thing that says no, and `git diff` is how you check it listened
 - `git add -A` / `git add .` — the workdir holds `.env` and caches `prepare_env` dropped there;
   stage by explicit path
 - Run two implementers at once on the same workdir

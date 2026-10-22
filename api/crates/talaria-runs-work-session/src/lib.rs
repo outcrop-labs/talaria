@@ -1255,7 +1255,7 @@ fn continue_prompt(turn: i64, status: &str) -> String {
         "[Work session — turn {turn}/{MAX_SESSION_TURNS}] You're mid-work on this ticket (status: \
          \"{status}\"). Continue like a developer: next step, run it, read the result, adjust. \
          Verify before you finish — tests, your own diff, and for UI work drive it in a real \
-         browser (Playwright) and attach evidence. When genuinely done: report_outcome. If stuck: \
+         browser (your browser tools) and attach evidence. When genuinely done: report_outcome. If stuck: \
          status \"blocked\" + comment. End with your status line."
     )
 }
