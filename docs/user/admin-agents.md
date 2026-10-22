@@ -45,16 +45,16 @@ The agent at a glance: role, send address, Google identity, and the switches tha
 At the bottom, for its managers, **Rotate credential**: the key the agent presents to Talaria
 is revoked and a fresh one minted, the answer to a leaked key that is not "retire the agent".
 The confirm says what happens, and it is exact: the old key stops working the moment you
-confirm; the fleet is re-rendered and a running container is rolled onto the new key (a fresh
-one comes up beside it, traffic cuts over once it is healthy); until then the old container is
-locked out, so a toolkit call or a workbench session in flight on the old key fails and has to
-be retried, while conversations carry on in the new container. An agent Talaria does not run
+confirm; the fleet is re-rendered and a running container is rolled onto the new key (it stops,
+a fresh one starts in its place, and the roll waits for it to report healthy); until then the
+agent is locked out, so a toolkit call or a workbench session in flight on the old key fails and
+has to be retried, while conversations wait for the new container and carry on there. An agent Talaria does not run
 gets the new key the next time it starts. The new value is never shown; the audit trail records
 who rotated which key. If the roll fails, roll the agent again from the roster, or stop and
 start it.
 
 Admins can roll the whole fleet from the roster: **Roll all** asks first, in the page, then
-rolls every running agent the same zero-downtime way, a couple at a time so the host stays
+rolls every running agent the same way, in place, a couple at a time so the host stays
 responsive (tick *Also start and roll agents that are stopped* to include the stopped ones).
 Each agent's row shows where its roll stands: rolling, rolled, or failed with the reason, and an
 agent mid-roll cannot be rolled again until it finishes. The strip above the roster keeps the

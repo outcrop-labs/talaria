@@ -136,10 +136,11 @@ must survive its own death:
    handover anyway heals to `done` on the next reconcile. No install spins
    forever, and no landing is lost to a wrong close.
 
-8. **The fleet** — once that landing is real, every *running* agent rolls
-   blue/green, one at a time, the same roll a config edit uses: the
-   replacement comes up healthy before the old container is retired, and an
-   unhealthy replacement never takes over. Stopped agents stay stopped — they
+8. **The fleet** — once that landing is real, every *running* agent rolls,
+   one at a time, the same in-place roll a config edit uses: its image is
+   pulled first if the host lacks it (a failed pull leaves the agent running),
+   then the container is recreated and health is waited for. This is how a
+   new Hermes pin reaches running agents. Stopped agents stay stopped — they
    read the new render on next start. An adopted install rolls only from the
    container that *is* the pin (green during blue's drain is not a second
    deploy). An unadopted image install (dokploy, plain compose) does the same

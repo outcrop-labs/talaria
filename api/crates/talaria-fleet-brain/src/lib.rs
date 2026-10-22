@@ -6,10 +6,10 @@
 // Two halves: the ROUTING half (the model-set question and the config
 // transform) and the PROVISIONING half (ensure_gateway_brain — the two
 // fleet-wide gateway keys minted into the Talaria-owned fleet .env, the two
-// key-list settings, and the LLM_* lines the containers interpolate — plus
-// ensure_agent_gateway_keys / set_agent_gateway_models: ONE key per enabled
-// agent, `agent:<slug>`, stamped as LLM_API_KEY_<SLUG> and scoped to the
-// model ids that agent's rendered config asks for).
+// key-list settings, and the LLM_BASE_URL/LLM_API_KEY lines the containers
+// interpolate — plus ensure_agent_gateway_keys / set_agent_gateway_models:
+// ONE key per enabled agent, `agent:<slug>`, stamped as LLM_API_KEY_<SLUG>
+// and scoped to the model ids that agent's rendered config asks for).
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -283,6 +283,11 @@ async fn default_gateway_model(pg: &PgPool) -> Option<String> {
 #[derive(Debug, Clone)]
 pub struct GatewayBrain {
     pub url: Option<String>,
+    /// The gateway's default model — None while no endpoint serves one, which
+    /// the render warns about. Read for that question only: it is NOT
+    /// provisioned into the fleet .env as `LLM_MODEL` any more, because
+    /// Hermes deliberately ignores that variable (it takes its model from
+    /// config.yaml alone) and its own config migration clears it.
     pub model: Option<String>,
     pub key_rotated: bool,
     /// False when the operator pointed the fleet at a non-gateway upstream.
@@ -359,7 +364,7 @@ pub async fn ensure_gateway_brain(pg: &PgPool) -> Result<GatewayBrain, String> {
         // Operator override: a raw upstream. Respect it — no gateway brain.
         return Ok(GatewayBrain {
             url: Some(cur),
-            model: read_env_line(&content, "LLM_MODEL").filter(|m| !m.is_empty()),
+            model: None,
             key_rotated: false,
             managed: false,
         });
@@ -400,13 +405,7 @@ pub async fn ensure_gateway_brain(pg: &PgPool) -> Result<GatewayBrain, String> {
         next = upsert_env_line(&next, WORKBENCH_KEY_ENV, &k.secret);
     }
 
-    let mut model = read_env_line(&next, "LLM_MODEL").filter(|m| !m.is_empty());
-    if model.is_none()
-        && let Some(m) = default_gateway_model(pg).await
-    {
-        next = upsert_env_line(&next, "LLM_MODEL", &m);
-        model = Some(m);
-    }
+    let model = default_gateway_model(pg).await;
 
     if next != content {
         // The file holds the fleet's gateway secrets: written private from
@@ -657,10 +656,158 @@ pub async fn write_atomic(path: &std::path::Path, bytes: &[u8], mode: u32) -> Re
     result
 }
 
+/// Rewrite a file IN PLACE — same inode — for a file a container holds
+/// through a single-file bind mount (an agent's config.yaml and SOUL.md).
+/// Such a bind pins the inode that existed when the container was created,
+/// so [`write_atomic`]'s rename lands on the host and never reaches the
+/// container: it keeps reading the orphaned old file until it is recreated.
+///
+/// What a racing reader can see, and why each is safe for Hermes:
+/// - **Never an empty file.** Nothing truncates first: the new bytes go over
+///   the old ones at offset 0, and only then is a shorter file cut to length.
+/// - **The new bytes followed by the old tail**, for the instant between that
+///   write and the cut. The caller makes that state unparseable (the render
+///   ends config.yaml with a YAML `...` document end), and Hermes keeps
+///   serving its last good config through a parse error.
+/// - **A stale read cached under a signature that never changes again.**
+///   Hermes caches config.yaml on `(mtime, size, inode, ctime)`; a same-size
+///   rewrite inside one coarse mtime tick could leave a mid-write read cached
+///   for good. The mtime is set explicitly once every byte has landed, so the
+///   final signature always differs from anything a reader saw before.
+///
+/// Writers are serialized by an exclusive `flock` on the file itself (two
+/// renders racing in place would interleave; Hermes never locks it), and a
+/// write whose bytes are already there is skipped — no signature change, no
+/// reload, for every agent a render did not touch. Answers whether it wrote.
+/// A missing file has no container holding it yet, so it is created
+/// atomically.
+pub async fn write_in_place(
+    path: &std::path::Path,
+    bytes: &[u8],
+    mode: u32,
+) -> Result<bool, String> {
+    let owned = path.to_path_buf();
+    let data = bytes.to_vec();
+    let wrote = tokio::task::spawn_blocking(move || rewrite_in_place(&owned, &data, mode))
+        .await
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    match wrote {
+        InPlace::Missing => write_atomic(path, bytes, mode).await.map(|()| true),
+        InPlace::Unchanged => Ok(false),
+        InPlace::Written => Ok(true),
+        InPlace::Failed(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+enum InPlace {
+    Missing,
+    Unchanged,
+    Written,
+    Failed(std::io::Error),
+}
+
+fn rewrite_in_place(path: &std::path::Path, bytes: &[u8], mode: u32) -> InPlace {
+    use std::io::Read;
+    use std::os::unix::fs::{FileExt, PermissionsExt};
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return InPlace::Missing,
+        Err(e) => return InPlace::Failed(e),
+    };
+    let step = || -> std::io::Result<bool> {
+        // Released when `file` drops, on every path out of here.
+        file.lock()?;
+        let mut current = Vec::new();
+        (&file).read_to_end(&mut current)?;
+        let perms = std::fs::Permissions::from_mode(mode);
+        if current == bytes {
+            if file.metadata()?.permissions().mode() & 0o7777 != mode {
+                file.set_permissions(perms)?;
+            }
+            return Ok(false);
+        }
+        file.write_all_at(bytes, 0)?;
+        if bytes.len() < current.len() {
+            file.set_len(bytes.len() as u64)?;
+        }
+        file.sync_data()?;
+        file.set_permissions(perms)?;
+        file.set_modified(std::time::SystemTime::now())?;
+        Ok(true)
+    };
+    match step() {
+        Ok(true) => InPlace::Written,
+        Ok(false) => InPlace::Unchanged,
+        Err(e) => InPlace::Failed(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn write_in_place_keeps_the_inode_skips_the_unchanged_and_shrinks_clean() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = std::env::temp_dir().join(format!(
+            "talaria-write-in-place-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let target = dir.join("config.yaml");
+
+        // Missing: created (atomically), and that counts as a write.
+        assert!(
+            write_in_place(&target, b"a: 1\nb: 22222\n...\n", 0o644)
+                .await
+                .unwrap()
+        );
+        let ino = tokio::fs::metadata(&target).await.unwrap().ino();
+
+        // Same bytes: nothing written, signature untouched.
+        let before = tokio::fs::metadata(&target).await.unwrap();
+        assert!(
+            !write_in_place(&target, b"a: 1\nb: 22222\n...\n", 0o644)
+                .await
+                .unwrap()
+        );
+        let after = tokio::fs::metadata(&target).await.unwrap();
+        assert_eq!(before.mtime_nsec(), after.mtime_nsec());
+        assert_eq!(before.ctime_nsec(), after.ctime_nsec());
+
+        // Shorter: same inode (what a single-file bind still sees), the
+        // whole new content and nothing of the old tail.
+        assert!(
+            write_in_place(&target, b"a: 2\n...\n", 0o644)
+                .await
+                .unwrap()
+        );
+        let meta = tokio::fs::metadata(&target).await.unwrap();
+        assert_eq!(meta.ino(), ino, "rewritten in place, not renamed over");
+        assert_eq!(tokio::fs::read(&target).await.unwrap(), b"a: 2\n...\n");
+
+        // Longer: same inode again.
+        assert!(
+            write_in_place(&target, b"a: 3\nc: [1, 2, 3]\n...\n", 0o644)
+                .await
+                .unwrap()
+        );
+        assert_eq!(tokio::fs::metadata(&target).await.unwrap().ino(), ino);
+        assert_eq!(
+            tokio::fs::read(&target).await.unwrap(),
+            b"a: 3\nc: [1, 2, 3]\n...\n"
+        );
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
 
     #[tokio::test]
     async fn write_atomic_lands_the_bytes_private_and_leaves_no_temp_behind() {

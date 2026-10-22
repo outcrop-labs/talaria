@@ -130,7 +130,7 @@ pub async fn get(
     let server_id = server_id.clone();
     tokio::spawn(async move {
         // Connected servers appear in configs…
-        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb, None).await;
+        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb).await;
         // Running agents wire MCP at start — roll the affected ones so the
         // connection is usable without anyone bouncing containers.
         if subject == "org" {

@@ -53,7 +53,7 @@ export function repointChassis(text: string, network: string): string {
 export function seedFleetEnv(primaryFleetEnv: string): string {
   const kept = primaryFleetEnv
     .split('\n')
-    .filter((l) => /^(LLM_BASE_URL|LLM_API_KEY|LLM_MODEL|HERMES_IMAGE)=/.test(l))
+    .filter((l) => /^(LLM_BASE_URL|LLM_API_KEY|HERMES_IMAGE)=/.test(l))
     .join('\n')
   return `# Fleet env — seeded from the primary fleet/.env by \`talaria box seed\`.
 # The renderer rewrites the endpoint through this box's own gateway;

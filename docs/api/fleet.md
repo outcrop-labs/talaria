@@ -70,7 +70,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs`]
 > POST /api/fleet/agents/{id}/control. Lifecycle control for one agent —
 > this agent's managers, and admins (docs/PERMISSIONS.md, "Agent managers").
 >   up | stop | restart   the managed service (renders first on `up`)
->   roll                  zero-downtime replacement — detached
+>   roll                  recreate the container in place — detached
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

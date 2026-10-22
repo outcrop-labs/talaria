@@ -486,7 +486,7 @@ fn spawn_render(pg: &sqlx::PgPool, sb: &talaria_secretbox::SecretBox) {
     let pg = pg.clone();
     let sb = sb.clone();
     tokio::spawn(async move {
-        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb, None).await;
+        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb).await;
     });
 }
 
