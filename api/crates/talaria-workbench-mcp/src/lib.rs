@@ -101,6 +101,10 @@ pub struct WorkbenchJob {
     pub plan: String,
     pub status: String,
     pub pr_url: Option<String>,
+    /// The PR's number on its repo — what `pr_status` reads and a revise
+    /// round reuses. `None` on rows written before the column existed;
+    /// those still name their PR through `pr_url`.
+    pub pr_number: Option<i64>,
     pub summary: String,
     /// When this job entered the queue (epoch ms), kept after promotion
     /// for history. `None` = never queued.
@@ -119,7 +123,7 @@ const JOB_COLS: &str = "id::text, agent_id::text, agent_model, task_id::text, re
                         effort, plan, status, pr_url, summary, \
                         (trunc(extract(epoch from queued_at) * 1000))::bigint, queued_reason, \
                         (trunc(extract(epoch from created_at) * 1000))::bigint, \
-                        (trunc(extract(epoch from updated_at) * 1000))::bigint";
+                        (trunc(extract(epoch from updated_at) * 1000))::bigint, pr_number";
 
 /// Runaway guard only. Host packing (`fleet::budget`) is the real queue.
 pub const MAX_CONCURRENT_JOBS_PER_AGENT: usize = talaria_fleet_budget::MAX_LIVE_JOBS_PER_AGENT;
@@ -140,6 +144,7 @@ type JobRow = (
     Option<String>,
     i64,
     i64,
+    Option<i64>,
 );
 
 impl WorkbenchJob {
@@ -155,6 +160,7 @@ impl WorkbenchJob {
             plan: r.7,
             status: r.8,
             pr_url: r.9,
+            pr_number: r.15,
             summary: r.10,
             queued_at_ms: r.11,
             queued_reason: r.12,
@@ -189,6 +195,10 @@ impl WorkbenchJob {
                 .map(Value::String)
                 .unwrap_or(Value::Null),
         );
+        out.insert(
+            "prNumber".into(),
+            self.pr_number().map(Value::from).unwrap_or(Value::Null),
+        );
         out.insert("summary".into(), json!(self.summary));
         out.insert("createdAt".into(), json!(self.created_at));
         out.insert("updatedAt".into(), json!(self.updated_at));
@@ -214,6 +224,13 @@ impl WorkbenchJob {
         }
         Value::Object(out)
     }
+
+    /// The job's PR number: the column, else read off the PR's URL (rows
+    /// from before the column).
+    pub fn pr_number(&self) -> Option<i64> {
+        self.pr_number
+            .or_else(|| self.pr_url.as_deref().and_then(gh::pr_number_from_url))
+    }
 }
 
 pub fn slugify(v: &str) -> String {
@@ -238,7 +255,7 @@ async fn ticket_ref_of(pg: &PgPool, task_id: &str) -> Option<(Option<String>, St
     row
 }
 
-/// The seven tools — verbatim inputSchemas, their own key order (name,
+/// The workbench tools — verbatim inputSchemas, their own key order (name,
 /// description, inputSchema; properties in declaration order).
 pub fn workbench_tools() -> Vec<Value> {
     vec![
@@ -273,14 +290,16 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "request_repo",
-            "description": "Request a NEW repository in an approved org — a human approves before anything is created (you will see it in list_repos once granted). Use only when the work genuinely needs a fresh repo; explain why.",
+            "description": "Request a NEW repository in an approved org — a human approves before anything is created, and the GitHub App creates it and grants it to you (it then shows in list_repos). doctor's repoCreation says whether this instance can create repos at all and lists the approved orgs: a request for any other org, or on an instance without the GitHub App connection, is refused. list_repos shows each of your requests and its outcome; a rejection's reason also lands on the ticket. Use only when the work genuinely needs a fresh repo; explain why.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "org": { "type": "string", "description": "The GitHub org — must be on the approved list (doctor shows it)" },
+                    "org": { "type": "string", "description": "The GitHub org — one of doctor's repoCreation.orgs" },
                     "name": { "type": "string", "description": "Repo name (lowercase, dashes)" },
                     "description": { "type": "string", "description": "One-line repo description" },
                     "why": { "type": "string", "description": "Why this work needs a new repo" },
+                    "visibility": { "type": "string", "enum": ["private", "public"], "description": "Who may see the repo. Omitted means private; the approver can change it." },
+                    "appSlug": { "type": "string", "description": "When the repo will hold a Talaria app: that app's slug (lowercase letters, digits, dashes). Recorded on the request for the approver." },
                     "taskId": { "type": "string", "description": "The ticket that motivated it — same rule as start_job: a ticket you may not work (board not yours, closed, archived, archived board) is refused, so omit it rather than guessing." },
                 },
                 "required": ["org", "name", "why"],
@@ -288,7 +307,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "finish_job",
-            "description": "Finish a job: Talaria verifies the job branch has commits in its workdir and opens the pull request with the ticket-linked body. A no-commits refusal names that workdir, branch, and refs/heads/… — push there, or abandon:true. Returns the PR URL — put it in your outcome report. Either way the job closes out; the ticket only gets an audit line if it is still open to you (a ticket closed or archived while you worked takes no further agent writes), so report the PR URL yourself.",
+            "description": "Finish a job: Talaria verifies the job branch has commits in its workdir and opens the pull request with the ticket-linked body. When the branch already has an open PR (a revise round), that PR is kept, never duplicated: your pushes already updated it, and the summary is posted on it as a comment. A no-commits refusal names that workdir, branch, and refs/heads/… — push there, or abandon:true. Returns the PR URL — put it in your outcome report. Either way the job closes out; the ticket only gets an audit line if it is still open to you (a ticket closed or archived while you worked takes no further agent writes), so report the PR URL yourself.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -303,6 +322,11 @@ pub fn workbench_tools() -> Vec<Value> {
             "name": "prepare_env",
             "description": "Set up the job's dev environment after you clone: Talaria reads the repo (its mise.toml / .tool-versions, else rust-toolchain.toml, .nvmrc, package.json, go.mod, .python-version, ...) and installs those toolchains through mise, plus any OS packages the repo lists in .talaria/workbench.toml. Idempotent; call it at the start of every job. The first run of a new toolchain can take minutes. Never install toolchains or system packages yourself: declare them in the repo and call this again.",
             "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job or job_status. Not a ticket ref." } }, "required": ["jobId"] },
+        }),
+        json!({
+            "name": "pr_status",
+            "description": "Read the pull request a job opened: open, closed or merged; each CI check's conclusion (checks.verdict is passing, failing, pending, none or unknown); and the review decision (approved, changes_requested, commented or none) with each reviewer's latest review. Read-only: it never merges, comments, approves or re-runs anything — a person merges. When checks fail or a reviewer asks for changes, start_job on the same ticket again: it resumes this job on its branch and PR, and finish_job updates that PR.",
+            "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job or job_status — a job whose PR is open (status pr_open) or was resumed for a revise round. Not a ticket ref." } }, "required": ["jobId"] },
         }),
     ]
 }
@@ -591,6 +615,12 @@ async fn call_tool(
                 false => "github: NOT connected — jobs cannot start (an admin connects it in Admin → Org)"
                     .into(),
             });
+            // request_repo's own door, asked the same way: an agent learns
+            // the approved orgs and whether creation can work here before it
+            // asks, instead of by being refused.
+            let (repo_creation, repo_creation_line) =
+                repo_creation_answer(&gh::get_github_config(pg).await);
+            checks.push(repo_creation_line);
             checks.push(if repos.is_empty() {
                 "repos: none granted — ask an admin to grant repos on your agent settings".into()
             } else {
@@ -631,6 +661,7 @@ async fn call_tool(
                     "passthroughConfig": format!("/opt/workbench-config/{MCP_CONFIG_FILE}"),
                 },
                 "models": models,
+                "repoCreation": repo_creation,
                 "workspaceRoot": "/opt/data/workbench/jobs/<jobId>",
                 "sessionHistory": "/opt/data/workbench/harness (persistent, shared with your department)",
                 // The probe already ran, above. Telling the agent to run it
@@ -650,11 +681,36 @@ async fn call_tool(
                 Ok(r) => r.wire(),
                 Err(e) => return thrown(e),
             };
-            CallOutcome::Ok(json!({
+            // The agent's own repo requests and how each was decided: a
+            // rejection used to be silent, so the agent never learned it.
+            let requests: Result<Vec<RepoRequestRow>, sqlx::Error> = sqlx::query_as(
+                "select org, name, status, decision_note, visibility, app_slug, \
+                        (trunc(extract(epoch from created_at) * 1000))::bigint, \
+                        (trunc(extract(epoch from updated_at) * 1000))::bigint \
+                 from workbench_repo_requests \
+                 where agent_id = $1::uuid and created_at > now() - interval '30 days' \
+                 order by created_at desc limit 10",
+            )
+            .bind(&agent.id)
+            .fetch_all(pg)
+            .await;
+            let mut out = json!({
                 "repos": repos,
                 "models": models,
                 "note": "Pick effort by the size of the work: light = quick fixes, standard = regular features (plan required), heavy = hard cross-cutting work (plan required, waits for human approval, used sparingly). Effort decides planning and how much room the job reserves; Oh My Pi picks its own models from the roles above as it works.",
-            }))
+            });
+            match requests {
+                Ok(rows) => {
+                    out["repoRequests"] =
+                        Value::Array(rows.iter().map(repo_request_wire).collect());
+                }
+                // Never an empty list for a read that failed: that would say
+                // "no requests" about requests that exist.
+                Err(e) => {
+                    out["repoRequestsError"] = json!(format!("repo requests unreadable: {e}"))
+                }
+            }
+            CallOutcome::Ok(out)
         }
 
         "start_job" => {
@@ -757,22 +813,35 @@ async fn call_tool(
                 },
                 None => (String::new(), String::new()),
             };
+            // A REVISE ROUND resumes the job whose PR is still open: same
+            // row, same branch, same workdir (the checkout the PR left behind
+            // is still there). A fresh job here meant a second workdir on the
+            // same branch and a finish_job that tried to open a second PR.
+            let resume = match &task_id {
+                Some(task_id) => resumable_job(deps, &agent.id, task_id, &repo).await,
+                None => None,
+            };
             // Mint the branch under the repo's own branch law: a grant with a
             // configured prefix gets the job branch under it, so the name
             // git's push gate (and the sandbox push check) will actually
             // accept. No rule, no prefix — the historical `talaria/…` shape.
-            let branch = job_branch_name(
-                pg,
-                &agent.id,
-                &repo,
-                &ticket_ref,
-                &if slugify(&title).is_empty() {
-                    "work".to_string()
-                } else {
-                    slugify(&title)
-                },
-            )
-            .await;
+            let branch = match &resume {
+                Some((prev, _)) => prev.branch.clone(),
+                None => {
+                    job_branch_name(
+                        pg,
+                        &agent.id,
+                        &repo,
+                        &ticket_ref,
+                        &if slugify(&title).is_empty() {
+                            "work".to_string()
+                        } else {
+                            slugify(&title)
+                        },
+                    )
+                    .await
+                }
+            };
             let created_branch = match gh::create_branch(pg, &deps.sb, &repo, &branch, None).await {
                 Ok(cb) => cb,
                 Err(e) => return thrown(e),
@@ -791,30 +860,61 @@ async fn call_tool(
             } else {
                 "started"
             };
-            let job_row: Result<JobRow, sqlx::Error> =
-                sqlx::query_as(sqlx::AssertSqlSafe(format!(
-                    "insert into workbench_jobs \
-                 (agent_id, agent_model, task_id, repo, branch, effort, plan, status, \
-                  queued_at, queued_reason) \
-                 values ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, $8, \
-                         case when $8 = 'queued' then now() end, $9) \
-                 returning {JOB_COLS}"
-                )))
-                .bind(&agent.id)
-                .bind(&agent.model)
-                .bind(&task_id)
-                .bind(&repo)
-                .bind(&branch)
-                .bind(&effort)
-                .bind(&plan)
-                .bind(status)
-                .bind(queue_reason.as_deref())
-                .fetch_one(pg)
-                .await;
+            // The resumed row goes back to work in place; a miss (the row
+            // moved under us) is an ordinary new job below.
+            let resumed_row: Option<JobRow> = match &resume {
+                Some((prev, pr)) => {
+                    resume_job_row(
+                        pg,
+                        &prev.id,
+                        &JobResume {
+                            status,
+                            effort: &effort,
+                            plan: &plan,
+                            queue_reason: queue_reason.as_deref(),
+                        },
+                        pr,
+                    )
+                    .await
+                }
+                None => None,
+            };
+            let resumed_pr = match (&resumed_row, &resume) {
+                (Some(_), Some((_, pr))) => Some(pr.clone()),
+                _ => None,
+            };
+            let job_row: Result<JobRow, sqlx::Error> = match resumed_row {
+                Some(row) => Ok(row),
+                None => {
+                    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                        "insert into workbench_jobs \
+                     (agent_id, agent_model, task_id, repo, branch, effort, plan, status, \
+                      queued_at, queued_reason) \
+                     values ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, $8, \
+                             case when $8 = 'queued' then now() end, $9) \
+                     returning {JOB_COLS}"
+                    )))
+                    .bind(&agent.id)
+                    .bind(&agent.model)
+                    .bind(&task_id)
+                    .bind(&repo)
+                    .bind(&branch)
+                    .bind(&effort)
+                    .bind(&plan)
+                    .bind(status)
+                    .bind(queue_reason.as_deref())
+                    .fetch_one(pg)
+                    .await
+                }
+            };
             let job = match job_row {
                 Ok(row) => WorkbenchJob::of(row),
                 Err(e) => return thrown(format!("job write: {e}")),
             };
+            let revise_note = resumed_pr
+                .as_ref()
+                .map(|pr| format!(" — revise round on PR {}", pr.url))
+                .unwrap_or_default();
             // `gated` means this agent has just stopped and will not move
             // again until a person approves the plan from the ticket. That is
             // an approval the instant the row lands, so it is announced now
@@ -965,14 +1065,21 @@ async fn call_tool(
                 task_id.as_deref(),
                 &WorkbenchActor::Agent(subject.clone()),
                 &if gated {
-                    format!("workbench job awaiting plan approval: {repo} @ {branch} (heavy)")
+                    format!(
+                        "workbench job awaiting plan approval: {repo} @ {branch} (heavy){revise_note}"
+                    )
                 } else if job.status == "queued" {
                     format!(
-                        "workbench job queued: {repo} @ {branch} ({effort}) — host out of headroom, it starts automatically when resources free up"
+                        "workbench job queued: {repo} @ {branch} ({effort}){revise_note} — host out of headroom, it starts automatically when resources free up"
                     )
                 } else {
                     format!(
-                        "workbench job started: {repo} @ {branch} ({effort}){}",
+                        "workbench job {}: {repo} @ {branch} ({effort}){revise_note}{}",
+                        if resumed_pr.is_some() {
+                            "resumed"
+                        } else {
+                            "started"
+                        },
                         if plan.is_empty() {
                             ""
                         } else {
@@ -988,7 +1095,7 @@ async fn call_tool(
             // and job_status then answers with the started shape.
             if job.status == "queued" {
                 let position = talaria_workbench_queue::queue_position(pg, &job.id).await;
-                return CallOutcome::Ok(json!({
+                let mut queued = json!({
                     "jobId": job.id,
                     "repo": repo,
                     "branch": branch,
@@ -996,7 +1103,12 @@ async fn call_tool(
                     "queuePosition": position,
                     "waitReason": queue_reason,
                     "note": "queued behind host headroom; it starts automatically when resources free up — poll job_status",
-                }));
+                });
+                if let Some(pr) = &resumed_pr {
+                    queued["prUrl"] = json!(pr.url);
+                    queued["prNumber"] = json!(pr.number);
+                }
+                return CallOutcome::Ok(queued);
             }
             // The model is omp's call: the org's Workbench roles are its
             // default / smol / slow / plan (rendered into the sandbox), and
@@ -1037,6 +1149,14 @@ async fn call_tool(
             let rules = if gated {
                 "Heavy work waits for a human: your plan is on the ticket for approval. Poll job_status — once approved it returns the clone URL. Do NOT begin building."
                     .to_string()
+            } else if let Some(pr) = &resumed_pr {
+                format!(
+                    "This job RESUMES your open PR #{number} ({url}) for a revise round: same branch ({branch}), same workdir. The earlier round's checkout may still be in {workdir} — if {workdir}/.git exists, `git -C {workdir} pull` and keep working there; otherwise clone the URL above INTO {workdir} (mkdir -p first) and check out {branch}. The clone URL carries no credential and needs none. Never touch {base}. Call prepare_env with this jobId once the checkout is there (it writes this project's env, if it has one, to {workdir}/{env_file}). Drive Oh My Pi as before (continueJsonRun keeps its context). Push your fixes to {branch}: that updates the PR. finish_job then keeps the PR (it never opens a second one) and posts your summary on it.",
+                    number = pr.number,
+                    url = pr.url,
+                    base = created_branch.base,
+                    env_file = devenv::JOB_ENV_FILE,
+                )
             } else {
                 // The project env is NOT written here: the workdir must be
                 // empty for `git clone <url> <workdir>`, and prepare_env —
@@ -1053,7 +1173,14 @@ async fn call_tool(
             value.insert("repo".into(), json!(repo));
             value.insert("branch".into(), json!(branch));
             value.insert("base".into(), json!(created_branch.base));
-            value.insert("resumed".into(), json!(!created_branch.created));
+            value.insert(
+                "resumed".into(),
+                json!(!created_branch.created || resumed_pr.is_some()),
+            );
+            if let Some(pr) = &resumed_pr {
+                value.insert("prUrl".into(), json!(pr.url));
+                value.insert("prNumber".into(), json!(pr.number));
+            }
             value.insert("status".into(), json!(job.status));
             value.insert("workdir".into(), json!(workdir));
             value.insert("sessionDir".into(), json!(session_dir));
@@ -1236,21 +1363,46 @@ async fn call_tool(
             let cfg = gh::get_github_config(pg).await;
             let org = arg_str(args, "org").trim().to_string();
             let repo_name = sanitize_repo_name(&arg_str(args, "name"));
-            if cfg.repo_creation_orgs.is_empty() {
-                return CallOutcome::Fail(
-                    "repo creation is not enabled — an admin can approve orgs on the GitHub panel"
-                        .into(),
-                );
-            }
-            if !cfg.repo_creation_orgs.iter().any(|o| o == &org) {
-                return CallOutcome::Fail(format!(
-                    "org \"{org}\" is not approved for repo creation (approved: {})",
-                    cfg.repo_creation_orgs.join(", ")
-                ));
+            // Refused UP FRONT for anything the approval could never do: no
+            // approved orgs, an org off the list, or a connection that is not
+            // the GitHub App (a PAT cannot create org repos here). These used
+            // to be accepted and then fail in the admin's hands.
+            if let Some(why) = gh::repo_creation_refusal(&cfg, &org) {
+                return CallOutcome::Fail(why);
             }
             if repo_name.is_empty() {
                 return CallOutcome::Fail("name required".into());
             }
+            let visibility = match args
+                .get("visibility")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                None => gh::RepoVisibility::Private,
+                Some(v) => match gh::RepoVisibility::parse(v) {
+                    Some(v) => v,
+                    None => {
+                        return CallOutcome::Fail(format!(
+                            "visibility must be \"private\" or \"public\" — got \"{v}\""
+                        ));
+                    }
+                },
+            };
+            let app_slug = match args
+                .get("appSlug")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                None => None,
+                Some(s) if app_slug_ok(s) => Some(s.to_string()),
+                Some(s) => {
+                    return CallOutcome::Fail(format!(
+                        "appSlug \"{s}\" is not an app slug (lowercase letters, digits and dashes, starting with a letter or digit, at most 64)"
+                    ));
+                }
+            };
             // Same door as start_job — literally the same function, not the
             // same three lines again: this taskId is stored on the request
             // row and gets a workbench audit line, so it is authorised rather
@@ -1273,10 +1425,34 @@ async fn call_tool(
                     "you already have a pending request for this repo — a human will decide".into(),
                 );
             }
+            // Ask GitHub whether the App is on that org NOW: an org it is not
+            // installed on can never be approved, and the agent should hear
+            // that, not an admin later. GitHub failing to answer is not a
+            // "no" — the request is filed and the approval asks again.
+            match gh::org_installation(pg, &deps.sb, &org).await {
+                Ok(installation) => {
+                    if let Some(why) = installation.refusal(&org) {
+                        return CallOutcome::Fail(why);
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    "[workbench] request_repo could not ask GitHub about {org}'s installation ({e}) — filing anyway; approval checks again"
+                ),
+            }
+            // The human the agent answers to (the attribution ladder: the
+            // assistant's owner, the person chatting, the hirer) — the person
+            // a repo minted for this work belongs to. None when nobody does.
+            let responsible =
+                talaria_attribution::responsible_user_for(pg, deps.redis.clone(), subject)
+                    .await
+                    .ok()
+                    .flatten();
             let filed: Result<String, sqlx::Error> = sqlx::query_scalar(
                 "insert into workbench_repo_requests \
-                   (agent_id, agent_model, org, name, description, why, task_id) \
-                 values ($1::uuid, $2, $3, $4, $5, $6, $7::uuid) returning id::text",
+                   (agent_id, agent_model, org, name, description, why, task_id, \
+                    visibility, app_slug, responsible_user_id) \
+                 values ($1::uuid, $2, $3, $4, $5, $6, $7::uuid, $8, $9, $10::uuid) \
+                 returning id::text",
             )
             .bind(&agent.id)
             .bind(&agent.model)
@@ -1285,6 +1461,9 @@ async fn call_tool(
             .bind(truncate_utf16(&arg_str(args, "description"), 300))
             .bind(truncate_utf16(&arg_str(args, "why"), 1000))
             .bind(&task_id)
+            .bind(visibility.as_str())
+            .bind(&app_slug)
+            .bind(&responsible)
             .fetch_one(pg)
             .await;
             let filed = match filed {
@@ -1295,7 +1474,14 @@ async fn call_tool(
                 pg,
                 task_id.as_deref(),
                 &WorkbenchActor::Agent(subject.clone()),
-                &format!("requested a new repo: {org}/{repo_name} — awaiting human approval"),
+                &format!(
+                    "requested a new {} repo: {org}/{repo_name}{} — awaiting human approval",
+                    visibility.as_str(),
+                    app_slug
+                        .as_deref()
+                        .map(|s| format!(" for the app \"{s}\""))
+                        .unwrap_or_default()
+                ),
             )
             .await;
             // Humans hear about it once, through the one announcer — which
@@ -1304,7 +1490,10 @@ async fn call_tool(
             announce_raised(deps, format!("repo_request:{filed}"));
             CallOutcome::Ok(json!({
                 "status": "pending",
-                "note": "Request filed — a human decides. Continue other work; the repo appears in list_repos if approved.",
+                "repo": format!("{org}/{repo_name}"),
+                "visibility": visibility.as_str(),
+                "appSlug": app_slug,
+                "note": "Request filed — a human decides. Continue other work; the repo appears in list_repos if approved, and list_repos shows the decision (a rejection's reason also lands on the ticket).",
             }))
         }
 
@@ -1334,6 +1523,47 @@ async fn call_tool(
             // AUDIT LINE does, and log_ticket asks for it. Abandoning is the
             // one branch gated by nothing at all — the audit line through
             // `log_ticket` is the check it cannot skip.
+            if args.get("abandon") == Some(&Value::Bool(true))
+                && (job.status == "started" || job.status == "awaiting_approval")
+                && let Some(pr_url) = &job.pr_url
+            {
+                // A RESUMED job abandons its revise round, not its PR: the PR
+                // is still open on GitHub, so the job goes back to pr_open
+                // (builds stopped, checkout kept, as after finish_job) instead
+                // of forgetting the PR it stands for.
+                if let Err(e) = sqlx::query(
+                    "update workbench_jobs set status = 'pr_open', queued_reason = null, \
+                     updated_at = now() where id = $1::uuid",
+                )
+                .bind(&job.id)
+                .execute(pg)
+                .await
+                {
+                    return thrown(format!("job update: {e}"));
+                }
+                log_ticket(
+                    pg,
+                    job.task_id.as_deref(),
+                    &WorkbenchActor::Agent(subject.clone()),
+                    &format!(
+                        "workbench revise round abandoned: {} @ {} — the job is back on its PR {pr_url}",
+                        job.repo, job.branch
+                    ),
+                )
+                .await;
+                sync_agent_budget(pg, &agent.department, &agent.id).await;
+                spawn_teardown(
+                    pg.clone(),
+                    agent.department.clone(),
+                    job.id.clone(),
+                    Teardown::Stop,
+                );
+                return CallOutcome::Ok(json!({
+                    "status": "pr_open",
+                    "prUrl": pr_url,
+                    "note": "The revise round is abandoned; the job is back on its open PR, which holds whatever you pushed to its branch.",
+                }));
+            }
             if args.get("abandon") == Some(&Value::Bool(true))
                 && (job.status == "started" || job.status == "awaiting_approval")
             {
@@ -1451,15 +1681,33 @@ async fn call_tool(
                 .to_string(),
                 None => format!("Workbench: {}", job.branch),
             };
-            let pr = match gh::create_pull_request(
+            // A revise round's branch already has its PR open: the push
+            // updated it, so the PR is KEPT and this round's summary is left
+            // on it as a comment. Opening a second one is GitHub's 422, which
+            // threw here and left the job `started` holding its reservation.
+            let update_note = format!(
+                "🔧 Updated by **{}** (`{}`) via the Talaria workbench ({} effort).\n\n{}",
+                agent.display_name,
+                agent.model,
+                job.effort,
+                if summary.is_empty() {
+                    "(no summary provided)"
+                } else {
+                    summary.as_str()
+                },
+            );
+            let pr = match gh::open_or_update_pull_request(
                 pg,
                 &deps.sb,
                 &job.repo,
-                &job.branch,
-                &base,
-                &title,
-                &body,
-                false,
+                &gh::PullRequestAsk {
+                    head: &job.branch,
+                    base: &base,
+                    title: &title,
+                    body: &body,
+                    draft: false,
+                    update_note: &update_note,
+                },
             )
             .await
             {
@@ -1468,11 +1716,12 @@ async fn call_tool(
             };
             if let Err(e) = sqlx::query(
                 "update workbench_jobs set status = 'pr_open', pr_url = $2, summary = $3, \
-                 updated_at = now() where id = $1::uuid",
+                 pr_number = $4, updated_at = now() where id = $1::uuid",
             )
             .bind(&job.id)
             .bind(&pr.url)
             .bind(&summary)
+            .bind(pr.number)
             .execute(pg)
             .await
             {
@@ -1489,7 +1738,11 @@ async fn call_tool(
                 pg,
                 job.task_id.as_deref(),
                 &WorkbenchActor::Agent(subject.clone()),
-                &format!("workbench PR opened: {}", pr.url),
+                &if pr.reused {
+                    format!("workbench PR updated: {}", pr.url)
+                } else {
+                    format!("workbench PR opened: {}", pr.url)
+                },
             )
             .await;
             sync_agent_budget(pg, &agent.department, &agent.id).await;
@@ -1505,8 +1758,49 @@ async fn call_tool(
             CallOutcome::Ok(json!({
                 "prUrl": pr.url,
                 "prNumber": pr.number,
-                "note": "Include this PR link in your outcome report.",
+                "reused": pr.reused,
+                "note": finish_note(&pr),
             }))
+        }
+
+        "pr_status" => {
+            let job_id = arg_str(args, "jobId");
+            if let Some(error) = bad_job_id(&job_id) {
+                return CallOutcome::Fail(error);
+            }
+            let rows: Vec<JobRow> = match sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {JOB_COLS} from workbench_jobs where id = $1::uuid and agent_id = $2::uuid"
+            )))
+            .bind(&job_id)
+            .bind(&agent.id)
+            .fetch_all(pg)
+            .await
+            {
+                Ok(rows) => rows,
+                Err(e) => return thrown(format!("job read: {e}")),
+            };
+            let Some(row) = rows.into_iter().next() else {
+                return CallOutcome::Fail("unknown job".into());
+            };
+            let job = WorkbenchJob::of(row);
+            let Some(number) = job.pr_number() else {
+                return CallOutcome::Fail(format!(
+                    "job {} has no pull request yet (it is {}) — finish_job opens it",
+                    job.id, job.status
+                ));
+            };
+            // Every call underneath is a GET. Nothing here merges, comments,
+            // approves or re-runs: a person merges, and the job row is not
+            // touched either.
+            let mut status = match gh::pull_request_status(pg, &deps.sb, &job.repo, number).await {
+                Ok(v) => v,
+                Err(e) => return thrown(e),
+            };
+            let next = pr_next_step(&status);
+            status["jobId"] = json!(job.id);
+            status["jobStatus"] = json!(job.status);
+            status["next"] = json!(next);
+            CallOutcome::Ok(status)
         }
 
         _ => CallOutcome::Fail(format!("unknown tool \"{name}\"")),
@@ -1820,6 +2114,174 @@ fn empty_branch_error(job_id: &str, repo: &str, branch: &str) -> String {
 
 /// `String(args.name ?? '').trim().toLowerCase().replace(/[^a-z0-9._-]+/g,
 /// '-').slice(0, 100)` — the repo-name normalizer.
+/// A Talaria app slug, as the app builder and scaffolder spell it:
+/// `^[a-z0-9][a-z0-9-]{0,63}$`.
+fn app_slug_ok(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 64
+        && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+}
+
+/// doctor's repo-creation answer: whether `request_repo` can work on this
+/// instance, the orgs it may name, and the one line the checks list
+/// carries. The same decision `request_repo` refuses with.
+fn repo_creation_answer(cfg: &gh::GithubConfig) -> (Value, String) {
+    let blocker = gh::repo_creation_blocker(cfg);
+    let line = match &blocker {
+        None => format!(
+            "repo creation: request_repo may ask for new repos in {} — a human approves each one",
+            cfg.repo_creation_orgs.join(", ")
+        ),
+        Some(why) => format!("repo creation: unavailable — {why}"),
+    };
+    let wire = json!({
+        "possible": blocker.is_none(),
+        "mode": cfg.mode,
+        "orgs": cfg.repo_creation_orgs,
+        "reason": blocker,
+    });
+    (wire, line)
+}
+
+/// One of this agent's repo requests, as list_repos reports it: org, name,
+/// status, the decision's note, visibility, app slug, created and decided
+/// (updated_at) as epoch ms.
+type RepoRequestRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    i64,
+    i64,
+);
+
+fn repo_request_wire(r: &RepoRequestRow) -> Value {
+    let mut out = json!({
+        "repo": format!("{}/{}", r.0, r.1),
+        "status": r.2,
+        "visibility": r.4,
+        "appSlug": r.5,
+        "requestedAt": epoch_ms_to_iso(r.6),
+    });
+    if r.2 != "pending" {
+        out["decidedAt"] = json!(epoch_ms_to_iso(r.7));
+        out["note"] = json!(r.3);
+    }
+    out
+}
+
+/// finish_job's note: what happened to the PR, in the words the agent
+/// repeats in its report.
+fn finish_note(pr: &gh::OpenedPullRequest) -> String {
+    match (pr.reused, pr.commented) {
+        (false, _) => "Include this PR link in your outcome report.".into(),
+        (true, true) => "This branch already had this PR open, so it was kept: your pushes updated it and your summary is posted on it as a comment. Include the PR link in your outcome report.".into(),
+        (true, false) => "This branch already had this PR open, so it was kept: your pushes updated it (the summary comment could not be posted — say what changed in your report). Include the PR link in your outcome report.".into(),
+    }
+}
+
+/// pr_status's `next`: what the PR's state asks of the agent, if anything.
+/// Advice only — Talaria never merges, and neither does the agent.
+fn pr_next_step(status: &Value) -> &'static str {
+    let state = status["state"].as_str().unwrap_or_default();
+    let checks = status["checks"]["verdict"].as_str().unwrap_or_default();
+    let review = status["reviewDecision"].as_str().unwrap_or_default();
+    match state {
+        "merged" => "Merged by a person — nothing left to do on this PR.",
+        "closed" => "Closed without merging — ask on the ticket before doing more work here.",
+        _ if checks == "failing" || review == "changes_requested" => {
+            "Act on it: start_job on the same ticket (it resumes this job on its branch and PR), fix, push, then finish_job — the PR is kept and updated."
+        }
+        _ if checks == "pending" => "Checks are still running — look again later.",
+        _ if review == "approved" => "Approved — a person merges it; nothing for you to do.",
+        _ => "Waiting on review — a person reviews and merges it.",
+    }
+}
+
+/// What a resumed job starts its revise round with — the same fields a new
+/// job row is written with.
+struct JobResume<'a> {
+    status: &'a str,
+    effort: &'a str,
+    plan: &'a str,
+    queue_reason: Option<&'a str>,
+}
+
+/// Put a `pr_open` job back to work in place for a revise round: its new
+/// status (started, queued or awaiting approval), effort and plan, and the
+/// PR it is resuming. `status = 'pr_open'` in the WHERE makes a race (the
+/// sweep, a second start_job) a miss — None — never a double resume.
+/// workspace_cleared_at goes back to null because the row is live again and
+/// that column is the sweep's "removed once" marker.
+async fn resume_job_row(
+    pg: &PgPool,
+    job_id: &str,
+    round: &JobResume<'_>,
+    pr: &gh::PullRequestRef,
+) -> Option<JobRow> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "update workbench_jobs set status = $2, effort = $3, plan = $4, \
+                queued_at = case when $2 = 'queued' then now() end, \
+                queued_reason = $5, workspace_cleared_at = null, \
+                pr_url = $6, pr_number = $7, updated_at = now() \
+         where id = $1::uuid and status = 'pr_open' \
+         returning {JOB_COLS}"
+    )))
+    .bind(job_id)
+    .bind(round.status)
+    .bind(round.effort)
+    .bind(round.plan)
+    .bind(round.queue_reason)
+    .bind(&pr.url)
+    .bind(pr.number)
+    .fetch_optional(pg)
+    .await
+    .ok()
+    .flatten()
+}
+
+/// The job a revise round resumes: this agent's newest `pr_open` job on the
+/// ticket and repo, while its branch still obeys the grant's branch law and
+/// its PR is still open on GitHub. Anything else — no such job, a branch
+/// the law now refuses, a PR merged or closed, GitHub not answering — is an
+/// ordinary new job, which is what start_job did before resuming existed.
+async fn resumable_job(
+    deps: &WorkbenchDeps,
+    agent_id: &str,
+    task_id: &str,
+    repo: &str,
+) -> Option<(WorkbenchJob, gh::PullRequestRef)> {
+    let pg = &deps.pg;
+    let row: Option<JobRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select {JOB_COLS} from workbench_jobs \
+         where agent_id = $1::uuid and task_id = $2::uuid and repo = $3 and status = 'pr_open' \
+         order by updated_at desc limit 1"
+    )))
+    .bind(agent_id)
+    .bind(task_id)
+    .bind(repo)
+    .fetch_optional(pg)
+    .await
+    .ok()
+    .flatten();
+    let job = WorkbenchJob::of(row?);
+    if let Some(rule) = gh::repo_rule(pg, agent_id, repo).await
+        && gh::push_allowed(&rule, "", &job.branch).is_err()
+    {
+        return None;
+    }
+    let pr = gh::find_open_pull_request(pg, &deps.sb, repo, &job.branch)
+        .await
+        .ok()
+        .flatten()?;
+    Some((job, pr))
+}
+
 fn sanitize_repo_name(v: &str) -> String {
     let lower = v.trim().to_lowercase();
     let collapsed = regex::Regex::new("[^a-z0-9._-]+")
@@ -2320,7 +2782,8 @@ mod tests {
                 "job_status",
                 "request_repo",
                 "finish_job",
-                "prepare_env"
+                "prepare_env",
+                "pr_status"
             ]
         );
         // The per-tool schema assertions below look their tool up BY NAME. The
@@ -2346,11 +2809,24 @@ mod tests {
             tool("start_job")["inputSchema"]["required"],
             json!(["repo"])
         );
-        // request_repo's required set, in declaration order.
+        // request_repo's required set, in declaration order — visibility and
+        // appSlug are optional, private and absent by default.
         assert_eq!(
             tool("request_repo")["inputSchema"]["required"],
             json!(["org", "name", "why"])
         );
+        assert_eq!(
+            tool("request_repo")["inputSchema"]["properties"]["visibility"]["enum"],
+            json!(["private", "public"])
+        );
+        assert_eq!(
+            tool("pr_status")["inputSchema"]["required"],
+            json!(["jobId"])
+        );
+        // The read-only promise is in the tool's own words, where the model
+        // reads it.
+        let pr_status = tool("pr_status")["description"].as_str().unwrap();
+        assert!(pr_status.contains("Read-only") && pr_status.contains("never merges"));
     }
 
     #[test]
@@ -2366,6 +2842,7 @@ mod tests {
             plan: "p".into(),
             status: "started".into(),
             pr_url: None,
+            pr_number: None,
             summary: String::new(),
             queued_at_ms: Some(1_700_000_000_000),
             queued_reason: None,
@@ -2395,13 +2872,624 @@ mod tests {
                 "effort",
                 "status",
                 "prUrl",
+                "prNumber",
                 "summary",
                 "createdAt",
                 "updatedAt"
             ]
         );
         assert_eq!(wire["taskId"], Value::Null);
+        assert_eq!(wire["prNumber"], Value::Null);
         assert!(wire.as_object().unwrap().get("plan").is_none());
+    }
+
+    #[test]
+    fn a_job_names_its_pr_by_number_even_from_before_the_column() {
+        let mut job = WorkbenchJob {
+            id: "j".into(),
+            agent_id: "a".into(),
+            agent_model: "m".into(),
+            task_id: None,
+            repo: "o/r".into(),
+            branch: "b".into(),
+            effort: "standard".into(),
+            plan: String::new(),
+            status: "pr_open".into(),
+            pr_url: Some("https://github.com/o/r/pull/12".into()),
+            pr_number: None,
+            summary: String::new(),
+            queued_at_ms: None,
+            queued_reason: None,
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            updated_at: "2026-01-01T00:00:00.000Z".into(),
+        };
+        assert_eq!(job.pr_number(), Some(12), "read off the URL");
+        assert_eq!(job.wire()["prNumber"], 12);
+        job.pr_number = Some(13);
+        assert_eq!(job.pr_number(), Some(13), "the column wins");
+    }
+
+    fn cfg(mode: Option<&str>, orgs: &[&str]) -> gh::GithubConfig {
+        gh::GithubConfig {
+            mode: mode.map(String::from),
+            pat_token_enc: None,
+            app_id: "1".into(),
+            installation_ids: vec!["2".into()],
+            private_key_enc: Some("sealed".into()),
+            repo_creation_orgs: orgs.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn doctor_says_where_repos_may_be_created_and_whether_they_can_be() {
+        let (wire, line) = repo_creation_answer(&cfg(Some("app"), &["acme", "acme-plugins"]));
+        assert_eq!(wire["possible"], true);
+        assert_eq!(wire["orgs"], json!(["acme", "acme-plugins"]));
+        assert_eq!(wire["reason"], Value::Null);
+        assert!(line.contains("acme, acme-plugins"), "{line}");
+
+        // PAT mode lists the orgs and says they cannot be used — the request
+        // that would have been accepted and then failed at approval.
+        let (wire, line) = repo_creation_answer(&cfg(Some("pat"), &["acme"]));
+        assert_eq!(wire["possible"], false);
+        assert_eq!(wire["mode"], "pat");
+        assert_eq!(wire["orgs"], json!(["acme"]));
+        assert!(wire["reason"].as_str().unwrap().contains("GitHub App"));
+        assert!(line.starts_with("repo creation: unavailable"), "{line}");
+
+        let (wire, _) = repo_creation_answer(&cfg(Some("app"), &[]));
+        assert_eq!(wire["possible"], false);
+        assert!(wire["reason"].as_str().unwrap().contains("off"));
+    }
+
+    #[test]
+    fn an_app_slug_is_the_builders_slug() {
+        for ok in ["notes", "a", "crm-2", "9lives"] {
+            assert!(app_slug_ok(ok), "{ok}");
+        }
+        for bad in ["", "-x", "Notes", "a_b", "a/b", &"x".repeat(65)] {
+            assert!(!app_slug_ok(bad), "{bad}");
+        }
+        assert!(app_slug_ok(&"x".repeat(64)));
+    }
+
+    #[test]
+    fn a_decided_request_carries_its_note_and_a_pending_one_does_not() {
+        let rejected: RepoRequestRow = (
+            "acme".into(),
+            "talaria-app-notes".into(),
+            "rejected".into(),
+            Some("use the existing notes repo".into()),
+            "private".into(),
+            Some("notes".into()),
+            1_700_000_000_000,
+            1_700_000_360_000,
+        );
+        let wire = repo_request_wire(&rejected);
+        assert_eq!(wire["repo"], "acme/talaria-app-notes");
+        assert_eq!(wire["status"], "rejected");
+        assert_eq!(wire["note"], "use the existing notes repo");
+        assert_eq!(wire["appSlug"], "notes");
+        assert_eq!(wire["decidedAt"], "2023-11-14T22:19:20.000Z");
+        let mut pending = rejected.clone();
+        pending.2 = "pending".into();
+        pending.3 = None;
+        let wire = repo_request_wire(&pending);
+        assert!(wire.get("note").is_none() && wire.get("decidedAt").is_none());
+    }
+
+    #[test]
+    fn finish_says_whether_the_pr_was_opened_or_kept() {
+        let pr = |reused, commented| gh::OpenedPullRequest {
+            url: "u".into(),
+            number: 1,
+            reused,
+            commented,
+        };
+        assert_eq!(
+            finish_note(&pr(false, false)),
+            "Include this PR link in your outcome report."
+        );
+        assert!(finish_note(&pr(true, true)).contains("posted on it as a comment"));
+        assert!(finish_note(&pr(true, false)).contains("could not be posted"));
+    }
+
+    // ── Live-DB: a revise round, end to end against a loopback GitHub ───────
+    //
+    // #[ignore]d (house rule: no service-dependent tests in the default run;
+    // api-integration.yml sweeps ignored lib tests against its scratch
+    // database). The verbs run exactly as the gateway calls them — call_tool
+    // with the agent's subject — and every GitHub call goes to a stub this
+    // test binds, via talaria_github::with_api_base.
+    //
+    //   DATABASE_URL=postgres://… cargo test -p talaria-workbench-mcp -- --ignored revise
+
+    mod live {
+        use super::*;
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        const DEPT: &str = "wb-revise-test";
+        const MODEL: &str = "wbrevise-test";
+        const REPO: &str = "acme/widgets";
+        const BRANCH: &str = "talaria/wbr-1-fix-login";
+        const LOOKUP: &str =
+            "/repos/acme/widgets/pulls?state=open&per_page=1&head=acme%3Atalaria%2Fwbr-1-fix-login";
+
+        #[derive(Debug, Clone)]
+        struct Seen {
+            method: String,
+            path: String,
+            body: String,
+        }
+
+        type Route = dyn Fn(&Seen) -> (u16, String) + Send + Sync;
+
+        /// The workspace's loopback-listener stub (see talaria-github's
+        /// tests): one listener per test, answers by method and path.
+        async fn stub(
+            route: impl Fn(&Seen) -> (u16, String) + Send + Sync + 'static,
+        ) -> (String, Arc<Mutex<Vec<Seen>>>) {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+            let seen = Arc::new(Mutex::new(Vec::<Seen>::new()));
+            let log = seen.clone();
+            let route: Arc<Route> = Arc::new(route);
+            tokio::spawn(async move {
+                while let Ok((mut sock, _)) = listener.accept().await {
+                    let (log, route) = (log.clone(), route.clone());
+                    tokio::spawn(async move {
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        let (head, body) = loop {
+                            let n = sock.read(&mut chunk).await.unwrap_or(0);
+                            if n == 0 {
+                                return;
+                            }
+                            buf.extend_from_slice(&chunk[..n]);
+                            let text = String::from_utf8_lossy(&buf).to_string();
+                            if let Some(end) = text.find("\r\n\r\n") {
+                                let len = text[..end]
+                                    .lines()
+                                    .find_map(|l| {
+                                        let (k, v) = l.split_once(':')?;
+                                        k.eq_ignore_ascii_case("content-length")
+                                            .then(|| v.trim().parse::<usize>().ok())?
+                                    })
+                                    .unwrap_or(0);
+                                if buf.len() >= end + 4 + len {
+                                    break (
+                                        text[..end].to_string(),
+                                        text[end + 4..end + 4 + len].to_string(),
+                                    );
+                                }
+                            }
+                        };
+                        let mut words = head.lines().next().unwrap_or_default().split(' ');
+                        let req = Seen {
+                            method: words.next().unwrap_or_default().to_string(),
+                            path: words.next().unwrap_or_default().to_string(),
+                            body,
+                        };
+                        log.lock().unwrap().push(req.clone());
+                        let (status, answer) = route(&req);
+                        let reply = format!(
+                            "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{answer}",
+                            answer.len()
+                        );
+                        let _ = sock.write_all(reply.as_bytes()).await;
+                        let _ = sock.shutdown().await;
+                    });
+                }
+            });
+            (base, seen)
+        }
+
+        /// GitHub as a revise round meets it: the branch is ahead of main
+        /// and already has PR #41 open. Opening a PR is refused the way
+        /// GitHub refuses a second one, so a test that reached it fails.
+        fn github(req: &Seen) -> (u16, String) {
+            match (req.method.as_str(), req.path.as_str()) {
+                ("GET", "/repos/acme/widgets") => (200, r#"{"default_branch":"main"}"#.into()),
+                ("GET", p) if p.starts_with("/repos/acme/widgets/compare/") => {
+                    (200, r#"{"ahead_by":2}"#.into())
+                }
+                ("GET", LOOKUP) => (
+                    200,
+                    r#"[{"number":41,"html_url":"https://github.com/acme/widgets/pull/41"}]"#.into(),
+                ),
+                ("POST", "/repos/acme/widgets/issues/41/comments") => (201, "{}".into()),
+                ("POST", "/repos/acme/widgets/pulls") => (
+                    422,
+                    r#"{"message":"Validation Failed","errors":[{"message":"A pull request already exists"}]}"#.into(),
+                ),
+                ("GET", "/repos/acme/widgets/pulls/41") => (
+                    200,
+                    r#"{"number":41,"html_url":"https://github.com/acme/widgets/pull/41","state":"open","merged":false,"head":{"ref":"talaria/wbr-1-fix-login","sha":"cafe"},"base":{"ref":"main"}}"#.into(),
+                ),
+                ("GET", "/repos/acme/widgets/commits/cafe/check-runs?per_page=100") => (
+                    200,
+                    r#"{"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}"#.into(),
+                ),
+                ("GET", "/repos/acme/widgets/commits/cafe/status") => {
+                    (200, r#"{"state":"success","statuses":[]}"#.into())
+                }
+                ("GET", "/repos/acme/widgets/pulls/41/reviews?per_page=100") => (
+                    200,
+                    r#"[{"user":{"login":"ann"},"state":"CHANGES_REQUESTED"}]"#.into(),
+                ),
+                // request_repo asks GitHub which installation owns the org.
+                ("GET", "/orgs/acme/installation") => (200, r#"{"id":70001}"#.into()),
+                ("GET", "/orgs/ghost/installation") => (404, r#"{"message":"Not Found"}"#.into()),
+                _ => (500, r#"{"message":"unexpected in this test"}"#.into()),
+            }
+        }
+
+        async fn reset(pg: &PgPool) {
+            sqlx::query("delete from agent_defs where department = $1")
+                .bind(DEPT)
+                .execute(pg)
+                .await
+                .unwrap();
+            sqlx::query("delete from users where sub = $1")
+                .bind(DEPT)
+                .execute(pg)
+                .await
+                .unwrap();
+        }
+
+        async fn job(pg: &PgPool, agent_id: &str, task_id: &str, status: &str) -> String {
+            sqlx::query_scalar(
+                "insert into workbench_jobs (agent_id, agent_model, task_id, repo, branch, effort, plan, status) \
+                 values ($1::uuid, $2, $3::uuid, $4, $5, 'light', '', $6) returning id::text",
+            )
+            .bind(agent_id)
+            .bind(MODEL)
+            .bind(task_id)
+            .bind(REPO)
+            .bind(BRANCH)
+            .bind(status)
+            .fetch_one(pg)
+            .await
+            .unwrap()
+        }
+
+        async fn row(pg: &PgPool, id: &str) -> (String, Option<String>, Option<i64>) {
+            sqlx::query_as(
+                "select status, pr_url, pr_number from workbench_jobs where id = $1::uuid",
+            )
+            .bind(id)
+            .fetch_one(pg)
+            .await
+            .unwrap()
+        }
+
+        fn ok(outcome: CallOutcome) -> Value {
+            match outcome {
+                CallOutcome::Ok(v) => v,
+                CallOutcome::Fail(e) => panic!("refused: {e}"),
+                CallOutcome::Throw(e) => panic!("threw: {e}"),
+            }
+        }
+
+        fn args(v: Value) -> Map<String, Value> {
+            v.as_object().cloned().unwrap()
+        }
+
+        #[tokio::test]
+        #[ignore = "needs a live database (DATABASE_URL)"]
+        async fn a_revise_round_keeps_its_pr_and_its_job() {
+            let url = std::env::var("DATABASE_URL")
+                .unwrap_or_else(|_| "postgres://talaria:talaria@127.0.0.1:5432/talaria".into());
+            let pg = PgPool::connect(&url).await.expect("DATABASE_URL reachable");
+            reset(&pg).await;
+            let sb = SecretBox::from_parts(
+                [9u8; 32],
+                HashMap::from([(1u32, talaria_secretbox::new_dek().unwrap())]),
+                Some(1),
+            );
+            // A PAT connection the test's own box sealed, restored after.
+            let prior: Option<Value> =
+                sqlx::query_scalar("select value from app_settings where key = 'github_config'")
+                    .fetch_optional(&pg)
+                    .await
+                    .unwrap();
+            let config =
+                json!({ "mode": "pat", "pat": { "tokenEnc": sb.seal("pat-test").unwrap() } });
+            sqlx::query(
+                "insert into app_settings (key, value) values ('github_config', $1) \
+                 on conflict (key) do update set value = excluded.value",
+            )
+            .bind(&config)
+            .execute(&pg)
+            .await
+            .unwrap();
+
+            let agent_id: String = sqlx::query_scalar(
+                "insert into agent_defs (slug, department, model, display_name, developer) \
+                 values ('wbrevise', $1, $2, 'WB Revise', true) returning id::text",
+            )
+            .bind(DEPT)
+            .bind(MODEL)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+            sqlx::query("insert into workbench_repos (agent_id, repo) values ($1::uuid, $2)")
+                .bind(&agent_id)
+                .bind(REPO)
+                .execute(&pg)
+                .await
+                .unwrap();
+            let user_id: String =
+                sqlx::query_scalar("insert into users (sub) values ($1) returning id::text")
+                    .bind(DEPT)
+                    .fetch_one(&pg)
+                    .await
+                    .unwrap();
+            let board_id: String = sqlx::query_scalar(
+                "insert into boards (name, owner_id) values ('WB Revise', $1::uuid) returning id::text",
+            )
+            .bind(&user_id)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+            let task_id: String = sqlx::query_scalar(
+                "insert into tasks (board_id, title) values ($1::uuid, 'Fix login') returning id::text",
+            )
+            .bind(&board_id)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+
+            let deps = WorkbenchDeps {
+                pg: pg.clone(),
+                sb,
+                redis: None,
+            };
+            let me = AgentSubject::Model(MODEL.into());
+            let (base, seen) = stub(github).await;
+
+            gh::with_api_base(base, async {
+                // 1. A started job whose branch already has PR #41 open:
+                //    finish_job keeps #41, records its number, comments the
+                //    summary, and never asks GitHub for a second PR.
+                let first = job(&pg, &agent_id, &task_id, "started").await;
+                let done = ok(call_tool(
+                    &deps,
+                    &me,
+                    "finish_job",
+                    &args(json!({ "jobId": first, "summary": "fixed the review" })),
+                )
+                .await);
+                assert_eq!(done["prNumber"], 41);
+                assert_eq!(done["reused"], true);
+                assert_eq!(
+                    row(&pg, &first).await,
+                    (
+                        "pr_open".into(),
+                        Some("https://github.com/acme/widgets/pull/41".into()),
+                        Some(41)
+                    )
+                );
+                {
+                    let seen = seen.lock().unwrap();
+                    assert!(
+                        !seen
+                            .iter()
+                            .any(|r| r.method == "POST" && r.path.ends_with("/pulls")),
+                        "a second PR was asked for: {seen:?}"
+                    );
+                    let comment = seen
+                        .iter()
+                        .find(|r| r.path.ends_with("/issues/41/comments"))
+                        .expect("the summary is on the PR");
+                    assert!(
+                        comment.body.contains("fixed the review"),
+                        "{}",
+                        comment.body
+                    );
+                }
+
+                // 2. The next round on that ticket resumes THAT job: it is the
+                //    newest pr_open job, its PR is open, its branch is lawful.
+                let (resumed, pr) = resumable_job(&deps, &agent_id, &task_id, REPO)
+                    .await
+                    .expect("the pr_open job is resumable");
+                assert_eq!((resumed.id.as_str(), pr.number), (first.as_str(), 41));
+                let back = resume_job_row(
+                    &pg,
+                    &first,
+                    &JobResume {
+                        status: "started",
+                        effort: "light",
+                        plan: "",
+                        queue_reason: None,
+                    },
+                    &pr,
+                )
+                .await
+                .map(WorkbenchJob::of)
+                .expect("the row goes back to work");
+                assert_eq!(
+                    (back.status.as_str(), back.pr_number),
+                    ("started", Some(41))
+                );
+                assert!(
+                    resume_job_row(
+                        &pg,
+                        &first,
+                        &JobResume {
+                            status: "started",
+                            effort: "light",
+                            plan: "",
+                            queue_reason: None
+                        },
+                        &pr,
+                    )
+                    .await
+                    .is_none(),
+                    "a live row is never resumed twice"
+                );
+
+                // 3. pr_status reads the PR, its checks and its reviews.
+                let status =
+                    ok(call_tool(&deps, &me, "pr_status", &args(json!({ "jobId": first }))).await);
+                assert_eq!(status["state"], "open");
+                assert_eq!(status["checks"]["verdict"], "passing");
+                assert_eq!(status["reviewDecision"], "changes_requested");
+                assert_eq!(status["jobStatus"], "started");
+                assert!(status["next"].as_str().unwrap().contains("start_job"));
+
+                // 4. Abandoning the resumed round returns the job to its PR
+                //    instead of forgetting it.
+                let abandoned = ok(call_tool(
+                    &deps,
+                    &me,
+                    "finish_job",
+                    &args(json!({ "jobId": first, "abandon": true })),
+                )
+                .await);
+                assert_eq!(abandoned["status"], "pr_open");
+                assert_eq!(row(&pg, &first).await.0, "pr_open");
+
+                // 5. A job with no PR has nothing for pr_status to read.
+                let fresh = job(&pg, &agent_id, &task_id, "started").await;
+                match call_tool(&deps, &me, "pr_status", &args(json!({ "jobId": fresh }))).await {
+                    CallOutcome::Fail(why) => assert!(why.contains("no pull request yet"), "{why}"),
+                    _ => panic!("a job without a PR has no status"),
+                }
+
+                // Every pr_status call underneath was a read.
+                {
+                    let seen = seen.lock().unwrap();
+                    assert!(
+                        seen.iter()
+                            .filter(|r| r.path.contains("/pulls/41") || r.path.contains("/commits/"))
+                            .all(|r| r.method == "GET"),
+                        "{seen:?}"
+                    );
+                }
+
+                // 6. request_repo. In PAT mode it is refused up front: the
+                //    approval could never create the repo.
+                sqlx::query(
+                    "update app_settings set value = value || '{\"repoCreationOrgs\":[\"acme\",\"ghost\"]}'::jsonb \
+                     where key = 'github_config'",
+                )
+                .execute(&pg)
+                .await
+                .unwrap();
+                let ask = |org: &str, extra: Value| {
+                    let mut a = json!({ "org": org, "name": "talaria-app-notes", "why": "a home for the notes app" });
+                    for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+                        a[k] = v;
+                    }
+                    args(a)
+                };
+                match call_tool(&deps, &me, "request_repo", &ask("acme", json!({}))).await {
+                    CallOutcome::Fail(why) => assert!(why.contains("GitHub App"), "{why}"),
+                    _ => panic!("PAT mode files a request that can never be approved"),
+                }
+                // App mode, the test's own sealed key and one installation.
+                let pem = include_str!("../../../tests/it/fixtures/github-jwt-traditional.pem");
+                let app = json!({
+                    "mode": "app",
+                    "app": { "appId": "4242", "installationIds": ["70001"], "privateKeyEnc": deps.sb.seal(pem).unwrap() },
+                    "repoCreationOrgs": ["acme", "ghost"],
+                });
+                sqlx::query("update app_settings set value = $1 where key = 'github_config'")
+                    .bind(&app)
+                    .execute(&pg)
+                    .await
+                    .unwrap();
+                for (org, extra, expect) in [
+                    ("other", json!({}), "not approved"),
+                    ("acme", json!({ "visibility": "internal" }), "visibility must be"),
+                    ("acme", json!({ "appSlug": "Notes App" }), "is not an app slug"),
+                    ("ghost", json!({}), "not installed on ghost"),
+                ] {
+                    match call_tool(&deps, &me, "request_repo", &ask(org, extra)).await {
+                        CallOutcome::Fail(why) => assert!(why.contains(expect), "{org}: {why}"),
+                        _ => panic!("{org}: expected a refusal containing {expect:?}"),
+                    }
+                }
+                let filed = ok(call_tool(
+                    &deps,
+                    &me,
+                    "request_repo",
+                    &ask("acme", json!({ "visibility": "public", "appSlug": "notes" })),
+                )
+                .await);
+                assert_eq!(filed["status"], "pending");
+                assert_eq!(filed["visibility"], "public");
+                let (vis, slug): (String, Option<String>) = sqlx::query_as(
+                    "select visibility, app_slug from workbench_repo_requests \
+                     where agent_id = $1::uuid and org = 'acme'",
+                )
+                .bind(&agent_id)
+                .fetch_one(&pg)
+                .await
+                .unwrap();
+                assert_eq!((vis.as_str(), slug.as_deref()), ("public", Some("notes")));
+                // A rejection's note reaches the agent through list_repos.
+                sqlx::query(
+                    "update workbench_repo_requests set status = 'rejected', \
+                     decision_note = 'use acme/wiki instead' where agent_id = $1::uuid",
+                )
+                .bind(&agent_id)
+                .execute(&pg)
+                .await
+                .unwrap();
+                let listed = ok(call_tool(&deps, &me, "list_repos", &Map::new()).await);
+                assert_eq!(listed["repos"], json!([REPO]));
+                assert_eq!(listed["repoRequests"][0]["repo"], "acme/talaria-app-notes");
+                assert_eq!(listed["repoRequests"][0]["status"], "rejected");
+                assert_eq!(listed["repoRequests"][0]["note"], "use acme/wiki instead");
+            })
+            .await;
+
+            match prior {
+                Some(v) => {
+                    sqlx::query("update app_settings set value = $1 where key = 'github_config'")
+                        .bind(v)
+                        .execute(&pg)
+                        .await
+                        .unwrap();
+                }
+                None => {
+                    sqlx::query("delete from app_settings where key = 'github_config'")
+                        .execute(&pg)
+                        .await
+                        .unwrap();
+                }
+            }
+            reset(&pg).await;
+        }
+    }
+
+    #[test]
+    fn pr_status_points_at_the_next_move_and_never_at_a_merge() {
+        let s = |state: &str, checks: &str, review: &str| json!({ "state": state, "checks": { "verdict": checks }, "reviewDecision": review });
+        assert!(
+            pr_next_step(&s("open", "failing", "none")).contains("start_job on the same ticket")
+        );
+        assert!(pr_next_step(&s("open", "passing", "changes_requested")).contains("start_job"));
+        assert!(pr_next_step(&s("open", "pending", "none")).contains("still running"));
+        assert!(pr_next_step(&s("open", "passing", "approved")).contains("a person merges"));
+        assert!(pr_next_step(&s("merged", "passing", "approved")).contains("Merged by a person"));
+        assert!(pr_next_step(&s("closed", "none", "none")).contains("Closed without merging"));
+        for state in ["open", "merged", "closed"] {
+            for checks in ["passing", "failing", "pending", "none", "unknown"] {
+                for review in ["approved", "changes_requested", "commented", "none"] {
+                    let next = pr_next_step(&s(state, checks, review));
+                    assert!(
+                        !next.to_lowercase().contains("merge it") && !next.contains("you merge"),
+                        "{next}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -2417,6 +3505,7 @@ mod tests {
             plan: "p".into(),
             status: "queued".into(),
             pr_url: None,
+            pr_number: None,
             summary: String::new(),
             queued_at_ms: Some(1_700_000_000_000),
             queued_reason: Some("host has 1.0 GiB RAM free".into()),
