@@ -1,5 +1,5 @@
-// Hermes' approval requests on the turns Talaria drives, answered by the
-// agent's own policy.
+// Hermes' approval requests on the turns Talaria drives, refused at the
+// door and recorded.
 //
 // WHY THIS EXISTS. A STREAMED turn (POST /api/sessions/{id}/chat/stream, or
 // /v1/chat/completions with `stream: true`, which between them carry every
@@ -19,10 +19,25 @@
 // (talaria-fleet-render's `fleet_approvals`: `manual` with deny, or `off`
 // for a Developer Agent), so no model approves anything. This module is the
 // other half. The door taps each stream as its bytes go past and answers
-// each request for the agent's own policy: `once` for a Developer Agent,
-// `deny` for every other agent and for one whose policy cannot be read. Each
-// decision lands in the audit log. The bytes pass through untouched, so every
-// consumer downstream still sees the frame and ignores it as it always did.
+// every request `deny`, then records it in the audit log. The bytes pass
+// through untouched, so every consumer downstream still sees the frame and
+// ignores it as it always did.
+//
+// WHY THE DOOR NEVER CONSENTS, NOT EVEN FOR A DEVELOPER AGENT. A Developer
+// Agent's policy is that flagged commands run, and `mode: off` already says
+// so inside the container: Hermes skips every gate that policy covers (the
+// dangerous-command and execute_code guards, plugin rules, ssh config and
+// computer-use writes) without asking. What a Developer Agent still asks is
+// a gate Hermes built never to be auto-approved: a write to a project's
+// AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / `.hermes/` (the
+// prompt-injection persistence vector), an untrusted MCP server's write tool
+// or spend limit, a saved payment card fill. Each ignores yolo and
+// `mode: off`, and each wants a person. This door is not one. Nor can it
+// tell those apart from a command: v0.22's session authority projects a
+// request down to its command, description, choices and generation, and
+// drops Hermes' `pattern_key`, so a card fill reads exactly like `rm -rf`.
+// A door that answered `once` would be consenting, blind, to whichever one
+// it got. The only answer it can give for every request is `deny`.
 //
 // The answer goes through the agent's own door with its own bearer, the same
 // as a steer or a stop, inside the same control window. If the answer cannot
@@ -61,37 +76,16 @@ pub struct ApprovalAsked {
     pub description: String,
 }
 
-/// The answer this door gives. `session` and `always` are never sent:
-/// `always` would write into a config.yaml the render owns, and a policy
-/// answer is per call, so nothing is remembered past the call it answers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Choice {
-    Once,
-    Deny,
-}
+/// The one answer this door gives (see the header for why it is never
+/// `once`). `session` and `always` would also write into a config.yaml the
+/// render owns.
+pub const ANSWER: &str = "deny";
 
-impl Choice {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Choice::Once => "once",
-            Choice::Deny => "deny",
-        }
-    }
-}
-
-/// What the agent's def says, for the answer and for the record.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentApprovalPolicy {
-    pub agent_id: String,
-    pub developer: bool,
-}
-
-/// One decision, for the audit log.
+/// One answered request, for the audit log.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalRecord {
+    /// The agent the turn belongs to, the name its def is found under.
     pub agent_model: String,
-    pub agent_id: Option<String>,
-    pub choice: Choice,
     pub run_id: String,
     /// Redacted again with Talaria's own credential patterns, and clamped.
     pub command: String,
@@ -100,33 +94,18 @@ pub struct ApprovalRecord {
     pub failure: Option<String>,
 }
 
-pub type PolicyFn =
-    Arc<dyn Fn(String) -> BoxFuture<'static, Option<AgentApprovalPolicy>> + Send + Sync>;
 pub type RecordFn = Arc<dyn Fn(ApprovalRecord) -> BoxFuture<'static, ()> + Send + Sync>;
 
-/// The agent's policy, read by its model. Wired from the boot assembly
-/// (talaria-jobs) because this crate holds no pool. Unset, or an agent it
-/// cannot find, reads as "no policy", which is answered `deny`.
-pub static APPROVAL_POLICY: OnceLock<PolicyFn> = OnceLock::new();
-/// Where a decision is recorded, wired the same way. Unset records nothing,
+/// Where an answered request is recorded. Wired from the boot assembly
+/// (talaria-jobs), because this crate holds no pool. Unset records nothing,
 /// and the answer still goes out.
 pub static RECORD_APPROVAL: OnceLock<RecordFn> = OnceLock::new();
-
-/// A Developer Agent's request is answered `once`; anything else is `deny`.
-/// That includes an agent whose policy could not be read: a request nobody
-/// can vouch for is refused.
-pub fn choice_for(policy: Option<&AgentApprovalPolicy>) -> Choice {
-    match policy {
-        Some(p) if p.developer => Choice::Once,
-        _ => Choice::Deny,
-    }
-}
 
 /// The body `POST /v1/runs/{run_id}/approval` takes: exactly
 /// `{request_id, execution_generation, choice}` when the request carried a
 /// generation, and `{request_id, choice}` when it did not.
-pub fn answer_body(asked: &ApprovalAsked, choice: Choice) -> Value {
-    let mut body = json!({ "request_id": asked.request_id, "choice": choice.as_str() });
+pub fn answer_body(asked: &ApprovalAsked) -> Value {
+    let mut body = json!({ "request_id": asked.request_id, "choice": ANSWER });
     if let Some(generation) = asked.execution_generation {
         body["execution_generation"] = json!(generation);
     }
@@ -222,7 +201,7 @@ impl ApprovalFrames {
 }
 
 /// The stream with the tap on it: every chunk passes through unchanged, and
-/// each approval request it completes is answered off to the side.
+/// each approval request it completes is refused off to the side.
 struct ApprovalTap {
     inner: ByteStream,
     frames: ApprovalFrames,
@@ -247,9 +226,9 @@ impl Stream for ApprovalTap {
 
 /// Put the tap on a turn's stream. `agent_model` is the agent the turn
 /// belongs to (a tier row dials the same container under a longer name), the
-/// name its policy is read under. A stream that is not a 2xx carries no
+/// name the audit row is filed under. A stream that is not a 2xx carries no
 /// frames to answer and is returned as it came.
-pub fn answer_by_policy(
+pub fn refuse_approvals(
     mut stream: ChatStream,
     entry: &ManifestEntry,
     agent_model: &str,
@@ -280,17 +259,12 @@ fn owned(entry: &ManifestEntry) -> ManifestEntry {
 /// How much of a flagged command the audit row keeps.
 const RECORDED_COMMAND_CHARS: usize = 500;
 
-/// Answer one request for the agent's policy, then record what happened.
+/// Refuse one request, then record what happened.
 async fn answer(entry: ManifestEntry, agent_model: String, asked: ApprovalAsked) {
-    let policy = match APPROVAL_POLICY.get() {
-        Some(lookup) => lookup(agent_model.clone()).await,
-        None => None,
-    };
-    let choice = choice_for(policy.as_ref());
     let sent = tokio::time::timeout(
         CONTROL_WINDOW,
         agent_post(&entry, &format!("/v1/runs/{}/approval", asked.run_id))
-            .json(&answer_body(&asked, choice))
+            .json(&answer_body(&asked))
             .send(),
     )
     .await;
@@ -304,14 +278,12 @@ async fn answer(entry: ManifestEntry, agent_model: String, asked: ApprovalAsked)
     // flag, and the audit row carries the (redacted) command.
     match &failure {
         None => tracing::info!(
-            "[approvals] {agent_model}: answered {} to a flagged call ({})",
-            choice.as_str(),
+            "[approvals] {agent_model}: answered {ANSWER} to a flagged call ({})",
             asked.description
         ),
         Some(why) => tracing::warn!(
-            "[approvals] {agent_model}: could not answer {} to a flagged call ({}): {why}; \
+            "[approvals] {agent_model}: could not answer {ANSWER} to a flagged call ({}): {why}; \
              Hermes refuses it when approvals.timeout runs out",
-            choice.as_str(),
             asked.description
         ),
     }
@@ -319,8 +291,6 @@ async fn answer(entry: ManifestEntry, agent_model: String, asked: ApprovalAsked)
         let (command, _) = crate::guard::redact_secrets(&asked.command, None);
         record(ApprovalRecord {
             agent_model,
-            agent_id: policy.map(|p| p.agent_id),
-            choice,
             run_id: asked.run_id,
             command: command.chars().take(RECORDED_COMMAND_CHARS).collect(),
             description: asked.description,
@@ -339,6 +309,11 @@ mod tests {
     // (2026-10-22): the session stream's, then the completions stream's.
     const SESSION_FRAME: &str = "event: approval.request\ndata: {\"execution_generation\": 1, \"command\": \"rm -rf /tmp/hx-canary\", \"description\": \"delete in root path\", \"request_id\": \"f27f3b67938548a1af19d5c2d9707b64\", \"allow_session\": true, \"allow_permanent\": true, \"event\": \"approval.request\", \"run_id\": \"run_ea8f1e18253c456db8faeb3133d2c661\", \"timestamp\": 1792694320.0035346, \"message_id\": \"msg_7a2d9fce5f5d40d1804c6b0420f93ea0\", \"choices\": [\"once\", \"session\", \"always\", \"deny\"], \"session_id\": \"probe-s1\", \"seq\": 4, \"ts\": 1792694320.0035727}";
     const COMPLETIONS_FRAME: &str = "event: approval.request\ndata: {\"execution_generation\": 1, \"command\": \"rm -rf /tmp/hx-canary\", \"description\": \"delete in root path\", \"request_id\": \"2eb28921d87d45a9b965df26e0770a11\", \"allow_session\": true, \"allow_permanent\": true, \"event\": \"approval.request\", \"run_id\": \"chatcmpl-d484a8983c0e44eebebe78e2bcd02\", \"timestamp\": 1792694477.077072, \"session_id\": \"api-a38460a763e01fd5\", \"choices\": [\"once\", \"session\", \"always\", \"deny\"]}";
+    // A Developer Agent (`approvals.mode: off`) asking to write a project's
+    // AGENTS.md, verbatim off a /api/chat turn through this door, same image
+    // (2026-10-22). Hermes' protected-instruction gate ignores `mode: off`,
+    // and the frame carries no `pattern_key` to say so.
+    const PROTECTED_WRITE_FRAME: &str = "event: approval.request\ndata: {\"execution_generation\": 1, \"command\": \"<write to AGENTS.md>\", \"description\": \"Write to protected agent-instruction file(s): AGENTS.md. These files steer future agent behavior; approval is always required (not bypassed by auto-approve).\", \"request_id\": \"44e98bc6bc544867860b37c800ac72cc\", \"allow_session\": false, \"allow_permanent\": false, \"event\": \"approval.request\", \"run_id\": \"run_d87c07107c4244a89973e5bd2618264b\", \"timestamp\": 1792698967.578477, \"message_id\": \"msg_e9afc6df39084ea694dde46b25b83d00\", \"choices\": [\"once\", \"deny\"], \"session_id\": \"6113b5bc-6935-46e1-a67c-60bd58daf4f0\", \"seq\": 4, \"ts\": 1792698967.5785139}";
 
     #[test]
     fn both_streams_frames_read_as_the_request_they_are() {
@@ -383,35 +358,48 @@ mod tests {
     }
 
     #[test]
-    fn the_answer_follows_the_developer_switch_and_refuses_the_unknown() {
-        let dev = AgentApprovalPolicy {
-            agent_id: "a".into(),
-            developer: true,
-        };
-        let plain = AgentApprovalPolicy {
-            agent_id: "b".into(),
-            developer: false,
-        };
-        assert_eq!(choice_for(Some(&dev)), Choice::Once);
-        assert_eq!(choice_for(Some(&plain)), Choice::Deny);
-        assert_eq!(choice_for(None), Choice::Deny);
+    fn every_request_is_refused_whatever_gate_raised_it() {
+        // A dangerous command on either stream and a Developer Agent's write
+        // to a protected instruction file all get the same body: the door
+        // cannot tell them apart, and must not consent to the second.
+        for (frame, request_id, run_id) in [
+            (
+                SESSION_FRAME,
+                "f27f3b67938548a1af19d5c2d9707b64",
+                "run_ea8f1e18253c456db8faeb3133d2c661",
+            ),
+            (
+                COMPLETIONS_FRAME,
+                "2eb28921d87d45a9b965df26e0770a11",
+                "chatcmpl-d484a8983c0e44eebebe78e2bcd02",
+            ),
+            (
+                PROTECTED_WRITE_FRAME,
+                "44e98bc6bc544867860b37c800ac72cc",
+                "run_d87c07107c4244a89973e5bd2618264b",
+            ),
+        ] {
+            let asked = approval_asked(frame).expect(request_id);
+            assert_eq!(asked.run_id, run_id);
+            assert_eq!(
+                answer_body(&asked),
+                json!({ "request_id": request_id, "execution_generation": 1, "choice": "deny" })
+            );
+        }
+        let protected = approval_asked(PROTECTED_WRITE_FRAME).unwrap();
+        assert_eq!(protected.command, "<write to AGENTS.md>");
     }
 
     #[test]
     fn the_body_carries_the_generation_back_and_nothing_else() {
-        let asked = approval_asked(SESSION_FRAME).unwrap();
-        assert_eq!(
-            answer_body(&asked, Choice::Deny),
-            json!({ "request_id": "f27f3b67938548a1af19d5c2d9707b64", "execution_generation": 1, "choice": "deny" })
-        );
         // The older bridge's request has no generation; its body has none.
         let older = ApprovalAsked {
             execution_generation: None,
-            ..asked
+            ..approval_asked(SESSION_FRAME).unwrap()
         };
         assert_eq!(
-            answer_body(&older, Choice::Once),
-            json!({ "request_id": "f27f3b67938548a1af19d5c2d9707b64", "choice": "once" })
+            answer_body(&older),
+            json!({ "request_id": "f27f3b67938548a1af19d5c2d9707b64", "choice": "deny" })
         );
     }
 
@@ -461,7 +449,7 @@ mod tests {
             url: "http://127.0.0.1:9".into(),
             key: None,
         };
-        let tapped = answer_by_policy(stream, &entry, "nobody");
+        let tapped = refuse_approvals(stream, &entry, "nobody");
         let read: Vec<Bytes> = tapped.body.map(|c| c.unwrap()).collect().await;
         assert_eq!(read.concat(), chunks.concat().as_bytes());
     }

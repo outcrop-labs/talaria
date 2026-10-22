@@ -219,13 +219,15 @@ still in force. **Every other agent** gets `mode: manual` and `deny`: no LLM gua
 and a flagged call is refused. Crons and unattended turns resolve that on the spot. A
 *streamed* turn (chat, channel reply, work session) is treated by Hermes as attended, so it
 emits an `approval.request` frame and blocks. The fleet chat door taps every turn's stream and
-answers each request through the agent's own `POST /v1/runs/{id}/approval`: `deny`, or `once`
-for a Developer Agent, or `deny` when the policy cannot be read
-(`talaria-gateway/src/fleet_approvals.rs`). Each decision is written to the audit log as
-`agent.approval_denied` / `agent.approval_allowed`. A request nobody answers is refused by
-Hermes after `approvals.timeout` (60 s). The same render pins Nous-hosted connectors
-(`tools.connectors.enabled`) and the Nous guest identity (`nous.guest`) off: SaaS goes through
-the MCP gateway, and models through the LLM gateway.
+answers each request `deny` through the agent's own `POST /v1/runs/{id}/approval`
+(`talaria-gateway/src/fleet_approvals.rs`), and writes an `agent.approval_denied` row to the
+audit log. It never answers `once`, not even for a Developer Agent. What a Developer Agent still
+asks under `mode: off` comes from the gates Hermes never lets anything auto-approve: a write to a
+project's AGENTS.md / CLAUDE.md / SOUL.md, an untrusted MCP server's write tool, a saved card
+fill. Those want a person, and v0.22 strips the `pattern_key` that would tell them apart from a
+command. A request nobody answers is refused by Hermes after `approvals.timeout` (60 s). The
+same render pins Nous-hosted connectors (`tools.connectors.enabled`) and the Nous guest identity
+(`nous.guest`) off: SaaS goes through the MCP gateway, and models through the LLM gateway.
 
 Work delivery is **push-side**: the app dispatches durable work sessions to agents
 (`work-dispatch.ts`). The Python plugin in `plugin/talaria/` is vestigial — nothing mounts

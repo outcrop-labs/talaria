@@ -1895,8 +1895,8 @@ fn def_raw_config(config: &Value) -> Value {
 }
 
 /// How long Hermes holds a flagged call open waiting for an answer. Talaria
-/// answers every approval request on a turn it drives, by policy, within
-/// seconds (talaria-gateway's `fleet_approvals`); this is the backstop for a
+/// refuses every approval request on a turn it drives within seconds
+/// (talaria-gateway's `fleet_approvals`); this is the backstop for a
 /// request nobody is left to answer — the stream that carried it dropped, the
 /// api restarted mid-turn. Hermes refuses the call when it runs out, and the
 /// session's next turn queues behind the wait, so a minute rather than
@@ -1929,7 +1929,11 @@ const APPROVAL_TIMEOUT_SECS: u64 = 60;
 /// - A Developer Agent gets `mode: off` and `approve`: the sandbox is the
 ///   point, the container is its boundary, and the harness runs code all
 ///   day. Flagged commands run without a prompt on every path; Hermes'
-///   hardline floor and an authored `approvals.deny` list still hold.
+///   hardline floor and an authored `approvals.deny` list still hold. So do
+///   the gates Hermes never lets anything auto-approve (a write to a
+///   project's AGENTS.md / CLAUDE.md / SOUL.md, an untrusted MCP server's
+///   write tool, a saved card fill): they still ask, and Talaria's door
+///   answers `deny`, as it does for every request.
 /// - Every other agent gets `mode: manual` and `deny`. No guardian, so no
 ///   model ever approves a command. A streamed turn's request reaches
 ///   Talaria's door, which answers `deny` and records it; an unattended path

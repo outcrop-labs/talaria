@@ -361,10 +361,10 @@ async fn hold_for_agent(
             }
             match request.open(entry).await {
                 Opened::Stream(stream) => {
-                    // Hermes' approval requests on this turn are answered
-                    // here, for the agent's policy (fleet_approvals.rs).
+                    // Hermes' approval requests on this turn are refused
+                    // here, and recorded (fleet_approvals.rs).
                     let subject = turn_subject(&manifest, entry);
-                    let stream = crate::fleet_approvals::answer_by_policy(stream, entry, &subject);
+                    let stream = crate::fleet_approvals::refuse_approvals(stream, entry, &subject);
                     return Ok(bind_turn(stream, turn));
                 }
                 Opened::Lost => return Err(SessionLost),
