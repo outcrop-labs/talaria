@@ -36,8 +36,9 @@
   // had room for. Its contents moved into the dock's right cluster and the
   // component was deleted.
   //
-  // The manage half of the menu lives in the sidebar the dock's gear opens
-  // (ManageSidebar, a sibling below).
+  // The manage half of the menu is the /manage area: the dock's gear goes to
+  // its overview, and ManageSidebar (a sibling below) is docked beside every
+  // manage page — a column at md and up, a strip above the page below it.
   let { children }: { children: Snippet } = $props()
 
   const session = useSession()
@@ -259,7 +260,7 @@
          above it reads as the shell's top edge rather than a notch cut out
          of the drawer. Nothing sits between it and the view any more. -->
     <TopDock {user} onLogout={() => void logout()} />
-    <div class="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
+    <div class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:flex-row">
       <ManageSidebar {user} />
       <!-- THE ASSISTANT DRAWER IS A PEER OF THE DOCK'S ROW, not of the page
            body. It used to open inside `vt-view`, below the top strip and

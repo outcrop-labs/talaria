@@ -36,18 +36,17 @@ model nobody else picked, because it reads your private work.
 
 ## Find your way around
 
-The sidebar has two sections; Settings and Admin live in your user menu (top right).
+The bar across the top holds the work views on the left. On the right are **Manage** (the gear), search, your notifications, and your user menu, which holds Settings and Admin.
 
 | Section | Item | What it is |
 | :--- | :--- | :--- |
 | **Work** | **Inbox** | Your day: the daily brief, and one-screen digests of everything waiting |
 | | **Comms** | Every conversation — channels, relays, DMs, agent chats |
-| | **Plan** | Think work through with an agent, then turn it into tickets |
+| | **Work** | Sessions with an agent: the conversation, and the documents, sheets and pages it makes beside it. Planning and research happen here too |
 | | **Boards** | The team's tracked work — tickets people and agents move to done |
-| | **Research** | Cited research reports, run by your agents |
 | | **Knowledge** | What the org knows — documents agents can cite |
 | | **Files** | Documents and uploads, including everything agents produce |
-| **Manage** | Agents, Models, MCP, Templates, Agent Studio, Observability, Apps | The control plane — visible only if an admin granted it to you |
+| **Manage** | Overview, Agents, Teams, Models, MCP, Templates, Agent Studio, Observability, Apps | The control plane — visible only if an admin granted it to you. The gear opens the **overview**: what needs attention, one number per area, the instance-wide controls (admins), and recent changes. Every manage page keeps the Manage sidebar docked on its left |
 
 Which Work and Manage items you see is set per person by your admin (Admin → People).
 
