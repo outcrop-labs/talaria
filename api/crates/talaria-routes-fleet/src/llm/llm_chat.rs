@@ -19,19 +19,19 @@
 // budget subject, the ledger row, the guard finding. An AGENT'S key
 // (`agent:<slug>`, minted per enabled agent by fleet-brain and stamped into
 // that agent's container alone) is the agent: its subject is the agent's
-// model id — the same name chat-persist ledgers the persona turn under, so
-// one `agent_model` sums both what the chat flow wrote and anything this
-// relay writes — and it may ask only for the model ids its rendered config
-// routes to (gateway_agent_models, written by the render); anything else is
-// a 403 before any upstream is touched.
+// model id — the one `agent_model` every row of its spend lands under, and
+// the name its budget binds — and it may ask only for the model ids its
+// rendered config routes to (gateway_agent_models, written by the render);
+// anything else is a 403 before any upstream is touched.
 //
-// WHETHER THE RELAY METERS AN AGENT'S CALL. A turn Talaria drove — chat,
-// channel, harness — is ledgered as one row by the flow that drove it, so
-// the inner-loop calls behind it are skipped here. A turn Hermes started by
-// itself (a cron inside the container) looks the same at this relay and no
-// flow writes its row, so the relay asks the turn register (gateway
-// usage.rs): a Talaria turn open for this agent → skip, as before; none →
-// meter here, under the agent, source `unattended`.
+// EVERY AGENT CALL IS METERED HERE, one row per upstream call — this is the
+// only writer of an agent's spend. Whose turn the call belongs to rides on
+// it: Hermes stamps `x-talaria-session` (the rendered provider entry's
+// `session_affinity_header`) with the conversation's key, and the row takes
+// the flow the chat transport recorded for that key — chat, channel, ticket,
+// research, with its conversation or run and ticket — or stays `unattended`
+// (a cron's `cron_<job id>`, no header, a key nobody recorded). gateway
+// usage.rs, "Attribution", has the whole mechanism.
 //
 // THE GUARD'S TWO POSTURES. Observe (or an agent-loop key): the guard runs
 // detached after the bytes are gone — findings record, response untouched.
@@ -66,8 +66,8 @@ use talaria_api_facades::gateway::registry::resolve_route;
 use talaria_api_facades::gateway::settings::get_setting_hot;
 use talaria_api_facades::gateway::upstream::{Reply, build_upstream, fetch_upstream, js_truthy};
 use talaria_api_facades::gateway::usage::{
-    RELAY_SOURCE, ReportedSpend, TokenCounts, UNATTENDED_SOURCE, estimate_tokens, normalize_usage,
-    record_relay_usage, reported_spend, talaria_turn_open,
+    RELAY_SOURCE, ReportedSpend, SESSION_HEADER, TokenCounts, UNATTENDED_SOURCE, affinity_key,
+    estimate_tokens, normalize_usage, record_relay_usage, reported_spend,
 };
 use talaria_auth::{authenticate_key, bearer_secret};
 use talaria_error::{
@@ -90,7 +90,7 @@ const PERSONA_KEY: &str = "fleet-gateway";
 const WORKBENCH_KEY: &str = "workbench-gateway";
 
 /// The subject a key's calls are budgeted, ledgered and guarded under: an
-/// agent's key answers with the agent's model id (the persona ledger's
+/// agent's key answers with the agent's model id (the agent's ledger
 /// namespace); any other key with `api:<name>`. The agent's slug stands in
 /// for a key the last render did not scope — a disabled agent's, or one
 /// rendered before scopes existed — so its spend still has a name.
@@ -116,6 +116,13 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         Ok(None) => return openai_error(StatusCode::UNAUTHORIZED, "invalid API key"),
         Err(e) => return internal("[llm/v1/chat] key lookup failed", e),
     };
+    // The conversation key Hermes stamped on the call, read before the body
+    // is consumed; only an agent's key gets to use it (below).
+    let session_header = affinity_key(
+        req.headers()
+            .get(SESSION_HEADER)
+            .and_then(|v| v.to_str().ok()),
+    );
 
     // Detached last_used_at — same fire-and-forget write as the models route.
     {
@@ -277,36 +284,21 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         }
     };
 
-    // METERING — does this call's spend already reach the ledger from another
-    // writer? On an agent's key (and the legacy fleet-wide persona key): a
-    // chat/channel turn writes one row for the whole turn, so metering the N
-    // inner-loop calls behind it counts that turn twice. Everything else is
-    // metered HERE because here is the only place it lands.
-    //
-    // An agent's key asks the turn register first: the chat transport counts
-    // every turn Talaria drives while it is open, so a call that arrives
-    // with NO turn counted for this agent is one Hermes started by itself —
-    // a cron — and nothing else will ledger it. That call is metered here,
-    // under the agent, as `unattended`. Only a key the render scoped can ask
-    // (the register is keyed by the agent's model id, which is the scope);
-    // an unscoped key keeps the skip. KNOWN DOUBLE-SKIP: a cron firing
-    // while a chat turn is open for the same agent is skipped with that
-    // turn's calls — the relay cannot tell one agent's two loops apart.
-    let unmetered = get_setting_hot(
-        &state.pg,
-        "gateway_unmetered_keys",
-        json!(["fleet-gateway"]),
-    )
-    .await;
+    // METERING — every call is booked here, an agent's included: no other
+    // writer books an agent's spend any more. The one way out is an
+    // operator listing a key in `gateway_unmetered_keys` (empty by default),
+    // and a key listed there is booked nowhere at all. An agent's row starts
+    // `unattended` and keeps the conversation key Hermes stamped on the
+    // call; the insert itself takes the flow recorded for that key, when
+    // there is one. Another key's header is ignored — an operator's rows are
+    // the operator's.
+    let unmetered = get_setting_hot(&state.pg, "gateway_unmetered_keys", json!([])).await;
     let listed_unmetered = unmetered
         .as_array()
         .map(|a| a.iter().any(|v| v.as_str() == Some(id.key_name.as_str())))
         .unwrap_or(false);
-    let talaria_turn = match &agent_scope {
-        Some(scope) => talaria_turn_open(&scope.model).await,
-        None => None,
-    };
-    let meter = meter_plan(is_agent_key, listed_unmetered, talaria_turn);
+    let meter = meter_plan(is_agent_key, listed_unmetered);
+    let affinity = session_header.filter(|_| is_agent_key);
 
     // ANNOTATION — is the caller an agent's own tool loop? Guard caveats are
     // for humans reading a reply; injecting one into an agent's loop would
@@ -359,6 +351,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         prompt_chars,
         skip: meter.skip(),
         source: meter.source(),
+        affinity,
     };
 
     // ── Non-streaming: read, meter, relay ─────────────────────────────────
@@ -525,11 +518,11 @@ fn prompt_chars_of(messages: &Value) -> usize {
 }
 
 /// What the ledger does with one call, decided before the upstream is
-/// touched: skip because another writer books the turn, or book it here
-/// under a source that says whose spend it is.
+/// touched: skip, because an operator listed the key unmetered, or book it
+/// here under a source that says whose spend it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Meter {
-    /// The flow that drove this turn writes the row — or nobody can tell.
+    /// An operator listed this key in `gateway_unmetered_keys`.
     Skip,
     /// Book it here, under this source.
     Book(&'static str),
@@ -548,24 +541,18 @@ impl Meter {
     }
 }
 
-/// The metering decision. `talaria_turn` is the register's answer for an
-/// agent key — Some(true) a Talaria turn is open, Some(false) none is, None
-/// the register could not be read (or the key is unscoped, so there was
-/// nothing to ask under) — and it is only consulted for an agent key.
-fn meter_plan(is_agent_key: bool, listed_unmetered: bool, talaria_turn: Option<bool>) -> Meter {
+/// The metering decision. An agent's call is booked under the agent as
+/// `unattended` until its conversation key says which flow it belongs to
+/// (the insert reads that); any other key's is the key's own, `gateway`.
+fn meter_plan(is_agent_key: bool, listed_unmetered: bool) -> Meter {
     if listed_unmetered {
         return Meter::Skip;
     }
-    if !is_agent_key {
-        return Meter::Book(RELAY_SOURCE);
-    }
-    match talaria_turn {
-        // Nobody is driving this turn: the row lands here or nowhere.
-        Some(false) => Meter::Book(UNATTENDED_SOURCE),
-        // A Talaria turn is open (or the question could not be asked): the
-        // flow's row is the row, as before.
-        Some(true) | None => Meter::Skip,
-    }
+    Meter::Book(if is_agent_key {
+        UNATTENDED_SOURCE
+    } else {
+        RELAY_SOURCE
+    })
 }
 
 /// The ledger write for one call — spawned, never awaited on the request
@@ -581,6 +568,9 @@ struct Ledger {
     prompt_chars: usize,
     skip: bool,
     source: &'static str,
+    /// The conversation key Hermes stamped on an agent's call — None for
+    /// any other key, and for an agent call outside any conversation.
+    affinity: Option<String>,
 }
 
 impl Ledger {
@@ -621,6 +611,7 @@ impl Ledger {
                 &l.pg,
                 l.source,
                 &l.caller,
+                l.affinity.as_deref(),
                 &l.endpoint,
                 &l.endpoint_class,
                 &l.upstream_model,
@@ -954,23 +945,15 @@ mod tests {
     }
 
     #[test]
-    fn an_agents_call_is_metered_here_only_when_no_talaria_turn_is_open() {
+    fn every_call_is_metered_here_and_an_agents_starts_unattended() {
         // An operator's key: metered here, as ever — unless listed unmetered.
-        assert_eq!(meter_plan(false, false, None), Meter::Book(RELAY_SOURCE));
-        assert_eq!(meter_plan(false, true, None), Meter::Skip);
-        // An agent's key during a chat turn: the flow writes the row.
-        assert_eq!(meter_plan(true, false, Some(true)), Meter::Skip);
-        // An agent's key with no Talaria turn open — a cron: the row lands
-        // here, named for what it is.
-        assert_eq!(
-            meter_plan(true, false, Some(false)),
-            Meter::Book(UNATTENDED_SOURCE)
-        );
-        // The register unreadable, or an unscoped key: today's skip, never a
-        // double-counted turn.
-        assert_eq!(meter_plan(true, false, None), Meter::Skip);
+        assert_eq!(meter_plan(false, false), Meter::Book(RELAY_SOURCE));
+        assert_eq!(meter_plan(false, true), Meter::Skip);
+        // An agent's key, inside a Talaria turn or not: booked here, as the
+        // agent's, until its conversation key names the flow.
+        assert_eq!(meter_plan(true, false), Meter::Book(UNATTENDED_SOURCE));
         // An operator listing an agent key as unmetered still wins.
-        assert_eq!(meter_plan(true, true, Some(false)), Meter::Skip);
+        assert_eq!(meter_plan(true, true), Meter::Skip);
         // The ledger's view of a decision.
         assert!(Meter::Skip.skip());
         assert!(!Meter::Book(UNATTENDED_SOURCE).skip());
@@ -990,6 +973,7 @@ mod tests {
             prompt_chars: 0,
             skip: true,
             source: RELAY_SOURCE,
+            affinity: None,
         };
         let guard_spec = GuardSpec {
             pg: sqlx::PgPool::connect_lazy("postgres://x").unwrap(),

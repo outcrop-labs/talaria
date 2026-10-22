@@ -23,6 +23,16 @@ halves of what the platform needs: `assistant_response`, the turn's final
 text, and the cron task id (`cron:<job>:<execution>`) that names which
 schedule — and so which conversation — this output belongs to.
 
+Metering needs one fact only Hermes holds. The gateway relay books every LLM
+call this agent makes, and Hermes names the conversation on each one in the
+`x-talaria-session` header (the rendered `providers.talaria` entry's
+`session_affinity_header`). On a turn Talaria drives, that name is Hermes'
+own digest of the session's route (`gwk_...`), which the platform cannot
+compute. `pre_llm_call` runs inside the turn, where the same function that
+builds the header answers, so it reports the key once per conversation with
+the conversation's own id — and the relay can then book the turn's calls,
+auxiliary and subagent calls included, to the flow that drove it.
+
 A screenshot is the same gap with bytes in it. `browser_vision` writes a PNG
 inside this container and reports its PATH — a path that means nothing to the
 platform and is gone with the next roll. When that tool answers with one, the
@@ -61,6 +71,7 @@ _POST_TIMEOUT = 4.0
 _TOOL_EVENTS_PATH = "/api/agents/tool-events"
 _SUBAGENT_EVENTS_PATH = "/api/agents/subagent-events"
 _CRON_OUTPUT_PATH = "/api/agents/cron-output"
+_AFFINITY_PATH = "/api/agents/affinity"
 _UPLOADS_PATH = "/api/agents/uploads"
 # The tool that hands back a screenshot, and the ceiling its door enforces.
 # Reading the file is bounded by the same number so an oversized image is
@@ -74,6 +85,12 @@ _MAX_SHOT_BYTES = 5 * 1024 * 1024
 # an offer of an image.
 _FRESH_SHOT_SECONDS = 180
 _recent_shots: dict[str, float] = {}
+
+# (conversation, key) pairs already reported by this process: one report per
+# conversation per container life. Bounded — a long-lived agent forgets the
+# oldest and at worst reports a pair twice, which the door takes as a no-op.
+_reported_affinity: set[tuple[str, str]] = set()
+_AFFINITY_SEEN_CAP = 4096
 
 _queue: "queue.Queue[dict]" = queue.Queue(maxsize=_QUEUE_CAP)
 _started = False
@@ -464,6 +481,39 @@ def on_post_llm_call(
     )
 
 
+def on_pre_llm_call(*, session_id: str = "", platform: str = "", **_: Any) -> None:
+    """Report the affinity key this turn's LLM calls carry, with the id of the
+    conversation it names. Read here because `pre_llm_call` runs inside the
+    turn, after Hermes has bound the conversation's scope — the values below
+    are exactly what `merge_session_affinity_headers` stamps on every main,
+    auxiliary and subagent call of the turn.
+
+    Returns None, always: a value returned from this hook is injected into
+    the user's message as context."""
+    if platform == "cron":
+        return None
+    try:
+        from agent.opencode_affinity import resolve_affinity_key
+        from agent.portal_tags import get_conversation_context
+
+        key = str(resolve_affinity_key(session_id or None) or "")
+        conversation = str(get_conversation_context() or session_id or "")
+    except Exception:
+        return None
+    # A cron's key names its job and needs no conversation; a key that IS the
+    # conversation's id already says everything.
+    if not key or not conversation or key == conversation or key.startswith("cron_"):
+        return None
+    pair = (conversation, key)
+    if pair in _reported_affinity:
+        return None
+    if len(_reported_affinity) >= _AFFINITY_SEEN_CAP:
+        _reported_affinity.clear()
+    _reported_affinity.add(pair)
+    _enqueue({"url": _door(_AFFINITY_PATH), "conversation": conversation, "key": key})
+    return None
+
+
 def register(ctx) -> None:
     """The loader's entry point — Hermes refuses a plugin without it
     ("Plugin 'talaria-events' has no register() function", the line that
@@ -473,9 +523,10 @@ def register(ctx) -> None:
     documentation, not the registration. The delegation pair is registered
     the same way: subagent_start / subagent_stop are the names in
     hermes_cli's VALID_HOOKS, fired by the delegate_task tool around every
-    child it spawns."""
+    child it spawns. `pre_llm_call` is the metering report above."""
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("post_llm_call", on_post_llm_call)
     ctx.register_hook("subagent_start", on_subagent_start)
     ctx.register_hook("subagent_stop", on_subagent_stop)
+    ctx.register_hook("pre_llm_call", on_pre_llm_call)

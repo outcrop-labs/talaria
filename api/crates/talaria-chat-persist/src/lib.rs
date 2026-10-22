@@ -2,7 +2,9 @@
 // Runs detached from the client response (fed
 // by a teed branch), so an in-progress reply is saved even if the client
 // disconnects/reloads. Throttled flushes during streaming; final on end.
-// Also records the turn in the token ledger (real usage or a char estimate).
+// The turn's spend is not written here: the gateway relay meters every call
+// the agent makes, and `send_turn` hands the transport this conversation as
+// the flow those calls belong to (talaria-gateway usage.rs, "Attribution").
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -17,13 +19,12 @@ use tokio::sync::mpsc;
 use sqlx::PgPool;
 use talaria_agent_auth::now_ms;
 use talaria_agent_defs::pinned_sessions_for_model;
-use talaria_body::utf16_len;
 use talaria_conversations::{
-    active_streaming_assistant, content_js_length, insert_streaming_assistant,
-    last_user_message_effort, mark_message_resumed, mark_message_stopped, merge_message_chips,
-    message_still_errored, next_seq, pinned_history_fits, prior_messages,
-    resurrect_streaming_assistant, set_message_guard, set_message_run_id, touch_conversation,
-    unanswered_user_after, update_assistant,
+    active_streaming_assistant, insert_streaming_assistant, last_user_message_effort,
+    mark_message_resumed, mark_message_stopped, merge_message_chips, message_still_errored,
+    next_seq, pinned_history_fits, prior_messages, resurrect_streaming_assistant,
+    set_message_guard, set_message_run_id, touch_conversation, unanswered_user_after,
+    update_assistant,
 };
 use talaria_fleet_agents::routed_model_for;
 use talaria_fleet_layout::describe_agent;
@@ -34,7 +35,7 @@ use talaria_gateway::fleet_chat::{
 use talaria_gateway::guard::{
     Finding, GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
 };
-use talaria_gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
+use talaria_gateway::usage::TurnAttribution;
 use talaria_model_efforts::efforts_for_model;
 use talaria_notify::{NotifyDeps, fan_conversation_event, notify_agent_reply};
 use talaria_plan_doc::{
@@ -349,26 +350,29 @@ pub fn session_turn_parts(messages: &[Value]) -> (Option<String>, Value) {
 }
 
 /// Send the turn the way the agent takes it: through its pinned session, or
-/// as the full-history completion every agent speaks. Returns the stream and
-/// how many characters of prompt actually left — the ledger's estimate when
-/// no usage frame comes back.
+/// as the full-history completion every agent speaks. Either way the
+/// transport is told the turn is this conversation's `chat` spend, so the
+/// relay books every call the agent makes for it under the conversation.
 pub async fn send_turn(
+    pg: &PgPool,
     pinned: bool,
     agent_model: &str,
     routed_model: &str,
     conversation_id: &str,
     messages: &[Value],
     effort: Option<&str>,
-) -> (ChatStream, usize) {
+) -> ChatStream {
     let messages = with_conversation_line(messages, conversation_id);
     let messages = messages.as_slice();
+    let attribution = TurnAttribution {
+        pg: pg.clone(),
+        agent_model: agent_model.to_string(),
+        source: "chat".into(),
+        ref_id: Some(conversation_id.to_string()),
+        task_id: None,
+    };
     if pinned {
         let (system_message, message) = session_turn_parts(messages);
-        let prompt_chars = system_message
-            .as_deref()
-            .map(|s| s.encode_utf16().count())
-            .unwrap_or(0)
-            + content_js_length(&message);
         // A conversation with a reply in it was driven through this session
         // before, so the session must still be there: a fresh one is the
         // state volume gone, and the turn below takes the full-history arm
@@ -381,22 +385,19 @@ pub async fn send_turn(
             &message,
             None,
             history_expected,
+            Some(attribution.clone()),
         )
         .await
         {
-            return (upstream, prompt_chars);
+            return upstream;
         }
     }
-    let prompt_chars: usize = messages
-        .iter()
-        .map(|m| content_js_length(&m["content"]))
-        .sum();
-    let upstream = proxy_chat(
+    proxy_chat(
         &chat_payload(routed_model, &Value::Array(messages.to_vec()), effort),
         None,
+        Some(attribution),
     )
-    .await;
-    (upstream, prompt_chars)
+    .await
 }
 
 /// The line that tells the agent which conversation this turn is: the
@@ -571,7 +572,8 @@ async fn continue_inner(
         Some(e) if efforts_for_model(&state.pg, &routed).await.contains(&e) => Some(e),
         _ => None,
     };
-    let (upstream, prompt_chars) = send_turn(
+    let upstream = send_turn(
+        &state.pg,
         pinned,
         &meta.agent_model,
         &routed,
@@ -603,7 +605,6 @@ async fn continue_inner(
     }
     let usage_meta = PersistMeta {
         agent_model: meta.agent_model.clone(),
-        prompt_chars,
         tier: meta.tier.clone(),
         plan: meta.plan.clone(),
         research_prompt: meta.research_prompt,
@@ -646,11 +647,10 @@ fn spawn_persist(
     });
 }
 
-/// The usage-side facts the ledger needs about the turn.
+/// What the persist needs to know about the turn beyond its stream.
 #[derive(Debug, Clone)]
 pub struct PersistMeta {
     pub agent_model: String,
-    pub prompt_chars: usize,
     pub tier: Option<String>,
     pub plan: Option<PlanMeta>,
     /// Rides through to the continuation's TurnMeta — see TurnMeta.
@@ -826,7 +826,6 @@ pub async fn persist_assistant_stream(
     let mut content = String::new();
     let mut reasoning = String::new();
     let mut tools: Vec<ToolCall> = Vec::new();
-    let mut usage: Option<(i64, i64)> = None;
     // The agent gateway's failure frame, when one lands — the provider call
     // died inside the container and the 200-stream carries the reason. Without
     // this the turn reads as EMPTY COMPLETE, and the chain re-fires it forever
@@ -870,42 +869,6 @@ pub async fn persist_assistant_stream(
             .await;
         };
     }
-    macro_rules! ledger {
-        () => {
-            if let Some(meta) = &usage_meta {
-                let counts = TokenCounts {
-                    prompt_tokens: usage
-                        .map(|u| u.0)
-                        .unwrap_or_else(|| estimate_tokens(meta.prompt_chars)),
-                    completion_tokens: usage.map(|u| u.1).unwrap_or_else(|| {
-                        estimate_tokens(utf16_len(&content) + utf16_len(&reasoning))
-                    }),
-                    ..TokenCounts::default()
-                };
-                let pg = state.pg.clone();
-                let agent_model = meta.agent_model.clone();
-                let tier = meta.tier.clone();
-                let ref_id = conversation_id.clone();
-                let estimated = usage.is_none();
-                tokio::spawn(async move {
-                    let _ = record_usage(
-                        &pg,
-                        &UsageInput {
-                            agent_model: &agent_model,
-                            source: "chat",
-                            ref_id: Some(&ref_id),
-                            task_id: None,
-                            tier: tier.as_deref(),
-                            counts,
-                            estimated,
-                        },
-                    )
-                    .await;
-                });
-            }
-        };
-    }
-
     // THE DRAIN HAS NO TOTAL TIMEOUT. Frames flowing — deltas, tool progress,
     // keep-alives — mean the agent is working, however long the work takes;
     // only `stream_idle()` of SILENCE ends the read. The total 600s request
@@ -1074,12 +1037,8 @@ pub async fn persist_assistant_stream(
                                 }
                             }
                         }
-                        AgentStreamEvent::Usage {
-                            prompt_tokens,
-                            completion_tokens,
-                        } => {
-                            usage = Some((prompt_tokens, completion_tokens));
-                        }
+                        // The relay metered every call behind these counts.
+                        AgentStreamEvent::Usage { .. } => {}
                         AgentStreamEvent::Error { message } => {
                             frame_error = frame_error.or(Some(message));
                         }
@@ -1118,12 +1077,7 @@ pub async fn persist_assistant_stream(
             } => {
                 tools = merge_tool(&tools, id.as_deref(), &name, &label, status.as_deref());
             }
-            AgentStreamEvent::Usage {
-                prompt_tokens,
-                completion_tokens,
-            } => {
-                usage = Some((prompt_tokens, completion_tokens));
-            }
+            AgentStreamEvent::Usage { .. } => {}
             AgentStreamEvent::Error { message } => {
                 frame_error = frame_error.or(Some(message));
             }
@@ -1144,7 +1098,6 @@ pub async fn persist_assistant_stream(
     if let Some(message) = frame_error {
         content = with_error_line(&content, &format!("(agent error: {message})"));
         flush!("error");
-        ledger!();
         return;
     }
     // A stream that DIED (as opposed to the agent refusing above) ends the
@@ -1156,7 +1109,6 @@ pub async fn persist_assistant_stream(
     if let Some(died) = death {
         content = with_error_line(&content, &format!("(agent error: {})", died.reason()));
         flush!("error");
-        ledger!();
         if let Some(meta) = usage_meta.filter(|m| !m.resumed) {
             maybe_resume(&state, &conversation_id, &message_id, &meta);
         }
@@ -1187,7 +1139,6 @@ pub async fn persist_assistant_stream(
         let _ = mark_message_stopped(&state.pg, &message_id).await;
     }
     let _ = touch_conversation(&state.pg, &conversation_id, None).await;
-    ledger!();
     // TALA-33: a landed plan turn rewrites the plan's living document
     // server-side (detached; see `spawn_plan_doc_auto_sync`). Only the
     // completed path — the error and death paths above return early — and

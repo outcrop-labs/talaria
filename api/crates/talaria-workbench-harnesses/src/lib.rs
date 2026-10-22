@@ -118,9 +118,11 @@ pub const MCP_CONFIG_FILE: &str = "mcp.json";
 // LLM_WORKBENCH_API_KEY by fleet-brain). It must: a harness run is spend NO
 // Talaria flow ever sees — no chat/channel/ticket row is written for it — so
 // the gateway is the only place it can enter the ledger, while the personas'
-// key has to stay unmetered there because the flow that drove the turn already
-// writes its row. One shared credential can only be one of those two things,
-// so harness runs were either invisible or doubled every persona turn.
+// key had to stay unmetered there while a chat flow wrote each persona turn's
+// row. One shared credential could only be one of those two things, so harness
+// runs were either invisible or doubled every persona turn. (Each agent now
+// has its own key, metered call by call at the relay; the workbench key still
+// keeps a harness run's spend apart from the agent's own.)
 //
 // NO FALLBACK TO THE PERSONAS' KEY. This used to read
 // `${LLM_WORKBENCH_API_KEY:-${LLM_API_KEY}}` so an operator-overridden fleet

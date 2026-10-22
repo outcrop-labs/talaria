@@ -5016,7 +5016,6 @@ dependencies = [
  "base64 0.23.1",
  "futures-util",
  "getrandom 0.3.4",
- "redis",
  "regex",
  "reqwest",
  "serde",

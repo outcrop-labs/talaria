@@ -1,4 +1,5 @@
 // The agent-facing plane (tak_ callers): gap/problem/message/media + role templates.
+pub mod affinity;
 pub mod agent_gap;
 pub mod agent_message_user;
 pub mod agent_problem;

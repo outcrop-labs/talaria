@@ -5,15 +5,14 @@
 // the running container (docker exec). Requires the container to be up.
 //
 // METERING: a cron fires the agent's own loop on the agent's own config,
-// i.e. the agent's own gateway key — the same key a chat turn uses, and at
-// the gateway a cron turn is byte-identical to a persona turn (`hermes cron
-// create` takes no model/provider/credential, and the scheduler runs inside
-// the single `hermes gateway run` process). The gateway relay tells them
-// apart by the turn register (talaria-gateway usage.rs): the chat transport
-// counts every turn Talaria drives while it is open, and a call on the
-// agent's key with no turn counted is metered at the relay, under the agent,
-// source `unattended` — so cron spend reaches the ledger and the agent's
-// budget. A cron firing while a chat turn is open is the known double-skip.
+// i.e. the agent's own gateway key — the same key a chat turn uses (`hermes
+// cron create` takes no model/provider/credential, and the scheduler runs
+// inside the single `hermes gateway run` process). The relay meters every
+// call on that key, and tells a cron's apart by the conversation key Hermes
+// stamps on each one (`x-talaria-session`, talaria-gateway usage.rs): a
+// fire's is `cron_<job id>`, so its spend lands under the agent, source
+// `unattended`, per job — reaching the ledger and the agent's budget whether
+// or not a chat turn is open at the same moment.
 
 use sqlx::PgPool;
 

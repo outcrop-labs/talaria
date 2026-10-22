@@ -1305,6 +1305,20 @@ CREATE TABLE public.uploads (
     uploaded_by uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.usage_affinity_keys (
+    agent_model text NOT NULL,
+    affinity_key text NOT NULL,
+    conversation_key text NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.usage_attributions (
+    agent_model text NOT NULL,
+    affinity_key text NOT NULL,
+    source text NOT NULL,
+    ref_id uuid,
+    task_id uuid,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.usage_events (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     agent_model text NOT NULL,
@@ -1326,7 +1340,8 @@ CREATE TABLE public.usage_events (
     cost_provider text,
     cost_variant text,
     cost_fetched_at timestamp with time zone,
-    generation_id text
+    generation_id text,
+    affinity_key text
 );
 CREATE TABLE public.user_agent_access (
     user_id uuid NOT NULL,
@@ -1778,6 +1793,10 @@ ALTER TABLE ONLY public.templates
     ADD CONSTRAINT templates_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.uploads
     ADD CONSTRAINT uploads_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.usage_affinity_keys
+    ADD CONSTRAINT usage_affinity_keys_pkey PRIMARY KEY (agent_model, affinity_key);
+ALTER TABLE ONLY public.usage_attributions
+    ADD CONSTRAINT usage_attributions_pkey PRIMARY KEY (agent_model, affinity_key);
 ALTER TABLE ONLY public.usage_events
     ADD CONSTRAINT usage_events_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.user_agent_access
@@ -1899,6 +1918,7 @@ CREATE UNIQUE INDEX task_workchain_steps_one_chain ON public.task_workchain_step
 CREATE INDEX tasks_assignee_idx ON public.tasks USING btree (assigned_to);
 CREATE INDEX tasks_board_idx ON public.tasks USING btree (board_id, status, updated_at DESC);
 CREATE INDEX tasks_parent_idx ON public.tasks USING btree (parent_id);
+CREATE INDEX usage_events_affinity_idx ON public.usage_events USING btree (agent_model, affinity_key) WHERE (affinity_key IS NOT NULL);
 CREATE INDEX usage_events_agent_idx ON public.usage_events USING btree (agent_model, created_at DESC);
 CREATE INDEX usage_events_created_idx ON public.usage_events USING btree (created_at DESC);
 CREATE INDEX usage_events_task_idx ON public.usage_events USING btree (task_id) WHERE (task_id IS NOT NULL);

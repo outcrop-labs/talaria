@@ -193,11 +193,24 @@ multiplexer.
   nothing.
 - **Crons live in the agent**, not in Talaria: Hermes' own scheduler ticks inside the
   container; Talaria reads it for truth and mutates through `docker exec`
-  (api/src/agent_crons.rs). Their spend is metered at the relay: a turn Talaria drives is
-  ledgered once by the flow that drove it, so the chat transport counts each such turn in
-  Redis (`talaria:turn:v1:<agent model>`) while it is open, and a call on an agent's key with
-  no turn counted — a cron — is booked by the relay under the agent as `unattended`, into the
-  same window its budget is judged on.
+  (api/src/agent_crons.rs). Their spend is metered at the relay like every agent call — see
+  **Agent spend** below; a fire's calls carry `cron_<job id>` and land as `unattended`, per job.
+- **Agent spend is metered at the relay, one row per upstream call.** Every agent's
+  config.yaml carries a `providers.talaria` entry on the same gateway URL its model specs use,
+  with `session_affinity_header: x-talaria-session`; Hermes matches it by base URL and stamps
+  the conversation's affinity key on every call it makes to the gateway — the main loop,
+  compression, titles, vision, a delegated subagent (its parent's key) and a cron
+  (`cron_<job id>`). On a turn Talaria drives, Hermes v0.22's key is its own digest of the
+  session's route (`gwk_…`), so two records meet in the middle: the chat transport
+  (`talaria-gateway` `fleet_chat.rs`) records the conversation it drove in
+  `usage_attributions` with the flow's source, conversation or run, and ticket — a pinned
+  session's id is the one Talaria created, the completions arm's is the one Hermes answers in
+  `X-Hermes-Session-Id` — and the agent's talaria-events plugin reports, from inside the turn,
+  which conversation its key names (`POST /api/agents/affinity` → `usage_affinity_keys`). The
+  relay copies the flow onto every row it books for that conversation; anything unclaimed stays
+  `unattended` under the agent. Budgets read the same rows, so a long turn counts while it runs.
+  No flow writes an agent's spend itself any more
+  ([`usage.rs`](../api/crates/talaria-gateway/src/usage.rs), "Attribution").
 
 ## Agent work and the guardrails
 

@@ -3990,6 +3990,47 @@ alter table tasks drop column if exists conversation_id`,
   // agent's next write stamps them.
   `alter table agent_created_google_docs
      add column if not exists last_agent_write_at timestamptz`,
+  // ── Every agent call is metered at the relay (2026-10-22) ──────────────
+  // THE CONVERSATION A CALL BELONGS TO. Hermes stamps every LLM call it makes
+  // with `x-talaria-session` (the rendered `providers.talaria`
+  // `session_affinity_header`): the main loop, compression, titles, vision,
+  // a delegated subagent (its parent's key) and a cron (`cron_<job id>`).
+  // The relay books one row per upstream call and keeps that key on it, so a
+  // cron's spend is per job and a turn's rows can be joined to the flow that
+  // drove it. Null on rows from before, on operator keys, and on an agent
+  // call made outside any conversation.
+  `alter table usage_events add column if not exists affinity_key text`,
+  `create index if not exists usage_events_affinity_idx
+     on usage_events (agent_model, affinity_key) where affinity_key is not null`,
+  // WHICH FLOW A KEY BELONGS TO. The chat transport writes one row per key
+  // a Talaria-driven turn runs under — a pinned conversation's id, a work
+  // session's run id, the completions arm's `X-Hermes-Session-Id` — and the
+  // relay copies `source`/`ref_id`/`task_id` from it onto every row it books
+  // under that key. This replaced the flow-level ledger rows (one per turn,
+  // from Hermes' main-loop counters) and the Redis turn register that made
+  // the relay skip every call while a turn was open.
+  `create table if not exists usage_attributions (
+     agent_model text not null,
+     affinity_key text not null,
+     source text not null,
+     ref_id uuid,
+     task_id uuid,
+     updated_at timestamptz not null default now(),
+     primary key (agent_model, affinity_key)
+   )`,
+  // WHICH CONVERSATION A HERMES KEY NAMES. On v0.22 the key Hermes stamps on
+  // a Talaria-driven turn's calls is its own digest (`gwk_…`) of the session's
+  // route, computable only inside Hermes. The agent's talaria-events plugin
+  // reads it at the start of each turn and reports it with the conversation's
+  // own id (POST /api/agents/affinity); the relay follows this row to the
+  // conversation's `usage_attributions` row.
+  `create table if not exists usage_affinity_keys (
+     agent_model text not null,
+     affinity_key text not null,
+     conversation_key text not null,
+     updated_at timestamptz not null default now(),
+     primary key (agent_model, affinity_key)
+   )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
