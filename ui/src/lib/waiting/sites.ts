@@ -135,7 +135,7 @@ export const WAITING_SITES = {
   'manage/fleet-start': { role: 'tool', slot: 'button', note: 'Starting every stopped agent from the Manage overview.' },
   'manage/mcp-check': { role: 'tool', slot: 'button', note: 'Re-probing every MCP server from the Manage overview.' },
   'skills/marketplace-search': { role: 'tool', slot: 'inline', note: 'Catalog search in flight.' },
-  'skills/marketplace-install': { role: 'submitting', slot: 'button', note: 'Reading a repo or writing its skills into a destination.' },
+  'skills/marketplace-install': { role: 'submitting', slot: 'button', note: "Fetching a skill, scanning it with Hermes' Skills Guard, or writing it into a destination." },
 
   /* ── The brief ────────────────────────────────────────────────────────── */
   'brief/writing': { role: 'reasoning', slot: 'inline', note: 'The daily brief being opened for this reader — lede first, then the day.' },

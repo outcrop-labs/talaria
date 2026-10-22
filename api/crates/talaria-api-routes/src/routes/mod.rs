@@ -1768,9 +1768,10 @@ pub fn router(state: AppState) -> Router {
                 .delete(talaria_routes_fleet::agents::skills_owner_name::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
         )
-        // The skills marketplace (Hermes Atlas's ranked catalog): the list,
-        // one repo's discovered skills, and the per-owner install. Static
-        // "marketplace" segments outrank the {owner}/{name} captures above.
+        // The skills marketplace (Hermes' official skills index, mirrored):
+        // the list, one skill's fetched files and Skills Guard verdict, and
+        // the scanned per-owner install. Static "marketplace" segments
+        // outrank the {owner}/{name} captures above.
         .route(
             "/api/skills/marketplace",
             get(talaria_routes_fleet::agents::skills_marketplace::get_list)

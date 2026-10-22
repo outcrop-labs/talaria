@@ -4044,6 +4044,37 @@ alter table tasks drop column if exists conversation_id`,
    where s.key = 'agents.mandatory_disabled_toolsets'
      and jsonb_typeof(s.value) = 'array'
      and s.value ?| array['debugging', 'safe', 'search', 'coding', 'project', 'desktop_ui']`,
+  // ── Skills marketplace: Hermes' official index, mirrored (2026-10-22) ───
+  // The marketplace scraped a third-party site's HTML for a ranked list of
+  // repos. Hermes publishes its own skills index (the JSON its own skills
+  // search reads, rebuilt daily): one row per skill with its source, trust
+  // level and GitHub location. The skills-index-refresh job mirrors the rows
+  // Talaria can install into this table and the picker searches it here.
+  // identifier is Hermes' own and the install's only input; path is the
+  // skill directory inside repo (exact = false marks a skills.sh slug the
+  // index never resolved, found by name at fetch time); rank is the index's
+  // own order, which lists Hermes' official skills first.
+  `create table if not exists skills_index_entries (
+     identifier text primary key,
+     name text not null,
+     description text not null default '',
+     source text not null,
+     trust_level text not null default 'community',
+     repo text not null,
+     path text not null default '',
+     exact boolean not null default true,
+     tags jsonb not null default '[]'::jsonb,
+     rank integer not null default 0,
+     synced_at timestamptz not null default now(),
+     search tsvector generated always as (
+       setweight(to_tsvector('simple', coalesce(name, '')), 'A') ||
+       setweight(to_tsvector('simple', tags), 'B') ||
+       setweight(to_tsvector('simple', replace(replace(repo, '/', ' '), '-', ' ')), 'B') ||
+       setweight(to_tsvector('simple', coalesce(description, '')), 'C')
+     ) stored
+   )`,
+  `create index if not exists skills_index_entries_search_idx on skills_index_entries using gin (search)`,
+  `create index if not exists skills_index_entries_rank_idx on skills_index_entries (rank)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
