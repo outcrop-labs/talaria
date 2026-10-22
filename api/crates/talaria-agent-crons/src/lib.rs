@@ -344,6 +344,23 @@ fn floor_verdict(schedule: Option<&Value>, floor: f64) -> Result<(), String> {
     }
 }
 
+/// Run a change that takes several calls on the agent to its end, whatever
+/// happens to the request that asked for it. A guarded create (write paused →
+/// judge → start) and a schedule edit (pause → patch → judge → resume, or put
+/// back) leave the job paused between their calls, and a request future
+/// dropped there — the client hung up — would strand it paused: failing
+/// closed, but with nobody told. A spawned task is not dropped with the
+/// request, so the sequence finishes. Only the process itself exiting can
+/// still cut one short, and that leaves a paused job: no spend, and shown as
+/// paused on its list.
+async fn detached<T: Send + 'static>(
+    work: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+) -> Result<T, String> {
+    tokio::spawn(work)
+        .await
+        .map_err(|e| format!("the change on the agent did not finish: {e}"))?
+}
+
 /// Create a job on the agent and return the id Hermes assigned.
 ///
 /// With a floor set, the job is written PAUSED: the floor reads the schedule
@@ -366,22 +383,22 @@ pub async fn create_cron_job(
     }
     prompt_fits(prompt)?;
     let floor = cron_floor_minutes(pg).await;
+    let body = json!({
+        "name": name,
+        "schedule": schedule,
+        "prompt": prompt,
+        "deliver": "local",
+        "paused": floor > 0.0,
+    });
+    detached(create_and_start(model, body, floor)).await
+}
+
+/// A create's calls on the agent: the write (paused when a floor is set), the
+/// floor's verdict on what Hermes parsed, then the start — or the paused job
+/// taken back out.
+async fn create_and_start(model: String, body: Value, floor: f64) -> Result<String, String> {
     let guarded = floor > 0.0;
-    let created = job_in(
-        jobs_call(
-            &model,
-            Method::POST,
-            "/api/jobs",
-            Some(json!({
-                "name": name,
-                "schedule": schedule,
-                "prompt": prompt,
-                "deliver": "local",
-                "paused": guarded,
-            })),
-        )
-        .await?,
-    )?;
+    let created = job_in(jobs_call(&model, Method::POST, "/api/jobs", Some(body)).await?)?;
     let Some(id) = created
         .get("id")
         .and_then(Value::as_str)
@@ -420,9 +437,9 @@ pub async fn create_cron_job(
 /// paused first, patched, judged and resumed. A refusal — the floor's, or
 /// Hermes's own at the resume — puts back the fields the edit changed and
 /// leaves the job armed as it was. A schedule sent back exactly as Hermes
-/// displays it is no change, and is dropped from the patch: the edit form
-/// always sends all three fields, and a rename must not re-parse, re-time or
-/// re-judge a schedule nobody touched.
+/// displays it is no change, and is dropped from the patch: a client that
+/// sends every field must not re-parse, re-time or re-judge a schedule nobody
+/// touched (the app's own edit form sends only the fields that changed).
 pub async fn edit_cron_job(
     pg: &PgPool,
     def_id: &str,
@@ -457,14 +474,35 @@ pub async fn edit_cron_job(
             .await
             .map(|_| ());
     };
+    let floor = cron_floor_minutes(pg).await;
+    detached(edit_with_schedule(
+        model,
+        path,
+        patch,
+        schedule.to_string(),
+        floor,
+    ))
+    .await
+}
+
+/// An edit's calls on the agent once it names a schedule: read the job, drop
+/// the schedule if it is Hermes's own display string, then either one PATCH
+/// or — with a floor set and the schedule changing — pause, patch, judge, and
+/// resume or put back.
+async fn edit_with_schedule(
+    model: String,
+    path: String,
+    mut patch: serde_json::Map<String, Value>,
+    schedule: String,
+    floor: f64,
+) -> Result<(), String> {
     let before = job_in(jobs_call(&model, Method::GET, &path, None).await?)?;
-    if before.get("schedule_display").and_then(Value::as_str) != Some(schedule) {
+    if before.get("schedule_display").and_then(Value::as_str) != Some(schedule.as_str()) {
         patch.insert("schedule".into(), json!(schedule));
     }
     if patch.is_empty() {
         return Ok(());
     }
-    let floor = cron_floor_minutes(pg).await;
     if !patch.contains_key("schedule") || floor <= 0.0 {
         return jobs_call(&model, Method::PATCH, &path, Some(Value::Object(patch)))
             .await
@@ -507,7 +545,7 @@ pub async fn edit_cron_job(
         .filter_map(|k| before.get(k).map(|v| (k.clone(), v.clone())))
         .collect();
     if let Err(e) = jobs_call(&model, Method::PATCH, &path, Some(Value::Object(restore))).await {
-        tracing::error!("[crons] job {job_id} on {model}: refused edit could not be undone: {e}");
+        tracing::error!("[crons] {path} on {model}: refused edit could not be undone: {e}");
         return Err(format!(
             "{why} (and the job's previous settings could not be put back: {e})"
         ));

@@ -198,7 +198,8 @@ multiplexer.
   job due for the next tick (≤60s), and is refused on a paused job, which Hermes's `run`
   would resume for good. The admin frequency floor judges the schedule Hermes parsed — a job
   is written paused, checked, then started — and refuses any shape it cannot read (a 6-field
-  cron, an unreadable field). Their spend is metered at the relay: a turn Talaria drives is
+  cron, an unreadable field).
+  Their spend is metered at the relay: a turn Talaria drives is
   ledgered once by the flow that drove it, so the chat transport counts each such turn in
   Redis (`talaria:turn:v1:<agent model>`) while it is open, and a call on an agent's key with
   no turn counted — a cron — is booked by the relay under the agent as `unattended`, into the

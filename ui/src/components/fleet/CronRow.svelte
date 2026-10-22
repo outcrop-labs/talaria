@@ -8,7 +8,7 @@
   import { cn } from '@/lib/cn'
   import { slide } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
-  import { MAX_CRON_PROMPT, describeSchedule, fmtNext, jobDot, parseSchedule, schedToString, type CronJob, type Sched } from './agent-crons'
+  import { MAX_CRON_PROMPT, describeSchedule, editPatch, fmtNext, jobDot, parseSchedule, schedToString, type CronJob, type CronPatch, type Sched } from './agent-crons'
   import ScheduleBuilder from './ScheduleBuilder.svelte'
 
   let {
@@ -20,8 +20,9 @@
   }: {
     job: CronJob
     onAction?: (action: 'pause' | 'resume' | 'run' | 'remove') => void
-    /** Present ⇒ the row is editable; called with the patch on save. */
-    onEdit?: (patch: { name: string; schedule: string; prompt: string }) => Promise<boolean>
+    /** Present ⇒ the row is editable; called on save with only the fields
+     *  that changed (editPatch). */
+    onEdit?: (patch: Partial<CronPatch>) => Promise<boolean>
     busy?: boolean
     agentLabel?: string
   } = $props()
@@ -48,7 +49,13 @@
   }
   const saveEdit = async () => {
     if (!onEdit) return
-    const ok = await onEdit({ name: name.trim(), schedule: schedToString(sched), prompt: prompt.trim() })
+    const patch = editPatch(job, { name: name.trim(), schedule: schedToString(sched), prompt: prompt.trim() })
+    // Nothing changed is nothing to send.
+    if (Object.keys(patch).length === 0) {
+      editing = false
+      return
+    }
+    const ok = await onEdit(patch)
     if (ok) editing = false
   }
 </script>
