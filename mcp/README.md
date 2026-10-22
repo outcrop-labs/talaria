@@ -46,7 +46,6 @@ guardrail prose rules below are checked against.
 
 | Tool | What it does |
 | --- | --- |
-| `describe_image` | Read an image the model cannot see, through the workspace's vision model; the answer is attributed, not the caller's own observation |
 | `search_knowledge` | RAG over the knowledge base, collections and past chats/channels/plans/research |
 
 ### Documents (artifacts)

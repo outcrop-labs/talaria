@@ -608,8 +608,6 @@ talaria-uploads = { path = "crates/talaria-uploads" }
 
 talaria-users = { path = "crates/talaria-users" }
 
-talaria-vision = { path = "crates/talaria-vision" }
-
 talaria-web-search = { path = "crates/talaria-web-search" }
 
 talaria-work-dispatch = { path = "crates/talaria-work-dispatch" }
@@ -868,7 +866,6 @@ talaria-update-roll = { workspace = true }
 talaria-update-state = { workspace = true }
 talaria-uploads = { workspace = true }
 talaria-users = { workspace = true }
-talaria-vision = { workspace = true }
 talaria-web-search = { workspace = true }
 talaria-work-dispatch = { workspace = true }
 talaria-work-wait = { workspace = true }

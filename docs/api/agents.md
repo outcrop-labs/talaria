@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-29 routes.
+28 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -44,7 +44,6 @@
 | [`/api/skills/marketplace`](#apiskillsmarketplace) | GET | `session` |
 | [`/api/skills/marketplace/detail`](#apiskillsmarketplacedetail) | GET | `session` |
 | [`/api/skills/marketplace/install`](#apiskillsmarketplaceinstall) | POST | `session` |
-| [`/api/vision/describe`](#apivisiondescribe) | POST | `dual` |
 
 ## `/api/agent-role-templates`
 
@@ -543,25 +542,4 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs`](../
 | :--- | :--- | :--- |
 | `owner` | `string(1, 80)` |  |
 | `repo` | `string(1, 200)` |  |
-
-## `/api/vision/describe`
-
-Source: [`api/crates/talaria-routes-fleet/src/agents/vision_describe.rs`](../../api/crates/talaria-routes-fleet/src/agents/vision_describe.rs)
-
-> /api/vision/describe.
->
-> READ AN IMAGE ON BEHALF OF A MODEL THAT CANNOT — the endpoint behind the
-> `describe_image` tool.
-> …
-
-| Method | Auth | Body | Returns | Status | Flags |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `dual` | [body](#post-apivisiondescribe-body) | `{description, model}` | 200, 400, 404, 503 | — |
-
-### POST `/api/vision/describe` body
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `uploadId` | `string(1, 200)` |  |
-| `question` | `string(3, 500)` |  |
 

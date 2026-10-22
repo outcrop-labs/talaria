@@ -49,7 +49,8 @@ slots run `auto`. Unfit assignments surface as warnings — they report, never b
 | **Chores** | Utility — plus the platform workers: blurb-writer, titler, summarizer, librarian |
 | **Writing** | Muse · Distiller · Concluder · Briefer |
 | **Oversight** | The QA judge |
-| **Reserved** | Vision · Image-generation · Embedding · Reranker |
+| **Agents' eyes** | Vision — reads images for every agent whose own model cannot see; leave it empty and those agents cannot read an image |
+| **Reserved** | Image-generation · Embedding · Reranker |
 | Your assistant | Fixed — each person's assistant, set from their own settings |
 
 ## Fitness: test before you trust

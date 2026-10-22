@@ -172,6 +172,16 @@ multiplexer.
   / `agents{<model>}`, on the same `agent_model` window its chat turns land in) and refuses
   any model outside the set its rendered config routes to (`gateway_agent_models`, written
   by the render). No container holds a fleet-wide gateway secret.
+- **How an agent reads an image** comes from Talaria's own capability facts, rendered in
+  Hermes' keys (`fleet_vision` in talaria-fleet-render): each model the agent runs on whose
+  sight Talaria knows gets `model_overrides.custom.<id>.supports_vision`, so Hermes attaches
+  pixels to a model that sees and describes images for one that does not. The describer is
+  the org's `vision` role model, rendered as `auxiliary.vision` — routed and key-scoped like
+  any other spec — whenever one of the agent's models is not known to see; a blind agent
+  reads a chat image through it automatically and a tool's image (`fetch_attachment` hands
+  one back as a `MEDIA:` path) with Hermes' `vision_analyze`. A main model known to see is
+  pinned to `agent.image_input_mode: native`, so the describer never stands in for its own
+  eyes. Talaria serves no image tool of its own.
 - Each agent presents its own `tak_` key; the renderer rewrites `fleet/.env` from the DB
   every render (0600 in a 0700 dir).
 - **Blue/green rolls** (api/src/fleet/reconcile.rs): the incoming slot comes up on a fresh port,

@@ -1843,15 +1843,11 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::agents::agent_message_user::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
-        // The Muse, the image describer, the personal assistant, and the
-        // local-inference observability plane.
+        // The Muse, the personal assistant, and the local-inference
+        // observability plane.
         .route(
             "/api/muse",
             post(talaria_routes_fleet::agents::muse::post).fallback(|| async { method_not_allowed("POST") }),
-        )
-        .route(
-            "/api/vision/describe",
-            post(talaria_routes_fleet::agents::vision_describe::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/me/assistant",
