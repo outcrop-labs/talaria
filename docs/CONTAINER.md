@@ -495,10 +495,17 @@ exactly why the CLI steps aside. Because it steps aside entirely, the shared
 sidecar plane has to be IN that list (first): the wrappers' own `-f` pair is
 `docker/sidecars.compose.yml` then the base, and the env replaces both.
 An export that omits the fragment is repaired, not rejected: the wrapper
-prepends `docker/sidecars.compose.yml`, warns once with the corrected export
-spelled out, and re-exports the repaired list for the docker child — so an
-export made before the fragment existed keeps working, and `service
-install` captures the corrected list into the unit. Left to docker, the
+prepends `docker/sidecars.compose.yml` and re-exports the repaired list for
+the docker child — so an export made before the fragment existed keeps
+working, and `service install` captures the corrected list into the unit.
+It also fixes the export where it lives: a line in `~/.profile`,
+`~/.bashrc`, `~/.zshrc`, fish's `config.fish`, `/etc/environment` or
+`/etc/profile.d/*.sh` whose value is exactly the fragment-less list is
+rewritten to the repaired one (quotes, `export` and comments kept, nothing
+else in the file touched), and the run says which file. A shell opened
+before that fix gets one quiet line until it re-reads its profile; only an
+export the CLI cannot find (built from other variables, say) or cannot
+write still warns, naming the file when it knows it. Left to docker, the
 omission answers per-service (`service "postgres" has neither an image nor
 a build context`) beside a pull command, which reads like a reachability
 problem — which is why the CLI never leaves that error to speak for itself.
@@ -511,6 +518,14 @@ checkout AS the registry ref.
 export COMPOSE_FILE=docker/sidecars.compose.yml:docker/compose.yml:docker/compose.registry.yml   # shell or profile
 bun talaria deploy update    # git pull --ff-only → compose pull → up -d
 ```
+
+When the pull moves the checkout, `update` finishes on the CLI it just
+pulled: it re-launches `cli/bin/talaria.ts deploy update` for the compose
+half, because the running process loaded its code before the pull. Without
+that, an update whose pull changed the CLI ran the old logic against the new
+compose files once (`no such service: searxng-config` the day that sidecar
+left) and only a second run was clean. The first update that pulls this
+behaviour in still runs the old code; every one after it does not.
 
 The env must live in the SHELL (or the systemd unit — `talaria service
 install` captures it into the unit as `Environment=COMPOSE_FILE=…` when it is
