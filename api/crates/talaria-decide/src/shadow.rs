@@ -304,8 +304,8 @@ pub struct SiteShadow {
     /// Of those that answered, how many matched the baseline.
     pub agreed: i64,
     /// Of those that answered, how many carried a SINGLE judgment — a
-    /// probability or a certainty. A derived row (tool pruning's keep-set, the
-    /// brief's reorder) has neither, because no one number stands behind it,
+    /// probability or a certainty. A derived row (the brief's reorder, the
+    /// retrieval rerank) has neither, because no one number stands behind it,
     /// so counting those against `calibrated` would report every such site as
     /// entirely uncalibrated and warn about a distribution that was never
     /// supposed to be there.

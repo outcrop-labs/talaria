@@ -2004,21 +2004,34 @@ fn fleet_disabled_toolsets(
 /// `on` rather than lean on a default whose meaning is announced to change.
 /// A def that authored its own `enabled` keeps it — an operator's explicit
 /// call — and every other key in the block (`defer`, `threshold_pct`, …) is
-/// left alone the same way.
+/// left alone the same way. So does a def that wrote the block in a shape
+/// other than a map: Hermes reads the legacy `tool_search: false` as off
+/// (`ToolSearchConfig.from_raw`), and rewriting it to a map would flip that
+/// explicit off to on. A null at either level is nothing authored.
 fn fleet_tool_search(routed: &mut Map<String, Value>) {
-    let mut tools = routed
-        .get("tools")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let mut search = tools
-        .get("tool_search")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
+    let tools = routed
+        .entry("tools")
+        .and_modify(|v| {
+            if v.is_null() {
+                *v = json!({});
+            }
+        })
+        .or_insert_with(|| json!({}));
+    let Some(tools) = tools.as_object_mut() else {
+        return;
+    };
+    let search = tools
+        .entry("tool_search")
+        .and_modify(|v| {
+            if v.is_null() {
+                *v = json!({});
+            }
+        })
+        .or_insert_with(|| json!({}));
+    let Some(search) = search.as_object_mut() else {
+        return;
+    };
     search.entry("enabled").or_insert_with(|| json!("on"));
-    tools.insert("tool_search".into(), Value::Object(search));
-    routed.insert("tools".into(), Value::Object(tools));
 }
 
 /// s6 cont-init path. Lexicographic: after Hermes's `02-reconcile-profiles`,
@@ -2693,6 +2706,34 @@ service:
             partial.get("tools"),
             Some(&json!({ "tool_search": { "defer": [], "enabled": "on" } }))
         );
+
+        // The legacy bool form is a def's explicit call too: Hermes reads
+        // `tool_search: false` as off, so the render must not rewrite it
+        // into a map that says on. Same for a `tools` that is not a map.
+        for authored in [
+            json!({ "tool_search": false, "connectors": { "enabled": false } }),
+            json!({ "tool_search": true }),
+        ] {
+            let mut legacy = Map::new();
+            legacy.insert("tools".into(), authored.clone());
+            fleet_tool_search(&mut legacy);
+            assert_eq!(legacy.get("tools"), Some(&authored));
+        }
+        let mut odd = Map::new();
+        odd.insert("tools".into(), json!(["not", "a", "map"]));
+        fleet_tool_search(&mut odd);
+        assert_eq!(odd.get("tools"), Some(&json!(["not", "a", "map"])));
+
+        // A null at either level is nothing authored, and gets the pin.
+        for authored in [json!(null), json!({ "tool_search": null })] {
+            let mut empty = Map::new();
+            empty.insert("tools".into(), authored);
+            fleet_tool_search(&mut empty);
+            assert_eq!(
+                empty.get("tools"),
+                Some(&json!({ "tool_search": { "enabled": "on" } }))
+            );
+        }
     }
 
     #[test]

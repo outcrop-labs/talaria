@@ -13,10 +13,18 @@
 // bundled skill whose name a skill in `external_dirs` already provides: it
 // never writes it into the local tree, and it removes a byte-identical stale
 // copy an earlier sync left. So a replaced pack stays off an agent exactly
-// as long as every one of its skill names has a signpost — which is what the
-// tests below hold. Talaria used to `docker exec rm -rf` the replaced paths
+// as long as every one of its skill names has a signpost. The tests below
+// hold that for the names the JSON lists; the chassis smoke holds it for the
+// live image (every skill it finds under a replaced path must carry a listed,
+// signposted name). Talaria used to `docker exec rm -rf` the replaced paths
 // after every up and roll; that is gone, because Hermes now does the job
 // itself from the first boot, with no window between start and prune.
+//
+// A REPLACED PATH NAMES ONE SKILL, NEVER A CATEGORY. The deleted prune removed
+// whole `email/` and `note-taking/`, so a category path once cost nothing. Now
+// a sibling Hermes adds under a category would classify as replaced, carry a
+// name no signpost holds, and sync onto every agent. Narrowed to the skill
+// directory, the newcomer is unclassified and fails the test and the smoke.
 //
 // THE WEEKLY PROBLEM. Hermes adds packs. The classified catalog
 // (`scripts/hermes-skill-authority.json`) is the tripwire: every snapshot
@@ -135,6 +143,21 @@ mod tests {
         assert!(
             unknown.is_empty(),
             "unclassified Hermes packs (add to replaced, keepExact, or keepPrefixes): {unknown:?}"
+        );
+    }
+
+    #[test]
+    fn every_replaced_path_names_a_catalogued_skill_not_a_category() {
+        let catalog: HashSet<&str> = catalog().iter().map(|s| s.as_str()).collect();
+        let categories: Vec<&str> = authority()
+            .replaced
+            .iter()
+            .map(|r| r.path.as_str())
+            .filter(|p| !catalog.contains(p))
+            .collect();
+        assert!(
+            categories.is_empty(),
+            "replaced paths that are not a catalogued skill directory (name the skill, email/himalaya, not its category, email): {categories:?}"
         );
     }
 

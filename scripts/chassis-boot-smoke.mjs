@@ -23,6 +23,9 @@
 //      SKILL.md under /opt/data/skills. Any pack not in
 //      scripts/hermes-skill-authority.json (replaced / keepExact / apple/) is
 //      a weekly Hermes add that would teach the fleet a parallel workspace.
+//      And every skill under a replaced path must carry a frontmatter name
+//      that entry lists and a scripts/skills signpost declares — that name is
+//      the only thing that keeps Hermes from syncing it onto an agent.
 //
 // WHAT THIS DELIBERATELY DOES NOT ASSERT: that the agent is HEALTHY. Hermes
 // only starts its API server — the thing behind `/health` — once it has a
@@ -51,7 +54,14 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { createRequire } from 'node:module'
-import { loadAuthority, unclassified, packFromSkillFile } from './hermes-skill-authority.mjs'
+import {
+  loadAuthority,
+  unclassified,
+  packFromSkillFile,
+  frontmatterName,
+  declaredSignpostNames,
+  uncoveredReplacedSkills,
+} from './hermes-skill-authority.mjs'
 
 const exec = promisify(execFile)
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -220,15 +230,29 @@ async function main() {
     // The JSON snapshot is a docs dump; this is the image. A pack Hermes
     // added since the snapshot was written is unclassified until someone
     // decides replace-or-keep (and occupies its names with signposts).
+    // The booted agent lists no external_dirs, so skills_sync writes every
+    // bundled skill into its tree and the find sees the whole library. Each
+    // SKILL.md's head comes back too: Hermes defers a bundled skill by its
+    // frontmatter name, so a skill under a replaced path whose name no
+    // signpost declares is one Hermes syncs onto every agent.
     const find = [
       'for r in /opt/data/skills /root/.hermes/skills /home/hermes/.hermes/skills /opt/data/.hermes/skills; do',
-      '  if [ -d "$r" ]; then find "$r" -name SKILL.md | sed "s|^$r/||"; fi',
+      '  if [ -d "$r" ]; then find "$r" -name SKILL.md | while IFS= read -r f; do',
+      '    printf "@@SKILL %s\\n" "${f#"$r"/}"; head -n 40 "$f"',
+      '  done; fi',
       'done',
     ].join('\n')
     const { stdout: skillOut } = await docker(['exec', CONTAINER, 'sh', '-c', find]).catch(() => ({ stdout: '' }))
-    const packs = [...new Set(
-      skillOut.split('\n').map((l) => l.trim()).filter(Boolean).map(packFromSkillFile),
-    )]
+    const skills = skillOut
+      .split(/^@@SKILL /m)
+      .slice(1)
+      .map((chunk) => {
+        const nl = chunk.indexOf('\n')
+        const rel = (nl < 0 ? chunk : chunk.slice(0, nl)).trim()
+        return { pack: packFromSkillFile(rel), name: frontmatterName(nl < 0 ? '' : chunk.slice(nl + 1)) }
+      })
+      .filter((s) => s.pack)
+    const packs = [...new Set(skills.map((s) => s.pack))]
     if (packs.length === 0) {
       fail(
         'no bundled SKILL.md under /opt/data/skills (or ~/.hermes/skills) after init. ' +
@@ -236,16 +260,24 @@ async function main() {
       )
     } else {
       log(`image ships ${packs.length} bundled skill packs`)
-      const unknown = unclassified(packs, loadAuthority(REPO))
+      const cat = loadAuthority(REPO)
+      const unknown = unclassified(packs, cat)
+      const uncovered = uncoveredReplacedSkills(skills, cat, declaredSignpostNames(REPO))
       if (unknown.length) {
         fail(
           'the live Hermes image ships packs scripts/hermes-skill-authority.json has not classified:\n  ' +
             unknown.join('\n  ') +
             '\nAdd each to replaced (plus a scripts/skills/<signpost> SKILL.md) or keepExact.',
         )
-      } else {
-        log('bundled skills classified ✓')
       }
+      if (uncovered.length) {
+        fail(
+          'the live Hermes image ships replaced skills no Talaria signpost holds, so skills_sync installs them:\n  ' +
+            uncovered.join('\n  ') +
+            '\nList the name in that entry\'s names[] and add a scripts/skills/<name>/SKILL.md whose frontmatter name: is it.',
+        )
+      }
+      if (!unknown.length && !uncovered.length) log('bundled skills classified, every replaced name held ✓')
     }
 
     // ── 2. does it stop cleanly ───────────────────────────────────────────

@@ -265,9 +265,8 @@ pub async fn patch(
     // problem.
     //
     // A toolset change rolls for the same reason and in the same stroke: the
-    // disabled list is read into the harness at start, and opening `browser`
-    // also has to pay for the Chromium install the post-health step runs on a
-    // fresh container. Both switches in one PATCH are still ONE roll.
+    // disabled list is read into the harness at start. Both switches in one
+    // PATCH are still ONE roll.
     //
     // THE ROLL NEVER FAILS THE PATCH. The switch is already stored by the
     // time the roll is queued, and a box the api cannot open is the roll's

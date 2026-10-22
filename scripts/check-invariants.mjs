@@ -49,7 +49,12 @@
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { loadAuthority, unclassified as unclassifiedHermes } from './hermes-skill-authority.mjs'
+import {
+  loadAuthority,
+  unclassified as unclassifiedHermes,
+  declaredSignpostNames,
+  replacedPathsNotCatalogued,
+} from './hermes-skill-authority.mjs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -1135,6 +1140,7 @@ for (const rule of CENSUS) {
     ['api/crates/talaria-harness-defs/src/registry.rs', 'fn every_backend_is_exercised_by_a_test_or_a_harness_surface'],
     ['api/crates/talaria-hermes-skills/src/lib.rs', 'fn every_catalogued_hermes_pack_is_classified'],
     ['api/crates/talaria-hermes-skills/src/lib.rs', 'fn every_replaced_pack_has_a_signpost_skill_occupying_the_name'],
+    ['api/crates/talaria-hermes-skills/src/lib.rs', 'fn every_replaced_path_names_a_catalogued_skill_not_a_category'],
   ]
   const missing = ANCHORS.filter(([path, anchor]) => !readFileSync(join(ROOT, path), 'utf8').includes(anchor))
   if (missing.length) {
@@ -1442,7 +1448,7 @@ for (const rule of CENSUS) {
           'teach the fleet a parallel workspace by omission.',
           ...unknown.map((u) => `  ${u}`),
         ],
-        found: unknown.map((u) => ({ file: 'scripts/hermes-skill-authority.json', line: 1, excerpt: u })),
+        found: unknown.map((u) => ({ path: 'scripts/hermes-skill-authority.json', line: 1, text: u })),
       })
     }
     const missing = []
@@ -1452,19 +1458,26 @@ for (const rule of CENSUS) {
         missing.push(`${r.path} → scripts/skills/${r.signpost}/SKILL.md (${r.why})`)
       }
     }
+    // A replaced path names one skill directory, never a category. Under a
+    // category prefix, a sibling Hermes adds next week classifies as replaced
+    // while no signpost holds its name, and nothing deletes it any more.
+    const categories = replacedPathsNotCatalogued(cat)
+    if (categories.length) {
+      failures.push({
+        id: 'hermes-skill-replaced-category',
+        what: 'a replaced Hermes path is not a catalogued skill directory',
+        fix: [
+          'Name the skill (email/himalaya), not its category (email). A category',
+          'prefix classifies every sibling Hermes adds as replaced while no',
+          'signpost holds its name, so Hermes syncs it onto every agent.',
+          ...categories.map((p) => `  ${p}`),
+        ],
+        found: categories.map((p) => ({ path: 'scripts/hermes-skill-authority.json', line: 1, text: p })),
+      })
+    }
     // Every name, not any one: the frontmatter `name:` of each signpost is
     // what Hermes matches, so a body that merely mentions a name is no cover.
-    const declared = new Set()
-    const skillsRoot = join(ROOT, 'scripts/skills')
-    for (const dir of existsSync(skillsRoot) ? readdirSync(skillsRoot) : []) {
-      const file = join(skillsRoot, dir, 'SKILL.md')
-      if (!existsSync(file)) continue
-      const front = readFileSync(file, 'utf8').match(/^---\r?\n([\s\S]*?)\r?\n---/)
-      for (const line of front ? front[1].split(/\r?\n/) : []) {
-        const m = line.match(/^name:\s*(.+?)\s*$/)
-        if (m) declared.add(m[1])
-      }
-    }
+    const declared = declaredSignpostNames(ROOT)
     for (const r of replaced) {
       for (const n of r.names || []) {
         if (!declared.has(n)) {

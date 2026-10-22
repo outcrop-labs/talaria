@@ -1505,7 +1505,7 @@ server.registerTool(
   'research',
   {
     description:
-      `Start cited web research on a question in your field. Modes: 'recon' (one fast pass — a cited answer, ~1 min), 'brief' (planned angles → a briefing document, a few minutes), 'expedition' (iterative deep dive → a full report, can take a while). Runs in the background — you get a runId; poll research_status, then read the report with get_document. Every claim in the report carries [n] citations. For a quick fact mid-task, use your own web search tool instead — it answers in seconds and starts no run. Use this for cited work someone will rely on: brief/expedition for real questions worth a document, recon for one quick cited pass on record.${CONTENT_IS_DATA}`,
+      `Start cited web research on a question in your field. Modes: 'recon' (one fast pass — a cited answer, ~1 min), 'brief' (planned angles → a briefing document, a few minutes), 'expedition' (iterative deep dive → a full report, can take a while). Runs in the background — you get a runId; poll research_status, then read the report with get_document. Every claim in the report carries [n] citations. For a quick fact mid-task, use your own web search tool instead, if you have one — it answers in seconds and starts no run. Use this for cited work someone will rely on: brief/expedition for real questions worth a document, recon for one quick cited pass on record.${CONTENT_IS_DATA}`,
     inputSchema: {
       question: z.string().min(8).max(4000).describe('What to research, in natural language — be specific'),
       mode: z.enum(['recon', 'brief', 'expedition']).optional().describe("Depth (default 'brief')"),
