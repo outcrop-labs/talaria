@@ -8,7 +8,9 @@
 // instance. The browser needs exactly three things — app.js, app.css and the
 // chunks and files under assets/ that they pull in (lib/apps.ts,
 // AppSurface.svelte) — so that is the whole list, and the same gate the app's
-// API uses (app-access.ts) decides who gets them.
+// API uses (app-access.ts) decides who gets them. assets/ is the CLIENT
+// build's alone: the server and MCP builds write their chunks to _server/ and
+// _mcp/ (app-build/build.ts `serverishFileNames`), never here.
 //
 // Served from the one fetch handler (server/app.ts), so `server-entry.ts` in
 // production and the dev middleware (app-runtime/vite-plugin.ts) answer

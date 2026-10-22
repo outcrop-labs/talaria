@@ -76,7 +76,10 @@ pub async fn put(
         // The same whitelist a person's grants pass through: the core manage
         // views plus every enabled app's views. App views were filtered out
         // here once, so a team could never be granted an app.
-        let views = grantable_manage_views(&state.pg).await;
+        let views = match grantable_manage_views(&state.pg).await {
+            Ok(v) => v,
+            Err(e) => return Ok(internal("[teams] grantable views read failed", e)),
+        };
         let valid: Vec<String> = allowed.into_iter().filter(|v| views.contains(v)).collect();
         if let Err(e) = set_team_allowed_manage_views(&state.pg, &id, &valid).await {
             return Ok(internal("[teams] manage views write failed", e));

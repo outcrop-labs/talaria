@@ -8,8 +8,11 @@ import { describe, expect, it } from 'vitest'
 import { appManageItem, appWorkItem, navActiveItem, navSections, type AppManifestLike } from './nav-sections'
 import type { NavSection } from './nav'
 
-const member = { isAdmin: false, denied: [] as string[] }
-const admin = { isAdmin: true, denied: [] as string[] }
+const member = { isAdmin: false, denied: [] as string[], appGrants: [] as string[] }
+const admin = { isAdmin: true, denied: [] as string[], appGrants: [] as string[] }
+// A member holding every app view these fixtures use: the layout cases below
+// are about where app entries land, not whether they are granted.
+const holder = { ...member, appGrants: ['/x/crm', '/x/crm/manage', '/x/leadworks', '/x/leadworks/manage'] }
 
 // Shaped like the real NAV: Work has no title (the views are the label),
 // Manage keeps one because it is the control plane.
@@ -49,7 +52,7 @@ describe('navSections', () => {
 
   it('slots app manage surfaces under the manage section, by section id', () => {
     const crm = app('crm', { work: 'CRM', manage: 'CRM Admin' })
-    const sections = navSections(CORE, [appWorkItem(crm)!], [appManageItem(crm)!], member)
+    const sections = navSections(CORE, [appWorkItem(crm)!], [appManageItem(crm)!], holder)
     expect(sections.map((s) => s.id)).toEqual(['work', 'apps', 'manage'])
     const manage = sections.find((s) => s.id === 'manage')
     expect(manage!.items.map((i) => i.to)).toEqual(['/agents', '/teams', '/x/crm/manage'])
@@ -63,7 +66,7 @@ describe('navSections', () => {
       CORE,
       [appWorkItem(crm)!, appWorkItem(lead)!],
       [appManageItem(crm)!],
-      member,
+      holder,
     )
     expect(sections.map((s) => s.id)).toEqual(['work', 'apps', 'manage'])
     const apps = sections.find((s) => s.id === 'apps')
@@ -73,13 +76,13 @@ describe('navSections', () => {
 
   it('keeps Apps ahead of Manage when Work is entirely denied — and at the top when nothing core survives', () => {
     const lead = app('leadworks', { work: 'Leads' })
-    const workDenied = navSections(CORE, [appWorkItem(lead)!], [], { isAdmin: false, denied: ['/home', '/comms', '/boards'] })
+    const workDenied = navSections(CORE, [appWorkItem(lead)!], [], { ...holder, denied: ['/home', '/comms', '/boards'] })
     expect(workDenied.map((s) => s.id)).toEqual(['apps', 'manage'])
     const allDenied = navSections(
       CORE,
       [appWorkItem(lead)!],
       [],
-      { isAdmin: false, denied: ['/home', '/comms', '/boards', '/agents', '/teams'] },
+      { ...holder, denied: ['/home', '/comms', '/boards', '/agents', '/teams'] },
     )
     expect(allDenied.map((s) => s.id)).toEqual(['apps'])
   })
@@ -88,7 +91,7 @@ describe('navSections', () => {
     const crm = app('crm', { manage: 'CRM Admin' })
     const sections = navSections(CORE, [], [appManageItem(crm)!], member)
     expect(sections.map((s) => s.id)).toEqual(['work', 'manage'])
-    const manageDenied = navSections(CORE, [], [], { isAdmin: false, denied: ['/agents', '/teams'] })
+    const manageDenied = navSections(CORE, [], [], { ...member, denied: ['/agents', '/teams'] })
     expect(manageDenied.map((s) => s.id)).toEqual(['work'])
   })
 
@@ -107,18 +110,18 @@ describe('navSections', () => {
   })
 
   it('filters by denied views — the view itself and anything nested under it', () => {
-    const sections = navSections(CORE, [], [], { isAdmin: false, denied: ['/boards'] })
+    const sections = navSections(CORE, [], [], { ...member, denied: ['/boards'] })
     expect(sections[0]!.items.map((i) => i.to)).toEqual(['/home', '/comms'])
     // Prefix denial: /boards gone also takes a hypothetical /boards/… item,
     // while a merely-similar prefix (/boardroom) stays.
     const nested: NavSection[] = [
       { id: 'work', items: [{ to: '/boards', label: 'Boards', icon: 'b' }, { to: '/boardroom', label: 'Boardroom', icon: 'r' }] },
     ]
-    expect(navSections(nested, [], [], { isAdmin: false, denied: ['/boards'] })[0]!.items.map((i) => i.to)).toEqual(['/boardroom'])
+    expect(navSections(nested, [], [], { ...member, denied: ['/boards'] })[0]!.items.map((i) => i.to)).toEqual(['/boardroom'])
     // Denial does not outrank role: an adminOnly item stays denied even for
     // an admin (deniedViews is empty for admins in practice, but the rule
     // must not depend on that).
-    const adminDenied = navSections(CORE, [], [], { isAdmin: true, denied: ['/teams'] })
+    const adminDenied = navSections(CORE, [], [], { ...admin, denied: ['/teams'] })
     expect(adminDenied.find((s) => s.id === 'manage')!.items.map((i) => i.to)).toEqual(['/agents'])
   })
 
@@ -127,11 +130,9 @@ describe('navSections', () => {
     const lead = app('leadworks', { work: 'Leads', manage: 'Leads Admin' })
     const work = [appWorkItem(crm)!, appWorkItem(lead)!]
     const manage = [appManageItem(crm)!, appManageItem(lead)!]
-    const grants = (...granted: string[]) => ({
-      isAdmin: false,
-      // Rust's deniedViews lists every app view the member was not granted.
-      denied: ['/x/crm', '/x/crm/manage', '/x/leadworks', '/x/leadworks/manage'].filter((v) => !granted.includes(v)),
-    })
+    // The session lists the app views a member holds (`appGrants`); an app
+    // entry shows only on a listed grant, whatever the denials leave out.
+    const grants = (...granted: string[]) => ({ isAdmin: false, denied: [] as string[], appGrants: granted })
     const tos = (sections: NavSection[], id: string) => sections.find((s) => s.id === id)?.items.map((i) => i.to)
 
     const none = navSections(CORE, work, manage, grants())
@@ -164,7 +165,7 @@ describe('navActiveItem', () => {
 
   it('most specific wins across sections — an app manage surface beats its work surface', () => {
     const crm = app('crm', { work: 'CRM', manage: 'CRM Admin' })
-    const sections = navSections(CORE, [appWorkItem(crm)!], [appManageItem(crm)!], member)
+    const sections = navSections(CORE, [appWorkItem(crm)!], [appManageItem(crm)!], holder)
     expect(navActiveItem('/x/crm', sections)).toMatchObject({ to: '/x/crm' })
     expect(navActiveItem('/x/crm/manage', sections)).toMatchObject({ to: '/x/crm/manage' })
     // Exactly one item claims the route, not two: the work surface must not

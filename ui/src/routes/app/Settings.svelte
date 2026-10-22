@@ -10,13 +10,13 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import Panel from '@/components/ui/Panel.svelte'
-  import { useDeniedViews, useSession } from '@/lib/session'
+  import { useAppGrants, useSession } from '@/lib/session'
   import { putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import AssistantSection from '@/components/assistant/AssistantSection.svelte'
   import AppSurface from '@/components/app/AppSurface.svelte'
   import { useEnabledApps } from '@/lib/apps'
-  import { appManageView, isViewDenied } from '@/lib/app-grants'
+  import { appAccess } from '@/lib/app-grants'
   import Tabs from '@/components/ui/Tabs.svelte'
   import { fly, staggerIn } from '@/lib/motion'
   import { claimViewTitle } from '@/lib/view-title.svelte'
@@ -79,10 +79,10 @@
   // A failed /api/apps used to remove app settings TABS with no trace — the
   // settings for an app you have simply were not there.
   const appsList = listQuery(useEnabledApps(), { title: 'Could not load app settings tabs', variant: 'inline' })
-  const deniedForApps = useDeniedViews()
+  const appGrants = useAppGrants()
   const appTabs = $derived(
     appsList.rows
-      .filter((a) => a.surfaces.settings && !isViewDenied(appManageView(a.slug), deniedForApps.current))
+      .filter((a) => appAccess(a, { isAdmin: user?.role === 'admin', appGrants: appGrants.current }).settings)
       .map((a) => ({ id: `app:${a.slug}` as SettingsTab, label: a.surfaces.settings! })),
   )
 

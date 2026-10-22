@@ -29,6 +29,9 @@ export function useIsAdmin(user: SessionUser | null | undefined): boolean {
 interface SessionResult {
   user: SessionUser | null
   deniedViews: string[]
+  /** The app views this person holds (lib/app-grants.ts). Empty for an
+   *  admin, who holds every app by role. */
+  appGrants: string[]
   perms: string[]
 }
 
@@ -45,9 +48,11 @@ interface SessionResult {
 // used to. getList already refuses to read a missing wrapper key as an empty
 // list; this refuses to read a missing `user` key as a logout.
 const fetchSession = async (): Promise<SessionResult> => {
-  const data = await getJson<{ user?: SessionUser | null; deniedViews?: string[]; perms?: string[] }>('/api/auth/session')
+  const data = await getJson<{ user?: SessionUser | null; deniedViews?: string[]; appGrants?: string[]; perms?: string[] }>('/api/auth/session')
   if (data.user === undefined) throw new Error('malformed response from /api/auth/session: no "user" field')
-  return { user: data.user, deniedViews: data.deniedViews ?? [], perms: data.perms ?? [] }
+  // A missing `appGrants` holds no app: the nav and the route gate admit an
+  // app view only on a listed grant, so the default fails closed.
+  return { user: data.user, deniedViews: data.deniedViews ?? [], appGrants: data.appGrants ?? [], perms: data.perms ?? [] }
 }
 
 export function useSession() {
@@ -80,6 +85,18 @@ export function useHasPerm(perm: MaybeGetter<string>): { readonly current: boole
  *  Same `{ current }` box as `useHasPerm`, for the same reason. */
 export function useDeniedViews(): { readonly current: string[] } {
   const query = createQuery(() => ({ queryKey: ['session'], queryFn: fetchSession, select: (d: SessionResult) => d.deniedViews }))
+  return {
+    get current() {
+      return query.data ?? []
+    },
+  }
+}
+
+/** The app views the current user holds — what an app's nav entry, route and
+ *  settings tab open on (lib/app-grants.ts). Empty for admins, who hold every
+ *  app by role. Same `{ current }` box as `useDeniedViews`. */
+export function useAppGrants(): { readonly current: string[] } {
+  const query = createQuery(() => ({ queryKey: ['session'], queryFn: fetchSession, select: (d: SessionResult) => d.appGrants }))
   return {
     get current() {
       return query.data ?? []

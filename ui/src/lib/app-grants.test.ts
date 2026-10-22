@@ -1,26 +1,38 @@
 // The app grant rule, pinned: each surface its own grant, the settings tab on
-// the manage grant, app views matched exactly while core views keep their
-// prefix denial. Every door that serves an app reads these functions.
+// the manage grant, app views opened only by a listed grant while core views
+// keep their prefix denial. Every door that serves an app reads these
+// functions. The cross-runtime half (Rust resolves the grants this reads) is
+// server/app-grants.fixture.test.ts.
 import { describe, expect, it } from 'vitest'
 import { appAccess, appGrantViews, appGrantViewsOf, appViewFor, isViewDenied, reachesApp, type AppGrantSubject } from './app-grants'
 
-const app = (slug: string, surfaces: AppGrantSubject['surfaces']): AppGrantSubject => ({ slug, surfaces })
-const full = app('crm', { work: 'CRM', manage: 'CRM Admin', settings: 'CRM' })
-const member = (denied: string[]) => ({ isAdmin: false, denied })
+const app = (slug: string, surfaces: AppGrantSubject['surfaces'], name?: string): AppGrantSubject => ({ slug, surfaces, ...(name ? { name } : {}) })
+const full = app('crm', { work: 'CRM', manage: 'CRM Admin', settings: 'CRM' }, 'CRM')
+/** A member holding exactly these app views (the session's `appGrants`). */
+const member = (appGrants: string[], denied: string[] = []) => ({ isAdmin: false, denied, appGrants })
+const admin = { isAdmin: true, denied: [] as string[], appGrants: [] as string[] }
 
 describe('appGrantViews', () => {
   it('offers the work view and the manage view as two grants', () => {
     expect(appGrantViews(full)).toEqual([
-      { to: '/x/crm', label: 'CRM', surface: 'work' },
-      { to: '/x/crm/manage', label: 'CRM Admin', surface: 'manage' },
+      { to: '/x/crm', label: 'CRM', surface: 'work', title: 'CRM · work' },
+      { to: '/x/crm/manage', label: 'CRM Admin', surface: 'manage', title: 'CRM · manage' },
     ])
   })
 
   it('gives a settings-only app a manage view to grant, labeled by its settings tab', () => {
     // Before: no view at all, so the tab and its server were open to everyone.
-    expect(appGrantViews(app('prefs', { settings: 'Prefs' }))).toEqual([
-      { to: '/x/prefs/manage', label: 'Prefs', surface: 'manage' },
+    expect(appGrantViews(app('prefs', { settings: 'Prefs' }, 'Prefs'))).toEqual([
+      { to: '/x/prefs/manage', label: 'Prefs', surface: 'manage', title: 'Prefs · settings' },
     ])
+  })
+
+  it('titles two views of one app apart even when their surfaces share a label', () => {
+    // Work "CRM" and settings "CRM" used to read as two identical "CRM" rows.
+    const views = appGrantViews(app('crm', { work: 'CRM', settings: 'CRM' }, 'CRM'))
+    expect(views.map((v) => v.title)).toEqual(['CRM · work', 'CRM · settings'])
+    // No name: the slug stands in.
+    expect(appGrantViews(app('wiki', { work: 'Wiki' }))[0]!.title).toBe('wiki · work')
   })
 
   it('offers nothing for an app with no surface', () => {
@@ -52,40 +64,54 @@ describe('appViewFor', () => {
 })
 
 describe('isViewDenied', () => {
-  it('lets a manage-only grant through while the work view stays denied', () => {
-    const denied = ['/x/crm']
-    expect(isViewDenied('/x/crm', denied)).toBe(true)
-    expect(isViewDenied('/x/crm/deals', denied)).toBe(true)
+  it('opens a manage-only grant while the work view stays shut', () => {
+    const v = member(['/x/crm/manage'])
+    expect(isViewDenied('/x/crm', v)).toBe(true)
+    expect(isViewDenied('/x/crm/deals', v)).toBe(true)
     // The bug: the prefix rule took /x/crm/manage down with /x/crm.
-    expect(isViewDenied('/x/crm/manage', denied)).toBe(false)
-    expect(isViewDenied('/x/crm/manage/fields', denied)).toBe(false)
+    expect(isViewDenied('/x/crm/manage', v)).toBe(false)
+    expect(isViewDenied('/x/crm/manage/fields', v)).toBe(false)
   })
 
-  it('denies the manage view to a work-only grant, and only that', () => {
-    const denied = ['/x/crm/manage']
-    expect(isViewDenied('/x/crm/manage', denied)).toBe(true)
-    expect(isViewDenied('/x/crm/manage/fields', denied)).toBe(true)
-    expect(isViewDenied('/x/crm', denied)).toBe(false)
+  it('shuts the manage view to a work-only grant, and only that', () => {
+    const v = member(['/x/crm'])
+    expect(isViewDenied('/x/crm/manage', v)).toBe(true)
+    expect(isViewDenied('/x/crm/manage/fields', v)).toBe(true)
+    expect(isViewDenied('/x/crm', v)).toBe(false)
   })
 
-  it('keeps prefix denial for core views', () => {
-    expect(isViewDenied('/boards/abc', ['/boards'])).toBe(true)
-    expect(isViewDenied('/boards', ['/boards'])).toBe(true)
-    expect(isViewDenied('/boardsx', ['/boards'])).toBe(false)
-    expect(isViewDenied('/agents', [])).toBe(false)
+  it('never opens an app view a list left out — absence from the denials is not a grant', () => {
+    // The fail-open: Rust could not read the enabled apps, left their views
+    // out of deniedViews, and every member got every app. Nothing listed,
+    // nothing open, whatever deniedViews says.
+    expect(isViewDenied('/x/crm', member([], []))).toBe(true)
+    expect(isViewDenied('/x/crm/manage', member([], []))).toBe(true)
+  })
+
+  it('opens every app view to an admin by role, with an empty grant list', () => {
+    expect(isViewDenied('/x/crm', admin)).toBe(false)
+    expect(isViewDenied('/x/crm/manage/fields', admin)).toBe(false)
+  })
+
+  it('keeps prefix denial for core views, for admins too', () => {
+    expect(isViewDenied('/boards/abc', member([], ['/boards']))).toBe(true)
+    expect(isViewDenied('/boards', member([], ['/boards']))).toBe(true)
+    expect(isViewDenied('/boardsx', member([], ['/boards']))).toBe(false)
+    expect(isViewDenied('/agents', member([]))).toBe(false)
+    expect(isViewDenied('/teams', { ...admin, denied: ['/teams'] })).toBe(true)
   })
 
   it('never lets one app grant open another app', () => {
-    expect(isViewDenied('/x/crm', ['/x/crm', '/x/wiki'])).toBe(true)
-    expect(isViewDenied('/x/wiki/manage', ['/x/wiki/manage'])).toBe(true)
-    expect(isViewDenied('/x/crm', ['/x/wiki'])).toBe(false)
+    expect(isViewDenied('/x/crm', member(['/x/wiki']))).toBe(true)
+    expect(isViewDenied('/x/wiki/manage', member(['/x/wiki']))).toBe(true)
+    expect(isViewDenied('/x/wiki', member(['/x/wiki']))).toBe(false)
   })
 })
 
 describe('appAccess', () => {
   it('gives an admin every surface the app ships, and only those', () => {
-    expect(appAccess(full, { isAdmin: true, denied: [] })).toEqual({ admin: true, work: true, manage: true, settings: true })
-    expect(appAccess(app('wiki', { work: 'Wiki' }), { isAdmin: true, denied: [] })).toEqual({
+    expect(appAccess(full, admin)).toEqual({ admin: true, work: true, manage: true, settings: true })
+    expect(appAccess(app('wiki', { work: 'Wiki' }), admin)).toEqual({
       admin: true,
       work: true,
       manage: false,
@@ -93,21 +119,17 @@ describe('appAccess', () => {
     })
   })
 
-  it('reads each surface from its own grant', () => {
-    // Rust denies every app view the member was not granted.
-    const none = member(['/x/crm', '/x/crm/manage'])
-    const workOnly = member(['/x/crm/manage'])
-    const manageOnly = member(['/x/crm'])
-    expect(appAccess(full, none)).toEqual({ admin: false, work: false, manage: false, settings: false })
-    expect(appAccess(full, workOnly)).toEqual({ admin: false, work: true, manage: false, settings: false })
+  it('reads each surface from its own listed grant', () => {
+    expect(appAccess(full, member([]))).toEqual({ admin: false, work: false, manage: false, settings: false })
+    expect(appAccess(full, member(['/x/crm']))).toEqual({ admin: false, work: true, manage: false, settings: false })
     // The settings tab follows the manage grant.
-    expect(appAccess(full, manageOnly)).toEqual({ admin: false, work: false, manage: true, settings: true })
+    expect(appAccess(full, member(['/x/crm/manage']))).toEqual({ admin: false, work: false, manage: true, settings: true })
   })
 
   it('gates a settings-only app on its manage view', () => {
     const prefs = app('prefs', { settings: 'Prefs' })
-    expect(appAccess(prefs, member(['/x/prefs/manage'])).settings).toBe(false)
-    expect(appAccess(prefs, member([])).settings).toBe(true)
+    expect(appAccess(prefs, member([])).settings).toBe(false)
+    expect(appAccess(prefs, member(['/x/prefs/manage'])).settings).toBe(true)
   })
 })
 
@@ -122,6 +144,6 @@ describe('reachesApp', () => {
   it('admits only admins to an app with nothing to grant', () => {
     const bare = app('bare', {})
     expect(reachesApp(appAccess(bare, member([])))).toBe(false)
-    expect(reachesApp(appAccess(bare, { isAdmin: true, denied: [] }))).toBe(true)
+    expect(reachesApp(appAccess(bare, admin))).toBe(true)
   })
 })

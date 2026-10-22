@@ -18,7 +18,7 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import ThemeToggle from '@/components/ThemeToggle.svelte'
-  import { useDeniedViews, useLogout, useSession } from '@/lib/session'
+  import { useAppGrants, useDeniedViews, useLogout, useSession } from '@/lib/session'
   import { upgradeDitherSurfaces } from '@/lib/dither-surface'
   import { ADMIN_VIEWS } from '@/lib/nav'
   import { isViewDenied } from '@/lib/app-grants'
@@ -44,6 +44,7 @@
 
   const session = useSession()
   const denied = useDeniedViews()
+  const appGrants = useAppGrants()
   const logout = useLogout()
   // THE FIREHOSE'S ONE MOUNT. Everything live that is not a page's own stream
   // rides this: the bell, the rails' badges, a run finishing off-page. One
@@ -125,13 +126,14 @@
   // Route gate: a denied or role-gated view isn't just hidden from the nav —
   // reaching it by URL bounces to Home. Core views match by prefix (/boards
   // denies /boards/x); an app's work and manage views are separate grants,
-  // matched exactly, so a manage-only grant opens /x/<slug>/manage
-  // (isViewDenied, app-grants.ts).
+  // each open only when the session lists it, so a manage-only grant opens
+  // /x/<slug>/manage (isViewDenied, app-grants.ts).
   $effect(() => {
     const u = session.data
     if (!u) return
-    const blocked = u.role === 'admin' ? denied.current : [...denied.current, ...ADMIN_VIEWS]
-    if (isViewDenied(route.pathname, blocked)) void navigate('/')
+    const isAdmin = u.role === 'admin'
+    const blocked = isAdmin ? denied.current : [...denied.current, ...ADMIN_VIEWS]
+    if (isViewDenied(route.pathname, { isAdmin, denied: blocked, appGrants: appGrants.current })) void navigate('/')
   })
 
   // THE AUTH GATE PAINTS NOTHING IT MIGHT TAKE BACK. While the session read is

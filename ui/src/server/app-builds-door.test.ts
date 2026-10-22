@@ -106,3 +106,21 @@ describe('serveAppBuild', () => {
     expect(await res.text()).toBe('')
   })
 })
+
+describe('the SSR builds stay behind the door', () => {
+  it('names every server and MCP chunk outside assets/, where the door never serves', async () => {
+    // A dynamic import() in server.ts or mcp.ts splits a chunk off the SSR
+    // build. Vite's default put it in assets/ beside the client's files, and
+    // the door hands assets/** to anyone holding the app.
+    const { serverishFileNames } = await import('./app-build/build')
+    for (const out of [join(dir, 'server.js'), join(dir, 'mcp.js')]) {
+      const names = serverishFileNames(out)
+      expect(names.entryFileNames).toBe(out.endsWith('mcp.js') ? 'mcp.js' : 'server.js')
+      for (const pattern of [names.chunkFileNames, names.assetFileNames]) {
+        expect(pattern.startsWith('assets/')).toBe(false)
+        const emitted = pattern.replace('[name]', 'lazy').replace('[hash]', 'Ab12Cd34').replace('[extname]', '.js')
+        expect(appBuildAsset(`/app-builds/crm/${KEY}/${emitted}`), emitted).toBeNull()
+      }
+    }
+  })
+})

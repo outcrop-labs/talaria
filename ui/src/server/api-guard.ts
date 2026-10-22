@@ -33,8 +33,8 @@ export async function requireAdmin(request: Request): Promise<SessionUser | Resp
  *  caller's grants (person + teams + agent managers, `GET /api/auth/session`
  *  — the one resolution; this host keeps no copy of it). A core view is denied
  *  by itself or a denied view above it ('x' denies 'x/anything'); an app's
- *  work and manage views are separate grants matched exactly
- *  (lib/app-grants.ts). Admins are exempt. The same rule the nav and route
+ *  work and manage views are separate grants, each open only when the
+ *  session lists it in `appGrants` (lib/app-grants.ts). Admins are exempt. The same rule the nav and route
  *  gate use. For an app's own routes use `authorizeApp` (app-access.ts),
  *  which also tells the app which surfaces the caller holds. */
 export async function requireView(request: Request, view: string): Promise<SessionUser | Response> {
@@ -47,7 +47,7 @@ export async function requireView(request: Request, view: string): Promise<Sessi
   }
   const user = session.user
   if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-  if (user.role !== 'admin' && isViewDenied(view, session.deniedViews)) {
+  if (user.role !== 'admin' && isViewDenied(view, { isAdmin: false, denied: session.deniedViews, appGrants: session.appGrants })) {
     return json({ error: 'forbidden' }, { status: 403 })
   }
   return user

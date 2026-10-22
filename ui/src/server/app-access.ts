@@ -9,9 +9,10 @@
 // the gateway, the nav and the route gate can never disagree again.
 //
 // THE RULE is app-grants.ts: each surface is its own grant, and a caller
-// reaches the app when they hold at least one. The app learns which ones
-// (`ctx.access`) so it can refuse a manage-only endpoint to a work-only
-// caller itself.
+// reaches the app when they hold at least one — read off the session's
+// `appGrants`, the app views Rust lists as theirs, never off a view missing
+// from `deniedViews`. The app learns which ones (`ctx.access`) so it can
+// refuse a manage-only endpoint to a work-only caller itself.
 import { appAccess, reachesApp, type AppAccess } from '@/lib/app-grants'
 import type { SessionUser } from './auth/session'
 import { json } from './http'
@@ -39,22 +40,32 @@ export function decideAppGate(session: RustSession, apps: readonly AppManifest[]
   if (!user) return { ok: false, response: json({ error: 'unauthorized' }, { status: 401 }) }
   const app = apps.find((a) => a.slug === slug)
   if (!app) return { ok: false, response: json({ error: 'no such app' }, { status: 404 }) }
-  const access = appAccess(app, { isAdmin: user.role === 'admin', denied: session.deniedViews })
+  const access = appAccess(app, { isAdmin: user.role === 'admin', appGrants: session.appGrants })
   if (!reachesApp(access)) return { ok: false, response: json({ error: 'forbidden' }, { status: 403 }) }
   return { ok: true, caller: { user, app, access, perms: session.perms } }
 }
 
+const unavailable = () => json({ error: 'could not check your access to this app — try again' }, { status: 503 })
+
 /** Session, enabled, granted — the trust work both app doors do before
- *  anything of the app's runs or ships. */
+ *  anything of the app's runs or ships. A session or an enabled-app list
+ *  that cannot be read answers 503: the gate never guesses. */
 export async function authorizeApp(request: Request, slug: string): Promise<AppGate> {
   let session: RustSession
   try {
     session = await rustSession(request)
   } catch (e) {
     console.error(`[apps] ${slug}: could not read the session from the api`, e)
-    return { ok: false, response: json({ error: 'could not check your access to this app — try again' }, { status: 503 }) }
+    return { ok: false, response: unavailable() }
   }
-  return decideAppGate(session, await enabledApps(), slug)
+  let apps: AppManifest[]
+  try {
+    apps = await enabledApps()
+  } catch (e) {
+    console.error(`[apps] ${slug}: could not read the enabled apps`, e)
+    return { ok: false, response: unavailable() }
+  }
+  return decideAppGate(session, apps, slug)
 }
 
 /** `ctx.can(perm)`: an admin holds every permission (Rust already lists them

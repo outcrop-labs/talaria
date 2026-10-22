@@ -11,15 +11,27 @@
 //               ships settings but no manage surface still has a view to grant
 // Core views deny by prefix ('/boards' denies '/boards/x'). App views do NOT:
 // a denied /x/<slug> used to deny /x/<slug>/manage under it, so a grant for
-// only an app's Manage surface wrote, audited, and did nothing. The Rust
-// authority for which views exist is `app_grant_views` in
-// api/crates/talaria-users/src/lib.rs; the denied list itself always comes
-// from Rust (`GET /api/auth/session`).
+// only an app's Manage surface wrote, audited, and did nothing.
+//
+// AN APP VIEW OPENS ONLY ON A LISTED GRANT. `GET /api/auth/session` serves
+// `appGrants`, the app views the person holds, and every reader here admits on
+// that list — never on a view's absence from `deniedViews`. Reading absence as
+// a grant failed open: when Rust could not read the enabled apps it left their
+// views out of the denials, and every member got every surface of every app.
+// An admin holds every app by role, and their `appGrants` is empty.
+//
+// The Rust authority for which views exist is `app_grant_views` in
+// api/crates/talaria-users/src/lib.rs, and its resolution of a person's
+// grants is `resolve_view_grants` there. Both sides are pinned to one shared
+// fixture, api/tests/it/fixtures/app-grants.json (server/app-grants.fixture.test.ts
+// here, the talaria-users unit tests there).
 
 /** The manifest fields a grant decision reads. Structural, so the server's
  *  manifest, the client's and a test fixture all fit. */
 export interface AppGrantSubject {
   slug: string
+  /** The app's name, for the checklists' labels; the slug stands in. */
+  name?: string
   surfaces: { work?: string; manage?: string; settings?: string }
 }
 
@@ -34,13 +46,19 @@ export interface AppAccess {
 export const appWorkView = (slug: string): string => `/x/${slug}`
 export const appManageView = (slug: string): string => `/x/${slug}/manage`
 
-/** One grantable app view, as a checklist offers it. `label` is the surface's
- *  own name from the manifest — the manage label, or the settings label for
- *  an app whose manage grant covers only a settings tab. */
+/** One grantable app view, as a checklist offers it. */
 export interface AppGrantView {
   to: string
+  /** The surface's own name from the manifest — the manage label, or the
+   *  settings label for an app whose manage grant covers only a settings tab. */
   label: string
   surface: 'work' | 'manage'
+  /** What a checklist shows: the app and what the grant opens — `CRM · work`,
+   *  `CRM · manage`, or `CRM · settings` when the manage grant covers only a
+   *  settings tab. Two views of one app never share it; their surface labels
+   *  often do (an app named CRM labels both its work surface and its
+   *  settings tab "CRM"). */
+  title: string
 }
 
 /** The views one app contributes to the grant checklists: its work view when
@@ -48,9 +66,13 @@ export interface AppGrantView {
  *  a settings tab. */
 export function appGrantViews(app: AppGrantSubject): AppGrantView[] {
   const out: AppGrantView[] = []
-  if (app.surfaces.work) out.push({ to: appWorkView(app.slug), label: app.surfaces.work, surface: 'work' })
+  const name = app.name || app.slug
+  if (app.surfaces.work) out.push({ to: appWorkView(app.slug), label: app.surfaces.work, surface: 'work', title: `${name} · work` })
   const manageLabel = app.surfaces.manage ?? app.surfaces.settings
-  if (manageLabel) out.push({ to: appManageView(app.slug), label: manageLabel, surface: 'manage' })
+  if (manageLabel) {
+    const opens = app.surfaces.manage ? 'manage' : 'settings'
+    out.push({ to: appManageView(app.slug), label: manageLabel, surface: 'manage', title: `${name} · ${opens}` })
+  }
   return out
 }
 
@@ -72,22 +94,36 @@ export function appViewFor(path: string): string | null {
   return m[2] ? appManageView(m[1]) : appWorkView(m[1])
 }
 
-/** Whether `path` is denied. A core view is denied by itself or by any denied
- *  view above it; an app route is denied only by the exact view that governs
- *  it, so a denied work view never takes the manage view with it. */
-export function isViewDenied(path: string, denied: readonly string[]): boolean {
-  const app = appViewFor(path)
-  if (app !== null) return denied.includes(app)
-  return denied.some((d) => path === d || path.startsWith(d + '/'))
+/** What Rust resolved for one viewer (`GET /api/auth/session`, person and
+ *  teams together). */
+export interface ViewerGrants {
+  isAdmin: boolean
+  /** `deniedViews`: the core views they may not reach. */
+  denied: readonly string[]
+  /** `appGrants`: the app views they hold. Empty for an admin, who holds
+   *  every app by role. */
+  appGrants: readonly string[]
 }
 
-/** A viewer's access to one app, from the denied list Rust resolved for them
- *  (person + teams). A surface the app doesn't ship is never granted. */
-export function appAccess(app: AppGrantSubject, viewer: { isAdmin: boolean; denied: readonly string[] }): AppAccess {
+/** Whether `path` is denied. A core view is denied by itself or by any denied
+ *  view above it — for an admin too, whose list is empty. An app route opens
+ *  only on the exact view that governs it, held by grant or by an admin's
+ *  role, so a work grant never opens the manage view and a view missing from
+ *  both lists stays shut. */
+export function isViewDenied(path: string, viewer: ViewerGrants): boolean {
+  const app = appViewFor(path)
+  if (app !== null) return !viewer.isAdmin && !viewer.appGrants.includes(app)
+  return viewer.denied.some((d) => path === d || path.startsWith(d + '/'))
+}
+
+/** A viewer's access to one app, from the app views Rust lists as theirs. A
+ *  surface the app doesn't ship is never granted, and nothing is granted
+ *  because a list left it out. */
+export function appAccess(app: AppGrantSubject, viewer: Pick<ViewerGrants, 'isAdmin' | 'appGrants'>): AppAccess {
   const { work, manage, settings } = app.surfaces
-  const { isAdmin, denied } = viewer
-  const workOpen = isAdmin || !denied.includes(appWorkView(app.slug))
-  const manageOpen = isAdmin || !denied.includes(appManageView(app.slug))
+  const { isAdmin, appGrants } = viewer
+  const workOpen = isAdmin || appGrants.includes(appWorkView(app.slug))
+  const manageOpen = isAdmin || appGrants.includes(appManageView(app.slug))
   return {
     admin: isAdmin,
     work: Boolean(work) && workOpen,

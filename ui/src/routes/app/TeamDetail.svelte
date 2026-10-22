@@ -264,7 +264,7 @@
                 {#each appViews as v (v.to)}
                   {@const granted = access.allowedManageViews.includes(v.to)}
                   <AdminPermChip
-                    entry={{ id: v.to, label: v.label, hint: `App ${v.surface} view. Filled means members of this team have been granted it.`, group: 'Apps', memberDefault: false }}
+                    entry={{ id: v.to, label: v.title, hint: `${v.to}. Filled means members of this team have been granted it.`, group: 'Apps', memberDefault: false }}
                     effective={granted}
                     overridden={granted}
                     onToggle={() => toggleManage(v.to)}

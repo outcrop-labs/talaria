@@ -131,10 +131,10 @@ Source: [`api/crates/talaria-routes-integrations/src/account/auth_providers.rs`]
 
 Source: [`api/crates/talaria-routes-integrations/src/account/auth_session.rs`](../../api/crates/talaria-routes-integrations/src/account/auth_session.rs)
 
-> GET /api/auth/session. The current user + their denied views + effective
-> permissions, read from the DB each time so an admin's access change applies
-> without re-login. The user's face — effective picture, status emoji and
-> text — is read fresh from the users row the same way, so a photo or status
+> GET /api/auth/session. The current user + their denied views + the app
+> views they hold + effective permissions, read from the DB each time so an
+> admin's access change applies without re-login. The user's face —
+> effective picture, status emoji and text — is read fresh from the users row
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

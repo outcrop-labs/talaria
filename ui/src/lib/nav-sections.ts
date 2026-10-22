@@ -17,7 +17,7 @@
 // string, which the Work section doesn't even have.
 
 import { activeAmong } from '@/lib/route-tabs'
-import { appManageView, appWorkView, isViewDenied } from '@/lib/app-grants'
+import { appManageView, appWorkView, isViewDenied, type ViewerGrants } from '@/lib/app-grants'
 import type { NavItem, NavSection } from '@/lib/nav'
 
 /** An app's injected nav entry: a manifest's work or manage surface turned
@@ -71,14 +71,15 @@ export function navSections(
   core: NavSection[],
   appWork: AppNavItem[],
   appManage: AppNavItem[],
-  opts: { isAdmin: boolean; denied: readonly string[] },
+  opts: ViewerGrants,
 ): NavSection[] {
-  const { isAdmin, denied } = opts
+  const { isAdmin } = opts
 
   // Denied-view + role filtering, shared by both modes and by the app items
   // wherever they land. Core views deny by prefix; an app's views are each
-  // their own grant (app-grants.ts), so a manage-only grant keeps its entry.
-  const passes = (i: NavItem) => (!i.adminOnly || isAdmin) && !isViewDenied(i.to, denied)
+  // their own grant, shown only when the session lists it (app-grants.ts), so
+  // a manage-only grant keeps its entry and an unlisted one never shows.
+  const passes = (i: NavItem) => (!i.adminOnly || isAdmin) && !isViewDenied(i.to, opts)
 
   const merged = core.flatMap((section) => {
     if (section.adminOnly && !isAdmin) return []

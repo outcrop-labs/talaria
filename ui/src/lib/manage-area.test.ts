@@ -18,7 +18,7 @@ const CORE: NavSection[] = [
     ],
   },
 ]
-const admin = { isAdmin: true, denied: [] as string[] }
+const admin = { isAdmin: true, denied: [] as string[], appGrants: [] as string[] }
 const crm: AppManifestLike = { slug: 'crm', icon: 'c', surfaces: { work: 'CRM', manage: 'CRM settings' } }
 
 describe('manageArea', () => {
@@ -53,7 +53,7 @@ describe('manageArea', () => {
   })
 
   it("follows the viewer's grants: a denied view is neither listed nor inside", () => {
-    const member = { isAdmin: false, denied: ['/models', '/observability'] }
+    const member = { isAdmin: false, denied: ['/models', '/observability'], appGrants: [] }
     const a = manageArea(CORE, [], member, '/models')
     expect(a.items.map((i) => i.to)).toEqual(['/agents'])
     expect(a.inside).toBe(false)
@@ -62,14 +62,14 @@ describe('manageArea', () => {
   it("lists an app's manage surface for a member granted only that, and is inside on it", () => {
     // Granted /x/crm/manage alone: the work view stays denied, and it used to
     // take the manage view with it as a prefix — no gear row, no sidebar.
-    const member = { isAdmin: false, denied: ['/agents', '/models', '/observability', '/x/crm'] }
+    const member = { isAdmin: false, denied: ['/agents', '/models', '/observability'], appGrants: ['/x/crm/manage'] }
     const a = manageArea(CORE, [crm], member, '/x/crm/manage')
     expect(a.items.map((i) => i.to)).toEqual(['/x/crm/manage'])
     expect(a).toMatchObject({ inside: true, activePath: '/x/crm/manage' })
   })
 
   it('has nothing at all for a member with no manage grants — not even the overview', () => {
-    const member = { isAdmin: false, denied: ['/agents', '/models', '/observability'] }
+    const member = { isAdmin: false, denied: ['/agents', '/models', '/observability'], appGrants: [] }
     expect(manageArea(CORE, [], member, MANAGE_HOME)).toEqual({ items: [], activePath: null, inside: false })
   })
 })

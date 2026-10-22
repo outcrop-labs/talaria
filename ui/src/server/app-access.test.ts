@@ -1,12 +1,15 @@
 // The app gate's decision and the session read it rests on. The gate admits a
-// caller holding ANY of the app's surfaces and tells the app which; the
-// session comes from the Rust api with the caller's cookie, and a session the
-// api cannot answer is never read as "no denials".
-import { afterEach, describe, expect, it, vi } from 'vitest'
+// caller holding ANY of the app's surfaces — read off the session's listed
+// `appGrants` — and tells the app which; the session comes from the Rust api
+// with the caller's cookie, and a session the api cannot answer (or answers
+// without its lists) is never read as "no denials" or "no grants": the gate
+// answers 503.
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('./apps', () => ({ enabledApps: vi.fn(async () => []) }))
+const enabledApps = vi.fn(async (): Promise<AppManifest[]> => [])
+vi.mock('./apps', () => ({ enabledApps }))
 
-const { canFor, decideAppGate } = await import('./app-access')
+const { authorizeApp, canFor, decideAppGate } = await import('./app-access')
 const { rustSession } = await import('./rust-session')
 import type { AppManifest } from './apps'
 import type { RustSession } from './rust-session'
@@ -26,14 +29,15 @@ const APPS = [
   manifest('bare', {}),
 ]
 const user = (role: 'admin' | 'member') => ({ id: 'u1', sub: 'password:u1', email: 'u@t.local', name: 'U', picture: null, provider: 'password' as const, role })
-const session = (role: 'admin' | 'member' | null, deniedViews: string[] = [], perms: string[] = []): RustSession => ({
+/** A session holding exactly `appGrants`. Its `deniedViews` is empty — what
+ *  once admitted every member — because the gate must not read the denials
+ *  for an app at all. */
+const session = (role: 'admin' | 'member' | null, appGrants: string[] = [], perms: string[] = []): RustSession => ({
   user: role ? user(role) : null,
-  deniedViews,
+  deniedViews: [],
+  appGrants,
   perms,
 })
-// Rust denies every app view a member was not granted.
-const ALL_APP_VIEWS = ['/x/crm', '/x/crm/manage', '/x/prefs/manage']
-const except = (...granted: string[]) => ALL_APP_VIEWS.filter((v) => !granted.includes(v))
 
 const status = (g: ReturnType<typeof decideAppGate>) => (g.ok ? 200 : g.response.status)
 
@@ -48,25 +52,34 @@ describe('decideAppGate', () => {
   })
 
   it('refuses a member who holds no surface of the app', () => {
-    expect(status(decideAppGate(session('member', except()), APPS, 'crm'))).toBe(403)
+    expect(status(decideAppGate(session('member'), APPS, 'crm'))).toBe(403)
     // A settings-only app is gated too — it used to be open to every member.
-    expect(status(decideAppGate(session('member', except()), APPS, 'prefs'))).toBe(403)
+    expect(status(decideAppGate(session('member'), APPS, 'prefs'))).toBe(403)
     // Nothing to grant: members never reach it.
-    expect(status(decideAppGate(session('member', except()), APPS, 'bare'))).toBe(403)
+    expect(status(decideAppGate(session('member'), APPS, 'bare'))).toBe(403)
+  })
+
+  it('never admits on a denial list that leaves the app out', () => {
+    // The fail-open this gate had: Rust could not read the enabled apps, so
+    // their views were missing from deniedViews, and a missing denial read as
+    // a grant. No listed grant, no entry — whatever the denials say.
+    const s: RustSession = { user: user('member'), deniedViews: [], appGrants: [], perms: [] }
+    expect(status(decideAppGate(s, APPS, 'crm'))).toBe(403)
+    expect(status(decideAppGate(s, APPS, 'prefs'))).toBe(403)
   })
 
   it('admits a work-only member and says manage is not theirs', () => {
-    const g = decideAppGate(session('member', except('/x/crm')), APPS, 'crm')
+    const g = decideAppGate(session('member', ['/x/crm']), APPS, 'crm')
     expect(g.ok && g.caller.access).toEqual({ admin: false, work: true, manage: false, settings: false })
   })
 
   it('admits a manage-only member — the grant that used to do nothing', () => {
-    const g = decideAppGate(session('member', except('/x/crm/manage')), APPS, 'crm')
+    const g = decideAppGate(session('member', ['/x/crm/manage']), APPS, 'crm')
     expect(g.ok && g.caller.access).toEqual({ admin: false, work: false, manage: true, settings: true })
   })
 
   it('admits a settings-only app to the member granted its manage view', () => {
-    const g = decideAppGate(session('member', except('/x/prefs/manage')), APPS, 'prefs')
+    const g = decideAppGate(session('member', ['/x/prefs/manage']), APPS, 'prefs')
     expect(g.ok && g.caller.access).toEqual({ admin: false, work: false, manage: false, settings: true })
   })
 
@@ -77,7 +90,7 @@ describe('decideAppGate', () => {
   })
 
   it('carries the caller and their permissions through', () => {
-    const g = decideAppGate(session('member', except('/x/crm'), ['boards.create']), APPS, 'crm')
+    const g = decideAppGate(session('member', ['/x/crm'], ['boards.create']), APPS, 'crm')
     expect(g.ok && g.caller.user.id).toBe('u1')
     expect(g.ok && g.caller.perms).toEqual(['boards.create'])
   })
@@ -92,6 +105,51 @@ describe('canFor', () => {
   })
 })
 
+describe('authorizeApp', () => {
+  const prev = process.env.TALARIA_RUST_API_URL
+  beforeEach(() => {
+    process.env.TALARIA_RUST_API_URL = 'http://api.test:5999'
+    enabledApps.mockResolvedValue(APPS)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    enabledApps.mockReset()
+    if (prev === undefined) delete process.env.TALARIA_RUST_API_URL
+    else process.env.TALARIA_RUST_API_URL = prev
+  })
+  const api = (status: number, body: unknown) =>
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body), { status })))
+  const req = () => new Request('http://app.test/api/apps/crm/x', { headers: { cookie: 'talaria_session=abc' } })
+  const member = { ...user('member') }
+
+  it('admits through the real session read when the api lists a grant', async () => {
+    api(200, { user: member, deniedViews: [], appGrants: ['/x/crm'], perms: [] })
+    const g = await authorizeApp(req(), 'crm')
+    expect(g.ok && g.caller.access).toEqual({ admin: false, work: true, manage: false, settings: false })
+  })
+
+  it('answers 503 — never opens — when the session read throws', async () => {
+    // The api 500s: the Rust side could not read the enabled apps.
+    api(500, { error: 'internal' })
+    expect(status(await authorizeApp(req(), 'crm'))).toBe(503)
+    // A 200 without the grant list is a broken answer, not an empty one.
+    api(200, { user: member, deniedViews: [], perms: [] })
+    expect(status(await authorizeApp(req(), 'crm'))).toBe(503)
+    // The api cannot be reached at all.
+    vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('fetch failed'))))
+    expect(status(await authorizeApp(req(), 'crm'))).toBe(503)
+    // The api is stood down.
+    process.env.TALARIA_RUST_API_URL = 'off'
+    expect(status(await authorizeApp(req(), 'crm'))).toBe(503)
+  })
+
+  it('answers 503 when the enabled apps cannot be read', async () => {
+    api(200, { user: member, deniedViews: [], appGrants: ['/x/crm'], perms: [] })
+    enabledApps.mockRejectedValueOnce(new Error('the apps_enabled setting is not a list of app slugs'))
+    expect(status(await authorizeApp(req(), 'crm'))).toBe(503)
+  })
+})
+
 describe('rustSession', () => {
   const prev = process.env.TALARIA_RUST_API_URL
   afterEach(() => {
@@ -103,7 +161,7 @@ describe('rustSession', () => {
 
   it('asks the api with the caller\'s cookie and nothing else', async () => {
     process.env.TALARIA_RUST_API_URL = 'http://api.test:5999'
-    const f = answer(200, { user: null, deniedViews: [], perms: [] })
+    const f = answer(200, { user: null, deniedViews: [], appGrants: [], perms: [] })
     await rustSession(new Request('http://app.test/x', { headers: { cookie: 'talaria_session=abc', authorization: 'Bearer k' } }), f)
     const [url, init] = f.mock.calls[0] as unknown as [URL, RequestInit]
     expect(String(url)).toBe('http://api.test:5999/api/auth/session')
@@ -114,21 +172,38 @@ describe('rustSession', () => {
 
   it('hands app code the documented user shape, not the whole wire', async () => {
     const wire = { ...user('member'), statusEmoji: '📅', statusText: 'out' }
-    const s = await rustSession(req('talaria_session=abc'), answer(200, { user: wire, deniedViews: ['/x/crm'], perms: ['kb.edit'] }))
+    const s = await rustSession(
+      req('talaria_session=abc'),
+      answer(200, { user: wire, deniedViews: ['/boards'], appGrants: ['/x/crm/manage'], perms: ['kb.edit'] }),
+    )
     expect(s.user).toEqual(user('member'))
-    expect(s.deniedViews).toEqual(['/x/crm'])
+    expect(s.deniedViews).toEqual(['/boards'])
+    expect(s.appGrants).toEqual(['/x/crm/manage'])
     expect(s.perms).toEqual(['kb.edit'])
   })
 
   it('reads `user: null` as signed out', async () => {
-    const s = await rustSession(req(), answer(200, { user: null, deniedViews: [], perms: [] }))
+    const s = await rustSession(req(), answer(200, { user: null, deniedViews: [], appGrants: [], perms: [] }))
     expect(s.user).toBeNull()
   })
 
   it('throws rather than guess when the api cannot answer', async () => {
     await expect(rustSession(req(), answer(500, { error: 'boom' }))).rejects.toThrow(/500/)
     await expect(rustSession(req(), answer(200, { deniedViews: [] }))).rejects.toThrow(/no "user"/)
+    await expect(rustSession(req(), answer(200, null))).rejects.toThrow(/no object/)
     process.env.TALARIA_RUST_API_URL = 'off'
     await expect(rustSession(req(), answer(200, { user: null }))).rejects.toThrow(/stood down/)
+  })
+
+  it('throws when a list is missing or is not a list of strings — never reads it as empty', async () => {
+    const full = { user: user('member'), deniedViews: [], appGrants: [], perms: [] }
+    for (const key of ['deniedViews', 'appGrants', 'perms'] as const) {
+      const { [key]: _gone, ...without } = full
+      await expect(rustSession(req(), answer(200, without)), `${key} missing`).rejects.toThrow(new RegExp(`no "${key}" list`))
+      await expect(rustSession(req(), answer(200, { ...full, [key]: 'x' })), `${key} a string`).rejects.toThrow(new RegExp(`no "${key}" list`))
+      await expect(rustSession(req(), answer(200, { ...full, [key]: ['/x', 7] })), `${key} with a number`).rejects.toThrow(
+        new RegExp(`no "${key}" list`),
+      )
+    }
   })
 })

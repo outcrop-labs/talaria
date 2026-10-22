@@ -96,6 +96,25 @@ async function buildClient(appDir: string, outDir: string): Promise<void> {
   if (existsSync(leftover)) rmSync(leftover)
 }
 
+/** Where an SSR build (server.ts, mcp.ts) writes into the shared build-key
+ *  directory. Its entry is server.js or mcp.js; every chunk and asset it
+ *  splits off goes under `_server/` or `_mcp/`. Vite's defaults would put
+ *  them in `assets/`, beside the client's files, and the /app-builds/ door
+ *  serves `assets/**` to anyone holding a grant on the app — so a dynamic
+ *  import() in server.ts would ship that piece of the server to the browser.
+ *  A leading underscore keeps the names apart from anything the client build
+ *  writes, and the door serves no top-level directory but `assets/`
+ *  (app-builds-door.ts). */
+export function serverishFileNames(outFile: string): { entryFileNames: string; chunkFileNames: string; assetFileNames: string } {
+  const mcp = outFile.endsWith('mcp.js')
+  const dir = mcp ? '_mcp' : '_server'
+  return {
+    entryFileNames: mcp ? 'mcp.js' : 'server.js',
+    chunkFileNames: `${dir}/[name]-[hash].js`,
+    assetFileNames: `${dir}/[name]-[hash][extname]`,
+  }
+}
+
 async function buildServerish(entry: string, outFile: string): Promise<void> {
   const shim = sdkServerShim()
   if (!shim) return
@@ -116,7 +135,7 @@ async function buildServerish(entry: string, outFile: string): Promise<void> {
         external: (id) => isServerSpecifier(id) || id.startsWith('node:'),
         output: {
           format: 'es',
-          entryFileNames: outFile.endsWith('mcp.js') ? 'mcp.js' : 'server.js',
+          ...serverishFileNames(outFile),
           paths: (id) => (isServerSpecifier(id) ? pathToFileURL(shim).href : id),
         },
       },
