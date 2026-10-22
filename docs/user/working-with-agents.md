@@ -104,8 +104,11 @@ runs Hermes' own security scanner (Skills Guard) over it before anything is writ
 rules decide, so a community skill with any high-risk finding — reading credential files,
 piping a download into a shell, hidden unicode — is not installed, and a trusted one is refused
 only for a critical finding. A refused skill opens its scan report (each finding with its file
-and line); nothing lands in the destination. Installing needs edit rights on the destination —
-that agent, or the shared root for **Every agent**.
+and line); nothing lands in the destination. A skill with a clean scan installs on the click. One
+that Hermes' rules allow but whose scan still found something opens the same report first, and
+installs only when you press **Install** there, as Hermes' own install shows the report and asks.
+Installing needs edit rights on the destination — that agent, or the shared root for
+**Every agent**.
 
 A term you'll meet around agents: a **roll** is a zero-downtime replacement — a fresh
 container comes up beside the old one and takes over only once healthy, so the old one

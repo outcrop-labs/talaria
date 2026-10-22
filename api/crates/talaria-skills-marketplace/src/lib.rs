@@ -24,7 +24,9 @@
 // may run, for scripted skills) — install is gated on canEdit for the
 // destination, the scan blocks what Hermes would block (any high or critical
 // finding on a community skill, a critical one on a trusted skill), and the
-// UI says what was found. Names normalize into the skill alphabet
+// UI shows what was found: a blocked skill opens its report, and a skill the
+// policy allows with findings opens the same report and installs only on an
+// explicit second click, as Hermes' own install asks before it writes. Names normalize into the skill alphabet
 // ([a-z0-9._-], first char a letter or digit).
 
 pub mod fetch;
