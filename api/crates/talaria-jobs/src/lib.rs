@@ -164,6 +164,20 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         });
     });
     let _ = talaria_gateway::usage::NUDGE_AUTO_PRICES.set(talaria_price_oracle::nudge_auto_prices);
+    // THE LOST-TURN EDGE. A session whose turn died with its container is
+    // held by Hermes until the lost turn is acknowledged; the session arm
+    // repairs it through this edge (talaria-gateway `fleet_lost_turns`).
+    // Unset, every later turn of that conversation or work session answers
+    // `unknown_execution`, as it did before the edge existed.
+    let lost_turns_pg = state.pg.clone();
+    let _ = talaria_gateway::fleet_lost_turns::RESOLVE_LOST_TURNS.set(Arc::new(
+        move |model: String, session: String| {
+            let pg = lost_turns_pg.clone();
+            Box::pin(async move {
+                talaria_fleet_docker::discard_lost_turns(&pg, &model, &session).await
+            })
+        },
+    ));
     let spend_state = state.clone();
     let _ = talaria_price_oracle::LOAD_SPEND_KEYS.set(std::sync::Arc::new(move || {
         let state = spend_state.clone();

@@ -17,6 +17,9 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+mod lost_turns;
+pub use lost_turns::discard_lost_turns;
+
 /// Set from the api binary so `fleet_up` can run preflight without this crate
 /// depending on the rest of the fleet engine.
 pub static PREFLIGHT: std::sync::OnceLock<fn(sqlx::PgPool)> = std::sync::OnceLock::new();
