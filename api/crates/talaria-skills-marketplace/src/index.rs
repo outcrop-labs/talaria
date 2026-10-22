@@ -14,7 +14,8 @@
 // LobeHub and browse.sh rows live on registries with their own fetch
 // protocols and are left out rather than listed uninstallable. The
 // trust level is the index's own; the scan recomputes it from the
-// identifier the way Hermes does (see `guard`).
+// identifier the way Hermes does (see `guard`), so a row is kept only when
+// that identifier names the repo its files come from (`provenance_ok`).
 //
 // HOW IT FILLS. The `skills-index-refresh` job (leased, every 6 hours — the
 // TTL Hermes itself caches the index for) fetches the index with the last
@@ -150,6 +151,40 @@ fn clip(s: &str, n: usize) -> String {
     s.trim().chars().take(n).collect()
 }
 
+/// The repo Hermes' official optional skills live in.
+pub const OFFICIAL_REPO: &str = "NousResearch/hermes-agent";
+
+/// Hermes' `_SOURCE_PREFIX_ALIASES` (tools/skills_guard.py): the prefixes
+/// its trust resolver strips before matching a repo.
+const SOURCE_PREFIX_ALIASES: [&str; 4] = ["skills-sh/", "skills.sh/", "skils-sh/", "skils.sh/"];
+
+/// Whether a row's trust can be read from the same place its files come
+/// from. The scan resolves trust from the identifier (or, for an official
+/// row, from the word "official", which never blocks), while the fetch reads
+/// `repo`. They have to agree, or a row could carry one repo's trust onto
+/// another repo's files:
+///   - official: only Hermes' own optional skills, in Hermes' own repo
+///   - github / skills.sh: the identifier, with Hermes' aliases stripped,
+///     is `repo` or a path inside it — compared exactly, as Hermes compares
+///     it to TRUSTED_REPOS
+///
+/// Every row of the 2026-10-22 index passes (153 official, 1,093 GitHub,
+/// 18,411 skills.sh). The check guards against a future row, not against
+/// any row in the index today.
+pub fn provenance_ok(source: &str, identifier: &str, repo: &str, path: &str) -> bool {
+    if source == "official" {
+        return repo == OFFICIAL_REPO
+            && identifier.starts_with("official/")
+            && path.starts_with("optional-skills/");
+    }
+    let bare = SOURCE_PREFIX_ALIASES
+        .iter()
+        .find_map(|p| identifier.strip_prefix(p))
+        .unwrap_or(identifier);
+    bare.strip_prefix(repo)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
 impl RawEntry {
     /// The row as the mirror stores it, or None when Talaria could not
     /// install it — a registry with its own protocol, or a repo or path
@@ -180,6 +215,9 @@ impl RawEntry {
             (clean_rel(&self.path)?, true)
         };
         if !exact && path.is_empty() {
+            return None;
+        }
+        if !provenance_ok(source, identifier, repo, &path) {
             return None;
         }
         let trust_level = match self.trust_level.as_str() {
@@ -706,6 +744,39 @@ mod tests {
         assert_eq!(parsed.entries.len(), 1);
         assert_eq!(parsed.entries[0].trust_level, "community");
         assert_eq!(parsed.entries[0].tags, vec!["two"]);
+    }
+
+    #[test]
+    fn a_row_whose_identifier_names_another_repo_stays_out() {
+        let body = serde_json::to_vec(&index(serde_json::json!([
+            // The identifier would resolve as trusted (openai/skills); the
+            // files would come from somewhere else.
+            {"name":"x","source":"github","identifier":"openai/skills/skills/x","trust_level":"trusted","repo":"evil/repo","path":"skills/x"},
+            {"name":"y","source":"skills.sh","identifier":"skills-sh/anthropics/skills/y","trust_level":"trusted","repo":"evil/repo","path":"y","resolved_github_id":"evil/repo/y"},
+            // A sibling that shares the prefix is a different repo.
+            {"name":"z","source":"github","identifier":"evil/repository/z","trust_level":"community","repo":"evil/repo","path":"z"},
+            // "official" is never blocked, so it must be Hermes' own skill.
+            {"name":"o","source":"official","identifier":"official/x/o","trust_level":"builtin","repo":"evil/repo","path":"optional-skills/x/o"},
+            {"name":"p","source":"official","identifier":"official/x/p","trust_level":"builtin","repo":"NousResearch/hermes-agent","path":"skills/x/p"},
+            {"name":"q","source":"official","identifier":"evil/repo/q","trust_level":"builtin","repo":"NousResearch/hermes-agent","path":"optional-skills/x/q"},
+            // The shapes that are fine: Hermes' aliases, the repo root.
+            {"name":"ok","source":"skills.sh","identifier":"skills.sh/good/repo/ok","trust_level":"community","repo":"good/repo","path":"ok","resolved_github_id":"good/repo/skills/ok"},
+            {"name":"root","source":"github","identifier":"good/root","trust_level":"community","repo":"good/root","path":""}
+        ])))
+        .unwrap();
+        let ids: Vec<String> = parse_index(&body)
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(ids, vec!["skills.sh/good/repo/ok", "good/root"]);
+        assert!(provenance_ok(
+            "official",
+            "official/security/1password",
+            OFFICIAL_REPO,
+            "optional-skills/security/1password"
+        ));
     }
 
     #[test]

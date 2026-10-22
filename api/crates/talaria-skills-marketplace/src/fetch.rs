@@ -28,6 +28,12 @@
 // builtin, so a dangerous scan verdict still blocks" (skills_hub_official.py)
 // — rather than as the official skill whose name it carries: an official
 // source is never blocked at all, and the files are live third-party code.
+// The scan itself runs the way Hermes' install runs it (`_scan_quarantined`
+// hands it source "official"), so no finding is demoted as a community
+// one. A trusted scan demotes nothing either, so the findings and the
+// trusted policy agree. Scanning under the upstream `repo/path` would have
+// resolved to community and softened doc-only `sudo_usage` and
+// `bind_all_interfaces` findings before the trusted policy ever read them.
 
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -37,7 +43,7 @@ use futures_util::stream::{self, StreamExt, TryStreamExt};
 use serde::Deserialize;
 use talaria_safe_fetch::{SafeFetch, SafeResponse, safe_fetch};
 
-use crate::index::CatalogEntry;
+use crate::index::{CatalogEntry, provenance_ok};
 use crate::{normalize_skill_name, valid_repo};
 
 const API: &str = "https://api.github.com/repos";
@@ -77,7 +83,8 @@ pub struct FetchedSkill {
     pub files: Vec<(String, Vec<u8>)>,
     /// What the scan is told the skill's source is — Hermes derives the
     /// trust level from it (tools/skills_guard.py `_resolve_trust_level`):
-    /// "official" for an official skill, else the identifier.
+    /// "official" for an official skill and for a followed stub (Hermes
+    /// scans those as official too), else the identifier.
     pub scan_source: String,
     /// The trust level the install policy judges with instead of the one
     /// Hermes resolves from `scan_source` — "trusted" for a followed
@@ -434,6 +441,15 @@ pub async fn fetch_skill(entry: &CatalogEntry) -> Result<Arc<FetchedSkill>, Stri
             return Ok(c.skill.clone());
         }
     }
+    // The mirror only keeps rows that pass this; a row stored before the
+    // rule existed (the sync keeps it until the index changes) is refused
+    // here instead.
+    if !provenance_ok(&entry.source, &entry.id, &entry.repo, &entry.path) {
+        return Err(format!(
+            "the catalog row {} does not name the repo its files come from ({})",
+            entry.id, entry.repo
+        ));
+    }
     let first = fetch_dir(&entry.repo, &entry.path, entry.exact).await?;
     let skill_md_of = |files: &[(String, Vec<u8>)]| {
         files
@@ -456,8 +472,7 @@ pub async fn fetch_skill(entry: &CatalogEntry) -> Result<Arc<FetchedSkill>, Stri
     let (dir, upstream, scan_source) = match (entry.source.as_str(), upstream_pointer(&first_md)) {
         ("official", Some((repo, path))) => {
             let up = fetch_dir(&repo, &path, true).await?;
-            let label = format!("{repo}/{path}");
-            (up, Some(label.clone()), label)
+            (up, Some(format!("{repo}/{path}")), "official".to_string())
         }
         ("official", None) => (first, None, "official".to_string()),
         _ => (first, None, entry.id.clone()),
