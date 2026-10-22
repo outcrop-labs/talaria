@@ -118,7 +118,7 @@ export const MODEL_ROLES: Array<{
   {
     role: 'vision',
     label: 'Image understanding',
-    hint: "Reads images for agents whose own model cannot see: each such agent's Hermes gets it as its image reader, for attached images, fetched attachments and screenshots. Auto: none, and those agents cannot read images.",
+    hint: "Reads images for agents whose own model is not known to see: each such agent's Hermes gets it as its image reader, for attached images, fetched attachments and screenshots. Saving it re-renders the fleet. Auto: none, and those agents cannot read images.",
     wired: true,
     requires: ['vision'],
   },

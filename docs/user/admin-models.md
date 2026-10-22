@@ -49,9 +49,17 @@ slots run `auto`. Unfit assignments surface as warnings — they report, never b
 | **Chores** | Utility — plus the platform workers: blurb-writer, titler, summarizer, librarian |
 | **Writing** | Muse · Distiller · Concluder · Briefer |
 | **Oversight** | The QA judge |
-| **Agents' eyes** | Vision — reads images for every agent whose own model cannot see; leave it empty and those agents cannot read an image |
+| **Agents' eyes** | Vision — reads images for every agent whose own model is not known to see; leave it empty and those agents cannot read an image |
 | **Reserved** | Image-generation · Embedding · Reranker |
 | Your assistant | Fixed — each person's assistant, set from their own settings |
+
+**How an agent sees.** Talaria knows a model can read images when a fitness run's vision probe
+passed, the provider's catalog lists image input, or you declared it. An agent whose main model
+is known to see gets images as pixels. Any other agent gets them through the Vision model, which
+describes each attached image and also reads the images tools hand back. Saving the Vision slot
+re-renders every agent. A new capability fact reaches agents the next time the fleet renders (any
+agent edit, **Roll**, or deploy). An agent has one image mode: if its main model sees but one of its
+tiers or fallbacks does not, a turn on that tier or fallback cannot read an attached image.
 
 ## Fitness: test before you trust
 

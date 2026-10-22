@@ -731,10 +731,10 @@ copying the step order into a file where it would become an eighth spelling of t
 A verdict is produced for **every slot**; the matrix draws a **column only for the ones a harness can
 reach**. The five it drops are `unbound` for every model forever, and they are dead for
 three different reasons that the one "reserved" chip used to flatten: three are reserved *roles* whose
-surfaces do not exist yet (image-generation, embedding, reranker); **vision** is live but reached by no
+surfaces do not exist yet (image-generation, embedding, reranker); **vision** is wired but reached by no
 harness — its model is rendered into each fleet agent whose own models are not known to see, as that
 agent's Hermes image reader (`auxiliary.vision`, behind Hermes' `vision_analyze`), so it is exercised
-inside Hermes rather than by a Talaria harness; and the fifth is the **briefer**,
+inside Hermes rather than by a Talaria harness, and `fitness_slots` keeps it inert by name; and the fifth is the **briefer**,
 which is not reserved at all — it ships, it writes the daily brief every morning and follows it all
 day, and its model is fixed by design because a brief reads one person's own views and answers in
 their own assistant's voice. Its harnesses take their model from the subject of the call, so they are

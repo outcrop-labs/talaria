@@ -1941,8 +1941,11 @@ struct ModelSight {
 /// The ROUTED specs an agent's loop can run on, main first, each once. Only
 /// a spec the gateway transform stamped a base URL on counts — that is the
 /// mark of a model the agent's key may ask for. The provider is read off the
-/// spec (the transform stamps `custom` today) because it is the id Hermes
-/// keys its per-model overrides by.
+/// spec (the transform stamps `custom` today) because, for `custom`, it is
+/// the section Hermes' capability lookup reads `model_overrides` under. A
+/// NAMED provider is canonicalised to `custom` at runtime, and its own name
+/// reaches only `providers.<name>.models.<id>` — so whoever names the
+/// provider must re-check which key Hermes reads, not assume this one.
 fn runnable_specs(routed: &Value) -> Vec<(String, String, bool)> {
     fn spec(s: &Value) -> Option<(String, String)> {
         let model = s
@@ -2014,6 +2017,21 @@ async fn model_sees(pg: &PgPool, model: &str) -> Option<bool> {
     pool_sees(&facts)
 }
 
+/// [`model_sees`], read once per gateway model id per render however many
+/// agents (and the image reader) ask about it.
+async fn cached_sight(
+    pg: &PgPool,
+    model: &str,
+    seen: &mut HashMap<String, Option<bool>>,
+) -> Option<bool> {
+    if let Some(known) = seen.get(model) {
+        return *known;
+    }
+    let known = model_sees(pg, model).await;
+    seen.insert(model.to_string(), known);
+    known
+}
+
 /// THE ID A RENDERED IMAGE READER ASKS THE GATEWAY FOR, from the `vision`
 /// role. A rendered spec reaches the gateway by a bare model id — that is
 /// what the gateway transform keeps (any id it does not serve is swapped for
@@ -2023,7 +2041,10 @@ async fn model_sees(pg: &PgPool, model: &str) -> Option<bool> {
 /// endpoint serves the model). So a qualified role renders as its bare model
 /// when the bare id cannot land anywhere the admin did not mean: no other
 /// endpoint serves it, or every endpoint that does is known to read images.
-/// Anything else is refused with the reason, never rendered as a guess.
+/// A role assigned by its bare id is the admin's own pick of the pool, and
+/// stands unless one of its endpoints is known NOT to read images — the same
+/// hazard [`pool_sees`] calls blind. Anything else is refused with the
+/// reason, never rendered as a guess.
 async fn image_reader(
     pg: &PgPool,
     role: &str,
@@ -2031,7 +2052,12 @@ async fn image_reader(
     seen: &mut HashMap<String, Option<bool>>,
 ) -> Result<String, String> {
     if models.served.contains(role) {
-        return Ok(role.to_string());
+        return match cached_sight(pg, role, seen).await {
+            Some(false) => Err(format!(
+                "\"{role}\" is served by an endpoint known not to read images"
+            )),
+            _ => Ok(role.to_string()),
+        };
     }
     let pinned = talaria_gateway::registry::routing_for(pg, role)
         .await
@@ -2044,14 +2070,7 @@ async fn image_reader(
         .await
         .map(|r| r.endpoints.len())
         .unwrap_or(0);
-    let sees = match seen.get(&bare) {
-        Some(known) => *known,
-        None => {
-            let known = model_sees(pg, &bare).await;
-            seen.insert(bare.clone(), known);
-            known
-        }
-    };
+    let sees = cached_sight(pg, &bare, seen).await;
     if pool == 1 || sees == Some(true) {
         Ok(bare)
     } else {
@@ -2078,14 +2097,7 @@ async fn agent_sights(
     );
     let mut out = Vec::new();
     for (provider, model, main) in runnable_specs(&routed) {
-        let sees = match seen.get(&model) {
-            Some(known) => *known,
-            None => {
-                let known = model_sees(pg, &model).await;
-                seen.insert(model.clone(), known);
-                known
-            }
-        };
+        let sees = cached_sight(pg, &model, seen).await;
         out.push(ModelSight {
             provider,
             model,
@@ -2131,19 +2143,29 @@ fn explicit_vision_backend(vision: &Map<String, Value>) -> bool {
 ///   loop runs on whose sight Talaria knows. Per model rather than one
 ///   `model.supports_vision`, which Hermes applies to every model the agent
 ///   runs (a tier or a fallback that sees differently included). It is the
-///   answer Hermes' capability lookup gives: true attaches an image as pixels,
-///   false sends it through the describer. Unknown renders nothing.
+///   answer Hermes' capability lookup gives, which its `auto` image mode
+///   decides by. Unknown renders nothing.
 /// - `auxiliary.vision` — the describer — set to the org's `vision` role
 ///   model, when one is served and some model of this agent is not known to
 ///   see. Written as a bare `{provider, model}` spec: the gateway transform
 ///   that runs next fills the gateway URL and key, and scopes the agent's
-///   key to the model. Hermes calls it for a chat image a blind model was
-///   sent, and for `vision_analyze`, which is how a blind agent reads an
+///   key to the model. Hermes calls it to describe a chat image in `text`
+///   mode, and for `vision_analyze`, which is how a blind agent reads an
 ///   image a tool handed it as a file path.
 /// - `agent.image_input_mode`: `native` when the main model is known to see
 ///   (an explicit describer would otherwise force every image through it —
 ///   Hermes' `auto` treats one as the user's chosen image route), `text`
 ///   when the describer was rendered for a main model that is not.
+///
+/// HERMES HAS ONE IMAGE MODE PER AGENT, not one per model: a configured mode
+/// is returned before any per-model lookup (`decide_image_input_mode`). So
+/// under a seeing main model, a turn on a tier or a fallback that cannot see
+/// is sent the attached image as pixels too — Hermes strips them after a
+/// rejection it recognises, or the call fails, and either way that turn does
+/// not read the image. The describer rendered for that model still serves
+/// its `vision_analyze`. The other choice, `text` whenever any model of the
+/// agent is not known to see, would put every image the seeing main model
+/// gets through a describer to cover an operator's own tier or fallback pick.
 ///
 /// A def that authored any of these keeps its own: its `supports_vision` for
 /// a model, an explicit vision backend of its own, an `image_input_mode`.
@@ -3361,9 +3383,12 @@ empty_list: []
             authored["model_overrides"]["custom"]["tier-m"],
             json!({ "supports_vision": false })
         );
+        // The describer is there for the tier's `vision_analyze`.
         assert_eq!(authored["auxiliary"]["vision"]["model"], json!("seer"));
         // An explicit describer would turn Hermes' `auto` into "describe
-        // everything" — the seeing main model is pinned to pixels.
+        // everything" — the seeing main model is pinned to pixels. The mode
+        // is per agent, so a turn on the blind tier gets pixels too and does
+        // not read an attached image (see `fleet_vision`).
         assert_eq!(authored["agent"]["image_input_mode"], json!("native"));
     }
 
