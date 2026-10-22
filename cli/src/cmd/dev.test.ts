@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { runDev, rustApi } from './dev'
+import { apiEnv, runDev, rustApi } from './dev'
 import { fakeCtx, type FakeCtx } from '../testing'
 import { CliError } from '../ui'
 
@@ -418,5 +418,36 @@ describe('talaria dev — rust api sidecar', () => {
     ctx.plant(['cargo', ['--version']], new Error('not found'))
     await rustApi(ctx, `DATABASE_URL=x\nTALARIA_API_PORT=${port}\n`)
     expect(ctx.env.TALARIA_RUST_API_URL).toBe(`http://127.0.0.1:${port}`)
+  })
+})
+
+// What the cargo child is handed. The api names every container it owns after
+// the instance (`talaria-appdb-<instance>-<slug>`, `talaria-mcp-<instance>-…`),
+// and the app side reads that instance from ui/.env — so the two have to agree.
+describe('talaria dev — the env the rust api gets', () => {
+  const uiEnv = [
+    'DATABASE_URL=postgres://talaria:pw@127.0.0.1:5605/talaria',
+    'REDIS_URL=redis://127.0.0.1:6505',
+    'TALARIA_API_PORT=5405',
+    'PORT=5305',
+    'TALARIA_WORKTREE=apps-enable',
+    'TALARIA_RUST_API_URL=http://127.0.0.1:5405',
+    'UNRELATED=1',
+  ].join('\n')
+
+  test("a worktree's name reaches the api, so it names the same app database container", () => {
+    const env = apiEnv({}, uiEnv)
+    expect(env.TALARIA_WORKTREE).toBe('apps-enable')
+    expect(env.TALARIA_API_PORT).toBe('5405')
+    expect(env.DATABASE_URL).toBe('postgres://talaria:pw@127.0.0.1:5605/talaria')
+    expect(env.UNRELATED).toBeUndefined()
+  })
+
+  test('the shell wins over ui/.env', () => {
+    expect(apiEnv({ TALARIA_WORKTREE: 'from-shell' }, uiEnv).TALARIA_WORKTREE).toBe('from-shell')
+  })
+
+  test('the main checkout (no worktree name anywhere) passes none', () => {
+    expect('TALARIA_WORKTREE' in apiEnv({}, 'DATABASE_URL=x\n')).toBe(false)
   })
 })
