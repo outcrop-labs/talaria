@@ -5,9 +5,9 @@
 
   // The section derivation the rail and the sidebar share, wired for the
   // dock's narrower question: which items are tiles at all? Manage is not —
-  // the core manage views live in the ManageSidebar the gear opens, so the
-  // dock's row is Work, then Apps. App manage surfaces live in the sidebar
-  // with the core ones, by the same section-id slotting as the rail.
+  // the manage views live behind the gear in the right cluster, which goes
+  // to the /manage overview, and in the sidebar docked on every manage page.
+  // So the dock's row is Work, then Apps.
   function dockSections(
     user: SessionUser,
     appsRows: { slug: string; icon: string; surfaces: { work?: string; manage?: string } }[],
@@ -49,17 +49,18 @@
   import { badgeTitle, useNavBadges } from '@/lib/nav-badges.svelte'
   import { useEnabledApps } from '@/lib/apps'
   import { useDeniedViews } from '@/lib/session'
-  import { toggleManageSidebar, useManageSidebar } from './nav-dock.svelte'
+  import { manageArea, MANAGE_HOME } from '@/lib/manage-area'
   import { cn } from '@/lib/cn'
-  import { route } from '@/router'
+  import { p, route } from '@/router'
 
   // THE DOCK, the shell's primary nav AND THE SHELL'S ONLY CHROME ROW: a
   // full-width band of icon tiles above everything, replacing the rail as the
   // place a person moves through views. Same tiles as the rail's collapsed
   // mode — h-9 w-9, data-status=active, RailTooltip, the badge doctrine —
   // laid out horizontally instead of in a column. The manage section does not
-  // get tiles: it lives behind the gear, in the ManageSidebar, exactly where
-  // the rail kept it last.
+  // get tiles: it lives behind ONE gear in the right cluster, beside the other
+  // instance-level controls, rather than as the last tile of the work row —
+  // where it sat for a while and read as one more work view.
   //
   // THE TOP STRIP IS GONE, and its three controls live here. The dock era
   // shipped with a second full-width band under the dock holding nothing but
@@ -73,7 +74,6 @@
 
   const denied = useDeniedViews()
   const badges = useNavBadges(() => route.pathname)
-  const manage = useManageSidebar()
 
   // Same apps doctrine as the rail: keep the query, default off it. `{ data:
   // apps = [] }` discarded the query on the line that made it, so a failed
@@ -97,11 +97,16 @@
   const onSystemHere = $derived(isUnder(route.pathname, '/settings') || isUnder(route.pathname, '/admin'))
 
   const { row, manage: manageSection } = $derived(dockSections(user, appsList.rows, denied.current))
+  // The gear's two questions — does this viewer have a manage area at all,
+  // and is the route inside it — asked of the same helper the sidebar asks.
+  const manage = $derived(
+    manageArea(NAV, appsList.rows, { isAdmin: user.role === 'admin', denied: denied.current }, route.pathname),
+  )
   const activePath = $derived(
-    // Active state includes the manage section's items: standing on
-    // /observability must light the gear, since that is the dock's only
-    // marker for the whole manage half of the menu. The most-specific-wins
-    // rule over every section at once is the same one the rail used.
+    // The manage section's items join the contest even though they have no
+    // tile: an app's manage surface (/x/<app>/manage) must beat its own work
+    // tile (/x/<app>) by the most-specific rule, or standing on the manage
+    // view would light the work tile. The gear lights from `manage.inside`.
     navActiveItem(route.pathname, [...row, ...(manageSection ? [manageSection] : [])])?.to ?? null,
   )
 </script>
@@ -165,32 +170,6 @@
       {/each}
     {/each}
 
-    <!-- The gear, after a divider — the position the manage section held at
-         the bottom of the rail, restated horizontally. It opens the manage
-         sidebar; it does not navigate. Hidden when the sidebar has nothing
-         to show (member with zero manage grants), so the affordance never
-         opens an empty pane. Lit while the sidebar is open OR while the
-         route is inside any manage view, because that is the dock's only
-         marker for the whole manage half of the menu. -->
-    {#if manageSection}
-      <div class="my-2 h-6 w-px shrink-0 bg-line"></div>
-      <RailTooltip label="Manage">
-        <button
-          type="button"
-          data-manage-tile
-          onclick={toggleManageSidebar}
-          aria-label="Manage"
-          aria-expanded={manage.manageOpen}
-          class={cn(
-            'relative grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted transition-colors duration-[120ms] dither-fill hover:text-fg',
-            (manage.manageOpen || manageSection.items.some((i) => i.to === activePath)) && 'bg-raised text-fg',
-          )}
-        >
-          <Cog size={16} strokeWidth={1.5} />
-        </button>
-      </RailTooltip>
-    {/if}
-
     <!-- The apps read decides which entries exist to the left. Dropping its
          failure here is how a surface disappears from the dock with nothing
          to say so — render the notice the query handed us. -->
@@ -201,7 +180,7 @@
 
   <!-- THE RIGHT CLUSTER, read right to left: who you are, what is waiting
        for you, what you are looking for — then the workspace affordances
-       (the assistant, and the apps-read failure when there is one). The
+       (Manage, the assistant, and the apps-read failure when there is one). The
        divider is the seam the strip used to be: everything left of it is
        about the workspace, everything right of it is about the person.
        The assistant launcher keeps its collapsed form (the drawer itself is
@@ -222,6 +201,29 @@
       </RailTooltip>
     {/if}
     <SidebarAssistant collapsed />
+    <!-- MANAGE, the instance's control plane: the last thing on the
+         workspace side of the seam, next to the account chip whose menu holds
+         Settings and Admin — the other instance-level doors. A link, not a
+         toggle: it goes to the /manage overview, whose sidebar is docked on
+         every manage page. Lit anywhere in the manage area, since this tile
+         is the dock's only marker for it. Absent for a member with no manage
+         grants, so it never opens onto an empty room. -->
+    {#if manage.items.length > 0}
+      <RailTooltip label="Manage">
+        <a
+          href={p(MANAGE_HOME)}
+          aria-label="Manage"
+          data-status={manage.inside ? 'active' : undefined}
+          aria-current={manage.inside ? 'page' : undefined}
+          class={cn(
+            'relative grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted transition-colors duration-[120ms] dither-fill hover:text-fg',
+            'data-[status=active]:bg-raised data-[status=active]:text-fg',
+          )}
+        >
+          <Cog size={16} strokeWidth={1.5} />
+        </a>
+      </RailTooltip>
+    {/if}
     <div class="my-2 h-6 w-px shrink-0 bg-line"></div>
     {#if !onBoardsHere}
       <BoardsSearch />
@@ -229,6 +231,6 @@
     <!-- The bell before the account chip: what is waiting for you, then who
          you are. -->
     <NotificationBell />
-    <UserMenu {user} {onLogout} active={onSystemHere} />
+    <UserMenu {user} {onLogout} active={onSystemHere} hasManage={manage.items.length > 0} />
   </div>
 </nav>

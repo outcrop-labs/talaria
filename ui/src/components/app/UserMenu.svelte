@@ -1,7 +1,6 @@
 <script lang="ts">
   import { Cog, LogOut, Settings, Shield, SunMoon } from '@lucide/svelte'
   import ThemeToggle from '@/components/ThemeToggle.svelte'
-  import { openManageSidebar } from './nav-dock.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Popover from '@/components/ui/Popover.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
@@ -23,7 +22,14 @@
     user,
     onLogout,
     active = false,
-  }: { user: SessionUser; onLogout: () => void; active?: boolean } = $props()
+    hasManage = false,
+  }: {
+    user: SessionUser
+    onLogout: () => void
+    active?: boolean
+    /** Whether this viewer has any manage view — the dock decides, once. */
+    hasManage?: boolean
+  } = $props()
 </script>
 
 <!-- The §7 popover shell owns the mechanics (outside-click, Esc, portal);
@@ -83,23 +89,19 @@
       </a>
     {/if}
 
-    <!-- Manage opens the dock's control-plane sidebar. A button, not a link:
-         it opens a pane beside the menu rather than going somewhere. The
-         gear matches the dock tile that opens the same pane; `open`, not
-         `toggle`, because the popover closing around this click must not
-         read as a second toggle — and `close` first so the flyover is gone
-         before the pane slides in. -->
-    <button
-      type="button"
-      onclick={() => {
-        close()
-        openManageSidebar()
-      }}
-      class="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm text-fg transition-colors duration-[120ms] dither-fill"
-    >
-      <Cog size={15} class="shrink-0 text-muted" />
-      <span>Manage</span>
-    </button>
+    <!-- Manage goes to the control plane's overview, the same place the
+         dock's gear goes; the gear glyph matches that tile. Shown to whoever
+         the gear is shown to. -->
+    {#if hasManage}
+      <a
+        href={p('/manage')}
+        onclick={close}
+        class="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-fg transition-colors duration-[120ms] dither-fill"
+      >
+        <Cog size={15} class="shrink-0 text-muted" />
+        <span>Manage</span>
+      </a>
+    {/if}
     <!-- Theme toggles in place — the flyover stays open for it. -->
     <div class="flex items-center justify-between rounded-md px-3 py-1.5 text-sm text-muted">
       <span class="flex items-center gap-2.5">
