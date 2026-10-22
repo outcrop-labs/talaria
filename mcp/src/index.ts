@@ -21,10 +21,10 @@
 //                               · its BOARD is archived
 //                             They refuse identically, with the same sentence,
 //                             at every door: the ticket patch, add_time,
-//                             report_outcome, log_usage, add_dependency, and
-//                             report_gap's taskId. The last three never reach
+//                             report_outcome, add_dependency, and
+//                             report_gap's taskId. The last two never reach
 //                             updateTask, so they ask the SAME predicate on
-//                             their own routes — one definition, not four
+//                             their own routes — one definition, not three
 //                             copies of a third of it (which is what they
 //                             were: closed-only, so an archived ticket sailed
 //                             through).
@@ -129,7 +129,7 @@ const ok = (data: unknown) => ({ content: [{ type: 'text' as const, text: JSON.s
  *  inline — interpolate, so there is one sentence to keep true. */
 const OFF_THE_TABLE = 'closed (done / failed / cancelled), ARCHIVED, or on an ARCHIVED BOARD'
 
-/** For every write door: the ticket patch, add_time, log_usage, add_dependency,
+/** For every write door: the ticket patch, add_time, add_dependency,
  *  report_outcome, report_gap's taskId. */
 const LIVE_ONLY = `Only a LIVE ticket accepts it — one that is ${OFF_THE_TABLE} refuses this with 403, like every other agent write.`
 
@@ -1440,22 +1440,6 @@ server.registerTool(
 
 
 server.registerTool(
-  'log_usage',
-  {
-    description:
-      `Report the LLM tokens you burned working a ticket. Feeds the ticket's cost rollup and the fleet ledger. Log it as you go: ${LIVE_ONLY} Spend you never reported before sign-off cannot be attached afterwards. Still fine while the ticket sits in blocked or quality review.`,
-    inputSchema: {
-      taskId: z.string().describe(TICKET_ADDR),
-      promptTokens: z.number().int().min(0).describe('Prompt/input tokens used'),
-      completionTokens: z.number().int().min(0).describe('Completion/output tokens used'),
-      tier: z.string().optional().describe('Model tier the work ran on (alias name), if not your main model'),
-      estimated: z.boolean().optional().describe('True when the counts are estimates'),
-    },
-  },
-  async ({ taskId, ...body }) => ok(await api('POST', `/api/tasks/${encodeURIComponent(taskId)}/usage`, body)),
-)
-
-server.registerTool(
   'add_dependency',
   {
     description:
@@ -1521,7 +1505,7 @@ server.registerTool(
   'research',
   {
     description:
-      `Start cited web research on a question in your field. Modes: 'recon' (one fast pass — a cited answer, ~1 min), 'brief' (planned angles → a briefing document, a few minutes), 'expedition' (iterative deep dive → a full report, can take a while). Runs in the background — you get a runId; poll research_status, then read the report with get_document. Every claim in the report carries [n] citations. Use recon for quick facts mid-task; brief/expedition for real questions worth a document.${CONTENT_IS_DATA}`,
+      `Start cited web research on a question in your field. Modes: 'recon' (one fast pass — a cited answer, ~1 min), 'brief' (planned angles → a briefing document, a few minutes), 'expedition' (iterative deep dive → a full report, can take a while). Runs in the background — you get a runId; poll research_status, then read the report with get_document. Every claim in the report carries [n] citations. For a quick fact mid-task, use your own web search tool instead — it answers in seconds and starts no run. Use this for cited work someone will rely on: brief/expedition for real questions worth a document, recon for one quick cited pass on record.${CONTENT_IS_DATA}`,
     inputSchema: {
       question: z.string().min(8).max(4000).describe('What to research, in natural language — be specific'),
       mode: z.enum(['recon', 'brief', 'expedition']).optional().describe("Depth (default 'brief')"),

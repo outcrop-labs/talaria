@@ -1319,6 +1319,9 @@ pub async fn render_fleet(
         skills_out.insert("external_dirs".into(), json!(ext_dirs));
         routed.insert("skills".into(), Value::Object(skills_out));
 
+        // The talaria MCP toolkit rides behind Hermes's tool-search bridge.
+        fleet_tool_search(&mut routed);
+
         // The talaria-events plugin (mounted into every agent above) is
         // enabled in config so Hermes registers its hooks. A user's own
         // enabled list is preserved — ours is added, never replaces.
@@ -1954,9 +1957,8 @@ fn fleet_delegation(routed: &mut Map<String, Value>, max_children: i32) {
 ///
 /// `floor` is what Talaria suppresses on every agent — the mandatory pair
 /// plus the org's own floor (`talaria_agent_defs::mandatory_disabled`);
-/// `def_disabled` is the operator's own list (agent_defs.disabled_toolsets) —
-/// `browser` above all, because a browsing agent costs a Chromium install on
-/// every roll. THE ORDER IS THE MERGE'S MEANING: the floor Talaria always
+/// `def_disabled` is the operator's own list (agent_defs.disabled_toolsets).
+/// THE ORDER IS THE MERGE'S MEANING: the floor Talaria always
 /// suppresses, then what the operator closed, then whatever the authored
 /// config already carried. A reader of the rendered config.yaml can tell the
 /// three apart by where they sit, and a re-render of the same three lists
@@ -1991,12 +1993,32 @@ fn fleet_disabled_toolsets(
     routed.insert("agent".into(), Value::Object(agent));
 }
 
-/// Whether this agent still holds Hermes' browser toolset — the switch behind
-/// the browser setup the post-health sites run (talaria-fleet-docker's
-/// `install_browser`). Absence from the disabled list is the "yes": every
-/// built-in toolset is on until something names it.
-pub fn browser_enabled(def: &RenderDef) -> bool {
-    !def.disabled_toolsets.iter().any(|name| name == "browser")
+/// Hermes's progressive tool disclosure, pinned on. Every agent carries the
+/// `talaria` MCP server, and Hermes always treats an MCP tool as deferrable,
+/// so with the bridge on the toolkit's schemas stay out of the model-facing
+/// tool array: a turn carries `tool_search` / `tool_describe` / `tool_call`
+/// and a short name-and-description listing, and the agent pulls a schema
+/// when it needs one — which is what the talaria-toolkit skill teaches.
+/// Hermes's own default is `auto`, an alias of `on` today that its config
+/// documents as reserved for a future budget-gated mode, so the render says
+/// `on` rather than lean on a default whose meaning is announced to change.
+/// A def that authored its own `enabled` keeps it — an operator's explicit
+/// call — and every other key in the block (`defer`, `threshold_pct`, …) is
+/// left alone the same way.
+fn fleet_tool_search(routed: &mut Map<String, Value>) {
+    let mut tools = routed
+        .get("tools")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut search = tools
+        .get("tool_search")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    search.entry("enabled").or_insert_with(|| json!("on"));
+    tools.insert("tool_search".into(), Value::Object(search));
+    routed.insert("tools".into(), Value::Object(tools));
 }
 
 /// s6 cont-init path. Lexicographic: after Hermes's `02-reconcile-profiles`,
@@ -2632,6 +2654,48 @@ service:
     }
 
     #[test]
+    fn fleet_tool_search_pins_the_bridge_on_and_keeps_what_a_def_authored() {
+        // Nothing authored: the bridge is pinned on, and the value is the
+        // STRING the YAML 1.1 emitter quotes — a bare `on` would reach
+        // PyYAML as a boolean.
+        let mut routed = Map::new();
+        fleet_tool_search(&mut routed);
+        assert_eq!(
+            routed.get("tools"),
+            Some(&json!({ "tool_search": { "enabled": "on" } }))
+        );
+        assert!(yaml11_emit(&Value::Object(routed)).contains("enabled: 'on'"));
+
+        // A def's own block: its `enabled` stands, its other keys stay, and
+        // a sibling under `tools` (another track's switch) is untouched.
+        let mut authored = Map::new();
+        authored.insert(
+            "tools".into(),
+            json!({
+                "tool_search": { "enabled": "off", "threshold_pct": 8 },
+                "connectors": { "enabled": false }
+            }),
+        );
+        fleet_tool_search(&mut authored);
+        assert_eq!(
+            authored.get("tools"),
+            Some(&json!({
+                "tool_search": { "enabled": "off", "threshold_pct": 8 },
+                "connectors": { "enabled": false }
+            }))
+        );
+
+        // A block with other keys but no `enabled` gets the pin beside them.
+        let mut partial = Map::new();
+        partial.insert("tools".into(), json!({ "tool_search": { "defer": [] } }));
+        fleet_tool_search(&mut partial);
+        assert_eq!(
+            partial.get("tools"),
+            Some(&json!({ "tool_search": { "defer": [], "enabled": "on" } }))
+        );
+    }
+
+    #[test]
     fn fleet_delegation_writes_the_cap_and_leaves_the_rest_of_the_block() {
         // No authored delegation block: the cap alone appears.
         let mut routed = Map::new();
@@ -2715,8 +2779,7 @@ service:
         );
 
         // The operator's list sits between the two: after the floor, before
-        // the authored names, deduped against both. `browser` here is the
-        // switch that also skips the Chromium install.
+        // the authored names, deduped against both.
         let mut closed = Map::new();
         closed.insert(
             "agent".into(),
@@ -2764,25 +2827,6 @@ service:
             org.get("agent"),
             Some(&json!({ "disabled_toolsets": ["todo", "clarify", "terminal", "web"] }))
         );
-
-        // The switch reads the def's list, not the rendered merge: `browser`
-        // closed is the one answer the install site acts on.
-        let def = |disabled: &[&str]| RenderDef {
-            id: "d1".into(),
-            slug: "analyst".into(),
-            department: "research".into(),
-            model: "analyst-research".into(),
-            display_name: "Analyst".into(),
-            role: None,
-            source: "created".into(),
-            active_slot: None,
-            developer: false,
-            max_children: 3,
-            disabled_toolsets: disabled.iter().map(|s| s.to_string()).collect(),
-        };
-        assert!(browser_enabled(&def(&[])), "every toolset is on by default");
-        assert!(browser_enabled(&def(&["memory", "web"])));
-        assert!(!browser_enabled(&def(&["browser"])));
     }
 
     /// The two-name floor a fresh install has — what the renderer passes when

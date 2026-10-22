@@ -219,7 +219,7 @@ async function main() {
     // ── 3. bundled skills vs the authority catalog ────────────────────────
     // The JSON snapshot is a docs dump; this is the image. A pack Hermes
     // added since the snapshot was written is unclassified until someone
-    // decides replace-or-keep — the six-line prune array's failure mode.
+    // decides replace-or-keep (and occupies its names with signposts).
     const find = [
       'for r in /opt/data/skills /root/.hermes/skills /home/hermes/.hermes/skills /opt/data/.hermes/skills; do',
       '  if [ -d "$r" ]; then find "$r" -name SKILL.md | sed "s|^$r/||"; fi',
@@ -232,7 +232,7 @@ async function main() {
     if (packs.length === 0) {
       fail(
         'no bundled SKILL.md under /opt/data/skills (or ~/.hermes/skills) after init. ' +
-        'The prune path docker.rs uses may have moved; an empty find is not a pass.',
+        'The skills root Hermes syncs into may have moved; an empty find is not a pass.',
       )
     } else {
       log(`image ships ${packs.length} bundled skill packs`)

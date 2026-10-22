@@ -226,9 +226,9 @@ pub async fn record_acted(pg: &PgPool, site: &str, subject_ref: Option<&str>, j:
 ///
 /// WHY THIS EXISTS BESIDE `Compare`. `Compare` is shaped for one baseline and
 /// one `Judgment`, with agreement decided by a comparator over that answer.
-/// Some sites do not have that shape: tool-offer pruning asks a Noul per
-/// offered tool, and the thing worth recording is the SET those answers
-/// produced plus whether it contained every tool the reply actually called.
+/// Some sites do not have that shape: the brief's attention order is scored
+/// item by item, and the thing worth recording is what the ORDER those
+/// scores produced put first, against what the deterministic order put first.
 /// There is no single probability behind that, so `probability`, `certainty`
 /// and `calibrated` stay null rather than carrying a summary statistic nobody
 /// could interpret.

@@ -340,21 +340,6 @@ async fn roll_agent_locked(
             "{display_name}: replacement never became healthy — kept the old container"
         )));
     }
-    // Toolkit-first by default: strip the image's bundled note-tool skills the
-    // moment the newcomer is healthy (Talaria-managed skills are untouched).
-    let _ = talaria_fleet_docker::prune_bundled_skills(department, new_slot).await;
-    // Chromium is not in the image, and the path the image points Playwright at
-    // is in the container layer — so the browser a browsing agent needs is
-    // installed per container, and THIS is the container. Detached: the install
-    // is minutes of download and a roll must not hold the cutover for it. The
-    // slot is already healthy, so the agent answers while Chromium lands behind
-    // it; a browser turn before then fails the way it did before this existed.
-    if talaria_fleet_docker::browser_enabled_for_department(pg, department).await {
-        let dept = department.to_string();
-        tokio::spawn(async move {
-            let _ = talaria_fleet_docker::install_browser(&dept, new_slot).await;
-        });
-    }
     // 3. Cutover: incoming slot becomes active (new port), manifest re-renders.
     sqlx::query("update agent_defs set active_slot = $2, gateway_port = $3 where slug = $1")
         .bind(&slug)
@@ -443,29 +428,7 @@ pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileRes
             continue;
         }
         match talaria_fleet_docker::fleet_up(pg, department).await {
-            Ok(_) => {
-                started.push(display_name.clone());
-                // New containers get the bundled note-tool skills stripped once
-                // healthy — toolkit-first is the default from first boot.
-                // Detached: reconcile must not block on health.
-                let dept = department.clone();
-                let pg_bg = pg.clone();
-                tokio::spawn(async move {
-                    if talaria_fleet_docker::wait_healthy(&pg_bg, &dept, 120_000).await {
-                        let slot = talaria_fleet_docker::active_slot(&pg_bg, &dept).await;
-                        let _ = talaria_fleet_docker::prune_bundled_skills(&dept, slot).await;
-                        // A fresh container has no Chromium (the image's
-                        // browsers path is in the layer), so a browsing agent
-                        // installs it here — inside the task that is already
-                        // detached, after the prune it shares a health wait
-                        // with.
-                        if talaria_fleet_docker::browser_enabled_for_department(&pg_bg, &dept).await
-                        {
-                            let _ = talaria_fleet_docker::install_browser(&dept, slot).await;
-                        }
-                    }
-                });
-            }
+            Ok(_) => started.push(display_name.clone()),
             Err(e) => warnings.push(format!("{display_name}: {e}")),
         }
     }

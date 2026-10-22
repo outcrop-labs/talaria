@@ -1,23 +1,31 @@
-// HERMES BUNDLED SKILLS — what we prune, what we keep, and the signposts that
-// occupy the names agents reach for.
+// HERMES BUNDLED SKILLS — what we replace, what we keep, and the signposts
+// that occupy the names agents reach for.
 //
-// Hermes ships a large library into `/opt/data/skills` on every container and
-// re-seeds on image updates. Some of those packs teach a PARALLEL WORKSPACE
+// Hermes ships a large library of bundled skills and syncs it into
+// `/opt/data/skills` on every container start (stage2 runs
+// `tools/skills_sync.py`). Some of those packs teach a PARALLEL WORKSPACE
 // (Notion, Obsidian, Airtable, gh CLI, gws, Himalaya). Talaria is the system
-// of record; those packs are deleted on every roll, and a Talaria-authored
-// skill of the same `name:` is seeded into `/opt/skills` so a search for
-// "notion" finds the override, not a hole.
+// of record, so for each replaced pack a Talaria-authored skill of the same
+// `name:` is seeded into `/opt/skills`, a root every agent lists under
+// `skills.external_dirs`.
 //
-// THE WEEKLY PROBLEM. Hermes adds packs. A hardcoded prune list silently let
-// new conflicts in. The classified catalog
+// THE SIGNPOST IS THE MECHANISM, not just a hint. `skills_sync` defers any
+// bundled skill whose name a skill in `external_dirs` already provides: it
+// never writes it into the local tree, and it removes a byte-identical stale
+// copy an earlier sync left. So a replaced pack stays off an agent exactly
+// as long as every one of its skill names has a signpost — which is what the
+// tests below hold. Talaria used to `docker exec rm -rf` the replaced paths
+// after every up and roll; that is gone, because Hermes now does the job
+// itself from the first boot, with no window between start and prune.
+//
+// THE WEEKLY PROBLEM. Hermes adds packs. The classified catalog
 // (`scripts/hermes-skill-authority.json`) is the tripwire: every snapshot
 // entry — and every path the chassis smoke finds in the live image — is
 // replaced, keepPrefix (apple/ only), or keepExact. `unclassified` is the
 // public answer; an unclassified path fails the test and the smoke.
 //
-// SOURCE OF TRUTH is the JSON. `prune_paths` is what docker.rs rm -rf's.
-// Signpost directories live in scripts/skills/<signpost>/, same seed path as
-// talaria-toolkit.
+// SOURCE OF TRUTH is the JSON. Signpost directories live in
+// scripts/skills/<signpost>/, same seed path as talaria-toolkit.
 
 use serde::Deserialize;
 use std::sync::LazyLock;
@@ -53,15 +61,6 @@ fn authority() -> &'static Authority {
         serde_json::from_str(AUTHORITY_JSON).expect("hermes-skill-authority.json parses")
     });
     &A
-}
-
-/// Paths under `/opt/data/skills/` to delete from every managed container.
-pub fn prune_paths() -> Vec<&'static str> {
-    authority()
-        .replaced
-        .iter()
-        .map(|r| r.path.as_str())
-        .collect()
 }
 
 fn replaced_matches(path: &str, entry: &str) -> bool {
@@ -141,9 +140,43 @@ mod tests {
 
     #[test]
     fn replaced_paths_are_unique() {
-        let paths: Vec<&str> = prune_paths();
+        let paths: Vec<&str> = authority()
+            .replaced
+            .iter()
+            .map(|r| r.path.as_str())
+            .collect();
         let set: HashSet<&str> = paths.iter().copied().collect();
-        assert_eq!(set.len(), paths.len(), "duplicate prune paths: {paths:?}");
+        assert_eq!(
+            set.len(),
+            paths.len(),
+            "duplicate replaced paths: {paths:?}"
+        );
+    }
+
+    /// Every `name:` a SKILL.md under scripts/skills declares in its
+    /// frontmatter. Read from the frontmatter only, so a body that merely
+    /// mentions a name ("never run `himalaya`") does not count as occupying it.
+    fn signpost_names() -> HashSet<String> {
+        let mut out = HashSet::new();
+        for entry in fs::read_dir(skills_root()).unwrap() {
+            let skill = entry.unwrap().path().join("SKILL.md");
+            let Ok(body) = fs::read_to_string(&skill) else {
+                continue;
+            };
+            let mut lines = body.lines();
+            if lines.next().map(str::trim) != Some("---") {
+                continue;
+            }
+            for line in lines {
+                if line.trim() == "---" {
+                    break;
+                }
+                if let Some(name) = line.strip_prefix("name:") {
+                    out.insert(name.trim().to_string());
+                }
+            }
+        }
+        out
     }
 
     #[test]
@@ -157,15 +190,22 @@ mod tests {
                     "{} → scripts/skills/{}/SKILL.md is missing — {}",
                     r.path, r.signpost, r.why
                 ));
-                continue;
             }
-            let body = fs::read_to_string(&skill).unwrap();
-            let named = r.names.iter().any(|n| body.contains(&format!("name: {n}")));
-            if !named {
-                missing.push(format!(
-                    "scripts/skills/{}/SKILL.md must declare name: {:?} (the Hermes names agents reach for)",
-                    r.signpost, r.names
-                ));
+        }
+        // EVERY name, not any one of them. Hermes defers a bundled skill only
+        // when a skill in external_dirs carries ITS name, so one pack with
+        // three skills needs three names occupied. Checking that any one
+        // matched let `himalaya` and `email-inbox-triage` load on fresh
+        // volumes while this test stayed green on the `email` signpost.
+        let names = signpost_names();
+        for r in &authority().replaced {
+            for n in &r.names {
+                if !names.contains(n) {
+                    missing.push(format!(
+                        "{} ships a skill named {n:?} and no scripts/skills/*/SKILL.md declares name: {n} — Hermes will sync it onto every agent",
+                        r.path
+                    ));
+                }
             }
         }
         assert!(

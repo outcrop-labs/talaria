@@ -21,7 +21,6 @@
 | [`/api/tasks/{id}/dependencies`](#apitasksiddependencies) | DELETE | `session` |
 | [`/api/tasks/{id}/review`](#apitasksidreview) | POST | `session` |
 | [`/api/tasks/{id}/usage`](#apitasksidusage) | GET | `dual` |
-| [`/api/tasks/{id}/usage`](#apitasksidusage) | POST | `agent` |
 | [`/api/tasks/{id}/watchers`](#apitasksidwatchers) | POST | `session` |
 | [`/api/tasks/{id}/watchers`](#apitasksidwatchers) | DELETE | `session` |
 | [`/api/tasks/{id}/work-session`](#apitasksidwork-session) | GET | `session` |
@@ -156,24 +155,15 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_review.rs`](../../
 
 Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_usage.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_usage.rs)
 
-> /api/tasks/{id}/usage. Per-ticket token spend. POST (agents, via MCP
-> log_usage): report tokens burned working this ticket — attributed to the
-> agent's serving endpoint and priced like every other ledger row. GET: the
-> rollup shown on the ticket.
+> GET /api/tasks/{id}/usage. Per-ticket token spend: the rollup shown on the
+> ticket, read from the `usage_events` rows that carry this ticket's id — the
+> work-session flow's metered rows, priced like every other ledger row.
+>
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `…` | 200, 400, 403, 404, 409 | — |
-| POST | `agent` | [body](#post-apitasksidusage-body) | `{ok}` | 200, 400, 403, 404, 409 | — |
-
-### POST `/api/tasks/{id}/usage` body
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `promptTokens` | `number(0, 100000)` |  |
-| `completionTokens` | `number(0, 100000)` |  |
-| `tier` | `nullish` | Model tier the work ran on (alias name); defaults to the agent's main. |
-| `estimated` | `bool?` |  |
 
 ## `/api/tasks/{id}/watchers`
 

@@ -12,10 +12,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_defs::agent_def_by_id;
 use talaria_api_facades::fleet::create::delete_agent_forever;
-use talaria_api_facades::fleet::docker::{
-    active_slot, browser_enabled_for_department, fleet_remove, fleet_restart, fleet_stop, fleet_up,
-    install_browser, prune_bundled_skills, wait_healthy,
-};
+use talaria_api_facades::fleet::docker::{fleet_remove, fleet_restart, fleet_stop, fleet_up};
 use talaria_api_facades::fleet::reconcile::roll_agent;
 use talaria_api_facades::fleet::render::render_fleet;
 use talaria_audit::{AuditEntry, log_audit};
@@ -101,7 +98,6 @@ pub async fn post(
                 return Ok(catch(e));
             }
             // Don't block on health — the roster shows the warm-up phase.
-            spawn_health_prune(&state.pg, &def.department);
             Json(json!({ "ok": true, "warming": true })).into_response()
         }
         "stop" => match fleet_stop(&state.pg, &def.department).await {
@@ -245,33 +241,12 @@ pub async fn post(
                 if let Err(e) = fleet_up(&state.pg, &def.department).await {
                     return Ok(catch(e));
                 }
-                spawn_health_prune(&state.pg, &def.department);
                 return Ok(Json(json!({ "ok": true, "warming": true })).into_response());
             }
             Json(json!({ "ok": true })).into_response()
         }
         _ => internal("[fleet] control: unknown action", &action),
     })
-}
-
-/// wait_healthy, then prune_bundled_skills on success — 120s health
-/// window, slot resolved per call. A browsing agent's Chromium rides along
-/// here: it is not in the image, the image's own browsers path is in the
-/// container layer, and this fresh container is the one that needs it. Both
-/// steps are best-effort and already detached, so the install's minutes cost
-/// the caller nothing.
-fn spawn_health_prune(pg: &sqlx::PgPool, department: &str) {
-    let pg = pg.clone();
-    let dept = department.to_string();
-    tokio::spawn(async move {
-        if wait_healthy(&pg, &dept, 120_000).await {
-            let slot = active_slot(&pg, &dept).await;
-            prune_bundled_skills(&dept, slot).await;
-            if browser_enabled_for_department(&pg, &dept).await {
-                install_browser(&dept, slot).await;
-            }
-        }
-    });
 }
 
 /// The catch arm's sentence — the em dash is part of the wire contract.
