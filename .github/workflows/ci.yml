@@ -277,7 +277,13 @@ jobs:
           # through are in EVERY list on purpose: an edit to either changes
           # what these jobs are, so the run that carries it should exercise
           # all of them.
-          surface ui      'ui/*' 'apps/*' '.github/workflows/ci.yml' '.github/actions/**'
+          #
+          # docs/sdk/ and the app scaffolder are in the ui list because the ui
+          # suite compiles the SDK docs' examples and every file `talaria app new`
+          # writes against the SDK (ui/src/sdk/client-docs.test.ts and
+          # server.test.ts). Without them, a docs-only or scaffold-only edit
+          # that stops compiling skips this job, and a skip reports success.
+          surface ui      'ui/*' 'apps/*' 'docs/sdk/*' 'cli/src/cmd/app/*' '.github/workflows/ci.yml' '.github/actions/**'
           surface mcp     'mcp/*' '.github/workflows/ci.yml' '.github/actions/**'
           surface cli     'cli/*' '.github/workflows/ci.yml' '.github/actions/**'
           surface api     'api/*' '.github/workflows/ci.yml' '.github/actions/**'

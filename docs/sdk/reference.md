@@ -138,8 +138,8 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | `errorMessage` | fn | One human line for any thrown value |
 | `getStream` / `postStream` | fn | A streamed reply's open Response, same error contract as `api` |
 | `openStream` | fn | Subscribe to a server-sent-events route; returns the unsubscribe |
-| `appApi` / `AppApi` | fn / type | get/post/put/patch/del/url bound to an app's routes, for code outside a component |
-| `useAppApi` | fn | `appApi` for the surrounding surface — no slug |
+| `appApi` / `AppApi` / `AppApiInit` | fn / types | get/post/put/patch/del/url bound to an app's routes, for a slug you already hold; each verb takes `{ timeout, signal }` last |
+| `useAppApi` | fn | `appApi` for the surrounding surface — no slug, read once at init |
 | `useAppQuery` / `AppQueryOptions` | fn / type | svelte-query read of an app-server GET; path and options may be getters |
 | `appQueryKey` | fn | The key an app-server path reads under: app, segments, then search params |
 | `useAppInvalidate` | fn | Invalidate an app's reads after a write: all of them, or every read under a path |

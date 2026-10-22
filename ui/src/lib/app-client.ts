@@ -9,14 +9,28 @@
 // tested without importing the whole UI kit (app-client.test.ts).
 import { delJson, getJson, patchJson, postJson, putJson } from '@/lib/fetch-json'
 
-/** Options for `api()`: a `RequestInit` plus a JSON body and a deadline. */
-export interface ApiInit extends RequestInit {
-  /** Sent as the JSON body, with the content-type set for you. Use `body`
-   *  instead for anything that isn't JSON (FormData, a Blob, text). */
-  json?: unknown
+/** What an app's bound verbs take after the path and body: a `RequestInit`
+ *  plus a deadline. */
+export interface AppApiInit extends RequestInit {
   /** Abort after this many milliseconds. Reads already stop at 30s; a write
    *  has no deadline unless you give it this or a `signal`. */
   timeout?: number
+}
+
+/** Options for `api()`: the same, plus a JSON body. */
+export interface ApiInit extends AppApiInit {
+  /** Sent as the JSON body, with the content-type set for you. Use `body`
+   *  instead for anything that isn't JSON (FormData, a Blob, text). */
+  json?: unknown
+}
+
+/** `timeout` becomes a signal, combined with the caller's own. */
+function withDeadline(init: AppApiInit | undefined): RequestInit | undefined {
+  if (!init) return init
+  const { timeout, ...rest } = init
+  if (timeout === undefined) return rest
+  const deadline = AbortSignal.timeout(timeout)
+  return { ...rest, signal: rest.signal ? AbortSignal.any([rest.signal, deadline]) : deadline }
 }
 
 const headerRecord = (h: HeadersInit): Record<string, string> => Object.fromEntries(new Headers(h).entries())
@@ -33,13 +47,11 @@ function keepJsonType(init: RequestInit | undefined, body: unknown): RequestInit
  *  with an `HttpError` (`.status`, the server's sentence as `.message`) on any
  *  non-2xx, and with a sentence that says so on a 2xx that isn't JSON. */
 export async function api<T = unknown>(path: string, init?: ApiInit): Promise<T> {
-  const { json, timeout, ...rest } = init ?? {}
+  const { json, ...rest } = init ?? {}
   const method = (rest.method ?? 'GET').toUpperCase()
-  const deadline = timeout === undefined ? undefined : AbortSignal.timeout(timeout)
-  const signal = deadline && rest.signal ? AbortSignal.any([rest.signal, deadline]) : (deadline ?? rest.signal ?? undefined)
   // A raw `body` rides in `init`, which the door spreads last, so it passes
   // through untouched; a `json` body is the door's to encode.
-  const req: RequestInit = { ...keepJsonType(rest, json), method, ...(signal ? { signal } : {}) }
+  const req: RequestInit = { ...keepJsonType(withDeadline(rest), json), method }
   if (json !== undefined) delete req.body
   switch (method) {
     case 'GET':
@@ -57,36 +69,33 @@ export async function api<T = unknown>(path: string, init?: ApiInit): Promise<T>
   }
 }
 
-/** The verbs bound to one app's server routes (/api/apps/<slug>/…). */
+/** The verbs bound to one app's server routes (/api/apps/<slug>/…). Each
+ *  takes the same `{ timeout, signal, headers, … }` last, as `api()` does. */
 export interface AppApi {
-  get: <T = unknown>(path: string, init?: RequestInit) => Promise<T>
-  post: <T = unknown>(path: string, body?: unknown, init?: RequestInit) => Promise<T>
-  put: <T = unknown>(path: string, body?: unknown, init?: RequestInit) => Promise<T>
-  patch: <T = unknown>(path: string, body?: unknown, init?: RequestInit) => Promise<T>
-  del: <T = unknown>(path: string, body?: unknown, init?: RequestInit) => Promise<T>
+  get: <T = unknown>(path: string, init?: AppApiInit) => Promise<T>
+  post: <T = unknown>(path: string, body?: unknown, init?: AppApiInit) => Promise<T>
+  put: <T = unknown>(path: string, body?: unknown, init?: AppApiInit) => Promise<T>
+  patch: <T = unknown>(path: string, body?: unknown, init?: AppApiInit) => Promise<T>
+  del: <T = unknown>(path: string, body?: unknown, init?: AppApiInit) => Promise<T>
   /** The absolute URL of a route, for `getStream`, `postStream` or `openStream`. */
   url: (path: string) => string
 }
 
 export const appRouteUrl = (slug: string, path: string): string => `/api/apps/${slug}/${path.replace(/^\/+/, '')}`
 
-/** The verbs for an app whose slug is read at call time. */
-export function appApiFor(slug: () => string): AppApi {
-  const url = (path: string) => appRouteUrl(slug(), path)
-  return {
-    get: (path, init) => getJson(url(path), init),
-    post: (path, body, init) => postJson(url(path), body ?? {}, keepJsonType(init, body ?? {})),
-    put: (path, body, init) => putJson(url(path), body ?? {}, keepJsonType(init, body ?? {})),
-    patch: (path, body, init) => patchJson(url(path), body ?? {}, keepJsonType(init, body ?? {})),
-    del: (path, body, init) => delJson(url(path), body, keepJsonType(init, body)),
-    url,
-  }
-}
-
 /** Fetch helpers bound to an app's server routes (/api/apps/<slug>/…), for
  *  code outside a component. Inside a surface, use `useAppApi()`. */
 export function appApi(slug: string): AppApi {
-  return appApiFor(() => slug)
+  const url = (path: string) => appRouteUrl(slug, path)
+  const send = (body: unknown, init: AppApiInit | undefined) => keepJsonType(withDeadline(init), body)
+  return {
+    get: (path, init) => getJson(url(path), withDeadline(init)),
+    post: (path, body, init) => postJson(url(path), body ?? {}, send(body ?? {}, init)),
+    put: (path, body, init) => putJson(url(path), body ?? {}, send(body ?? {}, init)),
+    patch: (path, body, init) => patchJson(url(path), body ?? {}, send(body ?? {}, init)),
+    del: (path, body, init) => delJson(url(path), body, send(body, init)),
+    url,
+  }
 }
 
 /** The query key an app-server path reads under: the app, the path's

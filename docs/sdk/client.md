@@ -20,8 +20,12 @@ as `contacts-app` runs as `contacts-app`. The host tells the surface instead:
 <p>{app.manifest.name} ({app.slug}), {app.surface} surface</p>
 ```
 
-Every hook below takes the slug as an optional first argument and defaults to the surrounding
-surface's. Outside a surface (a plain `.ts` helper module called from no component), pass it.
+Every hook below defaults to the surrounding surface's app, and reads its slug once, when the
+component initialises: a surface never changes app while it is mounted, so a handler still
+running after its surface closed keeps talking to its own app. To reach another app's routes,
+or from a component rendered outside any surface, pass the slug as the first argument. The
+hooks read Svelte context, so they run during a component's init and never in a plain `.ts`
+module; hand such a module the verbs a component got from `useAppApi()` instead.
 
 ## Session
 
@@ -69,8 +73,9 @@ export const agentCount = agents.length
 `api()` is the host's own HTTP door. A non-2xx rejects with an `HttpError` carrying `status`
 and the server's `error` sentence as its message; a 2xx that is not JSON rejects with a sentence
 that says so. Reads stop after 30 seconds; give a write `timeout: ms` or a `signal` when it
-should stop too. `errorMessage(e)` turns any thrown value into one line for the UI. The full
-route catalog with auth classes and body shapes: [`api/`](../api/README.md).
+should stop too. The verbs from `useAppApi()` and `appApi()` take the same `{ timeout, signal }`
+as their last argument. `errorMessage(e)` turns any thrown value into one line for the UI. The
+full route catalog with auth classes and body shapes: [`api/`](../api/README.md).
 
 ## Your app server
 
@@ -89,7 +94,7 @@ route catalog with auth classes and body shapes: [`api/`](../api/README.md).
 
   async function add(name: string) {
     try {
-      await mine.post('things', { name })
+      await mine.post('things', { name }, { timeout: 15_000 }) // writes have no default deadline
       await invalidate('things') // every read under things: things?q=…, things/123, …
     } catch (e) {
       await alert({ title: 'Could not add it', message: errorMessage(e) })
@@ -117,8 +122,8 @@ route catalog with auth classes and body shapes: [`api/`](../api/README.md).
   (`appQueryKey` builds it, for your own `createQuery`). `invalidate('things')` therefore
   reaches every read below `things`; `invalidate()` reaches all of the app's reads.
 - Call the three hooks during component init — they read the surface and the query client from
-  context. What they return is safe anywhere. `appApi(slug)` is the same verbs for code
-  outside a component.
+  context. What they return is safe anywhere, and stays bound to the app it read at init.
+  `appApi(slug)` is the same verbs, for a slug you already hold.
 - `useAppApi().url('events')` is the absolute URL of a route, for the streaming helpers below.
 
 ## Rendering a read: loading, broken, or empty

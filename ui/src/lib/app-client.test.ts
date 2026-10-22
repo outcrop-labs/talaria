@@ -1,7 +1,7 @@
 import { QueryClient } from '@tanstack/svelte-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HttpError } from '@/lib/fetch-json'
-import { api, appApi, appApiFor, appQueryKey } from './app-client'
+import { api, appApi, appQueryKey } from './app-client'
 
 // The SDK's HTTP layer and its query keys. Two behaviours an app author relies
 // on without reading the source: invalidate('things') refreshes the list the
@@ -106,20 +106,40 @@ describe('api() and the bound verbs', () => {
     expect(calls[1]?.init.headers).toBeUndefined()
   })
 
-  it("binds the verbs to /api/apps/<slug>/, reading the slug at call time", async () => {
+  it('binds the verbs to /api/apps/<slug>/', async () => {
     vi.stubGlobal('fetch', reply(200, '{"ok":true}'))
-    let slug = 'first'
-    const live = appApiFor(() => slug)
-    await live.post('items', { title: 'a' })
-    slug = 'renamed'
-    await live.del('/items/1')
-    await appApi('crm').get('things?q=ada')
+    const crm = appApi('crm')
+    await crm.post('items', { title: 'a' })
+    await crm.del('/items/1')
+    await crm.get('things?q=ada')
     expect(calls.map((c) => `${c.init.method ?? 'GET'} ${c.url}`)).toEqual([
-      'POST /api/apps/first/items',
-      'DELETE /api/apps/renamed/items/1',
+      'POST /api/apps/crm/items',
+      'DELETE /api/apps/crm/items/1',
       'GET /api/apps/crm/things?q=ada',
     ])
     expect(calls[0]?.init.body).toBe('{"title":"a"}')
-    expect(live.url('events')).toBe('/api/apps/renamed/events')
+    expect(crm.url('events')).toBe('/api/apps/crm/events')
+  })
+
+  it('gives a bound verb the same timeout as api(), beside the caller signal', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (url: string, init: RequestInit) =>
+          new Promise<Response>((_, reject) => {
+            calls.push({ url, init })
+            init.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+          }),
+      ),
+    )
+    const crm = appApi('crm')
+    const slow = await crm.post('slow', { a: 1 }, { timeout: 20, headers: { 'x-trace': '1' } }).catch((e: unknown) => e)
+    expect((slow as Error).name).toBe('TimeoutError')
+    expect(calls[0]?.init.headers).toEqual({ 'content-type': 'application/json', 'x-trace': '1' })
+
+    const mine = new AbortController()
+    const read = crm.get('things', { signal: mine.signal, timeout: 60_000 }).catch((e: unknown) => e)
+    mine.abort(new Error('closed'))
+    expect(((await read) as Error).message).toBe('closed')
   })
 })
