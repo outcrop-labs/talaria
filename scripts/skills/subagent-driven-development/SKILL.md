@@ -207,8 +207,9 @@ git diff <base>..HEAD --stat        # only what the ticket asked for
 <the repo's test command>           # green, run by you
 ```
 
-Anything with a front end: drive it with your browser tools (`browser_navigate` to the dev
-server on localhost, click through, `browser_vision`) and keep the screenshot for the ticket. Then `finish_job` with a summary that says what changed, how you
+Anything with a front end: drive it with your browser tool (`browser_exec`: `new_tab` to the
+dev server on localhost, click through with `js(...)`, `capture_screenshot()`) and keep the
+screenshot for the ticket (`save_image_artifact`). Then `finish_job` with a summary that says what changed, how you
 verified it, and what the reviewer should look at hardest — Talaria checks the branch and opens
 the pull request. A job that produced nothing is `finish_job` with `abandon:true`, never a
 hand-written substitute.
