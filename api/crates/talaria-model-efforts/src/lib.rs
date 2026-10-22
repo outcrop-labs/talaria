@@ -27,6 +27,7 @@ use talaria_gateway::provider::CatalogModel;
 use talaria_gateway::registry::{LlmEndpoint, list_endpoints};
 use talaria_model_catalog::{
     KEY, catalog_entries_for, catalog_entries_for_targets, effort_levels_of, entries_in_store,
+    targets_in_store,
 };
 use talaria_persona::{ModelTarget, persona_targets_for};
 use talaria_state::AppState;
@@ -104,21 +105,50 @@ pub async fn efforts_for_model(pg: &sqlx::PgPool, model: &str) -> Vec<String> {
     effort_levels_of(&with_declared_efforts(entries, &roster))
 }
 
-/// The effort levels ONE endpoint:upstream target supports, or `[]` — the
-/// per-target half of `efforts_for_model`, for a caller that speaks per
-/// RUNNING MODEL rather than per routable id: fleet-render's Hermes reasoning
-/// block, which Hermes resolves against whichever of an agent's models is
-/// actually answering (main, a tier, a fallback). Same two voices, same
-/// `[]`-means-nobody-vouched contract; no pool, because the pool rule exists
-/// for a routable id whose answering model is unknowable in advance, and here
-/// it is known.
-pub async fn efforts_for_target(pg: &sqlx::PgPool, target: &ModelTarget) -> Vec<String> {
-    let entries = catalog_entries_for_targets(pg, std::slice::from_ref(target)).await;
-    if entries.is_empty() {
-        return Vec::new();
+/// BOTH VOICES, READ ONCE — for a caller that asks about many endpoint:upstream
+/// targets in one pass and speaks per RUNNING MODEL rather than per routable
+/// id: fleet-render's Hermes reasoning block, which Hermes resolves against
+/// whichever of an agent's models is actually answering (main, a tier, a
+/// fallback).
+///
+/// FALLIBLE, unlike `efforts_for_model`, and on purpose. A chat turn reads an
+/// unreadable catalog as `[]` because a picker that cannot decide must not
+/// fail the turn; a render that did the same would WRITE that `[]` into an
+/// agent's config — every model marked as one nobody vouches for, every
+/// configured level dropped — off one transient Postgres error. A caller that
+/// gets `Err` here leaves the reasoning render out instead.
+pub struct EffortVoices {
+    store: serde_json::Value,
+    roster: Vec<LlmEndpoint>,
+}
+
+impl EffortVoices {
+    /// The stored catalog (an absent row is an empty catalog, the same as a
+    /// fresh self-host) and the endpoint roster, or the read error.
+    pub async fn read(pg: &sqlx::PgPool) -> Result<Self, sqlx::Error> {
+        let store = sqlx::query_scalar::<_, serde_json::Value>(
+            "select value from app_settings where key = $1",
+        )
+        .bind(KEY)
+        .fetch_optional(pg)
+        .await?
+        .unwrap_or_else(|| serde_json::json!({}));
+        let roster = list_endpoints(pg).await?;
+        Ok(Self { store, roster })
     }
-    let roster = list_endpoints(pg).await.unwrap_or_default();
-    effort_levels_of(&with_declared_efforts(entries, &roster))
+
+    /// The effort levels ONE target supports, or `[]` when nobody vouches —
+    /// the per-target half of `efforts_for_model`. Same two voices, same
+    /// `[]`-means-nobody-vouched contract; no pool, because the pool rule
+    /// exists for a routable id whose answering model is unknowable in
+    /// advance, and here it is known.
+    pub fn for_target(&self, target: &ModelTarget) -> Vec<String> {
+        let entries = targets_in_store(&self.store, std::slice::from_ref(target));
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        effort_levels_of(&with_declared_efforts(entries, &self.roster))
+    }
 }
 
 // ── The backfill ─────────────────────────────────────────────────────────────
@@ -369,5 +399,52 @@ mod tests {
         let roster = vec![ep("a", json!({"m": ["", "high"]}))];
         let merged = with_declared_efforts(entries, &roster);
         assert_eq!(effort_levels_of(&merged), vec!["low".to_string()]);
+    }
+
+    #[test]
+    fn a_target_answers_for_its_own_endpoint_only() {
+        let ep = |name: &str, declared: serde_json::Value| LlmEndpoint {
+            context_length: None,
+            id: name.into(),
+            name: name.into(),
+            provider: "openai".into(),
+            base_url: None,
+            class: "cloud".into(),
+            api_key_env: None,
+            models: vec!["m".into()],
+            price_in_per_mtok: None,
+            price_out_per_mtok: None,
+            model_prices: serde_json::Value::Null,
+            auto_prices: serde_json::Value::Null,
+            request_defaults: serde_json::Value::Null,
+            model_efforts: declared,
+        };
+        let target = |endpoint: &str, model: &str| ModelTarget {
+            endpoint: endpoint.into(),
+            model: model.into(),
+        };
+        let voices = EffortVoices {
+            store: store(&[
+                ("vouched", vec![raw_model(Some(json!(["low", "high"])))]),
+                ("silent", vec![raw_model(Some(json!(null)))]),
+                ("declared", vec![raw_model(Some(json!(null)))]),
+            ]),
+            roster: vec![ep("declared", json!({"m": ["medium"]}))],
+        };
+        // The catalog voice, for its endpoint's build only — no pooling.
+        assert_eq!(
+            voices.for_target(&target("vouched", "m")),
+            vec!["low".to_string(), "high".to_string()]
+        );
+        // Silent catalog, no declaration: nobody vouched.
+        assert!(voices.for_target(&target("silent", "m")).is_empty());
+        // The admin's declaration stands in for a silent catalog.
+        assert_eq!(
+            voices.for_target(&target("declared", "m")),
+            vec!["medium".to_string()]
+        );
+        // A model or endpoint the catalog does not list: nobody vouched.
+        assert!(voices.for_target(&target("vouched", "other")).is_empty());
+        assert!(voices.for_target(&target("gone", "m")).is_empty());
     }
 }
