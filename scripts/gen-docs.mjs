@@ -519,6 +519,42 @@ function bodySchemaRust(combined, sigText, fileRaw) {
     fields.push({ name: key, expr, note, offset: m.index })
     callRe.lastIndex = parenIdx
   }
+  // A REQUIRED KEY THE HANDLER READS BY HAND. `match obj.get("installUrl") {
+  // None => return …400 }` next to member calls for the other keys rendered
+  // only the other keys, so POST /api/admin/apps documented a body without
+  // the one field it cannot run without. Only that form is read: a `None` arm
+  // that returns an error is the handler saying the key must be there. The
+  // type comes from the first accessor in the match block; anything else
+  // renders as `value`.
+  if (fields.length) {
+    const getRe = new RegExp(`\\bmatch\\s+${objVar}\\.get\\(\\s*"((?:[^"\\\\]|\\\\.)*)"\\s*\\)\\s*\\{`, 'g')
+    while ((m = getRe.exec(text))) {
+      const key = m[1]
+      if (fields.some((f) => f.name === key)) continue
+      const open = m.index + m[0].length - 1
+      const close = matchDelimRust(text, open)
+      if (close === -1) continue
+      const block = text.slice(open + 1, close)
+      if (!/^\s*None\s*=>\s*\{?\s*return\s+(?:Ok\(\s*house_error\(|Err\()/.test(block)) continue
+      // The FIRST accessor is the field's own shape — a later `.as_str()` is
+      // usually an element of the array or a member of the record.
+      const first = /\.as_(array|object|str|bool|i64|u64|f64)\(\)|Value::(Array|Object|String|Bool|Number)\(/.exec(block)
+      const kind = first ? (first[1] ?? first[2]).toLowerCase() : null
+      let expr =
+        kind === 'array' ? 'array'
+        : kind === 'object' ? 'record'
+        : kind === 'str' || kind === 'string' ? (/\burl_ok\(/.test(block) ? 'url' : 'string')
+        : kind === 'bool' ? 'bool'
+        : kind ? 'number'
+        : 'value'
+      if (/Value::Null\b/.test(block)) expr += '? nullable'
+      const callLine = combined.lineOf(m.index)
+      const run = commentRunAbove(fileRaw.split('\n'), callLine, 2)
+      const note = run.text.length && !run.trimmed ? run.text.join(' ') : ''
+      fields.push({ name: key, expr, note, offset: m.index })
+    }
+    fields.sort((a, b) => a.offset - b.offset)
+  }
   if (!fields.length) {
     // The handler READS a body but validates it imperatively (`obj.get("k")`
     // dispatch, element-wise array walks) instead of through the member
@@ -538,6 +574,7 @@ function bodySchemaRust(combined, sigText, fileRaw) {
     const ifOpen = text.indexOf('{', parenClose)
     const ifClose = matchDelimRust(text, ifOpen)
     const elseMatch = /\belse\s*\{/.exec(text.slice(ifClose))
+    const strip = ({ name, expr, note }) => ({ name, expr, note })
     if (ifClose !== -1 && elseMatch) {
       const elseOpen = ifClose + elseMatch.index + elseMatch[0].length - 1
       const elseClose = matchDelimRust(text, elseOpen)
@@ -545,8 +582,21 @@ function bodySchemaRust(combined, sigText, fileRaw) {
       const inElse = fields.filter((f) => f.offset > elseOpen && f.offset < elseClose)
       const outside = fields.filter((f) => !inIf.includes(f) && !inElse.includes(f))
       if ((inIf.length || inElse.length) && !outside.length) {
-        const strip = ({ name, expr, note }) => ({ name, expr, note })
         return { kind: 'union', branches: [inIf.map(strip), inElse.map(strip)].filter((b) => b.length).map((b) => ({ kind: 'fields', fields: b })) }
+      }
+    }
+    // THE EARLY-RETURN SPELLING of the same union: `if obj.contains_key("app")
+    // { …; return …; }` with no `else`, the other body read by the rest of the
+    // handler. The arm ends in a return, so everything after it is the second
+    // variant; helpers appended past the handler's own text are not part of it.
+    const handlerEnd = combined.parts[0].text.length
+    const endsInReturn = ifClose !== -1 && /\breturn\b[^;]*;\s*$/.test(text.slice(ifOpen + 1, ifClose))
+    if (endsInReturn && !/^\s*else\b/.test(text.slice(ifClose + 1))) {
+      const inIf = fields.filter((f) => f.offset > ifOpen && f.offset < ifClose)
+      const after = fields.filter((f) => f.offset > ifClose && f.offset < handlerEnd)
+      const outside = fields.filter((f) => !inIf.includes(f) && !after.includes(f))
+      if (inIf.length && after.length && !outside.length) {
+        return { kind: 'union', branches: [inIf, after].map((b) => ({ kind: 'fields', fields: b.map(strip) })) }
       }
     }
   }

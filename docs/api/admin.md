@@ -96,14 +96,21 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/cr
 
 | field | schema | notes |
 | :--- | :--- | :--- |
+| `installUrl` | `url` | installUrl: a required URL; slug: optional override, 1..64 chars. |
 | `slug` | `string?(64)` |  |
 
-### PUT `/api/admin/apps` body
+### PUT `/api/admin/apps` body — variant 1
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `app` | `string(1)` |  |
 | `enabled` | `bool` |  |
+
+### PUT `/api/admin/apps` body — variant 2
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `catalogUrl` | `url? nullable` |  |
 
 ### DELETE `/api/admin/apps` body
 
@@ -310,7 +317,9 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_guardrails.rs`](../../
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `mode` | `enum(off|observe|annotate|strict)` |  |
+| `checks` | `record` |  |
 | `minConfidence` | `number(0, 1)` | Validated only — the stored config passes the number through as the client wrote it (a stored 1 reads back as 1, not 1.0). |
+| `policedHosts` | `array` |  |
 | `coach` | `bool` |  |
 
 ## `/api/admin/instance`
@@ -453,6 +462,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_outreach.rs`](../../ap
 | `intervalMinutes` | `number(15, 1440)` |  |
 | `dailyDmCap` | `number(1, 20)` |  |
 | `dailyDmTotalCap` | `number?(1, 500)` |  |
+| `proactiveAgents` | `array` |  |
 
 ## `/api/admin/password-accounts`
 
@@ -652,6 +662,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_storage.rs`](../../api
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `mode` | `enum(local|internal|s3)` | Body key order: mode, the Target spread, replica — a bad mode answers before any Target field can. |
+| `replica` | `record` |  |
 
 ## `/api/admin/updates`
 
@@ -726,6 +737,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_workspace_secrets.rs`]
 | :--- | :--- | :--- |
 | `name` | `value` | name: the alphabet check ('lowercase letters, digits, - and _') sits before the max, like the entry key. |
 | `title` | `string(1, 80)` |  |
+| `entries` | `array` | entries: elements parse before the array bounds run. |
 | `kind` | `enum(vault|relay)?` |  |
 | `note` | `string? nullish(400)` |  |
 | `expiresAt` | `string? nullish(40)` |  |

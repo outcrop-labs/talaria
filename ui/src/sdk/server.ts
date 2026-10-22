@@ -8,7 +8,6 @@
 import { json } from '@/server/http'
 import type { SessionUser } from '@/server/auth/session'
 import type { AppStore } from '@/server/app-store'
-import type { HarnessDefinition } from '@/server/harness/define'
 
 export { json }
 // The same validation door the host's own routes use: a zod schema in, the
@@ -74,18 +73,19 @@ export interface AppMcp {
 export const defineAppMcp = (mcp: AppMcp): AppMcp => mcp
 
 // ── Activity harnesses ─────────────────────────────────────────────────────
-// apps/<slug>/harnesses/*.ts default-export defineHarness(...): a MODEL CALL
-// Talaria makes on the app's behalf — a prompt, an output contract, a model
-// chain and a failure policy, executed by the one runner (`runHarness`). The
-// host merges it into the activity registry (builtin < app-shipped <
-// admin-custom, by id), and from that one array the app gets the whole
-// platform for free: model resolution, the capability floor, the guardrail
-// pass, ledger attribution, the repair turn on malformed JSON, a
-// `harness_runs` row — and, if it declares `evals`, ITS OWN COLUMN IN THE
-// ORG'S MODEL-FITNESS MATRIX. That last one is the point of shipping fixtures
-// in the registry rather than in a test directory: a third-party app can tell
-// an admin which of their models it actually works on, for the cost of an
-// array.
+// defineHarness(...) declares a MODEL CALL Talaria makes on the app's behalf —
+// a prompt, an output contract, a model chain and a failure policy, executed
+// by the one runner (`runHarness`), which brings model resolution, the
+// capability floor, the guardrail pass, ledger attribution, the repair turn
+// on malformed JSON and a `harness_runs` row.
+//
+// WHAT RUNS IT TODAY: ONLY YOUR OWN server.ts. Nothing compiles, loads,
+// registers or scores `apps/<slug>/harnesses/*.ts` — the host's app-harness
+// registry went with d79b7290 and has not been restored. A harness runs when
+// server.ts imports it and calls `runHarness` (the bridge below); it gets no
+// Admin row and no column in the model-fitness matrix, and its `evals` are
+// replayed by nothing but your own tests. A file there that server.ts does
+// not import is dead code.
 //
 // It carries CODE: `render` builds the messages, `output.clean`/`output.verify`
 // decide whether the reply held the contract, `evals[].check` grades it. So it
@@ -135,17 +135,19 @@ export { NO_TOOLS } from '@/server/harness/define'
 
 /** Declare an ACTIVITY harness — a model call Talaria runs for your app.
  *
- *  Identity at runtime; it exists so `render`'s input type and `output`'s value
- *  type are checked against each other at the definition site, which is the one
- *  place an author can get that pair wrong and the last place anyone looks. */
-export function defineHarness<I, O>(h: HarnessDefinition<I, O>): HarnessDefinition<I, O> {
-  return h
-}
+ *  THE PLATFORM'S OWN defineHarness, not a copy. It checks `render`'s input
+ *  type against `output`'s value type at the definition site, and it derives
+ *  the JSON floor every platform harness gets: a harness with
+ *  `output.kind === 'json'` gains `json` in `floor.capabilities` and
+ *  `refuseBelow: true`, so the runner refuses a model that a probe measured
+ *  (or an admin declared) unable to produce JSON instead of handing its prose
+ *  to the parser. The SDK used to return the definition untouched, which ran
+ *  app JSON harnesses on exactly those models. */
+export { defineHarness } from '@/server/harness/define'
 
 // ── The runner, from app code ───────────────────────────────────────────────
-// The registry runs app harnesses on the app's behalf (fitness matrix, admin
-// panel) — but an app's OWN server code has a legitimate reason to invoke one
-// directly: the bridge pattern, where a route runs its harness live when a
+// Until the app-harness registry is restored, this is the ONLY way an app
+// harness runs: the bridge pattern, where a route runs its harness live when a
 // model chain is routable and falls back to its own deterministic answer when
 // one isn't, journaling which answered. That code sits in apps/<slug>/, where
 // the tsconfig-paths plugin doesn't reach — `@/server/harness/run` cannot
@@ -154,8 +156,8 @@ export function defineHarness<I, O>(h: HarnessDefinition<I, O>): HarnessDefiniti
 //
 //   runHarness          — the one runner: resolve, floor, widen, render, call,
 //                         parse, repair, guard, redact, meter, `harness_runs`
-//                         row. Same function the registry uses; an app calling
-//                         it gets the same accounting.
+//                         row. Same function the platform's own TS harnesses
+//                         use; an app calling it gets the same accounting.
 //   resolveHarnessModel — the free probe (no model call): what chain would
 //                         carry a harness with this spec, or null. A bridge
 //                         labels itself honestly without spending a turn.

@@ -44,6 +44,18 @@ for provenance, never log the arguments, never echo them in a thrown message. Th
 Talaria keeps for you (`mcp_tool_calls`) stores the tool name and outcome and never the arguments,
 for the same reason.
 
+**Your tools are a destination named `talaria-app://<slug>`, and a locked secret has to list it.**
+A secret's **Spendable at** list (Admin → Secrets) says where it may go. Empty means anywhere. A
+non-empty list must name the destination — for your tools, `talaria-app://<slug>` exactly — and
+every host the arguments mention: a CRM key locked to `api.crm.com` resolves for a `crm` app tool
+only once the list reads `api.crm.com talaria-app://crm`. When a handle does not resolve — that
+list, an agent without a grant on the secret, an expired secret, or an agent still calling with
+the org-wide `TALARIA_AGENT_KEY` instead of its own key — **your handler receives the handle text
+itself**, `«secret:crm.api_key»`, in place of the value. The gateway logs why for the operator and
+never tells the agent. Check for the `«secret:` prefix before you spend an argument as a
+credential, and fail with a sentence that names the secret, rather than sending the handle
+upstream and returning the auth error you get back.
+
 `inputSchema` is checked before your handler runs: a call whose arguments do not satisfy it is
 answered as a tool error naming the field, and your handler never sees it. Schemas the checker
 cannot compile (a `$ref`, an unknown draft) are passed through unchecked.

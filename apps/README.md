@@ -45,7 +45,7 @@ Surfaces are opt-in; ship any combination:
 
 | surface    | where it appears                      | access                                       |
 |------------|----------------------------------------|----------------------------------------------|
-| `work`     | Work section of the nav → `/x/<slug>`  | admins; members need an explicit grant       |
+| `work`     | Apps section of the nav → `/x/<slug>`  | admins; members need an explicit grant       |
 | `manage`   | Manage section → `/x/<slug>/manage`    | admins; members need an explicit grant       |
 | `settings` | a Settings tab (for people with access)| follows the work-view grant                  |
 
@@ -66,10 +66,11 @@ export default defineApp({ work: Work })
 <!-- Work.svelte -->
 <script lang="ts">
   import { Button, useAppQuery } from '@talaria/sdk'
-  const things = useAppQuery('my-app', 'things')
+  // The server below answers { things: [...] } — read the list out of it.
+  const things = useAppQuery<{ things: Array<{ id: string; data: { name: string } }> }>('my-app', 'things')
 </script>
 
-{#each things.data ?? [] as t (t.id)}
+{#each things.data?.things ?? [] as t (t.id)}
   <div>{t.data.name}</div>
 {/each}
 <Button>Add one</Button>

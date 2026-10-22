@@ -18,7 +18,7 @@ apps/<slug>/
   *.svelte       one component per surface (plus whatever else you need)
   server.ts      optional API — defineAppServer(...) → /api/apps/<slug>/*
   mcp.ts         optional agent tools — defineAppMcp(...) → governed MCP server
-  harnesses/     optional activity harnesses — one defineHarness per file
+  harnesses/     optional activity harnesses — one defineHarness per file, run by server.ts
 ```
 
 The programming model — `defineApp`, the app server, the document store, MCP tools, harnesses —
@@ -45,8 +45,12 @@ is the [SDK docset](./sdk/README.md). Scaffold with `bun talaria app new <slug>`
 4. **Grant** — apps are **explicit-grant**: enabling one gives members nothing. Admins allow each
    app view per person in Admin → People — the same checklist as core Manage views, enforced
    server-side at the app API gateway.
-5. **Uninstall** — removes the codebase, stops its database container, and (optionally) wipes
-   stored data. Audited, like enable/disable/install.
+5. **Uninstall** — disables the app, stops and removes its database container, forgets the
+   database password, and deletes the codebase and its build output. It also tries to delete
+   the app's data directory, every time; the `wipeData` flag `DELETE /api/admin/apps` accepts
+   changes nothing today. The Postgres files in that directory belong to the database
+   container's user, not Talaria's, so they can outlive the attempt — count on uninstall neither
+   to keep an app's data nor to erase it. Audited, like enable/disable/install.
 
 
 ## The marketplace
@@ -75,7 +79,8 @@ rebuilding (managed update flows are on the roadmap).
 
 - `TALARIA_APPS_DIR` overrides where app codebases live (default: `apps/` beside `ui/`).
 - `TALARIA_APP_BUILDS_DIR` holds compiled chunks; `TALARIA_APP_DATA_DIR` holds each app's
-  Postgres volume, compose file, and `db.env`. Both default beside the apps dir. Uninstall deletes them.
+  Postgres volume, compose file, and `db.env`. Both default beside the apps dir. Uninstall deletes
+  an app's build output and tries to delete its data directory (see Uninstall above).
 - Each app gets its own Postgres (a compose project, image digest-pinned when the
   local image has one). The password is sealed in `app_settings` and written to a
   0600 `db.env` — never on `docker run -e` and never derived from `TALARIA_SECRET_KEY`.
@@ -90,7 +95,9 @@ rebuilding (managed update flows are on the roadmap).
 - A tool argument may arrive carrying a resolved credential (an agent's `«secret:…»` handle is
   resolved on its way into `mcp.ts`), and the app must not persist it — not in `ctx.store`, not
   in a log, not in a thrown message. The call record Talaria keeps never stores arguments either
-  ([mcp.md](./sdk/mcp.md)).
+  ([mcp.md](./sdk/mcp.md)). A secret whose **Spendable at** list (Admin → Secrets) is not empty
+  resolves for an app's tools only if that list names `talaria-app://<slug>`; otherwise the
+  handler receives the handle text itself.
 - App MCP servers appear in Manage → MCP badged **app**; their tool catalogs come from the module
   (no probe), and they cannot be deleted or re-pointed there — lifecycle belongs to Manage → Apps.
 - Everything an app's users do runs under their own session: platform permissions, resource ACLs,
@@ -99,9 +106,13 @@ rebuilding (managed update flows are on the roadmap).
 
 ## Shipping a harness
 
-An app ships an **activity harness** (`apps/<slug>/harnesses/*.ts`): a model call Talaria runs
-on your app's behalf, with evals that earn a column in the org's model-fitness matrix:
-[harnesses.md](./sdk/harnesses.md), deep contract in [HARNESSES.md](./HARNESSES.md).
+An app ships an **activity harness** — a model call Talaria runs on your app's behalf through the
+one runner: [harnesses.md](./sdk/harnesses.md), deep contract in [HARNESSES.md](./HARNESSES.md).
+
+**Today a harness runs only through your `server.ts`.** Nothing compiles, loads, registers or
+scores `apps/<slug>/harnesses/*.ts` on its own: a harness runs when `server.ts` imports it and
+calls `runHarness`. It is not listed in Admin, gets no column in the model-fitness matrix, and its
+`evals` run only where you replay them yourself.
 
 The coding harness agents drive in their sandbox is not an extension point: the workbench runs
 Oh My Pi, and only Oh My Pi ([WORKBENCH.md](./WORKBENCH.md)).

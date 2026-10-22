@@ -407,6 +407,7 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/muse.rs`](../../api/crates/
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `kind` | `enum(soul|personality|skill|memory|cron|agent|document|template|ticket|skillForm|templateForm)` |  |
+| `instruction` | `string` | instruction: trimmed, then 1..8_000 (empty after trim is a 400). |
 | `current` | `string?(300000)` |  |
 | `context` | `string?(2000)` |  |
 

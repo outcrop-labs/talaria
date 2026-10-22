@@ -27,6 +27,7 @@ import {
   type ToolCall,
 } from './server'
 import { runHarness } from '@/server/harness/run'
+import { defineHarness as platformDefineHarness } from '@/server/harness/define'
 
 const TRIAGE = z.object({ severity: z.enum(['low', 'medium', 'high']), reason: z.string() })
 type Triage = z.infer<typeof TRIAGE>
@@ -43,7 +44,7 @@ const triage = defineHarness<TriageInput, Triage>({
   floor: {
     capabilities: [],
     refuseBelow: false,
-    note: 'Runs on any model; a weak one grades more coarsely and the queue stays usable.',
+    note: 'Runs on any model that can return JSON; a weak one grades more coarsely and the queue stays usable.',
   },
   model: {},
   render: (input) => [
@@ -81,6 +82,31 @@ const answer = (text: string): Parameters<typeof runHarness>[2] => ({
     recordRun: async () => {},
   },
 })
+
+/** The same runner, on a model whose record says it cannot produce JSON —
+ *  `source` is who said so. Counts the transport calls, because the claim
+ *  under test is that a refusal never reaches the model. */
+const unableToJson = (source: 'probe' | 'declared' | 'learned') => {
+  const calls = { transport: 0 }
+  const ctx: Parameters<typeof runHarness>[2] = {
+    caller: 'test:sdk-doc',
+    model: 'qwen3-14b',
+    deps: {
+      routing: async (m: string) => ({ endpoints: ['pl-main'], upstreamModel: m }),
+      transport: async () => {
+        calls.transport++
+        return { kind: 'gateway' as const, text: '{"severity":"high","reason":"total checkout outage"}', toolNames: [], usage: null, contractDropped: false }
+      },
+      capabilities: async () => ({ json: { value: false, source } }),
+      missingCapabilities: async (_key, asked) => asked.filter((c) => c === 'json'),
+      guardConfig: async () => GUARD_OFF,
+      guardText: async () => [],
+      recordFindings: async () => {},
+      recordRun: async () => {},
+    },
+  }
+  return { ctx, calls }
+}
 
 describe("SDK.md's activity-harness example", () => {
   it('runs through the real runner and satisfies its own fixture', async () => {
@@ -123,6 +149,64 @@ describe("docs/sdk/harnesses.md's bridge example", () => {
   // here it would need a database. The bridge's null branch is its behavior.
 })
 
+describe("the SDK's defineHarness is the platform's, JSON floor included", () => {
+  // THE GAP THIS CLOSES. The SDK used to return the definition untouched, so an
+  // app's JSON harness ran on a model a probe had measured unable to produce
+  // JSON — the platform refuses there — and the app handed the prose to the
+  // parser and recorded the wreckage as the model's failure.
+  it('is the same function the platform harnesses use', () => {
+    expect(defineHarness).toBe(platformDefineHarness)
+  })
+
+  it("derives the doc example's floor: json, refusing, the author's note kept", () => {
+    expect(triage.floor.capabilities).toEqual(['json'])
+    expect(triage.floor.refuseBelow).toBe(true)
+    expect(triage.floor.note).toBe('Runs on any model that can return JSON; a weak one grades more coarsely and the queue stays usable.')
+  })
+
+  it('leaves a text harness exactly as declared', () => {
+    const texty = defineHarness<{ q: string }, string>({
+      id: 'sdk:texty-floor',
+      label: 'Texty',
+      job: 'echoes a question back as a sentence',
+      requires: [],
+      floor: { capabilities: [], refuseBelow: false, note: 'Runs on any model.' },
+      model: {},
+      render: (input) => [{ role: 'user', content: input.q }],
+      output: { kind: 'text' },
+      onFailure: 'null',
+    })
+    expect(texty.floor).toEqual({ capabilities: [], refuseBelow: false, note: 'Runs on any model.' })
+  })
+
+  it('refuses a model a probe measured unable to produce JSON, without calling it', async () => {
+    const { ctx, calls } = unableToJson('probe')
+    const run = await runHarnessFromSdk(triage, { subject: 'Checkout is down', body: 'Every card declined.' }, ctx)
+    expect(calls.transport).toBe(0)
+    expect(run.refused).toBe(true)
+    expect(run.value).toBeNull()
+    expect(run.error).toContain('json')
+    expect(run.error).toContain(triage.floor.note)
+    // The bridge's own label still reads as the doc's: no value is a fallback.
+    expect(run.value ? `model:${run.model}` : 'fallback').toBe('fallback')
+  })
+
+  it('refuses on an admin-declared fact too', async () => {
+    const { ctx, calls } = unableToJson('declared')
+    const run = await runHarnessFromSdk(triage, { subject: 'a', body: 'b' }, ctx)
+    expect(calls.transport).toBe(0)
+    expect(run.refused).toBe(true)
+  })
+
+  it('still runs on a fact the gateway only learned from one 400', async () => {
+    const { ctx, calls } = unableToJson('learned')
+    const run = await runHarnessFromSdk(triage, { subject: 'Checkout is down', body: 'Every card declined.' }, ctx)
+    expect(calls.transport).toBe(1)
+    expect(run.refused).toBe(false)
+    expect(run.value?.severity).toBe('high')
+  })
+})
+
 describe('the rest of the exported surface, as the docs list it', () => {
   it('exports EvalCase for a fixture written apart from its harness', () => {
     const apart: EvalCase<TriageInput, Triage> = {
@@ -155,11 +239,11 @@ describe('the rest of the exported surface, as the docs list it', () => {
   })
 
   it('exports runHarness and resolveHarnessModel, so an app bridge can run its own harnesses', () => {
-    // The gap this closes: the registry runs app harnesses on the app's behalf,
-    // but a bridge (live-if-routable with an app-side fallback) is the app's OWN
-    // server code invoking them — and `@/server/harness/*` specifiers cannot
-    // resolve from apps/, where only the SDK ids reach. The bridge needs the
-    // same runner and the free probe, or it cannot exist outside the ui root.
+    // The gap this closes: a bridge (live-if-routable with an app-side
+    // fallback) is the app's OWN server code invoking its harnesses — today the
+    // only thing that runs one at all — and `@/server/harness/*` specifiers
+    // cannot resolve from apps/, where only the SDK ids reach. The bridge needs
+    // the same runner and the free probe, or it cannot exist outside the ui root.
     // `RunContext` rides along: a bridge building its caller/signal apart from
     // the call has no type to annotate the context with otherwise.
     const ctx: RunContext = { caller: 'app:leadworks:intake' }

@@ -635,9 +635,10 @@ export interface HarnessDefinition<I, O> {
    *  spinner, asks for thirty seconds. Meaningless on the gateway path. */
   holdMs?: number
 
-  /** Fixtures the model-fitness suite replays. An app-shipped harness that
-   *  declares these gets its own column in the org's fitness matrix for the
-   *  cost of an array. */
+  /** Fixtures the model-fitness suite replays — for the platform's harnesses.
+   *  Nothing replays an app-shipped harness's fixtures today (the app-harness
+   *  registry went with d79b7290); an app runs its own, see
+   *  docs/sdk/harnesses.md. */
   evals?: EvalCase<I, O>[]
 }
 
@@ -651,8 +652,10 @@ export interface HarnessDefinition<I, O> {
  *
  *  DERIVED because the rule is mechanical and the alternative is nine copies of
  *  it that drift. Restating a floor per harness is how one of them comes to omit
- *  it and quietly go back to the old behaviour. `registry.test.ts` asserts every
- *  JSON harness carries it, so the derivation cannot be silently bypassed.
+ *  it and quietly go back to the old behaviour. The SDK re-exports this very
+ *  function, so app harnesses get the floor too (`sdk/server.test.ts` holds
+ *  that); the platform's own harnesses get it from the Rust twin,
+ *  `define_harness` in api/crates/talaria-harness/src/define.rs.
  *
  *  WHAT "UNFIT" MEANS HERE IS NARROW, and deliberately so. `run.ts` refuses only
  *  on a capability MEASURED false by a probe or declared false by a human — never

@@ -11,7 +11,7 @@
 import { getSetting, setSetting } from './audit'
 import { resolveRoute } from './llm-gateway'
 
-export type PlatformAgentId = 'muse' | 'distiller' | 'concluder' | 'blurb-writer' | 'titler' | 'librarian' | 'judge' | 'briefer' | 'summarizer'
+export type PlatformAgentId = 'muse' | 'distiller' | 'concluder' | 'blurb-writer' | 'titler' | 'librarian' | 'judge' | 'ticket-relevance' | 'briefer' | 'summarizer'
 
 export const PLATFORM_AGENTS: Array<{
   id: PlatformAgentId
@@ -86,6 +86,14 @@ export const PLATFORM_AGENTS: Array<{
     job: 'Reviews agents’ reported ticket outcomes against the ask: verdicts and findings on boards with judging on.',
     skills: ['outcome verification', 'structured verdicts'],
     auto: 'pl-main when judging is enabled without a pick',
+    assignable: true,
+  },
+  {
+    id: 'ticket-relevance',
+    label: 'Ticket gate',
+    job: 'Reads each message on a ticket’s discussion and decides whether it concerns the assigned agent’s work — the agent replies only to what is its business.',
+    skills: ['cheap relevance calls', 'fail-open gating'],
+    auto: 'the Utility role chain (a fast, cheap model is ideal)',
     assignable: true,
   },
   {
