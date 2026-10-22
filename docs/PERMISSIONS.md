@@ -36,8 +36,12 @@ ACL is checked, so roster changes apply immediately.
   app views the person holds, and the gates, the nav and the route gate admit on that list. An
   app view missing from `deniedViews` is not a grant. When the enabled apps can't be read (a
   malformed `apps_enabled` setting, an apps directory that can't be listed), a member's session
-  read fails and the app doors answer 503 instead of opening. An admin holds every app by role;
-  their session reads neither, so Admin → Apps stays reachable to rewrite a broken setting.
+  still answers with their core `deniedViews` and `perms`, and serves `appGrants: null` with
+  `appsUnreadable: true`. Every app reader treats that as no app at all: the nav and the
+  settings tabs show none, the route gate sends app routes home, and the app doors answer 503.
+  The rest of Talaria stays open, and `requireView` still answers for core views. An admin holds
+  every app by role; their session reads neither, so Admin → Apps stays reachable to rewrite a
+  broken setting.
 
 Denied views aren't just hidden: the route bounces, the nav omits them, and the APIs that power
 them enforce the same resolution server-side (`requireView`). The resolution is the Rust api's

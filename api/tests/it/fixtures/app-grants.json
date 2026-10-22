@@ -4,7 +4,9 @@
     "(app_grant_views, app_views_of, resolve_view_grants, enabled_slugs_from, discovered_apps_in); TS reads it",
     "in ui/src/server/app-grants.fixture.test.ts (appGrantViews, appGrantViewsOf, appAccess, enabledSlugsFrom,",
     "listInstalledApps). The junction is `appGrants`: Rust must resolve each viewer's grants to that list, and",
-    "TS must turn that list into `access`. Change the rule on both sides, then here."
+    "TS must turn that list into `access`. `appGrants: null` (an `appsUnreadable` viewer) is the session's answer",
+    "when the enabled apps could not be read: Rust still resolves the core denials, and TS must hold no app on it.",
+    "Change the rule on both sides, then here."
   ],
   "apps": [
     {
@@ -206,6 +208,33 @@
         "/agents"
       ],
       "appGrants": [],
+      "access": {}
+    },
+    {
+      "about": "the enabled apps could not be read: the core views still resolve, and no app is held whatever was granted",
+      "appsUnreadable": true,
+      "explicitDenied": [
+        "/boards",
+        "/x/wiki"
+      ],
+      "allowed": [
+        "/x/crm",
+        "/x/crm/manage",
+        "/x/prefs/manage",
+        "/agents"
+      ],
+      "appGrants": null,
+      "denied": [
+        "/boards",
+        "/x/wiki",
+        "/teams",
+        "/models",
+        "/mcp",
+        "/templates",
+        "/studio",
+        "/observability",
+        "/apps"
+      ],
       "access": {}
     },
     {

@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { appAccess, appGrantViews, appGrantViewsOf, reachesApp, type AppAccess, type AppGrantSubject } from '@/lib/app-grants'
+import { appAccess, appGrantViews, appGrantViewsOf, appViewFor, isViewDenied, reachesApp, type AppAccess, type AppGrantSubject } from '@/lib/app-grants'
 import { enabledSlugsFrom } from './apps'
 import { listInstalledApps } from './app-build/paths'
 
@@ -22,7 +22,14 @@ interface Fixture {
   apps: Array<AppGrantSubject & { name: string; views: string[] }>
   enabled: string[]
   appViews: string[]
-  viewers: Array<{ about: string; admin?: boolean; appGrants: string[]; access: Record<string, AppAccess> }>
+  viewers: Array<{
+    about: string
+    admin?: boolean
+    appsUnreadable?: boolean
+    appGrants: string[] | null
+    denied?: string[]
+    access: Record<string, AppAccess>
+  }>
   enabledSetting: Array<{ about: string; absent?: boolean; stored?: unknown; slugs?: string[]; error?: boolean }>
   manifests: Array<{ about: string; dir: string; bytesBase64: string; listed: boolean }>
 }
@@ -50,6 +57,22 @@ describe('the shared app-grants fixture', () => {
         // Reaching the app is exactly holding something of it (or the role).
         expect(reachesApp(got), `${viewer.about}: ${a.slug}`).toBe(isAdmin || Object.keys(viewer.access).includes(a.slug))
       }
+    }
+  })
+
+  it('holds no app on a session whose app grants could not be read, and keeps its core views', () => {
+    const unread = f.viewers.filter((v) => v.appsUnreadable === true)
+    expect(unread.length).toBeGreaterThan(0)
+    for (const viewer of unread) {
+      expect(viewer.appGrants, viewer.about).toBeNull()
+      const grants = { isAdmin: false, denied: viewer.denied ?? [], appGrants: viewer.appGrants }
+      for (const a of f.apps) {
+        expect(reachesApp(appAccess(a, grants)), `${viewer.about}: ${a.slug}`).toBe(false)
+        for (const v of appGrantViews(a)) expect(isViewDenied(v.to, grants), `${viewer.about}: ${v.to}`).toBe(true)
+      }
+      // The core views still answer off the denials Rust resolved.
+      for (const d of viewer.denied ?? []) if (appViewFor(d) === null) expect(isViewDenied(d, grants), d).toBe(true)
+      expect(isViewDenied('/inbox', grants)).toBe(false)
     }
   })
 

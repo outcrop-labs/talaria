@@ -59,8 +59,9 @@ so only admins reach its server. The grants come from the platform's session rea
 caller's cookie, which lists the app views the caller holds; when the host cannot read it, or
 cannot read which apps are enabled, the request gets a 503 and your handler doesn't run. The
 compiled client (`/app-builds/<slug>/…`) is served under the same rule, and only `app.js`,
-`app.css` and `assets/**` are served. The compiled `server.js` and `mcp.js`, and any chunk they
-split off with a dynamic `import()`, are built outside `assets/` and never leave the host.
+`app.css` and `assets/**` of the app's current build are served; an older build's key answers
+404. The compiled `server.js` and `mcp.js`, and any chunk they split off with a dynamic
+`import()`, are built outside `assets/` and never leave the host.
 
 `parseBody` is the same validation door the host's own routes use: a zod schema in, the
 validated data or the standard 400 (first issue message) out. `z` rides along because apps

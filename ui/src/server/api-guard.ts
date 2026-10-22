@@ -8,7 +8,7 @@
 //
 import { json } from '@/server/http'
 import type { z } from 'zod'
-import { isViewDenied } from '@/lib/app-grants'
+import { appViewFor, isViewDenied } from '@/lib/app-grants'
 import { getSessionUser, type SessionUser } from './auth/session'
 import { rustSession } from './rust-session'
 
@@ -47,6 +47,11 @@ export async function requireView(request: Request, view: string): Promise<Sessi
   }
   const user = session.user
   if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+  // The api could not read the enabled apps: an app view cannot be answered
+  // (503), a core view answers off deniedViews as ever.
+  if (user.role !== 'admin' && session.appGrants === null && appViewFor(view) !== null) {
+    return json({ error: 'could not check your access — try again' }, { status: 503 })
+  }
   if (user.role !== 'admin' && isViewDenied(view, { isAdmin: false, denied: session.deniedViews, appGrants: session.appGrants })) {
     return json({ error: 'forbidden' }, { status: 403 })
   }

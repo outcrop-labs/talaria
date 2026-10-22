@@ -13,8 +13,12 @@ export interface RustSession {
   deniedViews: string[]
   /** The app views the caller holds (`ViewGrants::app_grants`). The app
    *  gates admit on this list; empty for an admin, who holds every app by
-   *  role. */
-  appGrants: string[]
+   *  role. `null` when the api could not read the enabled apps
+   *  (`appsUnreadable`): the caller holds no app, and the app doors answer
+   *  503. The core `deniedViews` and `perms` are whole either way. */
+  appGrants: string[] | null
+  /** The api could not read the enabled apps, so it withheld `appGrants`. */
+  appsUnreadable: boolean
   perms: string[]
 }
 
@@ -54,7 +58,13 @@ export async function rustSession(request: Request, fetchImpl: typeof fetch = fe
   // null` is "nobody signed in"; a body with no `user` at all is broken.
   if (body.user === undefined) throw new Error('session read answered no "user" field')
   const deniedViews = stringList(body, 'deniedViews')
-  const appGrants = stringList(body, 'appGrants')
+  // `appsUnreadable: true` withholds the grant list (`appGrants: null`); any
+  // other answer must carry the list. A missing flag is an older api's
+  // answer, which always carried it.
+  const flag = body.appsUnreadable
+  if (flag !== undefined && typeof flag !== 'boolean') throw new Error('session read answered a non-boolean "appsUnreadable"')
+  const appsUnreadable = flag === true
+  const appGrants = appsUnreadable ? null : stringList(body, 'appGrants')
   const perms = stringList(body, 'perms')
   const u = body.user
   return {
@@ -65,6 +75,7 @@ export async function rustSession(request: Request, fetchImpl: typeof fetch = fe
       : null,
     deniedViews,
     appGrants,
+    appsUnreadable,
     perms,
   }
 }

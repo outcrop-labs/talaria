@@ -25,6 +25,11 @@ export function appSrc(slug: string, file: string): string {
   return join(appsDir(), slug, file)
 }
 
+/** A build key is the hex digest app-build/key.ts writes (`sourceKey`). */
+const BUILD_KEY_RE = /^[0-9a-f]{1,64}$/
+
+export const buildKeyOk = (s: string): boolean => BUILD_KEY_RE.test(s)
+
 export function appBuildKeyDir(slug: string, key: string): string {
   return join(appBuildsDir(), slug, key)
 }

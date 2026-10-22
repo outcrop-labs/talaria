@@ -153,6 +153,12 @@ describe('navSections', () => {
     // One app's grant never opens another app.
     const other = navSections(CORE, work, manage, grants('/x/leadworks/manage'))
     expect(tos(other, 'manage')).toEqual(['/agents', '/teams', '/x/leadworks/manage'])
+
+    // Grants the session could not read (`appGrants: null`): no app entry at
+    // all, and the core views exactly as with no grant.
+    const unread = navSections(CORE, work, manage, { isAdmin: false, denied: [] as string[], appGrants: null })
+    expect(tos(unread, 'apps')).toBeUndefined()
+    expect(unread).toEqual(none)
   })
 })
 

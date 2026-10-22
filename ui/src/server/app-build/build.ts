@@ -18,7 +18,7 @@ import {
 } from '@/app-runtime/specifiers'
 import { sourceKey } from './key'
 import { appBuildKeyDir, appSrc, uiRoot } from './paths'
-import { readCurrent, writeCurrent, type AppBuildCurrent } from './status'
+import { pruneSupersededBuilds, readCurrent, writeCurrent, type AppBuildCurrent } from './status'
 
 function externalsGuard(): Plugin {
   return {
@@ -186,6 +186,9 @@ export async function buildApp(slug: string): Promise<AppBuildCurrent> {
       files,
     }
     writeCurrent(slug, cur)
+    // The pointer now names this build, so every older key is superseded:
+    // the door would not serve them, and nothing loads them.
+    pruneSupersededBuilds(slug)
     return cur
   } catch (e) {
     const cur: AppBuildCurrent = {

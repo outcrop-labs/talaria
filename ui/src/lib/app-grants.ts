@@ -20,6 +20,13 @@
 // views out of the denials, and every member got every surface of every app.
 // An admin holds every app by role, and their `appGrants` is empty.
 //
+// WHEN THE APPS CANNOT BE READ. If Rust cannot read the enabled apps (a
+// malformed `apps_enabled`, an apps directory it cannot list), the session
+// still answers with the core `deniedViews` and `perms`, and serves
+// `appGrants: null` with `appsUnreadable: true`. Every reader here holds null
+// as no app at all, so a broken app setting costs a member their apps and
+// leaves the rest of Talaria open; the app doors answer 503 on it.
+//
 // The Rust authority for which views exist is `app_grant_views` in
 // api/crates/talaria-users/src/lib.rs, and its resolution of a person's
 // grants is `resolve_view_grants` there. Both sides are pinned to one shared
@@ -101,9 +108,14 @@ export interface ViewerGrants {
   /** `deniedViews`: the core views they may not reach. */
   denied: readonly string[]
   /** `appGrants`: the app views they hold. Empty for an admin, who holds
-   *  every app by role. */
-  appGrants: readonly string[]
+   *  every app by role. `null` when the session could not read the enabled
+   *  apps (`appsUnreadable`): they hold no app view at all. */
+  appGrants: readonly string[] | null
 }
+
+/** Whether `view` is one the viewer holds by grant — never when the grants
+ *  could not be read. */
+const holds = (viewer: Pick<ViewerGrants, 'appGrants'>, view: string): boolean => viewer.appGrants?.includes(view) ?? false
 
 /** Whether `path` is denied. A core view is denied by itself or by any denied
  *  view above it — for an admin too, whose list is empty. An app route opens
@@ -112,18 +124,19 @@ export interface ViewerGrants {
  *  both lists stays shut. */
 export function isViewDenied(path: string, viewer: ViewerGrants): boolean {
   const app = appViewFor(path)
-  if (app !== null) return !viewer.isAdmin && !viewer.appGrants.includes(app)
+  if (app !== null) return !viewer.isAdmin && !holds(viewer, app)
   return viewer.denied.some((d) => path === d || path.startsWith(d + '/'))
 }
 
 /** A viewer's access to one app, from the app views Rust lists as theirs. A
- *  surface the app doesn't ship is never granted, and nothing is granted
- *  because a list left it out. */
+ *  surface the app doesn't ship is never granted, nothing is granted because
+ *  a list left it out, and a list that could not be read (`null`) grants
+ *  nothing. */
 export function appAccess(app: AppGrantSubject, viewer: Pick<ViewerGrants, 'isAdmin' | 'appGrants'>): AppAccess {
   const { work, manage, settings } = app.surfaces
-  const { isAdmin, appGrants } = viewer
-  const workOpen = isAdmin || appGrants.includes(appWorkView(app.slug))
-  const manageOpen = isAdmin || appGrants.includes(appManageView(app.slug))
+  const { isAdmin } = viewer
+  const workOpen = isAdmin || holds(viewer, appWorkView(app.slug))
+  const manageOpen = isAdmin || holds(viewer, appManageView(app.slug))
   return {
     admin: isAdmin,
     work: Boolean(work) && workOpen,

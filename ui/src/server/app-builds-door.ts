@@ -7,8 +7,9 @@
 // private, org-specific plugin was readable by anyone who could reach the
 // instance. The browser needs exactly three things — app.js, app.css and the
 // chunks and files under assets/ that they pull in (lib/apps.ts,
-// AppSurface.svelte) — so that is the whole list, and the same gate the app's
-// API uses (app-access.ts) decides who gets them. assets/ is the CLIENT
+// AppSurface.svelte) — so that is the whole list, the same gate the app's
+// API uses (app-access.ts) decides who gets them, and only the build the
+// app's current pointer names is served. assets/ is the CLIENT
 // build's alone: the server and MCP builds write their chunks to _server/ and
 // _mcp/ (app-build/build.ts `serverishFileNames`), never here.
 //
@@ -18,7 +19,8 @@
 import { readFile, stat } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
 import { authorizeApp } from './app-access'
-import { appBuildsDir, slugOk } from './app-build/paths'
+import { appBuildsDir, buildKeyOk, slugOk } from './app-build/paths'
+import { servableBuildKey } from './app-build/status'
 
 export const APP_BUILDS_PREFIX = '/app-builds/'
 
@@ -29,9 +31,6 @@ export interface AppBuildAsset {
   key: string
   rel: string[]
 }
-
-// A build key is the hex digest app-build/key.ts writes.
-const KEY_RE = /^[0-9a-f]{1,64}$/
 
 /** A path segment that names a file or directory under assets/: not empty,
  *  no separator or NUL, and no leading dot — which refuses `..`, `.` and
@@ -53,7 +52,7 @@ export function appBuildAsset(rawPathname: string): AppBuildAsset | null {
     }
   }
   const [slug, key, ...rel] = parts
-  if (!slug || !key || !slugOk(slug) || !KEY_RE.test(key)) return null
+  if (!slug || !key || !slugOk(slug) || !buildKeyOk(key)) return null
   const [head, ...rest] = rel
   if (rel.length === 1 && (head === 'app.js' || head === 'app.css')) return { slug, key, rel }
   if (head === 'assets' && rest.length > 0 && rest.every(plainSegment)) return { slug, key, rel }
@@ -83,8 +82,13 @@ const notFound = () => new Response('not found', { status: 404, headers: { 'cont
 
 /** Answer an /app-builds/ request: 404 for anything outside the client list
  *  (the same 404 whether or not the file exists), then the app gate (401,
- *  404 for a disabled app, 403 without a grant, 503 when the session cannot
- *  be read), then the file. */
+ *  404 for a disabled app, 403 without a grant, 503 when the session or the
+ *  caller's app grants cannot be read), then 404 for any key but the one the
+ *  app's current, ready build pointer names, then the file. An older key is
+ *  never served: builds made before the server and MCP chunks moved out of
+ *  `assets/` still hold them there, and a superseded build is nothing the
+ *  browser should load. The key is checked after the gate, so a stranger
+ *  cannot learn which key is current. */
 export async function serveAppBuild(request: Request): Promise<Response> {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return new Response('method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } })
@@ -93,6 +97,7 @@ export async function serveAppBuild(request: Request): Promise<Response> {
   if (!asset) return notFound()
   const gate = await authorizeApp(request, asset.slug)
   if (!gate.ok) return gate.response
+  if (servableBuildKey(asset.slug) !== asset.key) return notFound()
   const root = resolve(appBuildsDir())
   const file = resolve(join(root, asset.slug, asset.key, ...asset.rel))
   if (!file.startsWith(root + sep)) return notFound()

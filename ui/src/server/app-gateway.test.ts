@@ -81,6 +81,10 @@ describe('the app API gateway', () => {
     expect((await call('a')).status).toBe(401)
     api(500, { error: 'internal' })
     expect((await call('a')).status).toBe(503)
+    // The api could not read the enabled apps: the session answered, but
+    // with no app grants — the app never runs on it.
+    api(200, { user: member, deniedViews: [], appGrants: null, appsUnreadable: true, perms: ['kb.edit'] })
+    expect((await call('a')).status).toBe(503)
     expect(appFetch).not.toHaveBeenCalled()
   })
 })

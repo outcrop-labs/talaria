@@ -9,7 +9,7 @@ import { appAccess, appGrantViews, appGrantViewsOf, appViewFor, isViewDenied, re
 const app = (slug: string, surfaces: AppGrantSubject['surfaces'], name?: string): AppGrantSubject => ({ slug, surfaces, ...(name ? { name } : {}) })
 const full = app('crm', { work: 'CRM', manage: 'CRM Admin', settings: 'CRM' }, 'CRM')
 /** A member holding exactly these app views (the session's `appGrants`). */
-const member = (appGrants: string[], denied: string[] = []) => ({ isAdmin: false, denied, appGrants })
+const member = (appGrants: string[] | null, denied: string[] = []) => ({ isAdmin: false, denied, appGrants })
 const admin = { isAdmin: true, denied: [] as string[], appGrants: [] as string[] }
 
 describe('appGrantViews', () => {
@@ -88,6 +88,17 @@ describe('isViewDenied', () => {
     expect(isViewDenied('/x/crm/manage', member([], []))).toBe(true)
   })
 
+  it('holds no app view when the grants could not be read, and keeps the core views', () => {
+    // `appGrants: null` — the session could not read the enabled apps. The
+    // apps shut; the rest of Talaria answers off deniedViews as ever.
+    const unread = member(null, ['/boards'])
+    expect(isViewDenied('/x/crm', unread)).toBe(true)
+    expect(isViewDenied('/x/crm/manage/fields', unread)).toBe(true)
+    expect(isViewDenied('/inbox', unread)).toBe(false)
+    expect(isViewDenied('/agents', unread)).toBe(false)
+    expect(isViewDenied('/boards/b1', unread)).toBe(true)
+  })
+
   it('opens every app view to an admin by role, with an empty grant list', () => {
     expect(isViewDenied('/x/crm', admin)).toBe(false)
     expect(isViewDenied('/x/crm/manage/fields', admin)).toBe(false)
@@ -124,6 +135,13 @@ describe('appAccess', () => {
     expect(appAccess(full, member(['/x/crm']))).toEqual({ admin: false, work: true, manage: false, settings: false })
     // The settings tab follows the manage grant.
     expect(appAccess(full, member(['/x/crm/manage']))).toEqual({ admin: false, work: false, manage: true, settings: true })
+  })
+
+  it('grants nothing on a list that could not be read', () => {
+    const none = { admin: false, work: false, manage: false, settings: false }
+    expect(appAccess(full, member(null))).toEqual(none)
+    expect(appAccess(app('prefs', { settings: 'Prefs' }), member(null))).toEqual(none)
+    expect(reachesApp(appAccess(full, member(null)))).toBe(false)
   })
 
   it('gates a settings-only app on its manage view', () => {

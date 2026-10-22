@@ -32,10 +32,11 @@ const user = (role: 'admin' | 'member') => ({ id: 'u1', sub: 'password:u1', emai
 /** A session holding exactly `appGrants`. Its `deniedViews` is empty — what
  *  once admitted every member — because the gate must not read the denials
  *  for an app at all. */
-const session = (role: 'admin' | 'member' | null, appGrants: string[] = [], perms: string[] = []): RustSession => ({
+const session = (role: 'admin' | 'member' | null, appGrants: string[] | null = [], perms: string[] = []): RustSession => ({
   user: role ? user(role) : null,
   deniedViews: [],
   appGrants,
+  appsUnreadable: appGrants === null,
   perms,
 })
 
@@ -63,9 +64,20 @@ describe('decideAppGate', () => {
     // The fail-open this gate had: Rust could not read the enabled apps, so
     // their views were missing from deniedViews, and a missing denial read as
     // a grant. No listed grant, no entry — whatever the denials say.
-    const s: RustSession = { user: user('member'), deniedViews: [], appGrants: [], perms: [] }
+    const s: RustSession = { user: user('member'), deniedViews: [], appGrants: [], appsUnreadable: false, perms: [] }
     expect(status(decideAppGate(s, APPS, 'crm'))).toBe(403)
     expect(status(decideAppGate(s, APPS, 'prefs'))).toBe(403)
+  })
+
+  it('answers 503 to a member whose grants the api could not read — never a grant', () => {
+    // `appGrants: null`: Rust could not read the enabled apps. The session
+    // still answered (the core views are whole), but no app opens on it.
+    for (const slug of ['crm', 'prefs', 'bare']) expect(status(decideAppGate(session('member', null), APPS, slug)), slug).toBe(503)
+    // Disclosure order holds: nobody is 401, a missing app is 404.
+    expect(status(decideAppGate(session(null, null), APPS, 'crm'))).toBe(401)
+    expect(status(decideAppGate(session('member', null), APPS, 'nope'))).toBe(404)
+    // An admin holds every app by role, so the list does not matter.
+    expect(status(decideAppGate(session('admin', null), APPS, 'crm'))).toBe(200)
   })
 
   it('admits a work-only member and says manage is not theirs', () => {
@@ -143,6 +155,16 @@ describe('authorizeApp', () => {
     expect(status(await authorizeApp(req(), 'crm'))).toBe(503)
   })
 
+  it('answers 503 when the api withholds the member\'s app grants', async () => {
+    // The api's answer when it could not read the enabled apps: a whole
+    // session for the core views, and no app grants at all.
+    api(200, { user: member, deniedViews: ['/teams'], appGrants: null, appsUnreadable: true, perms: [] })
+    expect(status(await authorizeApp(req(), 'crm'))).toBe(503)
+    // Even beside a list: the flag withholds it.
+    api(200, { user: member, deniedViews: [], appGrants: ['/x/crm'], appsUnreadable: true, perms: [] })
+    expect(status(await authorizeApp(req(), 'crm'))).toBe(503)
+  })
+
   it('answers 503 when the enabled apps cannot be read', async () => {
     api(200, { user: member, deniedViews: [], appGrants: ['/x/crm'], perms: [] })
     enabledApps.mockRejectedValueOnce(new Error('the apps_enabled setting is not a list of app slugs'))
@@ -179,7 +201,29 @@ describe('rustSession', () => {
     expect(s.user).toEqual(user('member'))
     expect(s.deniedViews).toEqual(['/boards'])
     expect(s.appGrants).toEqual(['/x/crm/manage'])
+    expect(s.appsUnreadable).toBe(false)
     expect(s.perms).toEqual(['kb.edit'])
+  })
+
+  it('reads `appsUnreadable` as no app grants, and keeps the core lists', async () => {
+    const s = await rustSession(
+      req('talaria_session=abc'),
+      answer(200, { user: user('member'), deniedViews: ['/teams'], appGrants: null, appsUnreadable: true, perms: ['kb.edit'] }),
+    )
+    expect(s.appsUnreadable).toBe(true)
+    expect(s.appGrants).toBeNull()
+    expect(s.deniedViews).toEqual(['/teams'])
+    expect(s.perms).toEqual(['kb.edit'])
+    // The flag withholds a list that came with it, too.
+    const t = await rustSession(req(), answer(200, { user: user('member'), deniedViews: [], appGrants: ['/x/crm'], appsUnreadable: true, perms: [] }))
+    expect(t.appGrants).toBeNull()
+  })
+
+  it('throws on a null grant list the flag does not explain, or a flag that is not a boolean', async () => {
+    const full = { user: user('member'), deniedViews: [], appGrants: [], perms: [] }
+    await expect(rustSession(req(), answer(200, { ...full, appGrants: null }))).rejects.toThrow(/no "appGrants" list/)
+    await expect(rustSession(req(), answer(200, { ...full, appGrants: null, appsUnreadable: false }))).rejects.toThrow(/no "appGrants" list/)
+    await expect(rustSession(req(), answer(200, { ...full, appsUnreadable: 'yes' }))).rejects.toThrow(/appsUnreadable/)
   })
 
   it('reads `user: null` as signed out', async () => {

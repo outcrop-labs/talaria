@@ -828,10 +828,13 @@ pub fn app_grant_views(app: &DiscoveredApp) -> (Option<String>, Option<String>) 
     (work, manage)
 }
 
-/// Why a person's view grants could not be resolved. Each is an answer the
-/// session must not guess at: an app list read as empty once dropped every
-/// app view from a member's denials, and the TS gate, which read a missing
-/// denial as a grant, opened every surface of every app to every member.
+/// Why a person's view grants, or the enabled apps' views, could not be
+/// read. Each is an answer nobody may guess at: an app list read as empty
+/// once dropped every app view from a member's denials, and the TS gate,
+/// which read a missing denial as a grant, opened every surface of every app
+/// to every member. When only the apps read fails, a member's resolution
+/// still answers for the core views and withholds the app grants
+/// (`ViewGrants::app_grants` is `None`); see `view_grants_in`.
 #[derive(Debug, thiserror::Error)]
 pub enum ViewsError {
     #[error("database read failed: {0}")]
@@ -900,35 +903,80 @@ pub async fn app_view_routes(pg: &PgPool) -> Result<Vec<String>, ViewsError> {
 pub struct ViewGrants {
     /// Views they may NOT reach: their explicit work-view denials (DB order),
     /// their teams', then every grantable manage view — core and app — they
-    /// hold no grant for. Empty for an admin.
+    /// hold no grant for. Empty for an admin. When the enabled apps could not
+    /// be read (`app_grants` is `None`) it lists no app view it was not
+    /// explicitly given, so it answers for the core views only — `denies`
+    /// is how a caller asks about a view.
     pub denied: Vec<String>,
     /// The app views they HOLD by grant (person or team), each named exactly
     /// as `app_grant_views` names it. The app gates admit on this list and
     /// never on a view's absence from `denied`. Empty for an admin, who holds
-    /// every app by role, the same way `denied` is empty for one.
-    pub app_grants: Vec<String>,
+    /// every app by role, the same way `denied` is empty for one. `None` when
+    /// the enabled apps could not be read (a malformed `apps_enabled`, an
+    /// apps directory that cannot be listed): the session serves
+    /// `appGrants: null` with `appsUnreadable: true`, and every app gate
+    /// reads that as no app at all. The core views resolve regardless, so a
+    /// broken app setting costs a member their apps, not all of Talaria.
+    pub app_grants: Option<Vec<String>>,
+}
+
+/// The app view that governs `path` — `/x/<slug>/manage` for the manage
+/// surface and anything under it, `/x/<slug>` for every other path under
+/// the app — or `None` when `path` is not an app route. The TS twin is
+/// `appViewFor` in ui/src/lib/app-grants.ts.
+pub fn app_view_for(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/x/")?;
+    let mut parts = rest.split('/');
+    let slug = parts.next().filter(|s| !s.is_empty())?;
+    Some(match parts.next() {
+        Some("manage") => format!("/x/{slug}/manage"),
+        _ => format!("/x/{slug}"),
+    })
+}
+
+impl ViewGrants {
+    /// Whether `view` is closed to this (non-admin) person — the rule
+    /// `isViewDenied` holds in ui/src/lib/app-grants.ts. A core view is
+    /// closed when it, or a view above it, is denied ('x' denies
+    /// 'x/anything'). An app route opens only on the exact view that governs
+    /// it, held by grant. `None` when `view` is an app route and the enabled
+    /// apps could not be read: nobody may read that as open.
+    pub fn denies(&self, view: &str) -> Option<bool> {
+        match app_view_for(view) {
+            Some(app) => self.app_grants.as_ref().map(|held| !held.contains(&app)),
+            None => Some(
+                self.denied
+                    .iter()
+                    .any(|v| v == view || view.starts_with(&format!("{v}/"))),
+            ),
+        }
+    }
 }
 
 /// The pure half of the resolution: given a member's explicit denials, the
 /// views they were granted and the enabled apps' views, what they may not
 /// reach and which app views they hold. An app view is held when it was
-/// granted and not explicitly denied.
+/// granted and not explicitly denied. `app_views` is `None` when the enabled
+/// apps could not be read: the core views resolve as ever, and no app view
+/// is held.
 pub fn resolve_view_grants(
     explicit_denied: Vec<String>,
     allowed: &HashSet<String>,
-    app_views: &[String],
+    app_views: Option<&[String]>,
 ) -> ViewGrants {
-    let app_grants = app_views
-        .iter()
-        .filter(|v| allowed.contains(*v) && !explicit_denied.contains(*v))
-        .cloned()
-        .collect();
+    let app_grants = app_views.map(|views| {
+        views
+            .iter()
+            .filter(|v| allowed.contains(*v) && !explicit_denied.contains(*v))
+            .cloned()
+            .collect()
+    });
     let mut denied = explicit_denied;
     denied.extend(
         MANAGE_VIEW_ROUTES
             .into_iter()
             .map(String::from)
-            .chain(app_views.iter().cloned())
+            .chain(app_views.unwrap_or_default().iter().cloned())
             .filter(|v| !allowed.contains(v)),
     );
     ViewGrants { denied, app_grants }
@@ -937,8 +985,11 @@ pub fn resolve_view_grants(
 /// A person's view grants, with the apps under `dir`. Team grants union in:
 /// a team's work denial adds to the person's, a team's manage grant opens the
 /// door. Admins are never restricted, and their resolution reads neither the
-/// apps directory nor the setting — so an admin can still reach Admin → Apps
-/// while a broken setting fails every member's session.
+/// apps directory nor the setting — so Admin → Apps stays reachable to fix a
+/// broken setting. For a member, an apps read that fails withholds the app
+/// grants (`app_grants: None`) and nothing else: the core views still
+/// resolve, so a malformed `apps_enabled` or an unlistable apps directory
+/// shuts the apps and leaves the rest of Talaria open.
 pub async fn view_grants_in(
     pg: &PgPool,
     dir: &std::path::Path,
@@ -948,7 +999,7 @@ pub async fn view_grants_in(
     if role == "admin" {
         return Ok(ViewGrants {
             denied: Vec::new(),
-            app_grants: Vec::new(),
+            app_grants: Some(Vec::new()),
         });
     }
     let row: Option<(Vec<String>, Option<Vec<String>>)> =
@@ -976,23 +1027,19 @@ pub async fn view_grants_in(
     if talaria_agent_managers::manages_any_agent(pg, user_id, role).await? {
         allowed.insert("/agents".to_string());
     }
-    let app_views = app_view_routes_in(pg, dir).await?;
-    Ok(resolve_view_grants(denied, &allowed, &app_views))
+    let app_views = match app_view_routes_in(pg, dir).await {
+        Ok(views) => Some(views),
+        Err(e) => {
+            tracing::warn!(error = %e, "[users] enabled apps unreadable: app grants withheld, core views resolved");
+            None
+        }
+    };
+    Ok(resolve_view_grants(denied, &allowed, app_views.as_deref()))
 }
 
 /// `view_grants_in` for the configured apps directory.
 pub async fn view_grants(pg: &PgPool, user_id: &str, role: &str) -> Result<ViewGrants, ViewsError> {
     view_grants_in(pg, &apps_dir(), user_id, role).await
-}
-
-/// Views a member may NOT reach (`ViewGrants::denied`). Fails, rather than
-/// leaving the app views out, when the enabled apps cannot be read.
-pub async fn denied_views(
-    pg: &PgPool,
-    user_id: &str,
-    role: &str,
-) -> Result<Vec<String>, ViewsError> {
-    Ok(view_grants(pg, user_id, role).await?.denied)
 }
 
 // ── Admin console writes ────────────────────────────────────────────────────
@@ -1441,22 +1488,79 @@ mod tests {
         for viewer in f["viewers"].as_array().unwrap() {
             let about = viewer["about"].as_str().unwrap();
             // An admin never reaches the resolver (`view_grants_in` answers
-            // two empty lists for one); the live test below pins that arm.
+            // no denials and an empty grant list for one); the live test
+            // below pins that arm.
             if viewer["admin"].as_bool() == Some(true) {
                 assert!(strings(&viewer["appGrants"]).is_empty(), "{about}");
                 continue;
             }
             let allowed: HashSet<String> = strings(&viewer["allowed"]).into_iter().collect();
-            let g = resolve_view_grants(strings(&viewer["explicitDenied"]), &allowed, &app_views);
-            assert_eq!(g.app_grants, strings(&viewer["appGrants"]), "{about}");
+            let explicit = strings(&viewer["explicitDenied"]);
+            if viewer["appsUnreadable"].as_bool() == Some(true) {
+                // The apps read failed: no app view is held, whatever was
+                // granted, and the core views resolve exactly as ever.
+                assert!(viewer["appGrants"].is_null(), "{about}");
+                let g = resolve_view_grants(explicit, &allowed, None);
+                assert_eq!(g.app_grants, None, "{about}");
+                assert_eq!(g.denied, strings(&viewer["denied"]), "{about}");
+                for v in &app_views {
+                    assert_eq!(g.denies(v), None, "{about}: {v} is not answerable");
+                }
+                assert_eq!(g.denies("/boards/b1"), Some(true), "{about}");
+                assert_eq!(g.denies("/agents"), Some(false), "{about}");
+                assert_eq!(g.denies("/inbox"), Some(false), "{about}");
+                continue;
+            }
+            let g = resolve_view_grants(explicit, &allowed, Some(&app_views));
+            let held = g.app_grants.clone().expect("the apps were read");
+            assert_eq!(held, strings(&viewer["appGrants"]), "{about}");
             // Fail closed: every enabled app view is either held or denied,
             // never neither — and never both.
             for v in &app_views {
-                let held = g.app_grants.contains(v);
+                let is_held = held.contains(v);
                 let denied = g.denied.contains(v);
-                assert!(held != denied, "{about}: {v} held={held} denied={denied}");
+                assert!(
+                    is_held != denied,
+                    "{about}: {v} held={is_held} denied={denied}"
+                );
+                assert_eq!(g.denies(v), Some(!is_held), "{about}: {v}");
             }
         }
+    }
+
+    #[test]
+    fn an_app_route_answers_to_the_view_that_governs_it() {
+        let s = |x: &str| Some(x.to_string());
+        assert_eq!(app_view_for("/x/crm"), s("/x/crm"));
+        assert_eq!(app_view_for("/x/crm/deals/7"), s("/x/crm"));
+        assert_eq!(app_view_for("/x/crm/manage"), s("/x/crm/manage"));
+        assert_eq!(app_view_for("/x/crm/manage/fields"), s("/x/crm/manage"));
+        assert_eq!(app_view_for("/x/crm/manager"), s("/x/crm"));
+        assert_eq!(app_view_for("/x/"), None);
+        assert_eq!(app_view_for("/x"), None);
+        assert_eq!(app_view_for("/teams"), None);
+
+        // A work grant never opens the manage surface, and a denied work view
+        // does not shut a granted manage view below it.
+        let g = ViewGrants {
+            denied: vec!["/x/crm".into(), "/teams".into()],
+            app_grants: Some(vec!["/x/crm/manage".into()]),
+        };
+        assert_eq!(g.denies("/x/crm/manage/fields"), Some(false));
+        assert_eq!(g.denies("/x/crm"), Some(true));
+        assert_eq!(g.denies("/teams/t1"), Some(true));
+        assert_eq!(g.denies("/observability"), Some(false));
+
+        // The apps could not be read: core views still answer, app routes
+        // never do.
+        let g = ViewGrants {
+            denied: vec!["/teams".into()],
+            app_grants: None,
+        };
+        assert_eq!(g.denies("/teams"), Some(true));
+        assert_eq!(g.denies("/observability"), Some(false));
+        assert_eq!(g.denies("/x/crm"), None);
+        assert_eq!(g.denies("/x/crm/manage"), None);
     }
 
     #[test]
@@ -1532,14 +1636,15 @@ mod tests {
     }
 
     /// Live: a settings-only app's manage view is denied until granted and
-    /// held once granted, and a member's resolution FAILS — rather than
-    /// leaving the app views out — on a malformed setting or an unlistable
-    /// apps directory, while an admin's never reads either.
+    /// held once granted, and on a malformed setting or an unlistable apps
+    /// directory a member's resolution withholds every app grant — never
+    /// leaving the app views out of a list read as complete — while the core
+    /// views resolve as before; an admin's never reads either.
     ///
     ///   DATABASE_URL=postgres://… cargo test -p talaria-users --lib -- --ignored live_
     #[tokio::test]
     #[ignore = "live DB: set DATABASE_URL"]
-    async fn live_denied_views_lists_a_settings_only_app_and_fails_closed() {
+    async fn live_view_grants_list_a_settings_only_app_and_withhold_apps_it_cannot_read() {
         use futures_util::FutureExt as _;
         use talaria_gateway::settings::{set_setting, try_get_setting};
         let url = std::env::var("DATABASE_URL").expect("set DATABASE_URL to run the live tests");
@@ -1569,7 +1674,7 @@ mod tests {
                 .unwrap();
             let g = view_grants_in(&pg, &dir, &uid, "member").await.unwrap();
             assert!(g.denied.contains(&view), "ungranted: denied");
-            assert!(g.app_grants.is_empty(), "ungranted: held nothing");
+            assert_eq!(g.app_grants, Some(vec![]), "ungranted: held nothing");
 
             sqlx::query("update users set allowed_manage_views = $1 where id = $2::uuid")
                 .bind(vec![view.clone()])
@@ -1578,29 +1683,44 @@ mod tests {
                 .await
                 .unwrap();
             let g = view_grants_in(&pg, &dir, &uid, "member").await.unwrap();
-            assert_eq!(g.app_grants, vec![view.clone()], "granted: held");
+            assert_eq!(g.app_grants, Some(vec![view.clone()]), "granted: held");
             assert!(!g.denied.contains(&view), "granted: not denied");
+            let core = g.denied.clone();
 
+            // A malformed setting withholds the app grants and nothing else:
+            // the core denials are the ones the readable setting gave.
             set_setting(&pg, "apps_enabled", &serde_json::json!({ "broken": true }))
                 .await
                 .unwrap();
             assert!(matches!(
-                denied_views(&pg, &uid, "member").await,
+                app_view_routes_in(&pg, &dir).await,
                 Err(ViewsError::EnabledSetting)
             ));
-            assert!(view_grants_in(&pg, &dir, &uid, "member").await.is_err());
+            let g = view_grants_in(&pg, &dir, &uid, "member").await.unwrap();
+            assert_eq!(g.app_grants, None, "malformed setting: no app held");
+            assert_eq!(g.denied, core, "malformed setting: core views as before");
+            assert_eq!(g.denies(&view), None);
+            assert_eq!(g.denies("/teams"), Some(true));
             // The admin arm reads neither, so Admin → Apps stays reachable to
             // rewrite the setting.
-            assert!(denied_views(&pg, &uid, "admin").await.unwrap().is_empty());
+            let g = view_grants_in(&pg, &dir, &uid, "admin").await.unwrap();
+            assert!(g.denied.is_empty());
+            assert_eq!(g.app_grants, Some(vec![]));
 
+            // An apps directory that cannot be listed: the same.
             set_setting(&pg, "apps_enabled", &serde_json::json!([slug]))
                 .await
                 .unwrap();
             let not_a_dir = dir.join(&slug).join("talaria.json");
             assert!(matches!(
-                view_grants_in(&pg, &not_a_dir, &uid, "member").await,
+                app_view_routes_in(&pg, &not_a_dir).await,
                 Err(ViewsError::AppsDir(_))
             ));
+            let g = view_grants_in(&pg, &not_a_dir, &uid, "member")
+                .await
+                .unwrap();
+            assert_eq!(g.app_grants, None, "unlistable dir: no app held");
+            assert_eq!(g.denied, core, "unlistable dir: core views as before");
         };
         let outcome = std::panic::AssertUnwindSafe(run).catch_unwind().await;
 

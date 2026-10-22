@@ -11,7 +11,7 @@
   function dockSections(
     user: SessionUser,
     appsRows: { slug: string; icon: string; surfaces: { work?: string; manage?: string } }[],
-    grants: { denied: readonly string[]; appGrants: readonly string[] },
+    grants: { denied: readonly string[]; appGrants: readonly string[] | null },
   ) {
     const appWork = appsRows.flatMap((a) => {
       const item = appWorkItem(a)

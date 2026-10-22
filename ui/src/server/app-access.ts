@@ -31,25 +31,29 @@ export interface AppCaller {
 
 export type AppGate = { ok: true; caller: AppCaller } | { ok: false; response: Response }
 
+const unavailable = () => json({ error: 'could not check your access to this app — try again' }, { status: 503 })
+
 /** The pure half of the gate, given the session and the enabled apps. The
  *  order is the disclosure order: a stranger learns nothing about which apps
  *  exist (401 first); a member learns an app is not there (404) before
- *  learning they lack it (403). */
+ *  learning they lack it (403). A member whose grants the api could not read
+ *  (`appGrants: null`) gets 503 — held as no grant, never guessed at. */
 export function decideAppGate(session: RustSession, apps: readonly AppManifest[], slug: string): AppGate {
   const user = session.user
   if (!user) return { ok: false, response: json({ error: 'unauthorized' }, { status: 401 }) }
   const app = apps.find((a) => a.slug === slug)
   if (!app) return { ok: false, response: json({ error: 'no such app' }, { status: 404 }) }
-  const access = appAccess(app, { isAdmin: user.role === 'admin', appGrants: session.appGrants })
+  const isAdmin = user.role === 'admin'
+  if (!isAdmin && session.appGrants === null) return { ok: false, response: unavailable() }
+  const access = appAccess(app, { isAdmin, appGrants: session.appGrants })
   if (!reachesApp(access)) return { ok: false, response: json({ error: 'forbidden' }, { status: 403 }) }
   return { ok: true, caller: { user, app, access, perms: session.perms } }
 }
 
-const unavailable = () => json({ error: 'could not check your access to this app — try again' }, { status: 503 })
-
 /** Session, enabled, granted — the trust work both app doors do before
- *  anything of the app's runs or ships. A session or an enabled-app list
- *  that cannot be read answers 503: the gate never guesses. */
+ *  anything of the app's runs or ships. A session, an enabled-app list or a
+ *  member's app grants that cannot be read answer 503: the gate never
+ *  guesses. */
 export async function authorizeApp(request: Request, slug: string): Promise<AppGate> {
   let session: RustSession
   try {

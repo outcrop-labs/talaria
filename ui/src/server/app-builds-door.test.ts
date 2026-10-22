@@ -23,7 +23,23 @@ for (const [rel, body] of [
   ['mcp.js', 'SECRET MCP CODE'],
   ['.cache-client/x.json', '{}'],
 ] as const) writeFileSync(join(dir, rel), body)
-writeFileSync(join(builds, 'crm', 'current.json'), JSON.stringify({ key: KEY }))
+// A build from before the server and MCP chunks moved to _server/ and _mcp/:
+// its split server chunk sits under assets/, where the door serves.
+const OLD_KEY = 'fedcba9876543210'
+const oldDir = join(builds, 'crm', OLD_KEY)
+mkdirSync(join(oldDir, 'assets'), { recursive: true })
+for (const [rel, body] of [
+  ['app.js', 'export default {} // old'],
+  ['server.js', "import('./assets/lazy-Ab12.js')"],
+  ['assets/lazy-Ab12.js', 'SECRET OLD SERVER CHUNK'],
+] as const) writeFileSync(join(oldDir, rel), body)
+
+/** Point crm's current build pointer at `key`, as app-build/status.ts writes it. */
+const pointTo = (key: string, status: 'ready' | 'building' | 'failed' = 'ready') =>
+  writeFileSync(
+    join(builds, 'crm', 'current.json'),
+    JSON.stringify({ key, status, hostBuild: 'h', builtAt: 1, bytes: 1, files: ['app.js', 'app.css', 'server.js', 'mcp.js'] }),
+  )
 
 const { appBuildAsset, serveAppBuild } = await import('./app-builds-door')
 
@@ -31,6 +47,7 @@ afterAll(() => rmSync(builds, { recursive: true, force: true }))
 beforeEach(() => {
   gate = { ok: true }
   authorizeApp.mockClear()
+  pointTo(KEY)
 })
 
 const get = (path: string, method = 'GET') => serveAppBuild(new Request(`http://app.test${path}`, { method }))
@@ -97,6 +114,35 @@ describe('serveAppBuild', () => {
     expect((await get(`/app-builds/crm/${KEY}/assets/missing.js`)).status).toBe(404)
     expect((await get(`/app-builds/crm/ffff/app.js`)).status).toBe(404)
     expect((await get(`/app-builds/crm/${KEY}/app.js`, 'POST')).status).toBe(405)
+  })
+
+  it('serves only the key the current pointer names — never an older build', async () => {
+    expect((await get(`/app-builds/crm/${KEY}/app.js`)).status).toBe(200)
+    // The old build is still on disk, and its server chunk is under assets/.
+    for (const p of [`/app-builds/crm/${OLD_KEY}/assets/lazy-Ab12.js`, `/app-builds/crm/${OLD_KEY}/app.js`]) {
+      const res = await get(p)
+      expect(res.status, p).toBe(404)
+      expect(await res.text()).not.toMatch(/SECRET|export/)
+    }
+    // Point at the old key and the roles swap: the pointer decides.
+    pointTo(OLD_KEY)
+    expect((await get(`/app-builds/crm/${OLD_KEY}/app.js`)).status).toBe(200)
+    expect((await get(`/app-builds/crm/${KEY}/app.js`)).status).toBe(404)
+  })
+
+  it('serves nothing while the current build is building or after it failed, or with no pointer', async () => {
+    for (const status of ['building', 'failed'] as const) {
+      pointTo(KEY, status)
+      expect((await get(`/app-builds/crm/${KEY}/app.js`)).status, status).toBe(404)
+    }
+    rmSync(join(builds, 'crm', 'current.json'))
+    expect((await get(`/app-builds/crm/${KEY}/app.js`)).status).toBe(404)
+  })
+
+  it('checks the key only past the gate, so a stranger learns nothing of it', async () => {
+    gate = { ok: false, response: new Response('{"error":"unauthorized"}', { status: 401 }) }
+    expect((await get(`/app-builds/crm/${KEY}/app.js`)).status).toBe(401)
+    expect((await get(`/app-builds/crm/${OLD_KEY}/app.js`)).status).toBe(401)
   })
 
   it('answers HEAD with headers and no body', async () => {

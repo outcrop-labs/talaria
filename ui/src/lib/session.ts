@@ -30,8 +30,10 @@ interface SessionResult {
   user: SessionUser | null
   deniedViews: string[]
   /** The app views this person holds (lib/app-grants.ts). Empty for an
-   *  admin, who holds every app by role. */
-  appGrants: string[]
+   *  admin, who holds every app by role. `null` when the api could not read
+   *  the enabled apps (`appsUnreadable`): no app view is held, and the core
+   *  views above answer as ever. */
+  appGrants: string[] | null
   perms: string[]
 }
 
@@ -48,11 +50,20 @@ interface SessionResult {
 // used to. getList already refuses to read a missing wrapper key as an empty
 // list; this refuses to read a missing `user` key as a logout.
 const fetchSession = async (): Promise<SessionResult> => {
-  const data = await getJson<{ user?: SessionUser | null; deniedViews?: string[]; appGrants?: string[]; perms?: string[] }>('/api/auth/session')
+  const data = await getJson<{
+    user?: SessionUser | null
+    deniedViews?: string[]
+    appGrants?: string[] | null
+    appsUnreadable?: boolean
+    perms?: string[]
+  }>('/api/auth/session')
   if (data.user === undefined) throw new Error('malformed response from /api/auth/session: no "user" field')
   // A missing `appGrants` holds no app: the nav and the route gate admit an
-  // app view only on a listed grant, so the default fails closed.
-  return { user: data.user, deniedViews: data.deniedViews ?? [], appGrants: data.appGrants ?? [], perms: data.perms ?? [] }
+  // app view only on a listed grant, so the default fails closed. When the
+  // api could not read the enabled apps it says so (`appsUnreadable`,
+  // `appGrants: null`), and null holds no app either.
+  const appGrants = data.appsUnreadable === true || data.appGrants === null ? null : (data.appGrants ?? [])
+  return { user: data.user, deniedViews: data.deniedViews ?? [], appGrants, perms: data.perms ?? [] }
 }
 
 export function useSession() {
@@ -94,12 +105,14 @@ export function useDeniedViews(): { readonly current: string[] } {
 
 /** The app views the current user holds — what an app's nav entry, route and
  *  settings tab open on (lib/app-grants.ts). Empty for admins, who hold every
- *  app by role. Same `{ current }` box as `useDeniedViews`. */
-export function useAppGrants(): { readonly current: string[] } {
+ *  app by role; `null` when the api could not read the enabled apps, which
+ *  every reader holds as no app. Same `{ current }` box as `useDeniedViews`. */
+export function useAppGrants(): { readonly current: readonly string[] | null } {
   const query = createQuery(() => ({ queryKey: ['session'], queryFn: fetchSession, select: (d: SessionResult) => d.appGrants }))
   return {
     get current() {
-      return query.data ?? []
+      // Still loading: nothing held yet. `null` passes through as itself.
+      return query.data === undefined ? [] : query.data
     },
   }
 }
