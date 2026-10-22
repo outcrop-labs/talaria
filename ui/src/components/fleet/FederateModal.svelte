@@ -19,7 +19,7 @@
       status: 'federated' | 'exists'
       /** Per-agent secrets the config's inline credentials were sealed as. */
       sealed?: string[]
-      /** Config paths of inline credentials the render never uses — not stored. */
+      /** Config paths of inline credentials Talaria supplies itself — not stored. */
       dropped?: string[]
     }>
     errors: string[]
@@ -136,9 +136,9 @@
                     {/if}
                     {#if a.dropped?.length}
                       <p class="mt-1 text-xs leading-relaxed text-muted">
-                        Not stored: <span class="font-mono text-fg">{a.dropped.join(', ')}</span>. Agents reach models
-                        through the gateway (the provider's key goes on Models) and MCP servers through the MCP
-                        registry, so these were never used.
+                        Not stored: <span class="font-mono text-fg">{a.dropped.join(', ')}</span>. Talaria supplies
+                        these itself: agents reach models through the gateway (the provider's key goes on Models), MCP
+                        servers through the MCP registry, and the API server answers to Talaria's own key.
                       </p>
                     {/if}
                   </li>

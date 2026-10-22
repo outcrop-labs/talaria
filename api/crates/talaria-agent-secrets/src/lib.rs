@@ -14,7 +14,7 @@ mod config_seal;
 mod env_file;
 pub use config_seal::{
     CONFIG_SECRET_PREFIX, ConfigLiteral, ConfigSeal, config_secret_handles, copy_config_secrets,
-    plan_config_seal, seal_config_literals,
+    plan_config_seal, seal_config_literals, withhold_config_secrets,
 };
 
 /// Container-env name: UPPER_SNAKE, must not collide with the stamped vars.

@@ -15,9 +15,9 @@
 // loads it (v0.22.4 `hermes_cli/config.py` `_expand_env_vars`) — the same way
 // the rendered `${LLM_API_KEY}` and `${TALARIA_AGENT_KEY}` already resolve.
 //
-// Two kinds of literal are dropped instead, because the render never emits
-// them and sealing one would hand the agent a credential it does not get
-// today:
+// Three kinds of literal are dropped instead, because Talaria supplies that
+// credential itself and the literal is never the one in use; sealing it
+// would hand the agent a credential it does not get today:
 //
 // - a model spec's `api_key`. The render points every spec at the gateway on
 //   the agent's own key (talaria_fleet_brain::route_config_through_gateway),
@@ -26,6 +26,16 @@
 // - anything under the authored top-level `mcp_servers`. The render builds
 //   that block fresh, every server through the MCP gateway, and an upstream
 //   MCP credential belongs in the MCP registry.
+// - the API server's own `key` (`platforms.api_server[.extra].key`). Its
+//   bearer is the render's `API_SERVER_KEY`, the key Talaria calls the agent
+//   with, and Hermes writes that over any `key` in the config (v0.22.4
+//   `gateway/config_env.py` `_api_server`), so the literal only sat there in
+//   plaintext.
+//
+// The top-level `secrets:` block is left alone. Hermes reads it raw, never
+// expanded (`hermes_cli/env_loader.py` `_load_secrets_config`), and what it
+// holds under credential-looking names are secret-manager references
+// (`op://…`), not the credentials themselves.
 
 use serde_json::Value;
 use sqlx::PgPool;
@@ -77,17 +87,30 @@ fn credential_key(key: &str) -> bool {
         "access_key",
         "signing_key",
         "encryption_key",
+        // feishu's `encrypt_key`, wecom's `encoding_aes_key`.
+        "encrypt_key",
+        "aes_key",
     ];
     let k = key.to_ascii_lowercase().replace('-', "_");
     EXACT.contains(&k.as_str()) || LAST_WORD.iter().any(|w| k.ends_with(w))
 }
 
-/// The literal behind a credential key, or None: a reference (`${VAR}`, or a
-/// template such as `Bearer ${TOKEN}`) is already a handle, an empty string
-/// holds nothing, and a non-string is not a credential.
+/// Whether a string is a literal rather than a reference. A `${VAR}`
+/// reference, alone or in a template such as `Bearer ${TOKEN}`, is already a
+/// handle, matched by Hermes's own pattern (v0.22.4 `hermes_cli/config.py`
+/// `_ENV_REF_RE`), so a stray `${` with no closing brace is still a literal.
+/// An empty string holds nothing.
+fn is_literal(s: &str) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"\$\{[^}]+\}").unwrap());
+    !s.trim().is_empty() && !re.is_match(s)
+}
+
+/// The literal behind a credential key, or None (a reference, an empty
+/// string, a non-string).
 fn literal<'a>(key: &str, value: &'a Value) -> Option<&'a str> {
     let s = value.as_str()?;
-    (credential_key(key) && !s.trim().is_empty() && !s.contains("${")).then_some(s)
+    (credential_key(key) && is_literal(s)).then_some(s)
 }
 
 #[derive(Debug, Clone)]
@@ -133,8 +156,11 @@ fn deliverable(path: &str, value: &str) -> Result<(), String> {
     } else {
         return Ok(());
     };
+    // No other route takes it either: a typed per-agent secret has the same
+    // two limits, so pointing at the Secrets tab would send the operator to a
+    // form that refuses the same value.
     Err(format!(
-        "{path} holds a literal credential that cannot be sealed as a per-agent secret ({why}) — replace it with a ${{VAR}} reference and set VAR on the agent's Secrets tab"
+        "{path} holds a literal credential that cannot be sealed ({why}): a per-agent secret is a single line of at most 8 KB, so Talaria has no way to deliver this value to the agent — remove it from the source config.yaml and federate again"
     ))
 }
 
@@ -215,6 +241,9 @@ impl Planner {
                     unreachable!("matched as an object above")
                 };
                 for (key, child) in map.iter_mut() {
+                    if path.is_empty() && key == "secrets" {
+                        continue;
+                    }
                     path.push(Seg::Key(key.clone()));
                     if let Some(lit) = literal(key, child) {
                         if spec && key == "api_key" {
@@ -233,6 +262,17 @@ impl Planner {
             _ => {}
         }
         Ok(())
+    }
+
+    /// A key the render owns: a literal there is taken out, not sealed.
+    fn drop_owned(&mut self, block: &mut Value, at: &str, key: &str) {
+        let Some(map) = block.as_object_mut() else {
+            return;
+        };
+        if map.get(key).and_then(Value::as_str).is_some_and(is_literal) {
+            map.remove(key);
+            self.dropped.push(format!("{at}.{key}"));
+        }
     }
 
     /// Authored MCP entries are never rendered: their literal credentials go.
@@ -288,6 +328,15 @@ pub fn plan_config_seal(config: &Value) -> Result<ConfigSeal, String> {
             planner.strip(servers, &mut path);
             path.pop();
         }
+        // The API server's bearer is the render's (see the header). Hermes
+        // promotes a key written directly under the platform into `extra`, so
+        // both spellings are the same setting.
+        if let Some(api) = raw.pointer_mut("/platforms/api_server") {
+            planner.drop_owned(api, "platforms.api_server", "key");
+            if let Some(extra) = api.get_mut("extra") {
+                planner.drop_owned(extra, "platforms.api_server.extra", "key");
+            }
+        }
         // From the root, as the render walks it — a legacy config whose top
         // level is itself a model spec gets the same treatment as a nested one.
         planner.walk(raw, &mut path, false)?;
@@ -339,10 +388,15 @@ pub async fn seal_config_literals(
         .map_err(|e| format!("secret write failed: {e}"))
 }
 
+/// A `${CONFIG_…}` handle; the group is the secret's name.
+fn handle_re() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"\$\{(CONFIG_[A-Z0-9_]{1,57})\}").unwrap())
+}
+
 /// Every `${CONFIG_…}` handle a config carries, first-seen order.
 pub fn config_secret_handles(config: &Value) -> Vec<String> {
-    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| regex::Regex::new(r"\$\{(CONFIG_[A-Z0-9_]{1,57})\}").unwrap());
+    let re = handle_re();
     fn walk(v: &Value, re: &regex::Regex, out: &mut Vec<String>) {
         match v {
             Value::String(s) => {
@@ -392,6 +446,60 @@ pub async fn copy_config_secrets(
     Ok(())
 }
 
+/// A config copied to an agent that may not take the source agent's sealed
+/// secrets along: every value in its `raw` that names one (`${CONFIG_…}`) is
+/// taken out, and the paths where they sat come back. Leaving the handle in
+/// would not keep the credential out of reach so much as replace it: Hermes
+/// keeps an unresolved `${…}` as its literal text, so a password would become
+/// a string every fleet reader can see. Taken out, the setting is simply not
+/// configured (a basic-auth dashboard with no password does not register).
+pub fn withhold_config_secrets(config: &Value) -> (Value, Vec<String>) {
+    fn names(v: &Value) -> bool {
+        v.as_str().is_some_and(|s| handle_re().is_match(s))
+    }
+    fn walk(v: &mut Value, path: &mut Vec<Seg>, out: &mut Vec<String>) {
+        match v {
+            Value::Object(map) => {
+                let gone: Vec<String> = map
+                    .iter()
+                    .filter(|(_, child)| names(child))
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for key in gone {
+                    map.remove(&key);
+                    path.push(Seg::Key(key));
+                    out.push(dotted(path));
+                    path.pop();
+                }
+                for (key, child) in map.iter_mut() {
+                    path.push(Seg::Key(key.clone()));
+                    walk(child, path, out);
+                    path.pop();
+                }
+            }
+            Value::Array(items) => {
+                for (i, mut item) in std::mem::take(items).into_iter().enumerate() {
+                    path.push(Seg::Index(i));
+                    if names(&item) {
+                        out.push(dotted(path));
+                    } else {
+                        walk(&mut item, path, out);
+                        items.push(item);
+                    }
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = config.clone();
+    let mut withheld = Vec::new();
+    if let Some(raw) = out.get_mut("raw") {
+        walk(raw, &mut Vec::new(), &mut withheld);
+    }
+    (out, withheld)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +526,12 @@ mod tests {
             "x-auth-token",
             "GITHUB_TOKEN",
             "aws_secret_access_key",
+            // Platform credentials Hermes v0.22.4 reads from a platform's
+            // `extra`: feishu, wecom.
+            "encrypt_key",
+            "encoding_aes_key",
+            "verification_token",
+            "corp_secret",
         ] {
             assert!(credential_key(k), "{k}");
         }
@@ -663,9 +777,87 @@ mod tests {
             "{err}"
         );
         assert!(err.contains("more than one line"), "{err}");
+        // The Secrets tab refuses the same values, so it is not offered.
+        assert!(!err.contains("Secrets tab"), "{err}");
         let big = "k".repeat(8193);
         let err = plan_config_seal(&json!({ "raw": { "secret": big } })).unwrap_err();
         assert!(err.contains("8 KB"), "{err}");
+    }
+
+    #[test]
+    fn a_stray_dollar_brace_is_a_literal_not_a_reference() {
+        let out = plan(json!({
+            "dashboard": { "basic_auth": { "password": "pa${ss" } },
+            "platforms": { "x": { "token": "${}" } },
+        }));
+        let names: Vec<(&str, &str)> = out
+            .sealed
+            .iter()
+            .map(|l| (l.name.as_str(), l.value.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("CONFIG_DASHBOARD_BASIC_AUTH_PASSWORD", "pa${ss"),
+                ("CONFIG_PLATFORMS_X_TOKEN", "${}"),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_secrets_block_is_read_raw_by_hermes_and_left_alone() {
+        let raw = json!({
+            "secrets": {
+                "onepassword": {
+                    "enabled": true,
+                    "env": { "OPENAI_API_KEY": "op://vault/openai/credential" },
+                },
+                "bitwarden": { "env": { "GITHUB_TOKEN": "bws-secret-id" } },
+            },
+        });
+        let out = plan(raw.clone());
+        assert_eq!(out.config["raw"], raw);
+        assert!(out.sealed.is_empty() && out.dropped.is_empty());
+        // Only the top-level block: a `secrets` map deeper down is walked.
+        let out = plan(json!({ "x": { "secrets": { "token": "t" } } }));
+        assert_eq!(out.sealed[0].name, "CONFIG_X_SECRETS_TOKEN");
+    }
+
+    #[test]
+    fn the_api_servers_key_is_the_renders_and_is_dropped() {
+        let out = plan(json!({
+            "platforms": {
+                "api_server": {
+                    "enabled": true,
+                    "key": "sk-local",
+                    "extra": { "key": "sk-extra", "port": 8642 },
+                },
+                "webhook": { "key": "not-a-credential-name" },
+            },
+        }));
+        let api = &out.config["raw"]["platforms"]["api_server"];
+        assert!(api.get("key").is_none(), "{api}");
+        assert_eq!(api["extra"], json!({ "port": 8642 }));
+        assert_eq!(api["enabled"], json!(true));
+        assert_eq!(
+            out.dropped,
+            vec!["platforms.api_server.key", "platforms.api_server.extra.key"]
+        );
+        // A bare `key` elsewhere is not a credential name.
+        assert_eq!(
+            out.config["raw"]["platforms"]["webhook"]["key"],
+            json!("not-a-credential-name")
+        );
+        assert!(out.sealed.is_empty());
+        // A reference there is left as written.
+        let out = plan(json!({
+            "platforms": { "api_server": { "key": "${API_SERVER_KEY}" } },
+        }));
+        assert_eq!(
+            out.config["raw"]["platforms"]["api_server"]["key"],
+            json!("${API_SERVER_KEY}")
+        );
+        assert!(out.dropped.is_empty());
     }
 
     #[test]
@@ -683,6 +875,47 @@ mod tests {
         let out = plan_config_seal(&bare).unwrap();
         assert_eq!(out.config, bare);
         assert!(out.sealed.is_empty() && out.dropped.is_empty());
+    }
+
+    #[test]
+    fn withholding_takes_every_handle_out_of_raw() {
+        let config = json!({
+            "main": { "endpoint": "e", "model": "m" },
+            "raw": {
+                "platforms": { "telegram": { "enabled": true, "token": "${CONFIG_PLATFORMS_TELEGRAM_TOKEN}" } },
+                "dashboard": { "basic_auth": { "username": "ops", "password": "${CONFIG_DASHBOARD_BASIC_AUTH_PASSWORD}" } },
+                "list": [ "keep", "Bearer ${CONFIG_A}", { "token": "${CONFIG_B}", "name": "n" } ],
+                "model": { "api_key": "${LLM_API_KEY}" },
+            },
+        });
+        let (out, withheld) = withhold_config_secrets(&config);
+        assert_eq!(
+            withheld,
+            vec![
+                "platforms.telegram.token",
+                "dashboard.basic_auth.password",
+                "list[1]",
+                "list[2].token",
+            ]
+        );
+        assert!(config_secret_handles(&out).is_empty(), "{out}");
+        assert_eq!(
+            out["raw"]["platforms"]["telegram"],
+            json!({ "enabled": true })
+        );
+        assert_eq!(
+            out["raw"]["dashboard"]["basic_auth"],
+            json!({ "username": "ops" })
+        );
+        assert_eq!(out["raw"]["list"], json!([ "keep", { "name": "n" } ]));
+        assert_eq!(out["raw"]["model"]["api_key"], json!("${LLM_API_KEY}"));
+        assert_eq!(out["main"], config["main"]);
+        // Nothing to withhold: the config comes back as it was.
+        let bare = json!({ "raw": { "model": { "api_key": "${LLM_API_KEY}" } } });
+        assert_eq!(
+            withhold_config_secrets(&bare),
+            (bare.clone(), Vec::<String>::new())
+        );
     }
 
     #[test]

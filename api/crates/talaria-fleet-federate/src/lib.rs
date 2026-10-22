@@ -9,9 +9,10 @@
 // A source config.yaml is third-party text and can carry credentials inline.
 // None is stored as written: before the version is written, each literal the
 // render would emit is sealed as one of the agent's per-agent secrets with a
-// `${CONFIG_…}` handle left in the config, and the ones the render never emits
-// (a model's api_key, an authored MCP server's headers) are dropped —
-// talaria_agent_secrets::plan_config_seal has the rules.
+// `${CONFIG_…}` handle left in the config, and the ones Talaria supplies
+// itself (a model's api_key, an authored MCP server's headers, the API
+// server's key) are dropped — talaria_agent_secrets::plan_config_seal has the
+// rules.
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -32,7 +33,7 @@ pub struct FederatedAgent {
     /// The per-agent secrets its config's literal credentials were sealed as.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sealed: Vec<String>,
-    /// Where each literal credential the render never emits sat — not stored.
+    /// Where each literal credential Talaria supplies itself sat — not stored.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dropped: Vec<String>,
 }
