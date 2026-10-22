@@ -1422,8 +1422,9 @@ pub async fn mark_message_resumed(pg: &PgPool, message_id: &str) -> Result<(), s
     Ok(())
 }
 
-/// Stamp a turn as STOPPED — a person pressed stop, or the doom-loop guard
-/// pulled the plug on an agent calling the same thing over and over. The row
+/// Stamp a turn as STOPPED — a person pressed stop. (An agent stuck calling
+/// the same thing over and over is halted inside Hermes by its own loop
+/// guard, which ends the turn with a reply rather than a stop.) The row
 /// itself lands COMPLETE, not errored: whatever the agent managed to say is
 /// what the person chose to keep, and an error status would put a retry
 /// affordance on a turn nobody wants retried. This stamp is what tells the

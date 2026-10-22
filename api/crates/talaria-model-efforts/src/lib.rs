@@ -104,6 +104,23 @@ pub async fn efforts_for_model(pg: &sqlx::PgPool, model: &str) -> Vec<String> {
     effort_levels_of(&with_declared_efforts(entries, &roster))
 }
 
+/// The effort levels ONE endpoint:upstream target supports, or `[]` — the
+/// per-target half of `efforts_for_model`, for a caller that speaks per
+/// RUNNING MODEL rather than per routable id: fleet-render's Hermes reasoning
+/// block, which Hermes resolves against whichever of an agent's models is
+/// actually answering (main, a tier, a fallback). Same two voices, same
+/// `[]`-means-nobody-vouched contract; no pool, because the pool rule exists
+/// for a routable id whose answering model is unknowable in advance, and here
+/// it is known.
+pub async fn efforts_for_target(pg: &sqlx::PgPool, target: &ModelTarget) -> Vec<String> {
+    let entries = catalog_entries_for_targets(pg, std::slice::from_ref(target)).await;
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let roster = list_endpoints(pg).await.unwrap_or_default();
+    effort_levels_of(&with_declared_efforts(entries, &roster))
+}
+
 // ── The backfill ─────────────────────────────────────────────────────────────
 //
 // THE STALE-CATALOG PROBLEM, which is why a picker shipped and did not appear:

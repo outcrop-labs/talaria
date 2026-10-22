@@ -282,13 +282,20 @@ export interface PersonaPayload {
 
 /** THE ONE MAPPING from a `TransportRequest` onto a persona-gateway payload.
  *
- *  Every field of the request is spent here, and that is the point: three of the
- *  five hand-written persona transports dropped `temperature` and `jsonMode`
- *  because each was written by copying `fleetTransport` and then editing the one
- *  axis its author cared about. A harness that declares `temperature: 0` and
- *  runs at the provider's 0.7 is a harness whose declaration is decorative, and
- *  nothing in the result, the row or the logs says so. There is now one place to
- *  get this right and one place to change it. */
+ *  Every field of the request is decided here, and that is the point: three of
+ *  the five hand-written persona transports dropped `temperature` and
+ *  `jsonMode` because each was written by copying `fleetTransport` and then
+ *  editing the one axis its author cared about. There is now one place to get
+ *  this right and one place to change it.
+ *
+ *  DECIDED, NOT ALL SENT — the Rust twin's `persona_payload` rule. Hermes' API
+ *  server reads `model`, `messages`, `stream` and `model_options` off a chat
+ *  completions body and nothing else (Hermes v0.22): no per-request
+ *  `temperature`, no `response_format`. Sending them only made a harness's
+ *  declaration look honored, so neither is sent; a JSON request comes back
+ *  `contractDropped` (see `personaTurn`) and the runner leans on the prompt
+ *  anchor every structured request already carries. The effort pick rides in
+ *  `model_options.reasoning_effort`, the one place Hermes reads it. */
 export function personaPayload(req: TransportRequest): PersonaPayload {
   const payload: PersonaPayload = {
     model: req.model,
@@ -302,14 +309,11 @@ export function personaPayload(req: TransportRequest): PersonaPayload {
     payload.tools = []
     payload.tool_choice = 'none'
   }
-  if (req.temperature !== undefined) payload.temperature = req.temperature
-  if (req.jsonMode) payload.response_format = { type: 'json_object' }
-  // The effort pick travels like temperature: one request field, forwarded to
-  // the persona's own gateway, which hands it to the provider it fronts. The
-  // agent container owns the model, so honoring the level is its call — Talaria
-  // already refused it on the way IN (the routes validate against
+  // The effort pick rides in `model_options`, forwarded to the persona's own
+  // gateway, which hands it to the provider it fronts. Talaria already refused
+  // an unvouched level on the way IN (the routes validate against
   // `effortsForModel`), which is the only side of the contract Talaria can see.
-  if (req.effort) payload.reasoning_effort = req.effort
+  if (req.effort) payload.model_options = { reasoning_effort: req.effort }
   return payload
 }
 
@@ -881,7 +885,10 @@ async function personaTurn(req: TransportRequest, emit?: (delta: string) => void
   }
   const turn = await pumpPersonaStream(upstream.body, emit)
   await meterPersonaTurn(req, turn)
-  return { kind: 'fleet', text: turn.text, toolNames: turn.toolNames, usage: turn.usage, contractDropped: false }
+  // `personaPayload` cannot put `response_format` anywhere Hermes reads it, so a
+  // JSON request's protocol constraint never held: say so, the way a gateway
+  // that stripped the parameter does.
+  return { kind: 'fleet', text: turn.text, toolNames: turn.toolNames, usage: turn.usage, contractDropped: req.jsonMode }
 }
 
 export const fleetTransport: Transport = (req) => personaTurn(req)
