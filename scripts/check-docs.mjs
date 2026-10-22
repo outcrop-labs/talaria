@@ -26,6 +26,7 @@
 
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
+import { diffReference, parseReference, sdkExports } from './sdk-reference.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 
@@ -94,41 +95,34 @@ for (const file of files) {
 // docs/sdk/reference.md claims to list EVERY export from both SDK entry points.
 // This doc once listed exports that didn't exist (KeyHint) and missed ones that
 // did (runHarness) for months. So the exports are parsed from the two source
-// files and diffed both directions against the backticked identifiers in the
-// reference — a missing export means "add a row", a documented-but-nonexistent
-// one means "the docs lie".
+// files and diffed both directions against the reference's rows — per entry
+// point and per kind, because a row is a claim about where a symbol is
+// imported from and what it is, not only that the name exists somewhere. The
+// parser and the diff live in sdk-reference.mjs; check-docs.test.mjs pins them.
 
-/** Every name a module exports, from the declaration spellings used in
- *  ui/src/sdk/index.ts and server.ts: `export const/function/interface NAME`,
- *  `export type NAME =`, and `export { … }` clauses (with `as` aliases and
- *  per-item `type` prefixes, default-as-X re-exports). */
-export function sdkExportNames(src) {
-  const names = new Set()
-  const id = '[A-Za-z_$][\\w$]*'
-  for (const m of src.matchAll(new RegExp(`export\\s+(?:async\\s+)?(?:function|const)\\s+(${id})`, 'g'))) names.add(m[1])
-  for (const m of src.matchAll(new RegExp(`export\\s+interface\\s+(${id})`, 'g'))) names.add(m[1])
-  for (const m of src.matchAll(new RegExp(`export\\s+type\\s+(${id})\\s*=`, 'g'))) names.add(m[1])
-  for (const m of src.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
-    for (const piece of m[1].split(',')) {
-      const t = piece.trim().replace(/^type\s+/, '')
-      if (!t) continue
-      const as = new RegExp(`^${id}\\s+as\\s+(${id})$`).exec(t)
-      if (as) names.add(as[1])
-      else if (new RegExp(`^${id}$`).test(t)) names.add(t)
-    }
-  }
-  return names
+const SDK_ENTRIES = {
+  '@talaria/sdk': 'ui/src/sdk/index.ts',
+  '@talaria/sdk/server': 'ui/src/sdk/server.ts',
 }
-
-const SDK_CLIENT = readFileSync(join(ROOT, 'ui/src/sdk/index.ts'), 'utf8')
-const SDK_SERVER = readFileSync(join(ROOT, 'ui/src/sdk/server.ts'), 'utf8')
 const SDK_REFERENCE = join(ROOT, 'docs/sdk/reference.md')
 
-const sdkExports = sdkExportNames(SDK_CLIENT + '\n' + SDK_SERVER)
-const sdkDocNames = existsSync(SDK_REFERENCE) ? new Set([...readFileSync(SDK_REFERENCE, 'utf8').matchAll(/`([A-Za-z_$][\w$]*)`/g)].map((m) => m[1])) : new Set()
+/** Source for an `@/…` specifier the SDK re-exports from, so a re-export's
+ *  kind is the declaration's. Anything else (a package) stays unresolved. */
+function resolveUiModule(spec) {
+  if (!spec.startsWith('@/')) return null
+  const base = join(ROOT, 'ui/src', spec.slice(2))
+  for (const candidate of [`${base}.ts`, `${base}/index.ts`, base]) {
+    if (existsSync(candidate) && statSync(candidate).isFile()) return readFileSync(candidate, 'utf8')
+  }
+  return null
+}
 
-const sdkMissing = [...sdkExports].filter((n) => !sdkDocNames.has(n)).sort()
-const sdkGhosts = [...sdkDocNames].filter((n) => !sdkExports.has(n)).sort()
+const sdkExportsByEntry = new Map(
+  Object.entries(SDK_ENTRIES).map(([entry, file]) => [entry, sdkExports(readFileSync(join(ROOT, file), 'utf8'), resolveUiModule)]),
+)
+const sdkDiff = existsSync(SDK_REFERENCE)
+  ? diffReference(sdkExportsByEntry, parseReference(readFileSync(SDK_REFERENCE, 'utf8')))
+  : { missing: ['docs/sdk/reference.md does not exist'], ghosts: [], kinds: [], dupes: [] }
 
 // ── Report (the check-invariants.mjs shape) ──────────────────────────────────
 
@@ -142,16 +136,24 @@ const report = (id, what, hits, instead) => {
   for (const l of instead) console.error('    ' + l)
 }
 
-if (sdkMissing.length || sdkGhosts.length) {
-  if (sdkMissing.length)
-    report('sdk-export-not-documented', 'exports with no row in docs/sdk/reference.md', sdkMissing, [
-      'Add a row to docs/sdk/reference.md — the file claims completeness.',
+if (sdkDiff.missing.length || sdkDiff.ghosts.length || sdkDiff.kinds.length || sdkDiff.dupes.length) {
+  if (sdkDiff.missing.length)
+    report('sdk-export-not-documented', 'exports with no row under their own entry point in docs/sdk/reference.md', sdkDiff.missing, [
+      'Add a row under the entry point that exports it — the file claims completeness, and an',
+      'app author imports from the entry point whose heading the row sits under.',
     ])
-  if (sdkGhosts.length)
-    report('sdk-doc-not-an-export', 'backticked identifiers in docs/sdk/reference.md that are not exported', sdkGhosts, [
-      'The docs name something neither SDK entry point exports. Fix the row (or the',
-      'docs) — this is how KeyHint survived for months.',
+  if (sdkDiff.ghosts.length)
+    report('sdk-doc-not-an-export', 'symbols docs/sdk/reference.md names that its entry point does not export', sdkDiff.ghosts, [
+      'The docs name something the entry point does not export. Fix the row (or move it under',
+      'the entry point that does export it) — this is how KeyHint survived for months.',
     ])
+  if (sdkDiff.kinds.length)
+    report('sdk-doc-wrong-kind', 'reference rows whose kind is not what the source exports', sdkDiff.kinds, [
+      'Make the kind cell say what the export is: fn, const, class, comp or type. A type an',
+      'author tries to call, or a component they try to call as a function, fails in their build.',
+    ])
+  if (sdkDiff.dupes.length)
+    report('sdk-doc-duplicate-row', 'symbols with two rows under one entry point', sdkDiff.dupes, ['Keep one row.'])
   process.exitCode = 1
 }
 

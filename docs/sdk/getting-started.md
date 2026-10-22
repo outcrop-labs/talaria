@@ -35,8 +35,8 @@ Surfaces are opt-in; ship any combination:
 
 | surface | where it appears | access |
 | :--- | :--- | :--- |
-| `work` | Work section of the nav → `/x/<slug>` | admins; members need an explicit grant |
-| `manage` | Manage section → `/x/<slug>/manage` | admins; members need an explicit grant |
+| `work` | a tile in the top dock's Apps group → `/x/<slug>` | admins; members need an explicit grant |
+| `manage` | the manage area behind the dock's gear: the `/manage` overview and its sidebar → `/x/<slug>/manage` | admins; members need an explicit grant |
 | `settings` | a Settings tab (for people with access) | follows the work-view grant |
 
 Apps are **explicit-grant**: enabling one gives members nothing until an admin adds its views
@@ -59,24 +59,28 @@ export default defineApp({ work: Work, settings: Settings })
 ```svelte
 <!-- apps/<slug>/Work.svelte -->
 <script lang="ts">
-  import { EmptyState, SkeletonRows, useAppQuery } from '@talaria/sdk'
+  import { EmptyState, QueryState, SkeletonRows, useAppQuery } from '@talaria/sdk'
 
-  const things = useAppQuery<{ things: Array<{ id: string; data: { name: string } }> }>(
-    'my-app',
-    'things',
-  )
+  type Thing = { id: string; data: { name: string } }
+
+  // GET /api/apps/<slug>/things — the slug is the surface's own, never spelled here.
+  const things = useAppQuery<{ things: Thing[] }>('things')
 </script>
 
-{#if things.isLoading}
-  <SkeletonRows />
-{:else if !things.data?.things.length}
-  <EmptyState title="No things yet" />
-{:else}
-  {#each things.data.things as t (t.id)}
-    <div>{t.data.name}</div>
-  {/each}
-{/if}
+<QueryState query={things} isEmpty={(d) => d.things.length === 0} errorTitle="Could not load the things">
+  {#snippet skeleton()}<SkeletonRows />{/snippet}
+  {#snippet empty()}<EmptyState title="No things yet" />{/snippet}
+  {#snippet children(data)}
+    {#each data.things as t (t.id)}
+      <div>{t.data.name}</div>
+    {/each}
+  {/snippet}
+</QueryState>
 ```
+
+`QueryState` gives the read its three honest answers: your skeleton while it loads, the
+failure (with a Retry) when the server could not answer, and the data — or your empty state
+only when the server really answered with nothing. A 500 never reads as "No things yet".
 
 That already reads like the platform because it is the platform: the kit, the query, the
 session, the theme.

@@ -12,16 +12,20 @@
 // every platform permission and ACL applies unchanged — an app can never do
 // more than the person using it. App authors never write Rust.
 
-import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+import { createQuery, useQueryClient, type CreateQueryOptions, type CreateQueryResult } from '@tanstack/svelte-query'
 import type { Component, ComponentProps } from 'svelte'
+import { getJson } from '@/lib/fetch-json'
+import { getAppContext, type AppContext } from '@/lib/app-context'
+import { appApiFor, appQueryKey, appRouteUrl, type AppApi } from '@/lib/app-client'
 
 // ── App definition ─────────────────────────────────────────────────────────
 export interface AppSurfaces {
-  /** The app's main view, shown in the Work section of the nav. */
+  /** The app's main view at /x/<slug>: a tile in the top dock's Apps group. */
   work?: Component
-  /** Admin-ish controls, shown in the Manage section (default-denied for members, grantable). */
+  /** Admin-ish controls at /x/<slug>/manage, listed in the manage area behind
+   *  the dock's gear (default-denied for members, grantable). */
   manage?: Component
-  /** A panel added to each user's Settings page. */
+  /** A tab added to the Settings page of people who have access. */
   settings?: Component
 }
 
@@ -103,59 +107,123 @@ export { type RichEditorHandle } from '@/components/ui/rich-editor'
 export { controlSizes, submitOnEnter, inlineEditKeys, type ControlSize } from '@/components/ui/control'
 export { cn } from '@/lib/cn'
 
+// ── Query state: loading, broken, or resolved ─────────────────────────────
+// The host rule, handed to apps: a failed read renders as a failure, never as
+// "there are none of these". `QueryState` takes the whole query and your own
+// skeleton and gives you the error branch for free; `listQuery` does the same
+// for a list you lay out yourself. See docs/sdk/client.md.
+export { default as QueryState } from '@/components/ui/QueryState.svelte'
+export { default as QueryError } from '@/components/ui/QueryError.svelte'
+export { listQuery, type ListQuery, type QueryLike, type QueryErrorProps } from '@/components/ui/query-state'
+
+// Host primitives an app's records and registries are built from — the same
+// components the core surfaces use, so an app's list reads like the host's.
+export { default as SortHeader } from '@/components/ui/SortHeader.svelte'
+export { default as AddRow } from '@/components/ui/AddRow.svelte'
+export { default as RenameField } from '@/components/ui/RenameField.svelte'
+export { default as RecordTitle } from '@/components/ui/RecordTitle.svelte'
+export { default as LibraryPane, type LibraryGroup } from '@/components/ui/LibraryPane.svelte'
+
 // ── Session + data hooks ───────────────────────────────────────────────────
 export { useSession as useMe, useHasPerm, useIsAdmin, type SessionUser } from '@/lib/session'
 export { createQuery, createMutation, useQueryClient, keepPreviousData } from '@tanstack/svelte-query'
+// The live firehose: run, notification, brief and message transitions, ids
+// only. One shared connection per tab — subscribe through this, never a second
+// EventSource of your own.
+export { useUserEvents, type UserEvent } from '@/lib/user-events.svelte'
 
-/** JSON fetch against any platform API (runs as the signed-in user). */
-export async function api<T = unknown>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
-  const { json: body, ...rest } = init ?? {}
-  const res = await fetch(path, {
-    credentials: 'same-origin',
-    ...rest,
-    ...(body !== undefined
-      ? { headers: { 'content-type': 'application/json', ...(rest.headers ?? {}) }, body: JSON.stringify(body) }
-      : {}),
-  })
-  if (!res.ok) {
-    const j = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new Error(j.error ?? `${res.status}`)
-  }
-  return res.json() as Promise<T>
+// ── HTTP: the host's own door ──────────────────────────────────────────────
+// `api()` and `appApi()` go through the same verbs the host's surfaces use
+// (ui/src/lib/fetch-json.ts): a non-2xx rejects with an `HttpError` carrying
+// the status and the server's own sentence, a 2xx that isn't JSON rejects
+// with a sentence that says so, and every read carries a deadline.
+export { HttpError, errorMessage, getStream, postStream } from '@/lib/fetch-json'
+export { openStream } from '@/lib/sse'
+export { api, appApi, appQueryKey, type ApiInit, type AppApi } from '@/lib/app-client'
+
+// ── The app this surface belongs to ────────────────────────────────────────
+export type { AppContext, AppSurfaceName } from '@/lib/app-context'
+export type { AppManifest } from '@/lib/apps'
+
+/** The app a surface belongs to: `{ slug, surface, manifest }`, as THIS
+ *  instance installed it. Call during component init, inside a surface.
+ *  The slug is the installed one, which need not be the name the app was
+ *  scaffolded with — never hard-code it. */
+export function useApp(): AppContext {
+  const app = getAppContext()
+  if (!app) throw new Error('useApp() must run during the init of a component inside an app surface')
+  return app
 }
 
-/** Fetch helpers bound to THIS app's server routes (/api/apps/<slug>/…). */
-export function appApi(slug: string) {
-  const base = `/api/apps/${slug}`
-  return {
-    get: <T = unknown>(path: string) => api<T>(`${base}/${path}`),
-    post: <T = unknown>(path: string, body?: unknown) => api<T>(`${base}/${path}`, { method: 'POST', json: body ?? {} }),
-    put: <T = unknown>(path: string, body?: unknown) => api<T>(`${base}/${path}`, { method: 'PUT', json: body ?? {} }),
-    patch: <T = unknown>(path: string, body?: unknown) => api<T>(`${base}/${path}`, { method: 'PATCH', json: body ?? {} }),
-    del: <T = unknown>(path: string, body?: unknown) =>
-      api<T>(`${base}/${path}`, { method: 'DELETE', ...(body !== undefined ? { json: body } : {}) }),
-  }
+/** The slug for a hook: the explicit one, or the surrounding surface's
+ *  (read live, so it follows the surface). Resolved at init, where context
+ *  is readable. */
+function slugSource(slug: string | undefined, hook: string): () => string {
+  if (slug) return () => slug
+  const app = getAppContext()
+  if (!app) throw new Error(`${hook}() outside an app surface needs the app's slug as its first argument`)
+  return () => app.slug
 }
 
-/** Svelte-query wrapper over an app server GET — the common read path.
- *  `path` may be a getter (`() => string`) so a path built from reactive
- *  state re-keys the query as that state changes (options are a function,
- *  re-run on rune changes). Call during component init. */
-export function useAppQuery<T = unknown>(slug: string, path: string | (() => string)) {
-  return createQuery(() => {
-    const p = typeof path === 'function' ? path() : path
+/** `appApi` for the surface this component is in — no slug to spell. Call
+ *  during component init; the verbs it returns are safe anywhere. */
+export function useAppApi(slug?: string): AppApi {
+  return appApiFor(slugSource(slug, 'useAppApi'))
+}
+
+/** What `useAppQuery` passes through to svelte-query: `enabled` (false holds
+ *  the read), `select` (derive what the component reads), `staleTime`,
+ *  `gcTime`, `refetchInterval`, `refetchOnWindowFocus`, `placeholderData`
+ *  (`keepPreviousData` for a page flip) and `retry`. */
+export type AppQueryOptions<T, TData = T> = Pick<
+  CreateQueryOptions<T, Error, TData>,
+  'enabled' | 'select' | 'staleTime' | 'gcTime' | 'refetchInterval' | 'refetchOnWindowFocus' | 'placeholderData' | 'retry'
+>
+
+type PathArg = string | (() => string)
+type OptionsArg<T, TData> = AppQueryOptions<T, TData> | (() => AppQueryOptions<T, TData>)
+
+/** Svelte-query read of an app-server GET — the common read path.
+ *
+ *  `useAppQuery(path, options?)` inside a surface; `useAppQuery(slug, path,
+ *  options?)` anywhere else. `path` may be a getter (`() => string`) so a
+ *  path built from reactive state re-keys the query as that state changes;
+ *  `options` may be a getter too, for a reactive `enabled`. A getter that
+ *  returns a string is a path. Call during component init. */
+export function useAppQuery<T = unknown, TData = T>(
+  ...args:
+    | [path: PathArg, options?: OptionsArg<T, TData>]
+    | [slug: string, path: PathArg, options?: OptionsArg<T, TData>]
+): CreateQueryResult<TData, Error> {
+  const [a, b, c] = args as [PathArg, (PathArg | OptionsArg<T, TData>)?, OptionsArg<T, TData>?]
+  // Context is readable only now, at init; the slug itself is read live.
+  const context = getAppContext()
+  return createQuery<T, Error, TData>(() => {
+    // (slug, path[, options]) when the second argument is a path — a string,
+    // or a getter returning one. Otherwise (path[, options]) in a surface.
+    const second = typeof b === 'function' ? (b as () => unknown)() : b
+    const slugFirst = c !== undefined || typeof second === 'string'
+    const slug = slugFirst ? (a as string) : context?.slug
+    if (!slug) throw new Error('useAppQuery(path) outside an app surface needs the slug first: useAppQuery(slug, path)')
+    const path = slugFirst ? (second as string) : typeof a === 'function' ? a() : a
+    const optionsArg = slugFirst ? c : (second as AppQueryOptions<T, TData> | undefined)
+    const options = typeof optionsArg === 'function' ? optionsArg() : optionsArg
+    const url = appRouteUrl(slug, path)
     return {
-      queryKey: ['app', slug, p],
-      queryFn: () => appApi(slug).get<T>(p),
+      ...options,
+      queryKey: appQueryKey(slug, path),
+      queryFn: ({ signal }) => getJson<T>(url, { signal }),
     }
   })
 }
 
-/** Invalidate this app's queries after a write. Call during component init
+/** Invalidate an app's queries after a write: `invalidate()` for all of
+ *  them, `invalidate('things')` for every read under `things` — its search
+ *  variants and the records below it included. Call during component init
  *  (it grabs the query client from context); the returned function is safe
- *  anywhere. */
-export function useAppInvalidate(slug: string) {
+ *  anywhere. The slug is optional inside a surface. */
+export function useAppInvalidate(slug?: string): (path?: string) => Promise<void> {
   const qc = useQueryClient()
-  return (path?: string) =>
-    qc.invalidateQueries({ queryKey: path ? ['app', slug, path] : ['app', slug] })
+  const current = slugSource(slug, 'useAppInvalidate')
+  return (path?: string) => qc.invalidateQueries({ queryKey: path ? appQueryKey(current(), path) : ['app', current()] })
 }

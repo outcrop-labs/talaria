@@ -2,8 +2,11 @@
 
 Every export from both entry points, one row each. **This file is enforced**:
 `bun run check` parses the exports out of `ui/src/sdk/index.ts` and
-`ui/src/sdk/server.ts` and fails if a symbol here doesn't exist, or an export
-is missing from here. Guides live beside this file; the row is the claim.
+`ui/src/sdk/server.ts`, entry point by entry point, and fails if a row names a
+symbol its entry point doesn't export, if an export has no row under its own
+entry point's headings, or if a row's kind (fn, const, class, comp, type) is
+not what the source declares. Guides live beside this file; the row is the
+claim.
 
 Import them as:
 
@@ -18,6 +21,10 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | :--- | :--- | :--- |
 | `defineApp` | fn | Declare the app's surfaces; default-export from app.ts |
 | `AppSurfaces` | type | The surfaces map (work / manage / settings), all optional |
+| `useApp` | fn | The app a surface belongs to: `{ slug, surface, manifest }`, as installed |
+| `AppContext` | type | What `useApp` returns |
+| `AppSurfaceName` | type | Which surface is rendering: work, manage or settings |
+| `AppManifest` | type | The manifest as the host serves it: slug, name, icon, version, surfaces |
 
 ## `@talaria/sdk` — UI kit: actions
 
@@ -45,8 +52,10 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | `Radio` | comp | Radio button |
 | `Toggle` | comp | On/off switch |
 | `InlineCreate` | comp | Click-to-add row (the + Add thing pattern) |
-| `submitOnEnter` | fn | Enter submits, Escape blurs — the inline-edit contract |
-| `inlineEditKeys` | fn | Key handler for inline edit fields |
+| `submitOnEnter` | fn | Key handler for a field with a button: Enter presses it (Enter only) |
+| `inlineEditKeys` | fn | Key handler for inline edit: Enter commits via blur, Escape reverts in place |
+| `AddRow` | comp | The always-open "type a name, press Add" row under a registry |
+| `RenameField` | comp | A name edited in place; commits on Enter or blur, only when changed |
 | `controlSizes` / `ControlSize` | const / type | The size scale shared by controls |
 | `RichEditor` / `RichEditorHandle` | comp / type | WYSIWYG editor (markdown under the hood) |
 
@@ -63,6 +72,9 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | `Disclosure` | comp | Expandable section |
 | `StatCard` | comp | Metric tile; may wrap a link |
 | `Steps` | comp | Numbered step indicator |
+| `LibraryPane` / `LibraryGroup` | comp / type | A library picker on the left, the selected record on the right |
+| `RecordTitle` | comp | A record's emoji + title heading, read or editable |
+| `SortHeader` | comp | A sortable column head; the sort cycle stays the caller's |
 
 ## `@talaria/sdk` — UI kit: display
 
@@ -88,6 +100,10 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | `InlineWaitingSite` | type | Declare an app's own waiting site inline |
 | `WaitingRole` / `WaitingSlot` | type | Waiting vocabulary for those sites |
 | `confirm` / `alert` / `prompt` | fn | The platform's dialogs |
+| `QueryState` | comp | A query's three answers — your skeleton, its error with Retry, or the data |
+| `QueryError` | comp | The error branch on its own; spread `listQuery(...).notice` into it |
+| `listQuery` | fn | A list read with its failure attached: rows, notice, failed, stale, pending |
+| `ListQuery` / `QueryLike` / `QueryErrorProps` | types | What `listQuery` returns, the query slice it reads, `QueryError`'s props |
 
 ## `@talaria/sdk` — UI kit: menus
 
@@ -116,10 +132,17 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | `createQuery` / `createMutation` | fn | svelte-query primitives (options are functions in v6) |
 | `useQueryClient` | fn | The query client from context |
 | `keepPreviousData` | fn | Page-flip placeholder |
-| `api` | fn | JSON fetch against any platform API; throws the server's error |
-| `appApi` | fn | get/post/put/patch/del bound to this app's routes |
-| `useAppQuery` | fn | svelte-query read of an app-server GET; path may be a getter |
-| `useAppInvalidate` | fn | Invalidate this app's queries after a write |
+| `useUserEvents` / `UserEvent` | fn / type | Subscribe to the shared live stream (ids only) for the component's lifetime |
+| `api` / `ApiInit` | fn / type | JSON fetch against any platform API; rejects with an `HttpError` |
+| `HttpError` | class | A non-2xx: its status, with the server's sentence as the message |
+| `errorMessage` | fn | One human line for any thrown value |
+| `getStream` / `postStream` | fn | A streamed reply's open Response, same error contract as `api` |
+| `openStream` | fn | Subscribe to a server-sent-events route; returns the unsubscribe |
+| `appApi` / `AppApi` | fn / type | get/post/put/patch/del/url bound to an app's routes, for code outside a component |
+| `useAppApi` | fn | `appApi` for the surrounding surface — no slug |
+| `useAppQuery` / `AppQueryOptions` | fn / type | svelte-query read of an app-server GET; path and options may be getters |
+| `appQueryKey` | fn | The key an app-server path reads under: app, segments, then search params |
+| `useAppInvalidate` | fn | Invalidate an app's reads after a write: all of them, or every read under a path |
 
 ## `@talaria/sdk/server` — app server
 
