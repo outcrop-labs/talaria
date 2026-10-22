@@ -48,8 +48,9 @@ use talaria_realtime::RealtimeDeps;
 use talaria_runs_define::run_definition;
 use talaria_secretbox::SecretBox;
 use talaria_tasks::{
-    AgentIntent, AgentWriteTarget, ResolvedTaskId, TaskActor, TaskDeps, TaskPatch, add_comment,
-    agent_ticket_refusal, get_task, log_activity, resolve_task_id, update_task,
+    AgentIntent, AgentWriteTarget, ResolvedTaskId, TaskActor, TaskDeps, TaskPatch, WORKCHAIN_WAIT,
+    add_comment, agent_ticket_refusal, agent_work_refusal, get_task, log_activity, resolve_task_id,
+    update_task,
 };
 pub mod devenv;
 pub mod teardown;
@@ -258,7 +259,7 @@ pub fn workbench_tools() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "taskId": { "type": "string", "description": "The ticket this job implements — id or ref (PLAT-118), from list_tickets or the assignment title. A bare number is not an id. ALWAYS pass it when the work came from a ticket; it links the branch, audit trail, plan gate, and PR to the ticket. Refused if that ticket is one you may not work: a board you are not allowed on, a closed ticket (done / failed / cancelled), an archived ticket, or a ticket on an archived board. Ask for it to be reopened, or work the follow-up ticket." },
+                    "taskId": { "type": "string", "description": "The ticket this job implements — id or ref (PLAT-118), from list_tickets or the assignment title. A bare number is not an id. ALWAYS pass it when the work came from a ticket; it links the branch, audit trail, plan gate, and PR to the ticket. Refused if that ticket is one you may not work: a board you are not allowed on, a closed ticket (done / failed / cancelled), an archived ticket, or a ticket on an archived board (ask for it to be reopened, or work the follow-up ticket); or a workchain step whose earlier step is still open (it starts once that step is signed off)." },
                     "repo": { "type": "string", "description": "owner/name — must be one of your granted repos" },
                     "effort": { "type": "string", "enum": ["light", "standard", "heavy"], "description": "How hard this work is. Omitted means standard. standard and heavy require `plan` and are refused without it; light does not. heavy then waits for human approval before a clone URL exists." },
                     "plan": { "type": "string", "description": "Required unless effort is light. Approach, files touched, test strategy. Omitting effort counts as standard, so a call with no plan is refused." },
@@ -281,7 +282,7 @@ pub fn workbench_tools() -> Vec<Value> {
                     "name": { "type": "string", "description": "Repo name (lowercase, dashes)" },
                     "description": { "type": "string", "description": "One-line repo description" },
                     "why": { "type": "string", "description": "Why this work needs a new repo" },
-                    "taskId": { "type": "string", "description": "The ticket that motivated it — same rule as start_job: a ticket you may not work (board not yours, closed, archived, archived board) is refused, so omit it rather than guessing." },
+                    "taskId": { "type": "string", "description": "The ticket that motivated it — same rule as start_job: a ticket you may not work (board not yours, closed, archived, archived board, a workchain step still waiting its turn) is refused, so omit it rather than guessing." },
                 },
                 "required": ["org", "name", "why"],
             },
@@ -395,7 +396,9 @@ pub async fn log_ticket(
     let Some(task_id) = task_id else { return false };
     let subject = agent_behind(pg, by).await;
     if let Some(subject) = &subject
-        && authorize_ticket(pg, task_id, subject).await.is_err()
+        && authorize_ticket(pg, task_id, subject, TicketUse::Audit)
+            .await
+            .is_err()
     {
         return false;
     }
@@ -408,10 +411,21 @@ pub async fn log_ticket(
         .is_ok()
 }
 
+/// What the agent is doing with the ticket it names. Binding a job or a repo
+/// request to it is WORK, which a workchain step behind a live predecessor
+/// cannot take yet (`agent_work_refusal`); an audit line on a job already
+/// bound is a write like any other (`agent_ticket_refusal`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TicketUse {
+    Work,
+    Audit,
+}
+
 async fn authorize_ticket(
     pg: &PgPool,
     task_id: &str,
     subject: &AgentSubject,
+    using: TicketUse,
 ) -> Result<(), String> {
     let deny = || {
         format!(
@@ -429,14 +443,24 @@ async fn authorize_ticket(
         return Err(deny());
     }
     let target = AgentWriteTarget::from(&task);
-    if let Ok(Some(shut)) = agent_ticket_refusal(pg, &target, subject, AgentIntent::Write).await {
-        return Err(format!(
-            "{shut}. Ticket {} is \"{}\". Ask for it to be reopened, or work the follow-up ticket.",
-            task.ticket_ref.as_deref().unwrap_or(task_id),
+    let refusal = match using {
+        TicketUse::Work => agent_work_refusal(pg, task_id, &target, subject).await,
+        TicketUse::Audit => agent_ticket_refusal(pg, &target, subject, AgentIntent::Write).await,
+    };
+    let ticket = task.ticket_ref.as_deref().unwrap_or(task_id);
+    match refusal {
+        // The chain's own sentence: the ticket is open, so "ask for it to be
+        // reopened" would send the agent after the wrong person.
+        Ok(Some(shut)) if shut == WORKCHAIN_WAIT => Err(format!(
+            "{shut}. Ticket {ticket} starts once the step before it is signed off — until then, \
+             omit taskId."
+        )),
+        Ok(Some(shut)) => Err(format!(
+            "{shut}. Ticket {ticket} is \"{}\". Ask for it to be reopened, or work the follow-up ticket.",
             task.status
-        ));
+        )),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 async fn ticket_arg(
@@ -465,7 +489,7 @@ async fn ticket_arg(
         }
         Err(e) => return Err(format!("ticket lookup failed: {e}")),
     };
-    authorize_ticket(pg, &task_id, subject).await?;
+    authorize_ticket(pg, &task_id, subject, TicketUse::Work).await?;
     Ok(Some(task_id))
 }
 
@@ -680,12 +704,13 @@ async fn call_tool(
                 );
             }
             // BEFORE anything reads the ticket: the caller supplied this id,
-            // so board policy and the closed-ticket rule decide whether it
-            // may be touched at all. Everything below (ref + title in the
-            // branch name, the plan comment and artifact chip on the ticket,
-            // the audit line, and finish_job's public PR title) depends on
-            // this having passed — which is why the id arrives ALREADY gated
-            // rather than gated on the next line.
+            // so board policy, the closed-ticket rule and the workchain
+            // order decide whether it may be touched at all. Everything
+            // below (ref + title in the branch name, the plan comment and
+            // artifact chip on the ticket, the audit line, and finish_job's
+            // public PR title) depends on this having passed — which is why
+            // the id arrives ALREADY gated rather than gated on the next
+            // line.
             let task_id = match ticket_arg(pg, subject, args).await {
                 Ok(id) => id,
                 Err(error) => return CallOutcome::Fail(error),

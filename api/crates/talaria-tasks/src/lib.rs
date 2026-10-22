@@ -715,11 +715,13 @@ pub async fn agent_ticket_refusal(
 // whatever its own column says: the agent assigned to step B must not start B
 // while A is in flight. That is the chain's whole contract, and it is asked
 // HERE, by everything that starts or drives work — `maybe_dispatch_ticket`
-// (task writes and the sixty-second sweep both arrive there) and the
-// work-session loop on every turn — from `talaria_workchains::chain_readiness`,
-// the same derive the board's chain view reads. It is not a WRITE clause:
-// agents still triage, comment on and report against a step that is waiting
-// its turn, exactly as before. Only starting the work waits.
+// (task writes and the sixty-second sweep both arrive there), the
+// work-session loop on every turn, and the workbench binding a job to a
+// ticket — from `talaria_workchains::chain_readiness`, the same derive the
+// board's chain view reads. `agent_safe_patch` asks it for the one write that
+// IS work: an agent's status move into a working column or review. It is not
+// a general WRITE clause: agents still triage, comment on and report against
+// a step that is waiting its turn, exactly as before. Only the work waits.
 
 /// The refusal for a workchain step whose turn has not come. One sentence,
 /// so the dispatch log, the session's stop line and any future caller say
@@ -746,9 +748,10 @@ pub async fn workchain_blocked(
 
 /// Why an agent may not START or keep DRIVING work on this ticket, or None
 /// when it may: `agent_ticket_refusal`'s Write question, plus the workchain
-/// order. The dispatch gate and the work-session loop ask this; writes that
-/// are not work (fields, comments, problem and gap reports, dependency edges)
-/// keep asking `agent_ticket_refusal` alone.
+/// order. The dispatch gate, the work-session loop and the workbench's
+/// `taskId` binding ask this; writes that are not work (fields, comments,
+/// problem and gap reports, dependency edges) keep asking
+/// `agent_ticket_refusal` alone.
 pub async fn agent_work_refusal(
     pg: &PgPool,
     task_id: &str,
@@ -920,6 +923,28 @@ async fn agent_safe_patch(
             "\"{}\" is no longer a column on this board — a person has to place this ticket",
             cur.status
         )));
+    }
+    // A workchain step behind a live predecessor is not the agent's work yet
+    // (`agent_work_refusal`'s clause), so the agent may not move it to where
+    // work happens or is delivered: a working column, review, or a terminal
+    // move that the coercion below would land in review. Triage stays open —
+    // an open column, or raising Blocked for a person. Asked only for those
+    // moves, so a field edit or a comment pays no chain read.
+    if let Some(dest) = patch
+        .status
+        .as_ref()
+        .filter(|_| status_present_and_moving(&patch))
+        && (meta.working_keys.contains(dest)
+            || meta.review_keys.contains(dest)
+            || meta.terminal(dest))
+    {
+        let metas = HashMap::from([(cur.board_id.clone(), meta.clone())]);
+        if workchain_blocked(pg, &metas, std::slice::from_ref(&cur.id))
+            .await?
+            .contains(&cur.id)
+        {
+            return Err(TaskError::ApprovalRequired(WORKCHAIN_WAIT.into()));
+        }
     }
     // Assignment stays human; so do the planning fields (estimate, sub-task
     // structure) and archival, which hides work from the people watching it.

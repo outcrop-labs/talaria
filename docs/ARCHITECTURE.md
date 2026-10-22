@@ -216,7 +216,9 @@ Work delivery is **push-side**: the app dispatches durable work sessions to agen
 agent-start column, or gains an agent assignee), on a workchain hand-off, and from a sixty-second
 sweep that re-offers anything a push missed. A workchain step whose predecessor is still open is
 not dispatched — the gate asks `talaria_tasks::workchain_blocked` before any session starts, and
-the session asks it again on every turn. Agents do not poll for work.
+the session asks it again on every turn. The agent cannot start it by hand either: moving it into a
+working column or review, or binding a workbench job to it, is refused the same way. Agents do not
+poll for work.
 
 ## The MCP gateway
 

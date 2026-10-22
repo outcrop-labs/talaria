@@ -1,5 +1,5 @@
-// Auth for every agent-authenticated API — the fleet-facing "brain" endpoints
-// (register / heartbeat / report) and the whole toolkit surface behind them.
+// Auth for every agent-authenticated API — the whole toolkit surface an agent
+// calls with its own key.
 //
 // An agent presents ITS OWN credential: a `tak_` secret minted per agent_defs
 // row, sealed in the DB, and stamped into that agent's container as

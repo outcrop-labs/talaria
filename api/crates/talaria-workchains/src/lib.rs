@@ -546,8 +546,18 @@ pub async fn advance_workchains(
                 return Ok(ready_ids);
             };
             for (succ_id, _, _) in ready {
-                let Some(t) = f(pg.clone(), succ_id.clone()).await? else {
-                    continue;
+                // A failed read costs that one notification, never the list:
+                // `ready_ids` is the dispatch hand-off, and a notification
+                // problem must not stop an agent step from starting.
+                let t = match f(pg.clone(), succ_id.clone()).await {
+                    Ok(Some(t)) => t,
+                    Ok(None) => continue,
+                    Err(e) => {
+                        tracing::error!(
+                            "[workchains] turn notification read for {succ_id} failed: {e}"
+                        );
+                        continue;
+                    }
                 };
                 let humans = talaria_tasks_types::human_assignee_ids(&t.assignees);
                 if humans.is_empty() {

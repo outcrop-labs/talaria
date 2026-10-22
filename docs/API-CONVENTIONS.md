@@ -100,13 +100,16 @@ because archival withdraws the work rather than closing it, and a channel nobody
 channel. Reads are not this question: an agent that passes `board_allows_agent` may read the ticket,
 because reading changes nothing.
 
-The same predicate answers the *push* side too. `agent_work_refusal` is the work-starting verb:
-the `Write` question plus the one clause only starting work adds — a workchain step whose
-predecessor is still open waits its turn (`workchain_blocked`, over the same derive the board's
-chain view reads). The work-session loop asks it on every turn; work dispatch asks the same two
-halves, the chain order once per ticket before any per-agent side effect. So the dispatcher and the
-write routes agree by construction rather than by two people remembering. It is not a write
-clause: agents still triage, comment on and report against a step that is waiting.
+The same predicate answers the *push* side too. `agent_work_refusal` is the work verb: the `Write`
+question plus the one clause only work adds — a workchain step whose predecessor is still open
+waits its turn (`workchain_blocked`, over the same derive the board's chain view reads). Every door
+that starts or drives work asks it: the work-session loop on every turn, the workbench when a job
+or repo request binds a `taskId`, and work dispatch (the same two halves, the chain order once per
+ticket before any per-agent side effect). The ticket patch asks the chain clause for the one write
+that *is* work — an agent's status move into a working column or review, terminal moves included,
+since those land in review. So the dispatcher and the write routes agree on authority by
+construction, and on the chain order wherever the write starts or delivers the work. The rest stays
+open: agents still triage, comment on, edit fields of and report against a step that is waiting.
 
 > **Do not copy it into your route.** Four TS routes once hand-rolled their own copies, because
 > parallel work split file ownership and nothing exported one. All four checked only the

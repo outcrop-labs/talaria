@@ -832,6 +832,66 @@ async fn work_refusal(pg: &PgPool, id: &str, model: &str) -> Option<String> {
     .unwrap()
 }
 
+/// The agent's own status move through the one write path (the ticket patch
+/// every agent door reaches). Answers the refusal sentence, or None when the
+/// write landed.
+async fn agent_moves(pg: &PgPool, id: &str, model: &str, status: &str) -> Option<String> {
+    let deps = talaria_tasks::TaskDeps::from_route(pg.clone(), None);
+    let patch = talaria_tasks::TaskPatch {
+        status: Some(status.to_string()),
+        ..Default::default()
+    };
+    match talaria_tasks::update_task(&deps, id, patch, &talaria_tasks::TaskActor::agent(model))
+        .await
+    {
+        Ok(_) => None,
+        Err(e) => Some(e.message()),
+    }
+}
+
+/// A workbench `start_job` naming `task_id`, as the MCP gateway hands it
+/// over — the agent is made a Developer Agent with one granted repo, so the
+/// call reaches the ticket gate. Answers the whole JSON-RPC reply as text.
+async fn workbench_start_job(pg: &PgPool, model: &str, task_id: &str) -> String {
+    let (agent_id,): (String,) = sqlx::query_as(
+        "update agent_defs set developer = true where model = $1 returning id::text",
+    )
+    .bind(model)
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into workbench_repos (agent_id, repo) values ($1::uuid, 'workchains-live/repo') \
+         on conflict do nothing",
+    )
+    .bind(&agent_id)
+    .execute(pg)
+    .await
+    .unwrap();
+    let deps = talaria_workbench_mcp::WorkbenchDeps {
+        pg: pg.clone(),
+        sb: talaria_api::secretbox::SecretBox::default(),
+        redis: None,
+    };
+    let rpc = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "start_job",
+            "arguments": { "repo": "workchains-live/repo", "effort": "light", "taskId": task_id },
+        },
+    });
+    let (_, out) = talaria_workbench_mcp::dispatch_workbench_mcp(
+        &deps,
+        &rpc,
+        &talaria_agent_auth::AgentSubject::Model(model.to_string()),
+        None,
+    )
+    .await;
+    out.map(|v| v.to_string()).unwrap_or_default()
+}
+
 #[tokio::test]
 #[ignore = "needs a live dev database and redis (source ui/.env)"]
 async fn done_hands_off_to_a_human_head_with_a_notification() {
@@ -986,6 +1046,40 @@ async fn dispatch_holds_a_blocked_step_until_its_turn_comes() {
         None,
         "writes on a waiting step stay open to the agent"
     );
+    // ...and a field edit lands through the real patch.
+    let deps_tasks = talaria_tasks::TaskDeps::from_route(pg.clone(), None);
+    talaria_tasks::update_task(
+        &deps_tasks,
+        &b,
+        talaria_tasks::TaskPatch {
+            tags: Some(vec!["triaged".into()]),
+            ..Default::default()
+        },
+        &talaria_tasks::TaskActor::agent(model.clone()),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("an agent field edit on a waiting step: {}", e.message()));
+    // But the writes that ARE work wait like dispatch does: moving the step
+    // to a working column, delivering it (a terminal move lands in review),
+    // or binding a workbench job to it.
+    for dest in ["in_progress", "quality_review", "done"] {
+        assert_eq!(
+            agent_moves(pg, &b, &model, dest).await.as_deref(),
+            Some(talaria_tasks::WORKCHAIN_WAIT),
+            "an agent move of a waiting step to {dest}"
+        );
+    }
+    let job = workbench_start_job(pg, &model, &b).await;
+    assert!(
+        job.contains(talaria_tasks::WORKCHAIN_WAIT),
+        "a workbench job cannot bind a waiting step: {job}"
+    );
+    let still: String = sqlx::query_scalar("select status from tasks where id = $1::uuid")
+        .bind(&b)
+        .fetch_one(pg)
+        .await
+        .unwrap();
+    assert_eq!(still, "assigned", "the refused moves left B where it was");
 
     // A person signs A off; B's turn has come and the same offer starts it.
     let (status, body) = call(
@@ -998,6 +1092,16 @@ async fn dispatch_holds_a_blocked_step_until_its_turn_comes() {
     .await;
     assert_eq!(status, 200, "done write failed: {body}");
     assert_eq!(work_refusal(pg, &b, &model).await, None, "B is ready now");
+    // The engine hands B back to the write that fired it — update_task offers
+    // each one to dispatch straight away instead of waiting for the sweep.
+    let notify = talaria_notify::NotifyDeps::publishing(pg.clone(), None);
+    assert_eq!(
+        talaria_workchains::advance_workchains(pg, &notify, &f.board_id, &a, "done")
+            .await
+            .unwrap(),
+        vec![b.clone()],
+        "the sign-off names B for dispatch"
+    );
     assert_eq!(
         offer_and_count(&state, &deps, &b).await,
         1,
