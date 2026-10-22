@@ -301,10 +301,10 @@ export function personaPayload(req: TransportRequest): PersonaPayload {
     model: req.model,
     messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
   }
-  // Suppressing the tools WE offer cannot reach the persona's own internal loop
-  // — which is exactly why the guard pass still runs `zero_tool_claim` over the
-  // tool names the stream reported — but it is real, and it belongs here rather
-  // than in one caller.
+  // `tools: []` / `tool_choice: 'none'` do NOT reach the persona: Hermes' API
+  // server reads neither off the body, and its own loop keeps its own tools.
+  // The real enforcement is the guard pass, which runs `zero_tool_claim` over
+  // the tool names the stream reported. Removing these two fields is a follow-up.
   if (toolPolicyOf(req) === 'none') {
     payload.tools = []
     payload.tool_choice = 'none'
@@ -888,7 +888,13 @@ async function personaTurn(req: TransportRequest, emit?: (delta: string) => void
   // `personaPayload` cannot put `response_format` anywhere Hermes reads it, so a
   // JSON request's protocol constraint never held: say so, the way a gateway
   // that stripped the parameter does.
-  return { kind: 'fleet', text: turn.text, toolNames: turn.toolNames, usage: turn.usage, contractDropped: req.jsonMode }
+  return {
+    kind: 'fleet',
+    text: turn.text,
+    toolNames: turn.toolNames,
+    usage: turn.usage,
+    contractDropped: req.jsonMode || req.jsonSchema !== undefined,
+  }
 }
 
 export const fleetTransport: Transport = (req) => personaTurn(req)

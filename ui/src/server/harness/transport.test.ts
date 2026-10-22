@@ -419,6 +419,15 @@ describe('the reasoning-effort pick', () => {
     const sent = proxyChat.mock.calls.at(-1)![0] as Record<string, unknown>
     expect('response_format' in sent).toBe(false)
     expect(reply.contractDropped).toBe(true)
+    // A schema alone is a JSON contract too — the Rust twin's rule.
+    const schemaOnly = await fleetTransport({
+      model: 'engineer-engineering',
+      messages: [],
+      jsonMode: false,
+      jsonSchema: { name: 'x', schema: { type: 'object' }, strict: false },
+      caller: 't',
+    })
+    expect(schemaOnly.contractDropped).toBe(true)
   })
 
   it('rides a streamed gateway turn', async () => {
