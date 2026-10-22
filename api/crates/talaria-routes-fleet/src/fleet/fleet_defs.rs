@@ -215,7 +215,21 @@ mod tests {
         // A fresh install's floor: the pair, and no org part.
         let wire = wire(&["todo", "clarify"]);
         let governed = names(&wire["toolsets"]["governed"]);
-        assert_eq!(governed.len(), 28, "28 governed toolsets, got {governed:?}");
+        assert_eq!(governed.len(), 22, "22 governed toolsets, got {governed:?}");
+        // Hermes' own switches only: no composite, posture or GUI surface.
+        for retired in [
+            "safe",
+            "debugging",
+            "search",
+            "coding",
+            "project",
+            "desktop_ui",
+        ] {
+            assert!(
+                !governed.iter().any(|g| g == retired),
+                "{retired} is still offered"
+            );
+        }
         let mut alphabetical = governed.clone();
         alphabetical.sort();
         assert_eq!(governed, alphabetical, "governed ships alphabetical");
