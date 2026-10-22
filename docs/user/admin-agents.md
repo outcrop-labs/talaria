@@ -94,8 +94,11 @@ subsets, and credentials managed on the [MCP](./admin-mcp-observability-apps.md)
 states: `Connected` · `Login required` · `Unreachable` · `Error` — with **Test** to re-check.
 
 Below the servers, **Hermes toolsets**: the tools the agent's own harness carries before any
-MCP server (`browser`, `terminal`, `file`, `code_execution`, `web`, …). A box is the toolset
-being on for this agent; clearing one closes it on the next roll, and a new agent starts with
+MCP server (`browser`, `terminal`, `file`, `code_execution`, `web`, …) — exactly the switches
+Hermes' own `hermes tools` offers, minus speech-to-text and the Discord and Yuanbao platform
+tools no Talaria agent uses. Hermes' bundles (`safe`, `debugging`, `search`, `coding`) are not
+rows: closing one closed its member tools while their own rows still read open, so a list that
+named one now shows those members closed instead. A box is the toolset being on for this agent; clearing one closes it on the next roll, and a new agent starts with
 the shell, code execution, the file tool and self-scheduling closed until a manager opens them.
 Two kinds of row are locked: `todo` and `clarify`, which Talaria's own tools replace for every
 agent, and anything an admin closed org-wide (**Admin → Security → Agent toolsets**, below).

@@ -3990,6 +3990,60 @@ alter table tasks drop column if exists conversation_id`,
   // agent's next write stamps them.
   `alter table agent_created_google_docs
      add column if not exists last_agent_write_at timestamptz`,
+  // ── Toolset vocabulary: Hermes' own switches only (2026-10-22) ──────────
+  // The governed toolset list carried Hermes composites (safe, debugging,
+  // search), a posture (coding) and GUI-only surfaces (project, desktop_ui).
+  // Hermes disables tool by tool, so a closed composite closed its MEMBERS
+  // while their own rows read open, and the other three closed nothing on an
+  // API-server agent. The list is now Hermes' CONFIGURABLE_TOOLSETS; a stored
+  // retired name becomes the governed names it closed (search reads as web,
+  // the stricter of the two), so the editor shows what the agent really has
+  // and nothing that was closed opens. The api expands the same names on
+  // read and write for anything this misses (the env twin, an older tab).
+  `-- deliberate: rewrites agent_defs.disabled_toolsets in place, expanding retired toolset
+   -- names into the governed names they closed; what Hermes closes stays the same or stricter.
+   update agent_defs d set disabled_toolsets = (
+     select coalesce(jsonb_agg(m.name order by m.first), '[]'::jsonb)
+     from (
+       select x.name, min(x.pos) as first
+       from (
+         select e.ord * 10 + u.ord as pos, u.name
+         from jsonb_array_elements_text(d.disabled_toolsets) with ordinality as e(raw, ord)
+         cross join lateral unnest(case e.raw
+             when 'debugging' then array['terminal', 'web', 'file']
+             when 'safe' then array['web', 'vision', 'image_gen']
+             when 'search' then array['web']
+             when 'coding' then array[]::text[]
+             when 'project' then array[]::text[]
+             when 'desktop_ui' then array[]::text[]
+             else array[e.raw] end) with ordinality as u(name, ord)
+       ) x
+       group by x.name
+     ) m
+   )
+   where jsonb_typeof(d.disabled_toolsets) = 'array'
+     and d.disabled_toolsets ?| array['debugging', 'safe', 'search', 'coding', 'project', 'desktop_ui']`,
+  `-- deliberate: the org-wide toolset floor gets the same expansion; it is stored sorted and
+   -- without the todo/clarify pair, so the rewrite keeps both properties.
+   update app_settings s set value = (
+     select coalesce(jsonb_agg(m.name order by m.name), '[]'::jsonb)
+     from (
+       select distinct u.name
+       from jsonb_array_elements_text(s.value) as e(raw)
+       cross join lateral unnest(case e.raw
+             when 'debugging' then array['terminal', 'web', 'file']
+             when 'safe' then array['web', 'vision', 'image_gen']
+             when 'search' then array['web']
+             when 'coding' then array[]::text[]
+             when 'project' then array[]::text[]
+             when 'desktop_ui' then array[]::text[]
+             else array[e.raw] end) as u(name)
+       where u.name not in ('todo', 'clarify')
+     ) m
+   ), updated_at = now()
+   where s.key = 'agents.mandatory_disabled_toolsets'
+     and jsonb_typeof(s.value) = 'array'
+     and s.value ?| array['debugging', 'safe', 'search', 'coding', 'project', 'desktop_ui']`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

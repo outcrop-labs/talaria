@@ -89,7 +89,7 @@ fn toolsets_block(floor: &[String]) -> Value {
 
 // doc: The roster also carries `toolsets`, the agent editor's vocabulary:
 // doc: `governed`, every Hermes toolset an operator may disable on an agent
-// doc: (28 names, alphabetical); `mandatoryDisabled`, the whole floor the
+// doc: (22 names, alphabetical); `mandatoryDisabled`, the whole floor the
 // doc: renderer closes on every agent whatever its def says — `todo` and
 // doc: `clarify`, because Talaria's own MCP versions are the ones a person
 // doc: sees, plus the org-wide floor an admin sets on `PUT
