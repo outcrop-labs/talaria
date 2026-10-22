@@ -21,7 +21,13 @@ Empty fleet? *"Describe the first one and Muse designs it: identity, soul, and s
 skills."* — **Design your first agent**.
 
 Outside agents can be pulled in too: the federation action (top of the page) federates agents
-that live elsewhere into Talaria.
+that live elsewhere into Talaria. A credential written inline in an imported config (a platform
+token, a provider's key, an `Authorization` header) is never stored as written. Each one the
+agent uses becomes one of its own secrets, named for where it sat
+(`CONFIG_PLATFORMS_TELEGRAM_TOKEN`), and the config keeps a `${CONFIG_…}` reference in its
+place. A model's inline key and an MCP server's inline credentials are dropped, because agents
+never use them: they reach models through the gateway (put the provider's key on **Models**)
+and MCP servers through the MCP registry. The federation result lists both.
 
 ## The manage modal
 
@@ -85,6 +91,10 @@ Grant the agent a **workspace credential** (sealed in Admin → Secrets — it g
 spend, never the value) or add its own env-var-style entries (`FIGMA_TOKEN` — the value is
 write-only). Nothing entered? *"Everything it needs comes from the shared platform env."*
 Which secrets an agent may spend is admin-only; members see **Admins only.**
+
+A `CONFIG_…` entry is a credential sealed out of the agent's own config when it was federated,
+and the config refers to it by that name. Replace its value here to rotate it, then roll the
+agent. Deleting it leaves the config pointing at nothing.
 
 ### MCP
 

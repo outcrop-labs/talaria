@@ -253,6 +253,13 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
     tx.commit().await.map_err(|e| e.to_string())?;
     def.managed = true;
 
+    // A template's config can name sealed literals (`${CONFIG_…}`, see
+    // talaria_agent_secrets::plan_config_seal); the clone takes them along,
+    // before the version that names them.
+    if let Some(template_id) = template_id {
+        talaria_agent_secrets::copy_config_secrets(pg, template_id, &def.id, &config).await?;
+    }
+
     add_version_if_changed(
         pg,
         &def.id,

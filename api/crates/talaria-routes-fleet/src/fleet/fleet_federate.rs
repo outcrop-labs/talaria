@@ -12,7 +12,7 @@ use talaria_api_facades::fleet::federate::federate_from_dir;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, trimmed_string_member};
 use talaria_error::{house_error, object_or_400};
-use talaria_session::{actor_of, require_admin};
+use talaria_session::{actor_of, require_admin, secretbox_or_500};
 use talaria_state::AppState;
 
 pub async fn post(
@@ -34,7 +34,10 @@ pub async fn post(
         .clone()
         .or_else(|| user.name.clone())
         .unwrap_or_else(|| "admin".into());
-    let result = federate_from_dir(&state.pg, &dir, &actor).await;
+    // A source config's literal credentials are sealed as per-agent secrets
+    // on the way in.
+    let sb = secretbox_or_500(&state, "[fleet/federate] secretbox failed").await?;
+    let result = federate_from_dir(&state.pg, &sb, &dir, &actor).await;
     if result.agents.iter().any(|a| a.status == "federated") {
         let actor = actor_of(&user);
         let label = dir.clone();

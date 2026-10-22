@@ -10,6 +10,13 @@ use std::path::Path;
 
 use talaria_secretbox::SecretBox;
 
+mod config_seal;
+mod env_file;
+pub use config_seal::{
+    CONFIG_SECRET_PREFIX, ConfigLiteral, ConfigSeal, config_secret_handles, copy_config_secrets,
+    plan_config_seal, seal_config_literals,
+};
+
 /// Container-env name: UPPER_SNAKE, must not collide with the stamped vars.
 fn name_ok(name: &str) -> bool {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
@@ -140,7 +147,7 @@ pub async fn materialize_agent_secrets(
         let value = sb
             .open(&value_enc)
             .map_err(|e| format!("secret \"{name}\" unseal failed: {e}"))?;
-        lines.push(format!("{name}={value}"));
+        lines.push(env_file::line(&name, &value));
     }
     write_0600(
         &path,

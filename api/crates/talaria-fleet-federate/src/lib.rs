@@ -5,6 +5,13 @@
 // into the fleet dir, run on the Talaria chassis with a fresh state volume.
 // Nothing keeps pointing at the source directory afterwards — it's a one-way
 // door, re-runnable (existing slugs are reported and skipped).
+//
+// A source config.yaml is third-party text and can carry credentials inline.
+// None is stored as written: before the version is written, each literal the
+// render would emit is sealed as one of the agent's per-agent secrets with a
+// `${CONFIG_…}` handle left in the config, and the ones the render never emits
+// (a model's api_key, an authored MCP server's headers) are dropped —
+// talaria_agent_secrets::plan_config_seal has the rules.
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -12,14 +19,22 @@ use sqlx::PgPool;
 use talaria_agent_defs::{
     NewVersion, UpsertDef, add_version_if_changed, dept_ok, slug_ok, upsert_agent_def,
 };
+use talaria_agent_secrets::{plan_config_seal, seal_config_literals};
 use talaria_fleet_create::ensure_agent_key;
 use talaria_gateway::registry::{add_endpoint_models, ensure_endpoint};
+use talaria_secretbox::SecretBox;
 
 #[derive(Debug, serde::Serialize)]
 pub struct FederatedAgent {
     pub slug: String,
     pub model: String,
     pub status: &'static str, // 'federated' | 'exists'
+    /// The per-agent secrets its config's literal credentials were sealed as.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sealed: Vec<String>,
+    /// Where each literal credential the render never emits sat — not stored.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dropped: Vec<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -28,7 +43,8 @@ pub struct FederateResult {
     pub errors: Vec<String>,
 }
 
-/// `"${LLM_API_KEY}"` → `"LLM_API_KEY"`; literal keys are never stored.
+/// `"${LLM_API_KEY}"` → `"LLM_API_KEY"`; a literal key names no env var (and
+/// is not stored either — plan_config_seal drops a model's literal api_key).
 fn key_env_of(api_key: Option<&str>) -> Option<String> {
     let raw = api_key?.trim();
     let inner = raw.strip_prefix("${").and_then(|s| s.strip_suffix('}'))?;
@@ -129,7 +145,12 @@ async fn target_of(pg: &PgPool, block: &Value) -> Result<Value, sqlx::Error> {
 
 /// The whole one-way door. Never returns Err: every failure is collected
 /// into `errors` (an unreadable roster aborts with one line).
-pub async fn federate_from_dir(pg: &PgPool, dir: &str, actor: &str) -> FederateResult {
+pub async fn federate_from_dir(
+    pg: &PgPool,
+    sb: &SecretBox,
+    dir: &str,
+    actor: &str,
+) -> FederateResult {
     let mut result = FederateResult {
         agents: Vec::new(),
         errors: Vec::new(),
@@ -191,7 +212,7 @@ pub async fn federate_from_dir(pg: &PgPool, dir: &str, actor: &str) -> FederateR
             ));
             continue;
         }
-        let r = federate_one(pg, root, dir, slug, department, entry, actor).await;
+        let r = federate_one(pg, sb, root, dir, slug, department, entry, actor).await;
         match r {
             Ok(Some(a)) => result.agents.push(a),
             Ok(None) => {} // skipped silently — malformed entry
@@ -201,8 +222,10 @@ pub async fn federate_from_dir(pg: &PgPool, dir: &str, actor: &str) -> FederateR
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn federate_one(
     pg: &PgPool,
+    sb: &SecretBox,
     root: &std::path::Path,
     dir: &str,
     slug: &str,
@@ -220,6 +243,8 @@ async fn federate_one(
             slug: slug.to_string(),
             model: String::new(),
             status: "exists",
+            sealed: Vec::new(),
+            dropped: Vec::new(),
         }));
     }
 
@@ -235,6 +260,10 @@ async fn federate_one(
     } else {
         serde_yaml_ng::from_str::<Value>(&raw_cfg_str).unwrap_or(json!({}))
     };
+    // Seal before anything is written: a config holding a credential no
+    // per-agent secret can carry is refused here, before an endpoint, a key or
+    // a def exists for it.
+    let seal = plan_config_seal(&json!({ "raw": raw_cfg }))?;
 
     // Model targets: main (object form only), aliases (object or
     // "provider/model" shorthand), fallbacks (array of objects).
@@ -319,13 +348,15 @@ async fn federate_one(
         .execute(pg)
         .await
         .map_err(|e| e.to_string())?;
+    // The secrets land before the version that names them.
+    seal_config_literals(pg, sb, &def.id, &seal.sealed, Some(actor)).await?;
     let config = json!({
         "main": main,
         "aliases": aliases,
         "fallbacks": fallbacks,
         "plugins": plugins,
         "mcpServers": mcp_servers,
-        "raw": raw_cfg,
+        "raw": seal.config["raw"],
     });
     add_version_if_changed(
         pg,
@@ -353,6 +384,8 @@ async fn federate_one(
         slug: slug.to_string(),
         model: def.model.clone(),
         status: "federated",
+        sealed: seal.sealed.into_iter().map(|l| l.name).collect(),
+        dropped: seal.dropped,
     }))
 }
 
