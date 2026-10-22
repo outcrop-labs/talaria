@@ -53,23 +53,9 @@ credential is a 403. `agent.legacy` marks a caller authenticated by the org-wide
 — the pre-per-agent-key path; identity asserted, not proven, so anything granting privilege must
 refuse it.
 
-Fleet-plane endpoints carry their subject in the URL or body, and they take one of two guards — not
-the same one:
-
-```ts
-if (!(await checkFleetKey(request))) return …   // agents/register: ANY fleet credential.
-                                                // An agent registers before it has its own.
-
-const caller = await fleetCaller(request)       // agents/$id/heartbeat: same validation as
-if (caller instanceof Response) return caller   // agentCaller, but an UNNAMED legacy caller
-if (!caller) return …                           // resolves to { model: null } instead of a 400.
-if (caller.model && caller.model !== name)      // A caller we CAN name must match the subject —
-  return json({ error: … }, { status: 403 })    // that's what stops A reading B's work queue.
-```
-
-`checkFleetKey` answers "does this credential belong to the fleet" and nothing else, so it is only
-correct where the response carries no per-agent data. Public routes say so in a comment; `llm.v1.*`
-follows the OpenAI wire contract and is exempt from all of this.
+There is no "any fleet credential" guard: every agent door resolves the caller to a named, enabled
+agent. Public routes say so in a comment; `llm.v1.*` follows the OpenAI wire contract and is exempt
+from all of this.
 
 A helper that takes an agent but isn't threaded everywhere yet accepts `AgentSubject`
 (`AgentCaller | string`) and asks `subjectProven(subject)` / `subjectModel(subject)` rather than
@@ -114,9 +100,13 @@ because archival withdraws the work rather than closing it, and a channel nobody
 channel. Reads are not this question: an agent that passes `board_allows_agent` may read the ticket,
 because reading changes nothing.
 
-The same predicate answers the *pull* side too — `assigned_work` asks it before serving an agent
-its queue — so the heartbeat and the write routes agree by construction rather than by two people
-remembering.
+The same predicate answers the *push* side too. `agent_work_refusal` is the work-starting verb:
+the `Write` question plus the one clause only starting work adds — a workchain step whose
+predecessor is still open waits its turn (`workchain_blocked`, over the same derive the board's
+chain view reads). The work-session loop asks it on every turn; work dispatch asks the same two
+halves, the chain order once per ticket before any per-agent side effect. So the dispatcher and the
+write routes agree by construction rather than by two people remembering. It is not a write
+clause: agents still triage, comment on and report against a step that is waiting.
 
 > **Do not copy it into your route.** Four TS routes once hand-rolled their own copies, because
 > parallel work split file ownership and nothing exported one. All four checked only the

@@ -224,7 +224,8 @@ curl -sS -b /tmp/talaria.cookies -X POST http://127.0.0.1:5273/api/fleet/render
 #   Any remaining line names exactly who is still pending.
 ```
 
-Give a rolled agent a heartbeat interval (default 45s, `TALARIA_HEARTBEAT_SECONDS`) to show up.
+A rolled agent shows up once Hermes connects its Talaria MCP toolkit, which verifies the key
+against `GET /api/agent/whoami` (that stamps `last_used_at`) — normally within a minute of boot.
 
 ## Step 5 — Close the window
 

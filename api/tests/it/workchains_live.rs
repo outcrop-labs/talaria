@@ -698,9 +698,9 @@ async fn deleting_a_chain_leaves_its_tasks_standing() {
     reset(pg, "chain-delete").await;
 }
 
-// ── The handoff engine + the workchain-aware heartbeat ──────────────────────
+// ── The handoff engine + the workchain order on the push side ───────────────
 
-/// A ticket with assignees — the engine and the heartbeat both key on them.
+/// A ticket with assignees — the engine and work dispatch both key on them.
 async fn ticket_with(
     pg: &PgPool,
     board_id: &str,
@@ -744,85 +744,92 @@ async fn await_notification(pg: &PgPool, user_id: &str, kind: &str) -> Option<(S
     None
 }
 
-/// A fleet agent: an agent_defs row (the model names no real provider, so
-/// nothing dispatches it), a minted per-agent key, and a board grant — the
-/// three things the heartbeat's policy gate asks for. Returns (agent id,
-/// model, key).
-async fn fleet_agent(state: &AppState, board_id: &str, tag: &str) -> (String, String, String) {
+/// A fleet agent: an enabled agent_defs row (the model names no real
+/// provider) and a board grant — what dispatch's policy gate asks for.
+/// Returns the model.
+async fn fleet_agent(state: &AppState, board_id: &str, tag: &str) -> String {
     let pg = &state.pg;
     // slug and model are each UNIQUE on agent_defs; both carry a uuid so a
     // rerun of the suite cannot collide with a prior run's leftovers.
     let model = format!("workchains-live-{tag}-{}", uuid::Uuid::new_v4());
     let slug = format!("workchains-live-{tag}-{}", uuid::Uuid::new_v4());
-    let (id,): (String,) = sqlx::query_as(
+    sqlx::query(
         "insert into agent_defs (slug, department, model, display_name) \
-         values ($1, 'personal', $2, 'Workchains Live Agent') returning id::text",
+         values ($1, 'personal', $2, 'Workchains Live Agent')",
     )
     .bind(&slug)
     .bind(&model)
-    .fetch_one(pg)
+    .execute(pg)
     .await
     .unwrap();
-    let sb = state
-        .secretbox()
-        .await
-        .expect("secretbox loads — TALARIA_SECRET_KEY must match (source ui/.env)");
-    let key = talaria_api::agent_auth::rotate_agent_api_key(pg, &sb, &id)
-        .await
-        .expect("agent key mints");
-    let (fleet_id,): (String,) =
-        sqlx::query_as("insert into fleet_agents (name) values ($1) returning id::text")
-            .bind(&model)
-            .fetch_one(pg)
-            .await
-            .expect("fleet_agents row the insert just wrote");
     sqlx::query("insert into board_agents (board_id, agent_model) values ($1::uuid, $2)")
         .bind(board_id)
         .bind(&model)
         .execute(pg)
         .await
         .expect("board_agents row");
-    let _ = id;
-    // The heartbeat (and every fleet-plane route) names the agent by
-    // fleet_agents.id — the registry the fleet renders from — not by
-    // agent_defs.id. Heartbeating with the defs id 404s as "unknown agent".
-    (fleet_id, model, key)
+    model
 }
 
-/// One heartbeat through the REAL router, with the agent's own key — the
-/// exact credential a container presents.
-async fn heartbeat(state: &AppState, agent_id: &str, key: &str) -> (u16, Value) {
-    let res = routes::router(state.clone())
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!("/api/agents/{agent_id}/heartbeat"))
-                .header("x-api-key", key)
-                .body(Body::empty())
-                .unwrap(),
-        )
+/// The agent's def goes with the run rows this suite's dispatches wrote —
+/// neither hangs off the users rows `reset` deletes.
+async fn drop_fleet_agent(pg: &PgPool, model: &str, task_ids: &[&str]) {
+    sqlx::query("delete from runs where kind = 'work-session' and subject_id = any($1)")
+        .bind(task_ids.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        .execute(pg)
         .await
         .unwrap();
-    let status = res.status().as_u16();
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+    sqlx::query("delete from agent_defs where model = $1")
+        .bind(model)
+        .execute(pg)
         .await
         .unwrap();
-    let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, json)
 }
 
-/// The heartbeat's work item ids — what the ordering guarantee is asserted
-/// against.
-fn work_item_ids(body: &Value) -> Vec<String> {
-    body["work_items"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .map(|i| i["id"].as_str().expect("feed items carry ids").to_string())
-                .collect()
-        })
-        .unwrap_or_default()
+/// The real push side: the dispatch assembly the process boots with, so a
+/// dispatch that passes every gate enqueues a real work-session row.
+async fn dispatch_deps(state: &AppState) -> talaria_runs_run::RunDeps {
+    let redis = state
+        .redis()
+        .await
+        .expect("redis connects (source ui/.env)");
+    let rt = talaria_realtime::RealtimeDeps::publish_only(Some(redis.clone()));
+    talaria_work_dispatch::dispatch_deps(state.pg.clone(), redis, rt)
+}
+
+/// Offer one ticket to dispatch exactly as a task write or the sweep does,
+/// then count the work-session rows it has. Dispatch enqueues before it
+/// returns (only the drive is detached), so the count is settled here.
+async fn offer_and_count(state: &AppState, deps: &talaria_runs_run::RunDeps, id: &str) -> i64 {
+    let task = talaria_tasks::get_task(&state.pg, id)
+        .await
+        .unwrap()
+        .expect("the ticket exists");
+    let ticket = talaria_tasks::dispatch_ticket_of(&task);
+    talaria_work_dispatch::maybe_dispatch_ticket(&state.pg, deps, &ticket, None).await;
+    sqlx::query_scalar(
+        "select count(*)::bigint from runs where kind = 'work-session' and subject_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&state.pg)
+    .await
+    .unwrap()
+}
+
+/// The work question for one ticket, as the session loop asks it per turn.
+async fn work_refusal(pg: &PgPool, id: &str, model: &str) -> Option<String> {
+    let task = talaria_tasks::get_task(pg, id)
+        .await
+        .unwrap()
+        .expect("the ticket exists");
+    talaria_tasks::agent_work_refusal(
+        pg,
+        id,
+        &talaria_tasks::AgentWriteTarget::from(&task),
+        &talaria_agent_auth::AgentSubject::Model(model.to_string()),
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -904,30 +911,40 @@ async fn done_hands_off_to_a_human_head_with_a_notification() {
 
 #[tokio::test]
 #[ignore = "needs a live dev database and redis (source ui/.env)"]
-async fn the_heartbeat_hides_blocked_steps_and_serves_the_ready_head() {
+async fn dispatch_holds_a_blocked_step_until_its_turn_comes() {
     let state = app_state().await;
     let f = fixture(&state, "ordering").await;
     let owner = sid(&state, &f.owner).await;
     let pg = &state.pg;
-    let (agent_id, _model, key) = fleet_agent(&state, &f.board_id, "ordering").await;
+    let model = fleet_agent(&state, &f.board_id, "ordering").await;
+    let deps = dispatch_deps(&state).await;
 
-    // Both steps belong to the agent; only A is servable while it is live.
+    // A is a person's step; B is the agent's, sitting in a PICKUP column
+    // with the agent assigned — every push-side gate but the chain says go.
     let a = ticket_with(
         pg,
         &f.board_id,
         "First",
         "in_progress",
-        serde_json::json!([_model]),
+        serde_json::json!([format!("user:{}", f.owner.id)]),
     )
     .await;
     let b = ticket_with(
         pg,
         &f.board_id,
         "Second",
-        "in_progress",
-        serde_json::json!([_model]),
+        "assigned",
+        serde_json::json!([model]),
     )
     .await;
+    let meta = talaria_statuses::status_meta(pg, &f.board_id)
+        .await
+        .unwrap();
+    assert!(
+        meta.pickup_keys.contains(&"assigned".to_string()),
+        "the default board picks up from 'assigned': {:?}",
+        meta.pickup_keys
+    );
     let chain = create_chain(&state, &owner, &f.board_id, "Ordering").await;
     for task_id in [&a, &b] {
         let (status, body) = call(
@@ -941,19 +958,36 @@ async fn the_heartbeat_hides_blocked_steps_and_serves_the_ready_head() {
         assert_eq!(status, 200, "step add failed: {body}");
     }
 
-    // THE CORE ORDERING GUARANTEE: the agent is ASSIGNED to B, B's column
-    // is a working column, and still B is not in the feed while A is live.
-    let (status, body) = heartbeat(&state, &agent_id, &key).await;
-    assert_eq!(status, 200, "heartbeat failed: {body}");
-    let ids = work_item_ids(&body);
-    assert_eq!(ids, vec![a.clone()], "only the head may be served");
+    // THE CORE ORDERING GUARANTEE: B is the agent's, B's column is a pickup
+    // column, and still nothing starts while A is live.
     assert_eq!(
-        body["work_items"][0]["workchainReady"],
-        Value::Bool(true),
-        "the ready head carries its flag"
+        offer_and_count(&state, &deps, &b).await,
+        0,
+        "a blocked step must not be dispatched"
+    );
+    assert_eq!(
+        work_refusal(pg, &b, &model).await.as_deref(),
+        Some(talaria_tasks::WORKCHAIN_WAIT),
+        "the session loop's work question refuses it with the chain's reason"
+    );
+    // Not a write clause: the agent may still triage the waiting step.
+    let target = talaria_tasks::AgentWriteTarget::from(
+        &talaria_tasks::get_task(pg, &b).await.unwrap().unwrap(),
+    );
+    assert_eq!(
+        talaria_tasks::agent_ticket_refusal(
+            pg,
+            &target,
+            &talaria_agent_auth::AgentSubject::Model(model.clone()),
+            talaria_tasks::AgentIntent::Write,
+        )
+        .await
+        .unwrap(),
+        None,
+        "writes on a waiting step stay open to the agent"
     );
 
-    // Sign A off; B becomes the head and enters the feed flagged.
+    // A person signs A off; B's turn has come and the same offer starts it.
     let (status, body) = call(
         &state,
         &owner,
@@ -963,34 +997,14 @@ async fn the_heartbeat_hides_blocked_steps_and_serves_the_ready_head() {
     )
     .await;
     assert_eq!(status, 200, "done write failed: {body}");
-    let (status, body) = heartbeat(&state, &agent_id, &key).await;
-    assert_eq!(status, 200, "heartbeat failed: {body}");
-    let ids = work_item_ids(&body);
-    assert_eq!(ids, vec![b.clone()], "the new head is served");
+    assert_eq!(work_refusal(pg, &b, &model).await, None, "B is ready now");
     assert_eq!(
-        body["work_items"][0]["workchainReady"],
-        Value::Bool(true),
-        "the new head is flagged as chain-ready"
+        offer_and_count(&state, &deps, &b).await,
+        1,
+        "the ready step is dispatched"
     );
 
-    // Sign B off too: nothing from this chain is left to serve.
-    let (status, body) = call(
-        &state,
-        &owner,
-        "PUT",
-        &format!("/api/tasks/{b}"),
-        Some(serde_json::json!({ "status": "done" })),
-    )
-    .await;
-    assert_eq!(status, 200, "done write failed: {body}");
-    let (status, body) = heartbeat(&state, &agent_id, &key).await;
-    assert_eq!(status, 200, "heartbeat failed: {body}");
-    let ids = work_item_ids(&body);
-    assert!(
-        !ids.contains(&b) && !ids.contains(&a),
-        "an all-done chain serves nothing: {ids:?}"
-    );
-
+    drop_fleet_agent(pg, &model, &[&a, &b]).await;
     reset(pg, "ordering").await;
 }
 

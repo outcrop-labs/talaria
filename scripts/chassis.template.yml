@@ -111,7 +111,6 @@ service:
     API_SERVER_HOST: 0.0.0.0
     HERMES_ACCEPT_HOOKS: '1'
     HERMES_SKIP_CONFIG_MIGRATION: '1'
-    TALARIA_HEARTBEAT_SECONDS: ${TALARIA_HEARTBEAT_SECONDS:-0}
   volumes: []
 
 # Fresh installs get their own fleet network (created by `talaria setup`).

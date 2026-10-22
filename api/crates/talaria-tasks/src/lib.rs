@@ -619,15 +619,17 @@ const BLOCKED_STATUS: &str = "blocked";
 
 // ── THE agent-authority question, as ONE exported predicate ──────────────────
 //
-// ONE PREDICATE, MANY GATES. The patch gate, the work-session loop, the
-// heartbeat and the MCP tool surface all ask the same question — may THIS
-// agent act on THIS ticket — and before this consolidation they asked four
-// private approximations of it that each omitted a clause. It returns the
-// REASON rather than a boolean so the refusal is the same sentence wherever
-// the write arrived, and a new caller cannot invent a vaguer one.
+// ONE PREDICATE, MANY GATES. The patch gate, the work-session loop, both
+// dispatch sides and the MCP tool surface all ask the same question — may
+// THIS agent act on THIS ticket — and before this consolidation they asked
+// four private approximations of it that each omitted a clause. It returns
+// the REASON rather than a boolean so the refusal is the same sentence
+// wherever the write arrived, and a new caller cannot invent a vaguer one.
+// `agent_work_refusal` below is the same question with the one clause that
+// only STARTING work adds: the workchain order.
 
 /// The ticket shape the predicate needs. `get_task` returns it; so does the
-/// row the heartbeat query selects.
+/// row the dispatch sweep selects.
 pub struct AgentWriteTarget {
     pub board_id: String,
     pub status: String,
@@ -707,6 +709,68 @@ pub async fn agent_ticket_refusal(
     Ok(None)
 }
 
+// ── The work question: the workchain order ───────────────────────────────────
+//
+// A workchain step whose predecessor is still live is nobody's work yet,
+// whatever its own column says: the agent assigned to step B must not start B
+// while A is in flight. That is the chain's whole contract, and it is asked
+// HERE, by everything that starts or drives work — `maybe_dispatch_ticket`
+// (task writes and the sixty-second sweep both arrive there) and the
+// work-session loop on every turn — from `talaria_workchains::chain_readiness`,
+// the same derive the board's chain view reads. It is not a WRITE clause:
+// agents still triage, comment on and report against a step that is waiting
+// its turn, exactly as before. Only starting the work waits.
+
+/// The refusal for a workchain step whose turn has not come. One sentence,
+/// so the dispatch log, the session's stop line and any future caller say
+/// the same thing.
+pub const WORKCHAIN_WAIT: &str =
+    "agents cannot work this ticket yet: an earlier step of its workchain is still open";
+
+/// Of `ids`, the tickets that are workchain steps behind a live predecessor.
+/// `metas` carries each candidate board's status meta (the terminal
+/// predicate is per board); a ticket in no chain is never in the answer.
+/// ONE batch read for the whole set, so the sweep asks it once per pass.
+pub async fn workchain_blocked(
+    pg: &PgPool,
+    metas: &HashMap<String, StatusMeta>,
+    ids: &[String],
+) -> Result<HashSet<String>, sqlx::Error> {
+    let readiness = talaria_workchains::chain_readiness(pg, metas, ids).await?;
+    Ok(readiness
+        .into_iter()
+        .filter(|(_, r)| *r == talaria_workchains::Readiness::Blocked)
+        .map(|(id, _)| id)
+        .collect())
+}
+
+/// Why an agent may not START or keep DRIVING work on this ticket, or None
+/// when it may: `agent_ticket_refusal`'s Write question, plus the workchain
+/// order. The dispatch gate and the work-session loop ask this; writes that
+/// are not work (fields, comments, problem and gap reports, dependency edges)
+/// keep asking `agent_ticket_refusal` alone.
+pub async fn agent_work_refusal(
+    pg: &PgPool,
+    task_id: &str,
+    task: &AgentWriteTarget,
+    agent: &AgentSubject,
+) -> Result<Option<String>, sqlx::Error> {
+    if let Some(refusal) = agent_ticket_refusal(pg, task, agent, AgentIntent::Write).await? {
+        return Ok(Some(refusal));
+    }
+    let metas = HashMap::from([(
+        task.board_id.clone(),
+        status_meta(pg, &task.board_id).await?,
+    )]);
+    if workchain_blocked(pg, &metas, &[task_id.to_string()])
+        .await?
+        .contains(task_id)
+    {
+        return Ok(Some(WORKCHAIN_WAIT.into()));
+    }
+    Ok(None)
+}
+
 impl From<&Task> for AgentWriteTarget {
     fn from(t: &Task) -> Self {
         AgentWriteTarget {
@@ -719,8 +783,8 @@ impl From<&Task> for AgentWriteTarget {
 
 // A misconfigured board is an OPERATOR problem, and the only party that sees
 // the API response is the agent that got refused. So log it too — on a slow
-// cadence per board (same idiom as agent-auth's legacy warning): a heartbeat
-// loop must not bury the log, but one line from whenever the server started
+// cadence per board (same idiom as agent-auth's legacy warning): a retrying
+// agent must not bury the log, but one line from whenever the server started
 // can't answer "is this still happening?".
 static BOARD_WARNED_AT: LazyLock<Mutex<HashMap<String, i64>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -816,8 +880,8 @@ async fn agent_safe_patch(
     //
     // That, the board-level twin, the board's agent policy and the
     // closed-status rule are all `agent_ticket_refusal` now — the same
-    // question the side doors, the heartbeat and both dispatch sides ask,
-    // from the one definition above.
+    // question the side doors and both dispatch sides ask, from the one
+    // definition above.
     let shut =
         agent_ticket_refusal(pg, &AgentWriteTarget::from(cur), agent, AgentIntent::Write).await?;
     if let Some(sentence) = shut {
@@ -1150,14 +1214,16 @@ pub async fn update_task(
         // notification failure never costs the ticket write it rode in on.
         // Human sign-off is the only trigger by construction: agents
         // cannot land a terminal column (agent_safe_patch above), so the
-        // chain advances only when a person moves the column.
+        // chain advances only when a person moves the column. The
+        // successors it made ready are offered to work dispatch — the
+        // agent half of the hand-off (dispatch asks the chain order again).
         {
             let deps = deps.clone();
             let board_id = cur.board_id.clone();
             let task_id = id.to_string();
             let status = next_status.clone();
             tokio::spawn(async move {
-                if let Err(e) = talaria_workchains::advance_workchains(
+                match talaria_workchains::advance_workchains(
                     &deps.pg,
                     &deps.notify,
                     &board_id,
@@ -1166,7 +1232,8 @@ pub async fn update_task(
                 )
                 .await
                 {
-                    tracing::error!("[workchains] advance on status write failed: {e}");
+                    Ok(ready) => dispatch_ready_steps(&deps, ready),
+                    Err(e) => tracing::error!("[workchains] advance on status write failed: {e}"),
                 }
             });
         }
@@ -1381,6 +1448,16 @@ fn spawn_dispatch(deps: &TaskDeps, task: Task, only_agents: Option<Vec<String>>)
         )
         .await;
     });
+}
+
+/// The workchain hand-off's agent half: each successor a sign-off just made
+/// ready is offered to dispatch, re-read fresh. A step already sitting in a
+/// pickup column with an agent assignee starts now instead of waiting for
+/// the sweep; anything else is the gate's quiet no.
+fn dispatch_ready_steps(deps: &TaskDeps, ready: Vec<String>) {
+    for id in ready {
+        spawn_dispatch_id(deps, id, None);
+    }
 }
 
 fn spawn_dispatch_id(deps: &TaskDeps, id: String, only_agents: Option<Vec<String>>) {
@@ -2154,7 +2231,7 @@ pub async fn complete_quality_review(
         let task_id = task_id.to_string();
         let status = next_status.to_string();
         tokio::spawn(async move {
-            if let Err(e) = talaria_workchains::advance_workchains(
+            match talaria_workchains::advance_workchains(
                 &deps.pg,
                 &deps.notify,
                 &board_id,
@@ -2163,7 +2240,8 @@ pub async fn complete_quality_review(
             )
             .await
             {
-                tracing::error!("[workchains] advance on review sign-off failed: {e}");
+                Ok(ready) => dispatch_ready_steps(&deps, ready),
+                Err(e) => tracing::error!("[workchains] advance on review sign-off failed: {e}"),
             }
         });
     }
@@ -2385,181 +2463,6 @@ pub async fn list_activity(pg: &PgPool, task_id: &str) -> Result<Vec<TaskActivit
                 kind_tag,
                 description,
                 created_at: epoch_ms_to_iso(created_ms),
-            },
-        )
-        .collect())
-}
-
-// ── The pull side ────────────────────────────────────────────────────────────
-/// One servable ticket on the heartbeat's pull channel, with the workflows
-/// matched to it riding along (plugin-side dispatch).
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AssignedWork {
-    pub id: String,
-    pub title: String,
-    pub description: Option<String>,
-    pub tags: Vec<String>,
-    pub board_id: String,
-    /// True when this ticket is the READY HEAD of a workchain — the chain's
-    /// first non-done, non-archived step, served to the agent because it is
-    /// genuinely next. Absent otherwise (a chain-free ticket keeps the feed
-    /// item shape it always had; a blocked chain ticket is not in the feed
-    /// at all).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workchain_ready: Option<bool>,
-    pub workflows: Vec<talaria_workflows::WorkflowDelivery>,
-}
-
-/// Work assigned to an agent (by name), across all boards, for the
-/// heartbeat.
-///
-/// THE PULL SIDE ASKS THE SAME QUESTIONS THE WRITE SIDE ASKS. Both of them,
-/// and neither in its own words. The history of this one query is the whole
-/// lesson: it once selected on `agent_start` alone, so it handed an agent
-/// work every write route would then refuse; then it asked only
-/// "closed to agents", which said nothing about the board's AGENT POLICY,
-/// so a board owner revoking a grant 403'd every write while the heartbeat
-/// kept serving; and the SQL still carried a status predicate of its own,
-/// which DISAGREED with `working_keys` — an agent that obeyed step 2 of its
-/// own dispatch prompt and moved the ticket into the board's active column
-/// fell off the heartbeat mid-session. So the SQL states NO rule. It
-/// narrows by ASSIGNMENT, and by a (board, key) pair list built from
-/// `working_keys` itself — the SQL is a projection of the one predicate,
-/// not a rival to it.
-pub async fn assigned_work(
-    pg: &PgPool,
-    agent_name: &str,
-) -> Result<Vec<AssignedWork>, sqlx::Error> {
-    let subject = AgentSubject::Model(agent_name.to_string());
-    let boards: Vec<(String,)> =
-        sqlx::query_as("select distinct board_id::text from tasks where assignees @> $1::jsonb")
-            .bind(serde_json::json!([agent_name]))
-            .fetch_all(pg)
-            .await?;
-    // ONE pass over board facts for the whole heartbeat — columns, archival
-    // AND agent policy, each resolved once per distinct board rather than
-    // once per ticket. A board the agent is not allowed on is dropped HERE,
-    // before its tickets are ever fetched.
-    let mut pair_boards: Vec<String> = Vec::new();
-    let mut pair_keys: Vec<String> = Vec::new();
-    let mut metas: HashMap<String, StatusMeta> = HashMap::new();
-    for (board_id,) in &boards {
-        if !board_allows_agent(pg, board_id, &subject).await? {
-            continue;
-        }
-        let meta = status_meta(pg, board_id).await?;
-        // Kept for the workchain readiness pass below — its terminal
-        // predicate comes from the same per-board meta, not a restatement.
-        metas.insert(board_id.clone(), meta.clone());
-        for key in &meta.working_keys {
-            pair_boards.push(board_id.clone());
-            pair_keys.push(key.clone());
-        }
-    }
-    if pair_boards.is_empty() {
-        return Ok(Vec::new());
-    }
-    // The narrowed row: assignment plus the working-key join, before the
-    // authority question is re-asked per ticket below.
-    type WorkRow = (
-        String,
-        String,
-        Option<String>,
-        serde_json::Value,
-        String,
-        String,
-        Option<i64>,
-    );
-    let rows: Vec<WorkRow> = sqlx::query_as(
-        "select t.id::text, t.title, t.description, t.tags, t.board_id::text, t.status, \
-                    (trunc(extract(epoch from t.archived_at) * 1000))::bigint \
-             from tasks t \
-             join unnest($1::text[], $2::text[]) as w(board_id, status) \
-               on w.board_id = t.board_id::text and w.status = t.status \
-             where t.assignees @> $3::jsonb \
-             order by t.created_at asc",
-    )
-    .bind(&pair_boards)
-    .bind(&pair_keys)
-    .bind(serde_json::json!([agent_name]))
-    .fetch_all(pg)
-    .await?;
-    // The pairs above already answered "is this column in play?"; this is
-    // the TICKET half of the same authority question — its own archival,
-    // and the board's, re-asked from the one predicate rather than restated
-    // in SQL.
-    // ── THE WORKCHAIN ORDERING GUARANTEE ────────────────────────────────────
-    // A ticket that lives in a workchain behind an earlier live step is NOT
-    // servable, whatever its own column says — the agent assigned to step B
-    // must not see B while A is in flight (the chain's own contract), and
-    // a ready head IS servable and carries `workchainReady: true` so the
-    // harness can prioritize chain work. One batch query for the whole
-    // heartbeat, asked here so the answer keys on the candidates the
-    // column join already narrowed to.
-    let candidates: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
-    let readiness = talaria_workchains::chain_readiness(pg, &metas, &candidates).await?;
-    let mut servable = Vec::new();
-    for (id, title, description, tags, board_id, status, archived_ms) in rows {
-        let target = AgentWriteTarget {
-            board_id: board_id.clone(),
-            status,
-            archived_at: archived_ms.map(epoch_ms_to_iso),
-        };
-        if agent_ticket_refusal(pg, &target, &subject, AgentIntent::Write)
-            .await?
-            .is_some()
-        {
-            continue;
-        }
-        // Blocked chain position: the chain decides, not the column. A
-        // ready head rides with its flag; a chain-free ticket stays the
-        // shape it always was.
-        match readiness.get(&id) {
-            Some(talaria_workchains::Readiness::Blocked) => continue,
-            ready => servable.push((
-                id,
-                title,
-                description,
-                json_strings(&tags),
-                board_id,
-                ready.and_then(|r| r.ready_flag()),
-            )),
-        }
-    }
-    // Matched workflows ride with the pull channel too (plugin-side
-    // dispatch). ONE read of the workflow list for the whole heartbeat:
-    // calling `workflows_for_task` per ticket re-read the table each time.
-    // Workflows are org-wide, not board-scoped, so there is nothing to key a
-    // cache by; the list is read once and handed to `workflows_from`, which
-    // is the SAME match the one-off path uses. Spelling the filter out here
-    // instead would make this the round's own counter-example: a second
-    // expression of a rule, free to drift.
-    let flows = if servable.is_empty() {
-        Vec::new()
-    } else {
-        talaria_workflows::list_workflows(pg).await?
-    };
-    Ok(servable
-        .into_iter()
-        .map(
-            |(id, title, description, tags, board_id, workchain_ready)| {
-                let target = talaria_workflows::MatchTarget {
-                    title: &title,
-                    description: description.as_deref(),
-                    tags: &tags,
-                    board_id: &board_id,
-                };
-                let workflows = talaria_workflows::workflows_from(&flows, &target);
-                AssignedWork {
-                    id,
-                    title,
-                    description,
-                    tags,
-                    board_id,
-                    workchain_ready,
-                    workflows,
-                }
             },
         )
         .collect())

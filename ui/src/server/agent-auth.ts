@@ -277,24 +277,11 @@ export function legacyMigrationWarning(s: LegacyMigrationStatus): string | null 
  *    if (agent) { … }
  */
 export async function agentCaller(request: Request): Promise<AgentCaller | Response | null> {
-  return resolve(request, { requireName: true })
+  return resolve(request)
 }
 
-/** Identity for the FLEET-PLANE endpoints whose subject is in the URL
- *  (register, heartbeat). Same validation as `agentCaller`, except a legacy
- *  caller that sent no x-agent-name resolves to `{ model: null }` instead of a
- *  400: the pre-per-key plugin doesn't send the header, and the subject is the
- *  URL anyway. A caller we CAN name must still match the subject — that is what
- *  stops agent A reading agent B's work. */
-export async function fleetCaller(request: Request): Promise<{ model: string | null } | Response | null> {
-  const caller = await resolve(request, { requireName: false })
-  if (caller instanceof Response || caller === null) return caller
-  return { model: caller.model || null }
-}
-
-/** Shared resolution. `requireName: false` allows an unnamed legacy caller
- *  through with an EMPTY model — never an identity, only "a fleet credential". */
-async function resolve(request: Request, opts: { requireName: boolean }): Promise<AgentCaller | Response | null> {
+/** Shared resolution behind `agentCaller`. */
+async function resolve(request: Request): Promise<AgentCaller | Response | null> {
   const secret = presented(request)
   if (!secret) return null
   const claimed = declaredName(request)
@@ -334,12 +321,8 @@ async function resolve(request: Request, opts: { requireName: boolean }): Promis
   }
   // The shared key proves fleet membership and nothing else, so the header is
   // all there is. An unnamed caller gets no identity and therefore no
-  // per-agent access — it is refused, not waved through (the fleet plane, whose
-  // subject is the URL, opts out via fleetCaller).
-  if (!claimed) {
-    if (opts.requireName) return json({ error: 'x-agent-name required' }, { status: 400 })
-    return { id: null, model: '', legacy: true }
-  }
+  // per-agent access — it is refused, not waved through.
+  if (!claimed) return json({ error: 'x-agent-name required' }, { status: 400 })
   // The claimed name is resolved, never taken on faith: a retired or invented
   // name must not authenticate, or retiring an agent revokes nothing and a
   // forged string lands in usage rows, task activity and channel authorship.
@@ -386,26 +369,3 @@ export async function requireAgent(request: Request): Promise<AgentCaller | Resp
   return caller
 }
 
-/** Any credential the fleet holds — a per-agent one, or the org-wide key while
- *  the window is open. Only for the fleet-plane endpoints that carry their
- *  subject in the URL (register, heartbeat) and so need no caller identity.
- *
- *  Retirement is `agent_defs.enabled = false` (agent-defs.ts) and it does NOT
- *  delete the agent_keys row, so the join onto agent_defs is what makes
- *  "retiring an agent revokes its access" true here as well as in `resolve()`.
- *  Checking agent_keys alone left a retired agent's credential working on every
- *  route that guards with this. */
-export async function checkFleetKey(request: Request): Promise<boolean> {
-  const secret = presented(request)
-  if (!secret) return false
-  if (secret.startsWith(KEY_PREFIX)) {
-    const sql = await db()
-    const rows = await sql`
-      select 1 from agent_keys k join agent_defs d on d.id = k.agent_id
-      where k.key_hash = ${hash(secret)} and d.enabled
-    `
-    return rows.length > 0
-  }
-  const shared = (process.env.TALARIA_AGENT_KEY ?? '').trim()
-  return !!shared && legacyOpen() && eq(secret, shared)
-}

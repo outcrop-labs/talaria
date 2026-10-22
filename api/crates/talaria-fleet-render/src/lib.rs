@@ -1480,10 +1480,6 @@ pub async fn render_fleet(
         if let Some(url) = &agent_search_url {
             env.insert("SEARXNG_URL".into(), json!(url));
         }
-        env.insert(
-            "TALARIA_HEARTBEAT_SECONDS".into(),
-            json!("${TALARIA_HEARTBEAT_SECONDS:-45}"),
-        );
         // A credential git cannot get must FAIL, not wait: with the terminal
         // prompt enabled (git's default), a push to a repo the helper declines
         // falls through to a username prompt that sits forever in a harness
@@ -2542,7 +2538,7 @@ service:
         for s in [
             "http://host.docker.internal:5273/api/mcp/gw/talaria",
             "${TALARIA_AGENT_KEY}",
-            "${TALARIA_HEARTBEAT_SECONDS:-45}",
+            "${API_SERVER_PORT:-8642}",
             "z-ai/glm-5.2",
             "-y",
             "a-b-c",

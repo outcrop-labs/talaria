@@ -25,13 +25,15 @@
 // advance_workchains is the write-side half of the same derived state: when a
 // task write lands a step's ticket in a DONE column, EVERY successor whose
 // predecessors are now all satisfied becomes ready at once (fan-out), and each
-// one's human assignees are told it is their turn. Agents are not — their
-// visibility is the heartbeat, which serves ready heads and hides blocked
-// steps, so an agent cannot read its chain position as an invitation to start
-// early. A step with several predecessors stays blocked until the LAST of them
-// completes — the notification rides that final edge, and only that firing
-// notifies (a successor whose other predecessors were already done does not
-// re-notify per completing predecessor).
+// one's human assignees are told it is their turn. Agents are not told — they
+// are DISPATCHED: the engine hands the caller the successors that just became
+// ready, and the caller offers each to work dispatch, whose gate asks
+// `chain_readiness` before any session starts (so a blocked step is never
+// started early, whoever offers it — a task write, this hand-off, or the
+// sixty-second sweep). A step with several predecessors stays blocked until
+// the LAST of them completes — the notification rides that final edge, and
+// only that firing notifies (a successor whose other predecessors were
+// already done does not re-notify per completing predecessor).
 //
 // An off-board terminal (failed/cancelled) pauses the whole chain and tells
 // its creator — v1's semantics, kept for v1 (the subtree-vs-chain question is
@@ -493,6 +495,11 @@ fn done_keys_of(meta: &StatusMeta) -> Vec<String> {
 /// passes what update_task just wrote (next_status), so the DB read below
 /// agrees with the write that fired it.
 ///
+/// Answers the successors this firing made ready (empty unless the task
+/// landed in a done column), so the caller can offer them to work dispatch —
+/// the agent half of the hand-off. Dispatch re-derives readiness itself; the
+/// list is a prompt to ask, not a claim that anything may start.
+///
 /// DETACHED BY DESIGN: every notification is fire-and-forget through the one
 /// writer; a paused write or a failed row never costs the ticket write it
 /// rode in on. The reads below are awaited (they must be: the notification's
@@ -504,7 +511,7 @@ pub async fn advance_workchains(
     board_id: &str,
     task_id: &str,
     status: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<Vec<String>, sqlx::Error> {
     let meta = status_meta(pg, board_id).await?;
     let category = terminal_of(&meta, status);
     // The chain this task sits in (one chain per task — the unique index).
@@ -518,22 +525,25 @@ pub async fn advance_workchains(
     .fetch_optional(pg)
     .await?;
     let Some((chain_id, chain_name, chain_creator, chain_paused)) = chain else {
-        return Ok(());
+        return Ok(Vec::new());
     };
+    // The successors this firing made ready — handed back for dispatch.
+    let mut ready_ids: Vec<String> = Vec::new();
     match category {
         // Done: the fan-out. Every successor whose predecessors are ALL now
         // satisfied becomes ready at once; its HUMAN assignees are told it
-        // is their turn. An agent successor hears nothing — its visibility
-        // is the heartbeat serving the ready head.
+        // is their turn. An agent successor is not notified — its id rides
+        // back to the caller, which offers it to work dispatch.
         Terminal::Done => {
             let ready = newly_ready_of(pg, &meta, task_id).await?;
+            ready_ids = ready.iter().map(|(id, _, _)| id.clone()).collect();
             // Unset seam = unwired boot, not a panic: skip the notification
             // rather than blow the request off the rails (the seam is set in
             // register_all; this arm is the safety net, same shape as the
             // attribution ladder's rungs).
             let Some(f) = GET_TASK.get() else {
                 tracing::warn!("[workchains] GET_TASK seam unset — turn notification skipped");
-                return Ok(());
+                return Ok(ready_ids);
             };
             for (succ_id, _, _) in ready {
                 let Some(t) = f(pg.clone(), succ_id.clone()).await? else {
@@ -581,14 +591,14 @@ pub async fn advance_workchains(
                 .await?;
             }
             let Some(creator) = chain_creator else {
-                return Ok(());
+                return Ok(Vec::new());
             };
             let Some(f) = GET_TASK.get() else {
                 tracing::warn!("[workchains] GET_TASK seam unset — pause notification skipped");
-                return Ok(());
+                return Ok(Vec::new());
             };
             let Some(t) = f(pg.clone(), task_id.to_string()).await? else {
-                return Ok(());
+                return Ok(Vec::new());
             };
             let subject = match t.ticket_ref.as_deref() {
                 Some(r) => format!("{r} {}", t.title),
@@ -604,7 +614,7 @@ pub async fn advance_workchains(
                     .fetch_optional(pg)
                     .await?;
             let Some((creator_id,)) = creator_id else {
-                return Ok(());
+                return Ok(Vec::new());
             };
             let input = NotificationInput {
                 kind: "workchain_paused",
@@ -618,18 +628,18 @@ pub async fn advance_workchains(
         }
         Terminal::Live => {}
     }
-    Ok(())
+    Ok(ready_ids)
 }
 
-// ── The heartbeat's ordering guarantee ───────────────────────────────────────
+// ── The ordering guarantee work dispatch asks ────────────────────────────────
 
-/// The workchain answer for one servable-candidate ticket, derived the same
-/// instant the heartbeat reads it: `Blocked` when a predecessor of its chain
-/// step is still live (the ticket must NOT be served, whatever its own
-/// column says), `Ready` when the step IS servable now — no predecessors
-/// (an entry point) or every predecessor done — flagged so the harness can
-/// prioritize chain work, `Free` when the ticket belongs to no chain (the
-/// ordinary heartbeat shape, unchanged).
+/// The workchain answer for one candidate ticket, derived the instant
+/// dispatch asks it: `Blocked` when a predecessor of its chain step is still
+/// live (the ticket must NOT be started, whatever its own column says),
+/// `Ready` when the step may start now — no predecessors (an entry point) or
+/// every predecessor done — and `Free` when the ticket belongs to no chain.
+/// `talaria_tasks::workchain_blocked` is the reader; every gate that starts
+/// or drives agent work goes through it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Readiness {
     Free,
@@ -637,21 +647,9 @@ pub enum Readiness {
     Blocked,
 }
 
-impl Readiness {
-    /// The wire field rides only on chain tickets: a `Free` ticket keeps the
-    /// feed item shape it always had, a `Ready` one carries
-    /// `workchainReady: true` — the minimum-churn shape the harnesses read.
-    pub fn ready_flag(self) -> Option<bool> {
-        match self {
-            Readiness::Free => None,
-            Readiness::Ready => Some(true),
-            Readiness::Blocked => None,
-        }
-    }
-}
-
 /// Chain readiness for a batch of candidate tickets, ONE query for the whole
-/// heartbeat. The query carries NO rule of its own — it fetches the chains'
+/// batch (the dispatch sweep asks once per pass). The query carries NO rule
+/// of its own — it fetches the chains'
 /// steps and edges and the terminal predicate is derived in Rust, through the
 /// one definition the board read uses. Spelling it in SQL is not possible
 /// without a second copy of the rule: done columns are per-board, and a board
@@ -661,8 +659,8 @@ impl Readiness {
 /// A candidate is Blocked when any predecessor of its step is still live
 /// (not archived, not done-terminal). It is Ready when it has NO
 /// predecessors or all of them are satisfied — a branched chain legitimately
-/// serves several ready steps at once (the fan-out is the point). A PAUSED
-/// chain serves its ready steps exactly as an unpaused one — pause is the
+/// starts several ready steps at once (the fan-out is the point). A PAUSED
+/// chain starts its ready steps exactly as an unpaused one — pause is the
 /// creator-facing signal that the chain stopped advancing, not a gate on
 /// work already at the front.
 ///
