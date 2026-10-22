@@ -1004,27 +1004,43 @@ pub struct RenderResult {
     pub warnings: Vec<String>,
 }
 
+/// Every image a stock chassis has ever defaulted to, oldest first; the LAST
+/// is the current pin. A chassis is the operator's file — seeded from the
+/// template once and never rewritten — so a host keeps whichever default it
+/// was seeded with: the floating `:latest` from before the pin, or the pin
+/// of the day it was installed. The render reads a chassis whose image is
+/// `${HERMES_IMAGE:-<any of these>}` as "never chosen" and renders the
+/// current pin, which is how a bump reaches every host and not only fresh
+/// installs. Any other image an operator wrote stays theirs.
+///
+/// Bumping: APPEND the new pin — never edit or drop an entry, or the hosts
+/// seeded with it stay on it for good. The rest of the procedure is in
+/// docs/ARCHITECTURE.md, "The fleet".
+const HERMES_IMAGE_DEFAULTS: &[&str] = &[
+    // Before 2026-10-22: floating, and never pulled once cached.
+    "nousresearch/hermes-agent:latest",
+    "nousresearch/hermes-agent:v0.22.4@sha256:7a69201726bc64db2072a1371557137c23312d29705cda2b8ea2a0214a50a4cf",
+];
+
 /// The Hermes image every agent runs unless `HERMES_IMAGE` says otherwise —
 /// tag AND digest, so a host can never quietly run a different build than
 /// the one this render was checked against. The chassis template carries
 /// the same string as its `${HERMES_IMAGE:-…}` default (a test holds the two
-/// together); this copy is what upgrades a chassis seeded before the pin.
-/// Bumping it: docs/ARCHITECTURE.md, "The fleet".
-pub const HERMES_IMAGE_PIN: &str = "nousresearch/hermes-agent:v0.22.4@sha256:7a69201726bc64db2072a1371557137c23312d29705cda2b8ea2a0214a50a4cf";
-
-/// The image line every chassis was seeded with before the pin. A chassis
-/// is the operator's file and is never rewritten, so a host seeded then
-/// still says this — and would keep running whatever `:latest` it cached
-/// first. The render reads this exact line as "never chosen" and renders
-/// the pin instead; any other image an operator wrote stays theirs.
-const LEGACY_FLOATING_IMAGE: &str = "${HERMES_IMAGE:-nousresearch/hermes-agent:latest}";
+/// together).
+pub const HERMES_IMAGE_PIN: &str = HERMES_IMAGE_DEFAULTS[HERMES_IMAGE_DEFAULTS.len() - 1];
 
 /// What every agent's service gets whatever chassis it was seeded from:
-/// the pinned image in place of the legacy floating default, and a stop
-/// grace long enough for Hermes to drain (`AGENT_STOP_GRACE_SECS`) unless
-/// the chassis sets its own.
+/// the current pin in place of any stock default a past template shipped,
+/// and a stop grace long enough for Hermes to drain
+/// (`AGENT_STOP_GRACE_SECS`) unless the chassis sets its own.
 fn apply_service_defaults(svc: &mut Map<String, Value>) {
-    if svc.get("image").and_then(Value::as_str) == Some(LEGACY_FLOATING_IMAGE) {
+    let stock = svc
+        .get("image")
+        .and_then(Value::as_str)
+        .and_then(|i| i.strip_prefix("${HERMES_IMAGE:-"))
+        .and_then(|i| i.strip_suffix('}'))
+        .is_some_and(|default| HERMES_IMAGE_DEFAULTS.contains(&default));
+    if stock {
         svc.insert(
             "image".into(),
             json!(format!("${{HERMES_IMAGE:-{HERMES_IMAGE_PIN}}}")),
@@ -1145,6 +1161,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             }
         };
     let mut agent_scopes: Vec<talaria_fleet_brain::AgentGatewayScope> = Vec::new();
+    let mut staged_configs: Vec<(PathBuf, String)> = Vec::new();
     seed_shared_skills().await?;
     seed_events_plugin().await?;
 
@@ -1368,12 +1385,9 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
 
         let cfg_path = agent_dir.join("config.yaml");
         let cfg_text = config_yaml_text(&def.model, version.version, &routed);
-        // IN PLACE, never renamed over: the running container sees this file
-        // through a single-file bind that pins its inode (the module header),
-        // and Hermes reloads it from there on the next request.
-        talaria_fleet_brain::write_in_place(&cfg_path, cfg_text.as_bytes(), 0o644)
-            .await
-            .map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+        // Written after the loop, once the relay's scope already allows
+        // what it routes to (the scope write, below).
+        staged_configs.push((cfg_path.clone(), cfg_text));
 
         // The rendered soul: standing headers + coaching + handles + soul.
         let coaching = if coach_on {
@@ -1844,14 +1858,40 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         ));
     }
 
-    // The relay's view of every agent key: subject and model set, one row,
-    // written after the loop so it is the whole roster at once.
+    // The relay's view of every agent key — subject and model set, one row —
+    // and the config.yaml files it must agree with. A config.yaml goes live
+    // in a RUNNING agent the moment it is written (the module header), and
+    // the relay allows an agent key exactly the ids its scope lists, so the
+    // order matters: WIDEN the row to the old scope plus the new one, write
+    // every config, then NARROW it to the new scope alone. A Hermes that
+    // reloads mid-render asks for an id from the old config or the new one,
+    // and both are allowed throughout; the other orders refuse its turns for
+    // the gap. (Another api instance reads the row through its 15s hot
+    // window and can lag that long.) A config that fails to write leaves the
+    // widened row in place — both scopes were sanctioned — until the next
+    // render.
+    let scope_warning = |e: String| {
+        format!(
+            "gateway: agent model scopes not written ({e}) — the relay judges agent keys by the last row it has"
+        )
+    };
+    if agent_gateway_keys
+        && let Err(e) = talaria_fleet_brain::widen_agent_gateway_models(pg, &agent_scopes).await
+    {
+        result.warnings.push(scope_warning(e));
+    }
+    for (cfg_path, cfg_text) in &staged_configs {
+        // IN PLACE, never renamed over: the running container sees this file
+        // through a single-file bind that pins its inode (the module header),
+        // and Hermes reloads it from there on the next request.
+        talaria_fleet_brain::write_in_place(cfg_path, cfg_text.as_bytes(), 0o644)
+            .await
+            .map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+    }
     if agent_gateway_keys
         && let Err(e) = talaria_fleet_brain::set_agent_gateway_models(pg, &agent_scopes).await
     {
-        result.warnings.push(format!(
-            "gateway: agent model scopes not written ({e}) — the relay judges agent keys by the last row it has"
-        ));
+        result.warnings.push(scope_warning(e));
     }
 
     let mut compose: Map<String, Value> = Map::new();
@@ -2812,25 +2852,50 @@ service:
 
     #[test]
     fn an_old_chassis_renders_the_pin_and_a_stop_grace_and_an_operators_image_stays() {
-        let mut legacy = Map::new();
-        legacy.insert("image".into(), json!(LEGACY_FLOATING_IMAGE));
-        apply_service_defaults(&mut legacy);
+        let pinned = json!(format!("${{HERMES_IMAGE:-{HERMES_IMAGE_PIN}}}"));
+        // Every stock default ever shipped — the floating `:latest` and each
+        // past pin — renders the CURRENT pin: a host seeded on any of them
+        // follows a bump.
+        for shipped in HERMES_IMAGE_DEFAULTS {
+            let mut seeded = Map::new();
+            seeded.insert(
+                "image".into(),
+                json!(format!("${{HERMES_IMAGE:-{shipped}}}")),
+            );
+            apply_service_defaults(&mut seeded);
+            assert_eq!(seeded.get("image"), Some(&pinned), "seeded with {shipped}");
+            assert_eq!(seeded.get("stop_grace_period"), Some(&json!("45s")));
+        }
         assert_eq!(
-            legacy.get("image"),
-            Some(&json!(format!("${{HERMES_IMAGE:-{HERMES_IMAGE_PIN}}}")))
+            HERMES_IMAGE_DEFAULTS[0], "nousresearch/hermes-agent:latest",
+            "the pre-pin floating default stays first: chassis files from before the pin still carry it"
         );
-        assert_eq!(legacy.get("stop_grace_period"), Some(&json!("45s")));
+        let unique: std::collections::HashSet<&&str> = HERMES_IMAGE_DEFAULTS.iter().collect();
+        assert_eq!(
+            unique.len(),
+            HERMES_IMAGE_DEFAULTS.len(),
+            "a pin listed twice"
+        );
 
-        let mut chosen = Map::new();
-        chosen.insert("image".into(), json!("registry.example/hermes:mine"));
-        chosen.insert("stop_grace_period".into(), json!("90s"));
-        apply_service_defaults(&mut chosen);
-        assert_eq!(
-            chosen.get("image"),
-            Some(&json!("registry.example/hermes:mine")),
-            "an image the operator wrote is theirs"
-        );
-        assert_eq!(chosen.get("stop_grace_period"), Some(&json!("90s")));
+        // An image the operator wrote is theirs — a registry of their own,
+        // a bare tag, or a Hermes version no stock template ever shipped.
+        for mine in [
+            "registry.example/hermes:mine",
+            "nousresearch/hermes-agent:v0.21.0",
+            "${HERMES_IMAGE:-nousresearch/hermes-agent:v0.21.0}",
+            "${HERMES_IMAGE:-registry.example/hermes:mine}",
+        ] {
+            let mut chosen = Map::new();
+            chosen.insert("image".into(), json!(mine));
+            chosen.insert("stop_grace_period".into(), json!("90s"));
+            apply_service_defaults(&mut chosen);
+            assert_eq!(
+                chosen.get("image"),
+                Some(&json!(mine)),
+                "{mine} is the operator's"
+            );
+            assert_eq!(chosen.get("stop_grace_period"), Some(&json!("90s")));
+        }
     }
 
     #[test]

@@ -138,17 +138,19 @@ must survive its own death:
 
 8. **The fleet** — once that landing is real, every *running* agent rolls,
    one at a time, the same in-place roll a config edit uses: its image is
-   pulled first if the host lacks it (a failed pull leaves the agent running),
-   then the container is recreated and health is waited for. This is how a
-   new Hermes pin reaches running agents. Stopped agents stay stopped — they
-   read the new render on next start. An adopted install rolls only from the
-   container that *is* the pin (green during blue's drain is not a second
-   deploy). An unadopted image install (dokploy, plain compose) does the same
-   when its container comes up on a digest the fleet has not been rolled for;
-   a restart of the same image is not a deploy. Checkout and dev installs do
-   not roll the fleet from here — they have no image digest, and a dev
-   restart is not a fleet event. The roll is detached from the reconcile tick
-   (a fleet outlives two minutes) and held on its own redis lease, so two
+   pulled first if the host lacks it (a failed pull leaves the agent
+   running), then the container is recreated and health is waited for. This
+   is how a new Hermes pin reaches an image install's running agents. Stopped
+   agents stay stopped — they read the new render on next start. An adopted
+   install rolls only from the container that *is* the pin (green during
+   blue's drain is not a second deploy). An unadopted image install (dokploy,
+   plain compose) does the same when its container comes up on a digest the
+   fleet has not been rolled for; a restart of the same image is not a
+   deploy. Checkout and dev installs do not roll the fleet from here — they
+   have no image digest, and a dev restart is not a fleet event; after an
+   upgrade there, **Roll all** once (`POST /api/fleet/roll`) moves running
+   agents onto a new pin. The roll is detached from the reconcile tick (a
+   fleet outlives two minutes) and held on its own redis lease, so two
    replicas do not roll the same fleet twice. A roll that dies mid-way does
    not record the digest, so the next tick retries.
 

@@ -601,6 +601,53 @@ pub async fn set_agent_gateway_models(
         .map_err(|e| format!("{AGENT_MODELS_SETTING} write failed: {e}"))
 }
 
+/// The row the render writes BEFORE it lands any config.yaml: each scoped
+/// agent may ask for what its stored scope allows AND what its new one
+/// does (the new ids first), and a slug the render dropped keeps its stored
+/// entry until [`set_agent_gateway_models`] narrows the row afterwards.
+/// Pure over the stored row so the merge is pinned without a database.
+pub fn widened_agent_gateway_models_json(current: &Value, scopes: &[AgentGatewayScope]) -> Value {
+    let mut out = current.as_object().cloned().unwrap_or_default();
+    for s in scopes {
+        let mut models = s.models.clone();
+        let stored = out
+            .get(&s.slug)
+            .and_then(|e| e.get("models"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str);
+        for m in stored {
+            if !models.iter().any(|x| x == m) {
+                models.push(m.to_string());
+            }
+        }
+        out.insert(
+            s.slug.clone(),
+            json!({ "model": s.model, "models": models }),
+        );
+    }
+    Value::Object(out)
+}
+
+/// Write [`widened_agent_gateway_models_json`] — the first half of the
+/// render's widen-then-narrow (see the scope write in render_fleet).
+/// Unchanged content is not rewritten.
+pub async fn widen_agent_gateway_models(
+    pg: &PgPool,
+    scopes: &[AgentGatewayScope],
+) -> Result<(), String> {
+    use talaria_gateway::agent_keys::AGENT_MODELS_SETTING;
+    let current = get_setting(pg, AGENT_MODELS_SETTING, Value::Null).await;
+    let next = widened_agent_gateway_models_json(&current, scopes);
+    if current == next {
+        return Ok(());
+    }
+    set_setting(pg, AGENT_MODELS_SETTING, &next)
+        .await
+        .map_err(|e| format!("{AGENT_MODELS_SETTING} write failed: {e}"))
+}
+
 /// Write a file ATOMICALLY and with its mode set before any byte lands:
 /// the content goes to a sibling temp file opened with `mode`, is flushed,
 /// and is renamed over the target. A reader (docker compose, the chat
@@ -984,6 +1031,50 @@ mod tests {
         assert_eq!(s.model, "x-eng");
         assert!(s.models.is_empty());
         assert_eq!(agent_gateway_models_json(&[]), json!({}));
+    }
+
+    #[test]
+    fn the_widened_row_allows_both_scopes_until_the_narrow_write() {
+        // A model switch on `analyst`, a new agent, and a slug this render
+        // dropped: while the configs land, every id either render routes to
+        // is allowed, and nothing stored is lost yet.
+        let stored = json!({
+            "analyst": { "model": "analyst", "models": ["old-main", "shared-aux"] },
+            "gone": { "model": "gone", "models": ["m"] }
+        });
+        let scopes = vec![
+            AgentGatewayScope {
+                slug: "analyst".into(),
+                model: "analyst".into(),
+                models: vec!["new-main".into(), "shared-aux".into()],
+            },
+            AgentGatewayScope {
+                slug: "fresh".into(),
+                model: "fresh".into(),
+                models: vec!["n".into()],
+            },
+        ];
+        let wide = widened_agent_gateway_models_json(&stored, &scopes);
+        assert_eq!(
+            wide,
+            json!({
+                "analyst": { "model": "analyst", "models": ["new-main", "shared-aux", "old-main"] },
+                "gone": { "model": "gone", "models": ["m"] },
+                "fresh": { "model": "fresh", "models": ["n"] }
+            })
+        );
+        let s = talaria_gateway::agent_keys::scope_of(&wide, "analyst").unwrap();
+        for id in ["old-main", "new-main", "shared-aux"] {
+            assert!(talaria_gateway::agent_keys::model_in_scope(&s, id), "{id}");
+        }
+        // Widening an already-current row changes nothing (no rewrite), and
+        // a missing or malformed row widens to exactly the new scope.
+        let narrow = agent_gateway_models_json(&scopes);
+        assert_eq!(widened_agent_gateway_models_json(&narrow, &scopes), narrow);
+        assert_eq!(
+            widened_agent_gateway_models_json(&Value::Null, &scopes),
+            narrow
+        );
     }
 
     #[test]

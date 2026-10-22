@@ -9,11 +9,15 @@
 #
 # THE IMAGE IS PINNED, tag AND digest, so every host runs the Hermes this
 # render was checked against — never whatever `:latest` a host cached first.
-# A host pulls a pin it lacks on the next roll or start (the post-deploy
-# fleet roll moves running agents onto it). HERMES_IMAGE in fleet/.env
-# overrides it. Bumping it: docs/ARCHITECTURE.md, "The fleet" — the same
-# string lives in HERMES_IMAGE_PIN (talaria-fleet-render) and the workbench
-# image's FROM, and tests fail if they disagree.
+# A host pulls a pin it lacks on the next roll or start (on an image install
+# the post-deploy fleet roll moves running agents onto it; elsewhere, Roll
+# all). HERMES_IMAGE in fleet/.env overrides it. This line is copied into
+# fleet/chassis.yml once and never rewritten, so the render reads any stock
+# default it ever shipped as "not chosen" and renders the current pin
+# (HERMES_IMAGE_DEFAULTS, talaria-fleet-render). Bumping it:
+# docs/ARCHITECTURE.md, "The fleet" — the same string is the last entry of
+# HERMES_IMAGE_DEFAULTS and the workbench image's FROM, and tests fail if
+# they disagree.
 service:
   image: ${HERMES_IMAGE:-nousresearch/hermes-agent:v0.22.4@sha256:7a69201726bc64db2072a1371557137c23312d29705cda2b8ea2a0214a50a4cf}
   command: gateway run

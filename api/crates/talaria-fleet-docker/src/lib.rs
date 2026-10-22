@@ -225,6 +225,20 @@ async fn drain_gateway(container: &str) {
     }
 }
 
+/// Undo [`drain_gateway`] when the stop it cleared the way for did not
+/// happen — a compose or `docker stop` that failed (or timed out) before it
+/// reached the container. s6 will not revive a service marked down, so
+/// without this the container keeps running with no gateway until someone
+/// restarts it. `s6-svc -u` brings it back up. Best effort, and harmless
+/// where there is nothing to undo: a container that did stop answers the
+/// exec with an error, and a gateway that is already up stays up.
+async fn undrain_gateway(container: &str) {
+    let script = format!("{S6_BIN}/s6-svc -u {GATEWAY_SERVICE_DIR}");
+    if let Err(e) = docker_exec(container, &["sh", "-c", &script], 15_000).await {
+        tracing::debug!("[fleet] gateway undrain in {container} skipped: {e}");
+    }
+}
+
 /// `compose up` for a department's service, with the network ensured and the
 /// image pulled first. The up's own timeout covers the stop and the create;
 /// the pull has its own, much longer one — a new Hermes pin is gigabytes.
@@ -240,13 +254,24 @@ async fn compose_up(
     pull_missing(&svc).await?;
     // A recreate stops the running container: drain it first. A plain `up`
     // starts one and leaves a running one alone, so it has nothing to drain.
-    if verb.contains(&"--force-recreate") {
-        drain_gateway(&slot_container(department, slot)).await;
+    let drained = verb
+        .contains(&"--force-recreate")
+        .then(|| slot_container(department, slot));
+    if let Some(container) = &drained {
+        drain_gateway(container).await;
     }
     let mut args: Vec<String> = compose_args(verb);
     args.push(svc);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let (_, stderr) = docker(&refs, timeout).await?;
+    let (_, stderr) = match docker(&refs, timeout).await {
+        Ok(out) => out,
+        Err(e) => {
+            if let Some(container) = &drained {
+                undrain_gateway(container).await;
+            }
+            return Err(e);
+        }
+    };
     // Bringing an agent up is the moment to ask whether it can reach us — from
     // the fleet network, not from here. Detached: a preflight must never be
     // able to fail a start, and its whole value is that it writes a verdict
@@ -276,6 +301,24 @@ async fn pull_missing(svc: &str) -> Result<(), String> {
         Err(e) if e.contains("unknown flag") => Ok(()),
         Err(e) => Err(format!("could not pull the image for {svc}: {e}")),
     }
+}
+
+/// [`pull_missing`] for a department's current service, on its own — for a
+/// caller that must have the image on the host BEFORE it stops anything
+/// compose does not stop for it: the roll that moves a legacy `-b` agent
+/// home retires `-b` itself, so it pulls first, while `-b` still serves.
+pub async fn pull_agent_image(pg: &PgPool, department: &str) -> Result<(), String> {
+    pull_missing(&slot_service(department, active_slot(pg, department).await)).await
+}
+
+/// Whether the named container exists and is running.
+pub async fn container_running(name: &str) -> bool {
+    docker(
+        &["inspect", "-f", "{{.State.Running}}", name],
+        Duration::from_secs(10),
+    )
+    .await
+    .is_ok_and(|(out, _)| out.trim() == "true")
 }
 
 /// Wait for the managed container to report healthy (or give up). `unhealthy`
@@ -334,6 +377,9 @@ pub async fn running_departments(departments: &[String]) -> Result<Vec<String>, 
 /// `AGENT_STOP_GRACE_SECS` before docker's KILL — and
 /// remove it. Never `rm -f`, which is a SIGKILL that cuts off whatever the
 /// agent had in flight. A container that does not exist is already retired.
+/// A stop that fails brings the drained gateway back up, so the container
+/// is left serving, not running without a gateway; a remove that fails
+/// leaves it stopped.
 pub async fn retire_container(name: &str) -> Result<(), String> {
     if docker(&["inspect", "-f", "{{.Id}}", name], Duration::from_secs(10))
         .await
@@ -343,11 +389,15 @@ pub async fn retire_container(name: &str) -> Result<(), String> {
     }
     drain_gateway(name).await;
     let grace = AGENT_STOP_GRACE_SECS.to_string();
-    docker(
+    if let Err(e) = docker(
         &["stop", "-t", &grace, name],
         Duration::from_secs(AGENT_STOP_GRACE_SECS + 30),
     )
-    .await?;
+    .await
+    {
+        undrain_gateway(name).await;
+        return Err(e);
+    }
     docker(&["rm", name], Duration::from_secs(60))
         .await
         .map(|_| ())
@@ -478,14 +528,21 @@ async fn compose_verb(
 ) -> Result<String, String> {
     let slot = active_slot(pg, department).await;
     // Every verb through here stops the container (stop, restart, rm -s):
-    // let the gateway drain first.
-    drain_gateway(&slot_container(department, slot)).await;
+    // let the gateway drain first — and bring it back if the verb failed
+    // before it got that far.
+    let container = slot_container(department, slot);
+    drain_gateway(&container).await;
     let svc = slot_service(department, slot);
     let mut full: Vec<String> = compose_args(verb_args);
     full.push(svc);
     let refs: Vec<&str> = full.iter().map(String::as_str).collect();
-    let (_, stderr) = docker(&refs, timeout).await?;
-    Ok(stderr.trim().to_string())
+    match docker(&refs, timeout).await {
+        Ok((_, stderr)) => Ok(stderr.trim().to_string()),
+        Err(e) => {
+            undrain_gateway(&container).await;
+            Err(e)
+        }
+    }
 }
 
 /// `docker volume rm` — plain success/failure: a missing volume fails, and

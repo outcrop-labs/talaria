@@ -305,21 +305,38 @@ async fn roll_agent_locked(
 
     // An agent a blue/green roll left in `agent-<dept>-b` comes home to
     // `agent-<dept>`: point the def back at slot a so the render names the
-    // home service (and the manifest dials it), then retire the -b
-    // container — compose no longer addresses it — the graceful way. The
-    // home container starts below, on the same volume, once -b has let go
-    // of the gateway lock. If either step fails the def goes back to b and
-    // the render follows, so the agent is left where it was, still serving.
+    // home service (and the manifest dials it), pull the home service's
+    // image if the host lacks it, and only then retire the -b container —
+    // compose no longer addresses it — the graceful way. The pull comes
+    // first because the first roll after a pin bump is the one that pulls
+    // gigabytes: done after the retire, the agent would be offline for the
+    // whole download, and a failed pull would leave it with no container.
+    // The home container starts below, on the same volume, once -b has let
+    // go of the gateway lock.
+    //
+    // A failure before -b stopped puts the def back on b and re-renders, so
+    // the agent stays where it was, still serving (a failed stop brings the
+    // drained gateway back up). A -b that stopped but would not be removed
+    // no longer serves or holds the lock, so the move home goes on and the
+    // leftover is named in the log.
     if active.as_deref() == Some("b") {
+        let legacy = talaria_fleet_docker::slot_container(department, Slot::B);
         set_active_slot(pg, &slug, "a").await?;
-        let moved = match render(pg, sb).await {
-            Ok(_) => {
-                talaria_fleet_docker::retire_container(&talaria_fleet_docker::slot_container(
-                    department,
-                    Slot::B,
-                ))
-                .await
-            }
+        let ready = match render(pg, sb).await {
+            Ok(_) => talaria_fleet_docker::pull_agent_image(pg, department).await,
+            Err(e) => Err(e),
+        };
+        let moved = match ready {
+            Ok(()) => match talaria_fleet_docker::retire_container(&legacy).await {
+                Ok(()) => Ok(()),
+                Err(e) if talaria_fleet_docker::container_running(&legacy).await => Err(e),
+                Err(e) => {
+                    tracing::warn!(
+                        "[fleet] {legacy} stopped but was not removed ({e}) — moving {department} home anyway; remove it by hand"
+                    );
+                    Ok(())
+                }
+            },
             Err(e) => Err(e),
         };
         if let Err(e) = moved {
@@ -332,7 +349,8 @@ async fn roll_agent_locked(
     }
 
     // The roll itself: pull if the host lacks the image (a failed pull stops
-    // here with the running container untouched), stop gracefully, recreate.
+    // here with the running container untouched — for a legacy -b agent the
+    // pull already ran above), stop gracefully, recreate.
     talaria_fleet_docker::fleet_recreate(pg, department).await?;
     if !talaria_fleet_docker::wait_healthy(pg, department, ROLL_HEALTH_WAIT_MS).await {
         return Ok(Some(format!(
