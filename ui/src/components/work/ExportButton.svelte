@@ -12,7 +12,6 @@
   // error, so this path wants the rejection.
   import { Download } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
-  import IconButton from '@/components/ui/IconButton.svelte'
   import { createArtifact, officeExportHref } from '@/lib/artifacts'
   import type { Conversation, StoredMessage } from '@/lib/conversations.svelte'
   import { downloadFile } from '@/lib/download-file'
@@ -94,9 +93,20 @@
 </script>
 
 {#if conversationId}
-  <IconButton size="sm" title="Export transcript" disabled={busy} onclick={() => void run()}>
-    <Download size={14} />
-  </IconButton>
+  <!-- The header's quiet register: icon + mono label, the label giving way
+       below `xl` (the title and the accessible name keep saying it). -->
+  <Button
+    variant="ghost"
+    size="xs"
+    class="gap-1"
+    title="Export the transcript as a document"
+    aria-label="Export transcript"
+    disabled={busy}
+    onclick={() => void run()}
+  >
+    <Download size={13} />
+    <span class="hidden xl:inline">Export</span>
+  </Button>
   {#if made}
     <!-- The second action on the export that just happened. Labelled, because
          a format is not a verb placement can imply. -->

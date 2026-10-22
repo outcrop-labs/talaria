@@ -1,10 +1,13 @@
 <script lang="ts">
   // THE LIVING DOCUMENT — a real `doc` artifact, side-by-side with the chat, for
-  // either surface that has one: a plan or a work session. One per conversation
-  // (linked via artifact_links), found-or-created server-side on first open. A
-  // plan's is seeded from the agent's plan template when one is bound; a work
-  // session's starts empty, because the shape belongs to the work rather than to
-  // a project-plan skeleton. Editable on the fly, autosaved, referenceable anywhere in the app.
+  // a PLAN session. One per conversation (linked via artifact_links),
+  // found-or-created server-side on first open, seeded from the agent's plan
+  // template when one is bound. Editable on the fly, autosaved, referenceable
+  // anywhere in the app.
+  //
+  // A work session has none: its pane is the files it works on, and the doc
+  // route answers 404 for a work session that never had one. An older work
+  // session's living document is listed among its files instead.
   import QueryError from '@/components/ui/QueryError.svelte'
   import DocEditor from './DocEditor.svelte'
   import PlanDocSkeleton from './PlanDocSkeleton.svelte'
@@ -53,7 +56,11 @@
   })
 </script>
 
-<div class="flex min-w-0 flex-col border-l border-line-subtle">
+<!-- THE HEIGHT CHAIN. Without `h-full min-h-0 flex-1` this root grew to the
+     editor's height, so the editor's own scroll box had nothing to scroll
+     within and a long plan simply ran off the bottom of the pane. No left
+     hairline: the host column draws the divider. -->
+<div class="flex h-full min-h-0 min-w-0 flex-1 flex-col">
   {#if error}
     <QueryError
       class="p-6"

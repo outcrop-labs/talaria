@@ -79,6 +79,15 @@ describe('streamChat — the streaming path', () => {
     expect(JSON.parse(init.body as string)).toEqual({ ...params, conversationId: 'c1', tier: 'deep' })
   })
 
+  it('carries the pane focus of a work turn in the body, as given', async () => {
+    const fetchMock = vi.fn(async () => sse('data: [DONE]\n\n'))
+    vi.stubGlobal('fetch', fetchMock)
+    const focus = { kind: 'artifact' as const, id: 'a1', title: 'Q3 plan' }
+    await collect(streamChat({ ...params, conversationId: 'c1', kind: 'work', focus }))
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toMatchObject({ kind: 'work', focus })
+  })
+
   it('throws on a non-OK streaming response', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 502, headers: { 'content-type': 'text/plain' } })))
     await expect(collect(streamChat(params))).rejects.toThrow('request failed (502)')
@@ -94,6 +103,15 @@ describe('queueChatMessage', () => {
     await queueChatMessage({ model: 'm', conversationId: 'c1', content: 'later' })
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(JSON.parse(init.body as string)).toMatchObject({ queue: true, conversationId: 'c1' })
+  })
+
+  it('carries the pane focus into the queued turn too', async () => {
+    const fetchMock = vi.fn(async () => jsonRes({ queued: true, conversationId: 'c1' }, 202))
+    vi.stubGlobal('fetch', fetchMock)
+    const focus = { kind: 'google' as const, id: 'g_1' }
+    await queueChatMessage({ model: 'm', conversationId: 'c1', content: 'later', kind: 'work', focus })
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toMatchObject({ queue: true, focus })
   })
 
   it('rejects with the server message on failure', async () => {

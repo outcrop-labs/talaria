@@ -1,8 +1,12 @@
 <script lang="ts">
   // The editor half of LivingDoc.svelte — mounts once the conversation doc id
-  // is known.
+  // is known. A PLAN's document: only plan sessions have one now (a work
+  // session's pane is its files — `components/work/FilePane`).
+  import { tick } from 'svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Maximize2, Minimize2 } from '@lucide/svelte'
+  import { Maximize2, MessageSquareText, Minimize2 } from '@lucide/svelte'
+  import ArtifactComments from '@/components/work/ArtifactComments.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import GeneratingOverlay from '@/components/ui/GeneratingOverlay.svelte'
@@ -29,6 +33,22 @@
   let syncNonce = $state(0)
   // Fullscreen (Esc exits) — same affordance as the artifact/KB editors.
   let fullscreen = $state(false)
+  // Comments swap in over the editor rather than beside it: the pane is a
+  // column of a split stage, too narrow to split again. The editor stays
+  // MOUNTED underneath (hidden), so its caret and scroll survive the visit.
+  let showComments = $state(false)
+  // The box around the editor. The scroll container itself is the editor's
+  // own content box inside it (RichEditor `fill`), found when it is needed.
+  let editorBox = $state<HTMLDivElement | null>(null)
+  // WHAT THE EDITOR IS SHOWING, as far as this component knows: the body it
+  // was seeded with, or the last body it saved. A sync remounts only when the
+  // server's body differs from it — the editor is uncontrolled, so a remount is
+  // the only way to show a rewrite, and an unneeded one throws the reader back
+  // to the top of the document on every turn.
+  let shownBody: string | null = null
+  $effect(() => {
+    if (shownBody === null && artifact) shownBody = artifact.body
+  })
 
   // TALA-33: the SERVER auto-syncs this document after every landed plan
   // turn and fans a conversation event — this pane no longer waits for its
@@ -53,7 +73,28 @@
       toastError('Save failed', e)
       return
     }
+    shownBody = body
     void qc.invalidateQueries({ queryKey: ['artifact', id] })
+  }
+
+  /** The element that actually scrolls: RichEditor's content box. Queried
+   *  rather than bound because it belongs to the editor, which is remounted. */
+  const scroller = (): HTMLElement | null => editorBox?.querySelector<HTMLElement>('.overflow-y-auto') ?? null
+
+  /** Remount the editor on the body the server now has, and put the reader
+   *  back where they were — a rewrite usually changes a paragraph, not the
+   *  place somebody was reading. */
+  const reseed = async (body: string) => {
+    const top = scroller()?.scrollTop ?? 0
+    shownBody = body
+    syncNonce += 1
+    await tick()
+    // The editor builds its document on mount; one frame later it has a height
+    // to scroll within.
+    requestAnimationFrame(() => {
+      const el = scroller()
+      if (el) el.scrollTop = top
+    })
   }
 
   // The plan's agent rewrites the document from the conversation so far.
@@ -63,7 +104,10 @@
     try {
       await postJson(`/api/conversations/${conversationId}/doc`, {})
       await qc.invalidateQueries({ queryKey: ['artifact', id] })
-      syncNonce += 1
+      // The server's recency guard often makes this a no-op (its own post-turn
+      // sync got there first, or nothing new was said): same body, no remount.
+      const fresh = qc.getQueryData<{ body: string } | null>(['artifact', id])?.body
+      if (fresh !== undefined && fresh !== shownBody) await reseed(fresh)
     } catch (e) {
       syncErr = errorMessage(e)
     } finally {
@@ -114,22 +158,40 @@
   <PlanDocSkeleton />
 {:else}
   <div class={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'flex-1')}>
-    <div class="flex items-center gap-2 border-b border-line-subtle px-4 py-2">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Plan document</span>
-      <span class="min-w-0 flex-1 truncate font-sans text-sm text-fg">{artifact.title}</span>
-      <Button size="sm" variant="outline" onclick={() => void sync()} disabled={syncing} title="The agent rewrites the document from the conversation so far">
+    <div class="flex h-11 shrink-0 items-center gap-2 border-b border-line-subtle pl-4 pr-2">
+      <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Plan</span>
+      <span class="min-w-0 flex-1 truncate font-sans text-sm text-fg" title={artifact.title}>{artifact.title}</span>
+      <Button size="xs" variant="outline" class="shrink-0" onclick={() => void sync()} disabled={syncing} title="The agent rewrites the document from the conversation so far">
         {syncing ? 'Syncing' : 'Sync from chat'}
       </Button>
-      <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">Auto-saves</span>
-      <a href={`${p('/artifacts')}?a=${id}`} class="shrink-0 text-[11px] text-accent hover:underline" title="Open in Files">
-        Open ↗
-      </a>
-      <Button variant="ghost" size="sm" class="shrink-0" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onclick={() => (fullscreen = !fullscreen)}>
-        {#if fullscreen}<Minimize2 size={14} />{:else}<Maximize2 size={14} />{/if}
-      </Button>
+      <span class="hidden shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim xl:inline">Auto-saves</span>
+      <span class="flex shrink-0 items-center">
+        <IconButton
+          size="sm"
+          title={showComments ? 'Back to the plan' : 'Comments'}
+          active={showComments}
+          onclick={() => (showComments = !showComments)}
+        >
+          <MessageSquareText size={14} />
+        </IconButton>
+        <a href={`${p('/artifacts')}?a=${id}`} class="px-1.5 text-[11px] text-accent hover:underline" title="Open in Files">
+          Open ↗
+        </a>
+        <IconButton size="sm" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onclick={() => (fullscreen = !fullscreen)}>
+          {#if fullscreen}<Minimize2 size={14} />{:else}<Maximize2 size={14} />{/if}
+        </IconButton>
+      </span>
     </div>
     {#if syncErr}<div class="border-b border-line-subtle px-4 py-1.5 text-xs" style:color="var(--theme-danger)">{syncErr}</div>{/if}
-    <div class="relative min-h-0 flex-1 overflow-y-auto">
+    {#if showComments}
+      <div class="flex min-h-0 flex-1">
+        <ArtifactComments artifactId={id} onClose={() => (showComments = false)} />
+      </div>
+    {/if}
+    <!-- A flex column, NOT a scroll box: the editor (`fill`) owns the scroll,
+         under its own toolbar, and needs a bounded parent to own it in. Two
+         nested scroll boxes was how a long plan stopped scrolling at all. -->
+    <div bind:this={editorBox} class={cn('relative flex min-h-0 flex-1 flex-col', showComments && 'hidden')}>
       {#if syncing}<GeneratingOverlay site="chat/doc-resync" label="Rewriting the plan document from the conversation" />{/if}
       {#key `${id}:${syncNonce}`}
         <RichEditor

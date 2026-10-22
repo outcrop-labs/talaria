@@ -37,7 +37,11 @@ Source: [`api/crates/talaria-routes-boards/src/plans/plans_id_doc.rs`](../../api
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{artifact}` | 200, 404 | — |
-| POST | `session` | [body](#post-apiplansiddoc-body) | `{artifactId}` | 200, 400, 403, 404, 502 | — |
+| POST | `session` | [body](#post-apiplansiddoc-body) | `{artifactId}` | 200, 400, 403, 404, 409, 502 | — |
+
+**GET** — A plan: its living document, created (from the plan template) on the first read. A work session: the living document a legacy session already has, else 404 "this session has no plan document" — never creates one.
+
+**POST** — A plan: the plan's agent rewrites the document from the conversation so far. A work session: 409 — its files are written by the agent's own tools, and there is no plan document to sync.
 
 ### POST `/api/plans/{id}/doc` body
 

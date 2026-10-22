@@ -130,6 +130,10 @@ export const WAITING_SITES = {
   'mcp/server-refresh': { role: 'tool', slot: 'button', note: 'Re-probing a server card for its tool list.' },
   'mcp/sync': { role: 'submitting', slot: 'button', note: 'Mirroring the official MCP registry into the local catalog.' },
   'mcp/featured-save': { role: 'submitting', slot: 'button', note: "Saving the operator's featured-shelf edits." },
+  /* ── Manage overview ─────────────────────────────────────────────────── */
+  'manage/fleet-roll': { role: 'tool', slot: 'button', note: 'Rolling every agent from the Manage overview.' },
+  'manage/fleet-start': { role: 'tool', slot: 'button', note: 'Starting every stopped agent from the Manage overview.' },
+  'manage/mcp-check': { role: 'tool', slot: 'button', note: 'Re-probing every MCP server from the Manage overview.' },
   'skills/marketplace-search': { role: 'tool', slot: 'inline', note: 'Catalog search in flight.' },
   'skills/marketplace-install': { role: 'submitting', slot: 'button', note: 'Reading a repo or writing its skills into a destination.' },
 

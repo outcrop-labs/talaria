@@ -18,7 +18,7 @@ the platform for other people lives in them.
 | :--- | :--- |
 | [Comms](./comms.md) | Channels, relays, DMs, agent chats |
 | [Boards](./boards.md) | Tickets, workflow columns, views, review and sign-off |
-| [Plan](./plan.md) | Planning with an agent, the living document, drafting tickets |
+| [Plan](./plan.md) | Planning with an agent, the living document, drafting tickets; a work session's files |
 | [Research](./research.md) | Cited research runs at three depths |
 | [Knowledge](./knowledge.md) | Spaces and docs, official content, OKF summaries |
 | [Files](./files.md) | Documents, uploads, sharing, Secrets |

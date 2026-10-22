@@ -1,17 +1,35 @@
+<script lang="ts" module>
+  import type { Snippet } from 'svelte'
+
+  /** The pieces of the toolbar a host lays out in its own header row. */
+  export interface PaneParts {
+    /** The title — plain in Read, an input in Edit (renaming stays here). */
+    title: Snippet
+    /** The Read/Edit switch. */
+    tools: Snippet
+    /** The More menu, with the share and official controls folded into it. */
+    menu: Snippet
+  }
+</script>
+
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Download, ExternalLink, History, Maximize2, Minimize2, MoreHorizontal, Paperclip, Star, Trash2, Upload } from '@lucide/svelte'
+  import { Download, ExternalLink, History, Maximize2, Minimize2, MoreHorizontal, Paperclip, Share2, Star, Trash2, Upload } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import { buttonClasses } from '@/components/ui/button'
   import Chip from '@/components/ui/Chip.svelte'
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
+  import Input from '@/components/ui/Input.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import RecordTitle from '@/components/ui/RecordTitle.svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
+  import { inlineEditKeys } from '@/components/ui/control'
   import { confirm, alert } from '@/components/ui/confirm.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import BrainRoutingSelect from '@/components/kb/BrainRoutingSelect.svelte'
@@ -24,14 +42,35 @@
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import AgentRefineNotice from '@/components/kb/AgentRefineNotice.svelte'
-  import { deleteArtifact, officeExport, officeExportHref, saveArtifact, uploadFile, useArtifact } from '@/lib/artifacts'
+  import { deleteArtifact, officeExport, officeExportHref, saveArtifact, uploadFile, useArtifact, type Artifact } from '@/lib/artifacts'
   import { KIND_LABEL } from './artifacts'
   import ArtifactHistory from './ArtifactHistory.svelte'
   import FilePreview from './FilePreview.svelte'
   import KbDocPageSkeleton from './KbDocPageSkeleton.svelte'
   import ArtifactSheetView from './ArtifactSheetView.svelte'
 
-  let { id, onDeleted }: { id: string; onDeleted: () => void } = $props()
+  let {
+    id,
+    onDeleted,
+    header,
+    override,
+  }: {
+    id: string
+    onDeleted: () => void
+    /** PANE MODE. A host that draws one header row for every kind of file (the
+     *  work pane: type, title, Comments, Open, fullscreen, Close) renders this
+     *  editor's own controls INTO that row rather than stacking a second
+     *  toolbar under it. Called with null until the artifact has loaded, so the
+     *  row stands from the first paint. In pane mode the host owns fullscreen,
+     *  the brain-routing select stays on the Files page, and the share and
+     *  official buttons move into the More menu — a 44% column cannot hold the
+     *  page toolbar on one line. */
+    header?: Snippet<[PaneParts | null]>
+    /** Pane mode: rendered INSTEAD of the body (the host's comments), between
+     *  the header row and the footer, so the editor's mode and title survive
+     *  the swap. */
+    override?: Snippet
+  } = $props()
 
   const qc = useQueryClient()
   const session = useSession()
@@ -164,7 +203,18 @@
 
   const menuItems = (): ContextMenuEntry[] => {
     if (!artifact) return []
+    // In pane mode the toolbar's share and official buttons live here instead.
+    const paneEntries: ContextMenuEntry[] = header
+      ? [
+          { label: `Share & permissions (${artifact.visibility})`, icon: [Share2, { size: 13 }], onSelect: () => (shareOpen = true) },
+          ...(isOwner
+            ? [{ label: artifact.official ? 'Remove official' : 'Make official', icon: [Star, { size: 13 }], onSelect: () => void save({ official: !artifact.official }) } as ContextMenuEntry]
+            : []),
+          'sep',
+        ]
+      : []
     const entries: ContextMenuEntry[] = [
+      ...paneEntries,
       { label: showHistory ? 'Hide history' : 'Version history', icon: [History, { size: 13 }], onSelect: () => (showHistory = !showHistory) },
       { label: exporting ? 'Exporting' : googleLabel, icon: [Upload, { size: 13 }], disabled: exporting, onSelect: () => void exportToGoogle() },
     ]
@@ -204,6 +254,91 @@
   }}
 />
 
+{#snippet paneTitle()}
+  {#if artifact}
+    {#if mode === 'edit'}
+      <Input
+        value={title}
+        placeholder="Untitled"
+        aria-label="Title"
+        oninput={(e) => {
+          title = e.currentTarget.value
+          dirty = true
+        }}
+        onblur={() => dirty && void saveBody()}
+        onkeydown={inlineEditKeys(() => artifact && (title = artifact.title))}
+        class="h-7 min-w-0 flex-1 border-0 bg-transparent px-0 font-sans text-sm font-medium focus:border-0"
+      />
+    {:else}
+      <span class="min-w-0 flex-1 truncate font-sans text-sm text-fg" title={artifact.title}>
+        {artifact.title || 'Untitled document'}
+      </span>
+    {/if}
+  {/if}
+{/snippet}
+
+{#snippet paneTools()}
+  <!-- A file upload has nothing to edit in place, so it has no mode either. -->
+  {#if artifact && artifact.kind !== 'file'}
+    <Segmented
+      size="xs"
+      options={[{ id: 'read', label: 'Read' }, { id: 'edit', label: 'Edit' }] as const}
+      value={mode}
+      onChange={(m) => {
+        if (m === 'read' && mode === 'edit') void saveBody()
+        mode = m
+      }}
+    />
+  {/if}
+{/snippet}
+
+{#snippet paneMenu()}
+  <DropdownMenu class="shrink-0" items={menuItems}>
+    {#snippet trigger(_open: boolean)}
+      <IconButton size="sm" title="More">
+        <MoreHorizontal size={14} />
+      </IconButton>
+    {/snippet}
+  </DropdownMenu>
+{/snippet}
+
+{#if header}
+  <!-- PANE MODE: one column, the host's header row on top, then the body, then
+       the footer. `flex-1` rather than `h-full`: the host column is a flex
+       column, and that is what bounds the body's own scroll box. -->
+  <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+    {@render header(artifact ? { title: paneTitle, tools: paneTools, menu: paneMenu } : null)}
+    {#if artifactQuery.isError && artifact === undefined}
+      <div in:fade={{ duration: 150 }} class="min-h-0 flex-1 overflow-y-auto">
+        <QueryError
+          error={artifactQuery.error}
+          title="Could not load this document"
+          onRetry={() => void artifactQuery.refetch()}
+        />
+      </div>
+    {:else if artifact === null}
+      <div in:fade={{ duration: 150 }} class="min-h-0 flex-1">
+        <EmptyState icon="⧉" title="Document not found" hint="It may have been deleted, or it is no longer shared with you." />
+      </div>
+    {:else if !artifact}
+      <!-- The prose half of the page skeleton: the row above is already the
+           real header, so a skeleton toolbar under it would be a second one. -->
+      <div aria-hidden="true" class="min-h-0 flex-1 space-y-3.5 overflow-hidden px-6 py-8">
+        {#each ['88%', '96%', '72%', '91%', '84%', '60%'] as w, i (i)}
+          <div style:width={w}><Skeleton class="h-3 w-full rounded-full" /></div>
+        {/each}
+      </div>
+    {:else}
+      {#if override}
+        <div class="flex min-h-0 flex-1">{@render override()}</div>
+      {:else}
+        {@render bodyRow(artifact)}
+      {/if}
+      {@render footerRow(artifact)}
+      {@render shareModal(artifact)}
+    {/if}
+  </div>
+{:else}
 <!-- `if (!artifact)` covered all three answers, so a 500 and a deleted artifact
      both left fourteen skeleton nodes shimmering — measured unchanged at +53s
      in a browser, with no error, no retry, and no way to tell which it was.
@@ -283,159 +418,172 @@
       </DropdownMenu>
     </div>
 
-    <div class="flex min-h-0 flex-1">
-      {#if artifact.kind === 'doc'}
-        {#if mode === 'edit'}
-          {#key `${id}-${seed}`}
-            <RichEditor bind:this={editorRef} value={artifact.body} slash prose autosave onSave={() => void saveBody()} placeholder="Start writing" fill class="min-w-0 flex-1" />
-          {/key}
-          <!-- TALA-4: announce agent refines (update_document) inside the
-               editing surface too. -->
+    {@render bodyRow(artifact)}
+
+    {@render footerRow(artifact)}
+
+    {@render shareModal(artifact)}
+  </div>
+{/if}
+{/if}
+
+{#snippet bodyRow(artifact: Artifact)}
+  <div class="flex min-h-0 flex-1">
+    {#if artifact.kind === 'doc'}
+      {#if mode === 'edit'}
+        {#key `${id}-${seed}`}
+          <RichEditor bind:this={editorRef} value={artifact.body} slash prose autosave onSave={() => void saveBody()} placeholder="Start writing" fill class="min-w-0 flex-1" />
+        {/key}
+        <!-- TALA-4: announce agent refines (update_document) inside the
+             editing surface too. -->
+        {#if artifact}
+          <AgentRefineNotice
+            kind="artifact"
+            id={id}
+            current={() => editorRef?.getMarkdown() ?? artifact.body}
+            onLoad={(md) => {
+              // Match the KB grammar: the staged text is saved (the viewer's
+              // acceptance) and the editor reseeds with the saved content.
+              void save({ body: md }).then(() => (seed += 1))
+            }}
+            {me}
+            class="shrink-0"
+          />
+        {/if}
+      {:else}
+        <!-- Tab-pane grammar on the READ pane only: the edit pane holds live
+             editor state (and is seed-keyed for Muse/revision swaps), so it
+             keeps its hard cut rather than replaying an entrance. -->
+        <div in:fly={{ y: 6, duration: 200 }} class="re-prose min-w-0 flex-1 overflow-y-auto">
           {#if artifact}
             <AgentRefineNotice
               kind="artifact"
               id={id}
-              current={() => editorRef?.getMarkdown() ?? artifact.body}
-              onLoad={(md) => {
-                // Match the KB grammar: the staged text is saved (the viewer's
-                // acceptance) and the editor reseeds with the saved content.
-                void save({ body: md }).then(() => (seed += 1))
-              }}
+              current={() => artifact.body}
+              onLoad={() => void qc.invalidateQueries({ queryKey: ['artifact', id] })}
+              onAnnounce={() => void qc.invalidateQueries({ queryKey: ['artifact', id] })}
               {me}
-              class="shrink-0"
+              class="mx-auto w-full max-w-[46rem] shrink-0"
             />
           {/if}
-        {:else}
-          <!-- Tab-pane grammar on the READ pane only: the edit pane holds live
-               editor state (and is seed-keyed for Muse/revision swaps), so it
-               keeps its hard cut rather than replaying an entrance. -->
-          <div in:fly={{ y: 6, duration: 200 }} class="re-prose min-w-0 flex-1 overflow-y-auto">
-            {#if artifact}
-              <AgentRefineNotice
-                kind="artifact"
-                id={id}
-                current={() => artifact.body}
-                onLoad={() => void qc.invalidateQueries({ queryKey: ['artifact', id] })}
-                onAnnounce={() => void qc.invalidateQueries({ queryKey: ['artifact', id] })}
-                {me}
-                class="mx-auto w-full max-w-[46rem] shrink-0"
-              />
-            {/if}
-            {#if artifact.body.trim()}
-              <Markdown class="tiptap" children={artifact.body} />
-            {:else}
-              <div class="mx-auto max-w-[46rem] px-6 py-8">
-                <button type="button" onclick={() => (mode = 'edit')} class="text-sm text-muted hover:text-fg">
-                  Empty document. Click to start.
-                </button>
-              </div>
-            {/if}
-          </div>
-        {/if}
-      {:else if artifact.kind === 'microsite'}
-        {#if mode === 'edit'}
-          <Textarea
-            value={html}
-            oninput={(e) => editHtml(e.currentTarget.value)}
-            onblur={() => dirty && void save({ body: html })}
-            spellcheck={false}
-            placeholder={'<!doctype html>\n<html>'}
-            class="min-w-0 flex-1 rounded-none border-0 font-mono text-xs leading-relaxed"
-          />
-        {:else if artifact.body.trim()}
-          <!-- Sandboxed: scripts run, but no same-origin — can't touch the app. -->
-          <iframe in:fly={{ y: 6, duration: 200 }} title={artifact.title} srcdoc={artifact.body} sandbox="allow-scripts allow-forms allow-popups allow-modals" class="min-w-0 flex-1 border-0 bg-white"></iframe>
-        {:else}
-          <div in:fly={{ y: 6, duration: 200 }} class="grid min-w-0 flex-1 place-items-center p-8 text-center text-sm text-muted">
-            <button type="button" onclick={() => (mode = 'edit')} class="hover:text-fg">Empty microsite. Switch to Edit to write HTML.</button>
-          </div>
-        {/if}
-      {:else if artifact.kind === 'sheet'}
-        {#key `${id}-${seed}`}
-          <ArtifactSheetView value={artifact.body} editable={mode === 'edit'} onSave={(body) => void save({ body })} />
-        {/key}
-      {:else if artifact.kind === 'file'}
-        <div class="min-w-0 flex-1 overflow-y-auto p-8">
-          {#if artifact.storageRef}
-            <div class="mx-auto max-w-[var(--read-width)]">
-              <div class="mb-4">
-                <FilePreview
-                  url={`/api/uploads/${artifact.storageRef}`}
-                  title={artifact.title}
-                  contentType={artifact.contentType}
-                />
-              </div>
-              <div class="flex gap-2">
-                <Button
-                  size="sm"
-                  onclick={() =>
-                    void downloadFile(`/api/uploads/${artifact.storageRef}`, artifact.title).catch((e) =>
-                      toastError('Could not download', e),
-                    )}
-                >
-                  Download
-                </Button>
-                {#if isOwner}
-                  <label class={cn(buttonClasses({ size: 'sm', variant: 'outline' }), 'cursor-pointer')}>
-                    <input type="file" class="hidden" onchange={(e) => void onPickFile(e.currentTarget.files?.[0])} />
-                    Replace file
-                  </label>
-                {/if}
-              </div>
-            </div>
+          {#if artifact.body.trim()}
+            <Markdown class="tiptap" children={artifact.body} />
           {:else}
-            <label class="mx-auto flex max-w-lg cursor-pointer flex-col items-center gap-2 rounded-lg border border-dashed border-line p-12 text-center transition-colors hover:border-[var(--theme-accent-border)]">
-              <input type="file" class="hidden" onchange={(e) => void onPickFile(e.currentTarget.files?.[0])} />
-              <Paperclip size={22} class="text-muted" />
-              <div class="text-sm text-fg">{uploading ? 'Uploading' : 'Click to upload a file'}</div>
-              <div class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">Up to 25 MB · stored and hosted by Talaria</div>
-            </label>
+            <div class="mx-auto max-w-[46rem] px-6 py-8">
+              <button type="button" onclick={() => (mode = 'edit')} class="text-sm text-muted hover:text-fg">
+                Empty document. Click to start.
+              </button>
+            </div>
           {/if}
         </div>
+      {/if}
+    {:else if artifact.kind === 'microsite'}
+      {#if mode === 'edit'}
+        <Textarea
+          value={html}
+          oninput={(e) => editHtml(e.currentTarget.value)}
+          onblur={() => dirty && void save({ body: html })}
+          spellcheck={false}
+          placeholder={'<!doctype html>\n<html>'}
+          class="min-w-0 flex-1 rounded-none border-0 font-mono text-xs leading-relaxed"
+        />
+      {:else if artifact.body.trim()}
+        <!-- Sandboxed: scripts run, but no same-origin — can't touch the app. -->
+        <iframe in:fly={{ y: 6, duration: 200 }} title={artifact.title} srcdoc={artifact.body} sandbox="allow-scripts allow-forms allow-popups allow-modals" class="min-w-0 flex-1 border-0 bg-white"></iframe>
       {:else}
-        <div class="grid min-w-0 flex-1 place-items-center p-8 text-center text-sm text-muted">
-          {KIND_LABEL[artifact.kind]} files are coming soon.
+        <div in:fly={{ y: 6, duration: 200 }} class="grid min-w-0 flex-1 place-items-center p-8 text-center text-sm text-muted">
+          <button type="button" onclick={() => (mode = 'edit')} class="hover:text-fg">Empty microsite. Switch to Edit to write HTML.</button>
         </div>
       {/if}
-      {#if showHistory}
-        <!-- IN-FLOW rail: slide={GROW_X} on both legs (ANIMATIONS.md); inner
-             wrapper pinned to the resting width so rows clip, not rewrap. -->
-        <div transition:slide={GROW_X} class="shrink-0 overflow-y-auto border-l border-line-subtle">
-        <div class="w-64 p-3">
-          <ArtifactHistory
-            {id}
-            onRestore={async (content) => {
-              const m = /^#\s+(.*)\n+([\s\S]*)$/.exec(content)
-              const t = m ? m[1]!.trim() : title
-              const b = m ? m[2]! : content
-              title = t
-              await save({ title: t, body: b })
-              seed += 1
-            }}
-          />
-        </div>
-        </div>
-      {/if}
-    </div>
-
-    <!-- Footer status line — mono chrome voice with right-aligned meta (§8). -->
-    <div class="flex items-center gap-2 border-t border-line-subtle px-6 py-2 font-mono text-[10px] tracking-[0.05em] text-muted">
-      <span>edited {relativeTime(artifact.updatedAt)}{artifact.updatedBy ? ` by ${artifact.updatedBy}` : ''}</span>
-      <span class="ml-auto"></span>
-      {#if mode === 'edit' && artifact.kind !== 'file'}<span class="uppercase">{saving ? 'Saving' : 'Saved'}</span>{/if}
-    </div>
-
-    <PermissionsModal
-      open={shareOpen}
-      onClose={() => (shareOpen = false)}
-      kind="artifacts"
-      {id}
-      label={artifact.title}
-      visibility={artifact.visibility}
-      editPolicy={artifact.editPolicy}
-      publicSlug={artifact.publicSlug}
-      canManage={isOwner}
-      onSave={(patch) => save(patch)}
-    />
+    {:else if artifact.kind === 'sheet'}
+      {#key `${id}-${seed}`}
+        <ArtifactSheetView value={artifact.body} editable={mode === 'edit'} onSave={(body) => void save({ body })} />
+      {/key}
+    {:else if artifact.kind === 'file'}
+      <div class="min-w-0 flex-1 overflow-y-auto p-8">
+        {#if artifact.storageRef}
+          <div class="mx-auto max-w-[var(--read-width)]">
+            <div class="mb-4">
+              <FilePreview
+                url={`/api/uploads/${artifact.storageRef}`}
+                title={artifact.title}
+                contentType={artifact.contentType}
+              />
+            </div>
+            <div class="flex gap-2">
+              <Button
+                size="sm"
+                onclick={() =>
+                  void downloadFile(`/api/uploads/${artifact.storageRef}`, artifact.title).catch((e) =>
+                    toastError('Could not download', e),
+                  )}
+              >
+                Download
+              </Button>
+              {#if isOwner}
+                <label class={cn(buttonClasses({ size: 'sm', variant: 'outline' }), 'cursor-pointer')}>
+                  <input type="file" class="hidden" onchange={(e) => void onPickFile(e.currentTarget.files?.[0])} />
+                  Replace file
+                </label>
+              {/if}
+            </div>
+          </div>
+        {:else}
+          <label class="mx-auto flex max-w-lg cursor-pointer flex-col items-center gap-2 rounded-lg border border-dashed border-line p-12 text-center transition-colors hover:border-[var(--theme-accent-border)]">
+            <input type="file" class="hidden" onchange={(e) => void onPickFile(e.currentTarget.files?.[0])} />
+            <Paperclip size={22} class="text-muted" />
+            <div class="text-sm text-fg">{uploading ? 'Uploading' : 'Click to upload a file'}</div>
+            <div class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">Up to 25 MB · stored and hosted by Talaria</div>
+          </label>
+        {/if}
+      </div>
+    {:else}
+      <div class="grid min-w-0 flex-1 place-items-center p-8 text-center text-sm text-muted">
+        {KIND_LABEL[artifact.kind]} files are coming soon.
+      </div>
+    {/if}
+    {#if showHistory}
+      <!-- IN-FLOW rail: slide={GROW_X} on both legs (ANIMATIONS.md); inner
+           wrapper pinned to the resting width so rows clip, not rewrap. -->
+      <div transition:slide={GROW_X} class="shrink-0 overflow-y-auto border-l border-line-subtle">
+      <div class="w-64 p-3">
+        <ArtifactHistory
+          {id}
+          onRestore={async (content) => {
+            const m = /^#\s+(.*)\n+([\s\S]*)$/.exec(content)
+            const t = m ? m[1]!.trim() : title
+            const b = m ? m[2]! : content
+            title = t
+            await save({ title: t, body: b })
+            seed += 1
+          }}
+        />
+      </div>
+      </div>
+    {/if}
   </div>
-{/if}
+{/snippet}
+
+{#snippet footerRow(artifact: Artifact)}
+  <!-- Footer status line — mono chrome voice with right-aligned meta (§8). -->
+  <div class="flex items-center gap-2 border-t border-line-subtle px-6 py-2 font-mono text-[10px] tracking-[0.05em] text-muted">
+    <span>edited {relativeTime(artifact.updatedAt)}{artifact.updatedBy ? ` by ${artifact.updatedBy}` : ''}</span>
+    <span class="ml-auto"></span>
+    {#if mode === 'edit' && artifact.kind !== 'file'}<span class="uppercase">{saving ? 'Saving' : 'Saved'}</span>{/if}
+  </div>
+{/snippet}
+
+{#snippet shareModal(artifact: Artifact)}
+  <PermissionsModal
+    open={shareOpen}
+    onClose={() => (shareOpen = false)}
+    kind="artifacts"
+    {id}
+    label={artifact.title}
+    visibility={artifact.visibility}
+    editPolicy={artifact.editPolicy}
+    publicSlug={artifact.publicSlug}
+    canManage={isOwner}
+    onSave={(patch) => save(patch)}
+  />
+{/snippet}

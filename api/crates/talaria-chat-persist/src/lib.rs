@@ -196,6 +196,12 @@ pub struct TurnMeta {
     /// the run's state at the turn — working while the run is, report-mode
     /// once it has finished. None for every other kind.
     pub research_prompt: Option<&'static str>,
+    /// A work session's system lines — the work-mode prompt and the line
+    /// naming the file open in the teammate's pane — exactly as /api/chat
+    /// computed them for the message this chain answers. Carried rather than
+    /// recomputed so a queued turn speaks to the file that was open when it
+    /// was sent. Empty for every other kind.
+    pub work_prompts: Vec<String>,
     /// Who spoke the queued turn this chain answers, threaded from /api/chat.
     /// None on turns that predate the stamp or arrive without one — the
     /// chained turn then composes without it, as before.
@@ -496,6 +502,11 @@ async fn continue_inner(
     if let Some(prompt) = meta.research_prompt {
         messages.push(json!({ "role": "system", "content": prompt }));
     }
+    // A chained work turn is a work turn: the same mode prompt and pane-focus
+    // line the live one carried. Without them it ran with no mode at all.
+    for prompt in &meta.work_prompts {
+        messages.push(json!({ "role": "system", "content": prompt }));
+    }
     if mentions_handle(&last.content) {
         messages.push(json!({ "role": "system", "content": HANDLE_TURN_NOTE }));
     }
@@ -596,6 +607,7 @@ async fn continue_inner(
         tier: meta.tier.clone(),
         plan: meta.plan.clone(),
         research_prompt: meta.research_prompt,
+        work_prompts: meta.work_prompts.clone(),
         sender: meta.sender.clone(),
         resumed: resume.is_some(),
     };
@@ -643,6 +655,8 @@ pub struct PersistMeta {
     pub plan: Option<PlanMeta>,
     /// Rides through to the continuation's TurnMeta — see TurnMeta.
     pub research_prompt: Option<&'static str>,
+    /// Rides through to the continuation's TurnMeta — see TurnMeta.
+    pub work_prompts: Vec<String>,
     /// Rides through to the continuation's TurnMeta — an auto-resumed turn
     /// answers the same person, so the stamp re-rides. See TurnMeta.
     pub sender: Option<talaria_sender_identity::SenderIdentity>,
@@ -1342,6 +1356,7 @@ pub async fn persist_assistant_stream(
                     tier: meta.tier,
                     plan: meta.plan,
                     research_prompt: meta.research_prompt,
+                    work_prompts: meta.work_prompts.clone(),
                     sender: meta.sender.clone(),
                 },
             )
@@ -1366,6 +1381,7 @@ fn maybe_resume(state: &AppState, conversation_id: &str, message_id: &str, meta:
         tier: meta.tier.clone(),
         plan: meta.plan.clone(),
         research_prompt: meta.research_prompt,
+        work_prompts: meta.work_prompts.clone(),
         sender: meta.sender.clone(),
     };
     tokio::spawn(async move {

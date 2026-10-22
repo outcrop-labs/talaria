@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { LayoutTemplate, MessageSquare, Telescope, X } from '@lucide/svelte'
+  import { untrack } from 'svelte'
+  import { Ellipsis, Files, MessageSquare, Plus, Telescope, X } from '@lucide/svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { navigate, route } from '@/router'
   import { cn } from '@/lib/cn'
@@ -22,21 +23,24 @@
   import NoModelBump from '@/components/setup/NoModelBump.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
+  import { alert, prompt } from '@/components/ui/confirm.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
+  import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { listQuery } from '@/components/ui/query-state'
   import Segmented from '@/components/ui/Segmented.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import type { DotStatus } from '@/components/ui/chip'
-  import ArtifactPane from '@/components/work/ArtifactPane.svelte'
   import DraftTicketsButton from '@/components/work/DraftTicketsButton.svelte'
   import ExportButton from '@/components/work/ExportButton.svelte'
+  import FileGlyph from '@/components/work/FileGlyph.svelte'
+  import FilePane from '@/components/work/FilePane.svelte'
   import LivingDocPane from '@/components/work/LivingDocPane.svelte'
   import ReportPane from '@/components/work/ReportPane.svelte'
   import ResearchComposer from '@/components/work/ResearchComposer.svelte'
@@ -46,18 +50,37 @@
   import { sendsSeed, type StarterCard } from '@/components/work/starter-cards'
   import WorkspacePane from '@/components/work/WorkspacePane.svelte'
   import { useAgents } from '@/lib/agents'
-  import { useArtifact } from '@/lib/artifacts'
-  import { streamChat } from '@/lib/chat'
+  import { createArtifact } from '@/lib/artifacts'
+  import { streamChat, type ChatFocus } from '@/lib/chat'
   import { toastError } from '@/lib/toast.svelte'
   import {
     archiveConversation,
     deleteConversation,
+    loadConversation,
     renameConversation,
     restoreConversation,
+    setPinnedFiles,
     useConversationMembers,
     useConversations,
     type Conversation,
+    type PinnedFile,
   } from '@/lib/conversations.svelte'
+  import { parseGoogleFileUrl } from '@/lib/google-embed'
+  import {
+    appendPin,
+    changedFiles,
+    fileGlyph,
+    fileTitle,
+    focusTarget,
+    hiddenFiles,
+    hideFile,
+    initialFocus,
+    resurfaced,
+    unhideFile,
+    useSessionFiles,
+    visibleFiles,
+    type SessionFile,
+  } from '@/lib/session-files'
   import {
     MODE_META,
     openResearchConversation,
@@ -71,9 +94,16 @@
   } from '@/lib/research'
   import { useHasPerm, useSession } from '@/lib/session'
   import { useStickyAgent } from '@/lib/sticky-agent.svelte'
-  import { useTemplates } from '@/lib/templates'
   import { useMarkResearchRunSeen } from '@/lib/unreads.svelte'
-  import { closeTab, isClosable, labelTab, openTab, selectTab, syncTouched, tabsFor } from '@/lib/workspace-tabs.svelte'
+  import {
+    closeTab,
+    openTab,
+    seedTabs,
+    selectTab,
+    syncTouched,
+    tabsFor,
+    type WorkspaceTab,
+  } from '@/lib/workspace-tabs.svelte'
   import ResearchMembers from './research/ResearchMembers.svelte'
 
   // THE WORK HARNESS — one surface for every session you work in.
@@ -90,11 +120,13 @@
   //
   // So: ONE rail over `?kind=sessions` (work + plan + research, one query, one
   // ordering — see `list_conversations_in`), the stream on the LEFT with the
-  // session's own kind, and the workspace on the RIGHT as a strip of tabs — the
-  // living document always, plus whatever the session has touched: an artifact
-  // the agent wrote, a Google file pinned to it, the run's report, the tickets
-  // it has drafted. The tabs are `lib/workspace-tabs`; each tab's body is a
-  // pane out of `components/work/`.
+  // session's own kind, and the workspace on the RIGHT as a strip of tabs: the
+  // session's FILES (every document, sheet, page and Google file the agent
+  // created or opened in it, and anything a teammate opened there —
+  // `lib/session-files`), plus the run's report and the tickets it has drafted.
+  // A PLAN session also keeps its living plan document as the first tab; a work
+  // session has no such document and none of its vocabulary. The tabs are
+  // `lib/workspace-tabs`; each tab's body is a pane out of `components/work/`.
   //
   // THE OLD ADDRESSES STILL RESOLVE. `/plan/<id>` is a session id and reads as
   // the selection; `/research/<runId>` resolves the run's own discussion and
@@ -242,27 +274,15 @@
   // surface is attach + text + submit only, and the rail owns the agent. A new
   // session starts on the agent's main model ('').
   let sessionTier = $state('')
-  // The template a NEW session's living document seeds from ('' = automatic:
-  // the agent's bound plan template). Locked in by the first turn, which is
-  // what creates the conversation — so the picker only ever stands on the
-  // zero state, which is also the only place it ever stood on Plan.
-  let templateId = $state('')
-  // Defaulted, a failed template read made the picker DISAPPEAR, so a new
-  // session silently seeded from the agent default with no sign the choice
-  // had ever existed.
-  const templatesList = listQuery(useTemplates(), { title: 'Could not load plan templates', variant: 'inline' })
-  const templatesLoading = $derived(templatesList.pending)
-  const planTemplates = $derived(templatesList.rows.filter((t) => t.kind === 'plan'))
-  // Automatic first — it is the default and the most common choice — and the
-  // library after; the sub line carries what the old option's parenthetical
-  // spelled out.
-  const templateOptions = $derived([
-    { value: '', label: 'Automatic', sub: 'agent default' },
-    ...planTemplates.map((t) => ({ value: t.id, label: t.name })),
-  ])
-  // Bumped when an agent turn lands; the living document asks for its new body
-  // on the bump. The server also rewrites the document on a landed turn, and
-  // its recency guard means whichever gets there first does the one rewrite.
+  // NO TEMPLATE PICKER. It stood on the zero state to choose what a new
+  // session's living document seeded from — and a work session has no living
+  // document to seed. A plan started from its starter card seeds from the
+  // agent's bound plan template server-side, which is what "Automatic" was.
+  //
+  // Bumped when an agent turn lands; a PLAN's living document asks for its new
+  // body on the bump. The server also rewrites a plan's document on a landed
+  // turn, and its recency guard means whichever gets there first does the one
+  // rewrite.
   let turnSignal = $state(0)
   // The run's own posts — the scope questions, the ack, the report-ready turn —
   // land in the discussion without going through ChatView's pollers, and the
@@ -309,49 +329,124 @@
 
   // ── THE WORKSPACE STRIP ────────────────────────────────────────────────────
   //
-  // The tabs are the session's, held in `lib/workspace-tabs` and seeded here:
-  // nothing opens a tab on its own, because what a session HAS is a question
-  // about the session and not about the strip.
-  const DOC_TAB = 'doc'
+  // The tabs are the session's, held in `lib/workspace-tabs` and fed from here.
+  // What a session HAS is a question the server answers — `GET
+  // /api/conversations/{id}/files`, the documents, sheets, pages and Google
+  // files its messages name plus the ones pinned to it — and the strip is that
+  // answer, plus the two tabs that are not files: the run's report and the
+  // drafts waiting on a person. Nothing is created because a session was
+  // opened.
+  const PLAN_TAB: WorkspaceTab = { id: 'doc', kind: 'doc', label: 'Plan', glyph: 'plan' }
   const REPORT_TAB = 'report'
   const DRAFTS_TAB = 'drafts'
   const strip = $derived(tabsFor(selectedSessionId))
-  // Seeded ONCE per session, not idempotently on every data arrival: every
-  // `openTab` focuses what it opens, so a re-seed would steal the tab a person
-  // just picked (and wipe the remembered one) on the next refetch.
-  //
-  // It waits for the runs list, because that list is what says whether this
-  // session is a research run — and a run's thread has NO living document of
-  // its own (the doc route answers for plans and work sessions only), so a
-  // `doc` tab there would be a tab onto a 404. Waiting costs nothing to look
-  // at: a session with no tabs renders the document anyway (see the snippet
-  // below), which is what the strip would be pointing at.
-  const seeded = new Set<string>()
+
+  const filesQuery = useSessionFiles(() => selectedSessionId)
+  // `undefined` while the first read is in flight — or while the result still
+  // answers the session that was open a moment ago, which is never this one's;
+  // `null` is the route's 404 (a session this viewer cannot read), which has
+  // nothing to list.
+  const filesAnswer = $derived(
+    filesQuery.data && filesQuery.data.sessionId === selectedSessionId ? filesQuery.data.answer : undefined,
+  )
+  const filesPending = $derived(filesAnswer === undefined && !filesQuery.isError)
+  const filesFailed = $derived(filesAnswer === undefined && filesQuery.isError)
+  // WHICH PANE THIS SESSION GETS: a plan keeps its living plan document, a
+  // research run its report, and everything else — a work session above all —
+  // gets its files. A run is known from the runs list (the rail's own read);
+  // the rest from the files answer's `kind`. Null until one of them has said,
+  // and the pane holds its skeleton until then.
+  const paneKind = $derived<string | null>(
+    selectedRun ? 'research' : filesAnswer === undefined ? null : (filesAnswer?.kind ?? 'work'),
+  )
+  // THE RUN'S REPORT IS ALSO A FILE the session touched — the report-ready turn
+  // links it — and it already has a tab, with its sources and the question it
+  // is parked on. So it is that tab, never a second one onto the same document.
+  const reportKey = $derived(selectedRun?.artifactId ? `artifact:${selectedRun.artifactId}` : null)
+  const sessionFiles = $derived((filesAnswer?.files ?? []).filter((f) => f.key !== reportKey))
+  const fileByKey = $derived(new Map(sessionFiles.map((f) => [f.key, f])))
+  const fileTab = (f: SessionFile): WorkspaceTab => ({
+    id: f.key,
+    kind: f.kind,
+    label: fileTitle(f),
+    ref: f.id,
+    glyph: fileGlyph(f),
+  })
+
+  // WHAT THE LAST READ SAID, per session: the baseline a refetch is compared
+  // with to find what is new. Plain rather than `$state` — it is bookkeeping
+  // the effect below writes, and writing it must not re-run anything.
+  const lastFiles = new Map<string, SessionFile[]>()
+  const applyFiles = (id: string, kind: string, all: SessionFile[]) => {
+    // A file this viewer closed comes back by itself once a newer message
+    // touches it — compared with its touch time WHEN it was closed, so this
+    // holds across a reload as well as within one visit.
+    for (const key of resurfaced(hiddenFiles(id), all)) unhideFile(id, key)
+    const prev = lastFiles.get(id) ?? null
+    lastFiles.set(id, all)
+    const files = all.filter((f) => f.key !== reportKey)
+    const visible = visibleFiles(files, hiddenFiles(id))
+    if (prev === null) {
+      // FIRST SIGHT in this page's life, so nothing is news yet: the strip
+      // takes the files in the server's order and lands on the tab this viewer
+      // was reading last time, else the file the agent touched most recently,
+      // else the first (`seedTabs` defers to the store's memory). A plan leads
+      // with its own document and lands there.
+      const lead = kind === 'plan' ? [PLAN_TAB] : []
+      seedTabs(id, [...lead, ...visible.map(fileTab)], kind === 'plan' ? PLAN_TAB.id : initialFocus(visible))
+      return
+    }
+    // A file the session no longer lists — deleted, or no longer readable —
+    // leaves the strip: a tab onto a 404 is not a way back to anything.
+    const listed = new Set(files.map((f) => f.key))
+    // A copy: `closeTab` splices the very array being walked.
+    for (const tab of [...tabsFor(id).tabs]) {
+      if ((tab.kind === 'artifact' || tab.kind === 'google') && !listed.has(tab.id)) closeTab(id, tab.id)
+    }
+    // THE PANE FOLLOWS THE AGENT: a file listed for the first time, or touched
+    // again, comes back if it was closed and takes the pane — the newest touch
+    // wins when a turn touched several.
+    const changed = changedFiles(prev, all)
+    for (const f of changed) unhideFile(id, f.key)
+    // Every visible file has a tab (titles refreshed in place); none of this
+    // moves anybody's reading.
+    seedTabs(id, visibleFiles(files, hiddenFiles(id)).map(fileTab))
+    const target = focusTarget(changed)
+    if (!target) return
+    if (target.key === reportKey) selectTab(id, REPORT_TAB)
+    else syncTouched(id, fileTab(target))
+  }
   $effect(() => {
     const id = selectedSessionId
-    if (!id || seeded.has(id) || runsQuery.isLoading) return
-    seeded.add(id)
-    if (runBySession.has(id)) return
-    // Every other session has its living document — the one tab that cannot be
-    // closed, because the pane always needs something to fall back on.
-    openTab(id, { id: DOC_TAB, kind: 'doc', label: 'Document' })
+    const answer = filesAnswer
+    const kind = paneKind
+    // Waits for the runs list as well: until it lands, a research run's report
+    // would be listed as an ordinary file.
+    if (!id || answer === undefined || kind === null || runsQuery.isLoading) return
+    const all = answer?.files ?? []
+    untrack(() => applyFiles(id, kind, all))
+  })
+  // A PLAN'S DOCUMENT RE-OPENS ITSELF when the strip empties. It closes like
+  // any tab — closing it with a file open beside it is a person saying "not
+  // now" — but a plan with nothing on its strip has lost the thing it is for.
+  $effect(() => {
+    const id = selectedSessionId
+    if (id && paneKind === 'plan' && strip.tabs.length === 0) openTab(id, PLAN_TAB)
   })
   // THE REPORT IS A TAB, from the moment the run is known rather than from the
   // moment it finishes: the pane renders where the run has got to and the
   // question it is parked on, which is the half that matters while it works.
   //
-  // RE-OPENED, not merely seeded: a report tab closes (only the doc tab
-  // refuses to), and a research session has nothing else to stand here — its
-  // report IS its document, so an empty strip is a dead end rather than a
-  // choice. Closing it with another tab open is a person saying "not now", and
-  // that is honoured.
+  // RE-OPENED, not merely seeded: a research session's report IS its document,
+  // so an empty strip is a dead end rather than a choice. Closing it with
+  // another tab open is a person saying "not now", and that is honoured.
   const reported = new Set<string>()
   $effect(() => {
     const id = selectedSessionId
     const run = selectedRun
     if (!id || !run || (reported.has(id) && strip.tabs.length > 0)) return
     reported.add(id)
-    openTab(id, { id: REPORT_TAB, kind: 'report', label: 'Report', ref: run.id })
+    openTab(id, { id: REPORT_TAB, kind: 'report', label: 'Report', ref: run.id, glyph: 'report' })
   })
   // DRAFTS WAITING ON A PERSON get a tab, and only then. A job that is still
   // drafting is the agent working, which belongs in the stream and in the
@@ -363,7 +458,7 @@
     const id = selectedSessionId
     if (!id || draftJob?.status !== 'ready' || draftsOpened.has(id)) return
     draftsOpened.add(id)
-    openTab(id, { id: DRAFTS_TAB, kind: 'drafts', label: 'Drafts' })
+    openTab(id, { id: DRAFTS_TAB, kind: 'drafts', label: 'Drafts', glyph: 'drafts' })
   })
   const draftSentence = $derived(
     draftJob?.status === 'ready'
@@ -375,94 +470,183 @@
           : 'Nothing drafted from this session yet.',
   )
 
-  // THE PANE FOLLOWS THE AGENT'S WORK: the document a turn touched, reported by
-  // ChatView from the landed turn's link chips, opens as a tab or focuses the
-  // one already open. A touch names the session it happened IN, because the
-  // strip is per session and carrying the last one across a switch would open
-  // the previous session's file in the new one's strip.
-  let touched = $state<{ session: string; id: string } | null>(null)
-  const touchedQuery = useArtifact(() => touched?.id ?? null)
-  const onDocumentTouched = (artifactId: string) => {
-    const session = selectedSessionId
-    if (!session) return
-    // The run's report already has a tab — with its sources and the question
-    // it is parked on — and the report-ready turn links that same document, so
-    // a second tab for it would be the same report twice.
-    if (artifactId === selectedRun?.artifactId) {
-      selectTab(session, REPORT_TAB)
-      return
-    }
-    touched = { session, id: artifactId }
-  }
-  // THE TAB OPENS NOW AND IS NAMED LATER. A strip of tabs wants names, and a
-  // touch carries only an id — but waiting for the title read to land left the
-  // way back to what the agent just wrote a read behind the work. So the tab
-  // opens on the touch under the generic name and is renamed when the title
-  // arrives (`labelTab`, which deliberately does not take focus). A 404 or a
-  // broken read keeps the generic name, because the way back matters more than
-  // what it is called.
-  let lastTouchOpened: string | null = null
-  $effect(() => {
-    const t = touched
-    if (!t || t.session !== selectedSessionId) return
-    // Second guard on the report, for the case the handler could not catch:
-    // the runs list may still have been in flight when the turn landed. It
-    // only SKIPS — focusing from here would re-focus on every poll of that
-    // list, which is a tab yanked out from under whoever picked another one.
-    if (t.id === selectedRun?.artifactId) return
-    const stamp = `${t.session}:${t.id}`
-    if (lastTouchOpened !== stamp) {
-      lastTouchOpened = stamp
-      syncTouched(t.session, { kind: 'artifact', id: t.id, label: 'Document' })
-    }
-    // The title, once the read lands: a rename and nothing else, so whoever
-    // moved to another tab in the meantime stays on it.
-    const title = touchedQuery.data?.title?.trim()
-    if (title) labelTab(t.session, t.id, title)
-  })
-  // The pane does not own the tab it is showing, so Close (and a deletion from
-  // inside the editor) asks the strip rather than clearing a prop. The doc tab
-  // refuses to close — in the store as well as in the chrome.
-  const closeActiveTab = () => {
+  // CLOSING A FILE HIDES IT for this viewer in this session (the file is still
+  // the session's, and every other member still sees it). It comes back when
+  // the agent touches it again, or from the strip's file list.
+  const closeWorkspaceTab = (tab: WorkspaceTab) => {
     const id = selectedSessionId
-    const tab = strip.active
-    if (!id || !tab || !isClosable(tab)) return
+    if (!id) return
+    if (tab.kind === 'artifact' || tab.kind === 'google') {
+      hideFile(id, fileByKey.get(tab.id) ?? { key: tab.id, lastTouchedAt: null })
+    }
     closeTab(id, tab.id)
   }
+  const reopenFile = (f: SessionFile) => {
+    const id = selectedSessionId
+    if (!id) return
+    unhideFile(id, f.key)
+    // A person asking for a file is somebody acting, past the last visit's
+    // memory too — the same call the agent's touch makes.
+    syncTouched(id, fileTab(f))
+  }
+  // THE FILE LIST, when the strip cannot show everything at a glance: more
+  // files than fit, or any this viewer closed.
+  const offStrip = $derived(sessionFiles.filter((f) => !strip.tabs.some((t) => t.id === f.key)))
+  const showAllFiles = $derived(sessionFiles.length > 6 || offStrip.length > 0)
+  const allFilesItems = (): ContextMenuEntry[] =>
+    sessionFiles.map((f) => ({
+      label: offStrip.includes(f) ? `${fileTitle(f)} (closed)` : fileTitle(f),
+      icon: [FileGlyph, { glyph: fileGlyph(f), size: 12 }],
+      checked: strip.activeId === f.key,
+      onSelect: () => reopenFile(f),
+    }))
+
+  // ── OPENING ONE BY HAND ────────────────────────────────────────────────────
+  //
+  // A teammate can put a file in front of the session too. Either way it is
+  // PINNED to the conversation (`pinned_files`), so it is the session's for
+  // every member and every reload, and the files route lists it; the refetch
+  // finds it new, which is what opens it.
+  const refreshFiles = (id: string | null = selectedSessionId) =>
+    id ? qc.invalidateQueries({ queryKey: ['session-files', id] }) : Promise.resolve()
+  let addingFile = $state(false)
+  // APPEND, never replace: opening a second file must not unpin the first.
+  // The pins are read fresh so one somebody else added a moment ago survives,
+  // and a failed read stops here rather than writing a list missing them.
+  const pinToSession = async (id: string, file: PinnedFile): Promise<boolean> => {
+    const detail = await loadConversation(id)
+    if (!detail) {
+      toastError('Could not open that file', new Error('The session did not load. Try again.'))
+      return false
+    }
+    return setPinnedFiles(id, appendPin(detail.conversation.pinnedFiles ?? [], file))
+  }
+  const newDocument = async () => {
+    const id = selectedSessionId
+    if (!id || addingFile) return
+    addingFile = true
+    try {
+      const artifact = await createArtifact({ kind: 'doc', title: 'Untitled document' })
+      if (await pinToSession(id, { kind: 'artifact', id: artifact.id, title: artifact.title })) await refreshFiles(id)
+    } catch (e) {
+      toastError('Could not create the document', e)
+    } finally {
+      addingFile = false
+    }
+  }
+  // PASTE A LINK. The smallest honest way in: people already have the URL. The
+  // type is read from the URL's own shape — a link that is not a Google file is
+  // refused here rather than pinned into a blank frame.
+  const openGoogleFile = async () => {
+    const id = selectedSessionId
+    if (!id || addingFile) return
+    const raw = await prompt({
+      title: 'Open a Google file',
+      message: 'Paste the link to a Google Doc, Sheet, Slides deck or Drive file.',
+      placeholder: 'https://docs.google.com/document/d/…',
+      confirmLabel: 'Open',
+    })
+    if (!raw?.trim()) return
+    const hit = parseGoogleFileUrl(raw)
+    if (!hit) {
+      await alert({
+        title: 'Not a Google file link',
+        message: 'That did not look like a docs.google.com or drive.google.com file URL.',
+      })
+      return
+    }
+    // Already the session's: show it rather than pinning it twice.
+    const listed = fileByKey.get(`google:${hit.id}`)
+    if (listed) {
+      reopenFile(listed)
+      return
+    }
+    addingFile = true
+    try {
+      const file: PinnedFile = { kind: 'google', id: hit.id, ...(hit.mime ? { mime: hit.mime } : {}) }
+      if (await pinToSession(id, file)) await refreshFiles(id)
+    } finally {
+      addingFile = false
+    }
+  }
+  const openItems = (): ContextMenuEntry[] => [
+    { label: 'New document', disabled: addingFile, onSelect: () => void newDocument() },
+    { label: 'Open a Google file', disabled: addingFile, onSelect: () => void openGoogleFile() },
+  ]
+
+  // THE AGENT IS TOLD WHICH FILE IS OPEN. The active file tab rides along with
+  // every work turn (`focus` in the chat body), so "this doc" means the file in
+  // front of the teammate. A plan's document, the report and the drafts are
+  // not files the agent edits by that name, so they send nothing.
+  const activeFile = $derived(
+    strip.active && (strip.active.kind === 'artifact' || strip.active.kind === 'google')
+      ? (fileByKey.get(strip.active.id) ?? null)
+      : null,
+  )
+  const chatFocus = $derived<ChatFocus | null>(
+    activeFile && paneKind !== 'plan'
+      ? {
+          kind: activeFile.kind,
+          id: activeFile.id,
+          ...(activeFile.title?.trim() ? { title: activeFile.title.trim() } : {}),
+        }
+      : null,
+  )
+  // A plan's living document, resolved by its pane: the id the write-tool
+  // invalidation below needs for it.
   let livingDocId = $state<string | null>(null)
 
-  // ── A WRITE DIRTIES A DOCUMENT WHETHER ANYTHING IS SHOWING IT ──────────────
+  // ── A WRITE DIRTIES A FILE WHETHER ANYTHING IS SHOWING IT ──────────────────
   //
-  // Tools whose completion means a document this session is working on changed
-  // underneath us. Only the artifact writers: a Google write of someone else's
-  // file queues rather than landing, so re-reading on it would show the
-  // unchanged document and imply the write went through.
+  // Tools whose completion means a file this session is working on changed
+  // underneath us, or a new one exists.
   //
   // THE INVALIDATION LIVES HERE, NOT IN THE PANE. It used to be the pane's, and
   // the pane handed its handler up for the stream to call — which meant the
   // whole thing was silently off whenever the pane was not mounted: the report
   // tab or the drafts tab in front, a narrow screen with the stream showing, a
-  // session with no workspace column at all. The stale body then sat in the
-  // cache until something else invalidated it. The ids are what the keys are
-  // made of, and this view knows them — the strip's artifact tabs plus the
+  // session with no workspace column at all. The ids are what the keys are made
+  // of, and this view knows them — the strip's artifact tabs plus a plan's
   // living document — so it does the invalidating and the pane just renders.
+  //
+  // Only the artifact writers re-read an artifact: a Google write of someone
+  // else's file queues rather than landing, so re-reading on it would show the
+  // unchanged document and imply the write went through. Every writer re-reads
+  // the FILE LIST, which is how a file the agent just made gets its tab.
   const MUTATES_ARTIFACT = new Set([
     'create_document',
     'update_document',
+    'edit_document',
     'create_sheet',
     'create_page',
     'save_image_artifact',
+  ])
+  const WRITES_FILE = new Set([
+    ...MUTATES_ARTIFACT,
+    'create_google_doc',
+    'update_google_doc',
+    'append_google_doc',
+    'import_drive_file',
   ])
   const touchedArtifactIds = $derived([
     ...strip.tabs.filter((t) => t.kind === 'artifact').map((t) => t.ref ?? t.id),
     ...(livingDocId ? [livingDocId] : []),
   ])
   const onToolDone = (name: string) => {
-    if (!MUTATES_ARTIFACT.has(name)) return
-    // Invalidate rather than remount: a pane that IS showing one of these keeps
-    // its scroll and any in-progress edit, and TanStack refetches the one key
-    // that changed.
-    for (const id of touchedArtifactIds) void qc.invalidateQueries({ queryKey: ['artifact', id] })
+    if (MUTATES_ARTIFACT.has(name)) {
+      // Invalidate rather than remount: a pane that IS showing one of these
+      // keeps its scroll and any in-progress edit, and TanStack refetches the
+      // one key that changed.
+      for (const id of touchedArtifactIds) void qc.invalidateQueries({ queryKey: ['artifact', id] })
+    }
+    if (WRITES_FILE.has(name)) void refreshFiles()
+  }
+  // A landed turn re-reads the file list (the server names a turn's files from
+  // the chips it attaches when the turn is persisted, so this is the read that
+  // is sure to see them), and nudges a plan's living document.
+  const onTurnComplete = () => {
+    turnSignal += 1
+    void refreshFiles()
   }
 
   // ── THE RESEARCH ASK ───────────────────────────────────────────────────────
@@ -534,7 +718,6 @@
     setSelectedSessionId(null)
     newChatSignal += 1
     sessionTier = ''
-    templateId = ''
   }
   const newSession = () => {
     if (selectedAgent) selectAgent(selectedAgent)
@@ -549,8 +732,8 @@
   // A starter card's seed IS the first message, and the first message is what
   // CREATES a session — there is no empty conversation to type into, because
   // /api/chat writes the row. So this takes the same send path the composer's
-  // first submit takes (same route, same kind, the header's own tier and
-  // template picks) and hands the new id to the stage, where ChatView loads
+  // first submit takes (same route, same kind, the header's own tier pick)
+  // and hands the new id to the stage, where ChatView loads
   // the thread and its live-resume poller animates the reply the server is
   // already writing (see its `resuming` derivation: the last row being the
   // user's is exactly this case).
@@ -574,7 +757,7 @@
     let landed: string | null = null
     try {
       const stream = streamChat(
-        { model, content: seed, kind, tier: sessionTier || undefined, templateId: templateId || null },
+        { model, content: seed, kind, tier: sessionTier || undefined },
         (m) => {
           landed = m.conversationId
           onCreated(m.conversationId)
@@ -727,6 +910,30 @@
       }),
     )
   }
+  // THE HEADER'S ⋯ MENU: the open session's own row menu, minus "Open" (you
+  // are standing in it). A research session's is the run's — rename and remove
+  // act on the run, the same split the rail makes.
+  const sessionMenuItems = (): ContextMenuEntry[] => {
+    const notOpen = (e: ContextMenuEntry) => e === 'sep' || e.label !== 'Open'
+    if (selectedRun) {
+      const run = selectedRun
+      return researchRowMenu(run.id, () => {}, canManageRun(run), {
+        rename: () => renameRun(run),
+        remove: () => removeRun(run),
+      }).filter(notOpen)
+    }
+    const c = selected
+    if (!c) return []
+    return planRowMenu(c, {
+      path: `/work/${c.id}`,
+      open: () => {},
+      archived: selectedIsArchived,
+      onRename: () => renameSession(c),
+      onArchive: () => archiveSession(c),
+      onRestore: () => restoreSession(c),
+      onDelete: () => deleteSession(c),
+    }).filter(notOpen)
+  }
   // WHAT THE RAIL CANNOT SAY FOR ITSELF: the merged list carries no kind on the
   // wire, so a research-origin row wears the run's own state — the dot, pulsing
   // only while it runs — and its depth. Every other row stays plain.
@@ -762,69 +969,23 @@
 {/snippet}
 
 {#snippet headerActions()}
-  <div class="flex items-center gap-3">
-    {#if selectedRun}
-      <!-- Sharing a research session shares the RUN: its members are the people
-           who can read the report being discussed, which is a different plane
-           from `conversation_members` and the only one that grants it. -->
-      <ResearchMembers runId={selectedRun.id} />
-    {:else if selectedSessionId}
-      <!-- Sharing and presence, the Plan idiom's own controls: a session is a
-           conversation with members, so it gets the same header row rather
-           than a second one built for it. -->
-      <ConversationMembers conversationId={selectedSessionId} />
-    {/if}
-    {#if selectedRun}
-      <!-- A RESEARCH SESSION IS A RUN, so the header's actions are the run's.
-           Renaming the thread would leave the run's own name — the one the
-           report, the rail and every notification read — untouched, and
-           deleting the thread alone would leave the run behind it; the server
-           takes the pair together. No Archive: a run is ephemeral. -->
-      {#if canManageRun(selectedRun)}
-        {@const run = selectedRun}
-        <button type="button" class={quiet} onclick={() => renameRun(run)}>Rename</button>
-        <DangerLink onClick={() => removeRun(run)}>Delete</DangerLink>
+  <div class="flex items-center gap-2">
+    <!-- Below `sm` the row has room for the session's actions or its faces, not
+         both; the actions win, because sharing is not what a phone is for. -->
+    <span class="hidden sm:contents">
+      {#if selectedRun}
+        <!-- Sharing a research session shares the RUN: its members are the
+             people who can read the report being discussed, which is a
+             different plane from `conversation_members` and the only one that
+             grants it. -->
+        <ResearchMembers runId={selectedRun.id} />
+      {:else if selectedSessionId}
+        <!-- Sharing and presence, the Plan idiom's own controls: a session is a
+             conversation with members, so it gets the same header row rather
+             than a second one built for it. -->
+        <ConversationMembers conversationId={selectedSessionId} />
       {/if}
-    {:else if selected}
-      {@const session = selected}
-      <button type="button" class={quiet} onclick={() => renameSession(session)}>Rename</button>
-      {#if session.role === 'owner'}
-        <button
-          type="button"
-          class={quiet}
-          onclick={() => (selectedIsArchived ? restoreSession(session) : archiveSession(session))}
-        >
-          {selectedIsArchived ? 'Restore' : 'Archive'}
-        </button>
-        <DangerLink onClick={() => deleteSession(session)}>Delete</DangerLink>
-      {/if}
-    {:else if !selectedSessionId}
-      {#if templatesLoading}
-        <!-- Hold the template picker's spot so the header doesn't re-layout
-             when templates land. -->
-        <Skeleton class="h-9 w-40 rounded-md" />
-      {:else if templatesList.failed}
-        <!-- The template read failed: say so inline. Falling through to the
-             picker would hide the failure behind a list that only looks
-             empty. -->
-        {#if templatesList.notice}<QueryError {...templatesList.notice} />{/if}
-      {:else if planTemplates.length > 0}
-        <!-- The structure a new session's living document starts from. It only
-             stands on the zero state because the first turn is what creates the
-             conversation, and the choice is read then. The popover opens DOWN
-             ('bottom'): the header sits at the top of the stage, so the
-             composer-style upward anchor would fly off-screen. -->
-        <ComposerPicker
-          icon={LayoutTemplate}
-          value={templateId}
-          options={templateOptions}
-          onChange={(v) => (templateId = v)}
-          title="The structure the living document starts from. Automatic uses the agent's bound plan template."
-          menuLabel="Template"
-          placement="bottom"
-        />
-      {/if}
-    {/if}
+    </span>
     {#if tierNames.length > 0}
       <!-- The harness sits beside the view's other model-level controls, not in
            the composer. -->
@@ -845,46 +1006,69 @@
     {#if selectedSessionId}
       <!-- WHICH COLUMN THE NARROW SCREEN IS SHOWING. Only below `lg` — above
            it both columns are up and there is nothing to choose. The second
-           cell says what the session's document actually IS, because for a
-           research run it is the report. -->
+           cell says what the pane actually holds: a run's report, a plan, or
+           the session's files. -->
       <div class="lg:hidden">
         <Segmented
           size="xs"
           value={narrowView}
           onChange={(v) => (narrowView = v)}
           options={[
-            { id: 'stream', label: 'Stream', title: 'The conversation' },
+            { id: 'stream', label: 'Chat', title: 'The conversation' },
             {
               id: 'document',
-              label: selectedRun ? 'Report' : 'Document',
-              title: selectedRun ? 'The run’s cited report' : 'The document this session is writing',
+              label: selectedRun ? 'Report' : paneKind === 'plan' ? 'Plan' : 'Files',
+              title: selectedRun
+                ? 'The run’s cited report'
+                : paneKind === 'plan'
+                  ? 'The plan this session is writing'
+                  : 'The files this session is working on',
             },
           ]}
         />
       </div>
     {/if}
-    {@render researchToggle()}
-    <!-- THE SESSION AS A DOCUMENT, beside the clock: both are things you do to
-         the thread as a whole rather than to a turn in it. Offered for a
-         research thread too — the discussion is a transcript like any other,
-         and the report has its own pane. -->
-    <ExportButton conversationId={selectedSessionId} {agentLabel} />
-    <!-- PUTTING THIS SESSION'S AGENT ON A CLOCK. Session-level like the two
-         beside it, and the same shape as drafting tickets: the control belongs
-         to the thread, so it takes the conversation id and renders nothing
-         without one. Who may do it is the agent's own question — only its
-         managers — and the answer is not on this surface's roster read
-         (/api/agents carries no `canManage`), so the button is offered and the
-         route's 403 arrives as a toast rather than paying for the fleet
-         roster here to hide one icon. -->
-    <!-- A research thread is a run's discussion, not a standing session: a
-         cron posting into it would be noise beside the report. -->
-    <ScheduleButton conversationId={selectedRun ? null : selectedSessionId} />
-    {#if !selectedRun}
-      <!-- Drafting tickets reads a PLAN or a work session — `plans_id_draft`
-           admits chat, plan and work kinds, and a research thread is none of
-           them, so offering the button here would be offering a 400. -->
+    <!-- THE SESSION-LEVEL ACTIONS, one quiet register: icon + mono label, the
+         labels giving way below `xl` (each keeps its title and accessible
+         name). Nothing here takes the accent, with one exception: a PLAN
+         exists to become tickets, so there Draft tickets stays the gold
+         primary. In a work session it is one action among several. -->
+    <span class="flex items-center">
+      {@render researchToggle()}
+      <!-- THE SESSION AS A DOCUMENT, beside the clock: both are things you do
+           to the thread as a whole rather than to a turn in it. Offered for a
+           research thread too — the discussion is a transcript like any other,
+           and the report has its own pane. -->
+      <ExportButton conversationId={selectedSessionId} {agentLabel} />
+      <!-- PUTTING THIS SESSION'S AGENT ON A CLOCK. The control belongs to the
+           thread, so it takes the conversation id and renders nothing without
+           one. Who may do it is the agent's own question — only its managers —
+           and the answer is not on this surface's roster read, so the button
+           is offered and the route's 403 arrives as a toast. A research thread
+           is a run's discussion, not a standing session: a cron posting into it
+           would be noise beside the report. -->
+      <ScheduleButton conversationId={selectedRun ? null : selectedSessionId} />
+      {#if selectedSessionId && !selectedRun && paneKind !== 'plan'}
+        <!-- Drafting tickets reads a plan or a work session (`plans_id_draft`
+             admits chat, plan and work kinds); a research thread is neither,
+             so offering it there would be offering a 400. -->
+        <DraftTicketsButton conversationId={selectedSessionId} variant="quiet" />
+      {/if}
+    </span>
+    {#if selectedSessionId && paneKind === 'plan'}
       <DraftTicketsButton conversationId={selectedSessionId} />
+    {/if}
+    {#if sessionMenuItems().length > 0}
+      <!-- Rename, archive, delete: the row menu the rail already offers for
+           this session (same functions, same confirms, same owner guard),
+           folded behind one control instead of three links across the header. -->
+      <DropdownMenu class="shrink-0" items={sessionMenuItems}>
+        {#snippet trigger(_open: boolean)}
+          <IconButton size="sm" title="Session actions">
+            <Ellipsis size={14} />
+          </IconButton>
+        {/snippet}
+      </DropdownMenu>
     {/if}
   </div>
 {/snippet}
@@ -893,14 +1077,17 @@
   <!-- ASKING FOR RESEARCH IS A SESSION-LEVEL ACT, not a view of its own: the
        ask opens over the stage, and the run it starts opens as a session like
        any other. -->
-  <button
-    type="button"
-    class={quiet}
+  <Button
+    variant="ghost"
+    size="xs"
+    class="gap-1"
     title={researchOpen ? 'Back to the session' : 'Ask for a cited report, run by this agent'}
+    aria-label={researchOpen ? 'Close research' : 'Research'}
     onclick={() => (researchOpen = !researchOpen)}
   >
-    {#if researchOpen}<X size={13} /> Close{:else}<Telescope size={13} /> Research{/if}
-  </button>
+    {#if researchOpen}<X size={13} /> <span class="hidden xl:inline">Close</span>{:else}<Telescope size={13} />
+      <span class="hidden xl:inline">Research</span>{/if}
+  </Button>
 {/snippet}
 
 {#snippet stageMeta()}
@@ -1042,6 +1229,37 @@
   {/if}
 {/snippet}
 
+{#snippet stripTrailing()}
+  {#if showAllFiles}
+    <!-- Every file the session has, the closed ones too, so a closed file is
+         one click from coming back. -->
+    <DropdownMenu items={allFilesItems}>
+      {#snippet trigger(_open: boolean)}
+        <Button variant="ghost" size="xs" class="gap-1" title="Every file in this session">
+          <Files size={12} />
+          All files ({sessionFiles.length})
+        </Button>
+      {/snippet}
+    </DropdownMenu>
+  {/if}
+  <DropdownMenu items={openItems}>
+    {#snippet trigger(_open: boolean)}
+      <IconButton size="sm" title="Open a file in this session" disabled={addingFile}>
+        <Plus size={14} />
+      </IconButton>
+    {/snippet}
+  </DropdownMenu>
+{/snippet}
+
+{#snippet filesEmptyActions()}
+  <div class="flex flex-wrap items-center justify-center gap-2">
+    <Button size="sm" variant="outline" disabled={addingFile} onclick={() => void newDocument()}>New document</Button>
+    <Button size="sm" variant="ghost" disabled={addingFile} onclick={() => void openGoogleFile()}>
+      Open a Google file
+    </Button>
+  </div>
+{/snippet}
+
 {#snippet stageHeader()}
   {#if standaloneRunId && legacyRun}
     <!-- No title: the strip carries the run's name (claimed above); the row
@@ -1076,8 +1294,8 @@
     rowMenu={openRowMenu}
     noun="session"
     newPerm="work.sessions"
-    newTitle="New session: work alongside the agent on a document"
-    emptyHint="A session is you and the agent working on one thing together — the stream here, the document, report or drafts beside it. Reads are free; anything it writes to Google waits for your approval."
+    newTitle="New session: work with the agent on your files"
+    emptyHint="A session is you and the agent working together: the conversation here, the files it writes beside it. Reads are free; anything it writes to Google waits for your approval."
     collapseKey="work"
   />
 
@@ -1138,19 +1356,17 @@
                 kind={sessionKind}
                 minimal
                 tier={sessionTier}
-                templateId={templateId || null}
                 syncSignal={chatSyncSignal}
                 {onToolDone}
                 {mentionables}
-                onTurnComplete={() => (turnSignal += 1)}
-                {onDocumentTouched}
+                {onTurnComplete}
+                focus={chatFocus}
               />
             {/key}
           </div>
         </div>
-        <!-- THE WORKSPACE. Two-pane from the FIRST keystroke — the rule the
-             plan's living document already followed — so the surface never
-             re-layouts mid-thought. `lg:block` rather than `lg:flex`: the pane
+        <!-- THE WORKSPACE. Two-pane from the FIRST keystroke, so the surface
+             never re-layouts mid-thought. `lg:block` rather than `lg:flex`: the pane
              inside is the flex container, and a flex child with no basis of its
              own would shrink-wrap its content instead of filling the column.
              Below `lg` it takes the whole stage when the toggle points at it,
@@ -1163,7 +1379,14 @@
         >
           {#if selectedSessionId}
             {@const sessionId = selectedSessionId}
-            <WorkspacePane {sessionId}>
+            <!-- The strip's trailing controls (the file list, the way to open
+                 another) stand once the session has anything on it; before
+                 that, the empty state below carries the same two ways in. -->
+            <WorkspacePane
+              {sessionId}
+              onClose={closeWorkspaceTab}
+              trailing={paneKind !== null && (strip.tabs.length > 0 || sessionFiles.length > 0) ? stripTrailing : undefined}
+            >
               {#snippet children(tab)}
                 <!-- The row the panes expect: they take their own `flex-1` and
                      scroll themselves, which needs a parent with a height. -->
@@ -1188,64 +1411,72 @@
                         </Panel>
                       </div>
                     </div>
-                  {:else}
-                    <!-- EVERY DOCUMENT TAB IS ONE PANE, and deliberately one
-                         instance: the artifact, a Google file pinned to the
-                         session and the living document all stand here, and
-                         splitting them into sibling branches would remount the
-                         pane — losing the comments it had open and re-reading
-                         the session's pinned files — every time the strip
-                         moved. `null` is the no-tab-yet case too, which is the
-                         living document, which is the right default. -->
-                    <!-- No `registerToolDone`: the invalidation a finished write
-                         needs is this view's (see MUTATES_ARTIFACT above), and
-                         it has to fire whether or not this pane is mounted. -->
-                    <ArtifactPane
+                  {:else if tab && (tab.kind === 'artifact' || tab.kind === 'google') && fileByKey.has(tab.id)}
+                    {@const file = fileByKey.get(tab.id)!}
+                    <!-- ONE FILE: one header row, the file under it. Keyed on
+                         the file, so moving between tabs resets the comments
+                         and fullscreen a file had open; a refetch of the list
+                         hands the same key a fresh object and remounts nothing. -->
+                    {#key file.key}
+                      <FilePane
+                        {file}
+                        onClose={() => closeWorkspaceTab(tab)}
+                        onDeleted={() => {
+                          closeTab(sessionId, tab.id)
+                          void refreshFiles(sessionId)
+                        }}
+                      />
+                    {/key}
+                  {:else if tab?.kind === 'doc' || paneKind === 'plan'}
+                    <!-- A PLAN'S OWN DOCUMENT — the one session kind that keeps a
+                         living document, its sync from chat, and drafting as
+                         its point. -->
+                    <LivingDocPane
                       conversationId={sessionId}
-                      artifactId={tab?.kind === 'artifact' ? (tab.ref ?? tab.id) : null}
-                      {livingDocId}
-                      onCloseArtifact={closeActiveTab}
-                    >
-                      {#snippet children()}
-                        {#if selectedRun}
-                          <!-- A research run's thread has no living document of
-                               its own: the report is the document, and it has
-                               its own tab. Said rather than shown as a failed
-                               read, which is what mounting the document here
-                               would be. -->
-                          <EmptyState
-                            icon="◫"
-                            title="No document here"
-                            hint="This session is a research run — its report is the document it wrote."
-                          />
-                        {:else}
-                          <!-- `loading` while the runs list is still in flight:
-                               until it lands we do not know whether this
-                               session HAS a living document, and the skeleton
-                               is the honest shape of not knowing. -->
-                          <LivingDocPane
-                            conversationId={sessionId}
-                            syncSignal={turnSignal}
-                            loading={runsQuery.isLoading}
-                            onDocId={(id) => (livingDocId = id)}
-                          />
-                        {/if}
-                      {/snippet}
-                    </ArtifactPane>
+                      syncSignal={turnSignal}
+                      onDocId={(id) => (livingDocId = id)}
+                    />
+                  {:else if filesFailed}
+                    <div class="grid min-w-0 flex-1 place-items-center p-6">
+                      <QueryError
+                        error={filesQuery.error}
+                        title="Could not load this session’s files"
+                        onRetry={() => void filesQuery.refetch()}
+                      />
+                    </div>
+                  {:else if filesPending || paneKind === null || runsQuery.isLoading}
+                    <!-- Until the list lands we do not know what stands here;
+                         the document shape is the honest stand-in for a pane
+                         that will most likely hold one. -->
+                    <PlanDocSkeleton />
+                  {:else}
+                    <!-- NOTHING IS OPEN, said where the file would be, with the
+                         two ways to change that. -->
+                    <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+                      <EmptyState
+                        class="min-h-0 flex-1"
+                        icon="◫"
+                        title={sessionFiles.length > 0 ? 'Nothing open' : 'Nothing open yet'}
+                        hint={sessionFiles.length > 0
+                          ? 'Every file in this session is closed. Reopen one from All files, or open another.'
+                          : `Ask ${agentLabel} for a document, sheet or page and it opens here, or open one yourself.`}
+                        action={filesEmptyActions}
+                      />
+                    </div>
                   {/if}
                 </div>
               {/snippet}
             </WorkspacePane>
           {:else}
-            <!-- No session yet, so there is no document to build — but the
-                 column still wears the document's own header row, the way the
-                 plan surface's empty pane did, so the pane that lands here is
-                 the same pane that was standing here. `full` on the empty
-                 state carries the dithered vignette, which keeps a 44% column
-                 that owns half the stage from reading as a dead void. -->
+            <!-- No session yet, so nothing is open — but the column still wears
+                 the pane's header row, so the pane that lands here is the same
+                 pane that was standing here. `full` on the empty state carries
+                 the dithered vignette, which keeps a 44% column that owns half
+                 the stage from reading as a dead void. -->
             <div class="flex h-full min-h-0 flex-col">
               <div class="flex h-12 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
-                <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Plan document</span>
+                <Files size={13} class="text-muted" aria-hidden="true" />
+                <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Files</span>
               </div>
               <div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
                 <!-- The vignette keeps the space it is given, and the group
@@ -1254,8 +1485,8 @@
                 <div class="min-h-48 flex-1">
                   <EmptyState
                     icon="◫"
-                    title="No document yet"
-                    hint={`Say what you are working on and the document builds here as you and ${agentLabel} talk.`}
+                    title="Nothing open yet"
+                    hint={`Ask ${agentLabel} for a document, sheet or page and it opens here.`}
                   />
                 </div>
                 <!-- THE WAYS IN, under the vignette and above the orphan runs:

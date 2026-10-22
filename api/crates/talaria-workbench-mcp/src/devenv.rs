@@ -704,6 +704,86 @@ pub fn parse_scan(out: &str) -> Option<Scan> {
 // the checkout exists (a non-empty workdir would refuse `git clone <url>
 // <workdir>`), and removed by the job's teardown.
 
+/// How long a container's provisioned harness runtime is trusted before it
+/// is checked again. The check is cheap once done (no download), so this only
+/// spares doctor and start_job an exec on calls a minute apart.
+const RUNTIME_OK_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Long enough for a first-time mise + bun download on a slow link.
+const RUNTIME_TIMEOUT_MS: u64 = 5 * 60_000;
+
+fn runtime_ok_cache()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>> {
+    static CACHE: OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    > = OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// PUT THE HARNESS'S RUNTIME IN THE SANDBOX before anything asks it to run.
+///
+/// omp is a bun program, and nothing else guarantees bun is there: the
+/// container image does not ship it, and the only other step that installed it
+/// (prepare_env) runs after a clone and reached the PATH only through a login
+/// shell's profile. So a fresh Developer Agent's doctor, and any command its
+/// terminal ran without a login shell, met `env: 'bun': No such file or
+/// directory` — and the agent, correctly, refused to start jobs. This runs the
+/// shared bootstrap (`talaria_workbench_harnesses::harness_runtime_script`) as
+/// the agent's own user: mise if missing, bun pinned and installed, and `bun`
+/// linked onto the PATH every shell has. Idempotent; Ok carries bun's version.
+pub async fn ensure_harness_runtime(pg: &PgPool, department: &str) -> Result<String, String> {
+    let container = managed_container(pg, department).await;
+    if let Some(at) = runtime_ok_cache()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&container)
+        && at.elapsed() < RUNTIME_OK_FOR
+    {
+        return Ok(talaria_workbench_harnesses::HARNESS_BUN.to_string());
+    }
+    let script = talaria_workbench_harnesses::harness_runtime_script();
+    let (out, err) = docker_exec_as(
+        &container,
+        Some(AGENT_USER),
+        &["sh", "-c", &script],
+        None,
+        RUNTIME_TIMEOUT_MS,
+    )
+    .await
+    .map_err(|e| {
+        // The exec's own error carries the script's stderr; the last line
+        // is the reason worth repeating.
+        let why = e
+            .lines()
+            .map(str::trim)
+            .rfind(|l| !l.is_empty())
+            .unwrap_or("no output")
+            .to_string();
+        format!(
+            "could not provision bun {} for the harness: {why}",
+            talaria_workbench_harnesses::HARNESS_BUN
+        )
+    })?;
+    let version = out
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            let why = err
+                .lines()
+                .map(str::trim)
+                .rfind(|l| !l.is_empty())
+                .unwrap_or("no output");
+            format!("bun did not answer after provisioning: {why}")
+        })?;
+    runtime_ok_cache()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(container, std::time::Instant::now());
+    Ok(version)
+}
+
 /// Where a job finds its repo's env, relative to the job's workdir.
 pub const JOB_ENV_FILE: &str = ".talaria/env";
 

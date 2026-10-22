@@ -18,7 +18,16 @@
     fileId,
     mime = null,
     title = null,
-  }: { fileId: string; mime?: string | null; title?: string | null } = $props()
+    bare = false,
+  }: {
+    fileId: string
+    mime?: string | null
+    title?: string | null
+    /** The frame alone, for a host that draws its own header row with the
+     *  same facts in it (the work pane's file header: type, title, Open ↗).
+     *  Two rows saying one file's name is the clutter this exists to avoid. */
+    bare?: boolean
+  } = $props()
 
   const src = $derived(embedUrl(fileId, mime))
   const href = $derived(openUrl(fileId, mime))
@@ -26,6 +35,7 @@
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col">
+  {#if !bare}
   <div class="flex shrink-0 items-center gap-2 border-b border-line-subtle px-4 py-1.5">
     <span class="truncate font-sans text-xs text-muted" title={title ?? fileId}>
       {title ?? 'Google file'}
@@ -47,6 +57,7 @@
       Open
     </a>
   </div>
+  {/if}
   <!-- `allow-same-origin` is required for Google's editor to reach its own
        session; without it the frame is signed out by construction. The sandbox
        still withholds top-level navigation, so the embed cannot move the tab

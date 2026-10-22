@@ -12,7 +12,7 @@
   import { Clock } from '@lucide/svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import CronForm from '@/components/fleet/CronForm.svelte'
-  import IconButton from '@/components/ui/IconButton.svelte'
+  import Button from '@/components/ui/Button.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import { scheduleFromConversation } from '@/lib/schedules'
   import { toastError } from '@/lib/toast.svelte'
@@ -67,9 +67,19 @@
 
 {#if conversationId && canManage !== false}
   {@const sessionId = conversationId}
-  <IconButton size="sm" title="Schedule this agent" onclick={() => (open = true)}>
-    <Clock size={14} />
-  </IconButton>
+  <!-- The header's quiet register: icon + mono label, the label giving way
+       below `xl` (the title and the accessible name keep saying it). -->
+  <Button
+    variant="ghost"
+    size="xs"
+    class="gap-1"
+    title="Put this agent on a schedule"
+    aria-label="Schedule this agent"
+    onclick={() => (open = true)}
+  >
+    <Clock size={13} />
+    <span class="hidden xl:inline">Schedule</span>
+  </Button>
 
   {#if open}
     <!-- Mount-gated, so each open starts on a clean form rather than on

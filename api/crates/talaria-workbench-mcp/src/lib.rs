@@ -552,6 +552,15 @@ async fn call_tool(
             // that pins bun, and every Rust job pins rust and not bun. The
             // agent saw a green doctor, found no runnable binary, and built
             // the ticket by hand. A self-diagnosis that cannot fail is not one.
+            // PROVISION FIRST, THEN PROBE. omp is a bun program and the
+            // image ships no bun, so the probe below used to measure whether
+            // some earlier prepare_env had happened to install one — on a fresh
+            // agent it never had. The platform puts the runtime there now
+            // (idempotent, cheap once done), and the probe reports on that.
+            let runtime = devenv::ensure_harness_runtime(pg, &agent.department).await;
+            if let Err(why) = &runtime {
+                checks.push(format!("harness runtime: bun NOT AVAILABLE — {why}"));
+            }
             let probe = harness_probe(pg, &agent.department).await;
             let writable = harness_writable(pg, &agent.department).await;
             checks.push(match &probe {
@@ -627,6 +636,7 @@ async fn call_tool(
                 // The probe already ran, above. Telling the agent to run it
                 // itself is how its failure stayed invisible.
                 "probeResult": match &probe { Ok(v) => json!({ "ok": true, "version": v }), Err(e) => json!({ "ok": false, "error": e }) },
+                "runtime": match &runtime { Ok(v) => json!({ "ok": true, "bun": v }), Err(e) => json!({ "ok": false, "error": e }) },
                 "next": match &probe {
                     Ok(_) => "start_job with the ticket, then clone into the workdir and call prepare_env.".to_string(),
                     Err(e) => format!("The harness cannot start in this sandbox ({e}). report_problem — do NOT hand-code the ticket."),
@@ -1006,6 +1016,16 @@ async fn call_tool(
             // the persistent volume, so clones and harness sessions survive
             // restarts.
             let workdir = format!("/opt/data/workbench/jobs/{}", job.id);
+            // The run lines below are only worth handing out if the harness
+            // can start; provisioning its runtime here is what makes that true
+            // on an agent whose first act is start_job. A failure is SAID in
+            // the answer rather than failing the job: the branch and the job
+            // row are real, and doctor names the fix.
+            let runtime = if gated {
+                None
+            } else {
+                Some(devenv::ensure_harness_runtime(pg, &agent.department).await)
+            };
             let clone = if gated {
                 Value::Null
             } else {
@@ -1039,6 +1059,12 @@ async fn call_tool(
             value.insert("sessionDir".into(), json!(session_dir));
             if !gated {
                 value.insert("cloneUrl".into(), clone);
+                if let Some(Err(why)) = &runtime {
+                    value.insert(
+                        "harnessRuntime".into(),
+                        json!({ "ok": false, "error": why, "next": "call doctor; if bun still cannot be provisioned, report_problem — do not hand-code the ticket" }),
+                    );
+                }
             }
             value.insert("effort".into(), json!(effort));
             value.insert(
@@ -1187,10 +1213,20 @@ async fn call_tool(
                     Ok(vars) => vars,
                     Err(e) => return thrown(format!("project env: {e}")),
                 };
+            // The harness's own runtime, beside the repo's: a repo that pins
+            // rust and no bun must still leave omp startable.
+            let runtime = devenv::ensure_harness_runtime(pg, &agent.department).await;
             if let Some(obj) = result.as_object_mut() {
                 obj.insert(
                     "projectEnv".into(),
                     devenv::job_env_answer(&workdir, env_vars),
+                );
+                obj.insert(
+                    "harnessRuntime".into(),
+                    match &runtime {
+                        Ok(v) => json!({ "ok": true, "bun": v }),
+                        Err(e) => json!({ "ok": false, "error": e }),
+                    },
                 );
             }
             CallOutcome::Ok(result)
@@ -1480,21 +1516,22 @@ async fn call_tool(
 /// `String(args.x ?? '')` — anything non-string reads as the empty string.
 /// Run the harness probe in the agent's own sandbox and say what happened.
 ///
-/// As the AGENT USER in a LOGIN shell, because that is the only environment
-/// the answer is about: root has a bare PATH, and the agent's PATH is built
-/// by the profile block prepare_env writes. Probing as anybody else measures
-/// a machine nobody works on.
+/// As the AGENT USER in a NON-LOGIN shell. That is the stricter of the two
+/// environments the agent's terminal runs in (Hermes runs `bash -c` unless it
+/// is configured for a login shell), and the one that used to fail while a
+/// login-shell probe passed: the profile block prepare_env writes is what put
+/// mise's shims on a login shell's PATH, and a plain shell never read it. The
+/// harness runtime now lives in a directory the container's own PATH carries
+/// (`ensure_harness_runtime`), so a probe that passes here passes everywhere.
 ///
 /// Ok(version) is the harness's own version line. Err is the reason it could
 /// not run, which is the whole point of the check.
 async fn harness_probe(pg: &PgPool, department: &str) -> Result<String, String> {
     let container = managed_container(pg, department).await;
-    // `runuser` keeps the login shell, so the probe sees the PATH the agent
-    // sees — mise shims included, which is where this has gone wrong before.
     let script = format!("{} 2>&1", OMP.probe);
     let out = docker_exec(
         &container,
-        &["runuser", "-u", HARNESS_USER, "--", "sh", "-lc", &script],
+        &["runuser", "-u", HARNESS_USER, "--", "sh", "-c", &script],
         PROBE_TIMEOUT_MS,
     )
     .await;

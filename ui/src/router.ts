@@ -189,6 +189,10 @@ export const { p, navigate, isActive, preload, route } = createRouter({
       '/:tab': () => import('./routes/app/Observability.svelte'),
     },
     '/apps': () => import('./routes/app/Apps.svelte'),
+    // The control plane's front door: what needs attention across agents,
+    // models, MCP, spend and apps, with each view's own page one click away
+    // in the sidebar docked beside it.
+    '/manage': () => import('./routes/app/Manage.svelte'),
     '/x': {
       '/:app': {
         '/': () => import('./routes/app/XAppView.svelte'),

@@ -1,23 +1,32 @@
 // THE WORKSPACE PANE'S TABS — what the pane beside a work session is showing.
 //
-// A session's workspace is never one surface. There is the doc the session is
-// written against, the artifacts the agent produced, a Google file it opened,
-// the run report, the drafts it is holding for a person to sign off. Each is a
-// tab here, and the set GROWS WHILE THE AGENT WORKS: the stream calls
-// `syncTouched` every time an agent touches a document, which opens a tab for
-// it or focuses the one already open.
+// A session's workspace is never one surface. There are the files the session
+// works on (the Talaria documents, sheets and pages and the Google files the
+// agent created or opened, `lib/session-files`), a plan's own document, the run
+// report, the drafts it is holding for a person to sign off. Each is a tab
+// here, and the set GROWS WHILE THE AGENT WORKS: when a refetch of the
+// session's files lists a new one, or one the agent touched again, the harness
+// calls `syncTouched`, which opens a tab for it or focuses the one already open.
 //
-// THE LIST IS NOT STATE WE OWN — it is what the session has touched, derived
-// from the session and held in memory for exactly as long as the session is on
-// screen. It is deliberately never persisted: a reload re-derives it from the
-// session's own documents, so a tab pointing at an artifact somebody deleted
+// THE LIST IS NOT STATE WE OWN — it is what the session has, derived from the
+// session and held in memory for exactly as long as the session is on screen.
+// It is deliberately never persisted: a reload re-derives it from the
+// session's own files, so a tab pointing at an artifact somebody deleted
 // cannot outlive the refresh. The one thing worth carrying across a reload is
 // WHICH tab you were reading, and that is a per-viewer convenience — one
-// localStorage key, best effort, with no correctness resting on it.
+// localStorage key, best effort, with no correctness resting on it. (Which
+// files a viewer CLOSED is the other one, and it lives with the files:
+// `hideFile` in `lib/session-files`.)
 
 import { readStored, writeStored } from './persist'
+import type { FileGlyph } from './session-files'
 
+/** `doc` is a plan session's living document; `artifact` and `google` are the
+ *  session's files. */
 export type WorkspaceTabKind = 'doc' | 'artifact' | 'google' | 'report' | 'drafts'
+
+/** The small icon a tab wears: the file's type, or what the tab is. */
+export type TabGlyph = FileGlyph | 'plan' | 'report' | 'drafts'
 
 export interface WorkspaceTab {
   /** Stable per document, because it is the dedupe key: the same artifact
@@ -28,6 +37,8 @@ export interface WorkspaceTab {
   /** What the body needs in order to render this one — an artifact id, a
    *  Google file id, a doc path. Opaque here; the pane's caller reads it. */
   ref?: string
+  /** The strip's icon for it. Absent renders no icon. */
+  glyph?: TabGlyph
 }
 
 /** One session's strip, as a reader sees it. `active` comes resolved, so no
@@ -135,7 +146,25 @@ export function openTab(sessionId: string, tab: WorkspaceTab): void {
   store(sessionId, slot)
 }
 
-/** Close a tab. The doc tab cannot be closed — see `isClosable`. */
+/** PUT TABS ON THE STRIP WITHOUT TAKING THE PANE. What a session already had
+ *  when it was opened arrives as one list, and none of it is news: tabs not
+ *  yet open are appended in order, ones already open take the fresher fields,
+ *  and nobody's reading moves. `focus` names where a session with no active
+ *  tab yet should land — it never overrides one that has an active tab, and
+ *  the last visit's memory still outranks it (see `resolveActive`), which is
+ *  how "remembered, else `focus`, else the first" falls out of one call. */
+export function seedTabs(sessionId: string, tabs: readonly WorkspaceTab[], focus: string | null = null): void {
+  const slot = slotFor(sessionId)
+  for (const tab of tabs) {
+    const at = slot.tabs.findIndex((t) => t.id === tab.id)
+    if (at < 0) slot.tabs.push(tab)
+    else slot.tabs[at] = { ...slot.tabs[at]!, ...tab }
+  }
+  if (slot.activeId === null && focus && slot.tabs.some((t) => t.id === focus)) slot.activeId = focus
+  store(sessionId, slot)
+}
+
+/** Close a tab. Every tab closes (see `isClosable`). */
 export function closeTab(sessionId: string, tabId: string): void {
   const slot = bySession[sessionId]
   if (!slot) return
@@ -181,23 +210,22 @@ export function selectTab(sessionId: string, tabId: string): void {
   store(sessionId, slot)
 }
 
-/** THE STREAM'S CALL: an agent just touched a document, so the pane shows it —
+/** THE AGENT'S CALL: an agent just touched a file, so the pane shows it —
  *  opening a tab for it or focusing the one already open, never a second copy.
- *  It takes the touch's own shape rather than a `WorkspaceTab` because that is
- *  what the stream has, and it always takes focus: following the agent as it
- *  works is what the pane is for. */
-export function syncTouched(
-  sessionId: string,
-  touched: { kind: WorkspaceTabKind; id: string; label: string },
-): void {
-  openTab(sessionId, { id: touched.id, kind: touched.kind, label: touched.label })
+ *  It always takes focus, past the last visit's memory too: following the
+ *  agent as it works is what the pane is for. */
+export function syncTouched(sessionId: string, touched: WorkspaceTab): void {
+  openTab(sessionId, touched)
   const slot = bySession[sessionId]
   if (!slot) return
   slot.remembered = null
   store(sessionId, slot)
 }
 
-/** The doc is the session's own writing surface: the pane always has it to
- *  fall back on, so it carries no close affordance — and the store refuses the
- *  call too, rather than trusting every caller to remember. */
-export const isClosable = (tab: WorkspaceTab): boolean => tab.kind !== 'doc'
+/** EVERY TAB CLOSES. There used to be one that could not — a work session's
+ *  living document, the pane's fallback — and a work session has no such
+ *  document any more: its pane is its files, and closing one hides it for
+ *  this viewer (`hideFile`). A plan's document and a run's report re-open
+ *  themselves when the strip empties, which is the harness's rule, not the
+ *  store's. Kept as a predicate so the chrome asks one place. */
+export const isClosable = (_tab: WorkspaceTab): boolean => true
