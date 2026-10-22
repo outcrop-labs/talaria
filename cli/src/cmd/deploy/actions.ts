@@ -188,6 +188,23 @@ async function pullRegistryImages(ctx: Ctx): Promise<void> {
 
 const DEPLOY_BRANCH_KEY = 'TALARIA_DEPLOY_BRANCH'
 
+/** Set on the child `runUpdate` re-launches after a sync that moved the
+ *  checkout: the child skips the sync and the prelude, which the parent ran. */
+export const UPDATE_RESUMED_KEY = 'TALARIA_DEPLOY_UPDATE_RESUMED'
+
+/** The CLI's entry point, repo-relative — what the re-launch runs. */
+export const CLI_ENTRY = 'cli/bin/talaria.ts'
+
+/** The commit the checkout is on, or '' when git cannot say (the update
+ *  then finishes in this process, as it always did). */
+async function checkoutHead(ctx: Ctx): Promise<string> {
+  try {
+    return (await ctx.exec('git', ['rev-parse', 'HEAD'], { cwd: ctx.root })).stdout.trim()
+  } catch {
+    return ''
+  }
+}
+
 /** A branch an operator types. The value is a git argv, never a shell, so
  *  this refuses surprises (`..`, a leading dash, whitespace) rather than
  *  parsing the full ref grammar. The pin is the branch name on `origin`
@@ -347,17 +364,38 @@ async function pullApiPackage(ctx: Ctx): Promise<void> {
  *  `git fetch origin <branch>` plus `git merge --ff-only origin/<branch>`
  *  and nothing else — not the current branch's upstream, and never a merge
  *  commit or a reset. Then the api package (or the registry images) and the
- *  same `up` as boot. */
+ *  same `up` as boot.
+ *
+ *  When the sync MOVES the checkout, the rest of the update runs on the CLI
+ *  it just pulled, re-launched: this process loaded the old modules before
+ *  the pull, so finishing in it ran yesterday's update logic against today's
+ *  compose files — `no such service: searxng-config` the first time, a clean
+ *  run the second (a customer VM, 2026-10-22). The child skips the sync and
+ *  the prelude (this run already did both) by UPDATE_RESUMED_KEY. */
 export async function runUpdate(ctx: Ctx, sock: string = DOCKER_SOCK, branchFlag?: string): Promise<number> {
-  const branch = branchFlag !== undefined ? branchFromFlag(ctx, branchFlag) : readDeployBranch(ctx)
-  if (branch) {
-    await syncPinnedBranch(ctx, branch)
+  if (ctx.env[UPDATE_RESUMED_KEY]) {
+    // The re-launched half. The marker goes before anything inherits it.
+    delete ctx.env[UPDATE_RESUMED_KEY]
   } else {
-    ctx.log.say('git pull --ff-only')
-    if ((await ctx.run('git', ['pull', '--ff-only'], { cwd: ctx.root })) !== 0) {
-      ctx.log.die(
-        'git pull failed — reconcile the checkout (or fetch/checkout your way), then finish with `bun talaria deploy up`',
+    const branch = branchFlag !== undefined ? branchFromFlag(ctx, branchFlag) : readDeployBranch(ctx)
+    const before = await checkoutHead(ctx)
+    if (branch) {
+      await syncPinnedBranch(ctx, branch)
+    } else {
+      ctx.log.say('git pull --ff-only')
+      if ((await ctx.run('git', ['pull', '--ff-only'], { cwd: ctx.root })) !== 0) {
+        ctx.log.die(
+          'git pull failed — reconcile the checkout (or fetch/checkout your way), then finish with `bun talaria deploy up`',
+        )
+      }
+    }
+    const after = await checkoutHead(ctx)
+    if (before && after && before !== after) {
+      ctx.log.say(
+        `checkout moved ${before.slice(0, 9)}..${after.slice(0, 9)} — finishing the update on the CLI it just pulled`,
       )
+      ctx.env[UPDATE_RESUMED_KEY] = after
+      return ctx.run(process.execPath, [join(ctx.root, CLI_ENTRY), 'deploy', 'update'], { cwd: ctx.root })
     }
   }
   // NOT pullRegistryImages here: runUp does that itself for registry mode,

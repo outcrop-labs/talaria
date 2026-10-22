@@ -22,13 +22,19 @@ import {
   runUp,
   statusCommand,
   updateCommand,
-  upCommand, pgVolumeName } from './actions'
+  upCommand, pgVolumeName,
+  CLI_ENTRY,
+  UPDATE_RESUMED_KEY } from './actions'
 import { deployCommand, warnEnvDrift } from './index'
 import { fakeCtx, type FakeCtx } from '../../testing'
 import { CliError } from '../../ui'
 import type { Leaf, ParsedArgs } from '../../cli'
 
 const NO_ARGS: ParsedArgs = { positionals: [], flags: {} }
+
+/** A git call that moves or reads the remote — the sync. `rev-parse HEAD`
+ *  (how update notices the checkout moved) is a read, not part of it. */
+const isGitSync = (c: { cmd: string; args: string[] }) => c.cmd === 'git' && c.args[0] !== 'rev-parse'
 
 /** A tmp repo with the parts of docker/ deploy reads: the compose fixture
  *  interpolates the vars the drift tests need, and the root Dockerfile
@@ -222,9 +228,70 @@ describe('talaria deploy down / logs / status / update', () => {
     const ctx = fakeCtx()
     ctx.root = makeDeployTree()
     await runUpdate(ctx, '/nonexistent-deploy-test-socket')
-    const pull = ctx.calls.find((c) => c.cmd === 'git')!
+    const pull = ctx.calls.find(isGitSync)!
     expect(pull.args).toEqual(['pull', '--ff-only'])
     expect(pull.opts?.cwd).toBe(ctx.root)
+    expect(ctx.calls.at(-1)!.args).toEqual(docUpArgv)
+  })
+
+  // A customer VM, 2026-10-22: the pull brought compose files without the
+  // searxng-config service while this process still ran the CLI that pulled
+  // it — `no such service` on the first run, a clean second. A sync that
+  // moves the checkout now hands the rest of the update to the CLI it pulled.
+  test('a pull that moves the checkout finishes the update on the pulled CLI', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree()
+    const heads = ['1111111111aaaa', '2222222222bbbb']
+    const exec = ctx.exec
+    ctx.exec = async (cmd, args, opts) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') {
+        ctx.calls.push({ cmd, args, opts })
+        return { stdout: `${heads.shift()}\n`, stderr: '' }
+      }
+      return exec(cmd, args, opts)
+    }
+    const code = await runUpdate(ctx, '/nonexistent-deploy-test-socket')
+    expect(code).toBe(0)
+    const last = ctx.calls.at(-1)!
+    expect(last.cmd).toBe(process.execPath)
+    expect(last.args).toEqual([join(ctx.root, CLI_ENTRY), 'deploy', 'update'])
+    expect(last.opts?.cwd).toBe(ctx.root)
+    // the child knows it is the second half, and nothing of the redeploy ran here
+    expect(ctx.env[UPDATE_RESUMED_KEY]).toBe('2222222222bbbb')
+    expect(ctx.calls.some((c) => c.cmd === 'docker')).toBe(false)
+    expect(ctx.logLines.some((l) => l.kind === 'say' && l.msg.includes('finishing the update on the CLI it just pulled'))).toBe(true)
+  })
+
+  test('the re-launched half skips the sync and runs the redeploy', async () => {
+    const ctx = fakeCtx({ env: { [UPDATE_RESUMED_KEY]: '2222222222bbbb' } })
+    ctx.root = makeDeployTree()
+    await runUpdate(ctx, '/nonexistent-deploy-test-socket')
+    expect(ctx.calls.some((c) => c.cmd === 'git')).toBe(false)
+    expect(ctx.calls.at(-1)!.args).toEqual(docUpArgv)
+    // the marker is gone before docker inherits the environment
+    expect(ctx.env[UPDATE_RESUMED_KEY]).toBeUndefined()
+  })
+
+  test('the re-launched half does not repeat the drift warning', async () => {
+    const leaf = deployCommand.children.find((c) => c.name === 'update') as Leaf
+    const drifted = (l: { kind: string; msg: string }) => l.kind === 'warn' && l.msg.includes('TALARIA_HTTP_PORT')
+    const ctx = fakeCtx({ env: { [UPDATE_RESUMED_KEY]: 'x', TALARIA_HTTP_PORT: '9999' } })
+    ctx.root = makeDeployTree()
+    await leaf.run(ctx, NO_ARGS)
+    expect(ctx.logLines.some(drifted)).toBe(false)
+    // the first half still warns — the warning moved, it did not go away
+    const first = fakeCtx({ env: { TALARIA_HTTP_PORT: '9999' } })
+    first.root = makeDeployTree()
+    await leaf.run(first, NO_ARGS)
+    expect(first.logLines.some(drifted)).toBe(true)
+  })
+
+  test('an unmoved checkout finishes the update in this process', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree()
+    ctx.plant(['git', ['rev-parse', 'HEAD']], '1111111111aaaa\n')
+    await runUpdate(ctx, '/nonexistent-deploy-test-socket')
+    expect(ctx.calls.some((c) => c.cmd === process.execPath)).toBe(false)
     expect(ctx.calls.at(-1)!.args).toEqual(docUpArgv)
   })
 
@@ -248,7 +315,7 @@ describe('talaria deploy down / logs / status / update', () => {
     const pkg = ctx.calls.find((c) => c.cmd === 'docker' && c.args[0] === 'pull')!
     expect(pkg.args).toEqual(['pull', 'ghcr.io/outcrop-labs/talaria-api:main'])
     // order: git pull → package pull → up --build
-    const git = ctx.calls.findIndex((c) => c.cmd === 'git')
+    const git = ctx.calls.findIndex(isGitSync)
     const up = ctx.calls.findIndex((c) => c.args.includes('up'))
     expect(git).toBeLessThan(ctx.calls.indexOf(pkg))
     expect(ctx.calls.indexOf(pkg)).toBeLessThan(up)
@@ -281,13 +348,13 @@ describe('talaria deploy down / logs / status / update', () => {
     const ctx = fakeCtx()
     ctx.root = makeDeployTree('TALARIA_DEPLOY_BRANCH=rc\n')
     await runUpdate(ctx, '/nonexistent-deploy-test-socket')
-    const git = ctx.calls.filter((c) => c.cmd === 'git')
+    const git = ctx.calls.filter(isGitSync)
     expect(git.map((c) => c.args)).toEqual([
       ['fetch', 'origin', 'rc'],
       ['merge', '--ff-only', 'origin/rc'],
     ])
     expect(git.every((c) => c.opts?.cwd === ctx.root)).toBe(true)
-    const fetchAt = ctx.calls.findIndex((c) => c.cmd === 'git')
+    const fetchAt = ctx.calls.findIndex(isGitSync)
     const pkg = ctx.calls.findIndex((c) => c.cmd === 'docker' && c.args[0] === 'pull')
     const up = ctx.calls.findIndex((c) => c.args.includes('up'))
     expect(fetchAt).toBeLessThan(pkg)
@@ -303,7 +370,7 @@ describe('talaria deploy down / logs / status / update', () => {
     expect(text).toContain('TALARIA_DEPLOY_BRANCH=rc')
     expect(text).not.toContain('TALARIA_DEPLOY_BRANCH=main')
     expect(text).toContain('POSTGRES_PASSWORD=kept')
-    expect(ctx.calls.filter((c) => c.cmd === 'git').map((c) => c.args)).toEqual([
+    expect(ctx.calls.filter(isGitSync).map((c) => c.args)).toEqual([
       ['fetch', 'origin', 'rc'],
       ['merge', '--ff-only', 'origin/rc'],
     ])
@@ -315,7 +382,7 @@ describe('talaria deploy down / logs / status / update', () => {
     ctx.root = root
     const msg = await attempt(() => runUpdate(ctx, '/nonexistent-deploy-test-socket', 'origin/rc'))
     expect(msg).toContain('not a branch name')
-    expect(ctx.calls.some((c) => c.cmd === 'git')).toBe(false)
+    expect(ctx.calls.some(isGitSync)).toBe(false)
     expect(readFileSync(join(root, 'docker/.env'), 'utf8')).toContain('TALARIA_DEPLOY_BRANCH=rc')
   })
 
@@ -324,7 +391,7 @@ describe('talaria deploy down / logs / status / update', () => {
     ctx.root = makeDeployTree('TALARIA_DEPLOY_BRANCH=..\n')
     const msg = await attempt(() => runUpdate(ctx))
     expect(msg).toContain('not a branch name')
-    expect(ctx.calls.some((c) => c.cmd === 'git')).toBe(false)
+    expect(ctx.calls.some(isGitSync)).toBe(false)
   })
 
   test('a failed fetch dies before any docker command', async () => {
@@ -351,7 +418,7 @@ describe('talaria deploy down / logs / status / update', () => {
     ctx.root = root
     await runUp(ctx, '/nonexistent-deploy-test-socket', 'rc')
     expect(readFileSync(join(root, 'docker/.env'), 'utf8')).toContain('TALARIA_DEPLOY_BRANCH=rc')
-    const git = ctx.calls.filter((c) => c.cmd === 'git')
+    const git = ctx.calls.filter(isGitSync)
     expect(git.map((c) => c.args)).toEqual([
       ['fetch', 'origin', 'rc'],
       ['merge', '--ff-only', 'origin/rc'],
@@ -362,7 +429,7 @@ describe('talaria deploy down / logs / status / update', () => {
     const again = fakeCtx()
     again.root = root
     await runUp(again, '/nonexistent-deploy-test-socket')
-    expect(again.calls.some((c) => c.cmd === 'git')).toBe(false)
+    expect(again.calls.some(isGitSync)).toBe(false)
   })
 
   test('status names the pinned branch', async () => {
