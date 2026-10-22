@@ -177,10 +177,13 @@ multiplexer.
   the hard stops are off unless rendered), routes each persona tier
   (`platforms.api_server.extra.model_routes`: `<persona>-<tier>` → the tier's upstream id),
   carries each model's configured effort (`agent.reasoning_overrides`, and
-  `model_overrides.custom.<id>.supports_reasoning: false` for a model nobody vouches levels
-  for, so Hermes does not fill in `medium`), and turns off Hermes' model-written session titles
+  `model_overrides.<provider>.<id>.supports_reasoning: false` — the provider id the model's
+  routed spec names, `custom` today — for a model nobody vouches levels for, so Hermes does not
+  fill in `medium`), and turns off Hermes' model-written session titles
   (`auxiliary.title_generation.model_upgrade_enabled: false`). A turn's own effort pick travels
-  as `model_options.reasoning_effort`, the one spelling Hermes' API server reads.
+  as `model_options.reasoning_effort`, the one spelling Hermes' API server reads. A pinned
+  session runs the agent's main model whatever tier a message picks (Hermes fixes a session's
+  model at its first turn), so such a turn carries no tier effort and is booked as the main model.
 - Each agent presents its own `tak_` key; the renderer rewrites `fleet/.env` from the DB
   every render (0600 in a 0700 dir).
 - **Blue/green rolls** (api/src/fleet/reconcile.rs): the incoming slot comes up on a fresh port,
