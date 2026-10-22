@@ -2,6 +2,7 @@
 
 pub mod agent_keys;
 pub mod budget;
+pub mod fleet_approvals;
 pub mod fleet_chat;
 pub mod guard;
 pub mod models;

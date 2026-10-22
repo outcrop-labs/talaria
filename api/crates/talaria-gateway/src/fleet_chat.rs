@@ -7,7 +7,8 @@
 // A session turn can also be reached while it runs: steer_run pushes words
 // into it and stop_run interrupts it, both naming the run id the stream
 // announced. They live here because they go through the same door with the
-// same bearer as the turn itself.
+// same bearer as the turn itself. The approval answer goes through that door
+// too, from a tap on every turn's stream (fleet_approvals.rs).
 //
 // Every Hermes persona turn in the tree is sent from here to the agent's own
 // container, which then talks to a provider we do not control the request
@@ -48,7 +49,7 @@ const HEADERS_WINDOW: Duration = Duration::from_secs(300);
 /// reading, and a route answers a person who just pressed the button.
 /// Neither can wait the turn's five minutes on a container that accepted
 /// TCP and went quiet.
-const CONTROL_WINDOW: Duration = Duration::from_secs(10);
+pub(crate) const CONTROL_WINDOW: Duration = Duration::from_secs(10);
 
 /// One OpenAI-style streamed reply, or a canned one. `status` is the upstream
 /// (or canned = 200) status; the body is raw SSE bytes the caller parses with
@@ -359,7 +360,13 @@ async fn hold_for_agent(
                 turn = register_turn(&turn_subject(&manifest, entry)).await;
             }
             match request.open(entry).await {
-                Opened::Stream(stream) => return Ok(bind_turn(stream, turn)),
+                Opened::Stream(stream) => {
+                    // Hermes' approval requests on this turn are answered
+                    // here, for the agent's policy (fleet_approvals.rs).
+                    let subject = turn_subject(&manifest, entry);
+                    let stream = crate::fleet_approvals::answer_by_policy(stream, entry, &subject);
+                    return Ok(bind_turn(stream, turn));
+                }
                 Opened::Lost => return Err(SessionLost),
                 Opened::NotYet => {}
             }
@@ -425,7 +432,7 @@ fn bind_turn(mut stream: ChatStream, turn: Option<TurnRegistration>) -> ChatStre
 /// chat arm go through the SAME door with the SAME bearer — the manifest row's
 /// key, which the renderer put in the container as its API_SERVER_KEY — so the
 /// key handling can only be got right or wrong once.
-fn agent_post(entry: &ManifestEntry, path: &str) -> reqwest::RequestBuilder {
+pub(crate) fn agent_post(entry: &ManifestEntry, path: &str) -> reqwest::RequestBuilder {
     let req = http()
         .post(format!("{}{path}", entry.url))
         .header("content-type", "application/json");
@@ -873,7 +880,7 @@ fn parse_message_count(body: &Value) -> Option<i64> {
 /// error code when the body names one (`run_not_found`, `invalid_steer_input`
 /// — a closed vocabulary Hermes owns). THE BODY'S PROSE NEVER TRAVELS: an
 /// agent's own words can be in there, and this string goes back into a chat.
-async fn control_failure(res: reqwest::Response) -> String {
+pub(crate) async fn control_failure(res: reqwest::Response) -> String {
     let status = res.status().as_u16();
     match res
         .json::<Value>()
@@ -1336,6 +1343,10 @@ fn parse_session_frame(
         // acknowledgement is nothing to land.
         "run.steered" => Some(Vec::new()),
         "run.queued" => Some(Vec::new()),
+        // Hermes asking whoever reads the stream to approve a flagged call.
+        // The door answered it as the bytes went past (fleet_approvals.rs);
+        // the consumer has nothing to land.
+        "approval.request" => Some(Vec::new()),
         "error" => Some(vec![AgentStreamEvent::Error {
             message: session_error_message(json),
         }]),
@@ -2052,6 +2063,27 @@ mod tests {
         let mut p = AgentStreamParser::new();
         let events = p.feed("event: run.cancelled\ndata: {\"run_id\":\"r1\"}\n\n".as_bytes());
         assert_eq!(events, vec![AgentStreamEvent::Stopped]);
+    }
+
+    /// An approval request is the door's to answer (fleet_approvals.rs), on
+    /// either stream: the consumer lands nothing for it, not a tool row and
+    /// not an error, and the frames around it read as they always did.
+    #[test]
+    fn an_approval_request_lands_nothing_on_either_stream() {
+        for run in ["run_1", "chatcmpl-1"] {
+            let mut p = AgentStreamParser::new();
+            let events = p.feed(
+                format!(
+                    "event: approval.request\ndata: {{\"execution_generation\": 1, \"command\": \"rm -rf /tmp/x\", \"description\": \"delete in root path\", \"request_id\": \"q1\", \"event\": \"approval.request\", \"run_id\": \"{run}\", \"choices\": [\"once\", \"deny\"]}}\n\nevent: assistant.delta\ndata: {{\"message_id\": \"m1\", \"delta\": \"ok\", \"run_id\": \"{run}\"}}\n\n"
+                )
+                .as_bytes(),
+            );
+            assert_eq!(
+                events,
+                vec![AgentStreamEvent::Content { text: "ok".into() }],
+                "{run}"
+            );
+        }
     }
 
     /// Three runs of one tool inside one reply are three calls — three ids,

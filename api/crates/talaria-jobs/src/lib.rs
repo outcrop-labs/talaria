@@ -169,6 +169,66 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         let state = spend_state.clone();
         Box::pin(async move { talaria_price_oracle::keys_for(&state).await })
     }));
+    // THE APPROVAL ANSWER'S TWO EDGES. The fleet chat door answers each
+    // Hermes approval request on a streamed turn for the agent's own policy
+    // (talaria-gateway's fleet_approvals), and the gateway crate holds no
+    // pool. Unwired, the policy reads as unknown, so every request is
+    // answered `deny`, a Developer Agent's included, and nothing is recorded.
+    let approval_pg = state.pg.clone();
+    let _ = talaria_gateway::fleet_approvals::APPROVAL_POLICY.set(Arc::new(move |model| {
+        let pg = approval_pg.clone();
+        Box::pin(async move {
+            match sqlx::query_as::<_, (String, bool)>(
+                "select id::text, developer from agent_defs where model = $1 and enabled",
+            )
+            .bind(&model)
+            .fetch_optional(&pg)
+            .await
+            {
+                Ok(row) => row.map(|(agent_id, developer)| {
+                    talaria_gateway::fleet_approvals::AgentApprovalPolicy {
+                        agent_id,
+                        developer,
+                    }
+                }),
+                Err(e) => {
+                    tracing::warn!("{LOG} approval policy for {model} unreadable: {e}");
+                    None
+                }
+            }
+        })
+    }));
+    let record_pg = state.pg.clone();
+    let _ = talaria_gateway::fleet_approvals::RECORD_APPROVAL.set(Arc::new(move |r| {
+        let pg = record_pg.clone();
+        Box::pin(async move {
+            use talaria_gateway::fleet_approvals::Choice;
+            let action = match r.choice {
+                Choice::Once => "agent.approval_allowed",
+                Choice::Deny => "agent.approval_denied",
+            };
+            talaria_audit::log_audit(
+                &pg,
+                talaria_audit::AuditEntry {
+                    actor: "talaria",
+                    action,
+                    target_type: "agent",
+                    target_id: r.agent_id.as_deref(),
+                    target_label: Some(&r.agent_model),
+                    before: None,
+                    after: Some(serde_json::json!({
+                        "choice": r.choice.as_str(),
+                        "description": r.description,
+                        "command": r.command,
+                        "runId": r.run_id,
+                        "answered": r.failure.is_none(),
+                        "error": r.failure,
+                    })),
+                },
+            )
+            .await;
+        })
+    }));
     // THE RUN ASSEMBLY plan-draft, research, and reindex enqueue through.
     // The seam and its constructor (`work_dispatch::dispatch_deps`, which is
     // `real_run_deps` — the same assembly agent-hire calls directly) both

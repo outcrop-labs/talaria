@@ -211,6 +211,22 @@ lives once in `server/tasks.ts` (`agentSafePatch`); a second definition anywhere
 invariant check, and the tool descriptions must mirror it (a startup auditor shouts on
 drift).
 
+Inside the container, Hermes gates `execute_code` and any terminal command its classifier
+calls dangerous behind an approval, and Talaria sets that policy whole on every render
+(`fleet_approvals` in `talaria-fleet-render`). A **Developer Agent** gets `approvals.mode: off`
+and `approve`: flagged commands run, with Hermes' hardline floor and any `approvals.deny` list
+still in force. **Every other agent** gets `mode: manual` and `deny`: no LLM guardian decides,
+and a flagged call is refused. Crons and unattended turns resolve that on the spot. A
+*streamed* turn (chat, channel reply, work session) is treated by Hermes as attended, so it
+emits an `approval.request` frame and blocks. The fleet chat door taps every turn's stream and
+answers each request through the agent's own `POST /v1/runs/{id}/approval`: `deny`, or `once`
+for a Developer Agent, or `deny` when the policy cannot be read
+(`talaria-gateway/src/fleet_approvals.rs`). Each decision is written to the audit log as
+`agent.approval_denied` / `agent.approval_allowed`. A request nobody answers is refused by
+Hermes after `approvals.timeout` (60 s). The same render pins Nous-hosted connectors
+(`tools.connectors.enabled`) and the Nous guest identity (`nous.guest`) off: SaaS goes through
+the MCP gateway, and models through the LLM gateway.
+
 Work delivery is **push-side**: the app dispatches durable work sessions to agents
 (`work-dispatch.ts`). The Python plugin in `plugin/talaria/` is vestigial — nothing mounts
 it; its heartbeat reference is the legacy mission-control contract.
