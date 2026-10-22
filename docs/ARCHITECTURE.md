@@ -216,11 +216,17 @@ multiplexer.
     finish.
   - *A resumed turn the agent still holds is picked up, not re-sent.* A v0.22 session turn
     keeps running when its stream drops, so the auto-resume asks `GET /v1/runs/{id}` first and
-    lands the reply the run produced.
+    lands the run the way its live stream would have: the reply, a stopped turn, or, for a
+    `failed` run, an error row that does not chain. Only a run the container does not know
+    (404) or one Hermes fenced as `unknown` is sent again. The run door keeps only the reply's
+    text: no tool calls or reasoning, `MEDIA:` tags unresolved, and no `approval.request`
+    frames, so a run parked on an approval waits out the agent's approval timeout.
 
-  Pinned sessions stay a per-agent switch, off by default. On a session, a per-message tier
-  is not honoured: the session runs its main model. Conversations from before the switch stay
-  on replay. The first turn after a crash can wait up to five minutes before it runs: the
+  Pinned sessions stay a per-agent switch, off by default. Two things block making them the
+  default. On a session, a per-message tier is not honoured: the session runs its main model.
+  And session turns are ledgered as character estimates until `session_usage` reads the
+  session stream's `input_tokens`/`output_tokens` usage frame. Conversations from before the
+  switch stay on replay. The first turn after a crash can wait up to five minutes before it runs: the
   restarted container's gateway gets the same pid and pid-namespace id as the dead one, so
   Hermes treats the dead turn's transcript lease as live until it expires.
 

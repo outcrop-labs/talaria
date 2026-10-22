@@ -391,18 +391,32 @@ const KEEPALIVE: &[u8] = b": keepalive\n\n";
 /// re-sending the message would put it into the session a second time, and
 /// the agent would do the work twice.
 ///
-/// `None` means there is nothing to pick up. The run is unknown here (404:
-/// the container restarted, so the turn died with it), or it ended some other
-/// way (cancelled, failed), or the agent could not be asked. The caller then
-/// sends the turn again, which is right in every one of those cases. A turn
-/// lost in a restart is closed by Hermes' own boundary first, through the
-/// repair above.
+/// Any run the container still holds is picked up and landed the way its live
+/// stream would have landed it: `completed` as the reply, `cancelled` as a
+/// stopped turn, `failed` as an error row. A failed run is never sent again.
+/// Hermes' `failed` also covers a turn that did real work and then stopped
+/// short (`partial`, or the iteration budget), so a re-send would do that
+/// work a second time, and a live `run.failed` ends the turn without a chain
+/// for the same reason.
+///
+/// `None` means there is nothing to pick up, and the caller sends the turn
+/// again. That happens in three cases: the run is unknown here (404: the
+/// container restarted, so the turn died with it), the agent could not be
+/// asked, or Hermes fenced the run as `unknown`. In that last case the
+/// session's FIFO waits behind it, and the re-send's refusal is what the
+/// repair above acts on. A turn lost in a restart is closed by Hermes' own
+/// boundary first, through that repair.
 ///
 /// The returned stream speaks the session frames every reader already knows:
 /// `run.started` (so a stop can name the run), a keep-alive per poll while it
-/// runs, then `assistant.completed` with the reply. The tool calls and
-/// reasoning the lost stream would have carried do not come back; the run
-/// door does not keep them.
+/// runs, then `assistant.completed` with the reply and the run's verdict.
+/// Only the reply's text comes back. The tool calls and reasoning the lost
+/// stream would have carried are not kept by the run door, and its `output`
+/// is the reply before Hermes resolves `MEDIA:` tags, so an attachment lands
+/// as its raw tag where a live turn would show it. A run waiting on an
+/// approval only gets keep-alives here: the reattach raises no
+/// `approval.request` frames, so no approval tap sees the prompt, and it
+/// waits out the agent's approval timeout, which denies it.
 pub async fn reattach_session_run(agent_model: &str, run_id: &str) -> Option<ChatStream> {
     if !plain_id(run_id) {
         return None;
@@ -412,7 +426,7 @@ pub async fn reattach_session_run(agent_model: &str, run_id: &str) -> Option<Cha
     let RunRead::Found(first) = read_run(entry, run_id).await else {
         return None;
     };
-    if !matches!(run_state(&first), RunState::Running | RunState::Landed(_)) {
+    if run_state(&first) == RunState::Lost {
         return None;
     }
     let turn = register_turn(&turn_subject(&manifest, entry)).await;
@@ -467,10 +481,11 @@ async fn read_run(entry: &ManifestEntry, run_id: &str) -> RunRead {
 enum RunState {
     /// Still going in the container.
     Running,
-    /// Finished, or stopped on purpose: the frames that land it.
+    /// Over: the frames that land it, as its live stream would have.
     Landed(Bytes),
-    /// Over some other way: the error frame that ends the turn.
-    Ended(Bytes),
+    /// Fenced as `unknown`: Hermes does not know what became of it, and the
+    /// session's FIFO waits behind it until the lost-turn repair runs.
+    Lost,
 }
 
 fn run_state(projection: &Value) -> RunState {
@@ -489,9 +504,14 @@ fn run_state(projection: &Value) -> RunState {
     let reply = sse("assistant.completed", &with(json!({ "content": output })));
     match projection["status"].as_str().unwrap_or_default() {
         "queued" | "running" | "waiting_for_approval" | "stopping" => RunState::Running,
+        "unknown" => RunState::Lost,
         "completed" => RunState::Landed([reply, sse("run.completed", &stamp)].concat().into()),
         "cancelled" => RunState::Landed([reply, sse("run.cancelled", &stamp)].concat().into()),
-        other => RunState::Ended(sse(
+        // The live stream's own ending for a failed run: Hermes' reply (an
+        // apology, or the work it got through), then the verdict that makes
+        // the row an error and keeps the chain from firing again.
+        "failed" => RunState::Landed([reply, sse("run.failed", &stamp)].concat().into()),
+        other => RunState::Landed(sse(
             "error",
             &with(json!({ "message": format!("the agent's run ended {other}") })),
         )),
@@ -540,9 +560,15 @@ impl Reattached {
                 self.misses = 0;
                 match run_state(&projection) {
                     RunState::Running => Bytes::from_static(KEEPALIVE),
-                    RunState::Landed(frames) | RunState::Ended(frames) => {
+                    RunState::Landed(frames) => {
                         self.done = true;
                         frames
+                    }
+                    // Fenced while it was being followed. The next turn's
+                    // refusal is what the repair acts on.
+                    RunState::Lost => {
+                        self.done = true;
+                        gone("the agent lost track of this turn before it finished")
                     }
                 }
             }
@@ -786,13 +812,32 @@ mod tests {
                 AgentStreamEvent::Stopped
             ]
         );
-        let RunState::Ended(failed) = run_state(&base("failed")) else {
-            panic!("failed ends the turn");
+        // A failed run lands as the error row its live stream would have
+        // made, reply first: never sent again, never chained.
+        let RunState::Landed(failed) = run_state(&base("failed")) else {
+            panic!("failed lands as an error, not a re-send");
         };
         assert_eq!(
             landed(&failed),
+            vec![
+                AgentStreamEvent::Content {
+                    text: "the reply".into()
+                },
+                AgentStreamEvent::Error {
+                    message: "the run failed".into()
+                }
+            ]
+        );
+        // Only a run Hermes fenced as unknown is handed back for a re-send,
+        // whose refusal the lost-turn repair acts on.
+        assert_eq!(run_state(&base("unknown")), RunState::Lost);
+        let RunState::Landed(odd) = run_state(&base("steered")) else {
+            panic!("a status this build does not know still lands");
+        };
+        assert_eq!(
+            landed(&odd),
             vec![AgentStreamEvent::Error {
-                message: "the agent's run ended failed".into()
+                message: "the agent's run ended steered".into()
             }]
         );
     }

@@ -548,8 +548,10 @@ async fn continue_inner(
     // left the turn running, or finished, in the agent. Re-sending the
     // message would put it into the session twice and the agent would do the
     // work twice. The run door says whether the agent still has it, and the
-    // reattached stream lands its reply on this same row. A turn the agent
-    // no longer knows died with its container, and is sent again below.
+    // reattached stream lands its reply on this same row, a failed run as
+    // the error row its live stream would have made. A turn the agent no
+    // longer knows died with its container, and one Hermes fenced as
+    // `unknown` waits on the lost-turn repair: both are sent again below.
     let held = match resume.filter(|_| pinned) {
         Some(row) => match message_run_id(&state.pg, row).await.ok().flatten() {
             Some(run) => {

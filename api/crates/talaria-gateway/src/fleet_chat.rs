@@ -231,16 +231,18 @@ enum AgentRequest {
         conversation_id: String,
         body: Value,
         /// The conversation was driven through this session before, so the
-        /// session must already be there: a fresh create is a lost volume,
-        /// not a first turn.
+        /// session must already be there: it is looked up, never created,
+        /// and a lookup that finds nothing is a lost session, not a first
+        /// turn.
         history_expected: bool,
     },
 }
 
-/// The pinned session this turn expected to find is gone: the container
-/// answered the create with a fresh session where a transcript should have
-/// been. Not a hold and not a canned reply — the caller has the full history
-/// in hand and sends it the other way.
+/// The pinned session this turn expected to find is gone: the lookup of a
+/// session that carried turns answered `session_not_found` (a lost state
+/// volume), or a create was refused as `session_deleted`. Not a hold and not a
+/// canned reply — the caller has the full history in hand and sends it the
+/// other way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionLost;
 
