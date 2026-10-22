@@ -149,7 +149,7 @@
     ])
 </script>
 
-<Panel class={cn(!s.enabled && 'opacity-60')}>
+<Panel class={cn((!s.enabled || s.appOff) && 'opacity-60')}>
   <!-- ── Header: identity left, one status cluster right ── -->
   <div class="flex items-center gap-3">
     <McpServerMark title={s.label} domain={domain?.replace(/^mcp\./, '')} size={36} />
@@ -261,6 +261,12 @@
     <div class={cn('mt-2 font-sans text-[11px] leading-relaxed', status.tone === 'danger' ? 'text-danger' : 'text-muted')}>
       {s.probe.detail}
       {#if !probed && s.probe.at}<span class="text-ink-dim" title={new Date(s.probe.at).toLocaleString()}>· {relativeTime(s.probe.at)}</span>{/if}
+    </div>
+  {/if}
+  <!-- The app behind it cannot serve: say why, and that nothing granted is lost. -->
+  {#if s.appOff && s.enabled}
+    <div class="mt-2 font-sans text-[11px] leading-relaxed text-muted">
+      Off because {s.appOff.replace(/\.$/, '')}. No agent carries it until the app serves again; every access grant is kept.
     </div>
   {/if}
   {#if stale.length && s.enabled}

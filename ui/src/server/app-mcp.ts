@@ -11,7 +11,7 @@ import { dispatchJsonRpc, rpcError, type Rpc } from './mcp-jsonrpc'
 import type { AppMcp, AppMcpTool } from '@/sdk/server'
 import { isolateApp } from './app-isolate'
 import { appHasMcp as hasMcpFile, loadAppMcp } from './app-load'
-import { appBuildsDir } from './app-build/paths'
+import { appDataDir } from './app-build/paths'
 import { getSetting } from './audit'
 import { resyncAppMcpServers } from './internal-api'
 
@@ -154,16 +154,20 @@ export async function appMcpTools(slug: string): Promise<Array<{ name: string; d
 // The registry row's `tools` column is what Manage → MCP's tool-subset picker
 // and "Discover tools" read. Rust cannot load the module (rule 10), so the
 // catalog travels the other way: the build probe writes the checked catalog
-// beside the build (`mcp-catalog.json`), and the api copies it into the row
-// whenever it upserts one (talaria-apps `sync_app_mcp_servers`) — on enable,
-// at boot, and when this host asks after writing a new catalog. An enabled
-// app's row therefore has its tools the moment it exists; it used to start
-// as `[]` and stay empty until some agent happened to call.
+// to the app's data directory (`mcp-catalog.json`), and the api copies it
+// into the row whenever it upserts one (talaria-apps `sync_app_mcp_servers`)
+// — on enable, at boot, and when this host asks after writing a new catalog.
+// An enabled app's row therefore has its tools the moment it exists; it used
+// to start as `[]` and stay empty until some agent happened to call.
+//
+// NOT BESIDE THE BUILD. app-builds/ is served to anyone, unauthenticated and
+// cached as immutable (server-entry.ts `tryServeAppBuilds`); the catalog is
+// every tool's name, description and schema. app-data/ is never served.
 
-/** registry twin: talaria-apps `MCP_CATALOG_FILE`. */
+/** registry twin: talaria-apps `MCP_CATALOG_FILE` / `mcp_catalog_path`. */
 export const MCP_CATALOG_FILE = 'mcp-catalog.json'
 
-export const appMcpCatalogPath = (slug: string): string => join(appBuildsDir(), slug, MCP_CATALOG_FILE)
+export const appMcpCatalogPath = (slug: string): string => join(appDataDir(slug), MCP_CATALOG_FILE)
 
 /** slug → the catalog body last written and handed to the api. */
 const catalogWritten = new Map<string, string>()
@@ -171,7 +175,7 @@ const catalogWritten = new Map<string, string>()
 const isEnabled = async (slug: string): Promise<boolean> =>
   (await getSetting<string[]>('apps_enabled', [])).includes(slug)
 
-/** Write the checked catalog beside the app's build and, for an enabled app,
+/** Write the checked catalog to the app's data directory and, for an enabled app,
  *  ask the api to copy it into the registry row. Never throws — a catalog that
  *  did not land is a warning (the api's boot sync reads the file anyway), not
  *  a failed load. */
@@ -180,10 +184,10 @@ export async function syncAppMcpCatalog(slug: string, c: CheckedAppMcp): Promise
     const tools = catalogOf(c.tools)
     const body = JSON.stringify({ tools, problems: c.problems })
     const file = appMcpCatalogPath(slug)
-    // An uninstall removes the build directory: a remembered catalog whose
-    // file is gone is written again.
+    // An uninstall removes the file: a remembered catalog whose file is gone
+    // is written again.
     if (catalogWritten.get(slug) === body && existsSync(file)) return
-    mkdirSync(join(appBuildsDir(), slug), { recursive: true })
+    mkdirSync(appDataDir(slug), { recursive: true })
     const at = new Date()
     writeFileSync(`${file}.tmp`, `${JSON.stringify({ tools, probe: catalogProbe(c, at), at: at.toISOString() }, null, 2)}\n`)
     renameSync(`${file}.tmp`, file)
@@ -198,7 +202,8 @@ export async function syncAppMcpCatalog(slug: string, c: CheckedAppMcp): Promise
 }
 
 /** The app publishes no MCP surface (any more): drop its catalog, and let the
- *  api drop the row if one was there. */
+ *  api turn its row off if one was there. The row keeps its grants, so an
+ *  mcp.ts that comes back brings the server back to the same agents. */
 export async function clearAppMcpCatalog(slug: string): Promise<void> {
   catalogWritten.delete(slug)
   const file = appMcpCatalogPath(slug)
@@ -235,15 +240,18 @@ export function argumentProblem(schema: Record<string, unknown> | undefined, arg
 /** Why the gateway must refuse this app server outright, or null.
  *
  *  AN APP THAT IS NOT ENABLED SERVES NOTHING, whatever its registry row says.
- *  Turning an app off (an admin, or a failed build) asks the api to remove the
- *  row and roll the agents that carried it, but an agent's rendered config
- *  outlives that until its roll lands — and in dev the module loads from
- *  source whatever the build said, so a broken app's tools kept answering. The
- *  app server gateway (apps.$app.$.ts) has always applied this rule to people;
- *  this is the same rule for agents. */
-export async function appMcpOff(appSlug: string | null | undefined): Promise<string | null> {
+ *  Turning an app off (an admin, or a failed build) asks the api to turn the
+ *  row off (`appOff`, keeping its grants) and roll the agents that carried it,
+ *  but an agent's rendered config outlives that until its roll lands — and in
+ *  dev the module loads from source whatever the build said, so a broken app's
+ *  tools kept answering. The app server gateway (apps.$app.$.ts) has always
+ *  applied this rule to people; this is the same rule for agents. A row the
+ *  api turned off for any other reason (the app lost its mcp.ts) is refused
+ *  with that reason. */
+export async function appMcpOff(appSlug: string | null | undefined, appOff: string | null = null): Promise<string | null> {
   if (!appSlug) return null
-  return (await isEnabled(appSlug)) ? null : `app "${appSlug}" is not enabled`
+  if (!(await isEnabled(appSlug))) return `app "${appSlug}" is not enabled`
+  return appOff ? `app "${appSlug}" is not serving: ${appOff}` : null
 }
 
 export async function dispatchAppMcp(

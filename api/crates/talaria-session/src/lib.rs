@@ -610,6 +610,59 @@ pub fn json_with_cookies(body: impl IntoResponse, cookies: &[String]) -> Respons
 mod tests {
     use super::*;
 
+    /// A state with a test root and a pool that never connects: the guard
+    /// answers from the header alone, before any query.
+    fn internal_state() -> AppState {
+        let cfg = talaria_config::Config::from_parts(
+            "postgres://t:t@127.0.0.1:1/unused".into(),
+            "redis://127.0.0.1:1".into(),
+            "test-root".into(),
+            String::new(),
+            String::new(),
+            String::new(),
+        )
+        .expect("test config assembles");
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy(&cfg.database_url)
+            .expect("a lazy pool needs no database");
+        AppState::new(pg, std::sync::Arc::new(cfg))
+    }
+
+    fn with(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                axum::http::HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        h
+    }
+
+    /// `/api/internal/*` admits the root-derived credential and nothing else:
+    /// no header, a person's session cookie, an agent's bearer key, a wrong or
+    /// truncated token, or the token under another header name.
+    #[tokio::test]
+    async fn require_internal_admits_only_the_root_derived_token() {
+        let state = internal_state();
+        let token = state.cfg.secret_root.internal_token();
+        let header = talaria_config::INTERNAL_HEADER;
+        let refused = |h: HeaderMap| {
+            let r = require_internal(&state, &h).expect_err("refused");
+            assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        };
+        refused(HeaderMap::new());
+        refused(with(&[("cookie", "talaria_session=an-admins-session")]));
+        refused(with(&[("authorization", "Bearer tak_an-agents-key")]));
+        refused(with(&[(header, "")]));
+        refused(with(&[(header, "not-the-token")]));
+        refused(with(&[(header, &token[..63])]));
+        refused(with(&[("x-talaria-internal-token", &token)]));
+        assert!(require_internal(&state, &with(&[(header, &token)])).is_ok());
+        // The host may pad it; the guard trims, as it reads every header.
+        assert!(require_internal(&state, &with(&[(header, &format!(" {token} "))])).is_ok());
+    }
+
     #[test]
     fn uri_component_round_trips_the_js_way() {
         // The unreserved set survives; everything else escapes as %XX.

@@ -17,6 +17,7 @@ mod support;
 
 mod agent_managers;
 mod agent_reply_notify;
+mod app_mcp_sync_live;
 mod artifacts_read;
 mod attribution;
 mod blueprints_live;
@@ -40,6 +41,7 @@ mod gateway_hot_caches;
 mod github_jwt;
 mod github_pem_repair;
 mod group_dm_live;
+mod internal_routes;
 mod llm_models;
 mod me_threads_sent_live;
 mod notifications_reads;

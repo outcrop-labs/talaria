@@ -69,7 +69,7 @@ export const Route = defineApi('/api/mcp/gw/$server', {
     }
     // A disabled app serves nothing, whatever its row says (`appMcpOff`).
     const { appMcpOff } = await import('@/server/app-mcp')
-    const off = await appMcpOff(eff.server.appSlug)
+    const off = await appMcpOff(eff.server.appSlug, eff.server.appOff)
     if (off) {
       record('denied', 403, off)
       return json({ error: off }, { status: 403 })
@@ -131,7 +131,7 @@ export const Route = defineApi('/api/mcp/gw/$server', {
     const eff = await effectiveMcpFor(caller, params.server)
     if (!eff) return json({ error: 'no access to this MCP server' }, { status: 403 })
     const { appMcpOff } = await import('@/server/app-mcp')
-    const off = await appMcpOff(eff.server.appSlug)
+    const off = await appMcpOff(eff.server.appSlug, eff.server.appOff)
     if (off) return json({ error: off }, { status: 403 })
     if (eff.server.appSlug) return new Response(null, { status: 405 })
     return json({ error: 'not an app-published server' }, { status: 404 })

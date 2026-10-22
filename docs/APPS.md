@@ -91,8 +91,11 @@ rebuilding (managed update flows are on the roadmap).
   resolved on its way into `mcp.ts`), and the app must not persist it — not in `ctx.store`, not
   in a log, not in a thrown message. The call record Talaria keeps never stores arguments either
   ([mcp.md](./sdk/mcp.md)).
-- App MCP servers appear in Manage → MCP badged **app**; their tool catalogs come from the module
-  (no probe), and they cannot be deleted or re-pointed there — lifecycle belongs to Manage → Apps.
+- App MCP servers appear in Manage → MCP badged **app**. Their tool catalogs come from the app's
+  load probe, which checks each tool in `mcp.ts` and names any it leaves out on the server's card
+  ([mcp.md](./sdk/mcp.md)). They cannot be deleted or re-pointed there; lifecycle belongs to
+  Manage → Apps. An app that is turned off or fails its build keeps its server row and every
+  grant on it, marked **app off**, until it serves again; only uninstalling it removes the row.
 - Everything an app's users do runs under their own session: platform permissions, resource ACLs,
   and the audit log apply exactly as in core surfaces.
 

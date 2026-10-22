@@ -21,6 +21,14 @@ export function appBuildsDir(): string {
   return process.env.TALARIA_APP_BUILDS_DIR || join(dirname(appsDir()), 'app-builds')
 }
 
+/** One app's data directory: its database files and the records the host
+ *  keeps about it (the MCP catalog). Never served over HTTP, unlike
+ *  `appBuildsDir()`. Rust twin: talaria-users `app_data_dir`. */
+export function appDataDir(slug: string): string {
+  const root = process.env.TALARIA_APP_DATA_DIR || join(appsDir(), '..', 'app-data')
+  return join(root, slug)
+}
+
 export function appSrc(slug: string, file: string): string {
   return join(appsDir(), slug, file)
 }

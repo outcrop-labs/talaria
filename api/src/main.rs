@@ -95,14 +95,17 @@ async fn serve() {
     // is a read — it must not mutate the enabled set. Then reconcile the
     // app MCP rows UNCONDITIONALLY: the app host turns a broken app off by
     // writing the enabled set itself, and a host that did so while this
-    // process was down left the app's server row (and the agents carrying
-    // it) behind — and every row's catalog is copied fresh from its build.
+    // process was down left the app's server serving on the agents carrying
+    // it. The sync turns such a row off (keeping its grants), and copies
+    // every serving row's catalog fresh from its build.
     {
         let state = state.clone();
         tokio::spawn(async move {
             if let Ok(sb) = state.secretbox().await {
                 talaria_api::apps::disable_broken_apps(&state.pg, &sb).await;
-                talaria_api::apps::sync_app_mcp_servers(&state.pg, &sb).await;
+                if let Err(e) = talaria_api::apps::sync_app_mcp_servers(&state.pg, &sb).await {
+                    tracing::warn!("[apps] boot MCP registry sync failed: {e}");
+                }
             }
         });
     }

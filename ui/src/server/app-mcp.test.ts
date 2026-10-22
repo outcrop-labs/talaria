@@ -6,8 +6,9 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 // THE QUESTION THIS FILE PINS DOWN: what an agent can see of an app's mcp.ts.
 // A tool that fails its checks is left out and named — never listed, never
 // callable, never catalogued — and never takes the app or its other tools down
-// with it. The catalog the registry row holds is written beside the build and
-// handed to the api, and an app that is not enabled serves nothing at all.
+// with it. The catalog the registry row holds is written to the app's data
+// directory and handed to the api, and an app that is not enabled serves
+// nothing at all.
 
 const state = vi.hoisted(() => ({
   enabled: [] as string[],
@@ -16,8 +17,10 @@ const state = vi.hoisted(() => ({
   module: null as unknown,
 }))
 
-const buildsDir = mkdtempSync(join(tmpdir(), 'app-mcp-test-'))
+const buildsDir = mkdtempSync(join(tmpdir(), 'app-mcp-test-builds-'))
+const dataDir = mkdtempSync(join(tmpdir(), 'app-mcp-test-data-'))
 process.env.TALARIA_APP_BUILDS_DIR = buildsDir
+process.env.TALARIA_APP_DATA_DIR = dataDir
 
 vi.mock('./audit', () => ({
   getSetting: async (key: string, fallback: unknown) => (key === 'apps_enabled' ? state.enabled : fallback),
@@ -45,7 +48,10 @@ const tool = (over: Record<string, unknown> = {}) => ({
   ...over,
 })
 
-afterAll(() => rmSync(buildsDir, { recursive: true, force: true }))
+afterAll(() => {
+  rmSync(buildsDir, { recursive: true, force: true })
+  rmSync(dataDir, { recursive: true, force: true })
+})
 
 describe('checkAppMcpTools', () => {
   it('keeps every tool that passes, in order', () => {
@@ -128,8 +134,11 @@ describe('syncAppMcpCatalog', () => {
 
   const read = (slug: string) => JSON.parse(readFileSync(mcp.appMcpCatalogPath(slug), 'utf8'))
 
-  it('writes the checked catalog beside the build, in the shape the api copies into the row', async () => {
+  it('writes the checked catalog to the app’s data directory, in the shape the api copies into the row', async () => {
     await mcp.syncAppMcpCatalog('crm', mcp.checkAppMcpTools([tool(), tool({ name: 'Bad Name' })]))
+    // Never into app-builds/, which the host serves to anyone.
+    expect(mcp.appMcpCatalogPath('crm')).toBe(join(dataDir, 'crm', 'mcp-catalog.json'))
+    expect(existsSync(join(buildsDir, 'crm', 'mcp-catalog.json'))).toBe(false)
     const file = read('crm')
     expect(file.tools.map((t: { name: string }) => t.name)).toEqual(['crm_find'])
     expect(file.probe.state).toBe('error')
@@ -158,16 +167,16 @@ describe('syncAppMcpCatalog', () => {
     expect(state.resyncs).toEqual(['crm3: catalog', 'crm3: catalog'])
   })
 
-  it('writes a remembered catalog again when its file is gone (an uninstall removed the build)', async () => {
+  it('writes a remembered catalog again when its file is gone (an uninstall removed it)', async () => {
     await mcp.syncAppMcpCatalog('crm5', mcp.checkAppMcpTools([tool()]))
     rmSync(mcp.appMcpCatalogPath('crm5'))
     await mcp.syncAppMcpCatalog('crm5', mcp.checkAppMcpTools([tool()]))
     expect(read('crm5').tools).toHaveLength(1)
   })
 
-  it('an app that stops publishing MCP drops its catalog, and the api its row', async () => {
+  it('an app that stops publishing MCP drops its catalog, and the api is asked to turn its row off', async () => {
     state.enabled = ['crm4']
-    mkdirSync(join(buildsDir, 'crm4'), { recursive: true })
+    mkdirSync(join(dataDir, 'crm4'), { recursive: true })
     writeFileSync(mcp.appMcpCatalogPath('crm4'), '{}')
     await mcp.clearAppMcpCatalog('crm4')
     expect(existsSync(mcp.appMcpCatalogPath('crm4'))).toBe(false)
@@ -198,5 +207,14 @@ describe('appMcpOff', () => {
     expect(await mcp.appMcpOff('crm')).toBeNull()
     expect(await mcp.appMcpOff('other')).toBe('app "other" is not enabled')
     expect(await mcp.appMcpOff(null)).toBeNull()
+  })
+
+  it('refuses a row the api turned off, with its reason; a disabled app says so first', async () => {
+    state.enabled = ['crm']
+    const why = 'the app no longer publishes MCP tools'
+    expect(await mcp.appMcpOff('crm', why)).toBe(`app "crm" is not serving: ${why}`)
+    expect(await mcp.appMcpOff('crm', null)).toBeNull()
+    expect(await mcp.appMcpOff('other', why)).toBe('app "other" is not enabled')
+    expect(await mcp.appMcpOff(null, why)).toBeNull()
   })
 })

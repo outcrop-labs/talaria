@@ -51,10 +51,11 @@ export async function postInternal(path: string, what: string): Promise<unknown 
 }
 
 /** Ask the api to reconcile the registry rows of app-published MCP servers
- *  with the enabled set (talaria-apps `sync_app_mcp_servers`): copy each
- *  enabled app's catalog from its build, and remove — rolling its carriers —
- *  the row of an app that is no longer enabled. Answers the app server names
- *  that remain, or null when the call did not land. */
+ *  with the apps (talaria-apps `sync_app_mcp_servers`): copy each serving
+ *  app's catalog from its probe, and turn off — rolling its carriers, keeping
+ *  every grant — the row of an app that is turned off or failed its build.
+ *  Answers the app server names that serve, or null when the call did not
+ *  land. */
 export async function resyncAppMcpServers(reason: string): Promise<string[] | null> {
   const body = (await postInternal('/api/internal/apps/mcp-sync', `app MCP resync (${reason})`)) as {
     servers?: unknown

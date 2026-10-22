@@ -12,7 +12,7 @@
 //   catalog      the marketplace feed — JSON, source URL configurable,
 //                always through the SSRF guard
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -48,9 +48,17 @@ pub async fn enabled_app_slugs(pg: &PgPool) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The tool catalog an app's last load probe wrote beside its build
-/// (ui/src/server/app-mcp.ts `syncAppMcpCatalog`).
+/// The tool catalog an app's last load probe wrote (ui/src/server/app-mcp.ts
+/// `syncAppMcpCatalog`). It lives in the app's DATA directory and never beside
+/// its build: the host serves app-builds/ to anyone (`tryServeAppBuilds`), and
+/// a catalog holds every tool's name, description and schema and the probe's
+/// findings.
 pub const MCP_CATALOG_FILE: &str = "mcp-catalog.json";
+
+/// Where an app's catalog file lives: `app-data/<slug>/mcp-catalog.json`.
+pub fn mcp_catalog_path(slug: &str) -> PathBuf {
+    app_data_dir().join(slug).join(MCP_CATALOG_FILE)
+}
 
 /// The two registry columns an app's catalog file fills: `tools` (the tools
 /// that passed the probe's checks, already bounded) and `last_probe`
@@ -67,78 +75,296 @@ pub fn catalog_columns(raw: &str) -> Option<(Value, Value)> {
 }
 
 fn read_mcp_catalog(slug: &str) -> Option<(Value, Value)> {
-    let raw = std::fs::read_to_string(app_builds_dir().join(slug).join(MCP_CATALOG_FILE)).ok()?;
+    let raw = std::fs::read_to_string(mcp_catalog_path(slug)).ok()?;
     catalog_columns(&raw)
 }
 
-/// Reconcile registry rows with the ENABLED apps that publish MCP tools:
-/// upsert one row per app, drop rows whose app went away — rolling the agents
-/// that carried them. Answers the app server names that remain.
+/// The advisory lock every write to app MCP rows takes, for its transaction
+/// (migrations hold 8_314_207, the admin claim 8_314_208). Syncs run from
+/// several triggers at once (an enable, a failed build, a new catalog, the
+/// boot pass), and without it one sync could read the enabled set, another
+/// turn the app off, and the first then write the row back as serving.
+pub const MCP_SYNC_LOCK: i64 = 8_314_209;
+
+/// The most of a reason an app-off row keeps (Manage → MCP shows it).
+const APP_OFF_MAX: usize = 300;
+
+/// One installed app as a sync sees it: the facts on disk, and whether the
+/// enabled set names it.
+#[derive(Debug, Clone)]
+pub struct AppFacts {
+    pub slug: String,
+    pub name: String,
+    pub description: String,
+    /// `apps/<slug>/mcp.ts` exists.
+    pub mcp: bool,
+    pub enabled: bool,
+    /// The last compile or load failed, and why (`current.json`).
+    pub failed: Option<String>,
+}
+
+/// What a sync makes of one app's MCP registry row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppMcpRow {
+    /// Enabled, built and publishing tools: the row serves, and is created if
+    /// it does not exist yet.
+    Serve { name: String, description: String },
+    /// The app cannot serve right now. The row stays, and so does every agent
+    /// assignment, team grant and user grant on it, but no agent carries it
+    /// and its gateway refuses it until the app serves again. The sentence
+    /// says why, on the server's card.
+    Off(String),
+}
+
+fn clip(s: String) -> String {
+    if s.chars().count() <= APP_OFF_MAX {
+        return s;
+    }
+    let mut out: String = s.chars().take(APP_OFF_MAX - 1).collect();
+    out.push('…');
+    out
+}
+
+/// The plan, pure: what each app's row should be after a sync. A row is
+/// created only for an app that serves. A row that exists for any other app
+/// is turned OFF and never deleted, because deleting it cascades every grant
+/// on it: a build that broke for an hour would cost an admin every agent, team
+/// and person they had granted the server to. Uninstall is the one deleter
+/// (`remove_app_mcp_server`). The admin's own `enabled` flag is not the
+/// sync's to touch, so the plan says nothing about it.
+pub fn app_mcp_plan(apps: &[AppFacts], rows: &[String]) -> BTreeMap<String, AppMcpRow> {
+    let mut plan = BTreeMap::new();
+    for a in apps {
+        if a.enabled && a.mcp && a.failed.is_none() {
+            plan.insert(
+                a.slug.clone(),
+                AppMcpRow::Serve {
+                    name: a.name.clone(),
+                    description: a.description.clone(),
+                },
+            );
+        }
+    }
+    for slug in rows {
+        if plan.contains_key(slug) {
+            continue;
+        }
+        let why = match apps.iter().find(|a| &a.slug == slug) {
+            None => "the app is not installed".to_string(),
+            Some(a) => match &a.failed {
+                Some(err) => clip(format!("the app failed to build or load: {err}")),
+                None if !a.enabled => "the app is turned off".to_string(),
+                None => "the app no longer publishes MCP tools".to_string(),
+            },
+        };
+        plan.insert(slug.clone(), AppMcpRow::Off(why));
+    }
+    plan
+}
+
+/// What one sync changed: the app server names that serve, and the rows that
+/// went from serving to off or back (their carriers are rolled).
+struct Synced {
+    serving: Vec<String>,
+    flipped: Vec<String>,
+}
+
+/// The installed apps, with the enabled set's verdict and each build's status.
+pub fn app_facts(enabled: &BTreeSet<String>) -> Vec<AppFacts> {
+    discovered_apps()
+        .into_iter()
+        .map(|a| {
+            let build = app_build_status(&a.slug);
+            let failed = (build.status == "failed").then(|| {
+                build
+                    .error
+                    .filter(|e| !e.is_empty())
+                    .unwrap_or_else(|| "app failed to compile or load".into())
+            });
+            AppFacts {
+                enabled: enabled.contains(&a.slug),
+                failed,
+                slug: a.slug,
+                name: a.name,
+                description: a.description,
+                mcp: a.mcp,
+            }
+        })
+        .collect()
+}
+
+async fn sync_app_mcp_rows(
+    pg: &PgPool,
+    facts: impl FnOnce(&BTreeSet<String>) -> Vec<AppFacts>,
+) -> Result<Synced, sqlx::Error> {
+    let mut tx = pg.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock($1)")
+        .bind(MCP_SYNC_LOCK)
+        .execute(&mut *tx)
+        .await?;
+    // Read under the lock, and a failed read fails the sync. It must never
+    // read as "no app is enabled", which would take every app's server off
+    // every agent.
+    let enabled: BTreeSet<String> =
+        sqlx::query_scalar::<_, Value>("select value from app_settings where key = $1")
+            .bind(ENABLED_KEY)
+            .fetch_optional(&mut *tx)
+            .await?
+            .and_then(|v| {
+                v.as_array().map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+    let apps = facts(&enabled);
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "select id::text, app_slug::text, app_off from mcp_servers where app_slug is not null",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let slugs: Vec<String> = rows.iter().map(|(_, slug, _)| slug.clone()).collect();
+    let mut synced = Synced {
+        serving: Vec::new(),
+        flipped: Vec::new(),
+    };
+    for (slug, row) in app_mcp_plan(&apps, &slugs) {
+        let had = rows.iter().find(|(_, s, _)| *s == slug);
+        match row {
+            AppMcpRow::Serve { name, description } => {
+                let server = format!("app-{slug}");
+                // $6/$7 null = no catalog file yet: an insert seeds `[]` and
+                // no probe, an update keeps the row's own. `enabled` is set
+                // only by the insert: on an existing row it is the admin's
+                // choice, and an admin who turned the server off keeps it off
+                // across every boot and resync.
+                let (tools, probe) = read_mcp_catalog(&slug).unzip();
+                let id: String = sqlx::query_scalar(
+                    "insert into mcp_servers \
+                        (name, label, description, url, all_agents, app_slug, tools, tools_refreshed_at, last_probe, created_by) \
+                     values ($1, $2, $3, $4, false, $5, coalesce($6, '[]'::jsonb), now(), $7, 'talaria') \
+                     on conflict (name) do update set \
+                        label = excluded.label, description = excluded.description, \
+                        app_slug = excluded.app_slug, tools_refreshed_at = now(), \
+                        tools = coalesce($6, mcp_servers.tools), \
+                        last_probe = coalesce($7, mcp_servers.last_probe), \
+                        app_off = null, updated_at = now() \
+                     returning id::text",
+                )
+                .bind(&server)
+                .bind(&name)
+                .bind(if description.is_empty() {
+                    None
+                } else {
+                    Some(description)
+                })
+                .bind(format!("talaria-app://{slug}"))
+                .bind(&slug)
+                .bind(tools)
+                .bind(probe)
+                .fetch_one(&mut *tx)
+                .await?;
+                if had.is_some_and(|(_, _, off)| off.is_some()) {
+                    synced.flipped.push(id);
+                }
+                synced.serving.push(server);
+            }
+            AppMcpRow::Off(why) => {
+                let Some((id, _, off)) = had else { continue };
+                if off.as_deref() == Some(why.as_str()) {
+                    continue;
+                }
+                sqlx::query(
+                    "update mcp_servers set app_off = $2, updated_at = now() where id::text = $1",
+                )
+                .bind(id)
+                .bind(&why)
+                .execute(&mut *tx)
+                .await?;
+                if off.is_none() {
+                    synced.flipped.push(id.clone());
+                }
+            }
+        }
+    }
+    tx.commit().await?;
+    Ok(synced)
+}
+
+/// Reconcile the registry rows of app-published MCP servers with the apps
+/// (`app_mcp_plan`): an enabled app that publishes tools gets a serving row,
+/// created if missing, and every other app's row is turned off with the
+/// reason. A row that changes between serving and off rolls the agents that
+/// carry it by grant, so its tools leave them, or return, with every
+/// assignment, team grant and user grant intact. Answers the app server names
+/// that serve.
 ///
 /// THE CATALOG COMES FROM THE BUILD, never from here: the app module is TS
-/// (rule 10), and its load probe writes the checked catalog beside the build
-/// (`MCP_CATALOG_FILE`). Every upsert copies that file into `tools` and
-/// `last_probe`, so the row an enable creates already carries its tools —
-/// it used to start as `[]` and stay that way until an agent happened to
-/// call. An app the probe has not reached yet keeps whatever its row has.
+/// (rule 10), and its load probe writes the checked catalog to the app's data
+/// directory (`mcp_catalog_path`). Every upsert copies that file into `tools`
+/// and `last_probe`, so the row an enable creates already carries its tools.
+/// An app the probe has not reached yet keeps whatever its row has.
 ///
-/// Runs on enable/disable, at api boot, and whenever the app host asks
-/// (`POST /api/internal/apps/mcp-sync`: a probe wrote a new catalog, or a
-/// failed build turned the app off).
-pub async fn sync_app_mcp_servers(pg: &PgPool, sb: &SecretBox) -> Vec<String> {
-    let want: Vec<_> = talaria_users::enabled_apps(pg)
-        .await
-        .into_iter()
-        .filter(|a| a.mcp)
-        .map(|a| (a.slug, a.name, a.description))
-        .collect();
-    let have: Vec<(String, String)> = sqlx::query_as(
-        "select id::text, app_slug::text from mcp_servers where app_slug is not null",
-    )
-    .fetch_all(pg)
-    .await
-    .unwrap_or_default();
-    for (id, app_slug) in have {
-        if !want.iter().any(|(slug, _, _)| *slug == app_slug) {
-            talaria_mcp_apply::roll_agents_for_server(pg, sb, &id).await;
-            let _ = sqlx::query("delete from mcp_servers where id::text = $1")
-                .bind(&id)
-                .execute(pg)
-                .await;
+/// One sync at a time (`MCP_SYNC_LOCK`). Runs on enable and disable, at api
+/// boot, and whenever the app host asks (`POST /api/internal/apps/mcp-sync`:
+/// a probe wrote a new catalog, or a failed build turned the app off).
+pub async fn sync_app_mcp_servers(pg: &PgPool, sb: &SecretBox) -> Result<Vec<String>, sqlx::Error> {
+    sync_app_mcp_servers_over(pg, sb, app_facts).await
+}
+
+/// The same sync over app facts the caller derives from the enabled set —
+/// the disk's (`app_facts`) in production. The live test adds an app that is
+/// not on disk, so it can drive one row through serving, off and back without
+/// touching anyone's apps.
+pub async fn sync_app_mcp_servers_over(
+    pg: &PgPool,
+    sb: &SecretBox,
+    facts: impl FnOnce(&BTreeSet<String>) -> Vec<AppFacts>,
+) -> Result<Vec<String>, sqlx::Error> {
+    let synced = sync_app_mcp_rows(pg, facts).await?;
+    // After the commit, so each replacement renders the state it was rolled
+    // for.
+    for id in &synced.flipped {
+        talaria_mcp_apply::roll_agents_for_server(pg, sb, id).await;
+    }
+    Ok(synced.serving)
+}
+
+/// Delete an app's MCP registry row, and with it, by cascade, every agent
+/// assignment, team grant and user grant on it. Uninstall only; every other
+/// way an app stops serving turns the row off (`sync_app_mcp_servers`). A row
+/// that was still serving rolls its carriers, read before the cascade takes
+/// the grants that name them.
+pub async fn remove_app_mcp_server(
+    pg: &PgPool,
+    sb: &SecretBox,
+    slug: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pg.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock($1)")
+        .bind(MCP_SYNC_LOCK)
+        .execute(&mut *tx)
+        .await?;
+    let rows: Vec<(String, Option<String>)> =
+        sqlx::query_as("select id::text, app_off from mcp_servers where app_slug = $1")
+            .bind(slug)
+            .fetch_all(&mut *tx)
+            .await?;
+    let mut departments = Vec::new();
+    for (id, off) in &rows {
+        if off.is_none() {
+            departments.extend(talaria_mcp_apply::carriers_for_server(pg, id).await?);
         }
     }
-    let mut kept = Vec::with_capacity(want.len());
-    for (slug, name, description) in want {
-        let server = format!("app-{slug}");
-        // $6/$7 null = no catalog file yet: an insert seeds `[]` and no
-        // probe, an update keeps the row's own.
-        let (tools, probe) = read_mcp_catalog(&slug).unzip();
-        let upserted = sqlx::query(
-            "insert into mcp_servers \
-                (name, label, description, url, all_agents, app_slug, tools, tools_refreshed_at, last_probe, created_by) \
-             values ($1, $2, $3, $4, false, $5, coalesce($6, '[]'::jsonb), now(), $7, 'talaria') \
-             on conflict (name) do update set \
-                label = excluded.label, description = excluded.description, \
-                app_slug = excluded.app_slug, tools_refreshed_at = now(), \
-                tools = coalesce($6, mcp_servers.tools), \
-                last_probe = coalesce($7, mcp_servers.last_probe), \
-                enabled = true, updated_at = now()",
-        )
-        .bind(&server)
-        .bind(&name)
-        .bind(if description.is_empty() { None } else { Some(description) })
-        .bind(format!("talaria-app://{slug}"))
-        .bind(&slug)
-        .bind(tools)
-        .bind(probe)
-        .execute(pg)
-        .await;
-        match upserted {
-            Ok(_) => kept.push(server),
-            Err(e) => tracing::warn!("[apps] could not register {server}: {e}"),
-        }
-    }
-    kept
+    sqlx::query("delete from mcp_servers where app_slug = $1")
+        .bind(slug)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    talaria_mcp_apply::enqueue_rolls(&departments, pg, sb);
+    Ok(())
 }
 
 /// Flip one app's enablement. Enabling an app that is not on disk
@@ -165,9 +391,11 @@ pub async fn set_app_enabled(
     set_setting(pg, ENABLED_KEY, &sorted)
         .await
         .map_err(|e| e.to_string())?;
-    // Apps that publish MCP tools follow their enablement into the registry
-    // (rows appear/disappear; carriers get rolled on removal).
-    sync_app_mcp_servers(pg, sb).await;
+    // Apps that publish MCP tools follow their enablement into the registry:
+    // a row serves or turns off (keeping its grants), and its carriers roll.
+    if let Err(e) = sync_app_mcp_servers(pg, sb).await {
+        tracing::warn!("[apps] {slug}: MCP registry sync failed: {e}");
+    }
     Ok(())
 }
 
@@ -303,6 +531,12 @@ pub async fn uninstall_app(pg: &PgPool, sb: &SecretBox, slug: &str) -> Result<()
     if !target.starts_with(apps_dir()) {
         return Err("bad target path".into());
     }
+    // The one place an app's MCP row is deleted, taking its grants with it.
+    // Turning the app off above already took the server off its agents.
+    remove_app_mcp_server(pg, sb, slug)
+        .await
+        .map_err(|e| format!("could not remove the app's MCP server: {e}"))?;
+    let _ = tokio::fs::remove_file(mcp_catalog_path(slug)).await;
     stop_app_db(slug).await;
     forget_app_db_password(pg, slug).await;
     let _ = tokio::fs::remove_dir_all(&target).await;
@@ -458,6 +692,105 @@ mod tests {
         assert_eq!(tools.as_array().map(Vec::len), Some(1));
         assert_eq!(probe["state"], "error");
         assert!(probe["detail"].as_str().unwrap().contains("left out"));
+    }
+
+    /// The catalog never lands in the tree the host serves without auth.
+    #[test]
+    fn the_catalog_file_lives_in_the_apps_data_not_its_build() {
+        let p = mcp_catalog_path("crm");
+        assert!(p.starts_with(app_data_dir().join("crm")));
+        assert!(!p.starts_with(app_builds_dir()));
+        assert!(p.ends_with(MCP_CATALOG_FILE));
+    }
+
+    fn app(slug: &str, enabled: bool, mcp: bool, failed: Option<&str>) -> AppFacts {
+        AppFacts {
+            slug: slug.into(),
+            name: format!("{slug} app"),
+            description: String::new(),
+            mcp,
+            enabled,
+            failed: failed.map(String::from),
+        }
+    }
+
+    fn rows(slugs: &[&str]) -> Vec<String> {
+        slugs.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// An enabled, built app that publishes tools serves, whether or not its
+    /// row exists yet; nothing else ever gets a row created.
+    #[test]
+    fn only_an_enabled_built_app_with_tools_serves() {
+        let apps = [
+            app("crm", true, true, None),
+            app("notes", true, true, None),
+            app("off", false, true, None),
+            app("broken", true, true, Some("mcp.ts: SyntaxError")),
+            app("plain", true, false, None),
+        ];
+        let plan = app_mcp_plan(&apps, &rows(&["crm"]));
+        assert_eq!(
+            plan.get("crm"),
+            Some(&AppMcpRow::Serve {
+                name: "crm app".into(),
+                description: String::new()
+            })
+        );
+        assert!(matches!(plan.get("notes"), Some(AppMcpRow::Serve { .. })));
+        assert_eq!(plan.len(), 2, "no row is created for {plan:?}");
+    }
+
+    /// A row whose app cannot serve is turned off with the reason, never
+    /// dropped from the plan: the plan has no "delete", because a delete
+    /// cascades every agent, team and user grant on the row.
+    #[test]
+    fn a_row_whose_app_cannot_serve_turns_off_and_says_why() {
+        let apps = [
+            app("off", false, true, None),
+            app("broken", false, true, Some("mcp.ts: SyntaxError")),
+            app(
+                "still-enabled-broken",
+                true,
+                true,
+                Some("database did not start"),
+            ),
+            app("plain", true, false, None),
+        ];
+        let plan = app_mcp_plan(
+            &apps,
+            &rows(&["off", "broken", "still-enabled-broken", "plain", "gone"]),
+        );
+        let off = |s: &str| match plan.get(s) {
+            Some(AppMcpRow::Off(why)) => why.clone(),
+            other => panic!("{s}: expected Off, got {other:?}"),
+        };
+        assert_eq!(off("off"), "the app is turned off");
+        assert_eq!(
+            off("broken"),
+            "the app failed to build or load: mcp.ts: SyntaxError"
+        );
+        assert_eq!(
+            off("still-enabled-broken"),
+            "the app failed to build or load: database did not start"
+        );
+        assert_eq!(off("plain"), "the app no longer publishes MCP tools");
+        assert_eq!(off("gone"), "the app is not installed");
+        assert_eq!(plan.len(), 5);
+    }
+
+    #[test]
+    fn a_long_failure_is_clipped_to_the_cards_line() {
+        let err = "x".repeat(1000);
+        let plan = app_mcp_plan(
+            &[app("broken", false, true, Some(&err))],
+            &rows(&["broken"]),
+        );
+        let Some(AppMcpRow::Off(why)) = plan.get("broken") else {
+            panic!("expected Off");
+        };
+        assert_eq!(why.chars().count(), APP_OFF_MAX);
+        assert!(why.ends_with('…'));
     }
 
     /// Anything else leaves the row alone rather than blanking it: a torn
