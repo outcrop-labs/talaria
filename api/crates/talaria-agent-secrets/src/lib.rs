@@ -60,6 +60,31 @@ const HERMES_PREFIXES: &[&str] = &[
     "TERMINAL_",
 ];
 
+/// Names the container's own processes read at start — the shell, the
+/// dynamic loader, the Python Hermes runs on, node (omp), s6-overlay's init,
+/// and the browser executable Hermes's boot hook keeps when one is already
+/// set. A secret here reconfigures the agent's runtime, not a tool.
+const PROCESS_RUNTIME: &[&str] = &[
+    "AGENT_BROWSER_EXECUTABLE_PATH",
+    "BASH_ENV",
+    "ENV",
+    "HOME",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "PATH",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "SHELL",
+    "USER",
+];
+
+/// s6-overlay's settings (`S6_*`), read by the container's init.
+const PROCESS_RUNTIME_PREFIXES: &[&str] = &["S6_"];
+
 /// Hermes v0.22.4's own stripped set — see the file's header for what it is
 /// and how to refresh it when the image pin moves.
 const HERMES_STRIPPED_SNAPSHOT: &str = include_str!("hermes_stripped_env.txt");
@@ -89,15 +114,25 @@ pub fn hermes_stripped_names() -> impl Iterator<Item = &'static str> {
 /// Why `name` cannot be a per-agent secret, or `None` when it can.
 ///
 /// A per-agent secret is for the agent's own tools — a vendor key a skill's
-/// script reads. Three kinds of name are not that: Talaria's (stamped on the
-/// container, which wins over the secret), Hermes's runtime settings (they
-/// reconfigure the agent), and the names Hermes strips from every command the
-/// agent runs (the secret would never reach a tool, and Hermes may read it
-/// itself: an `OPENROUTER_API_KEY` is a route to a model around the gateway,
-/// a `TELEGRAM_BOT_TOKEN` turns on a Telegram adapter).
+/// script reads. Four kinds of name are not that: Talaria's (stamped on the
+/// container, which wins over the secret), Hermes's runtime settings and the
+/// container's process settings (they reconfigure the agent), and the names
+/// Hermes strips from every command the agent runs. Those last never reach a
+/// tool, and Hermes reads many of them for itself: a `TELEGRAM_BOT_TOKEN`
+/// turns on a Telegram adapter, and a provider key such as
+/// `OPENROUTER_API_KEY` is one Hermes would call a model with if its config
+/// ever stopped naming the gateway (v0.22.4 does not fall back to it while a
+/// main provider is set — `_discovery_chain_allowed`).
 pub fn reserved(name: &str) -> Option<String> {
     if TALARIA_STAMPED.contains(&name) || TALARIA_PREFIXES.iter().any(|p| name.starts_with(p)) {
         return Some(format!("{name} is managed by Talaria"));
+    }
+    if PROCESS_RUNTIME.contains(&name)
+        || PROCESS_RUNTIME_PREFIXES.iter().any(|p| name.starts_with(p))
+    {
+        return Some(format!(
+            "{name} configures the agent's runtime (its container's processes read it at start), not a secret for its tools"
+        ));
     }
     if let Some(prefix) = HERMES_PREFIXES.iter().find(|p| name.starts_with(*p)) {
         return Some(format!(
@@ -106,7 +141,7 @@ pub fn reserved(name: &str) -> Option<String> {
     }
     if hermes_stripped().contains(name) {
         return Some(format!(
-            "{name} is one of Hermes's own credential or platform names: Hermes strips it from every command the agent runs and may use it itself, around Talaria. Give the secret a name of your own"
+            "{name} is one of Hermes's own provider, platform or tool names: Hermes strips it from every command the agent runs, so no tool of the agent's would see it, and reads it for itself instead. Give the secret a name of your own"
         ));
     }
     None
@@ -119,6 +154,12 @@ pub struct AgentSecretMeta {
     pub name: String,
     pub updated_by: Option<String>,
     pub updated_at: Option<String>,
+    /// Why this name would be refused now ([`reserved`]), for a row saved
+    /// before the rule. It still materializes (that behaviour is kept), but
+    /// it is left out of `env_passthrough`, so the UI says why and offers
+    /// the delete. Absent for an ordinary secret.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
 }
 
 pub async fn list_agent_secrets(
@@ -135,6 +176,7 @@ pub async fn list_agent_secrets(
     Ok(rows
         .into_iter()
         .map(|(name, updated_by, at)| AgentSecretMeta {
+            refused: reserved(&name),
             name,
             updated_by,
             updated_at: at.map(talaria_agent_auth::epoch_ms_to_iso),
@@ -353,6 +395,48 @@ mod tests {
             let why = reserved(name).unwrap_or_else(|| panic!("{name} must be refused"));
             assert!(why.contains("managed by Talaria"), "{name}: {why}");
         }
+    }
+
+    #[test]
+    fn the_containers_process_settings_are_refused() {
+        for name in [
+            "PATH",
+            "HOME",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "PYTHONPATH",
+            "NODE_OPTIONS",
+            "BASH_ENV",
+            "S6_KEEP_ENV",
+            "S6_CMD_WAIT_FOR_SERVICES_MAXTIME",
+            "AGENT_BROWSER_EXECUTABLE_PATH",
+        ] {
+            let why = reserved(name).unwrap_or_else(|| panic!("{name} must be refused"));
+            assert!(
+                why.contains("configures the agent's runtime"),
+                "{name}: {why}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_legacy_row_under_a_refused_name_is_marked_on_the_wire() {
+        let meta = |name: &str| AgentSecretMeta {
+            refused: reserved(name),
+            name: name.into(),
+            updated_by: Some("a@b.c".into()),
+            updated_at: None,
+        };
+        let legacy = serde_json::to_value(meta("OPENROUTER_API_KEY")).unwrap();
+        assert!(
+            legacy["refused"]
+                .as_str()
+                .is_some_and(|w| w.contains("Hermes strips it")),
+            "{legacy}"
+        );
+        // An ordinary secret's wire shape is unchanged: no `refused` key.
+        let ok = serde_json::to_value(meta("FIGMA_TOKEN")).unwrap();
+        assert!(ok.get("refused").is_none(), "{ok}");
     }
 
     #[test]
