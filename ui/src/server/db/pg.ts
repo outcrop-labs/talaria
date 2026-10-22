@@ -4031,6 +4031,25 @@ alter table tasks drop column if exists conversation_id`,
      updated_at timestamptz not null default now(),
      primary key (agent_model, affinity_key)
    )`,
+  // TALARIA'S OWN ENTRY LEAVES `gateway_unmetered_keys`. Every render used to
+  // force the personas' fleet-wide key (`fleet-gateway`) onto that list, so
+  // the relay would skip the calls a chat flow ledgered as one row. No flow
+  // ledgers an agent's spend now, and that key is still what agents run on
+  // for a render whose per-agent keys could not be minted. Left on the list,
+  // those calls would be booked nowhere. Only that one entry goes; an
+  // operator's own entries stand. The relay reads this key through its 15s
+  // hot-settings window, which bounds how long a running api serves the old
+  // list after boot.
+  `update app_settings
+     set value = coalesce((
+       select jsonb_agg(v)
+       from jsonb_array_elements(value) as t(v)
+       where v #>> '{}' <> 'fleet-gateway'
+     ), '[]'::jsonb),
+     updated_at = now()
+   where key = 'gateway_unmetered_keys'
+     and jsonb_typeof(value) = 'array'
+     and value @> '["fleet-gateway"]'::jsonb`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

@@ -1888,6 +1888,26 @@ pub async fn render_fleet(
     Ok(result)
 }
 
+/// The gateway as the agent's `providers.talaria` entry (fleet-brain's
+/// `gateway_provider_entry`), so Hermes stamps every call it makes to the
+/// gateway with the conversation it belongs to and the relay can meter each
+/// one as that flow's. Merged into an authored `providers:` block — the
+/// def's own entries stand; only this key is Talaria's. Rendered only while
+/// the brain is managed: an operator's raw upstream did not ask for a
+/// session header, and Hermes would send it there.
+fn fleet_gateway_provider(routed: &mut Map<String, Value>) {
+    let mut providers = routed
+        .get("providers")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    providers.insert(
+        talaria_fleet_brain::GATEWAY_PROVIDER.into(),
+        talaria_fleet_brain::gateway_provider_entry(),
+    );
+    routed.insert("providers".into(), Value::Object(providers));
+}
+
 /// The agent's raw config, as authored (version.config.raw ?? {}).
 fn def_raw_config(config: &Value) -> Value {
     config
@@ -1915,26 +1935,6 @@ fn def_raw_config(config: &Value) -> Value {
 /// Talaria's chain otherwise never has. The one thing `deny` closes that an
 /// operator might want is `execute_code` on a non-Developer agent — that is
 /// the Developer switch's job, and the toolset editor says so.
-/// The gateway as the agent's `providers.talaria` entry (fleet-brain's
-/// `gateway_provider_entry`), so Hermes stamps every call it makes to the
-/// gateway with the conversation it belongs to and the relay can meter each
-/// one as that flow's. Merged into an authored `providers:` block — the
-/// def's own entries stand; only this key is Talaria's. Rendered only while
-/// the brain is managed: an operator's raw upstream did not ask for a
-/// session header, and Hermes would send it there.
-fn fleet_gateway_provider(routed: &mut Map<String, Value>) {
-    let mut providers = routed
-        .get("providers")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    providers.insert(
-        talaria_fleet_brain::GATEWAY_PROVIDER.into(),
-        talaria_fleet_brain::gateway_provider_entry(),
-    );
-    routed.insert("providers".into(), Value::Object(providers));
-}
-
 fn fleet_approvals(routed: &mut Map<String, Value>, developer: bool) {
     let mut cfg = routed
         .get("approvals")

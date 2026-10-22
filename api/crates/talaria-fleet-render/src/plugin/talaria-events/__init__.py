@@ -29,9 +29,10 @@ call this agent makes, and Hermes names the conversation on each one in the
 `session_affinity_header`). On a turn Talaria drives, that name is Hermes'
 own digest of the session's route (`gwk_...`), which the platform cannot
 compute. `pre_llm_call` runs inside the turn, where the same function that
-builds the header answers, so it reports the key once per conversation with
-the conversation's own id — and the relay can then book the turn's calls,
-auxiliary and subagent calls included, to the flow that drove it.
+builds the header answers, so it reports the key with the conversation's own
+id — at every turn until the platform has confirmed it, then no more — and
+the relay can then book the turn's calls, auxiliary and subagent calls
+included, to the flow that drove it.
 
 A screenshot is the same gap with bytes in it. `browser_vision` writes a PNG
 inside this container and reports its PATH — a path that means nothing to the
@@ -86,9 +87,14 @@ _MAX_SHOT_BYTES = 5 * 1024 * 1024
 _FRESH_SHOT_SECONDS = 180
 _recent_shots: dict[str, float] = {}
 
-# (conversation, key) pairs already reported by this process: one report per
-# conversation per container life. Bounded — a long-lived agent forgets the
-# oldest and at worst reports a pair twice, which the door takes as a no-op.
+# (conversation, key) pairs the platform has CONFIRMED: one delivered report
+# per conversation per container life. A pair joins this set only when its POST
+# answered 2xx (see `_poster`), never when it is queued — a report lost to a
+# timeout, an api restart or the queue dropping its oldest event under a burst
+# is simply sent again at the next turn of that conversation, and the door's
+# backfill then claims the calls booked before it landed. Bounded — a
+# long-lived agent forgets the oldest and at worst reports a pair twice,
+# which the door takes as a no-op.
 _reported_affinity: set[tuple[str, str]] = set()
 _AFFINITY_SEEN_CAP = 4096
 
@@ -164,6 +170,9 @@ def _poster() -> None:
         # the platform parses today, and a cron turn's or a screenshot's body
         # reaches its own door with nothing extra in it.
         url = event.pop("url", None) or url
+        # An affinity report names the pair it confirms, popped like the url
+        # so the body stays the door's own shape.
+        confirms = event.pop("confirms", None)
         try:
             req = urllib.request.Request(
                 url, data=json.dumps(event).encode("utf-8"), headers=headers, method="POST"
@@ -171,8 +180,20 @@ def _poster() -> None:
             urllib.request.urlopen(req, timeout=_POST_TIMEOUT).close()
         except Exception:
             # Fire-and-forget by contract; a dropped event costs one line of
-            # visibility, never agent work.
-            pass
+            # visibility, never agent work. An unconfirmed affinity pair is
+            # reported again at its conversation's next turn.
+            continue
+        if confirms is not None:
+            _confirm_affinity(confirms)
+
+
+def _confirm_affinity(pair: tuple[str, str]) -> None:
+    """The platform has the pair: stop reporting it for this container's
+    life. urlopen raises on anything but a 2xx, so only a stored report gets
+    here."""
+    if len(_reported_affinity) >= _AFFINITY_SEEN_CAP:
+        _reported_affinity.clear()
+    _reported_affinity.add(pair)
 
 
 def on_pre_tool_call(
@@ -507,10 +528,16 @@ def on_pre_llm_call(*, session_id: str = "", platform: str = "", **_: Any) -> No
     pair = (conversation, key)
     if pair in _reported_affinity:
         return None
-    if len(_reported_affinity) >= _AFFINITY_SEEN_CAP:
-        _reported_affinity.clear()
-    _reported_affinity.add(pair)
-    _enqueue({"url": _door(_AFFINITY_PATH), "conversation": conversation, "key": key})
+    # Marked reported by the poster once the door answers 2xx, not here: a
+    # report that never lands must be sent again.
+    _enqueue(
+        {
+            "url": _door(_AFFINITY_PATH),
+            "conversation": conversation,
+            "key": key,
+            "confirms": pair,
+        }
+    )
     return None
 
 

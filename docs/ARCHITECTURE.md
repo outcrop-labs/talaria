@@ -210,7 +210,10 @@ multiplexer.
   relay copies the flow onto every row it books for that conversation; anything unclaimed stays
   `unattended` under the agent. Budgets read the same rows, so a long turn counts while it runs.
   No flow writes an agent's spend itself any more
-  ([`usage.rs`](../api/crates/talaria-gateway/src/usage.rs), "Attribution").
+  ([`usage.rs`](../api/crates/talaria-gateway/src/usage.rs), "Attribution"). So a fleet an
+  operator pointed at a raw upstream (a non-gateway `LLM_BASE_URL` in the fleet `.env`, which
+  skips the gateway brain) has no agent spend in the ledger at all: its calls never reach the
+  relay, and nothing else books them.
 
 ## Agent work and the guardrails
 

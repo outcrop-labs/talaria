@@ -94,6 +94,11 @@ const WORKBENCH_KEY: &str = "workbench-gateway";
 /// namespace); any other key with `api:<name>`. The agent's slug stands in
 /// for a key the last render did not scope — a disabled agent's, or one
 /// rendered before scopes existed — so its spend still has a name.
+///
+/// That fallback name is not the one the chat transport records a turn's
+/// flow under (the agent's model id), so an unscoped key's rows never join
+/// an attribution: they are booked, under the slug, and stay `unattended`.
+/// The next render scopes every enabled agent's key, which closes it.
 fn caller_of(key_name: &str, scope_model: Option<&str>) -> String {
     match (agent_slug_of_key(key_name), scope_model) {
         (Some(_), Some(model)) => model.to_string(),

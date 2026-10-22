@@ -1348,3 +1348,307 @@ mod tests {
         assert_eq!(uuid_or_none(None), None);
     }
 }
+
+// ── Live-DB proof of the relay ledger's SQL ──────────────────────────────────
+//
+// Three hand-written statements decide where an agent's spend lands and
+// whether a budget can see it, and one of them already failed every call
+// in silence: `spend_since` bound its window as a bigint `make_interval`
+// has no signature for, and `check_budget` fails open on a failed read, so
+// no budget ever bound. A unit test cannot see that — it is Postgres's
+// answer — so these run against a migrated database, `#[ignore]`d:
+//
+//   DATABASE_URL=postgres://… cargo test -p talaria-gateway --lib -- --ignored usage::live_db
+//
+// CI's live-tests job runs them (`cargo test --workspace --lib -- --ignored`)
+// on its freshly migrated scratch database. Every test owns its own agent
+// name and deletes only its own rows.
+
+#[cfg(test)]
+mod live_db {
+    use super::*;
+
+    async fn pg() -> PgPool {
+        let url = std::env::var("DATABASE_URL")
+            .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
+        PgPool::connect(&url).await.expect("connect")
+    }
+
+    /// A name no other test, and no real agent, books under.
+    fn agent() -> String {
+        format!("live-meter-{}", uuid::Uuid::new_v4())
+    }
+
+    fn uuid() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+
+    async fn cleanup(pg: &PgPool, agent: &str) {
+        for sql in [
+            "delete from usage_events where agent_model = $1",
+            "delete from usage_attributions where agent_model = $1",
+            "delete from usage_affinity_keys where agent_model = $1",
+        ] {
+            sqlx::query(sql).bind(agent).execute(pg).await.unwrap();
+        }
+    }
+
+    /// One relay row, as the relay books an agent's call. `prompt` doubles
+    /// as the row's name in the assertions. A local endpoint, so the row is
+    /// $0 and never nudges the price oracle.
+    async fn book(pg: &PgPool, source: &str, agent: &str, key: Option<&str>, prompt: i64) {
+        let counts = TokenCounts {
+            prompt_tokens: prompt,
+            completion_tokens: 1,
+            ..TokenCounts::default()
+        };
+        record_relay_usage(
+            pg,
+            source,
+            agent,
+            key,
+            "live-test-endpoint",
+            "local",
+            "live-test-model",
+            &counts,
+            false,
+            None,
+        )
+        .await
+        .expect("the relay's insert");
+    }
+
+    /// (source, ref_id, task_id) of the row named `prompt`.
+    async fn row(
+        pg: &PgPool,
+        agent: &str,
+        prompt: i64,
+    ) -> (String, Option<String>, Option<String>) {
+        sqlx::query_as(
+            "select source, ref_id::text, task_id::text from usage_events \
+              where agent_model = $1 and prompt_tokens = $2",
+        )
+        .bind(agent)
+        .bind(prompt)
+        .fetch_one(pg)
+        .await
+        .expect("the row")
+    }
+
+    fn flow(
+        pg: &PgPool,
+        agent: &str,
+        source: &str,
+        ref_id: &str,
+        task_id: Option<&str>,
+    ) -> TurnAttribution {
+        TurnAttribution {
+            pg: pg.clone(),
+            agent_model: agent.to_string(),
+            source: source.to_string(),
+            ref_id: Some(ref_id.to_string()),
+            task_id: task_id.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn spend_since_reads_its_window_instead_of_failing_open() {
+        let pg = pg().await;
+        let a = agent();
+        cleanup(&pg, &a).await;
+        book(&pg, UNATTENDED_SOURCE, &a, None, 100).await;
+        book(&pg, UNATTENDED_SOURCE, &a, None, 50).await;
+        sqlx::query(
+            "update usage_events set created_at = now() - interval '2 days' \
+              where agent_model = $1 and prompt_tokens = 50",
+        )
+        .bind(&a)
+        .execute(&pg)
+        .await
+        .unwrap();
+
+        // Each read is the statement the budget check runs; an error here is
+        // a budget that never binds.
+        let day = spend_since(&pg, 24, Some(&a)).await.expect("a 24h window");
+        assert_eq!(day.tokens, 101, "the row two days old is outside 24h");
+        assert_eq!(day.cost, 0.0, "a local row is $0");
+        let three = spend_since(&pg, 72, Some(&a)).await.expect("a 72h window");
+        assert_eq!(three.tokens, 152);
+        // The clamp's two ends still bind as the int4 make_interval takes.
+        spend_since(&pg, 0, Some(&a)).await.expect("the 1h floor");
+        let wide = spend_since(&pg, i64::MAX, Some(&a))
+            .await
+            .expect("the one-year ceiling");
+        assert_eq!(wide.tokens, 152);
+        // The org-wide read (no subject) is the same statement.
+        let all = spend_since(&pg, 24, None)
+            .await
+            .expect("the org-wide window");
+        assert!(all.tokens >= 101);
+        cleanup(&pg, &a).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn a_relay_row_takes_the_flow_recorded_for_its_key_in_the_insert() {
+        let pg = pg().await;
+        let (a, other) = (agent(), agent());
+        cleanup(&pg, &a).await;
+        cleanup(&pg, &other).await;
+        let (conversation, ticket) = (uuid(), uuid());
+
+        // The session arm: the key on the wire is the conversation's own id.
+        record_attribution(
+            &flow(&pg, &a, "ticket", &conversation, Some(&ticket)),
+            &conversation,
+        )
+        .await
+        .unwrap();
+        book(&pg, UNATTENDED_SOURCE, &a, Some(&conversation), 1).await;
+        assert_eq!(
+            row(&pg, &a, 1).await,
+            (
+                "ticket".into(),
+                Some(conversation.clone()),
+                Some(ticket.clone())
+            )
+        );
+
+        // A v0.22 turn: the key is Hermes' gwk_ digest, which the plugin
+        // tied to the conversation. Nothing was booked under it yet.
+        let gwk = format!("gwk_{}", &uuid()[..8]);
+        assert_eq!(
+            record_affinity_key(&pg, &a, &gwk, &conversation)
+                .await
+                .unwrap(),
+            0
+        );
+        book(&pg, UNATTENDED_SOURCE, &a, Some(&gwk), 2).await;
+        assert_eq!(
+            row(&pg, &a, 2).await,
+            (
+                "ticket".into(),
+                Some(conversation.clone()),
+                Some(ticket.clone())
+            )
+        );
+
+        // Keys nobody recorded stay the agent's own: a cron's, none at all.
+        book(&pg, UNATTENDED_SOURCE, &a, Some("cron_live0001"), 3).await;
+        book(&pg, UNATTENDED_SOURCE, &a, None, 4).await;
+        assert_eq!(
+            row(&pg, &a, 3).await,
+            (UNATTENDED_SOURCE.into(), None, None)
+        );
+        assert_eq!(
+            row(&pg, &a, 4).await,
+            (UNATTENDED_SOURCE.into(), None, None)
+        );
+
+        // Both records are the agent's: another agent sending the same key
+        // claims nothing.
+        book(&pg, UNATTENDED_SOURCE, &other, Some(&gwk), 5).await;
+        assert_eq!(
+            row(&pg, &other, 5).await,
+            (UNATTENDED_SOURCE.into(), None, None)
+        );
+
+        // An operator key's row keeps its own source whatever key it names.
+        book(&pg, RELAY_SOURCE, &a, None, 6).await;
+        assert_eq!(row(&pg, &a, 6).await, (RELAY_SOURCE.into(), None, None));
+
+        // A later flow on the same conversation wins for the rows after it.
+        let channel = uuid();
+        record_attribution(&flow(&pg, &a, "channel", &channel, None), &conversation)
+            .await
+            .unwrap();
+        book(&pg, UNATTENDED_SOURCE, &a, Some(&gwk), 7).await;
+        assert_eq!(
+            row(&pg, &a, 7).await,
+            ("channel".into(), Some(channel), None)
+        );
+        cleanup(&pg, &a).await;
+        cleanup(&pg, &other).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn the_second_record_backfills_only_the_last_days_unattended_rows() {
+        let pg = pg().await;
+        let a = agent();
+        cleanup(&pg, &a).await;
+        let (conversation, run) = (uuid(), uuid());
+        let gwk = format!("gwk_{}", &uuid()[..8]);
+
+        // Booked before either record: two calls of this turn, one under the
+        // same key two days ago, and one row some other flow already owns.
+        book(&pg, UNATTENDED_SOURCE, &a, Some(&gwk), 11).await;
+        book(&pg, UNATTENDED_SOURCE, &a, Some(&gwk), 12).await;
+        book(&pg, UNATTENDED_SOURCE, &a, Some(&gwk), 13).await;
+        sqlx::query(
+            "update usage_events set created_at = now() - interval '2 days' \
+              where agent_model = $1 and prompt_tokens = 13",
+        )
+        .bind(&a)
+        .execute(&pg)
+        .await
+        .unwrap();
+        book(&pg, RELAY_SOURCE, &a, Some(&gwk), 14).await;
+
+        // The transport's record alone cannot reach rows under a key it
+        // has never heard of.
+        record_attribution(&flow(&pg, &a, "research", &run, None), &conversation)
+            .await
+            .unwrap();
+        assert_eq!(
+            backfill_attribution(&pg, &a, &conversation).await.unwrap(),
+            0
+        );
+
+        // The plugin's report lands second and claims this turn's two calls.
+        assert_eq!(
+            record_affinity_key(&pg, &a, &gwk, &conversation)
+                .await
+                .unwrap(),
+            2
+        );
+        for prompt in [11, 12] {
+            assert_eq!(
+                row(&pg, &a, prompt).await,
+                ("research".into(), Some(run.clone()), None)
+            );
+        }
+        assert_eq!(
+            row(&pg, &a, 13).await,
+            (UNATTENDED_SOURCE.into(), None, None),
+            "a row older than a day is never reached back over"
+        );
+        assert_eq!(
+            row(&pg, &a, 14).await,
+            (RELAY_SOURCE.into(), None, None),
+            "a row that is not unattended is left alone"
+        );
+        // Run again, it finds nothing left to claim.
+        assert_eq!(
+            backfill_attribution(&pg, &a, &conversation).await.unwrap(),
+            0
+        );
+
+        // The completions arm's order: calls booked under the conversation's
+        // own id, then the transport records it from the response headers.
+        let mut completions = format!("api-{}", uuid().replace('-', ""));
+        completions.truncate(20);
+        let chat = uuid();
+        book(&pg, UNATTENDED_SOURCE, &a, Some(&completions), 15).await;
+        record_attribution(&flow(&pg, &a, "chat", &chat, None), &completions)
+            .await
+            .unwrap();
+        assert_eq!(
+            backfill_attribution(&pg, &a, &completions).await.unwrap(),
+            1
+        );
+        assert_eq!(row(&pg, &a, 15).await, ("chat".into(), Some(chat), None));
+        cleanup(&pg, &a).await;
+    }
+}
