@@ -21,6 +21,7 @@
   import { useDeniedViews, useLogout, useSession } from '@/lib/session'
   import { upgradeDitherSurfaces } from '@/lib/dither-surface'
   import { ADMIN_VIEWS } from '@/lib/nav'
+  import { isViewDenied } from '@/lib/app-grants'
   import { useUserEventInvalidation } from '@/lib/user-events.svelte'
   import { usePresenceHeartbeat } from '@/lib/presence.svelte'
   import { assistantSurface, shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
@@ -122,15 +123,15 @@
   })
 
   // Route gate: a denied or role-gated view isn't just hidden from the nav —
-  // reaching it by URL bounces to Home. (Match prefixes, e.g. /boards/x.)
+  // reaching it by URL bounces to Home. Core views match by prefix (/boards
+  // denies /boards/x); an app's work and manage views are separate grants,
+  // matched exactly, so a manage-only grant opens /x/<slug>/manage
+  // (isViewDenied, app-grants.ts).
   $effect(() => {
     const u = session.data
     if (!u) return
     const blocked = u.role === 'admin' ? denied.current : [...denied.current, ...ADMIN_VIEWS]
-    const pathname = route.pathname
-    if (blocked.some((v) => pathname === v || pathname.startsWith(v + '/'))) {
-      void navigate('/')
-    }
+    if (isViewDenied(route.pathname, blocked)) void navigate('/')
   })
 
   // THE AUTH GATE PAINTS NOTHING IT MIGHT TAKE BACK. While the session read is

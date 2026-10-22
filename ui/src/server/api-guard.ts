@@ -8,8 +8,9 @@
 //
 import { json } from '@/server/http'
 import type { z } from 'zod'
+import { isViewDenied } from '@/lib/app-grants'
 import { getSessionUser, type SessionUser } from './auth/session'
-import { deniedViews } from './users'
+import { rustSession } from './rust-session'
 
 export type { SessionUser }
 
@@ -28,19 +29,26 @@ export async function requireAdmin(request: Request): Promise<SessionUser | Resp
   return user
 }
 
-/** Signed-in user whose view is NOT DENIED. Denial-based, so a member sees a
- *  view by default and only a deniedViews entry (or a prefix of one — 'x'
- *  denies 'x/anything') takes it away; admins are exempt. The same resolution
- *  the nav and route gates use. For APIs that power a gateable view:
- *  /observability, /models, /agents, /apps, /x/<slug>… */
+/** Signed-in user whose view is NOT DENIED, as the Rust api resolves the
+ *  caller's grants (person + teams + agent managers, `GET /api/auth/session`
+ *  — the one resolution; this host keeps no copy of it). A core view is denied
+ *  by itself or a denied view above it ('x' denies 'x/anything'); an app's
+ *  work and manage views are separate grants matched exactly
+ *  (lib/app-grants.ts). Admins are exempt. The same rule the nav and route
+ *  gate use. For an app's own routes use `authorizeApp` (app-access.ts),
+ *  which also tells the app which surfaces the caller holds. */
 export async function requireView(request: Request, view: string): Promise<SessionUser | Response> {
-  const user = await getSessionUser(request)
+  let session
+  try {
+    session = await rustSession(request)
+  } catch (e) {
+    console.error(`[api-guard] requireView ${view}: could not read the session from the api`, e)
+    return json({ error: 'could not check your access — try again' }, { status: 503 })
+  }
+  const user = session.user
   if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-  if (user.role !== 'admin') {
-    const denied = await deniedViews(user.id, user.role)
-    if (denied.some((v) => v === view || view.startsWith(v + '/'))) {
-      return json({ error: 'forbidden' }, { status: 403 })
-    }
+  if (user.role !== 'admin' && isViewDenied(view, session.deniedViews)) {
+    return json({ error: 'forbidden' }, { status: 403 })
   }
   return user
 }

@@ -25,17 +25,25 @@ ACL is checked, so roster changes apply immediately.
   actions inside.
 - **App views** (`/x/<slug>`, `/x/<slug>/manage` — tagged `app` in the checklist) behave like
   Manage views: **explicit-grant only**. Enabling an app gives members nothing until an admin adds
-  it per person.
+  it per person or per team. Each surface is its own grant: the work view and the manage view are
+  granted apart, and a grant for only the manage view opens it on its own. An app's settings tab
+  follows its manage view, so an app with settings but no manage surface still offers
+  `/x/<slug>/manage` to grant. App views match exactly, while core views also deny everything
+  nested under them. The app's API (`/api/apps/<slug>/*`) and its compiled client
+  (`/app-builds/<slug>/…`) admit a member who holds any of the app's views. The API tells the
+  app which views the member holds (`ctx.access`).
 
 Denied views aren't just hidden: the route bounces, the nav omits them, and the APIs that power
-them enforce the same resolution server-side (`requireView`).
+them enforce the same resolution server-side (`requireView`). The resolution is the Rust api's
+(`talaria_users::denied_views`, served at `GET /api/auth/session`); the TS host asks it with the
+caller's cookie rather than keeping a copy.
 
 A team may carry the same two arrays (`denied_views`, `allowed_manage_views`). Effective views:
 
 - work denials = the person's denials ∪ every team they belong to;
 - manage grants = the person's grants ∪ every team they belong to.
 
-Admins set team view grants on Manage → Teams (not the roster owner).
+Admins set team view grants on Manage → Teams (not the roster owner), app views included.
 
 ## The permission catalog
 

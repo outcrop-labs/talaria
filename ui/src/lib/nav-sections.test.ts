@@ -122,31 +122,36 @@ describe('navSections', () => {
     expect(adminDenied.find((s) => s.id === 'manage')!.items.map((i) => i.to)).toEqual(['/agents'])
   })
 
-  it('filters app items by the same grants wherever they land', () => {
+  it('filters app items by their own grants — each surface is its own view', () => {
     const crm = app('crm', { work: 'CRM', manage: 'CRM Admin' })
-    const sections = navSections(
-      CORE,
-      [appWorkItem(crm)!],
-      [appManageItem(crm)!],
-      { isAdmin: false, denied: ['/x'] },
-    )
-    expect(sections.map((s) => s.id)).toEqual(['work', 'manage'])
-    expect(sections.find((s) => s.id === 'apps')).toBeUndefined()
-    // Denying '/x/crm' removes the work item AND its manage surface — the
-    // denial is a prefix, so `/x/crm/manage` falls under it, exactly as
-    // denying `/boards` hides a task nested in a board. What stays is a
-    // DIFFERENT app whose path only shares the `/x` head: `/x/leadworks`
-    // does not start with `/x/crm/`.
     const lead = app('leadworks', { work: 'Leads', manage: 'Leads Admin' })
-    const workDenied = navSections(
-      CORE,
-      [appWorkItem(crm)!, appWorkItem(lead)!],
-      [appManageItem(crm)!, appManageItem(lead)!],
-      { isAdmin: false, denied: ['/x/crm'] },
-    )
-    expect(workDenied.map((s) => s.id)).toEqual(['work', 'apps', 'manage'])
-    expect(workDenied.find((s) => s.id === 'apps')!.items.map((i) => i.to)).toEqual(['/x/leadworks'])
-    expect(workDenied.find((s) => s.id === 'manage')!.items.map((i) => i.to)).toEqual(['/agents', '/teams', '/x/leadworks/manage'])
+    const work = [appWorkItem(crm)!, appWorkItem(lead)!]
+    const manage = [appManageItem(crm)!, appManageItem(lead)!]
+    const grants = (...granted: string[]) => ({
+      isAdmin: false,
+      // Rust's deniedViews lists every app view the member was not granted.
+      denied: ['/x/crm', '/x/crm/manage', '/x/leadworks', '/x/leadworks/manage'].filter((v) => !granted.includes(v)),
+    })
+    const tos = (sections: NavSection[], id: string) => sections.find((s) => s.id === id)?.items.map((i) => i.to)
+
+    const none = navSections(CORE, work, manage, grants())
+    expect(none.map((s) => s.id)).toEqual(['work', 'manage'])
+    expect(tos(none, 'manage')).toEqual(['/agents', '/teams'])
+
+    // A manage-only grant keeps its entry. The denied work view used to take
+    // /x/crm/manage down with it as a prefix, so this grant did nothing.
+    const manageOnly = navSections(CORE, work, manage, grants('/x/crm/manage'))
+    expect(tos(manageOnly, 'apps')).toBeUndefined()
+    expect(tos(manageOnly, 'manage')).toEqual(['/agents', '/teams', '/x/crm/manage'])
+
+    // A work-only grant shows the work item and not the manage one.
+    const workOnly = navSections(CORE, work, manage, grants('/x/crm'))
+    expect(tos(workOnly, 'apps')).toEqual(['/x/crm'])
+    expect(tos(workOnly, 'manage')).toEqual(['/agents', '/teams'])
+
+    // One app's grant never opens another app.
+    const other = navSections(CORE, work, manage, grants('/x/leadworks/manage'))
+    expect(tos(other, 'manage')).toEqual(['/agents', '/teams', '/x/leadworks/manage'])
   })
 })
 

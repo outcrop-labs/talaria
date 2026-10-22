@@ -59,6 +59,15 @@ describe('manageArea', () => {
     expect(a.inside).toBe(false)
   })
 
+  it("lists an app's manage surface for a member granted only that, and is inside on it", () => {
+    // Granted /x/crm/manage alone: the work view stays denied, and it used to
+    // take the manage view with it as a prefix — no gear row, no sidebar.
+    const member = { isAdmin: false, denied: ['/agents', '/models', '/observability', '/x/crm'] }
+    const a = manageArea(CORE, [crm], member, '/x/crm/manage')
+    expect(a.items.map((i) => i.to)).toEqual(['/x/crm/manage'])
+    expect(a).toMatchObject({ inside: true, activePath: '/x/crm/manage' })
+  })
+
   it('has nothing at all for a member with no manage grants — not even the overview', () => {
     const member = { isAdmin: false, denied: ['/agents', '/models', '/observability'] }
     expect(manageArea(CORE, [], member, MANAGE_HOME)).toEqual({ items: [], activePath: null, inside: false })

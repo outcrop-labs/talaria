@@ -533,7 +533,7 @@ pub async fn list_directory(pg: &PgPool) -> Result<Vec<DirectoryRow>, sqlx::Erro
 
 /// Manage-section routes: default DENIED for members, granted explicitly via
 /// allowed_manage_views. Enabled apps extend this set with EVERY app view
-/// (work and manage) — apps are explicit-grant only.
+/// (`app_view_routes`) — apps are explicit-grant only.
 pub const MANAGE_VIEW_ROUTES: [&str; 8] = [
     "/agents",
     "/teams",
@@ -792,8 +792,23 @@ pub async fn enabled_apps(pg: &PgPool) -> Vec<WireApp> {
         .collect()
 }
 
-/// ALL app view routes of ENABLED apps: every work surface, then every
-/// manage surface — apps are explicit-grant.
+/// The grantable views one app contributes, `(work, manage)`. Each surface
+/// is its own grant: the work surface is `/x/<slug>`, the manage surface is
+/// `/x/<slug>/manage`, and the settings tab follows the manage grant. So an
+/// app that ships settings but no manage surface still contributes
+/// `/x/<slug>/manage` — without it nothing could be granted, and the settings
+/// tab (and the server behind it) would be open to every member or to none.
+/// The TS twin, which the route gate, the nav and the app API gateway read,
+/// is `appGrantViews` in ui/src/lib/app-grants.ts.
+pub fn app_grant_views(app: &DiscoveredApp) -> (Option<String>, Option<String>) {
+    let work = app.work.as_ref().map(|_| format!("/x/{}", app.slug));
+    let manage =
+        (app.manage.is_some() || app.settings.is_some()).then(|| format!("/x/{}/manage", app.slug));
+    (work, manage)
+}
+
+/// ALL app view routes of ENABLED apps: every work view, then every manage
+/// view (`app_grant_views`) — apps are explicit-grant.
 pub async fn app_view_routes(pg: &PgPool) -> Vec<String> {
     let enabled: HashSet<String> =
         get_setting(pg, "apps_enabled", serde_json::Value::Array(vec![]))
@@ -810,14 +825,10 @@ pub async fn app_view_routes(pg: &PgPool) -> Vec<String> {
         .into_iter()
         .filter(|a| enabled.contains(&a.slug))
         .collect();
-    let mut out = Vec::new();
-    for a in apps.iter().filter(|a| a.work.is_some()) {
-        out.push(format!("/x/{}", a.slug));
-    }
-    for a in apps.iter().filter(|a| a.manage.is_some()) {
-        out.push(format!("/x/{}/manage", a.slug));
-    }
-    out
+    let views: Vec<_> = apps.iter().map(app_grant_views).collect();
+    let work = views.iter().filter_map(|(w, _)| w.clone());
+    let manage = views.iter().filter_map(|(_, m)| m.clone());
+    work.chain(manage).collect()
 }
 /// Views a member may NOT reach: their explicit work-view denials (DB order)
 /// PLUS every Manage view they haven't been granted. Team grants union in:
@@ -859,10 +870,9 @@ pub async fn denied_views(
     }
     let mut out = denied;
     out.extend(
-        MANAGE_VIEW_ROUTES
+        grantable_manage_views(pg)
+            .await
             .into_iter()
-            .map(String::from)
-            .chain(app_view_routes(pg).await)
             .filter(|v| !allowed.contains(v)),
     );
     Ok(out)
@@ -999,6 +1009,18 @@ pub async fn set_user_agent_access(
     Ok(())
 }
 
+/// Every view an `allowed_manage_views` list may name: the core manage views,
+/// then each enabled app's views. A person's grants and a team's pass through
+/// the same list, so a stale id typed into a request body can't manufacture a
+/// grant on either.
+pub async fn grantable_manage_views(pg: &PgPool) -> Vec<String> {
+    MANAGE_VIEW_ROUTES
+        .into_iter()
+        .map(String::from)
+        .chain(app_view_routes(pg).await)
+        .collect()
+}
+
 /// Replace a member's granted Manage views — filtered to the valid routes,
 /// so a stale id typed into a request body can't manufacture a grant.
 pub async fn set_allowed_manage_views(
@@ -1006,11 +1028,7 @@ pub async fn set_allowed_manage_views(
     user_id: &str,
     views: &[String],
 ) -> Result<(), sqlx::Error> {
-    let valid: Vec<String> = MANAGE_VIEW_ROUTES
-        .into_iter()
-        .map(String::from)
-        .chain(app_view_routes(pg).await)
-        .collect();
+    let valid = grantable_manage_views(pg).await;
     let filtered: Vec<&str> = views
         .iter()
         .filter(|v| valid.contains(v))
@@ -1203,6 +1221,49 @@ pub async fn set_assistant_dm_access(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app(slug: &str, work: bool, manage: bool, settings: bool) -> DiscoveredApp {
+        let label = |on: bool, l: &str| on.then(|| l.to_string());
+        DiscoveredApp {
+            slug: slug.into(),
+            name: slug.into(),
+            icon: "⬡".into(),
+            description: String::new(),
+            version: "0.0.0".into(),
+            work: label(work, "Work"),
+            manage: label(manage, "Manage"),
+            settings: label(settings, "Settings"),
+            mcp: false,
+        }
+    }
+
+    #[test]
+    fn each_app_surface_is_its_own_grant_and_settings_follows_manage() {
+        let v = |a: DiscoveredApp| app_grant_views(&a);
+        let s = |x: &str| Some(x.to_string());
+        // Work and manage are two views, granted apart.
+        assert_eq!(
+            v(app("crm", true, true, false)),
+            (s("/x/crm"), s("/x/crm/manage"))
+        );
+        assert_eq!(v(app("crm", true, false, false)), (s("/x/crm"), None));
+        assert_eq!(
+            v(app("crm", false, true, false)),
+            (None, s("/x/crm/manage"))
+        );
+        // A settings tab rides the manage grant — even with no manage
+        // surface, so a settings-only app has something to grant at all.
+        assert_eq!(
+            v(app("crm", false, false, true)),
+            (None, s("/x/crm/manage"))
+        );
+        assert_eq!(
+            v(app("crm", true, false, true)),
+            (s("/x/crm"), s("/x/crm/manage"))
+        );
+        // No surface, nothing to grant: only an admin reaches it.
+        assert_eq!(v(app("crm", false, false, false)), (None, None));
+    }
 
     const UID: &str = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
 

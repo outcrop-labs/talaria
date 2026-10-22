@@ -10,6 +10,8 @@
   import TeamMembers from '@/components/board/TeamMembers.svelte'
   import { useAgents } from '@/lib/agents'
   import { GATEABLE_VIEWS, MANAGE_VIEWS } from '@/lib/nav'
+  import { useEnabledApps } from '@/lib/apps'
+  import { appGrantViewsOf } from '@/lib/app-grants'
   import { useSession } from '@/lib/session'
   import { toastError } from '@/lib/toast.svelte'
   import {
@@ -50,6 +52,11 @@
   const catalog = $derived(permsQuery.data?.catalog ?? [])
   const orgDefaults = $derived(permsQuery.data?.orgDefaults ?? {})
   const orgDefaultOf = (p: PermCatalogEntry) => orgDefaults[p.id] ?? p.memberDefault
+  // Enabled apps' views, grantable to a team the same way as to a person —
+  // each surface its own grant (app-grants.ts). A failed read only hides the
+  // row: the toggles below edit the STORED set, never a list derived from it.
+  const appsQuery = useEnabledApps()
+  const appViews = $derived(appGrantViewsOf(appsQuery.data ?? []))
   const fleetQuery = useAgents()
   const fleetFailed = $derived(fleetQuery.isError && fleetQuery.data === undefined)
   const agentOptions = $derived(
@@ -251,6 +258,20 @@
                 />
               {/each}
             </div>
+            {#if appViews.length}
+              <div class="flex flex-wrap items-center gap-1.5">
+                <span class="w-16 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Apps</span>
+                {#each appViews as v (v.to)}
+                  {@const granted = access.allowedManageViews.includes(v.to)}
+                  <AdminPermChip
+                    entry={{ id: v.to, label: v.label, hint: `App ${v.surface} view. Filled means members of this team have been granted it.`, group: 'Apps', memberDefault: false }}
+                    effective={granted}
+                    overridden={granted}
+                    onToggle={() => toggleManage(v.to)}
+                  />
+                {/each}
+              </div>
+            {/if}
             {#each permGroups(catalog) as [group, entries] (group)}
               <div class="flex flex-wrap items-center gap-1.5">
                 <span class="w-16 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{group}</span>

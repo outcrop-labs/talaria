@@ -48,12 +48,3 @@ export async function enabledApps(): Promise<AppManifest[]> {
 export async function appServerModule(slug: string): Promise<unknown> {
   return loadAppServer(slug)
 }
-
-/** ALL app view routes of ENABLED apps (work + manage surfaces). */
-export async function appViewRoutes(): Promise<string[]> {
-  const apps = await enabledApps()
-  return [
-    ...apps.filter((a) => a.surfaces.work).map((a) => `/x/${a.slug}`),
-    ...apps.filter((a) => a.surfaces.manage).map((a) => `/x/${a.slug}/manage`),
-  ]
-}
