@@ -539,6 +539,10 @@ async fn call_tool(
 
     match name {
         "doctor" => {
+            // One clock for the whole answer: Hermes's MCP client gives up on
+            // a call at 300 s, and an answer that arrives after that is a
+            // timeout to the agent, not a diagnosis.
+            let started = std::time::Instant::now();
             let gh_status = github_status(pg, &deps.sb).await;
             let repos = gh::granted_repos(pg, &agent.id).await;
             let mut checks: Vec<String> = Vec::new();
@@ -565,6 +569,12 @@ async fn call_tool(
                 Ok(r) => r,
                 Err(e) => return thrown(e),
             };
+            // Which plan the agent's jobs run on decides whether the gateway
+            // login is the one to check: a job on a coding subscription never
+            // calls the gateway, so its health says nothing about that job.
+            let plan = talaria_coding_accounts::resolve(pg, &agent.id, None)
+                .await
+                .unwrap_or(None);
             let probe = harness_probe(pg, &agent.department).await;
             // A harness that STARTS is not one that can work: `--version`
             // calls no model. omp answered it while every model call it made
@@ -572,26 +582,44 @@ async fn call_tool(
             // Hermes strips, under a `$`-prefixed reference omp never
             // resolved. So once it starts, make it reach the gateway: the one
             // check that says the harness can actually do a job.
-            let auth = match (&probe, roles.default.as_deref()) {
-                (Ok(_), Some(model)) => {
-                    Some(harness_auth_probe(pg, &agent.department, model).await)
-                }
-                _ => None,
+            let auth = match (&probe, roles.default.as_deref(), &plan) {
+                (Err(_), ..) => AuthCheck::NotRun,
+                (Ok(_), _, Some(p)) if !p.is_gateway() => AuthCheck::Skipped(format!(
+                    "its gateway login was not checked: your jobs run on the {} subscription, not the gateway",
+                    p.provider
+                )),
+                (Ok(_), None, _) => AuthCheck::Skipped(
+                    "its gateway login was not checked, because no Workbench model role resolves to a gateway model"
+                        .into(),
+                ),
+                (Ok(_), Some(model), _) => match auth_probe_budget(started.elapsed()) {
+                    Some(budget) => AuthCheck::Ran(
+                        harness_auth_probe(pg, &agent.department, model, budget).await,
+                    ),
+                    None => AuthCheck::Skipped(format!(
+                        "its gateway login was not checked: the steps before it used doctor's time ({} s of the {} s an MCP call gets) — run doctor again, it is quicker once warm",
+                        started.elapsed().as_secs(),
+                        DOCTOR_BUDGET_MS / 1000
+                    )),
+                },
             };
             let writable = harness_writable(pg, &agent.department).await;
             checks.push(match (&probe, &auth) {
-                (Ok(version), Some(Ok(_))) => format!(
+                (Ok(version), AuthCheck::Ran(Ok(_))) => format!(
                     "harness: {} ({}) runs — {version} — and reached the Talaria gateway (one model call as `{}`), no key needed on your side",
                     OMP.label,
                     OMP.slug,
                     roles.default.as_deref().unwrap_or_default()
                 ),
-                (Ok(version), Some(Err(why))) => format!(
+                (Ok(version), AuthCheck::Ran(Err(why))) => format!(
                     "harness: {} ({}) starts — {version} — but CANNOT REACH THE TALARIA GATEWAY: {why}. Roll the agent if the sandbox check says STALE; otherwise report_problem. Do not hand-code the ticket instead.",
                     OMP.label, OMP.slug
                 ),
-                (Ok(version), None) => format!(
-                    "harness: {} ({}) runs — {version}; its gateway login was not checked, because no Workbench model role resolves to a gateway model",
+                (Ok(version), AuthCheck::Skipped(why)) => {
+                    format!("harness: {} ({}) runs — {version}; {why}", OMP.label, OMP.slug)
+                }
+                (Ok(version), AuthCheck::NotRun) => format!(
+                    "harness: {} ({}) runs — {version}",
                     OMP.label, OMP.slug
                 ),
                 (Err(why), _) => format!(
@@ -628,10 +656,7 @@ async fn call_tool(
             // reads as the whole truth and an agent debugging a model it never
             // asked for has nothing to look at.
             checks.push(
-                match talaria_coding_accounts::resolve(pg, &agent.id, None)
-                    .await
-                    .unwrap_or(None)
-                {
+                match &plan {
                     Some(plan) if plan.is_gateway() => {
                         "coding account: none in use — your harness runs on the org's Talaria gateway"
                             .to_string()
@@ -660,14 +685,15 @@ async fn call_tool(
                 // itself is how its failure stayed invisible.
                 "probeResult": match &probe { Ok(v) => json!({ "ok": true, "version": v }), Err(e) => json!({ "ok": false, "error": e }) },
                 "authResult": match &auth {
-                    Some(Ok(reply)) => json!({ "ok": true, "model": roles.default, "reply": reply }),
-                    Some(Err(e)) => json!({ "ok": false, "model": roles.default, "error": e }),
-                    None => Value::Null,
+                    AuthCheck::Ran(Ok(reply)) => json!({ "ok": true, "model": roles.default, "reply": reply }),
+                    AuthCheck::Ran(Err(e)) => json!({ "ok": false, "model": roles.default, "error": e }),
+                    AuthCheck::Skipped(why) => json!({ "ok": null, "skipped": why }),
+                    AuthCheck::NotRun => Value::Null,
                 },
                 "runtime": match &runtime { Ok(v) => json!({ "ok": true, "bun": v }), Err(e) => json!({ "ok": false, "error": e }) },
                 "next": match (&probe, &auth) {
                     (Err(e), _) => format!("The harness cannot start in this sandbox ({e}). report_problem — do NOT hand-code the ticket."),
-                    (Ok(_), Some(Err(e))) => format!("The harness starts but cannot reach the gateway ({e}). Roll the agent if the sandbox is STALE, else report_problem — do NOT hand-code the ticket."),
+                    (Ok(_), AuthCheck::Ran(Err(e))) => format!("The harness starts but cannot reach the gateway ({e}). Roll the agent if the sandbox is STALE, else report_problem — do NOT hand-code the ticket."),
                     _ => "start_job with the ticket, then clone into the workdir and call prepare_env.".to_string(),
                 },
             }))
@@ -1625,7 +1651,12 @@ async fn harness_probe(pg: &PgPool, department: &str) -> Result<String, String> 
 /// what is left is what omp has when the agent starts it.
 ///
 /// Ok is the model's reply; Err is omp's own last word on why not.
-async fn harness_auth_probe(pg: &PgPool, department: &str, model: &str) -> Result<String, String> {
+async fn harness_auth_probe(
+    pg: &PgPool,
+    department: &str,
+    model: &str,
+    timeout_ms: u64,
+) -> Result<String, String> {
     let container = managed_container(pg, department).await;
     let line = fill_cmd(OMP.auth_probe, Some(model), "");
     // The stripped names arrive as positional args, never inside the script.
@@ -1636,7 +1667,7 @@ async fn harness_auth_probe(pg: &PgPool, department: &str, model: &str) -> Resul
     );
     let stripped: Vec<&str> = talaria_agent_secrets::hermes_stripped_names().collect();
     let argv = agent_terminal_argv(&script, &stripped);
-    let (stdout, stderr) = docker_exec(&container, &argv, AUTH_PROBE_TIMEOUT_MS)
+    let (stdout, stderr) = docker_exec(&container, &argv, timeout_ms)
         .await
         .map_err(|e| format!("the model call could not be run in the sandbox: {e}"))?;
     auth_probe_verdict(&format!("{stdout}\n{stderr}"))
@@ -1686,6 +1717,39 @@ fn auth_probe_verdict(text: &str) -> Result<String, String> {
 }
 
 const AUTH_EXIT_MARK: &str = "__talaria_omp_exit=";
+
+/// What doctor found out about the harness's gateway login.
+enum AuthCheck {
+    /// The model call ran: the reply, or omp's reason it got none.
+    Ran(Result<String, String>),
+    /// Deliberately not run, and why — the answer says so.
+    Skipped(String),
+    /// Not run because the harness does not start; that check speaks.
+    NotRun,
+}
+
+/// How long the auth probe may take, given how long doctor has already
+/// spent — or `None` when what is left is too little for a model call to be
+/// worth starting.
+///
+/// Hermes's MCP client gives up on a call at 300 s (`_DEFAULT_TOOL_TIMEOUT`,
+/// and the workbench server sets no `timeout_secs`), and provisioning the
+/// runtime and the cold `npx` of the version probe can take most of that on a
+/// fresh sandbox. A probe that ran past it would turn the whole answer into a
+/// timeout; skipping it says what was not checked and lets the rest arrive.
+fn auth_probe_budget(spent: std::time::Duration) -> Option<u64> {
+    let spent = u64::try_from(spent.as_millis()).unwrap_or(u64::MAX);
+    let left = DOCTOR_BUDGET_MS.saturating_sub(spent);
+    (left >= AUTH_PROBE_MIN_MS).then(|| left.min(AUTH_PROBE_TIMEOUT_MS))
+}
+
+/// doctor's whole answer, inside Hermes's 300 s MCP call timeout with room
+/// for the quick checks that follow the probe.
+const DOCTOR_BUDGET_MS: u64 = 270_000;
+
+/// Less than this left and a model call is not started: npx's warm start
+/// plus one short reply needs about this much.
+const AUTH_PROBE_MIN_MS: u64 = 30_000;
 
 /// A cold `npx` already ran in the version probe; this is one short reply
 /// from whatever model the org's code-standard role names, small or slow.
@@ -2307,6 +2371,28 @@ mod tests {
         // No marker at all (the shell itself died): a failure, with what it said.
         let err = auth_probe_verdict("sh: 1: runuser: not found").unwrap_err();
         assert!(err.contains("without a status"), "{err}");
+    }
+
+    #[test]
+    fn the_auth_probe_gets_only_the_time_doctor_has_left() {
+        use std::time::Duration;
+        // A warm sandbox: the full probe timeout fits.
+        assert_eq!(
+            auth_probe_budget(Duration::from_secs(5)),
+            Some(AUTH_PROBE_TIMEOUT_MS)
+        );
+        // A cold one that spent 200 s provisioning and probing: what is left.
+        assert_eq!(auth_probe_budget(Duration::from_secs(200)), Some(70_000));
+        // Too little left for a model call: not started, said so instead.
+        assert_eq!(auth_probe_budget(Duration::from_secs(250)), None);
+        assert_eq!(auth_probe_budget(Duration::from_secs(900)), None);
+        // Whatever it is given, the whole answer stays inside Hermes's 300 s.
+        for spent in [0u64, 60, 120, 239, 240] {
+            if let Some(b) = auth_probe_budget(Duration::from_secs(spent)) {
+                assert!(spent * 1000 + b <= DOCTOR_BUDGET_MS, "{spent}s + {b}ms");
+            }
+        }
+        const { assert!(DOCTOR_BUDGET_MS < 300_000) };
     }
 
     #[test]

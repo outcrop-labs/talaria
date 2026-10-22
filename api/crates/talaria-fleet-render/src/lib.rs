@@ -1654,8 +1654,11 @@ pub async fn render_fleet(
             )
             .await
             .map_err(|e| e.to_string())?;
-            // The models.json an older render left here: nothing reads it.
-            let _ = tokio::fs::remove_file(wb_dir.join("models.json")).await;
+            // A models.json an older render wrote here STAYS. Nothing reads
+            // it, but a container created before this render still binds it,
+            // and most renders recreate no container: delete the bind source
+            // and that agent's next restart (a daemon restart, a reboot, its
+            // own crash) fails on a missing mount until someone rolls it.
             // The token that says which render built this sandbox. doctor
             // compares it with the one this build expects, so a container
             // that was never rolled stops being invisible.
