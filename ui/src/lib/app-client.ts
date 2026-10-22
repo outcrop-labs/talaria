@@ -83,8 +83,8 @@ export interface AppApi {
 
 export const appRouteUrl = (slug: string, path: string): string => `/api/apps/${slug}/${path.replace(/^\/+/, '')}`
 
-/** Fetch helpers bound to an app's server routes (/api/apps/<slug>/…), for
- *  code outside a component. Inside a surface, use `useAppApi()`. */
+/** Fetch helpers bound to an app's server routes (/api/apps/<slug>/…), for a
+ *  slug you already hold. Inside a surface, `useAppApi()` binds its own. */
 export function appApi(slug: string): AppApi {
   const url = (path: string) => appRouteUrl(slug, path)
   const send = (body: unknown, init: AppApiInit | undefined) => keepJsonType(withDeadline(init), body)
