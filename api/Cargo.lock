@@ -3568,7 +3568,6 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
- "talaria-fleet-docker",
  "talaria-gateway",
  "tokio",
  "tracing",

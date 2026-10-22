@@ -8,7 +8,7 @@
   import { cn } from '@/lib/cn'
   import { slide } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
-  import { describeSchedule, fmtNext, jobDot, parseSchedule, schedToString, type CronJob, type Sched } from './agent-crons'
+  import { MAX_CRON_PROMPT, describeSchedule, fmtNext, jobDot, parseSchedule, schedToString, type CronJob, type Sched } from './agent-crons'
   import ScheduleBuilder from './ScheduleBuilder.svelte'
 
   let {
@@ -75,7 +75,14 @@
             <Pencil size={13} />
           </IconButton>
         {/if}
-        <IconButton size="sm" title="Run on the next tick (≤60s)" onclick={() => onAction('run')}>
+        <!-- A paused job cannot be run now: Hermes's run would resume it for
+             good, so the api refuses it — resume first. -->
+        <IconButton
+          size="sm"
+          title={paused ? 'Paused — resume it to run it' : 'Run on the next tick (≤60s)'}
+          disabled={paused}
+          onclick={() => onAction('run')}
+        >
           <Zap size={14} />
         </IconButton>
         <IconButton size="sm" title={paused ? 'Resume' : 'Pause'} onclick={() => onAction(paused ? 'resume' : 'pause')}>
@@ -102,7 +109,7 @@
         <Input size="sm" bind:value={name} maxlength={80} class="w-56" />
       </div>
       <ScheduleBuilder value={sched} onChange={(s) => (sched = s)} />
-      <Textarea autoGrow rows={3} bind:value={prompt} class="max-h-64" maxlength={20_000} />
+      <Textarea autoGrow rows={3} bind:value={prompt} class="max-h-64" maxlength={MAX_CRON_PROMPT} />
       <div class="flex items-center gap-2">
         <Button size="sm" disabled={busy || !name.trim() || !prompt.trim() || !schedToString(sched)} onclick={() => void saveEdit()}>
           Save changes

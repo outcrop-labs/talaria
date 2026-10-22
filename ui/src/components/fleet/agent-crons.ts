@@ -15,6 +15,10 @@
 import { confirm } from '@/components/ui/confirm.svelte'
 import { delJson, errorMessage, postJson, putJson } from '@/lib/fetch-json'
 
+/** The agent's own cap on a scheduled prompt: Hermes's `/api/jobs` refuses a
+ *  longer one, and the api bounds its prompt members by the same number. */
+export const MAX_CRON_PROMPT = 5_000
+
 export interface CronJob {
   id: string
   name: string
