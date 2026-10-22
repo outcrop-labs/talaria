@@ -16,10 +16,21 @@
 // Hermes's own resolution, which on v0.22.4 ends at the keyless public ring
 // (the anonymous tiers of Exa, Parallel, Firecrawl and Keenable). Talaria
 // recommends no vendor. Once the operator picks something (a backend here,
-// or a search URL that reaches the agents), the ring and Hermes's one-shot
-// "rescue" through it are both switched off, unless the operator explicitly
-// allowed the public tiers. A query the operator routed to their own
-// provider must not fall through to a third party they never chose.
+// or a search URL the render hands the agents as SEARXNG_URL), the ring and
+// Hermes's one-shot "rescue" through it are both switched off, unless the
+// operator explicitly allowed the public tiers. A query the operator routed
+// to their own provider must not fall through to a third party they never
+// chose. Rendered is not reachable: nothing probes the URL from an agent, so
+// a URL the agents cannot connect to still switches the ring off, and their
+// searches then fail with SearXNG's connection error.
+//
+// SEARCH-ONLY BACKENDS. Brave Search and SearXNG cannot read pages. With
+// `web.extract_backend` unset, Hermes's web_extract takes the first
+// autodetect rung the agent's env feeds, and when that is one of them every
+// web_extract fails with Hermes's typed "search-only backend" error. The
+// render says so in its warnings (and Admin → Search shows them) rather than
+// refusing the save: SearXNG alone is a legitimate keyless setup, and the
+// same breakage already follows from a search URL with nothing else picked.
 //
 // THE KEY NEVER TOUCHES A CONFIG FILE. It is sealed into this setting row
 // (envelope encryption, docs/ENCRYPTION.md). The render unseals it into the
@@ -225,8 +236,41 @@ pub async fn read(pg: &PgPool) -> AgentWebSearch {
     )
 }
 
-pub async fn write(pg: &PgPool, cfg: &AgentWebSearch) -> Result<(), sqlx::Error> {
-    talaria_settings::set_setting(pg, SETTING_KEY, &cfg.to_stored()).await
+/// Read, change and write the setting in one transaction under the row
+/// lock, so two saves at once, or a save racing key rotation (which locks
+/// the same row to re-seal it), cannot write a stale copy back over the
+/// other's keys. `change` returns the setting to store, or the sentence the
+/// admin reads, and then nothing is written. Ok(Ok) carries (before, after).
+pub async fn update(
+    pg: &PgPool,
+    change: impl FnOnce(&AgentWebSearch) -> Result<AgentWebSearch, String>,
+) -> Result<Result<(AgentWebSearch, AgentWebSearch), String>, sqlx::Error> {
+    let mut tx = pg.begin().await?;
+    // The lock needs a row to hold. A first save creates the empty one, and
+    // a refused save rolls it back with everything else.
+    sqlx::query(
+        "insert into app_settings (key, value) values ($1, '{}'::jsonb) on conflict (key) do nothing",
+    )
+    .bind(SETTING_KEY)
+    .execute(tx.as_mut())
+    .await?;
+    let stored: Value =
+        sqlx::query_scalar("select value from app_settings where key = $1 for update")
+            .bind(SETTING_KEY)
+            .fetch_one(tx.as_mut())
+            .await?;
+    let cur = AgentWebSearch::from_stored(&stored);
+    let next = match change(&cur) {
+        Ok(next) => next,
+        Err(msg) => return Ok(Err(msg)),
+    };
+    sqlx::query("update app_settings set value = $1, updated_at = now() where key = $2")
+        .bind(next.to_stored())
+        .bind(SETTING_KEY)
+        .execute(tx.as_mut())
+        .await?;
+    tx.commit().await?;
+    Ok(Ok((cur, next)))
 }
 
 /// An admin's edit. Absent fields keep what is stored.
@@ -365,11 +409,39 @@ pub struct WebRender {
     pub warnings: Vec<String>,
 }
 
-/// The render, pure. `searxng_reaches_agents` says whether the workspace
-/// search URL is rendered into the agents as `SEARXNG_URL`: a URL the agents
-/// cannot reach chooses nothing for them, so it does not switch the public
-/// tiers off.
-pub fn render(cfg: &AgentWebSearch, searxng_reaches_agents: bool) -> WebRender {
+/// Hermes v0.22.4's `_autodetect_backend()` rungs (tools/web_tools.py), in
+/// order, for the backends Talaria offers. With no `web.extract_backend`,
+/// web_extract lands on the first rung whose env the agent carries: a vendor
+/// key, or SEARXNG_URL for searxng.
+const AUTODETECT_ORDER: &[&str] = &[
+    "tavily",
+    "perplexity",
+    "exa",
+    "parallel",
+    "keenable",
+    "firecrawl",
+    "searxng",
+    "brave-free",
+];
+
+/// Whether the render hands the agents the workspace search URL as
+/// SEARXNG_URL, for `app_search_url` as the app spells it. The same rule
+/// fleet-render applies (`talaria_fleet_layout::agent_search_url`), for a
+/// caller that reads the render back without rendering, like Admin → Search.
+pub fn searxng_rendered(app_search_url: &str) -> bool {
+    talaria_fleet_layout::agent_search_url(
+        app_search_url,
+        talaria_fleet_layout::dial_is_container(),
+    )
+    .is_some()
+}
+
+/// The render, pure. `searxng_rendered` says whether the workspace search
+/// URL is rendered into the agents as `SEARXNG_URL`. A URL withheld from
+/// them (a loopback address in a containerized stack) chooses nothing for
+/// them, so it does not switch the public tiers off. A rendered URL does,
+/// whether or not the agents can connect to it.
+pub fn render(cfg: &AgentWebSearch, searxng_rendered: bool) -> WebRender {
     let mut out = WebRender::default();
     let known = |name: &Option<String>| name.as_deref().and_then(backend);
     let search = known(&cfg.backend);
@@ -393,14 +465,35 @@ pub fn render(cfg: &AgentWebSearch, searxng_reaches_agents: bool) -> WebRender {
         if let (Some(env), Some(sealed)) = (b.key_env, cfg.keys.get(b.name)) {
             out.keys.push((env, sealed.clone()));
         }
-        if b.name == "searxng" && !searxng_reaches_agents {
+        if b.name == "searxng" && !searxng_rendered {
             out.warnings.push(
-                "agent web search: SearXNG is picked, but the workspace search URL does not reach agent containers, so their searches will fail; give it an address the agents can reach"
+                "agent web search: SearXNG is picked, but the workspace search URL is a loopback address the agent containers cannot use, so it is not rendered and their searches will fail; give it an address the agents can reach"
                     .into(),
             );
         }
     }
-    let chosen = search.is_some() || extract.is_some() || searxng_reaches_agents;
+    if extract.is_none() {
+        let fed = |name: &str| {
+            if name == "searxng" {
+                return searxng_rendered;
+            }
+            backend(name)
+                .and_then(|b| b.key_env)
+                .is_some_and(|env| out.keys.iter().any(|(e, _)| *e == env))
+        };
+        if let Some(b) = AUTODETECT_ORDER
+            .iter()
+            .find(|name| fed(name))
+            .and_then(|name| backend(name))
+            && !b.extract
+        {
+            out.warnings.push(format!(
+                "agent web search: reading pages is left to Hermes, which lands on {}, a search-only backend, so every agent's web_extract will fail; pick a provider under Read pages on Admin → Search",
+                b.label
+            ));
+        }
+    }
+    let chosen = search.is_some() || extract.is_some() || searxng_rendered;
     if chosen && !cfg.allow_public_tiers {
         out.web.push(("keyless_fallback", json!(false)));
         out.web.push(("keyless_rescue", json!(false)));
@@ -539,7 +632,63 @@ mod tests {
             allow_public_tiers: true,
             ..Default::default()
         };
-        assert_eq!(render(&allowed, true), WebRender::default());
+        assert_eq!(render(&allowed, true).web, vec![]);
+    }
+
+    /// Hermes's web_extract with no `web.extract_backend` lands on the first
+    /// autodetect rung the agent's env feeds; a search-only one fails every
+    /// call. Each case, against tools/web_tools.py `_autodetect_backend`.
+    #[test]
+    fn a_search_only_backend_left_to_read_pages_warns() {
+        let reads = |r: &WebRender| r.warnings.iter().any(|w| w.contains("web_extract"));
+        // Brave with its key and nothing for pages: autodetect lands on Brave.
+        let brave = render(
+            &cfg(Some("brave-free"), None, &[("brave-free", "s")]),
+            false,
+        );
+        assert!(reads(&brave), "{:?}", brave.warnings);
+        assert!(brave.warnings[0].contains("Brave Search"));
+        // SearXNG picked, or a search URL alone: autodetect lands on SearXNG,
+        // public tiers allowed or not (autodetect runs before the keyless walk).
+        assert!(reads(&render(&cfg(Some("searxng"), None, &[]), true)));
+        assert!(reads(&render(&AgentWebSearch::default(), true)));
+        let allowed = AgentWebSearch {
+            allow_public_tiers: true,
+            ..Default::default()
+        };
+        assert!(reads(&render(&allowed, true)));
+        // A keyed vendor on a public tier with no key: SEARXNG_URL is the
+        // first rung the env feeds.
+        let mut exa_keyless = cfg(Some("exa"), None, &[]);
+        exa_keyless.allow_public_tiers = true;
+        assert!(reads(&render(&exa_keyless, true)));
+        // A page reader named, or a keyed vendor on an earlier rung: fine.
+        assert!(!reads(&render(
+            &cfg(
+                Some("brave-free"),
+                Some("firecrawl"),
+                &[("brave-free", "b"), ("firecrawl", "f")]
+            ),
+            true
+        )));
+        assert!(!reads(&render(
+            &cfg(Some("tavily"), None, &[("tavily", "t")]),
+            true
+        )));
+        assert!(!reads(&render(
+            &cfg(Some("searxng"), Some("exa"), &[("exa", "e")]),
+            true
+        )));
+        // Nothing set and no search URL: Hermes's own ring reads pages.
+        assert!(!reads(&render(&AgentWebSearch::default(), false)));
+    }
+
+    #[test]
+    fn the_search_url_counts_when_it_is_rendered_not_when_it_is_reachable() {
+        // A routable address the agents may or may not connect to is
+        // rendered, and so counts; only a withheld one does not.
+        assert!(searxng_rendered("http://searx.corp.example:8080"));
+        assert!(!searxng_rendered(""));
     }
 
     #[test]
@@ -599,15 +748,12 @@ mod tests {
     }
 
     #[test]
-    fn searxng_that_cannot_reach_the_agents_warns() {
+    fn searxng_withheld_from_the_agents_warns() {
+        let withheld = |r: &WebRender| r.warnings.iter().any(|w| w.contains("loopback"));
         let r = render(&cfg(Some("searxng"), None, &[]), false);
         assert_eq!(r.web[0], ("search_backend", json!("searxng")));
-        assert_eq!(r.warnings.len(), 1);
-        assert!(
-            render(&cfg(Some("searxng"), None, &[]), true)
-                .warnings
-                .is_empty()
-        );
+        assert!(withheld(&r));
+        assert!(!withheld(&render(&cfg(Some("searxng"), None, &[]), true)));
     }
 
     #[test]

@@ -593,7 +593,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_search_agents.rs`](../
 > /api/admin/search/agents. AGENT WEB SEARCH — the one provider every fleet
 > agent's own Hermes searches with (talaria-agent-web-search). GET is the
 > setting with its keys MASKED (which vendors hold one, never the value),
-> plus the backends this build offers. PUT patches it.
+> the backends this build offers, and what the render hands every agent
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

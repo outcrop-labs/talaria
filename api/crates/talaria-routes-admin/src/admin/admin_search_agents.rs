@@ -1,7 +1,10 @@
 // /api/admin/search/agents. AGENT WEB SEARCH — the one provider every fleet
 // agent's own Hermes searches with (talaria-agent-web-search). GET is the
 // setting with its keys MASKED (which vendors hold one, never the value),
-// plus the backends this build offers. PUT patches it.
+// the backends this build offers, and what the render hands every agent
+// from it (`rendered`: the `web:` keys, the env names, whether SEARXNG_URL
+// is rendered, and the render's warnings), computed by the render itself so
+// the panel never restates its rules. PUT patches it under the row lock.
 //
 // AGENTS ONLY. Research keeps its own search stage on the workspace search
 // URL (/api/admin/search) or a registered search MCP server; this setting
@@ -17,15 +20,20 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
-use talaria_agent_web_search::{AgentWebSearch, BACKENDS, Patch, SETTING_KEY, apply, read, write};
+use talaria_agent_web_search::{
+    AgentWebSearch, BACKENDS, Patch, SETTING_KEY, apply, read, render, searxng_rendered, update,
+};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{nullish_member, optional_boolean_member, optional_max_string_member, parse};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_admin, secretbox_or_500};
 use talaria_state::AppState;
 
-/// The setting as a client may see it: keys folded to set-flags.
+/// The setting as a client may see it: keys folded to set-flags, and the
+/// render's own read-back with env NAMES only.
 fn view(cfg: &AgentWebSearch, search_url: &str) -> Value {
+    let searxng = searxng_rendered(search_url);
+    let r = render(cfg, searxng);
     json!({
         "backend": cfg.backend,
         "extractBackend": cfg.extract_backend,
@@ -40,6 +48,12 @@ fn view(cfg: &AgentWebSearch, search_url: &str) -> Value {
             "publicTier": b.public_tier,
             "sdkOnFirstUse": b.sdk_on_first_use,
         })).collect::<Vec<_>>(),
+        "rendered": {
+            "web": r.web.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect::<serde_json::Map<_, _>>(),
+            "env": r.keys.iter().map(|(env, _)| *env).collect::<Vec<_>>(),
+            "searxngUrl": searxng,
+            "warnings": r.warnings,
+        },
     })
 }
 
@@ -124,7 +138,6 @@ pub async fn put(
         allow_public_tiers,
     };
 
-    let cur = read(&state.pg).await;
     let search_url = talaria_search::search_url(&state.pg).await;
     // The secretbox only when a key is being sealed: switching to SearXNG or
     // back to Hermes's default must not 500 on a box that cannot seal.
@@ -139,13 +152,17 @@ pub async fn put(
             .seal(plain)
             .map_err(|e| e.to_string())
     };
-    let next = match apply(&cur, &patch, !search_url.is_empty(), seal) {
-        Ok(n) => n,
-        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    // Read, apply and write under the row lock: a concurrent save or a key
+    // rotation cannot be overwritten with the copy this request read.
+    let (cur, next) = match update(&state.pg, |cur| {
+        apply(cur, &patch, !search_url.is_empty(), seal)
+    })
+    .await
+    {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(msg)) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        Err(e) => return Ok(internal("[admin/search/agents] setting write failed", e)),
     };
-    if let Err(e) = write(&state.pg, &next).await {
-        return Ok(internal("[admin/search/agents] setting write failed", e));
-    }
     log_audit(
         &state.pg,
         AuditEntry {

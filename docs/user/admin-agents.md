@@ -137,10 +137,15 @@ them here would change nothing.
 its own Hermes: Tavily, Exa, Parallel, Firecrawl, Keenable, the Perplexity Search API, Brave
 Search, or SearXNG at the workspace search URL, each with its key (stored encrypted, never shown
 again), plus an optional separate provider for reading pages. Left on Hermes's default, Talaria
-sets nothing. Once you pick a provider, or set a search URL the agents can reach, agents stop
-falling back to the anonymous free tiers of Exa, Parallel, Firecrawl and Keenable unless you tick
-**Allow Hermes's keyless public tiers**. Research is not affected: it searches with the search URL
-or a registered search MCP server. Like the toolset floor, a change lands on each agent at its
-next roll.
+sets nothing. Once you pick a provider, or set a search URL (every agent gets it as
+`SEARXNG_URL`), agents stop falling back to the anonymous free tiers of Exa, Parallel, Firecrawl
+and Keenable unless you tick **Allow Hermes's keyless public tiers**. Talaria does not check that
+the agents can connect to that URL: if they cannot, their searches fail with SearXNG's connection
+error instead of falling back. Brave Search and SearXNG only search. Unless you also pick a
+provider under **Read pages**, agents' `web_extract` lands on them and fails, and the panel warns
+about it. The choice applies to every agent. It overrides an agent's own web backend settings, and
+an agent secret with the same name as the vendor key. Research is not affected: it searches with
+the search URL or a registered search MCP server. Like the toolset floor, a change lands on each
+agent at its next roll.
 
 Besides these panels, one rule is stamped into every agent's soul at hire and in every role template, so it holds no matter how the soul is later edited: **agents never do dev work in chat**. Code changes — however small — ship through a ticket and a workbench job; a dev-work request in chat produces (or links) a ticket and moves execution to the workbench, and instructions given in chat are posted to the ticket as comments.

@@ -11,5 +11,6 @@ workspace = true
 [dependencies]
 serde_json = { workspace = true }
 sqlx = { workspace = true }
+talaria-fleet-layout = { workspace = true }
 talaria-secretbox = { workspace = true }
 talaria-settings = { workspace = true }

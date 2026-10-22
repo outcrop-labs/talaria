@@ -28,6 +28,21 @@ export interface WebBackend {
   sdkOnFirstUse: boolean
 }
 
+/** What the render hands every agent from the saved setting, computed by
+ *  the render itself (talaria-agent-web-search), never restated here. */
+export interface RenderedWeb {
+  /** The keys merged into every agent's config.yaml `web:` block. */
+  web: Record<string, string | boolean>
+  /** The Hermes env names that carry a vendor key. Never the value. */
+  env: string[]
+  /** The workspace search URL reaches the agents' env as SEARXNG_URL.
+   *  Rendered, not probed: the agents may still fail to connect to it. */
+  searxngUrl: boolean
+  /** What the render would warn about, e.g. web_extract landing on a
+   *  search-only backend. */
+  warnings: string[]
+}
+
 export interface AgentWebSearch {
   backend: string | null
   extractBackend: string | null
@@ -36,6 +51,7 @@ export interface AgentWebSearch {
   keys: Record<string, boolean>
   searchUrl: string
   backends: WebBackend[]
+  rendered: RenderedWeb
 }
 
 export function useSearchEndpoint() {
@@ -62,19 +78,16 @@ export function needsKeyFirst(cfg: AgentWebSearch, name: string): boolean {
   return !b.publicTier || !cfg.allowKeylessPublicTiers
 }
 
-/** What every agent's Hermes gets from this setting, one line, in the
- *  render's own terms. Mirrors talaria-agent-web-search's `render`. */
+/** What every agent's Hermes gets from the saved setting, one line, read
+ *  off the server's own render (`rendered`) rather than re-derived. */
 export function renderSummary(cfg: AgentWebSearch): string {
+  const { web, env, searxngUrl } = cfg.rendered
   const parts: string[] = []
-  const vendor = (name: string | null) => cfg.backends.find((b) => b.name === name)
-  const search = vendor(cfg.backend)
-  const extract = vendor(cfg.extractBackend)
-  if (search) parts.push(`search: ${search.name}`)
-  if (extract) parts.push(`extract: ${extract.name}`)
-  for (const b of [search, extract]) {
-    if (b?.keyEnv && cfg.keys[b.name] && !parts.includes(`${b.keyEnv} sealed`)) parts.push(`${b.keyEnv} sealed`)
-  }
-  const chosen = Boolean(search || extract || cfg.searchUrl)
-  if (chosen) parts.push(cfg.allowKeylessPublicTiers ? 'keyless tiers allowed' : 'keyless tiers off')
+  if (typeof web.search_backend === 'string') parts.push(`search: ${web.search_backend}`)
+  if (typeof web.extract_backend === 'string') parts.push(`extract: ${web.extract_backend}`)
+  for (const name of env) parts.push(`${name} sealed`)
+  if (searxngUrl) parts.push('SEARXNG_URL')
+  if (web.keyless_fallback === false) parts.push('keyless tiers off')
+  else if (parts.length && cfg.allowKeylessPublicTiers) parts.push('keyless tiers allowed')
   return parts.length ? parts.join(' · ') : "nothing rendered: Hermes resolves its own default"
 }

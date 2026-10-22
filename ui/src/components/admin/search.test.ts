@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { needsKeyFirst, renderSummary, type AgentWebSearch, type WebBackend } from './search'
+import { needsKeyFirst, renderSummary, type AgentWebSearch, type RenderedWeb, type WebBackend } from './search'
 
 const backends: WebBackend[] = [
   { name: 'tavily', label: 'Tavily', keyEnv: 'TAVILY_API_KEY', extract: true, publicTier: true, sdkOnFirstUse: false },
@@ -13,8 +13,11 @@ const cfg = (over: Partial<AgentWebSearch> = {}): AgentWebSearch => ({
   keys: {},
   searchUrl: '',
   backends,
+  rendered: { web: {}, env: [], searxngUrl: false, warnings: [] },
   ...over,
 })
+const off = { keyless_fallback: false, keyless_rescue: false }
+const rendered = (over: Partial<RenderedWeb>): RenderedWeb => ({ web: {}, env: [], searxngUrl: false, warnings: [], ...over })
 
 describe('needsKeyFirst', () => {
   it('asks for a key before a keyed vendor can be picked', () => {
@@ -34,13 +37,22 @@ describe('renderSummary', () => {
   it('says plainly when nothing is rendered', () => {
     expect(renderSummary(cfg())).toBe('nothing rendered: Hermes resolves its own default')
   })
-  it('names the backend, the sealed key, and the keyless switch', () => {
-    expect(renderSummary(cfg({ backend: 'tavily', keys: { tavily: true } }))).toBe(
+  it("reads the server's render: backend, sealed key, keyless switch", () => {
+    const r = rendered({ web: { search_backend: 'tavily', ...off }, env: ['TAVILY_API_KEY'] })
+    expect(renderSummary(cfg({ backend: 'tavily', keys: { tavily: true }, rendered: r }))).toBe(
       'search: tavily · TAVILY_API_KEY sealed · keyless tiers off',
     )
   })
-  it('counts a search URL alone as a choice', () => {
-    expect(renderSummary(cfg({ searchUrl: 'http://searx.local' }))).toBe('keyless tiers off')
-    expect(renderSummary(cfg({ searchUrl: 'http://searx.local', allowKeylessPublicTiers: true }))).toBe('keyless tiers allowed')
+  it('names a rendered search URL, and the keyless tiers when they are allowed', () => {
+    expect(renderSummary(cfg({ searchUrl: 'http://searx.local', rendered: rendered({ web: off, searxngUrl: true }) }))).toBe(
+      'SEARXNG_URL · keyless tiers off',
+    )
+    expect(
+      renderSummary(cfg({ searchUrl: 'http://searx.local', allowKeylessPublicTiers: true, rendered: rendered({ searxngUrl: true }) })),
+    ).toBe('SEARXNG_URL · keyless tiers allowed')
+  })
+  it('does not count a search URL the render withholds from the agents', () => {
+    // A loopback URL in a containerized stack: set, but not rendered.
+    expect(renderSummary(cfg({ searchUrl: 'http://127.0.0.1:8888' }))).toBe('nothing rendered: Hermes resolves its own default')
   })
 })

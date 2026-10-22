@@ -143,6 +143,9 @@
         <div class="border-t border-line-subtle pt-3 font-mono text-[10px] tracking-[0.05em] text-muted">
           Agents get: {renderSummary(cfg)}
         </div>
+        {#each cfg.rendered.warnings as w, i (i)}
+          <p class="max-w-2xl font-sans text-xs text-warning">{w.replace(/^agent web search: /, '')}</p>
+        {/each}
       </div>
     {/snippet}
   </QueryState>
