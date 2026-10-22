@@ -1448,12 +1448,12 @@ pub async fn refresh_mcp_tools(
     };
     if server.app_slug.is_some() {
         // App servers: the catalog comes from the compiled app module —
-        // authors' TS/node code, owned by the app runtime, not something this
-        // registry path can fetch.
-        return Err(format!(
-            "app \"{}\" publishes its catalog from the app module, which stays TS by rule 10 (docs/RUST-MIGRATION.md)",
-            server.app_slug.unwrap_or_default()
-        ));
+        // authors' TS/node code (rule 10) — and the app host's load probe has
+        // already checked it and written it to this row (talaria-apps
+        // `sync_app_mcp_servers`). There is nothing further to ask, so
+        // discovery answers that catalog. It used to answer an error, which
+        // Manage → MCP showed as a 502 on "Discover tools".
+        return Ok(app_catalog(&server));
     }
     // Package servers split by transport: stdio packages converse through
     // the pump (the cached handshake answers initialize); oci-http packages
@@ -1693,6 +1693,13 @@ pub(crate) const TOOL_SCHEMA_MAX_BYTES: usize = 32 * 1024;
 /// `TOOL_SCHEMA_MAX_BYTES` becomes the marker. Every other field an entry
 /// carries is kept as it came. Anything that is not an array of objects
 /// bounds to an empty catalog. Pure, pinned by tests.
+/// What discovery answers for an app-published server: the catalog its row
+/// holds, bounded like any other. The app host wrote it from the module it
+/// loaded; this registry cannot load app code, and does not pretend to.
+pub(crate) fn app_catalog(server: &McpServer) -> Vec<Value> {
+    bound_catalog(&server.tools)
+}
+
 pub(crate) fn bound_catalog(tools: &Value) -> Vec<Value> {
     let Some(entries) = tools.as_array() else {
         return Vec::new();
@@ -2207,6 +2214,47 @@ mod tests {
             wire.get("headers").is_none(),
             "no value-bearing headers member at all"
         );
+    }
+
+    /// "Discover tools" on an app server answers the catalog the app host
+    /// wrote — never the rule-10 error the route turned into a 502.
+    #[test]
+    fn an_app_servers_discovery_is_its_stored_catalog() {
+        let server = McpServer {
+            id: "00000000-0000-0000-0000-000000000004".into(),
+            name: "app-crm".into(),
+            label: "CRM".into(),
+            description: None,
+            url: "talaria-app://crm".into(),
+            headers_plain: Map::new(),
+            headers_sealed: None,
+            timeout_secs: None,
+            enabled: true,
+            all_agents: false,
+            auth_mode: "org".into(),
+            tools: json!([
+                { "name": "crm_find", "description": "Find a contact", "inputSchema": { "type": "object" } },
+                { "name": "", "description": "a row nobody can call" },
+            ]),
+            tools_refreshed_ms: None,
+            required_headers: json!([]),
+            oauth_enabled: false,
+            builtin: false,
+            app_slug: Some("crm".into()),
+            created_by: None,
+            created_ms: 0,
+            package: None,
+            env_enc: None,
+            last_probe: None,
+        };
+        let catalog = app_catalog(&server);
+        assert_eq!(catalog.len(), 1, "bounded like any catalog: {catalog:?}");
+        assert_eq!(catalog[0]["name"], "crm_find");
+        let empty = McpServer {
+            tools: json!([]),
+            ..server
+        };
+        assert!(app_catalog(&empty).is_empty());
     }
 
     #[test]

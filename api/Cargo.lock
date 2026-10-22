@@ -4486,6 +4486,10 @@ dependencies = [
 [[package]]
 name = "talaria-config"
 version = "0.1.0"
+dependencies = [
+ "hmac",
+ "sha2 0.11.0",
+]
 
 [[package]]
 name = "talaria-conversation-layout"
@@ -7222,6 +7226,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-managers",
  "talaria-body",
+ "talaria-config",
  "talaria-error",
  "talaria-password",
  "talaria-secretbox",

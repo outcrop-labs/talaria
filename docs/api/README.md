@@ -6,7 +6,7 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-335 routes across 23 groups.
+336 routes across 24 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
@@ -22,6 +22,7 @@
 | [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 26 |
 | [`inbox`](./inbox.md) | The focus inbox and its command surface. | 7 |
 | [`integrations`](./integrations.md) | Connected accounts — Google Workspace and the rest. | 42 |
+| [`internal`](./internal.md) | Service-to-service calls from the app host — never a user's or an agent's. | 1 |
 | [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, blueprints, search. | 21 |
 | [`llm`](./llm.md) | The OpenAI-compatible wire (llm.v1.*). | 2 |
 | [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 16 |
@@ -49,6 +50,7 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 | `agent` | an agent credential (`tak_` key, `require_agent`/`agent_caller`) |
 | `dual` | session path and agent path both reach the handler |
 | `fleet` | internal fleet key (`fleet_caller`/`check_fleet_key`) |
+| `internal` | the app host's root-derived service credential (`x-talaria-internal`, `require_internal`) — never a user or agent |
 | `bearer-key` | a personal LLM-gateway API key (`authenticate_key`) |
 
 ---

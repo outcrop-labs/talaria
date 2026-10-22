@@ -3,78 +3,208 @@
 // resolves access with the SAME rules as any server, then dispatches here.
 // The module is loaded from disk (dev) or the app's own build (prod) — never
 // a host glob.
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { z } from 'zod'
 import { storeFor } from './app-store'
 import { dispatchJsonRpc, rpcError, type Rpc } from './mcp-jsonrpc'
 import type { AppMcp, AppMcpTool } from '@/sdk/server'
 import { isolateApp } from './app-isolate'
 import { appHasMcp as hasMcpFile, loadAppMcp } from './app-load'
+import { appBuildsDir } from './app-build/paths'
+import { getSetting } from './audit'
+import { resyncAppMcpServers } from './internal-api'
 
 export const appHasMcp = (slug: string): boolean => hasMcpFile(slug)
 
-async function loadMcp(slug: string): Promise<AppMcp | null> {
+// ── The checks a tool passes before any agent sees it ──────────────────────
+// Every tool an app declares is checked when its module loads — by the build
+// probe, and by every dispatch. A tool that fails is LEFT OUT and named: not
+// listed, not callable, not in the registry's catalog. It never takes the app
+// (or the app's other tools) down with it; a typo in one tool is that tool's
+// problem. The bounds are the registry's own (`bound_catalog`,
+// api/crates/talaria-mcp/src/registry.rs), which used to clip a third-party
+// catalog silently and let an app's through unchecked.
+
+/** registry.rs `TOOL_NAME_MAX`. */
+export const TOOL_NAME_MAX = 200
+/** registry.rs `TOOL_DESCRIPTION_MAX`: the catalog keeps this much. */
+export const TOOL_DESCRIPTION_MAX = 300
+/** registry.rs `TOOL_SCHEMA_MAX_BYTES`. */
+export const TOOL_SCHEMA_MAX_BYTES = 32 * 1024
+/** What a model API accepts as a function name. An agent's harness turns each
+ *  MCP tool into one, and providers refuse the WHOLE request over a name with
+ *  a space or a dot in it — so one bad name would break every turn of every
+ *  agent carrying the app, not just calls to that tool. */
+const TOOL_NAME_RE = /^[A-Za-z0-9_-]+$/
+
+const EMPTY_SCHEMA = { type: 'object', properties: {} } as const
+
+export interface CheckedAppMcp {
+  /** The tools that passed — the only ones listed, called or catalogued. */
+  tools: AppMcpTool[]
+  /** One sentence per tool left out: which one, and why. */
+  problems: string[]
+}
+
+function toolProblem(t: unknown, seen: ReadonlySet<string>): string | null {
+  if (!t || typeof t !== 'object' || Array.isArray(t)) return 'is not a tool definition'
+  const { name, description, handler, inputSchema } = t as Partial<Record<keyof AppMcpTool, unknown>>
+  if (typeof name !== 'string' || !name) return 'has no name'
+  if (name.length > TOOL_NAME_MAX) return `has a ${name.length}-character name (at most ${TOOL_NAME_MAX})`
+  if (!TOOL_NAME_RE.test(name)) return 'has a name with characters other than letters, digits, _ and -'
+  if (seen.has(name)) return 'is defined twice; only the first definition is kept'
+  if (typeof description !== 'string' || !description.trim()) return 'has no description'
+  if (typeof handler !== 'function') return 'has no handler function'
+  if (inputSchema !== undefined) {
+    if (!inputSchema || typeof inputSchema !== 'object' || Array.isArray(inputSchema)) {
+      return 'has an inputSchema that is not a JSON Schema object'
+    }
+    const type = (inputSchema as Record<string, unknown>).type
+    if (type !== undefined && type !== 'object') {
+      return `has an inputSchema of type ${JSON.stringify(type)}; tool arguments are an object`
+    }
+    let bytes: number
+    try {
+      bytes = Buffer.byteLength(JSON.stringify(inputSchema))
+    } catch {
+      return 'has an inputSchema that is not JSON'
+    }
+    if (bytes > TOOL_SCHEMA_MAX_BYTES) {
+      return `has a ${(bytes / 1024).toFixed(1)} KiB inputSchema (at most ${TOOL_SCHEMA_MAX_BYTES / 1024} KiB)`
+    }
+  }
+  return null
+}
+
+const toolLabel = (t: unknown, i: number): string => {
+  const name = t && typeof t === 'object' ? (t as { name?: unknown }).name : undefined
+  return typeof name === 'string' && name ? JSON.stringify(name.length > 60 ? `${name.slice(0, 60)}…` : name) : `tool #${i + 1}`
+}
+
+/** Check every declared tool; keep the ones that pass, name the rest. */
+export function checkAppMcpTools(tools: readonly unknown[]): CheckedAppMcp {
+  const ok: AppMcpTool[] = []
+  const problems: string[] = []
+  const seen = new Set<string>()
+  tools.forEach((t, i) => {
+    const problem = toolProblem(t, seen)
+    if (problem) {
+      problems.push(`${toolLabel(t, i)} ${problem}`)
+      return
+    }
+    const tool = t as AppMcpTool
+    seen.add(tool.name)
+    ok.push(tool)
+  })
+  return { tools: ok, problems }
+}
+
+/** The catalog the registry row holds for an app server: what tools/list
+ *  serves, with descriptions clipped to the registry's bound. */
+export const catalogOf = (tools: readonly AppMcpTool[]): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> =>
+  tools.map((t) => ({
+    name: t.name,
+    description: t.description.slice(0, TOOL_DESCRIPTION_MAX),
+    inputSchema: t.inputSchema ?? { ...EMPTY_SCHEMA },
+  }))
+
+/** The registry row's `last_probe` for an app server, in the shape the api's
+ *  `probe_json` writes: `ok` with the tool count, or `error` naming every
+ *  tool left out — which Manage → MCP shows on the server's card. Clipped to
+ *  the api's 300 characters. */
+export function catalogProbe(checked: CheckedAppMcp, at: Date = new Date()): { state: 'ok' | 'error'; detail: string; at: string } {
+  const n = checked.tools.length
+  const count = `${n} tool${n === 1 ? '' : 's'}`
+  if (!checked.problems.length) return { state: 'ok', detail: count, at: at.toISOString() }
+  const full = `${count}; ${checked.problems.length} left out: ${checked.problems.join('; ')}`
+  const detail = full.length > 300 ? `${full.slice(0, 299)}…` : full
+  return { state: 'error', detail, at: at.toISOString() }
+}
+
+// The module's check, once per tools array: the same array comes back from
+// the module cache on every dispatch until the module changes.
+const checkedCache = new WeakMap<readonly unknown[], CheckedAppMcp>()
+
+async function loadMcp(slug: string): Promise<CheckedAppMcp | null> {
   const loaded = await isolateApp(slug, 'mcp load', async () => {
     const mod = (await loadAppMcp(slug)) as { default?: AppMcp } | null
-    return mod?.default?.tools ? mod.default : null
+    const tools = mod?.default?.tools
+    if (!Array.isArray(tools)) return null
+    let checked = checkedCache.get(tools)
+    if (!checked) {
+      checked = checkAppMcpTools(tools)
+      checkedCache.set(tools, checked)
+      // A module this process has not seen — a first load, or an edit Vite
+      // reloaded in dev, where no build probe runs — may carry a new catalog.
+      // The sync writes and hands it on only when it changed.
+      void syncAppMcpCatalog(slug, checked)
+    }
+    return checked
   })
-  if (!loaded.ok || !loaded.value) return null
-  // Every successful load — the build probe's, the first dispatch's — is a
-  // chance to write the catalog the registry row was seeded without.
-  void syncAppMcpCatalog(slug, loaded.value)
-  return loaded.value
+  return loaded.ok ? loaded.value : null
 }
 
 export async function appMcpTools(slug: string): Promise<Array<{ name: string; description?: string }>> {
-  const mcp = await loadMcp(slug)
-  return catalogOf(mcp)
+  const checked = await loadMcp(slug)
+  return catalogOf(checked?.tools ?? []).map(({ name, description }) => ({ name, description }))
 }
 
-const catalogOf = (mcp: AppMcp | null): Array<{ name: string; description?: string }> =>
-  (mcp?.tools ?? []).map((t) => ({ name: t.name, description: t.description.slice(0, 300) }))
-
 // ── The registry's cached catalog ───────────────────────────────────────────
-// The Rust side registers an app server with `tools = '[]'` and never
-// refreshes it (no probe: the module is the authority, and this process is
-// the only one that can load it). The gateway serves tools/list from the
-// module on every call, so agents never noticed — but Manage → MCP's "narrow
-// the tool subset" picker reads the cached column, and an empty catalog is a
-// picker with nothing to pick. This writes the column from the module once
-// per distinct catalog per process, and again whenever a load finds the row
-// was not there yet (install → build runs before enable → register).
+// The registry row's `tools` column is what Manage → MCP's tool-subset picker
+// and "Discover tools" read. Rust cannot load the module (rule 10), so the
+// catalog travels the other way: the build probe writes the checked catalog
+// beside the build (`mcp-catalog.json`), and the api copies it into the row
+// whenever it upserts one (talaria-apps `sync_app_mcp_servers`) — on enable,
+// at boot, and when this host asks after writing a new catalog. An enabled
+// app's row therefore has its tools the moment it exists; it used to start
+// as `[]` and stay empty until some agent happened to call.
 
-/** slug → the catalog JSON last written for it. */
+/** registry twin: talaria-apps `MCP_CATALOG_FILE`. */
+export const MCP_CATALOG_FILE = 'mcp-catalog.json'
+
+export const appMcpCatalogPath = (slug: string): string => join(appBuildsDir(), slug, MCP_CATALOG_FILE)
+
+/** slug → the catalog body last written and handed to the api. */
 const catalogWritten = new Map<string, string>()
 
-/** Has this process already written this app's current catalog into the
- *  registry row? False until a load has run and found the row. */
-export const appMcpCatalogSynced = (slug: string): boolean => catalogWritten.has(slug)
+const isEnabled = async (slug: string): Promise<boolean> =>
+  (await getSetting<string[]>('apps_enabled', [])).includes(slug)
 
-/** Write the module's tool list into `mcp_servers.tools` for `app-<slug>`.
- *  Pass the loaded module to avoid a second load; without one it loads (and
- *  the load syncs). Never throws — a catalog that did not land is a warning,
- *  not a failed call. */
-export async function syncAppMcpCatalog(slug: string, mcp?: AppMcp | null): Promise<void> {
+/** Write the checked catalog beside the app's build and, for an enabled app,
+ *  ask the api to copy it into the registry row. Never throws — a catalog that
+ *  did not land is a warning (the api's boot sync reads the file anyway), not
+ *  a failed load. */
+export async function syncAppMcpCatalog(slug: string, c: CheckedAppMcp): Promise<void> {
   try {
-    if (mcp === undefined) {
-      await loadMcp(slug) // the load writes
-      return
+    const tools = catalogOf(c.tools)
+    const body = JSON.stringify({ tools, problems: c.problems })
+    const file = appMcpCatalogPath(slug)
+    // An uninstall removes the build directory: a remembered catalog whose
+    // file is gone is written again.
+    if (catalogWritten.get(slug) === body && existsSync(file)) return
+    mkdirSync(join(appBuildsDir(), slug), { recursive: true })
+    const at = new Date()
+    writeFileSync(`${file}.tmp`, `${JSON.stringify({ tools, probe: catalogProbe(c, at), at: at.toISOString() }, null, 2)}\n`)
+    renameSync(`${file}.tmp`, file)
+    // Remembered only once the row has it (or there is no row): an api that
+    // was down gets asked again on the next sync rather than never.
+    if (!(await isEnabled(slug)) || (await resyncAppMcpServers(`${slug}: catalog`)) !== null) {
+      catalogWritten.set(slug, body)
     }
-    if (!mcp) return
-    const body = JSON.stringify(catalogOf(mcp))
-    if (catalogWritten.get(slug) === body) return
-    const { db } = await import('./db/pg')
-    const sql = await db()
-    const r = await sql.unsafe(
-      `update mcp_servers set tools = $1::jsonb, tools_refreshed_at = now(), updated_at = now()
-       where app_slug = $2 and name = $3`,
-      [body, slug, `app-${slug}`],
-    )
-    // No row yet (the app is built but not enabled): try again on the next
-    // load rather than remembering a write that never happened.
-    if (r.count > 0) catalogWritten.set(slug, body)
   } catch (e) {
-    console.warn(`[app-mcp] ${slug}: could not write the tool catalog to the registry: ${(e as Error).message}`)
+    console.warn(`[app-mcp] ${slug}: could not write the tool catalog: ${(e as Error).message}`)
   }
+}
+
+/** The app publishes no MCP surface (any more): drop its catalog, and let the
+ *  api drop the row if one was there. */
+export async function clearAppMcpCatalog(slug: string): Promise<void> {
+  catalogWritten.delete(slug)
+  const file = appMcpCatalogPath(slug)
+  if (!existsSync(file)) return
+  rmSync(file, { force: true })
+  if (await isEnabled(slug)) await resyncAppMcpServers(`${slug}: no MCP surface`)
 }
 
 // ── Argument validation against the advertised inputSchema ─────────────────
@@ -102,6 +232,20 @@ export function argumentProblem(schema: Record<string, unknown> | undefined, arg
   return r.success ? null : z.prettifyError(r.error)
 }
 
+/** Why the gateway must refuse this app server outright, or null.
+ *
+ *  AN APP THAT IS NOT ENABLED SERVES NOTHING, whatever its registry row says.
+ *  Turning an app off (an admin, or a failed build) asks the api to remove the
+ *  row and roll the agents that carried it, but an agent's rendered config
+ *  outlives that until its roll lands — and in dev the module loads from
+ *  source whatever the build said, so a broken app's tools kept answering. The
+ *  app server gateway (apps.$app.$.ts) has always applied this rule to people;
+ *  this is the same rule for agents. */
+export async function appMcpOff(appSlug: string | null | undefined): Promise<string | null> {
+  if (!appSlug) return null
+  return (await isEnabled(appSlug)) ? null : `app "${appSlug}" is not enabled`
+}
+
 export async function dispatchAppMcp(
   slug: string,
   rpc: Rpc,
@@ -110,6 +254,8 @@ export async function dispatchAppMcp(
 ): Promise<{ status: number; body: unknown | null }> {
   const mcp = await loadMcp(slug)
   if (!mcp) return { status: 404, body: rpcError(rpc.id, -32601, `app "${slug}" has no MCP surface`) }
+  // Only the tools that passed their checks exist for an agent — listed,
+  // callable, or not at all.
   const tools = mcp.tools.filter((t) => allowed === null || allowed.includes(t.name))
 
   return dispatchJsonRpc(rpc, tools, {
@@ -117,7 +263,7 @@ export async function dispatchAppMcp(
     listEntry: (t: AppMcpTool) => ({
       name: t.name,
       description: t.description,
-      inputSchema: t.inputSchema ?? { type: 'object', properties: {} },
+      inputSchema: t.inputSchema ?? EMPTY_SCHEMA,
     }),
     call: async (tool, args) => {
       const bad = argumentProblem(tool.inputSchema, args)

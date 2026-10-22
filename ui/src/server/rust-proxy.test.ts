@@ -147,6 +147,19 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(5)
   })
 
+  it('never forwards the service-to-service prefix — /api/internal is the host’s own call, not a visitor’s', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    for (const path of ['/api/internal/apps/mcp-sync', '/api/internal', '/api/internal/']) {
+      const res = await maybeProxy(req(path, { method: 'POST', headers: { 'x-talaria-internal': 'guess' } }), path)
+      expect(res?.status).toBe(404)
+    }
+    // Anchored: a route that merely starts with the word still hops.
+    expect(await maybeProxy(req('/api/internals'), '/api/internals')).not.toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
   it('answers 502 with the fixed sentence when the Rust api is down — no fallback', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     vi.stubGlobal(

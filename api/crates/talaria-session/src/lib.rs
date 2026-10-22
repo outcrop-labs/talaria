@@ -432,6 +432,30 @@ pub async fn secretbox_or_500(
     }
 }
 
+/// The app host, or the 403. `/api/internal/*` is service-to-service: the
+/// caller presents the root-derived credential
+/// (`SecretRoot::internal_token`) in `x-talaria-internal`, which only a
+/// process holding the root can compute. No session, agent key or app
+/// identity is ever enough, and the host's proxy never forwards the prefix
+/// from outside (ui/src/server/rust-proxy.ts).
+// The Err IS the response to send, as for every guard here — clippy's size
+// heuristic only fires because this one is not async (`object_or_400` too).
+#[allow(clippy::result_large_err)]
+pub fn require_internal(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
+    let presented = headers
+        .get(talaria_config::INTERNAL_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .unwrap_or("");
+    if state.cfg.secret_root.admits_internal(presented) {
+        return Ok(());
+    }
+    Err(talaria_error::house_error(
+        StatusCode::FORBIDDEN,
+        "internal route: only the app host may call it",
+    ))
+}
+
 /// Signed-in user or the 401 Response — return the gate when it is a
 /// Response.
 pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<SessionUser, Response> {

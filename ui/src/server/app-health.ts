@@ -14,6 +14,8 @@ import {
   loadAppMcp,
   loadAppServer,
 } from './app-load'
+import { checkAppMcpTools, clearAppMcpCatalog, syncAppMcpCatalog } from './app-mcp'
+import { resyncAppMcpServers } from './internal-api'
 
 
 export function moduleHasFetch(mod: unknown): boolean {
@@ -45,6 +47,13 @@ export function clientArtifactOk(source: string): boolean {
 }
 
 
+/** Mark the build failed and turn the app off. The enabled set is written
+ *  here, but the app's MCP server row is the api's (talaria-apps): it is asked
+ *  to reconcile, which removes the row and rolls the agents that carried it —
+ *  otherwise a broken app's server stayed on every agent it had been granted
+ *  to, until an admin happened to toggle some app. Asked on every failure, not
+ *  only when this call changed the set: a row an earlier failure left behind
+ *  (the api was down) goes too. */
 export async function failHealth(slug: string, error: string): Promise<void> {
   const cur = readCurrent(slug)
   writeCurrent(slug, {
@@ -68,9 +77,17 @@ export async function failHealth(slug: string, error: string): Promise<void> {
       targetLabel: error,
     })
   }
+  await resyncAppMcpServers(`${slug}: ${next.length !== enabled.length ? 'turned off' : 'failed'}`)
 }
 
-/** Load server/mcp/client modules and demand the SDK contracts. Does not spawn Postgres. */
+/** Load server/mcp/client modules and demand the SDK contracts. Does not spawn Postgres.
+ *
+ *  The MCP module's tools are checked one by one (`checkAppMcpTools`): a tool
+ *  that fails is left out and named — in the log and on the server's card in
+ *  Manage → MCP — and never fails the probe. The checked catalog is written
+ *  beside the build and handed to the api, so the registry row carries the
+ *  tools the moment the app is enabled. The boot sweep probes every installed
+ *  app, which makes this the boot sync too. */
 export async function probeLoad(slug: string): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!slugOk(slug)) return { ok: false, error: 'bad slug' }
   if (!appHasClient(slug) && !existsSync(appSrc(slug, 'app.ts'))) {
@@ -102,6 +119,11 @@ export async function probeLoad(slug: string): Promise<{ ok: true } | { ok: fals
     if (!moduleHasMcpTools(loaded.value)) {
       return { ok: false, error: 'mcp.ts must default-export defineAppMcp({ tools })' }
     }
+    const checked = checkAppMcpTools((loaded.value as { default: { tools: unknown[] } }).default.tools)
+    for (const problem of checked.problems) console.warn(`[app-mcp] ${slug}: left out ${problem}`)
+    await syncAppMcpCatalog(slug, checked)
+  } else {
+    await clearAppMcpCatalog(slug)
   }
   return { ok: true }
 }

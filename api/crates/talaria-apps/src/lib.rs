@@ -48,15 +48,44 @@ pub async fn enabled_app_slugs(pg: &PgPool) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The tool catalog an app's last load probe wrote beside its build
+/// (ui/src/server/app-mcp.ts `syncAppMcpCatalog`).
+pub const MCP_CATALOG_FILE: &str = "mcp-catalog.json";
+
+/// The two registry columns an app's catalog file fills: `tools` (the tools
+/// that passed the probe's checks, already bounded) and `last_probe`
+/// (`{state, detail, at}`, naming any tool the probe left out). None when the
+/// file is not the probe's shape — the row then keeps what it has.
+pub fn catalog_columns(raw: &str) -> Option<(Value, Value)> {
+    let v: Value = serde_json::from_str(raw).ok()?;
+    let tools = v.get("tools").filter(|t| t.is_array())?.clone();
+    let probe = v.get("probe").filter(|p| {
+        p.get("state").is_some_and(Value::is_string)
+            && p.get("detail").is_some_and(Value::is_string)
+    })?;
+    Some((tools, probe.clone()))
+}
+
+fn read_mcp_catalog(slug: &str) -> Option<(Value, Value)> {
+    let raw = std::fs::read_to_string(app_builds_dir().join(slug).join(MCP_CATALOG_FILE)).ok()?;
+    catalog_columns(&raw)
+}
+
 /// Reconcile registry rows with the ENABLED apps that publish MCP tools:
-/// upsert one row per app, drop rows
-/// whose app went away — rolling the agents that carried them.
+/// upsert one row per app, drop rows whose app went away — rolling the agents
+/// that carried them. Answers the app server names that remain.
 ///
-/// The cached `tools` column is untouched here: the live authority for an
-/// app server's tool list is the TS dispatcher (app runtime — rule 10),
-/// which serves tools/list from the module on every call — so an update
-/// keeps the row's cache and an insert seeds `[]`.
-pub async fn sync_app_mcp_servers(pg: &PgPool, sb: &SecretBox) {
+/// THE CATALOG COMES FROM THE BUILD, never from here: the app module is TS
+/// (rule 10), and its load probe writes the checked catalog beside the build
+/// (`MCP_CATALOG_FILE`). Every upsert copies that file into `tools` and
+/// `last_probe`, so the row an enable creates already carries its tools —
+/// it used to start as `[]` and stay that way until an agent happened to
+/// call. An app the probe has not reached yet keeps whatever its row has.
+///
+/// Runs on enable/disable, at api boot, and whenever the app host asks
+/// (`POST /api/internal/apps/mcp-sync`: a probe wrote a new catalog, or a
+/// failed build turned the app off).
+pub async fn sync_app_mcp_servers(pg: &PgPool, sb: &SecretBox) -> Vec<String> {
     let want: Vec<_> = talaria_users::enabled_apps(pg)
         .await
         .into_iter()
@@ -78,24 +107,38 @@ pub async fn sync_app_mcp_servers(pg: &PgPool, sb: &SecretBox) {
                 .await;
         }
     }
+    let mut kept = Vec::with_capacity(want.len());
     for (slug, name, description) in want {
-        let _ = sqlx::query(
+        let server = format!("app-{slug}");
+        // $6/$7 null = no catalog file yet: an insert seeds `[]` and no
+        // probe, an update keeps the row's own.
+        let (tools, probe) = read_mcp_catalog(&slug).unzip();
+        let upserted = sqlx::query(
             "insert into mcp_servers \
-                (name, label, description, url, all_agents, app_slug, tools, tools_refreshed_at, created_by) \
-             values ($1, $2, $3, $4, false, $5, '[]'::jsonb, now(), 'talaria') \
+                (name, label, description, url, all_agents, app_slug, tools, tools_refreshed_at, last_probe, created_by) \
+             values ($1, $2, $3, $4, false, $5, coalesce($6, '[]'::jsonb), now(), $7, 'talaria') \
              on conflict (name) do update set \
                 label = excluded.label, description = excluded.description, \
                 app_slug = excluded.app_slug, tools_refreshed_at = now(), \
+                tools = coalesce($6, mcp_servers.tools), \
+                last_probe = coalesce($7, mcp_servers.last_probe), \
                 enabled = true, updated_at = now()",
         )
-        .bind(format!("app-{slug}"))
+        .bind(&server)
         .bind(&name)
         .bind(if description.is_empty() { None } else { Some(description) })
         .bind(format!("talaria-app://{slug}"))
         .bind(&slug)
+        .bind(tools)
+        .bind(probe)
         .execute(pg)
         .await;
+        match upserted {
+            Ok(_) => kept.push(server),
+            Err(e) => tracing::warn!("[apps] could not register {server}: {e}"),
+        }
     }
+    kept
 }
 
 /// Flip one app's enablement. Enabling an app that is not on disk
@@ -395,4 +438,40 @@ pub async fn fetch_catalog(pg: &PgPool) -> (Vec<Value>, Option<String>) {
         out.push(Value::Object(obj));
     }
     (out, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shape the TS probe writes (`syncAppMcpCatalog`): the checked
+    /// tools and the probe line, copied into the row as they are.
+    #[test]
+    fn a_probe_catalog_fills_both_columns() {
+        let raw = r#"{
+            "tools": [{"name": "crm_find", "description": "Find a contact", "inputSchema": {"type": "object"}}],
+            "probe": {"state": "error", "detail": "1 tool; 1 left out: \"Bad Name\" is not a usable tool name", "at": "2026-10-22T12:00:00.000Z"},
+            "at": "2026-10-22T12:00:00.000Z"
+        }"#;
+        let (tools, probe) = catalog_columns(raw).expect("probe shape");
+        assert_eq!(tools[0]["name"], "crm_find");
+        assert_eq!(tools.as_array().map(Vec::len), Some(1));
+        assert_eq!(probe["state"], "error");
+        assert!(probe["detail"].as_str().unwrap().contains("left out"));
+    }
+
+    /// Anything else leaves the row alone rather than blanking it: a torn
+    /// write, an older host's file, a hand edit.
+    #[test]
+    fn anything_but_the_probe_shape_is_no_catalog() {
+        assert!(catalog_columns("").is_none());
+        assert!(catalog_columns("{not json").is_none());
+        assert!(catalog_columns(r#"{"tools": {}}"#).is_none());
+        assert!(catalog_columns(r#"{"tools": []}"#).is_none());
+        assert!(catalog_columns(r#"{"tools": [], "probe": {"state": "ok"}}"#).is_none());
+        assert!(
+            catalog_columns(r#"{"tools": [], "probe": {"state": "ok", "detail": "0 tools"}}"#)
+                .is_some()
+        );
+    }
 }
