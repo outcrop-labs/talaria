@@ -347,9 +347,16 @@ pub fn session_turn_parts(messages: &[Value]) -> (Option<String>, Value) {
 }
 
 /// Send the turn the way the agent takes it: through its pinned session, or
-/// as the full-history completion every agent speaks. Returns the stream and
-/// how many characters of prompt actually left — the ledger's estimate when
-/// no usage frame comes back.
+/// as the full-history completion every agent speaks. Returns the stream, how
+/// many characters of prompt actually left — the ledger's estimate when no
+/// usage frame comes back — and whether the SESSION served the turn.
+///
+/// A SESSION RUNS THE AGENT'S MAIN MODEL, whatever tier the message picked:
+/// the session route carries no model, and Hermes pins a session's model at
+/// its first turn (a later per-request route is ignored). So on that arm the
+/// tier's effort is not sent — it was validated against the tier's levels,
+/// not the main model's, and the main runs at its own rendered level — and
+/// the caller books the turn as the main model ([`PersistMeta::on_session`]).
 pub async fn send_turn(
     pinned: bool,
     agent_model: &str,
@@ -357,7 +364,7 @@ pub async fn send_turn(
     conversation_id: &str,
     messages: &[Value],
     effort: Option<&str>,
-) -> (ChatStream, usize) {
+) -> (ChatStream, usize, bool) {
     let messages = with_conversation_line(messages, conversation_id);
     let messages = messages.as_slice();
     if pinned {
@@ -372,18 +379,19 @@ pub async fn send_turn(
         // state volume gone, and the turn below takes the full-history arm
         // instead of answering from an empty room (the transport logs it).
         let history_expected = messages.iter().any(|m| m["role"] == "assistant");
+        let session_effort = effort.filter(|_| routed_model == agent_model);
         if let Some(upstream) = proxy_session_turn(
             agent_model,
             conversation_id,
             system_message.as_deref(),
             &message,
-            effort,
+            session_effort,
             None,
             history_expected,
         )
         .await
         {
-            return (upstream, prompt_chars);
+            return (upstream, prompt_chars, true);
         }
     }
     let prompt_chars: usize = messages
@@ -395,7 +403,7 @@ pub async fn send_turn(
         None,
     )
     .await;
-    (upstream, prompt_chars)
+    (upstream, prompt_chars, false)
 }
 
 /// The line that tells the agent which conversation this turn is: the
@@ -570,7 +578,7 @@ async fn continue_inner(
         Some(e) if efforts_for_model(&state.pg, &routed).await.contains(&e) => Some(e),
         _ => None,
     };
-    let (upstream, prompt_chars) = send_turn(
+    let (upstream, prompt_chars, on_session) = send_turn(
         pinned,
         &meta.agent_model,
         &routed,
@@ -604,6 +612,7 @@ async fn continue_inner(
         agent_model: meta.agent_model.clone(),
         prompt_chars,
         tier: meta.tier.clone(),
+        on_session,
         plan: meta.plan.clone(),
         research_prompt: meta.research_prompt,
         work_prompts: meta.work_prompts.clone(),
@@ -650,7 +659,16 @@ fn spawn_persist(
 pub struct PersistMeta {
     pub agent_model: String,
     pub prompt_chars: usize,
+    /// The tier the message picked. It rides on to a chained or resumed turn
+    /// (which may take the completions arm and honour it) and to the plan
+    /// document's rewrite; the ledger books it only when the turn ran on the
+    /// completions arm — see `on_session`.
     pub tier: Option<String>,
+    /// Whether the agent's pinned SESSION served this turn. A session runs
+    /// the main model whatever tier was picked (`send_turn`), so the ledger
+    /// books such a turn as the main model rather than pricing it as a tier
+    /// that never ran.
+    pub on_session: bool,
     pub plan: Option<PlanMeta>,
     /// Rides through to the continuation's TurnMeta — see TurnMeta.
     pub research_prompt: Option<&'static str>,
@@ -663,6 +681,19 @@ pub struct PersistMeta {
     /// same row. The death path reads it: a resumed turn that dies again
     /// STAYS dead — one quiet retry, then the error is a person's to look at.
     pub resumed: bool,
+}
+
+impl PersistMeta {
+    /// The tier the ledger books the turn under: the picked tier on the
+    /// completions arm, and none — the main model, which is what ran — when
+    /// the session served it.
+    fn booked_tier(&self) -> Option<String> {
+        if self.on_session {
+            None
+        } else {
+            self.tier.clone()
+        }
+    }
 }
 
 /// A dead stream's reason, appended after whatever prose it had drained
@@ -742,7 +773,7 @@ pub async fn persist_assistant_stream(
                 };
                 let pg = state.pg.clone();
                 let agent_model = meta.agent_model.clone();
-                let tier = meta.tier.clone();
+                let tier = meta.booked_tier();
                 let ref_id = conversation_id.clone();
                 let estimated = usage.is_none();
                 tokio::spawn(async move {
@@ -1436,6 +1467,39 @@ mod tests {
             let out = with_conversation_line(&[json!({ "role": "user", "content": "hi" })], "c1");
             assert_eq!(out[0]["role"], "system");
             assert_eq!(out[1]["content"], "hi");
+        }
+    }
+
+    /// A pinned session runs the agent's main model whatever tier the
+    /// message picked, so the ledger books a session turn as the main model;
+    /// the tier still rides on for the chain and the plan rewrite.
+    mod booked_tier {
+        use super::*;
+
+        fn meta(tier: Option<&str>, on_session: bool) -> PersistMeta {
+            PersistMeta {
+                agent_model: "dex-ops".into(),
+                prompt_chars: 0,
+                tier: tier.map(str::to_string),
+                on_session,
+                plan: None,
+                research_prompt: None,
+                work_prompts: Vec::new(),
+                sender: None,
+                resumed: false,
+            }
+        }
+
+        #[test]
+        fn a_session_turn_books_the_main_model_and_keeps_the_tier() {
+            let m = meta(Some("deep"), true);
+            assert_eq!(m.booked_tier(), None);
+            assert_eq!(m.tier.as_deref(), Some("deep"));
+            assert_eq!(
+                meta(Some("deep"), false).booked_tier().as_deref(),
+                Some("deep")
+            );
+            assert_eq!(meta(None, false).booked_tier(), None);
         }
     }
 
