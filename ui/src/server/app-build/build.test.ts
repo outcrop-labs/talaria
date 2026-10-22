@@ -6,7 +6,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { clientRuntimePath, clientSpecifiers } from '@/app-runtime/specifiers'
 import { clientArtifactOk } from '../app-health'
 import { buildApp } from './build'
-import { appBuildKeyDir } from './paths'
+import { BUILD_RECIPE, sourceKey } from './key'
+import { appBuildKeyDir, appSrc } from './paths'
+import { readCurrent, writeCurrent } from './status'
 
 const APP = {
   'talaria.json': JSON.stringify({ name: 'Build Check', icon: '⬡', version: '0.1.0', surfaces: { work: 'Build Check' } }),
@@ -70,6 +72,32 @@ describe('buildApp (client)', () => {
     expect(specs).toContain('/runtime/rt-svelte-internal-client.js')
     expect(specs).toContain('/runtime/rt-talaria-sdk.js')
     expect(specs).toContain('/runtime/rt-svelte-transition.js')
+  }, 180_000)
+
+  it('rebuilds a ready build an older recipe left behind, and reuses one made by this recipe', async () => {
+    const first = await buildApp('build-check')
+    expect(first.status).toBe('ready')
+    const appDir = join(appSrc('build-check', 'talaria.json'), '..')
+    expect(first.key).toBe(sourceKey(appDir, first.hostBuild, BUILD_RECIPE))
+
+    // What a build from before the bump looks like: same sources, same host
+    // build id (no TALARIA_VERSION), marked ready, and broken (no default export).
+    const stale = sourceKey(appDir, first.hostBuild, BUILD_RECIPE - 1)
+    expect(stale).not.toBe(first.key)
+    mkdirSync(appBuildKeyDir('build-check', stale), { recursive: true })
+    writeFileSync(join(appBuildKeyDir('build-check', stale), 'app.js'), 'import"/runtime/rt-svelte.js";\n')
+    writeCurrent('build-check', { ...first, key: stale, builtAt: 1, files: ['app.js'] })
+
+    const rebuilt = await buildApp('build-check')
+    expect(rebuilt.status).toBe('ready')
+    expect(rebuilt.key).toBe(first.key)
+    expect(rebuilt.builtAt).toBeGreaterThan(1)
+    expect(readCurrent('build-check')?.key).toBe(first.key)
+    expect(clientArtifactOk(readFileSync(join(appBuildKeyDir('build-check', rebuilt.key), 'app.js'), 'utf8'))).toBe(true)
+
+    // The cache still works: a ready build under this recipe's key is returned as is.
+    writeCurrent('build-check', { ...rebuilt, builtAt: 2 })
+    expect((await buildApp('build-check')).builtAt).toBe(2)
   }, 180_000)
 
   it('fails a build that imports a subpath the host does not share, naming it', async () => {

@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { appDataDir, appDbContainer, appDbUrl, composeYaml, inImage, writeDbEnv } from './app-db'
+import { appDataDir, appDbContainer, appDbUrl, composeYaml, dialsByName, inImage, writeDbEnv } from './app-db'
 
 describe('app db identity', () => {
   it('names containers from the instance + slug', () => {
@@ -93,5 +93,14 @@ describe('inImage', () => {
   it('treats a checkout install under server-entry.ts as the host, not the image', () => {
     withEnv({ TALARIA_INSTALL: undefined, TALARIA_RUNTIME: 'prod-server' }, () => expect(inImage()).toBe(false))
     withEnv({ TALARIA_INSTALL: undefined, TALARIA_RUNTIME: undefined }, () => expect(inImage()).toBe(false))
+  })
+
+  // TALARIA_APP_DB_NETWORK attaches the DB to that network with no published
+  // port, so a host outside the image that sets it must dial by name too.
+  it('dials by name in the image or on a named app DB network, else the loopback port', () => {
+    const host = { TALARIA_INSTALL: undefined, TALARIA_RUNTIME: 'prod-server' }
+    withEnv({ ...host, TALARIA_APP_DB_NETWORK: 'custom_internal' }, () => expect(dialsByName()).toBe(true))
+    withEnv({ ...host, TALARIA_APP_DB_NETWORK: undefined }, () => expect(dialsByName()).toBe(false))
+    withEnv({ TALARIA_INSTALL: 'image', TALARIA_APP_DB_NETWORK: undefined }, () => expect(dialsByName()).toBe(true))
   })
 })

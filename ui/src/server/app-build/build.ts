@@ -2,6 +2,10 @@
 // server/mcp chunks, every shared specifier external and rewritten to the
 // host's /runtime/rt-*.js entries. A bundled svelte is a build error
 // (`effect_orphan` at runtime), not a surprise later.
+//
+// Changing what this file emits, or how the host reads it? Bump BUILD_RECIPE
+// in ./key.ts in the same change, so builds made by the old recipe are
+// rebuilt instead of reused.
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'

@@ -41,6 +41,15 @@ export function inImage(): boolean {
   return process.env.TALARIA_INSTALL === 'image'
 }
 
+/** Does this process dial app DBs by container name on a shared network,
+ *  rather than on the loopback port the container publishes? In the image,
+ *  and wherever TALARIA_APP_DB_NETWORK names the network: runningNetwork()
+ *  attaches the DB there and composeYaml then publishes no port, so a
+ *  loopback dial has nothing to reach. */
+export function dialsByName(): boolean {
+  return inImage() || Boolean(process.env.TALARIA_APP_DB_NETWORK)
+}
+
 function composeFile(slug: string): string {
   return join(appDataDir(slug), 'docker-compose.yml')
 }
@@ -256,7 +265,7 @@ export function appDbUrl(_slug: string, port: number | null, host: string, passw
 
 async function connectUrl(slug: string, password: string): Promise<string> {
   const name = appDbContainer(slug)
-  if (inImage()) return appDbUrl(slug, 5432, name, password)
+  if (dialsByName()) return appDbUrl(slug, 5432, name, password)
   const port = await publishedPort(name)
   if (port == null) throw new Error(`app db ${slug} has no published port`)
   return appDbUrl(slug, port, '127.0.0.1', password)
