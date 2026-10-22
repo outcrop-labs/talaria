@@ -11,6 +11,7 @@
 
 import { join } from 'node:path'
 import type { Ctx } from './ctx'
+import { profileFiles, repairComposeFileExport, tildePath } from './profile-export'
 
 /** The canonical production compose file — the RELATIVE path CONTAINER.md
  *  tells operators to type, which is why every printed equivalent shows it
@@ -48,17 +49,41 @@ export function stackComposeFiles(root: string, ...stack: string[]): string[] {
  *  inherited environment, not from this string, so the repair only reaches
  *  compose by re-exporting it. The write-back is also the once-only gate:
  *  every later call reads the repaired value and passes it through. Null
- *  when unset or whitespace — the canonical single-file path. */
+ *  when unset or whitespace — the canonical single-file path.
+ *
+ *  The export itself is repaired too, where it lives (profile-export.ts):
+ *  the in-memory repair alone left the same warning on every update for as
+ *  long as the profile line stayed wrong. Fixed there, the run says so once;
+ *  a shell that still holds the old value gets one quiet line; only an export
+ *  the CLI cannot find or cannot write keeps the warning. */
 export function composeFileEnv(ctx: Ctx): string | null {
   const value = ctx.env.COMPOSE_FILE?.trim()
   if (!value) return null
   const repaired = withSidecarPlane(value)
   if (repaired !== value) {
-    ctx.log.warn(
-      `COMPOSE_FILE=${value} omits ${SIDECARS_COMPOSE} — prepending it. The env replaces the wrappers' -f pair ` +
-        'and the sidecar plane\'s images live only in that fragment; spell it first in the export to keep this quiet.',
-    )
     ctx.env.COMPOSE_FILE = repaired
+    const home = ctx.env.HOME
+    const results = repairComposeFileExport(profileFiles(ctx.env), value, repaired)
+    const named = (status: string) => results.filter((r) => r.status === status).map((r) => tildePath(r.file, home))
+    const fixed = named('fixed')
+    const readonly = named('readonly')
+    const already = named('already')
+    if (fixed.length > 0 && readonly.length === 0) {
+      ctx.log.ok(
+        `fixed the COMPOSE_FILE export in ${fixed.join(', ')}: ${SIDECARS_COMPOSE} now leads the list. ` +
+          'New shells read the fixed line; this run already uses it.',
+      )
+    } else if (already.length > 0 && readonly.length === 0) {
+      ctx.log.skip(
+        `this shell's COMPOSE_FILE predates the fix in ${already.join(', ')} — a new shell (or \`source ${already[0]}\`) ends this line`,
+      )
+    } else {
+      const there = readonly.length > 0 ? ` It is exported in ${readonly.join(', ')}, which this user cannot write — fix it there.` : ''
+      ctx.log.warn(
+        `COMPOSE_FILE=${value} omits ${SIDECARS_COMPOSE} — prepending it. The env replaces the wrappers' -f pair ` +
+          `and the sidecar plane's images live only in that fragment; spell it first in the export to keep this quiet.${there}`,
+      )
+    }
   }
   return repaired
 }

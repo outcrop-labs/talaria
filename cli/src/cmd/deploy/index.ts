@@ -9,7 +9,7 @@ import type { Ctx } from '../../ctx'
 import type { Group, Leaf, ParsedArgs } from '../../cli'
 import { COMPOSE_BASE, SIDECARS_COMPOSE } from '../../compose'
 import { readEnvFile } from '../../envfile'
-import { credsCommand, downCommand, logsCommand, statusCommand, updateCommand, upCommand } from './actions'
+import { credsCommand, downCommand, logsCommand, statusCommand, UPDATE_RESUMED_KEY, updateCommand, upCommand } from './actions'
 
 /** CONTAINER.md's one habit, enforced: a variable you override on the
  *  command line belongs in docker/.env, because interpolation happens on
@@ -57,11 +57,12 @@ export function warnEnvDrift(ctx: Ctx): void {
 }
 
 /** Every deploy leaf gets the drift warning first — declared once here, not
- *  six times in actions. */
+ *  six times in actions. Not twice for one update: the half `runUpdate`
+ *  re-launches after a sync that moved the checkout has already had it. */
 const prelude = (leaf: Leaf): Leaf => ({
   ...leaf,
   run: (ctx: Ctx, args: ParsedArgs) => {
-    warnEnvDrift(ctx)
+    if (!ctx.env[UPDATE_RESUMED_KEY]) warnEnvDrift(ctx)
     return leaf.run(ctx, args)
   },
 })
