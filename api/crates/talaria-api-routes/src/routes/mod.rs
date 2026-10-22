@@ -1038,6 +1038,12 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
+            "/api/admin/search/agents",
+            get(talaria_routes_admin::admin::admin_search_agents::get)
+                .put(talaria_routes_admin::admin::admin_search_agents::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
             "/api/admin/secrets",
             get(talaria_routes_admin::admin::admin_secrets::get)
                 .delete(talaria_routes_admin::admin::admin_secrets::delete)

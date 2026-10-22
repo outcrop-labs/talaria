@@ -133,4 +133,14 @@ at its next render or roll, which is what the panel says when it saves. Names th
 environment pins (`TALARIA_MANDATORY_DISABLED_TOOLSETS`) show locked as well, since unticking
 them here would change nothing.
 
+**Admin → Search → Agent web search** picks the web provider every agent searches with, through
+its own Hermes: Tavily, Exa, Parallel, Firecrawl, Keenable, the Perplexity Search API, Brave
+Search, or SearXNG at the workspace search URL, each with its key (stored encrypted, never shown
+again), plus an optional separate provider for reading pages. Left on Hermes's default, Talaria
+sets nothing. Once you pick a provider, or set a search URL the agents can reach, agents stop
+falling back to the anonymous free tiers of Exa, Parallel, Firecrawl and Keenable unless you tick
+**Allow Hermes's keyless public tiers**. Research is not affected: it searches with the search URL
+or a registered search MCP server. Like the toolset floor, a change lands on each agent at its
+next roll.
+
 Besides these panels, one rule is stamped into every agent's soul at hire and in every role template, so it holds no matter how the soul is later edited: **agents never do dev work in chat**. Code changes — however small — ship through a ticket and a workbench job; a dev-work request in chat produces (or links) a ticket and moves execution to the workbench, and instructions given in chat are posted to the ticket as comments.

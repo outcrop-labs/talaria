@@ -447,6 +447,40 @@ async fn ensure_hermes_env_keys(
     (unkeyed, warnings)
 }
 
+/// Unseal the agent web-search vendor key(s) into the fleet .env as
+/// `TALARIA_WEB_<VAR>` lines (rewritten whole each render, so a cleared or
+/// switched vendor leaves nothing behind) and return the Hermes env names
+/// that now have a value to interpolate. A key that cannot be opened is
+/// named in the warnings and left out: the agent then reports the vendor's
+/// own missing-key error rather than receiving an empty variable.
+async fn ensure_web_search_env(
+    sb: &SecretBox,
+    plan: &talaria_agent_web_search::WebRender,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<&'static str>, String> {
+    let mut delivered: Vec<(&'static str, String)> = Vec::new();
+    for (var, sealed) in &plan.keys {
+        match sb.open(sealed) {
+            Ok(v) if talaria_agent_web_search::fleet_env_value_ok(&v) => delivered.push((*var, v)),
+            Ok(_) => warnings.push(format!(
+                "agent web search: the stored {var} is not a value Talaria can write to the fleet .env — re-enter it on Admin → Search"
+            )),
+            Err(e) => warnings.push(format!(
+                "agent web search: {var} could not be unsealed ({e}) — re-enter it on Admin → Search"
+            )),
+        }
+    }
+    let env_path = talaria_fleet_layout::fleet_env();
+    let current = tokio::fs::read_to_string(&env_path)
+        .await
+        .unwrap_or_default();
+    let next = talaria_agent_web_search::fleet_env_with(&current, &delivered);
+    if next != current {
+        write_fleet_env(&env_path, &next).await?;
+    }
+    Ok(delivered.into_iter().map(|(var, _)| var).collect())
+}
+
 fn unkeyed_warning(slug: &str, why: &str) -> String {
     format!(
         "{slug}: HERMES_KEY_{} could not be minted ({why}) — service left out of the compose file rather than rendered with an open API",
@@ -1026,10 +1060,17 @@ pub async fn render_fleet(
     let targets = managed_agents(pg).await.map_err(|e| e.to_string())?;
     let agent_search_url =
         agent_search_url(&talaria_search::search_url(pg).await, dial_is_container());
+    // The operator's agent web-search choice (Admin → Search), the same for
+    // every agent in this render: the `web:` keys merged into each config
+    // below, and the vendor key delivered through the fleet .env.
+    let web_search = talaria_agent_web_search::render(
+        &talaria_agent_web_search::read(pg).await,
+        agent_search_url.is_some(),
+    );
     let mut result = RenderResult {
         agents: Vec::new(),
         files: Vec::new(),
-        warnings: Vec::new(),
+        warnings: web_search.warnings.clone(),
     };
 
     // The fleet's default brain is Talaria's own gateway. Best-effort — never
@@ -1080,6 +1121,7 @@ pub async fn render_fleet(
     talaria_mcp_service::ensure_mcp_service();
     ensure_fleet_env_key().await?;
     ensure_agent_env_keys(pg, sb, &targets).await?;
+    let web_search_keys = ensure_web_search_env(sb, &web_search, &mut result.warnings).await?;
     // The compose bearer, minted where missing; a slug that cannot be keyed
     // is skipped in the service loop below — named in the warnings, never
     // rendered with an empty `API_SERVER_KEY`.
@@ -1341,6 +1383,7 @@ pub async fn render_fleet(
         fleet_approvals(&mut routed, def.developer);
         fleet_delegation(&mut routed, def.max_children);
         fleet_disabled_toolsets(&mut routed, &toolset_floor, &def.disabled_toolsets);
+        talaria_agent_web_search::merge_into(&mut routed, &web_search.web);
 
         let cfg_path = agent_dir.join("config.yaml");
         let cfg_text = format!(
@@ -1476,9 +1519,23 @@ pub async fn render_fleet(
         // used to bolt a second `web_search` onto every agent over MCP and run
         // its own SearXNG to answer it; now the agent searches with what it
         // has, and an endpoint the operator configured here reaches it too.
-        // Nothing set → nothing rendered → Hermes resolves its own floor.
+        // Nothing set → nothing rendered → Hermes resolves its own floor. A
+        // URL that does reach the agent also switches that keyless floor off
+        // (the `web:` merge above), unless Admin → Search allowed it.
         if let Some(url) = &agent_search_url {
             env.insert("SEARXNG_URL".into(), json!(url));
+        }
+        // The picked web vendor's key, under the exact name its Hermes
+        // provider reads, interpolated from the fleet .env — the value never
+        // lands in the compose file.
+        for var in &web_search_keys {
+            env.insert(
+                (*var).into(),
+                json!(format!(
+                    "${{{}}}",
+                    talaria_agent_web_search::fleet_env_var(var)
+                )),
+            );
         }
         env.insert(
             "TALARIA_HEARTBEAT_SECONDS".into(),

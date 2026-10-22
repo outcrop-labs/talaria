@@ -2,11 +2,12 @@
 import { createQuery } from '@tanstack/svelte-query'
 import { getJson, getList } from '@/lib/fetch-json'
 
-export type AdminTab = 'org' | 'people' | 'agents' | 'retrieval' | 'storage' | 'secrets' | 'security'
+export type AdminTab = 'org' | 'people' | 'agents' | 'search' | 'retrieval' | 'storage' | 'secrets' | 'security'
 export const ADMIN_TABS: { id: AdminTab; label: string }[] = [
   { id: 'org', label: 'Organization' },
   { id: 'people', label: 'People' },
   { id: 'agents', label: 'Agents' },
+  { id: 'search', label: 'Search' },
   { id: 'retrieval', label: 'Retrieval' },
   { id: 'storage', label: 'Storage' },
   // Its own tab rather than a section under Security: an operator whose
