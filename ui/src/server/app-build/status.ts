@@ -12,7 +12,13 @@ export interface AppBuildCurrent {
   bytes: number
   files: string[]
   error?: string
+  /** What the load probe made of `harnesses/*.ts`: the ids it registers and
+   *  one sentence per file it skipped (app-harnesses.ts). Absent when the app
+   *  ships none. Manage → Apps reads it off the build status. */
+  harnesses?: { registered: string[]; problems: string[] }
 }
+
+const stringsOf = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : [])
 
 export function currentPath(slug: string): string {
   return join(appBuildsDir(), slug, 'current.json')
@@ -32,6 +38,9 @@ export function readCurrent(slug: string): AppBuildCurrent | null {
       bytes: typeof v.bytes === 'number' ? v.bytes : 0,
       files: Array.isArray(v.files) ? v.files.filter((f): f is string => typeof f === 'string') : [],
       ...(typeof v.error === 'string' ? { error: v.error } : {}),
+      ...(v.harnesses && typeof v.harnesses === 'object'
+        ? { harnesses: { registered: stringsOf(v.harnesses.registered), problems: stringsOf(v.harnesses.problems) } }
+        : {}),
     }
   } catch {
     return null

@@ -5,7 +5,7 @@ Everything a [Talaria app](../APPS.md) imports. Two entry points:
 | entry point | for | used in |
 | :--- | :--- | :--- |
 | `@talaria/sdk` | client: UI kit, session + data hooks, fetch helpers, motion | `app.ts`, `*.svelte` |
-| `@talaria/sdk/server` | server: app server, document store, MCP tools, harnesses | `server.ts`, `mcp.ts`, and the harness modules `server.ts` imports |
+| `@talaria/sdk/server` | server: app server, document store, MCP tools, harnesses | `server.ts`, `mcp.ts`, and `harnesses/*.ts` |
 
 The stack is **Svelte 5 (runes) + @tanstack/svelte-query v6 + Tailwind 4**, rendered inside the
 host's own router. Both entry points resolve from the host at build time — an app **installs

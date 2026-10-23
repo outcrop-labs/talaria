@@ -144,3 +144,18 @@ export function clientlessError(declared: readonly string[], hasServerSide: bool
   if (!hasServerSide) return 'an app needs at least one of app.ts, server.ts or mcp.ts'
   return null
 }
+
+/** A file under `apps/<slug>/harnesses/` that holds one harness: a `.ts`
+ *  module name, nothing nested. */
+export const HARNESS_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*\.ts$/
+
+/** `harnesses/*.ts` in an app's source, sorted — one level, and never a test
+ *  or a declaration file. The build (build.ts) compiles exactly this list and
+ *  the dev loader (app-load.ts) loads exactly this list. */
+export function harnessSourceFiles(dir: string): string[] {
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) return []
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((d) => d.isFile() && HARNESS_FILE.test(d.name) && !/\.(test|spec|d)\.ts$/.test(d.name))
+    .map((d) => d.name)
+    .sort()
+}

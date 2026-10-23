@@ -5,7 +5,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from 'vite'
 import viteTsConfigPaths from 'vite-tsconfig-paths'
-import { writeHeadHeaders } from './src/server/http'
+import { stampPeer, writeHeadHeaders } from './src/server/http'
 import { appRuntimeDev, appRuntimeHost } from './src/app-runtime/vite-plugin'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
@@ -102,6 +102,9 @@ function apiDev(): Plugin {
           for (const [k, v] of Object.entries(req.headers)) {
             if (v) headers.set(k, Array.isArray(v) ? v.join(', ') : v)
           }
+          // Who is on the socket, stated by the host and never the client
+          // (http.ts PEER_HEADER) — the same stamp server-entry.ts writes.
+          stampPeer(headers, req.socket.remoteAddress)
           let body: Uint8Array<ArrayBuffer> | null = null
           if (req.method !== 'GET' && req.method !== 'HEAD') {
             body = await new Promise<Uint8Array<ArrayBuffer>>((resolveBody) => {

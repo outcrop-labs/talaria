@@ -1,6 +1,6 @@
 // One app = one standalone Vite build. Client chunk + CSS + optional
-// server/mcp chunks, every shared specifier external and rewritten to the
-// host's /runtime/rt-*.js entries. A bundled svelte is a build error
+// server/mcp/harnesses chunks, every shared specifier external and rewritten
+// to the host's /runtime/rt-*.js entries. A bundled svelte is a build error
 // (`effect_orphan` at runtime), not a surprise later.
 //
 // Changing what this file emits, or how the host reads it? Bump BUILD_RECIPE
@@ -21,7 +21,7 @@ import {
   shimFileName,
 } from '@/app-runtime/specifiers'
 import { sourceKey } from './key'
-import { appBuildKeyDir, appDir, clientlessError, declaredSurfacesAt, manifestError, uiRoot } from './paths'
+import { appBuildKeyDir, appDir, clientlessError, declaredSurfacesAt, harnessSourceFiles, manifestError, uiRoot } from './paths'
 import { pruneSupersededBuilds, readCurrent, writeCurrent, type AppBuildCurrent } from './status'
 
 function externalsGuard(): Plugin {
@@ -105,9 +105,10 @@ async function buildClient(appDir: string, outDir: string): Promise<void> {
   if (existsSync(leftover)) rmSync(leftover)
 }
 
-/** Where an SSR build (server.ts, mcp.ts) writes into the shared build-key
- *  directory. Its entry is server.js or mcp.js; every chunk and asset it
- *  splits off goes under `_server/` or `_mcp/`. Vite's defaults would put
+/** Where an SSR build (server.ts, mcp.ts, harnesses/) writes into the shared
+ *  build-key directory. Its entry is server.js, mcp.js or harnesses.js; every
+ *  chunk and asset it splits off goes under `_server/`, `_mcp/` or
+ *  `_harnesses/`. Vite's defaults would put
  *  them in `assets/`, beside the client's files, and the /app-builds/ door
  *  serves `assets/**` to anyone holding a grant on the app — so a dynamic
  *  import() in server.ts would ship that piece of the server to the browser.
@@ -115,13 +116,23 @@ async function buildClient(appDir: string, outDir: string): Promise<void> {
  *  writes, and the door serves no top-level directory but `assets/`
  *  (app-builds-door.ts). */
 export function serverishFileNames(outFile: string): { entryFileNames: string; chunkFileNames: string; assetFileNames: string } {
-  const mcp = outFile.endsWith('mcp.js')
-  const dir = mcp ? '_mcp' : '_server'
+  const entry = outFile.endsWith('mcp.js') ? 'mcp.js' : outFile.endsWith('harnesses.js') ? 'harnesses.js' : 'server.js'
+  const dir = `_${entry.slice(0, -'.js'.length)}`
   return {
-    entryFileNames: mcp ? 'mcp.js' : 'server.js',
+    entryFileNames: entry,
     chunkFileNames: `${dir}/[name]-[hash].js`,
     assetFileNames: `${dir}/[name]-[hash][extname]`,
   }
+}
+
+/** The entry `harnesses.js` is built from: one LAZY import per file under
+ *  `harnesses/`, keyed by file name. Lazy, so each file is its own chunk and
+ *  the host imports them one at a time — a module that throws at import costs
+ *  its own harness, never the app's others (app-harnesses.ts). The host reads
+ *  `harnesses` off the built entry (app-load.ts `loadAppHarnesses`). */
+export function harnessesEntrySource(dir: string, files: readonly string[]): string {
+  const rows = files.map((f) => `  ${JSON.stringify(f)}: () => import(${JSON.stringify(join(dir, f))}),`)
+  return `export const harnesses = {\n${rows.join('\n')}\n}\n`
 }
 
 async function buildServerish(entry: string, outFile: string): Promise<void> {
@@ -164,7 +175,7 @@ function dirBytes(dir: string): number {
 }
 
 function listFiles(dir: string): string[] {
-  const names = ['app.js', 'app.css', 'server.js', 'mcp.js']
+  const names = ['app.js', 'app.css', 'server.js', 'mcp.js', 'harnesses.js']
   return names.filter((n) => existsSync(join(dir, n)))
 }
 
@@ -221,6 +232,20 @@ export async function buildAppAt(slug: string, dir: string, opts: { pointer: boo
     else clientlessOk(dir, existsSync(serverTs) || existsSync(mcpTs))
     if (existsSync(serverTs)) await buildServerish(serverTs, join(outDir, 'server.js'))
     if (existsSync(mcpTs)) await buildServerish(mcpTs, join(outDir, 'mcp.js'))
+    // harnesses/*.ts → harnesses.js: the activity harnesses the app ships,
+    // which the host registers for fitness (app-harnesses.ts). Built from a
+    // generated entry that is removed once the build has read it.
+    const harnessDir = join(dir, 'harnesses')
+    const harnessFiles = harnessSourceFiles(harnessDir)
+    if (harnessFiles.length > 0) {
+      const entry = join(outDir, '.harnesses-entry.js')
+      writeFileSync(entry, harnessesEntrySource(harnessDir, harnessFiles))
+      try {
+        await buildServerish(entry, join(outDir, 'harnesses.js'))
+      } finally {
+        rmSync(entry, { force: true })
+      }
+    }
     const files = listFiles(outDir)
     const cur: AppBuildCurrent = {
       key,

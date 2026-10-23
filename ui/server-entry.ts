@@ -80,7 +80,7 @@ if (validateEnv) {
 // output with no type declarations, so a literal import fails module
 // resolution — the cast supplies the source module's types instead.
 const serverBundleUrl = './dist/server/server.js'
-const { default: server, migrate, writeHeadHeaders, startAppBuilds } = (await import(serverBundleUrl)) as typeof import('./src/server/app.ts')
+const { default: server, migrate, writeHeadHeaders, stampPeer, startAppBuilds } = (await import(serverBundleUrl)) as typeof import('./src/server/app.ts')
 
 // The boundary conversion for res.writeHead. A bundle built before
 // writeHeadHeaders existed exports none — same stale-dist case as `migrate`
@@ -351,6 +351,12 @@ async function requestHandler(req: IncomingMessage, res: ServerResponse) {
   for (const [k, v] of Object.entries(req.headers)) {
     if (v) headers.set(k, Array.isArray(v) ? v.join(', ') : v)
   }
+  // Who is on the socket, stated by the host (http.ts PEER_HEADER). A bundle
+  // built before the stamp existed exports none: the client's value is then
+  // dropped and nothing is stamped, which every loopback-only route reads as
+  // remote — a stale dist refuses those routes rather than trusting a header.
+  if (typeof stampPeer === 'function') stampPeer(headers, req.socket.remoteAddress)
+  else headers.delete('x-talaria-peer')
 
   let body: Uint8Array<ArrayBuffer> | null = null
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -580,9 +586,11 @@ async function ensureRustApi() {
     return
   }
   // TALARIA_APP_HOST_URL: where the api calls this process back — an app
-  // install's build, an update's stage and switch (talaria-apps `AppHost`).
-  // Loopback when this process listens on every address; the address it
-  // listens on otherwise.
+  // install's build, an update's stage and switch (talaria-apps `AppHost`),
+  // and the /api/app-host/harnesses routes the fitness sweep reads app
+  // harnesses from and replays their fixtures through. Loopback when this
+  // process listens on every address; the address it listens on otherwise.
+  // An operator's value wins.
   const selfHost = host === '0.0.0.0' || host === '::' || host === '' ? '127.0.0.1' : host.includes(':') ? `[${host}]` : host
   apiChild = spawn(bin, [], {
     env: {

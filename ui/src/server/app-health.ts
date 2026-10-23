@@ -17,6 +17,7 @@ import {
   loadAppServer,
   type AppTree,
 } from './app-load'
+import { checkAppHarnessesOf, recordAppHarnessReport } from './app-harnesses'
 import { checkAppMcpTools, clearAppMcpCatalog, syncAppMcpCatalog } from './app-mcp'
 import { resyncAppMcpServers } from './internal-api'
 
@@ -89,7 +90,8 @@ export async function failHealth(slug: string, error: string): Promise<void> {
   await resyncAppMcpServers(`${slug}: ${next.length !== enabled.length ? 'turned off' : 'failed'}`)
 }
 
-/** Load server/mcp/client modules and demand the SDK contracts. Does not spawn Postgres.
+/** Load server/mcp/client modules and demand the SDK contracts, and check the
+ *  harnesses the app ships (never a reason to fail). Does not spawn Postgres.
  *
  *  The MCP module's tools are checked one by one (`checkAppMcpTools`): a tool
  *  that fails is left out and named — in the log and on the server's card in
@@ -150,5 +152,13 @@ export async function probeLoad(
   } else if (publish) {
     await clearAppMcpCatalog(slug)
   }
+  // The harnesses under harnesses/ are checked here too, and like a bad MCP
+  // tool a bad harness never fails the probe: it is skipped, and the reason
+  // lands on the build status where Manage → Apps shows it.
+  const harnesses = await isolateApp(slug, 'check harnesses', () => checkAppHarnessesOf(slug))
+  recordAppHarnessReport(
+    slug,
+    harnesses.ok ? harnesses.value : { registered: [], problems: [`harnesses/: the check could not run: ${harnesses.error}`] },
+  )
   return { ok: true }
 }

@@ -4118,6 +4118,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-app-harnesses"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "talaria-config",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-harness-model",
+ "talaria-harness-schema",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-app-manifest"
 version = "0.1.0"
 dependencies = [
@@ -4748,6 +4763,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-app-harnesses",
  "talaria-body",
  "talaria-capability",
  "talaria-capability-reach",

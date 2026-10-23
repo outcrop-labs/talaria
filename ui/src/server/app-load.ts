@@ -1,6 +1,6 @@
-// Load an app's server/mcp/client module. Dev: Vite SSR graph (HMR). Prod:
-// the independently-built artifact. Never a host glob — the host build does
-// not see apps/.
+// Load an app's server/mcp/client module and its harness files. Dev: Vite
+// SSR graph (HMR). Prod: the independently-built artifact. Never a host glob
+// — the host build does not see apps/.
 //
 // Every loader reads one TREE: the app's live one by default, or an update's
 // staged tree (`apps/.<slug>.next` and its staged build), which the update
@@ -8,7 +8,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { appDir, slugOk } from './app-build/paths'
+import { appDir, HARNESS_FILE, harnessSourceFiles, slugOk } from './app-build/paths'
 import { readCurrent, type AppBuildCurrent } from './app-build/status'
 import { appBuildKeyDir } from './app-build/paths'
 
@@ -79,6 +79,41 @@ export function appHasServer(slug: string, tree: AppTree = liveTree(slug)): bool
 
 export function appHasMcp(slug: string, tree: AppTree = liveTree(slug)): boolean {
   return existsSync(join(tree.dir, 'mcp.ts')) || builtFile(tree, 'mcp.js') !== null
+}
+
+/** One module under `apps/<slug>/harnesses/`, not yet imported: each file is
+ *  loaded on its own, so a module that throws at import costs that file and
+ *  nothing beside it (app-harnesses.ts). */
+export interface AppHarnessFile {
+  /** The file name under `harnesses/`, e.g. `triage.ts`. */
+  file: string
+  load: () => Promise<unknown>
+}
+
+/** The harness files under `apps/<slug>/harnesses/`, sorted. Dev: each source
+ *  file through the Vite SSR graph. Prod: the build's `harnesses.js`, whose
+ *  `harnesses` export maps each file name to a lazy import of its own chunk
+ *  (build.ts). Empty when the app ships none, or its build is not ready. */
+export async function loadAppHarnesses(slug: string, tree: AppTree = liveTree(slug)): Promise<AppHarnessFile[]> {
+  if (!slugOk(slug)) return []
+  const dir = join(tree.dir, 'harnesses')
+  if (ssrLoad && existsSync(dir)) {
+    const load = ssrLoad
+    return harnessSourceFiles(dir).map((file) => ({ file, load: () => load(`${dir}/${file}`) }))
+  }
+  const built = builtFile(tree, 'harnesses.js')
+  if (!built) return []
+  const mod = (await importFile(built)) as { harnesses?: unknown } | null
+  const table = mod?.harnesses
+  if (!table || typeof table !== 'object') return []
+  return Object.entries(table as Record<string, unknown>)
+    .filter((entry): entry is [string, () => Promise<unknown>] => HARNESS_FILE.test(entry[0]) && typeof entry[1] === 'function')
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([file, load]) => ({ file, load }))
+}
+
+export function appHasHarnesses(slug: string, tree: AppTree = liveTree(slug)): boolean {
+  return harnessSourceFiles(join(tree.dir, 'harnesses')).length > 0 || builtFile(tree, 'harnesses.js') !== null
 }
 
 export async function loadAppClient(slug: string, tree: AppTree = liveTree(slug)): Promise<unknown> {

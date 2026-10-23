@@ -184,13 +184,14 @@ export { toolResult, isUnresolvedHandle } from '@/server/app-mcp-call'
 // capability floor, the guardrail pass, ledger attribution, the repair turn
 // on malformed JSON and a `harness_runs` row.
 //
-// WHAT RUNS IT TODAY: ONLY YOUR OWN server.ts. Nothing compiles, loads,
-// registers or scores `apps/<slug>/harnesses/*.ts` — the host's app-harness
-// registry went with d79b7290 and has not been restored. A harness runs when
-// server.ts imports it and calls `runHarness` (the bridge below); it gets no
-// Admin row and no column in the model-fitness matrix, and its `evals` are
-// replayed by nothing but your own tests. A file there that server.ts does
-// not import is dead code.
+// WHERE IT LIVES: one per file, default-exported from
+// `apps/<slug>/harnesses/*.ts`. While the app is enabled the host checks each
+// one against the platform's harness rules and registers it
+// (server/app-harnesses.ts): it gets a column in Admin → Models → Fitness and
+// the sweep replays its `evals` against each candidate model. A harness that
+// fails a check is skipped and named on the app's row in Manage → Apps; the
+// app keeps running. In production your server.ts runs it with `runHarness`
+// (the bridge below).
 //
 // It carries CODE: `render` builds the messages, `output.clean`/`output.verify`
 // decide whether the reply held the contract, `evals[].check` grades it. So it
@@ -251,10 +252,11 @@ export { NO_TOOLS } from '@/server/harness/define'
 export { defineHarness } from '@/server/harness/define'
 
 // ── The runner, from app code ───────────────────────────────────────────────
-// Until the app-harness registry is restored, this is the ONLY way an app
-// harness runs: the bridge pattern, where a route runs its harness live when a
-// model chain is routable and falls back to its own deterministic answer when
-// one isn't, journaling which answered. That code sits in apps/<slug>/, where
+// How an app harness runs in production: the bridge pattern, where a route
+// runs its harness live when a model chain is routable and falls back to its
+// own deterministic answer when one isn't, journaling which answered. (The
+// fitness sweep replays a registered harness's fixtures through this same
+// runner, on the host.) That code sits in apps/<slug>/, where
 // the tsconfig-paths plugin doesn't reach — `@/server/harness/run` cannot
 // resolve there BY DESIGN (the vite config extends only the SDK ids to app
 // files), so the SDK is the only road in and these two are app surface:

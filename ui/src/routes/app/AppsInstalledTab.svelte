@@ -125,6 +125,22 @@
   </span>
 {/snippet}
 
+<!-- The activity harnesses the app ships (harnesses/*.ts), as the last load
+     probe checked them: the ones registered for model fitness, and the ones
+     skipped. -->
+{#snippet harnessChips(a: InstalledApp)}
+  {@const registered = a.build?.harnesses?.registered ?? []}
+  {@const skipped = a.build?.harnesses?.problems ?? []}
+  {#if registered.length > 0}
+    <Chip title={`Activity harnesses scored in Models → Fitness:\n${registered.join('\n')}`}>
+      {registered.length} harness{registered.length === 1 ? '' : 'es'}
+    </Chip>
+  {/if}
+  {#if skipped.length > 0 && a.build?.status !== 'failed'}
+    <Chip tone="warn" title={skipped.join('\n')}>{skipped.length} harness{skipped.length === 1 ? '' : 'es'} skipped</Chip>
+  {/if}
+{/snippet}
+
 {#if query.isLoading}
   <SkeletonRows rows={4} />
 {:else if !query.data}
@@ -148,6 +164,7 @@
             {#if a.broken}<Chip tone="danger" title={a.broken}>broken manifest</Chip>
             {:else if a.build?.status === 'building'}<Chip>compiling</Chip>
             {:else if a.build?.status === 'failed'}<Chip tone="danger" title={a.build.error}>build failed</Chip>{/if}
+            {@render harnessChips(a)}
           </div>
           <div class="truncate font-sans text-xs text-muted">{a.description}</div>
           {#if a.git}
@@ -168,6 +185,14 @@
             <div class="mt-1 truncate font-mono text-[11px] text-danger" title={a.broken}>{a.broken}</div>
           {:else if a.build?.status === 'failed' && a.build.error}
             <div class="mt-1 truncate font-mono text-[11px] text-danger">{a.build.error}</div>
+          {/if}
+          <!-- A harness the platform skipped never disables the app, so this
+               line is the only place an admin learns one is missing from the
+               fitness matrix, and why. -->
+          {#if a.build?.status !== 'failed'}
+            {#each a.build?.harnesses?.problems ?? [] as problem (problem)}
+              <div class="mt-1 break-words font-mono text-[11px] text-warning" data-harness-problem>{problem}</div>
+            {/each}
           {/if}
           {#if results[a.slug]}
             <div class={`mt-1 font-mono text-[11px] ${results[a.slug]!.ok ? 'text-fg' : 'text-danger'}`} data-app-update-result>

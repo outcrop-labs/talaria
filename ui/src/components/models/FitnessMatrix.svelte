@@ -34,7 +34,11 @@
   // anything an admin assigns from a registry. See `SlotKind` in the Rust
   // fitness scorer (api/src/fitness/score.rs).
   const fleet = $derived(slots.filter((s) => s.kind === 'fleet'))
-  const ordered = $derived([...roles, ...agents, ...fleet])
+  // THE APPS' OWN HARNESSES, after everything the platform runs: one column
+  // per harness an enabled app ships, scored on that app's own fixtures. They
+  // come and go with the app, and they never move a platform column.
+  const apps = $derived(slots.filter((s) => s.kind === 'app'))
+  const ordered = $derived([...roles, ...agents, ...fleet, ...apps])
 
   // Tested models first: a page whose top rows are all grey buries the work an
   // admin has already paid for under an alphabetical list of everything else.

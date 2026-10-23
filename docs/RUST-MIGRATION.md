@@ -116,20 +116,6 @@ Found while porting, frozen here: each entry is behavior the api has **on
 purpose**, decided against the TS route it replaced. This list is the contract
 — a divergence not here is a bug.
 
-- **The fitness plane counts what an enabled app shipped.** App harnesses
-  (`apps/<slug>/harnesses/*.ts`) are customer code loaded as code, not data
-  the api can read (rule 10) — the registry cannot see them. On an install
-  with an enabled app (dev's leadworks ships 4 harnesses, 35 fixtures) the
-  matrix/bare `registry` counts, the value view's workload keys and every
-  aggregate they feed (`perDay`, `shares`, `usdPerReadyRun`, the
-  `unmeasured` list), and the estimate's fixture-derived arithmetic plus the
-  note branch the unmeasured count selects all exclude exactly that set.
-  On an install with no enabled app harnesses, nothing is excluded.
-  (`fitness/surface.rs`, `fitness/value.rs`) Today nothing loads that set
-  at all: the TS app-harness registry went with d79b7290, so an app harness
-  runs only when its own `server.ts` imports it and calls `runHarness`
-  ([sdk/harnesses.md](./sdk/harnesses.md)), and only those runs reach
-  `harness_runs`.
 - **Fitness `clear` works.** The TS-era route 500'd on every model — its
   report-clearing write put SQL NULL into a NOT NULL column — while the run
   rows and transcripts cleared fine. The api's `clear` deletes its rows and

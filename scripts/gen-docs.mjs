@@ -56,6 +56,8 @@ const TS_RESIDENT_FILES = [
   'ui/src/routes/api/healthz.ts',
   'ui/src/routes/api/apps.$app.$.ts',
   'ui/src/routes/api/app-host.$app.rebuild.ts',
+  'ui/src/routes/api/app-host.harnesses.ts',
+  'ui/src/routes/api/app-host.$app.harnesses.$id.cases.$name.ts',
   'ui/src/routes/api/app-host.$app.lifecycle.ts',
 ]
 const CHECK = process.argv.includes('--check')
@@ -856,16 +858,17 @@ function extractRoute(file) {
 }
 
 const KNOWN_REQUEST_TAKERS = new Set([
-  'requireUser', 'requireAdmin', 'requirePerm', 'requireView', 'requireAgent',
+  'requireUser', 'requireAdmin', 'requireInternal', 'requirePerm', 'requireView', 'requireAgent',
   'agentCaller', 'authenticateKey',
   'actingUser', 'getSessionUser', 'updateSessionUser', 'taskActor',
-  'parseBody', 'destroySession', 'requireInternal',
+  'parseBody', 'destroySession',
 ])
 
 function authClassTS(clean, methodRaw) {
   const has = (s) => clean.includes(s)
   const perms = [...clean.matchAll(/(?:requirePerm\(request,\s*|hasPerm\(\s*[\w.]+,\s*)'([\w.-]+)'/g)].map((m) => m[1])
   const view = clean.match(/requireView\(\s*request,\s*'([^']+)'/)
+  // The api on this machine, with the root-derived service credential.
   if (has('requireInternal(')) return { auth: 'internal' }
   if (has('authenticateKey(')) return { auth: 'bearer-key' }
   if (has('requireAgent(')) return { auth: 'agent' }
@@ -1021,7 +1024,7 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 | \`admin\` | an admin session (\`require_admin\`) |
 | \`agent\` | an agent credential (\`tak_\` key, \`require_agent\`/\`agent_caller\`) |
 | \`dual\` | session path and agent path both reach the handler |
-| \`internal\` | the app host's root-derived service credential (\`x-talaria-internal\`, \`require_internal\`) — never a user or agent |
+| \`internal\` | the root-derived service credential (\`x-talaria-internal\`) between the app host and the api — \`require_internal\` on the api's routes, \`requireInternal\` (loopback only) on the host's — never a user or agent |
 | \`bearer-key\` | a personal LLM-gateway API key (\`authenticate_key\`) |`
 
 const GENERATED_BANNER = (extra = '') =>

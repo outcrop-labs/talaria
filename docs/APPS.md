@@ -19,7 +19,7 @@ apps/<slug>/
   *.svelte       one component per surface (plus whatever else you need)
   server.ts      optional API — defineAppServer(...) → /api/apps/<slug>/*
   mcp.ts         optional agent tools — defineAppMcp(...) → governed MCP server
-  harnesses/     optional activity harnesses — one defineHarness per file, run by server.ts
+  harnesses/     optional activity harnesses — one defineHarness per file, scored in Models → Fitness
 ```
 
 The programming model — `defineApp`, the app server, the document store, MCP tools, harnesses —
@@ -34,7 +34,8 @@ still be uninstalled.
 
 Every path under `/api/apps/<slug>/` is the app's own. The host's routes about an app live under
 `/api/app-host/<slug>/`: `POST …/rebuild`, which Manage → Apps calls to compile and probe an app
-before enabling it, and `POST …/lifecycle`, which only the api calls during an update.
+before enabling it, and `POST …/lifecycle`, which only the api calls during an update; plus the two
+loopback-only routes the api's fitness plane reads app harnesses through (below).
 
 ## Surfaces
 
@@ -194,10 +195,27 @@ rather than failing to build it.
 An app ships an **activity harness** — a model call Talaria runs on your app's behalf through the
 one runner: [harnesses.md](./sdk/harnesses.md), deep contract in [HARNESSES.md](./HARNESSES.md).
 
-**Today a harness runs only through your `server.ts`.** Nothing compiles, loads, registers or
-scores `apps/<slug>/harnesses/*.ts` on its own: a harness runs when `server.ts` imports it and
-calls `runHarness`. It is not listed in Admin, gets no column in the model-fitness matrix, and its
-`evals` run only where you replay them yourself.
+**Each file in `harnesses/` registers on its own.** One `defineHarness` default export per
+`harnesses/*.ts`. The build compiles them into `harnesses.js`, one chunk per file, and the load
+probe checks each one against the rules the platform holds its own harnesses to. A harness that
+passes gets a column in **Models → Fitness**, labelled with the app's name, and the eval sweep
+replays its `evals` against every candidate model. Your `server.ts` still runs it in production
+with `runHarness`.
+
+- **It must:** name only guard rules that exist; keep its floor inside `requires` and empty
+  unless it refuses; for a JSON harness, list `json` in `requires`, because the floor is derived
+  from it; keep fixture names distinct; give a widening a reason; keep a temperature between 0
+  and 1. Its id must not be a builtin harness's id or one that another enabled app registers;
+  when two apps claim one id, the app whose slug sorts first keeps it.
+- **A harness that fails a check** is skipped. The app keeps running. The reason shows on the
+  app's row in Manage → Apps as "N harnesses skipped", with one line per file.
+- **Only enabled apps count.** Disabling an app removes its columns.
+- **How the sweep reaches it.** The api never loads app code. It reads the list from the app host
+  (`GET /api/app-host/harnesses`) and replays each fixture there
+  (`POST /api/app-host/<slug>/harnesses/<id>/cases/<name>`). Both routes answer only a loopback
+  caller that presents the internal service credential. The replay pins the candidate model and
+  writes no `harness_runs` or guard-findings rows. Token spend still reaches the usage ledger,
+  as every sweep case does.
 
 The coding harness agents drive in their sandbox is not an extension point: the workbench runs
 Oh My Pi, and only Oh My Pi ([WORKBENCH.md](./WORKBENCH.md)).
