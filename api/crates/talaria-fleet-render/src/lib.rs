@@ -1341,6 +1341,23 @@ pub async fn render_fleet(
         fleet_approvals(&mut routed, def.developer);
         fleet_delegation(&mut routed, def.max_children);
         fleet_disabled_toolsets(&mut routed, &toolset_floor, &def.disabled_toolsets);
+        fleet_tool_loop_guardrails(&mut routed);
+        fleet_title_generation(&mut routed);
+        fleet_model_routes(&mut routed, &def.model);
+        match talaria_model_efforts::EffortVoices::read(pg).await {
+            Ok(voices) => {
+                let efforts = target_efforts(&voices, &version.config, &routed);
+                fleet_reasoning(&mut routed, &efforts);
+            }
+            // Left out, not guessed: reading a failed catalog as "nobody
+            // vouched" would mark every model unvouched and drop every
+            // configured level. Without the block Hermes runs as it did
+            // before there was one, and the next render puts it back.
+            Err(e) => tracing::warn!(
+                "[fleet] {}: effort catalog unreadable, reasoning block left out: {e}",
+                def.model
+            ),
+        }
 
         let cfg_path = agent_dir.join("config.yaml");
         let cfg_text = format!(
@@ -1985,6 +2002,355 @@ fn fleet_disabled_toolsets(
     }
     agent.insert("disabled_toolsets".into(), json!(disabled));
     routed.insert("agent".into(), Value::Object(agent));
+}
+
+/// Hermes' own tool-loop guard, ARMED. Hermes counts identical calls (tool,
+/// canonical arguments, result), cycles, replayed failures and read-only
+/// calls that keep answering the same, and on an attended platform it only
+/// warns — and `api_server`, the platform every fleet agent runs on, counts as
+/// attended (`agent/tool_guardrails.py`'s `_ATTENDED_PLATFORMS`). So the hard
+/// stops are switched on explicitly: block or halt at five, a halted turn
+/// ending with a reply that says why. This replaced the stream-side guard
+/// Talaria ran in talaria-chat-persist, which keyed on what the stream carries
+/// (a display preview and an always-empty result) and stopped legitimate
+/// work. Every other key a def set in the block — thresholds, loop caps — is
+/// the def's to tune; only the switch is Talaria's.
+fn fleet_tool_loop_guardrails(routed: &mut Map<String, Value>) {
+    let mut cfg = routed
+        .get("tool_loop_guardrails")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    cfg.insert("hard_stop_enabled".into(), json!(true));
+    routed.insert("tool_loop_guardrails".into(), Value::Object(cfg));
+}
+
+/// Hermes' model-written session titles, OFF. By default Hermes titles every
+/// session it holds with a background auxiliary model call — through the
+/// gateway, on the agent's key — and nothing in Talaria reads those titles:
+/// talaria-titler names the conversations people see. `model_upgrade_enabled:
+/// false` keeps Hermes' free instant title (derived from the opening message,
+/// no model call) for its own session list and drops the call. The rest of
+/// the def's `auxiliary` block is left as authored.
+fn fleet_title_generation(routed: &mut Map<String, Value>) {
+    let mut aux = routed
+        .get("auxiliary")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut titles = aux
+        .get("title_generation")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    titles.insert("model_upgrade_enabled".into(), json!(false));
+    aux.insert("title_generation".into(), Value::Object(titles));
+    routed.insert("auxiliary".into(), Value::Object(aux));
+}
+
+/// THE PERSONA'S TIERS, as Hermes' API server routes them. Talaria publishes
+/// `<persona>-<tier>` in the manifest and dials that id for a tier turn, but
+/// Hermes ignores a bare `model` on `/v1/chat/completions` unless an alias in
+/// `platforms.api_server.extra.model_routes` names it — without one every
+/// tier turn ran (and was metered as) something it was not: the main model,
+/// priced as the tier. Each routed `model_aliases` entry becomes a route to
+/// its upstream id, with no provider, base URL or key of its own, so it runs
+/// on the main runtime: the gateway, on the agent's key, which the render
+/// already scopes to every routed model id. Routes are read when the API
+/// server starts, so a tier change reaches a running agent on its next
+/// recreate. Routes the def authored under other names stay.
+fn fleet_model_routes(routed: &mut Map<String, Value>, persona: &str) {
+    let mut ours = Map::new();
+    if let Some(aliases) = routed.get("model_aliases").and_then(Value::as_object) {
+        for (name, spec) in aliases {
+            // Only a ROUTED spec: the gateway transform stamps a base URL on
+            // every model spec, and an entry without one is not a model the
+            // agent's key may ask for. The name is used as stored — the
+            // manifest publishes `<persona>-<name>` from the same edit, and
+            // the route has to match that id byte for byte.
+            let model = spec
+                .get("base_url")
+                .and(spec.get("model"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|m| !m.is_empty());
+            if !name.trim().is_empty()
+                && let Some(model) = model
+            {
+                ours.insert(format!("{persona}-{name}"), json!({ "model": model }));
+            }
+        }
+    }
+    if ours.is_empty() {
+        return;
+    }
+    let mut platforms = routed
+        .get("platforms")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut api = platforms
+        .get("api_server")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut extra = api
+        .get("extra")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut routes = extra
+        .get("model_routes")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    for (alias, route) in ours {
+        routes.insert(alias, route);
+    }
+    extra.insert("model_routes".into(), Value::Object(routes));
+    api.insert("extra".into(), Value::Object(extra));
+    platforms.insert("api_server".into(), Value::Object(api));
+    routed.insert("platforms".into(), Value::Object(platforms));
+}
+
+/// One of an agent's models as Hermes will run it, beside what Talaria knows
+/// about its reasoning effort: the upstream id the routed config asks the
+/// gateway for, the Hermes provider id its spec runs under, the levels
+/// somebody vouches for on its endpoint (the catalog or the endpoint's own
+/// declaration — `EffortVoices::for_target`), and the level the agent editor
+/// configured next to it.
+#[derive(Debug, Clone, PartialEq)]
+struct TargetEffort {
+    model: String,
+    provider: String,
+    levels: Vec<String>,
+    configured: Option<String>,
+}
+
+/// A structured target whose routed spec really runs it: the editor's
+/// endpoint, upstream model and configured effort, and the `provider` the
+/// spec names — the id Hermes resolves the model under, and so the section
+/// its `model_overrides` lookup reads (`agent/models_dev.py`'s
+/// `_provider_override_section`, keyed by the exact provider id).
+#[derive(Debug, Clone, PartialEq)]
+struct RunningTarget {
+    endpoint: String,
+    model: String,
+    configured: Option<String>,
+    provider: String,
+}
+
+/// A stored target as the editor wrote it: endpoint, upstream model, and the
+/// configured effort. Same posture as talaria-persona's reader — a
+/// half-written target is no target, a blank effort is no effort.
+fn read_effort_target(raw: &Value) -> Option<(String, String, Option<String>)> {
+    let t = raw.as_object()?;
+    let endpoint = t.get("endpoint")?.as_str()?.trim();
+    let model = t.get("model")?.as_str()?.trim();
+    if endpoint.is_empty() || model.is_empty() {
+        return None;
+    }
+    let effort = t
+        .get("effort")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_string);
+    Some((endpoint.to_string(), model.to_string(), effort))
+}
+
+/// The agent's structured targets in claim order — main, then each tier,
+/// then each fallback — each paired with the routed config's model spec for
+/// it (`model`, `model_aliases.<name>`, `fallback_providers[i]`). A target the
+/// gateway transform REMAPPED (its model is not served, so the spec now names
+/// the fallback default) is dropped: its endpoint's levels describe a model
+/// that will not run. The provider is read off the spec rather than assumed:
+/// the gateway transform stamps `custom` today, and a render that names its
+/// own provider must move the `model_overrides` section with it.
+fn structured_targets(config: &Value, routed: &Map<String, Value>) -> Vec<RunningTarget> {
+    let spec_model = |spec: Option<&Value>| {
+        spec.and_then(|s| s.get("model"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let spec_provider = |spec: Option<&Value>| {
+        spec.and_then(|s| s.get("provider"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .unwrap_or("custom")
+            .to_string()
+    };
+    let mut out = Vec::new();
+    let mut take = |raw: Option<&Value>, spec: Option<&Value>| {
+        if let (Some((endpoint, model, configured)), Some(running)) =
+            (raw.and_then(read_effort_target), spec_model(spec))
+            && running == model
+        {
+            out.push(RunningTarget {
+                endpoint,
+                model,
+                configured,
+                provider: spec_provider(spec),
+            });
+        }
+    };
+    take(config.get("main"), routed.get("model"));
+    for alias in config
+        .get("aliases")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = alias.get("name").and_then(Value::as_str).map(str::trim);
+        let spec = name.and_then(|n| routed.get("model_aliases").and_then(|a| a.get(n)));
+        take(Some(alias), spec);
+    }
+    for (i, fallback) in config
+        .get("fallbacks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let spec = routed
+            .get("fallback_providers")
+            .and_then(Value::as_array)
+            .and_then(|f| f.get(i));
+        take(Some(fallback), spec);
+    }
+    out
+}
+
+/// Each structured target's vouched levels, against voices read once per
+/// render.
+fn target_efforts(
+    voices: &talaria_model_efforts::EffortVoices,
+    config: &Value,
+    routed: &Map<String, Value>,
+) -> Vec<TargetEffort> {
+    structured_targets(config, routed)
+        .into_iter()
+        .map(|t| {
+            let levels = voices.for_target(&talaria_persona::ModelTarget {
+                endpoint: t.endpoint,
+                model: t.model.clone(),
+            });
+            TargetEffort {
+                model: t.model,
+                provider: t.provider,
+                levels,
+                configured: t.configured,
+            }
+        })
+        .collect()
+}
+
+/// The efforts Hermes' own loop recognizes as bare strings
+/// (`hermes_constants.VALID_REASONING_EFFORTS` plus `none`). A provider's
+/// bespoke level rides in the mapping form, which Hermes passes through
+/// verbatim instead of discarding as a typo.
+const HERMES_EFFORTS: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
+
+/// THE REASONING EFFORT EACH OF AN AGENT'S MODELS RUNS AT when nobody picked
+/// one for the turn — a cron fire, a channel reply, a harness turn, a work
+/// session. Hermes resolves it per RUNNING MODEL: a per-turn
+/// `model_options.reasoning_effort` first, then `agent.reasoning_overrides`
+/// for the model answering, then a global `agent.reasoning_effort`, and with
+/// none of those its custom-provider profile sends `medium`
+/// (`plugins/model-providers/custom`).
+///
+/// Two renders, both from Talaria's own effort contract:
+///
+/// - a level the agent editor configured beside a target, and the target's
+///   endpoint vouches for, becomes that model's `reasoning_overrides` entry.
+///   Per model rather than one global `reasoning_effort`, because a global
+///   would also apply to a fallback whose endpoint vouches for different
+///   levels. First claim wins (main, then tiers, then fallbacks), the order
+///   talaria-persona claims ids in;
+/// - a model NOBODY vouches for levels on — the catalog is silent and the
+///   endpoint declares none, the case where Talaria's own chat sends no effort
+///   at all — is marked `model_overrides.<provider>.<id>.supports_reasoning:
+///   false`, which is what keeps Hermes from filling in `medium` for it
+///   (`agent/reasoning_params.py`'s `unset_reasoning_default`). The section
+///   is the provider id the model's routed spec names (`custom`, as the
+///   gateway transform stamps it today), because Hermes looks the override up
+///   by the exact id it runs the model under. A `supports_reasoning` the def
+///   itself authored for that model stands.
+///
+/// A target that is vouched for but has no configured level is left to
+/// Hermes' default, as it always ran. Overrides a def authored for other
+/// models stay.
+fn fleet_reasoning(routed: &mut Map<String, Value>, targets: &[TargetEffort]) {
+    let mut overrides = Map::new();
+    for t in targets {
+        if let Some(effort) = t.configured.as_ref().filter(|e| t.levels.contains(e))
+            && !overrides.contains_key(&t.model)
+        {
+            let value = if HERMES_EFFORTS.contains(&effort.as_str()) {
+                json!(effort)
+            } else {
+                json!({ "enabled": true, "effort": effort })
+            };
+            overrides.insert(t.model.clone(), value);
+        }
+    }
+    let vouched: Vec<&str> = targets
+        .iter()
+        .filter(|t| !t.levels.is_empty())
+        .map(|t| t.model.as_str())
+        .collect();
+    let mut unvouched: Vec<(&str, &str)> = Vec::new();
+    for t in targets {
+        let key = (t.provider.as_str(), t.model.as_str());
+        if t.levels.is_empty() && !vouched.contains(&key.1) && !unvouched.contains(&key) {
+            unvouched.push(key);
+        }
+    }
+    if !overrides.is_empty() {
+        let mut agent = routed
+            .get("agent")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let mut merged = agent
+            .get("reasoning_overrides")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for (model, effort) in overrides {
+            merged.insert(model, effort);
+        }
+        agent.insert("reasoning_overrides".into(), Value::Object(merged));
+        routed.insert("agent".into(), Value::Object(agent));
+    }
+    if !unvouched.is_empty() {
+        let mut model_overrides = routed
+            .get("model_overrides")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for (provider, m) in unvouched {
+            let mut section = model_overrides
+                .get(provider)
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let mut entry = section
+                .get(m)
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            if !entry.contains_key("supports_reasoning") {
+                entry.insert("supports_reasoning".into(), json!(false));
+            }
+            section.insert(m.to_string(), Value::Object(entry));
+            model_overrides.insert(provider.to_string(), Value::Object(section));
+        }
+        routed.insert("model_overrides".into(), Value::Object(model_overrides));
+    }
 }
 
 /// Whether this agent still holds Hermes' browser toolset — the switch behind
@@ -2665,6 +3031,238 @@ service:
         );
         let back: Value = serde_yaml_ng::from_str(&yaml).expect("emitted yaml parses");
         assert_eq!(back, Value::Object(authored));
+    }
+
+    #[test]
+    fn fleet_tool_loop_guardrails_arms_the_hard_stop_and_keeps_the_def_tuning() {
+        // Nothing authored: the switch alone — every threshold stays Hermes'.
+        let mut routed = Map::new();
+        fleet_tool_loop_guardrails(&mut routed);
+        assert_eq!(
+            routed.get("tool_loop_guardrails"),
+            Some(&json!({ "hard_stop_enabled": true }))
+        );
+        // A def that tuned the thresholds keeps them, and one that switched
+        // the hard stops off is switched back on: with the stream-side guard
+        // gone, this is the only loop breaker an agent has.
+        let mut authored = Map::new();
+        authored.insert(
+            "tool_loop_guardrails".into(),
+            json!({ "hard_stop_enabled": false, "hard_stop_after": { "exact_failure": 7 } }),
+        );
+        fleet_tool_loop_guardrails(&mut authored);
+        assert_eq!(
+            authored.get("tool_loop_guardrails"),
+            Some(&json!({ "hard_stop_enabled": true, "hard_stop_after": { "exact_failure": 7 } }))
+        );
+        // Emitted as the bare boolean Hermes' 1.1 reader takes for true.
+        let yaml = yaml11_emit(&Value::Object(authored));
+        assert!(yaml.contains("hard_stop_enabled: true"), "{yaml}");
+    }
+
+    #[test]
+    fn fleet_title_generation_drops_the_model_call_and_keeps_the_rest() {
+        let mut routed = Map::new();
+        fleet_title_generation(&mut routed);
+        assert_eq!(
+            routed.get("auxiliary"),
+            Some(&json!({ "title_generation": { "model_upgrade_enabled": false } }))
+        );
+        // The def's other auxiliary tasks, and its other title keys, stay.
+        let mut authored = Map::new();
+        authored.insert(
+            "auxiliary".into(),
+            json!({
+                "compression": { "timeout": 300 },
+                "title_generation": { "language": "fr", "model_upgrade_enabled": true }
+            }),
+        );
+        fleet_title_generation(&mut authored);
+        assert_eq!(
+            authored.get("auxiliary"),
+            Some(&json!({
+                "compression": { "timeout": 300 },
+                "title_generation": { "language": "fr", "model_upgrade_enabled": false }
+            }))
+        );
+    }
+
+    #[test]
+    fn fleet_model_routes_route_each_tier_to_its_upstream_id() {
+        // The routed shape: every model spec carries the gateway base URL.
+        let mut routed = Map::new();
+        routed.insert(
+            "model_aliases".into(),
+            json!({
+                "fast": { "model": "gpt-5-mini", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+                "deep": { "model": "o4", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+                // Not a routed spec: nothing the agent's key may ask for.
+                "odd": { "model": "stray" }
+            }),
+        );
+        routed.insert(
+            "platforms".into(),
+            json!({ "api_server": { "extra": { "model_routes": { "mine": { "model": "m" } }, "cors_origins": "*" } } }),
+        );
+        fleet_model_routes(&mut routed, "dex-ops");
+        assert_eq!(
+            routed.get("platforms"),
+            Some(&json!({ "api_server": { "extra": {
+                "model_routes": {
+                    "mine": { "model": "m" },
+                    "dex-ops-fast": { "model": "gpt-5-mini" },
+                    "dex-ops-deep": { "model": "o4" }
+                },
+                "cors_origins": "*"
+            } } }))
+        );
+        // No tiers: no platforms block appears at all.
+        let mut bare = Map::new();
+        bare.insert("model_aliases".into(), json!({}));
+        fleet_model_routes(&mut bare, "dex-ops");
+        assert!(bare.get("platforms").is_none());
+    }
+
+    #[test]
+    fn structured_targets_pair_each_target_with_its_running_spec() {
+        let config = json!({
+            "main": { "endpoint": "or", "model": "m", "effort": "high" },
+            "aliases": [
+                { "name": "deep", "endpoint": "or", "model": "big", "effort": " max " },
+                // Remapped by the gateway transform: its spec runs the fallback.
+                { "name": "gone", "endpoint": "old", "model": "retired", "effort": "low" }
+            ],
+            "fallbacks": [ { "endpoint": "local", "model": "q" } ]
+        });
+        let routed = json!({
+            "model": { "model": "m", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+            "model_aliases": {
+                "deep": { "model": "big", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+                "gone": { "model": "m", "base_url": "${LLM_BASE_URL}", "provider": "custom" }
+            },
+            // A spec naming its own provider keeps it; a spec with none is
+            // Hermes' `custom`.
+            "fallback_providers": [ { "model": "q", "base_url": "${LLM_BASE_URL}", "provider": "talaria" } ]
+        });
+        let routed = routed.as_object().unwrap();
+        let running =
+            |endpoint: &str, model: &str, configured: Option<&str>, provider: &str| RunningTarget {
+                endpoint: endpoint.into(),
+                model: model.into(),
+                configured: configured.map(str::to_string),
+                provider: provider.into(),
+            };
+        assert_eq!(
+            structured_targets(&config, routed),
+            vec![
+                running("or", "m", Some("high"), "custom"),
+                running("or", "big", Some("max"), "custom"),
+                running("local", "q", None, "talaria"),
+            ]
+        );
+        let mut bare = routed.clone();
+        bare.insert(
+            "model".into(),
+            json!({ "model": "m", "base_url": "${LLM_BASE_URL}" }),
+        );
+        assert_eq!(structured_targets(&config, &bare)[0].provider, "custom");
+        // A federated def with no structured targets renders nothing here.
+        assert!(structured_targets(&json!({ "raw": {} }), routed).is_empty());
+    }
+
+    #[test]
+    fn fleet_reasoning_renders_vouched_levels_and_neutralises_the_unvouched() {
+        let on =
+            |provider: &str, model: &str, levels: &[&str], configured: Option<&str>| TargetEffort {
+                model: model.into(),
+                provider: provider.into(),
+                levels: levels.iter().map(|l| l.to_string()).collect(),
+                configured: configured.map(str::to_string),
+            };
+        let t = |model: &str, levels: &[&str], configured: Option<&str>| {
+            on("custom", model, levels, configured)
+        };
+        let mut routed = Map::new();
+        routed.insert(
+            "agent".into(),
+            json!({ "disabled_toolsets": ["todo"], "reasoning_overrides": { "other": "low" } }),
+        );
+        routed.insert(
+            "model_overrides".into(),
+            json!({ "custom": { "authored": { "supports_reasoning": true } } }),
+        );
+        fleet_reasoning(
+            &mut routed,
+            &[
+                // Main: vouched, configured — the override.
+                t("gpt-5", &["low", "medium", "high"], Some("high")),
+                // A tier on the same model id: the main claimed it first.
+                t("gpt-5", &["low", "medium", "high"], Some("low")),
+                // A provider's own level rides in the mapping form.
+                t("kimi", &["thinking", "fast"], Some("thinking")),
+                // Configured but not vouched for: nothing, Hermes' default.
+                t("o4", &["low", "high"], Some("medium")),
+                // Nobody vouches: neutralised, so Hermes sends no effort.
+                t("qwen-local", &[], None),
+                t("qwen-local", &[], Some("high")),
+                // The def's own capability fact for a model stands.
+                t("authored", &[], None),
+            ],
+        );
+        assert_eq!(
+            routed.get("agent"),
+            Some(&json!({
+                "disabled_toolsets": ["todo"],
+                "reasoning_overrides": {
+                    "other": "low",
+                    "gpt-5": "high",
+                    "kimi": { "enabled": true, "effort": "thinking" }
+                }
+            }))
+        );
+        assert_eq!(
+            routed.get("model_overrides"),
+            Some(&json!({ "custom": {
+                "authored": { "supports_reasoning": true },
+                "qwen-local": { "supports_reasoning": false }
+            } }))
+        );
+        // A model one target vouches for is never marked unvouched by another
+        // target (another endpoint) that is silent about it.
+        let mut shared = Map::new();
+        fleet_reasoning(&mut shared, &[t("m", &[], None), t("m", &["low"], None)]);
+        assert!(shared.get("model_overrides").is_none());
+        assert!(shared.get("agent").is_none());
+        // The section is the provider the spec runs under, never an assumed
+        // `custom`: Hermes reads `model_overrides` by the exact provider id,
+        // so an entry under the wrong one is silently never read.
+        let mut named = Map::new();
+        named.insert(
+            "model_overrides".into(),
+            json!({ "custom:talaria": { "kept": { "context_length": 8192 } } }),
+        );
+        fleet_reasoning(
+            &mut named,
+            &[
+                on("custom:talaria", "plain", &[], None),
+                on("custom", "local", &[], None),
+            ],
+        );
+        assert_eq!(
+            named.get("model_overrides"),
+            Some(&json!({
+                "custom:talaria": {
+                    "kept": { "context_length": 8192 },
+                    "plain": { "supports_reasoning": false }
+                },
+                "custom": { "local": { "supports_reasoning": false } }
+            }))
+        );
+        // Emitted as Hermes reads it: a bare string, an unquoted false.
+        let yaml = yaml11_emit(&Value::Object(routed.clone()));
+        assert!(yaml.contains("supports_reasoning: false"), "{yaml}");
+        let back: Value = serde_yaml_ng::from_str(&yaml).expect("emitted yaml parses");
+        assert_eq!(back, Value::Object(routed));
     }
 
     #[test]
