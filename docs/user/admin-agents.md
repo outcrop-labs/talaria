@@ -21,7 +21,16 @@ Empty fleet? *"Describe the first one and Muse designs it: identity, soul, and s
 skills."* — **Design your first agent**.
 
 Outside agents can be pulled in too: the federation action (top of the page) federates agents
-that live elsewhere into Talaria.
+that live elsewhere into Talaria. A credential written inline in an imported config (a platform
+token, a provider's key, an `Authorization` header) is never stored as written. Each one the
+agent uses becomes one of its own secrets, named for where it sat
+(`CONFIG_PLATFORMS_TELEGRAM_TOKEN`), and the config keeps a `${CONFIG_…}` reference in its
+place. A model's inline key, an MCP server's inline credentials and the API server's own `key`
+are dropped, because agents never use them: they reach models through the gateway (put the
+provider's key on **Models**), MCP servers through the MCP registry, and Talaria calls the agent
+with a key of its own. The federation result lists both what was sealed and what was dropped. A
+credential that spans several lines or runs past 8 KB (an inline PEM key) cannot be delivered
+at all, so federation refuses that agent and names where it sat.
 
 ## The manage modal
 
@@ -92,6 +101,15 @@ under such a name before the rule is marked in the list with the same reason; it
 loads into the container until you remove it. Nothing entered?
 *"Everything it needs comes from the shared platform env."*
 Which secrets an agent may spend is admin-only; members see **Admins only.**
+
+A `CONFIG_…` entry is a credential sealed out of the agent's own config when it was federated,
+and the config refers to it by that name. Replace its value here to rotate it, then roll the
+agent. Replace rather than delete: deleting it leaves the reference in the config, and the agent
+then reads the `${CONFIG_…}` text itself as the value. Like every secret here, the value sits in
+the agent's environment, where a terminal command the agent runs can read it. An agent hired
+from this one as a template takes these values along only when the person hiring manages this
+agent (or is an admin); otherwise the clone is hired without them, and its first version's note
+lists what was left out.
 
 ### MCP
 
