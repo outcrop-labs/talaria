@@ -33,8 +33,8 @@ fn root() -> &'static Path {
         let root = std::env::temp_dir().join(format!("talaria-lifecycle-live-{}", random_hex()));
         std::fs::create_dir_all(&root).unwrap();
         // SAFETY: set once, before any test of this module reads them, and
-        // every test of this module asks for the root first. Only these
-        // ignored tests set them: the default run never does.
+        // every test of this module asks for the root first (`serial`). Only
+        // these ignored tests set them: the default run never does.
         unsafe {
             std::env::set_var("TALARIA_APPS_DIR", root.join("apps"));
             std::env::set_var("TALARIA_APP_DATA_DIR", root.join("app-data"));
@@ -43,6 +43,19 @@ fn root() -> &'static Path {
         }
         root
     })
+}
+
+/// One test of this module at a time. They share the apps directory, and an
+/// install's staging tree (`apps/.install-<random>`) names no slug: a test
+/// asserting that its own refused install left none behind would otherwise
+/// see another test's install in flight. Taken first; it sets the root.
+async fn serial() -> tokio::sync::MutexGuard<'static, ()> {
+    static SERIAL: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    root();
+    SERIAL
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
 }
 
 async fn pg() -> PgPool {
@@ -280,7 +293,7 @@ fn no_leftovers() -> bool {
 #[tokio::test]
 #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
 async fn an_update_lands_or_rolls_back_and_the_record_follows_the_trees() {
-    root();
+    let _serial = serial().await;
     let pg = pg().await;
     let slug = slug("update");
     let repo = Repo::new("update");
@@ -423,7 +436,7 @@ async fn an_update_lands_or_rolls_back_and_the_record_follows_the_trees() {
 #[tokio::test]
 #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
 async fn kept_data_goes_back_only_to_its_own_repository() {
-    root();
+    let _serial = serial().await;
     let pg = pg().await;
     let sb = SecretBox::default();
     let slug = slug("kept");
@@ -539,7 +552,7 @@ async fn kept_data_goes_back_only_to_its_own_repository() {
 #[tokio::test]
 #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
 async fn an_install_holds_its_slug() {
-    root();
+    let _serial = serial().await;
     let pg = pg().await;
     let slug = slug("lock");
     let repo = Repo::new("lock");
@@ -587,7 +600,7 @@ async fn an_install_holds_its_slug() {
 #[tokio::test]
 #[ignore = "sets this process's apps directories, as the live tests do"]
 async fn a_passive_check_reads_a_public_source() {
-    root();
+    let _serial = serial().await;
     let repo = Repo::new("check");
     let v1 = repo.commit("v1");
     let src = parse_source(&repo.url, true).unwrap();
