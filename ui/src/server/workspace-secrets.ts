@@ -636,6 +636,111 @@ export async function spendHandlesInToolCall(
   return { changed: used.length > 0, used, unresolved }
 }
 
+// ── AN APP'S SERVER READS A SECRET IT WAS GIVEN ─────────────────────────────
+//
+// `ctx.secret(name)` in an app's server.ts. The MCP path already lets an app's
+// code hold a secret's value: an agent's «secret:…» handle is resolved on its
+// way INTO the app's tool handler when the secret's allowed hosts name
+// `talaria-app://<slug>`. That entry is the operator saying "this app's code
+// may receive this credential", and it is the one rule here, made explicit:
+//
+//   · the allowed hosts must NAME `talaria-app://<slug>` — exactly. An
+//     unrestricted secret (no allowed hosts) is NOT readable by app code: for
+//     an agent, the per-agent grant is what gates an unrestricted secret, and
+//     an app's server has no agent to be granted;
+//   · a WORKSPACE credential (no owner): a person's working secret is theirs,
+//     and an app's server answers every member;
+//   · a VAULT doc: a relay is a one-shot handed to an agent in a conversation,
+//     not configuration;
+//   · not expired, and the entry named (or the doc's only entry).
+//
+// A use limit is honoured and spent like any other spend, in the statement
+// that checks it, and every read writes the same `secrets.spend` audit row the
+// other boundaries write — actor `app:<slug>`, the person whose request it
+// was, the destination token.
+
+/** Why `resolveAppSecret` refused. Logged for the operator; the app gets null. */
+export type AppSecretRefusal = 'bad-name' | 'unknown' | 'not-for-this-app' | 'not-workspace' | 'not-vault' | 'expired' | 'ambiguous' | 'spent'
+
+const SECRET_NAME = /^([a-z0-9][a-z0-9_-]*)(?:\.([a-z0-9][a-z0-9_-]*))?$/i
+
+/** The destination token an app's code is named by in a secret's allowed hosts. */
+export const appDestination = (slug: string): string => `talaria-app://${slug}`
+
+export async function resolveAppSecret(
+  slug: string,
+  name: string,
+  /** The person whose request is reading it — recorded on the spend. */
+  userId: string,
+): Promise<{ ok: true; value: string } | { ok: false; reason: AppSecretRefusal }> {
+  const m = typeof name === 'string' ? SECRET_NAME.exec(name.trim()) : null
+  if (!m) return { ok: false, reason: 'bad-name' }
+  const docName = m[1]!.toLowerCase()
+  const entryKey = m[2]?.toLowerCase() ?? null
+  const dest = appDestination(slug)
+  const sql = await db()
+  const rows = (await sql`
+    select id, name, kind, expires_at as "expiresAt", uses_remaining as "usesRemaining",
+           allowed_hosts as "allowedHosts", owner_user_id as "ownerUserId"
+      from workspace_secrets
+     where lower(name) = ${docName}
+  `) as unknown as Array<{
+    id: string
+    name: string
+    kind: SecretKind
+    expiresAt: string | null
+    usesRemaining: number | null
+    allowedHosts: string[] | null
+    ownerUserId: string | null
+  }>
+  const doc = rows[0]
+  if (!doc) return { ok: false, reason: 'unknown' }
+  // The app check first: a secret this app was never given answers the same
+  // whatever else is true of it.
+  if (!(doc.allowedHosts ?? []).some((h) => h.trim().toLowerCase() === dest)) return { ok: false, reason: 'not-for-this-app' }
+  if (doc.ownerUserId !== null) return { ok: false, reason: 'not-workspace' }
+  if (doc.kind !== 'vault') return { ok: false, reason: 'not-vault' }
+  if (doc.expiresAt && new Date(doc.expiresAt).getTime() <= Date.now()) return { ok: false, reason: 'expired' }
+
+  const entries = (await sql`
+    select key, label, value_cipher as "cipher" from workspace_secret_entries where secret_id = ${doc.id} order by key
+  `) as unknown as Array<{ key: string; label: string; cipher: string }>
+  const entry = entryKey ? entries.find((e) => e.key.toLowerCase() === entryKey) : entries.length === 1 ? entries[0] : undefined
+  if (!entry) return { ok: false, reason: entryKey ? 'unknown' : 'ambiguous' }
+  let value: string
+  try {
+    value = open(entry.cipher)
+  } catch {
+    return { ok: false, reason: 'unknown' }
+  }
+
+  let exhausted = false
+  if (doc.usesRemaining !== null) {
+    const spent = (await sql`
+      update workspace_secrets set uses_remaining = uses_remaining - 1, last_used_at = now()
+       where id = ${doc.id} and uses_remaining > 0
+      returning id
+    `) as unknown as Array<{ id: string }>
+    if (spent.length === 0) return { ok: false, reason: 'spent' }
+    exhausted = doc.usesRemaining - 1 <= 0
+  } else {
+    await sql`update workspace_secrets set last_used_at = now() where id = ${doc.id}`
+  }
+  // The same rule as every other spend: a credential with no uses left is
+  // destroyed, and its row kept for the audit trail.
+  if (exhausted) await sql`update workspace_secret_entries set value_cipher = '' where secret_id = ${doc.id}`
+
+  void logAudit({
+    actor: `app:${slug}`,
+    action: 'secrets.spend',
+    targetType: 'secret',
+    targetId: doc.name,
+    targetLabel: entry.label,
+    after: { key: entry.key, destination: dest, hosts: [], kind: doc.kind, exhausted, restricted: true, userId },
+  })
+  return { ok: true, value }
+}
+
 // ── WORKING SECRETS: read, share, unshare ────────────────────────────────────
 //
 // THE ONE PLACE A VALUE COMES BACK. Everything else in this file moves a

@@ -15,6 +15,7 @@ describe('maybeProxy', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.unstubAllEnvs()
+    vi.restoreAllMocks()
   })
 
   it('unset env hops to the loopback default — first spin-up assumes the Rust api', async () => {
@@ -147,6 +148,51 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(5)
   })
 
+  it('keeps the host\'s own app routes (/api/app-host/) on TS — they build and probe app code', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    const rebuild = '/api/app-host/contacts/rebuild'
+    expect(await maybeProxy(req(rebuild, { method: 'POST' }), rebuild)).toBeNull()
+    // Anchored on the whole segment.
+    expect(await maybeProxy(req('/api/app-hosted'), '/api/app-hosted')).not.toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('a caller who hangs up cuts a READ; a WRITE runs on for nobody, as it always has', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const seen: Array<AbortSignal | null | undefined> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_target: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            seen.push(init.signal)
+            init.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true })
+          }),
+      ) as unknown as typeof globalThis.fetch,
+    )
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const readGone = new AbortController()
+    const read = maybeProxy(req('/api/boards', { signal: readGone.signal }), '/api/boards')
+    const writeGone = new AbortController()
+    const write = maybeProxy(req('/api/fleet/reconcile', { method: 'POST', signal: writeGone.signal }), '/api/fleet/reconcile').then(() => 'settled')
+    await vi.waitFor(() => expect(seen).toHaveLength(2))
+    readGone.abort(new DOMException('the client disconnected', 'AbortError'))
+    writeGone.abort(new DOMException('the client disconnected', 'AbortError'))
+    // The cut read is the caller leaving, not the api failing: a bodiless 499
+    // (the app gateway's answer for the same moment), and NOT the
+    // `unreachable` line an operator reads as an api outage.
+    const cut = (await read)!
+    expect(cut.status).toBe(499)
+    expect(await cut.text()).toBe('')
+    expect(logged).not.toHaveBeenCalled()
+    // The write's upstream fetch carries no signal of the caller's.
+    expect(seen[1]).toBeUndefined()
+    const race = await Promise.race([write, new Promise((r) => setTimeout(() => r('still-pending'), 50))])
+    expect(race).toBe('still-pending')
+  })
+
   it('answers 502 with the fixed sentence when the Rust api is down — no fallback', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     vi.stubGlobal(
@@ -155,12 +201,69 @@ describe('maybeProxy', () => {
         throw new Error('connect ECONNREFUSED 127.0.0.1:5274')
       }) as unknown as typeof globalThis.fetch,
     )
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     const res = await maybeProxy(req('/api/llm/v1/models'), '/api/llm/v1/models')
     expect(res).not.toBeNull()
     expect(res!.status).toBe(502)
     // The exact boundary sentence — the ECONNREFUSED text names the Rust
     // api's host:port and must not leak.
     expect(await res!.text()).toBe('{"error":{"message":"upstream unreachable"}}')
+    // ...but the operator's log names it: that line is how an outage is seen.
+    expect(logged).toHaveBeenCalledWith('[rust-proxy] /api/llm/v1/models unreachable: connect ECONNREFUSED 127.0.0.1:5274')
+  })
+
+  // The 499 above is only for the caller's OWN abort. An api that is really
+  // down, or a read that hit our deadline, stays a logged 502 even when the
+  // caller leaves in the same moment — otherwise a closing tab could hide an
+  // outage from the one line that reports it.
+  it('a real upstream failure stays a logged 502 even when the caller leaves at the same moment', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const gone = new AbortController()
+    // The connection is refused, and the tab closes before the proxy looks.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        gone.abort(new DOMException('the client disconnected', 'AbortError'))
+        throw new TypeError('fetch failed')
+      }) as unknown as typeof globalThis.fetch,
+    )
+    const refused = await maybeProxy(req('/api/boards', { signal: gone.signal }), '/api/boards')
+    expect(refused!.status).toBe(502)
+    expect(logged).toHaveBeenCalledWith('[rust-proxy] /api/boards unreachable: fetch failed')
+  })
+
+  it('a read our deadline cut stays a logged 502 even if its caller leaves afterwards', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    vi.useFakeTimers()
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const gone = new AbortController()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_target: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener(
+              'abort',
+              () => {
+                // The deadline fired; the caller gives up in the same tick.
+                gone.abort(new DOMException('the client disconnected', 'AbortError'))
+                reject(init.signal!.reason)
+              },
+              { once: true },
+            )
+          }),
+      ) as unknown as typeof globalThis.fetch,
+    )
+    try {
+      const pending = maybeProxy(req('/api/fleet/defs', { signal: gone.signal }), '/api/fleet/defs')
+      await vi.advanceTimersByTimeAsync(30_000)
+      const res = await pending
+      expect(res!.status).toBe(502)
+      expect(logged).toHaveBeenCalledWith('[rust-proxy] /api/fleet/defs unreachable: upstream did not answer in time')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('streams the upstream status and body through untouched', async () => {
@@ -280,7 +383,8 @@ describe('maybeProxy', () => {
       const pending = maybeProxy(req('/api/fleet/reconcile', { method: 'POST' }), '/api/fleet/reconcile')
       const race = await Promise.race([pending.then(() => 'settled'), vi.advanceTimersByTimeAsync(600_000).then(() => 'still-pending')])
       expect(race).toBe('still-pending')
-      expect(sawSignal?.aborted).toBe(false)
+      // No signal at all: no timer of ours, and not the caller's either.
+      expect(sawSignal).toBeUndefined()
     } finally {
       vi.useRealTimers()
     }

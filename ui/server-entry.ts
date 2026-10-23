@@ -120,7 +120,15 @@ const MIME_TYPES: Record<string, string> = {
 
 async function tryServeStatic(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
-  const pathname = decodeURIComponent(url.pathname)
+  // A malformed escape is no file: the fetch handler answers it (a 400 under
+  // /api). A throw here was an unhandled rejection that left the request
+  // hanging with no answer at all.
+  let pathname: string
+  try {
+    pathname = decodeURIComponent(url.pathname)
+  } catch {
+    return false
+  }
   if (pathname.includes('..')) return false
 
   const filePath = join(CLIENT_DIR, pathname)
@@ -317,11 +325,27 @@ function waitForDrain(res: ServerResponse): Promise<void> {
   })
 }
 
+/** A signal that aborts when the response closes before it finished — the
+ *  client hung up (closed tab, dropped connection, a fetch it aborted). Read
+ *  off the RESPONSE: the request's own 'close' fires as soon as its body has
+ *  been read, which is every request, so it says nothing about the client. A
+ *  response that finished closes too, with writableFinished set, and aborts
+ *  nothing. The same rule as the vite dev middleware (vite.config.ts). */
+function clientGone(res: ServerResponse): AbortSignal {
+  const gone = new AbortController()
+  res.once('close', () => {
+    if (!res.writableFinished) gone.abort(new DOMException('the client disconnected', 'AbortError'))
+  })
+  return gone.signal
+}
+
 async function requestHandler(req: IncomingMessage, res: ServerResponse) {
   if (req.method === 'GET' || req.method === 'HEAD') {
     if (await tryServeStatic(req, res)) return
   }
 
+  // Armed before the body is read, so a client that leaves mid-upload is seen.
+  const signal = clientGone(res)
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
   const headers = new Headers()
   for (const [k, v] of Object.entries(req.headers)) {
@@ -341,7 +365,10 @@ async function requestHandler(req: IncomingMessage, res: ServerResponse) {
 
   // `duplex: 'half'` is an undici extension this TS's DOM lib doesn't know —
   // cast the init rather than drop it (the runtime needs it for the body).
-  const request = new Request(url.toString(), { method: req.method, headers, body, duplex: 'half' } as RequestInit)
+  // `signal` aborts when the caller goes away before the answer is done
+  // (clientGone): an app's server reads it as ctx.signal, and a proxied read
+  // stops waiting on the api for nobody.
+  const request = new Request(url.toString(), { method: req.method, headers, body, duplex: 'half', signal } as RequestInit)
   const ctx = requestContext(req, url)
   let isEventStream = false
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null

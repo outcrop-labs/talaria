@@ -150,7 +150,9 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | :--- | :--- | :--- |
 | `defineAppServer` | fn | Declare the fetch handler; default-export from server.ts |
 | `AppServer` | type | What `defineAppServer` takes |
-| `AppRequestContext` | type | ctx: user, app, path, url, store |
+| `AppRequestContext` | type | ctx: user, access, perms, can, app, path, segments, url, origin, store, api, secret, signal |
+| `HttpError` | class | What ctx.api throws on a non-2xx answer: status + the server's sentence |
+| `PlatformApiInit` | type | ctx.api's options: method, body, headers, signal, timeoutMs |
 | `SessionUser` | type | The authenticated user the handler runs as |
 | `json` | fn | JSON response helper (`json(body, { status })`) |
 | `parseBody` | fn | Zod-validate a request body; returns data or the standard 400 |

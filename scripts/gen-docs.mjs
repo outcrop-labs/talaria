@@ -55,6 +55,7 @@ const ROUTES_DIR = join(ROOT, 'api/crates/talaria-api-routes/src/routes')
 const TS_RESIDENT_FILES = [
   'ui/src/routes/api/healthz.ts',
   'ui/src/routes/api/apps.$app.$.ts',
+  'ui/src/routes/api/app-host.$app.rebuild.ts',
 ]
 const CHECK = process.argv.includes('--check')
 
@@ -69,7 +70,7 @@ const GROUPS = {
   activity: { segs: ['activity', 'history', 'notifications', 'unreads', 'push', 'alerts', 'home', 'cost', 'host'], blurb: 'What happened, what it cost, what the machine is doing, what needs you.' },
   admin: { segs: ['admin'], blurb: 'Instance administration (admin session required).' },
   agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'runs'], blurb: 'Agent CRUD, skills, runs.' },
-  apps: { segs: ['apps'], blurb: 'The app platform surface and the app-server gateway.' },
+  apps: { segs: ['apps', 'app-host'], blurb: 'The app platform surface, the app-server gateway, and the host\'s own app routes.' },
   boards: { segs: ['boards', 'workchains'], blurb: 'Kanban boards, members, statuses, labels, views, workchains.' },
   brief: { segs: ['brief'], blurb: 'The personal brief: items, replies, delegation.' },
   comms: { segs: ['channels', 'chat', 'conversations', 'dms'], blurb: 'Channels, DMs, threads, chat streaming.' },
@@ -1203,7 +1204,7 @@ for (const r of routes) {
 if (routes.some((r) => r.path === APPS_DISPATCH)) {
   const r = routes.find((x) => x.path === APPS_DISPATCH)
   r.methods = [{ method: 'ANY', auth: 'session', body: null, returns: 'app-defined', statuses: null, sse: false, audit: false, note: [] }]
-  r.note = { text: ['The app-server gateway: `/api/apps/<slug>/*` dispatches into the app\'s own `server.ts`.', 'The host authenticates, checks the app is enabled and the user may reach it, then hands over a context (user, sub-path, namespaced store). The contract: the SDK doc.'], trimmed: false, source: 'doc' }
+  r.note = { text: ['The app-server gateway: `/api/apps/<slug>/*` dispatches into the app\'s own `server.ts`. Every path under it is the app\'s; the host\'s own app routes are under `/api/app-host/`.', 'The host authenticates, checks the app is enabled and the user may reach it, then hands over a context (user, grants, sub-path and segments, store, the platform API as the caller, the app\'s secrets, the abort signal). The contract: the SDK doc.'], trimmed: false, source: 'doc' }
 }
 
 // `$param` renders as `{param}`; trailing `$` as `*` — but sort by raw path.

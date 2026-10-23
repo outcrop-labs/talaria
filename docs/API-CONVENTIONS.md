@@ -1,13 +1,14 @@
 # API conventions — one dialect for every route
 
 The contract that keeps every `/api/*` route predictable, on both sides of the origin. The runtime of
-record is the Rust crate (`api/`): it serves every route except the four permanent TS residents
-(`healthz`, `/api/admin/update`, the `/api/apps/` dispatch subtree, the app-MCP gateway), and a new
+record is the Rust crate (`api/`): it serves every route except the permanent TS residents
+(`healthz`, the `/api/apps/` dispatch subtree, the host's own app routes under `/api/app-host/`,
+the app-MCP gateway), and a new
 route lands as a Rust file under `api/src/routes/<group>/`, in this dialect, with its tests (the
 Rust-side authoring rules and the recorded divergences are
 [`RUST-MIGRATION.md`](./RUST-MIGRATION.md)).
 
-The TS route dialect below still governs everything that writes a route the TS way — the four
+The TS route dialect below still governs everything that writes a route the TS way — the
 residents, and app servers through the host gateway. A resident route lives in `ui/src/routes/api/`;
 its path is the string in its `defineApi('…')` call, the filename is convention that mirrors it, and
 its server logic lives in `ui/src/server/`. Every module under `routes/api/` that exports `Route`
