@@ -91,6 +91,11 @@ only the manage grant the reverse.
 - Paths are relative to the surface, not to the current route: `appHref('?tab=notes')` is the
   surface's own address with that query. To change only the query where you are, pass the rest
   along: `` appNavigate(`${route.rest}?tab=notes`) ``.
+- A path resolves as a link does: `..` and `.` (also spelled `%2e`), a backslash, and tabs or
+  newlines come out as the browser would write them to the address, so `appHref('items/42/../7')`
+  is `/x/<slug>/items/7`. A path that would leave its surface throws instead of landing
+  somewhere you did not name: `'../items'` from the manage surface, or `'manage/fields'` from the
+  work surface. Cross to the other surface with `{ surface }`.
 - `manage` is the manage surface's own segment, so the work surface cannot have a route named
   `manage`. Don't reach for the host's router or `window.history` directly: an address outside
   `/x/<slug>` is not your app's.

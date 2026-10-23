@@ -289,9 +289,12 @@
       "/x/<slug>/<anything> is the work view's and /x/<slug>/manage/<anything> the manage view's, so a",
       "work-only member reaches /x/crm/a/b and never /x/crm/manage/a, and a manage-only member the reverse.",
       "Paths compare ASCII-case-insensitively, as the client router matches a static segment: it mounts the",
-      "manage surface at /x/crm/MANAGE. TS asserts appViewFor and isViewDenied (the route gate and the nav);",
+      "manage surface at /x/crm/MANAGE. TS asserts appViewFor and isViewDenied (the route gate and the nav),",
+      "and runs the client router's own matcher over its route table for every path (route-table.test.ts);",
       "Rust asserts app_view_for and ViewGrants::denies. Each viewer below is a member holding those app",
-      "views, with /teams denied; `open` names the viewers the path is open to."
+      "views, with /teams denied; `open` names the viewers the path is open to. `reservedSlugs` are the",
+      "client router's config keys, which install refuses as app slugs (Rust RESERVED_APP_SLUGS, the CLI's",
+      "`talaria app new`); an app that already has one still routes, which the hooks and layout paths pin."
     ],
     "viewers": {
       "work": {
@@ -299,7 +302,8 @@
           "/teams"
         ],
         "appGrants": [
-          "/x/crm"
+          "/x/crm",
+          "/x/hooks"
         ]
       },
       "manage": {
@@ -307,7 +311,8 @@
           "/teams"
         ],
         "appGrants": [
-          "/x/crm/manage"
+          "/x/crm/manage",
+          "/x/hooks/manage"
         ]
       },
       "none": {
@@ -317,6 +322,11 @@
         "appGrants": []
       }
     },
+    "reservedSlugs": [
+      "layout",
+      "hooks",
+      "meta"
+    ],
     "paths": [
       {
         "path": "/x/crm",
@@ -425,6 +435,77 @@
         "path": "/x/wiki/manage/a",
         "view": "/x/wiki/manage",
         "open": []
+      },
+      {
+        "path": "/x/hooks",
+        "view": "/x/hooks",
+        "open": [
+          "work"
+        ]
+      },
+      {
+        "path": "/x/hooks/items/1",
+        "view": "/x/hooks",
+        "open": [
+          "work"
+        ]
+      },
+      {
+        "path": "/x/hooks/hooks",
+        "view": "/x/hooks",
+        "open": [
+          "work"
+        ]
+      },
+      {
+        "path": "/x/hooks/manage",
+        "view": "/x/hooks/manage",
+        "open": [
+          "manage"
+        ]
+      },
+      {
+        "path": "/x/hooks/manage/a/b",
+        "view": "/x/hooks/manage",
+        "open": [
+          "manage"
+        ]
+      },
+      {
+        "path": "/x/layout",
+        "view": "/x/layout",
+        "open": []
+      },
+      {
+        "path": "/x/layout/manage",
+        "view": "/x/layout/manage",
+        "open": []
+      },
+      {
+        "path": "/x/meta/layout",
+        "view": "/x/meta",
+        "open": []
+      },
+      {
+        "path": "/x/crm/hooks",
+        "view": "/x/crm",
+        "open": [
+          "work"
+        ]
+      },
+      {
+        "path": "/x/crm/layout/manage",
+        "view": "/x/crm",
+        "open": [
+          "work"
+        ]
+      },
+      {
+        "path": "/x/crm/manage/meta",
+        "view": "/x/crm/manage",
+        "open": [
+          "manage"
+        ]
       },
       {
         "path": "/teams/t1",

@@ -9,6 +9,12 @@
 
 export const APP_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
 
+/** Slugs install refuses: the client router's config keys, which it would
+ *  read as path segments under /x/<slug>. Rust's RESERVED_APP_SLUGS
+ *  (talaria-users) is the install-side list; both match the shared fixture's
+ *  `routes.reservedSlugs` (api/tests/it/fixtures/app-grants.json). */
+export const RESERVED_APP_SLUGS: readonly string[] = ['layout', 'hooks', 'meta']
+
 export function displayName(slug: string): string {
   return slug
     .split('-')

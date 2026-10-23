@@ -1,14 +1,14 @@
 import { createRouter } from 'sv-router'
 import { bindViewTitlePath } from './lib/view-title.svelte'
-import NotFound from './routes/NotFound.svelte'
-import { splitHref } from '@/lib/route-tabs'
+import { resolveHref } from '@/lib/route-tabs'
+import { routes } from './route-table'
 
 // Server-path anchors vs. sv-router's global click interceptor.
 //
 // Router.svelte listens for (bubble-phase) clicks on window and rewrites ANY
 // same-origin <a> into a client-side navigation — including plain anchors to
 // server routes (the Google login buttons, every Google "Connect" link). Those
-// paths have no client route, so the '*' catch-all rendered NotFound at e.g.
+// paths have no client route, so the catch-all rendered NotFound at e.g.
 // /api/integrations/google/org/connect and the request never reached the
 // server. Capture-phase runs before that handler; stopping propagation for
 // same-origin /api (and /.well-known) anchors — without preventDefault — lets
@@ -31,227 +31,9 @@ if (typeof document !== 'undefined') {
   )
 }
 
-// The whole route map, explicit (sv-router code-based tree mode). Lazy
-// `() => import(...)` per view keeps code splitting; the app shell
-// (AppLayout) is the layout for everything behind the session gate — and it
-// is lazy TOO (the old _app.tsx was a lazy file route for the same reason):
-// eager, it hoists the whole shell graph — InboxFocusShell → InboxChatPanel →
-// RichEditor → tiptap/prosemirror — into the entry chunk that /login and the
-// public share pages must also download.
-//
-// Old TanStack file routes → this tree:
-//   routes/login.tsx            → '/login'
-//   routes/join.tsx             → '/join'
-//   routes/a.$slug.tsx          → '/a/:slug'      (public artifact share)
-//   routes/kb.$slug.tsx         → '/kb/:slug'     (public doc share)
-//   routes/kb.space.$slug.tsx   → '/kb/space/:slug'
-//   routes/_app.tsx             → layout: AppLayout
-//   routes/_app/<view>.tsx      → '/<view>'
-//   routes/_app/x.$app.*.tsx    → '/x/:app'(+/manage, and the routes below each)
-//   routes/_app/boards/*        → '/boards', '/boards/:boardId(/:taskId)'
-
-// The app shell, as a layout. Two route groups wear it (the core views under
-// '/', the app surfaces under '/x'); both lazy-import the same module, so the
-// router resolves one component and the shell stays mounted between them.
-const shell = () => import('./routes/app/AppLayout.svelte')
-const shellHooks = {
-  onError(error: unknown) {
-    // A lazy chunk that no longer exists after a deploy lands here, as
-    // does a throw from a route module's top level. Log it; the shell's
-    // <svelte:boundary> is the visible net.
-    console.error('[router]', error)
-  },
-}
-
-export const { p, navigate, isActive, preload, route } = createRouter({
-  '/login': () => import('./routes/Login.svelte'),
-  '/claim': () => import('./routes/Claim.svelte'),
-  '/join': () => import('./routes/Join.svelte'),
-  '/a': {
-    '/:slug': () => import('./routes/ArtifactPublic.svelte'),
-  },
-  '/kb': {
-    '/:slug': () => import('./routes/KbDocPublic.svelte'),
-    '/space': {
-      '/:slug': () => import('./routes/KbSpacePublic.svelte'),
-    },
-  },
-  '/': {
-    // The landing bounces to the Inbox's own URL. `/` used to BE the Inbox,
-    // which left the surface with no address of its own — you could not link to
-    // it, and the nav rail entry for it was a root path that is an ancestor of
-    // every other route (see `activeAmong` in lib/route-tabs.ts for what that
-    // cost). Home is the container; the Inbox is a route inside it.
-    '/': () => import('./routes/app/HomeRedirect.svelte'),
-    // Home and its tabs. Under /home rather than at the root because their
-    // names ARE the names of real views: /boards is the board list, /home/boards
-    // is Home's summary of it.
-    '/home': {
-      // Bare `/home` renders the default tab (the Inbox) rather than 404ing, so
-      // the nav rail can point at the container.
-      '/': () => import('./routes/app/Home.svelte'),
-      '/:tab': () => import('./routes/app/Home.svelte'),
-    },
-    '/chat': () => import('./routes/app/Chat.svelte'),
-    // A DISCRIMINATED path. The selection is a tagged union — a channel, or a
-    // thread with an agent — so the tag is a segment: the two kinds cannot be
-    // confused, and a thread hangs off the agent that owns it.
-    '/comms': {
-      '/': () => import('./routes/app/Comms.svelte'),
-      // The sidebar's two cross-conversation views (Threads, Drafts & sent).
-      '/threads': () => import('./routes/app/Comms.svelte'),
-      '/drafts': () => import('./routes/app/Comms.svelte'),
-      '/new': () => import('./routes/app/Comms.svelte'),
-      // Every conversation shared with one person or agent (the profile
-      // drawer's "See all conversations"): /comms/with/<person|agent>/<id>.
-      '/with': {
-        '/:kind': {
-          '/:id': () => import('./routes/app/Comms.svelte'),
-        },
-      },
-      '/channel': {
-        '/:id': () => import('./routes/app/Comms.svelte'),
-      },
-      '/agent': {
-        '/:model': {
-          '/': () => import('./routes/app/Comms.svelte'),
-          '/:thread': () => import('./routes/app/Comms.svelte'),
-        },
-      },
-    },
-    '/channels': () => import('./routes/app/Channels.svelte'),
-    '/inbox': () => import('./routes/app/Inbox.svelte'),
-    '/boards': {
-      layout: () => import('./routes/app/boards/BoardsShell.svelte'),
-      '/': () => import('./routes/app/boards/BoardsIndex.svelte'),
-      '/:boardId': {
-        // BoardLayout persists across board↔ticket navigation (sv-router
-        // layouts survive child swaps), so opening a ticket mounts ONLY the
-        // overlay — the board behind it never re-renders. BoardsShell wraps
-        // it: the boards view's own sidebar lives at THIS level, so the board
-        // and the ticket overlay both get it and the shell's nav does not.
-        '/': () => import('./routes/app/boards/NoOverlay.svelte'),
-        '/:taskId': () => import('./routes/app/boards/Task.svelte'),
-        layout: () => import('./routes/app/boards/BoardLayout.svelte'),
-      },
-    },
-    // ONE SURFACE FOR EVERY SESSION, at three addresses. Work, Plan and
-    // Research were three views of one shape and are now the work harness:
-    // `/work` is the session list, `/work/:sessionId` is one session.
-    //
-    // The other two paths still resolve, because a URL somebody linked,
-    // bookmarked or was mailed is a promise. `/plan/:planId` names a session
-    // id, and the harness reads the selection out of either path.
-    // `/research/:runId` names a RUN rather than a conversation, so the
-    // harness resolves the run's own discussion and replaces the address with
-    // `/work/<conversationId>` — or, for a run that has no discussion to open,
-    // renders its report alone. A bare `/plan` or `/research` is the harness
-    // with nothing selected; the first selection moves the URL to `/work`.
-    '/work': {
-      '/': () => import('./routes/app/WorkHarness.svelte'),
-      '/:sessionId': () => import('./routes/app/WorkHarness.svelte'),
-    },
-    '/plan': {
-      '/': () => import('./routes/app/WorkHarness.svelte'),
-      '/:planId': () => import('./routes/app/WorkHarness.svelte'),
-    },
-    '/research': {
-      '/': () => import('./routes/app/WorkHarness.svelte'),
-      '/:runId': () => import('./routes/app/WorkHarness.svelte'),
-    },
-    // Space then doc — genuinely hierarchical, so it reads as a path.
-    // `/knowledge?doc=<id>` still resolves: it is the by-id permalink for
-    // links that know a document but not which space it lives in.
-    '/knowledge': {
-      '/': () => import('./routes/app/Knowledge.svelte'),
-      '/:space': {
-        '/': () => import('./routes/app/Knowledge.svelte'),
-        '/:doc': () => import('./routes/app/Knowledge.svelte'),
-      },
-    },
-    // PLACE is the path; the folder you are browsing and the file you have
-    // open stay in the query. They are a different axis — selection WITHIN a
-    // place — and they are independent of each other, so a file can be open
-    // with no folder. A positional path could not say that without a
-    // placeholder segment.
-    '/artifacts': {
-      '/': () => import('./routes/app/Artifacts.svelte'),
-      '/:place': () => import('./routes/app/Artifacts.svelte'),
-    },
-    // Each tab is a real location: /agents (roster), /agents/templates,
-    // /agents/schedules. A tab you cannot link to, bookmark, or reach with the
-    // back button is a mode, not a place.
-    '/agents': {
-      '/': () => import('./routes/app/Agents.svelte'),
-      '/:tab': () => import('./routes/app/Agents.svelte'),
-    },
-    '/fleet': () => import('./routes/app/Fleet.svelte'),
-    '/studio': () => import('./routes/app/Studio.svelte'),
-    '/teams': () => import('./routes/app/Teams.svelte'),
-    '/templates': {
-      '/': () => import('./routes/app/Templates.svelte'),
-      '/:tab': () => import('./routes/app/Templates.svelte'),
-    },
-    '/models': {
-      '/': () => import('./routes/app/Models.svelte'),
-      '/:tab': () => import('./routes/app/Models.svelte'),
-    },
-    '/mcp': {
-      '/': () => import('./routes/app/Mcp.svelte'),
-      '/:tab': () => import('./routes/app/Mcp.svelte'),
-    },
-    '/observability': {
-      '/': () => import('./routes/app/Observability.svelte'),
-      '/:tab': () => import('./routes/app/Observability.svelte'),
-    },
-    '/apps': () => import('./routes/app/Apps.svelte'),
-    // The control plane's front door: what needs attention across agents,
-    // models, MCP, spend and apps, with each view's own page one click away
-    // in the sidebar docked beside it.
-    '/manage': () => import('./routes/app/Manage.svelte'),
-    '/settings': {
-      '/': () => import('./routes/app/Settings.svelte'),
-      '/:tab': () => import('./routes/app/Settings.svelte'),
-    },
-    '/admin': {
-      '/': () => import('./routes/app/Admin.svelte'),
-      '/:tab': () => import('./routes/app/Admin.svelte'),
-    },
-    layout: shell,
-    hooks: shellHooks,
-  },
-  // AN APP OWNS EVERY ROUTE BELOW ITS SURFACES. /x/<slug>/<rest> is the work
-  // surface and /x/<slug>/manage/<rest> the manage surface, each mounted once
-  // with <rest> handed to it (AppSurface → useAppRoute), so an app's list, its
-  // record pages and its tabs are real, linkable addresses. The route gate
-  // reads the same split (appViewFor in lib/app-grants.ts): a work grant opens
-  // /x/<slug>/a/b and never /x/<slug>/manage/a. A settings tab is one page and
-  // has no routes below it.
-  //
-  // WHY THIS GROUP SITS OUTSIDE '/'. sv-router treats a catch-all inside the
-  // '/' layout group as a FALLBACK, and the top-level '*' below beats it — so
-  // nested here, /x/<slug>/items 404'd. As its own group it is an ordinary
-  // match. The same shell and hooks wear it; the same component either way.
-  //
-  // The catch-alls are bare '*', not '*rest': a named one makes sv-router
-  // decode the rest, and a malformed escape (/x/crm/%zz) makes its matcher
-  // throw a URIError, so the navigation fails. AppSurface reads the rest off
-  // the pathname and the SDK decodes it once, per segment, keeping a
-  // malformed escape as spelled.
-  '/x': {
-    '/:app': {
-      '/': () => import('./routes/app/XAppView.svelte'),
-      '/manage': {
-        '/': () => import('./routes/app/XAppManage.svelte'),
-        '*': () => import('./routes/app/XAppManage.svelte'),
-      },
-      '*': () => import('./routes/app/XAppView.svelte'),
-    },
-    layout: shell,
-    hooks: shellHooks,
-  },
-  '*': NotFound,
-})
+// The route map lives in route-table.ts, where a node test can run the
+// matcher over it; this module is the router built from it.
+export const { p, navigate, isActive, preload, route } = createRouter(routes)
 
 // View-title claims are keyed by this router's pathname. The binding runs
 // this way round so that module stays loadable outside a browser (see
@@ -262,10 +44,18 @@ bindViewTitlePath(() => route.pathname)
  *  or an app's own (appNavigate). The typed `navigate` wants a route-path
  *  literal; these arrive as plain strings, often with a query string
  *  (`/artifacts?a=<id>`), which `navigate` would match as part of the path —
- *  so the query and hash go in its options (splitHref). One widening cast
- *  here instead of an unsound one at every call site. */
-export const navigateHref = (href: string, options?: { replace?: boolean }): Promise<unknown> => {
-  const { pathname, search, hash } = splitHref(href)
+ *  so the query and hash go in its options. One widening cast here instead
+ *  of an unsound one at every call site.
+ *
+ *  THE HREF IS RESOLVED FIRST, as the browser resolves it (resolveHref).
+ *  sv-router matches the string it is handed but writes the URL-normalized
+ *  path to the address bar, and the address is what the route gate checks —
+ *  so `/x/crm/manage/../items` mounted the manage surface at the address
+ *  /x/crm/items, which the gate judged as the work view. Resolved, the router
+ *  and the gate read one path. An href to another origin is refused — the
+ *  promise rejects and nothing moves. */
+export const navigateHref = async (href: string, options?: { replace?: boolean }): Promise<unknown> => {
+  const { pathname, search, hash } = resolveHref(href, location.href)
   type Untyped = (path: string, options?: { replace?: boolean; search?: string; hash?: string }) => Promise<unknown>
   return (navigate as unknown as Untyped)(pathname, {
     ...options,

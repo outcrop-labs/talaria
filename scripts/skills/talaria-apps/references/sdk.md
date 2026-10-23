@@ -45,3 +45,7 @@ apps/<slug>/
 ```
 
 Surfaces opt in via `talaria.json`. Work → `/x/<slug>`. Manage → `/x/<slug>/manage`. Settings is a Settings tab.
+Each of work and manage owns every route below it (`/x/<slug>/items/42`, `/x/<slug>/manage/fields`): read where
+the surface is with `useAppRoute()` (`rest`, `match('items/:id')`, `query`), and link or move with `appHref(path)` and
+`appNavigate(path)`, both relative to the surface (`{ surface: 'manage' }` crosses to the other one); a settings tab
+has no routes below it.

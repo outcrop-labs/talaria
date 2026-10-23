@@ -559,6 +559,35 @@ pub fn slug_ok(s: &str) -> bool {
     head && rest
 }
 
+/// Slugs no NEW app may take: the client router's config keys. An app's
+/// slug is a path segment under /x, and sv-router reads a `layout`, `hooks`
+/// or `meta` key in its route table as a path segment too — one beside the
+/// slug segment outranked '/:app', so /x/hooks matched the key, found no
+/// route, and rendered a blank page. The route table keeps those keys above
+/// /x (ui/src/route-table.ts), which is what lets an app that already has
+/// one of these slugs open; install refuses them so no new app leans on it.
+/// Discovery, enablement and uninstall still take them (`slug_ok`), so an
+/// app installed before the refusal stays manageable. The list is the shared
+/// fixture's `routes.reservedSlugs`, which the TS route-table test and the
+/// CLI's `talaria app new` read too.
+pub const RESERVED_APP_SLUGS: &[&str] = &["layout", "hooks", "meta"];
+
+/// Whether a new app may be installed under `s`: the slug rule, and not one
+/// of `RESERVED_APP_SLUGS`. The error is the sentence the admin reads.
+pub fn slug_installable(s: &str) -> Result<(), String> {
+    if !slug_ok(s) {
+        return Err(format!(
+            "\"{s}\" is not a usable app slug (lowercase letters, digits, dashes)"
+        ));
+    }
+    if RESERVED_APP_SLUGS.contains(&s) {
+        return Err(format!(
+            "\"{s}\" is reserved: the client router uses that word in its route table — install the app under another slug"
+        ));
+    }
+    Ok(())
+}
+
 /// Where app codebases live: TALARIA_APPS_DIR, else <cwd>/../apps — the
 /// repo's apps/ dir when the process runs from api/.
 pub fn apps_dir() -> PathBuf {
@@ -1921,6 +1950,27 @@ mod tests {
         assert!(!slug_ok("Upper"));
         assert!(!slug_ok("under_score"));
         assert!(!slug_ok("sp ace"));
+    }
+
+    #[test]
+    fn a_new_app_cannot_take_a_router_config_key_as_its_slug() {
+        // The shared fixture's list, which the TS route-table test checks
+        // against the route table's own config keys.
+        let f = fixture();
+        let reserved: Vec<String> = RESERVED_APP_SLUGS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(reserved, strings(&f["routes"]["reservedSlugs"]));
+        for s in RESERVED_APP_SLUGS {
+            // Slug-shaped, so an app already installed under one is still
+            // discovered, enabled and uninstalled; only a new install refuses.
+            assert!(slug_ok(s), "{s}");
+            let err = slug_installable(s).expect_err(s);
+            assert!(err.contains("is reserved"), "{err}");
+        }
+        assert_eq!(slug_installable("crm"), Ok(()));
+        assert_eq!(slug_installable("hooks-app"), Ok(()));
+        assert_eq!(slug_installable("my-layout"), Ok(()));
+        let err = slug_installable("Hooks").expect_err("upper case");
+        assert!(err.contains("not a usable app slug"), "{err}");
     }
 
     #[test]

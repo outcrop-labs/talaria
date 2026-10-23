@@ -167,6 +167,46 @@ describe('resolveAppHref', () => {
     expect(resolveAppHref(settings)).toBe('/settings/app:crm')
     expect(resolveAppHref(settings, '?section=keys')).toBe('/settings/app:crm?section=keys')
     expect(() => resolveAppHref(settings, 'fields')).toThrow(/no routes below it/)
+    expect(() => resolveAppHref(settings, 'a/../fields')).toThrow(/no routes below it/)
+    expect(resolveAppHref(settings, 'a/..')).toBe('/settings/app:crm')
+    expect(() => resolveAppHref(settings, '..')).toThrow(/outside the settings surface/)
+  })
+
+  it('resolves dots, backslashes and control characters as a link does', () => {
+    // What the browser writes to the address is what the gate checks, so the
+    // href is that address — never a spelling the router would read apart.
+    expect(resolveAppHref(work, 'items/42/../7')).toBe('/x/crm/items/7')
+    expect(resolveAppHref(work, 'items/%2e%2e/7')).toBe('/x/crm/7')
+    expect(resolveAppHref(work, './items/./42')).toBe('/x/crm/items/42')
+    expect(resolveAppHref(work, 'items\\42')).toBe('/x/crm/items/42')
+    expect(resolveAppHref(work, '\\items')).toBe('/x/crm/items')
+    expect(resolveAppHref(work, 'ite\tms/4\n2')).toBe('/x/crm/items/42')
+    expect(resolveAppHref(work, 'a\u0000b c')).toBe('/x/crm/a%00b%20c')
+    expect(resolveAppHref(manage, 'fields/..')).toBe('/x/crm/manage')
+    expect(resolveAppHref(work, 'items/42/..?tab=1#n')).toBe('/x/crm/items?tab=1#n')
+  })
+
+  it('refuses a path that resolves outside its surface', () => {
+    // Each of these used to go into the href verbatim: the router mounted one
+    // surface and the address — the gate's input — named another.
+    for (const [from, path] of [
+      [manage, '../items'],
+      [manage, '%2e%2e/items'],
+      [manage, '.%2E/items'],
+      [manage, '..\\items'],
+      [manage, 'fields/../../items'],
+      [work, '..'],
+      [work, '../other/items'],
+      [work, '../../boards'],
+      [work, 'manage'],
+      [work, 'MANAGE/fields'],
+      [work, 'items/../manage/fields'],
+    ] as const) {
+      expect(() => resolveAppHref(from, path), `${from.surface} ${path}`).toThrow(/outside the (work|manage) surface/)
+    }
+    // An escape that is not a dot is a name: it stays below the surface.
+    expect(resolveAppHref(work, 'm%61nage')).toBe('/x/crm/m%61nage')
+    expect(resolveAppHref(work, 'items/..%2Fmanage')).toBe('/x/crm/items/..%2Fmanage')
   })
 })
 
@@ -183,6 +223,18 @@ describe('appHref and appNavigate', () => {
       { href: '/x/crm/manage/fields', options: { replace: true } },
       { href: '/x/crm/items/9', options: { replace: undefined } },
     ])
+  })
+
+  it('refuse a path that leaves the surface, before navigating anywhere', async () => {
+    at('/x/crm/items/42')
+    expect(() => appHref('manage/fields')).toThrow(/outside the work surface/)
+    await expect(appNavigate('../other')).rejects.toThrow(/outside the work surface/)
+    at('/x/crm/manage/fields')
+    await expect(appNavigate('../items')).rejects.toThrow(/outside the manage surface/)
+    // The way across is to name the surface; its path is relative to it.
+    await expect(appNavigate('../items', { surface: 'work' })).rejects.toThrow(/outside the work surface/)
+    await appNavigate('items', { surface: 'work' })
+    expect(h.navigated).toEqual([{ href: '/x/crm/items', options: { replace: undefined } }])
   })
 
   it('refuse off an app surface, before navigating anywhere', async () => {

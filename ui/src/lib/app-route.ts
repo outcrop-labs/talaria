@@ -93,7 +93,8 @@ export function matchRest(pattern: string, rest: string): Record<string, string>
 export interface AppHrefOptions {
   /** Link into another surface of the same app — `'work'` or `'manage'`.
    *  Defaults to the surface the call is made from. A settings tab has no
-   *  routes below it, so from one, a path needs a surface. */
+   *  routes below it, so from one, a path needs a surface. A path never
+   *  climbs out of its surface with `..`; this is how you leave it. */
   surface?: 'work' | 'manage'
 }
 
@@ -104,24 +105,46 @@ export interface AppNavigateOptions extends AppHrefOptions {
   replace?: boolean
 }
 
+/** Any origin will do: `resolveAppHref` reads only the path the URL parser
+ *  makes of a host path, and the host path always starts with '/'. */
+const PARSE_BASE = 'http://app.invalid'
+
 /** The host path for `path` below a surface: `items/42?tab=notes` on the
  *  work surface of `crm` is `/x/crm/items/42?tab=notes`. `path` is relative
  *  to the surface (a leading slash is ignored) and may carry a query and a
  *  hash; its segments go into the URL as given, so encode an id that may
  *  hold a slash (`encodeURIComponent(id)`). Pure: `from` is the surface the
- *  link is made on. */
+ *  link is made on.
+ *
+ *  RESOLVED AS A LINK IS. `..` and `.` (spelled `%2e` too), a backslash, a
+ *  tab or newline, and a control character come out as the browser's URL
+ *  parser makes them — the same parser that writes the address the route gate
+ *  checks — and empty segments collapse. A path that resolves outside its
+ *  surface throws rather than land somewhere the caller did not name:
+ *  `'../items'` from the manage surface, or `'manage/fields'` from the work
+ *  surface, which is the manage surface's address. Name the other surface
+ *  with `{ surface }` instead. */
 export function resolveAppHref(from: { slug: string; surface: AppSurfaceName }, path = '', opts: AppHrefOptions = {}): string {
   const surface = opts.surface ?? from.surface
-  const cut = path.search(/[?#]/)
-  const sub = (cut < 0 ? path : path.slice(0, cut)).split('/').filter(Boolean).join('/')
-  const tail = cut < 0 ? '' : path.slice(cut)
-  if (surface === 'settings' && sub) {
-    throw new Error(
-      `a settings tab has no routes below it — link to '${sub}' on another surface: appHref('${sub}', { surface: 'manage' })`,
-    )
-  }
   const base = surfaceBase(from.slug, surface)
-  return `${sub ? `${base}/${sub}` : base}${tail}`
+  const url = new URL(`${base}/${path.replace(/^[/\\]+/, '')}`, PARSE_BASE)
+  const pathname = `/${url.pathname.split('/').filter(Boolean).join('/')}`
+  const tail = `${url.search}${url.hash}`
+  if (surface === 'settings') {
+    if (pathname === base) return `${pathname}${tail}`
+    if (pathname.startsWith(`${base}/`)) {
+      const sub = pathname.slice(base.length + 1)
+      throw new Error(
+        `a settings tab has no routes below it — link to '${sub}' on another surface: appHref('${sub}', { surface: 'manage' })`,
+      )
+    }
+  } else {
+    const lands = surfaceAt(pathname)
+    if (lands && lands.slug === asciiLower(from.slug) && lands.surface === surface) return `${pathname}${tail}`
+  }
+  throw new Error(
+    `'${path}' resolves to ${pathname}, outside the ${surface} surface (${base}) — an app path stays below its surface; name another surface of the app with { surface }`,
+  )
 }
 
 /** The surface the page shows now, for the link helpers. They run from
@@ -136,7 +159,8 @@ function currentSurface(fn: string): { slug: string; surface: AppSurfaceName } {
 /** The href for a route of this app, relative to the surface the page
  *  shows: `appHref('items/42')` on `/x/crm/…` is `/x/crm/items/42`, and on
  *  `/x/crm/manage/…` it is `/x/crm/manage/items/42`. `appHref()` is the
- *  surface's own address. An `<a href>` built from it navigates in place —
+ *  surface's own address. `..` resolves as in a link and may not leave the
+ *  surface (resolveAppHref). An `<a href>` built from it navigates in place —
  *  the host router takes the click — and still opens in a new tab. */
 export function appHref(path = '', opts?: AppHrefOptions): string {
   return resolveAppHref(currentSurface('appHref'), path, opts)

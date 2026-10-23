@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CliError } from '../../ui'
 import { fakeCtx } from '../../testing'
-import { displayName, skeletonFiles } from './skeleton'
+import { RESERVED_APP_SLUGS, displayName, skeletonFiles } from './skeleton'
 import { runAppNew } from './new'
 
 const attempt = (fn: () => unknown): string => {
@@ -87,6 +87,20 @@ describe('runAppNew', () => {
     const ctx = ctxAt()
     expect(attempt(() => runAppNew(ctx, 'MyApp'))).toContain('not a usable app slug')
     expect(existsSync(join(ctx.root, 'apps'))).toBe(false)
+  })
+
+  test('refuses a slug the router reserves, as install does', () => {
+    // The same list Rust's install refuses: the shared fixture's.
+    const fixture = JSON.parse(
+      readFileSync(join(import.meta.dir, '..', '..', '..', '..', 'api', 'tests', 'it', 'fixtures', 'app-grants.json'), 'utf8'),
+    ) as { routes: { reservedSlugs: string[] } }
+    expect([...RESERVED_APP_SLUGS]).toEqual(fixture.routes.reservedSlugs)
+    for (const slug of RESERVED_APP_SLUGS) {
+      const ctx = ctxAt()
+      expect(attempt(() => runAppNew(ctx, slug))).toContain('is reserved')
+      expect(existsSync(join(ctx.root, 'apps'))).toBe(false)
+    }
+    expect(runAppNew(ctxAt(), 'hooks-board')).toBe(0)
   })
 
   test('refuses an existing destination', () => {
