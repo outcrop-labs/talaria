@@ -6,7 +6,7 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-334 routes across 23 groups.
+333 routes across 23 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
