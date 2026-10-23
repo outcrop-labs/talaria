@@ -240,7 +240,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs`](../../api/cr
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{defs, endpoints, brains, canHire, toolsets}` | 200 | — |
 
-**GET** — The roster also carries `toolsets`, the agent editor's vocabulary: `governed`, every Hermes toolset an operator may disable on an agent (28 names, alphabetical); `mandatoryDisabled`, the whole floor the renderer closes on every agent whatever its def says — `todo` and `clarify`, because Talaria's own MCP versions are the ones a person sees, plus the org-wide floor an admin sets on `PUT /api/admin/settings` (`mandatoryDisabledToolsets`) or pins with `TALARIA_MANDATORY_DISABLED_TOOLSETS`; and `orgDisabled`, that org part alone, so the editor can say an admin closed a row rather than Talaria. `governed` is the constant the `PATCH /api/fleet/defs/{id}` validator reads, so the picker cannot offer a name the write door would refuse.
+**GET** — The roster also carries `toolsets`, the agent editor's vocabulary: `governed`, every Hermes toolset an operator may disable on an agent (22 names, alphabetical); `mandatoryDisabled`, the whole floor the renderer closes on every agent whatever its def says — `todo` and `clarify`, because Talaria's own MCP versions are the ones a person sees, plus the org-wide floor an admin sets on `PUT /api/admin/settings` (`mandatoryDisabledToolsets`) or pins with `TALARIA_MANDATORY_DISABLED_TOOLSETS`; and `orgDisabled`, that org part alone, so the editor can say an admin closed a row rather than Talaria. `governed` is the constant the `PATCH /api/fleet/defs/{id}` validator reads, so the picker cannot offer a name the write door would refuse.
 
 ## `/api/fleet/defs/{id}`
 

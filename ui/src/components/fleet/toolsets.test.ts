@@ -4,14 +4,14 @@ import { MANDATORY_DISABLED, builtinFloor, normalizeToolsets, sameToolsets, togg
 // The governed list as the server publishes it, trimmed to the names these
 // cases need. Alphabetical, because that is the contract the grid relies on
 // for its reading order.
-const GOVERNED = ['browser', 'clarify', 'coding', 'memory', 'todo', 'web']
+const GOVERNED = ['browser', 'clarify', 'delegation', 'memory', 'todo', 'web']
 const FLOOR = ['todo', 'clarify']
 
 describe('toolsetRows: the checkbox is the toolset, the list is its absence', () => {
   it('reads an empty disabled list as every governed toolset on, bar the floor', () => {
     const rows = toolsetRows(GOVERNED, FLOOR, [])
     expect(rows.map((r) => r.name)).toEqual(GOVERNED)
-    expect(rows.filter((r) => r.on).map((r) => r.name)).toEqual(['browser', 'coding', 'memory', 'web'])
+    expect(rows.filter((r) => r.on).map((r) => r.name)).toEqual(['browser', 'delegation', 'memory', 'web'])
     expect(rows.filter((r) => r.forced).map((r) => r.name)).toEqual(['clarify', 'todo'])
     // Forced rows are off, which is the only honest rendering: the renderer
     // closes them whatever the def says.

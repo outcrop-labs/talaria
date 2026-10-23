@@ -655,6 +655,11 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         state.pg.clone(),
         talaria_mcp_library::library(),
     );
+    // skills-index-refresh mirrors Hermes' official skills index into the
+    // marketplace's catalog table (leased; a 304 most runs — the index is
+    // rebuilt daily). Optional like the MCP mirror: its absence is a slower
+    // first marketplace open, which nudges its own sync.
+    talaria_skills_marketplace::register_skills_index_refresh_job(state.pg.clone());
     talaria_mcp::pkg::register_pkg_reconcile_job(state.pg.clone());
     talaria_mcp::calls::register_mcp_calls_prune_job(state.pg.clone());
     talaria_mcp::health::register_mcp_health_job(state.pg.clone(), sb.clone(), rt.clone());
@@ -832,6 +837,10 @@ mod tests {
         assert!(
             names.contains(&JobName::McpLibraryRefresh),
             "mcp-library-refresh fell out of the job table"
+        );
+        assert!(
+            names.contains(&JobName::SkillsIndexRefresh),
+            "skills-index-refresh fell out of the job table"
         );
         assert!(
             names.contains(&JobName::McpHealth),

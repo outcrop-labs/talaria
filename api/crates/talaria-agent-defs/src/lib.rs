@@ -39,10 +39,26 @@ pub fn dept_ok(department: &str) -> bool {
         .is_match(department)
 }
 
-/// The Hermes toolsets Talaria governs — `toolsets.py`'s own TOOLSETS, in its
-/// order, minus the platform/integration ones (bot_room, discord*, feishu*,
-/// hermes-*, homeassistant, spotify, yuanbao) that no Talaria agent is ever
-/// wired to and that nobody here could switch on by naming them.
+/// The Hermes toolsets Talaria governs — the switches Hermes' own `hermes
+/// tools` offers (`CONFIGURABLE_TOOLSETS` in hermes_cli/tools_config.py), in
+/// alphabetical order, minus the four no Talaria agent is ever wired to:
+/// `stt` (a provider setting with its own `stt.enabled` switch, not a model
+/// toolset) and the platform tools `discord`, `discord_admin` and `yuanbao`.
+/// `scripts/hermes-toolsets.json` is the checked-in snapshot of Hermes'
+/// list; a test below holds this constant to it and the chassis smoke holds
+/// the snapshot to the live image, so the day Hermes grows a switch both say
+/// so.
+///
+/// What is NOT here, and why it must not be: the composites (`safe`,
+/// `debugging`, `search`), the `coding` posture, the `hermes-*` bundles and
+/// the GUI client surfaces (`project`, `desktop_ui`, `onboarding`,
+/// `catalog`). Hermes disables tool by tool, so unticking a composite strips
+/// its MEMBERS — `safe` took web search, vision and image generation with
+/// it while their own rows stayed ticked — a posture or a bundle strips only
+/// its non-core delta (nothing, for `coding`), and a client surface never
+/// reaches an API-server session at all. A switch that does something other
+/// than what its row says is worse than no switch. Names that used to be
+/// here are [`RETIRED_TOOLSETS`].
 ///
 /// A name outside this list is a typo or a Hermes version nobody has read
 /// yet, and either way it reaches `agent.disabled_toolsets` in the rendered
@@ -54,21 +70,15 @@ pub const GOVERNED_TOOLSETS: &[&str] = &[
     "browser",
     "clarify",
     "code_execution",
-    "coding",
     "computer_use",
     "connections",
     "context_engine",
     "cronjob",
-    "debugging",
     "delegation",
-    "desktop_ui",
     "file",
     "image_gen",
     "kanban",
     "memory",
-    "project",
-    "safe",
-    "search",
     "session_search",
     "skills",
     "terminal",
@@ -80,6 +90,41 @@ pub const GOVERNED_TOOLSETS: &[&str] = &[
     "web",
     "x_search",
 ];
+
+/// The names [`GOVERNED_TOOLSETS`] carried before it was cut to Hermes' own
+/// switches, each with the governed toolsets that close at least what it
+/// closed in Hermes (`toolsets.py`): `debugging` is terminal + process with
+/// web and file folded in, `safe` folds in web, vision and image_gen, and
+/// `search` is web_search alone — `web` closes that and web_extract beside
+/// it, the stricter reading, because a list that said "closed" must not come
+/// back open. `coding` (a posture), `project` and `desktop_ui` (GUI client
+/// surfaces) closed nothing on an API-server agent, so they map to nothing.
+///
+/// A stored def, an org floor, the floor's env twin, or an older editor tab
+/// can still spell one of these; [`toolset_names`] expands it rather than
+/// refusing what used to be a valid list or, worse, dropping a closed name.
+pub const RETIRED_TOOLSETS: &[(&str, &[&str])] = &[
+    ("coding", &[]),
+    ("debugging", &["terminal", "web", "file"]),
+    ("desktop_ui", &[]),
+    ("project", &[]),
+    ("safe", &["web", "vision", "image_gen"]),
+    ("search", &["web"]),
+];
+
+/// One raw name as the governed names it stands for: itself when governed,
+/// its expansion when retired ([`RETIRED_TOOLSETS`]), `None` for a stranger.
+/// Trims; the caller owns dedupe and order.
+pub fn toolset_names(raw: &str) -> Option<Vec<&'static str>> {
+    let name = raw.trim();
+    if let Some(governed) = GOVERNED_TOOLSETS.iter().find(|g| **g == name) {
+        return Some(vec![*governed]);
+    }
+    RETIRED_TOOLSETS
+        .iter()
+        .find(|(old, _)| *old == name)
+        .map(|(_, members)| members.to_vec())
+}
 
 /// The two Talaria takes off every agent's table whatever a def says, because
 /// Talaria already does both jobs and only its versions reach a person: the
@@ -160,15 +205,19 @@ pub fn merge_org_floor(stored: &Value, env: Option<&str>) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .collect();
     for raw in stored_names.into_iter().chain(env_names) {
-        let name = raw.trim();
-        if !GOVERNED_TOOLSETS.contains(&name) {
+        // A retired name expands to what it closed — dropping it as a
+        // stranger would REOPEN those toolsets fleet-wide.
+        let Some(names) = toolset_names(&raw) else {
             tracing::warn!(
-                "[agent-defs] org toolset floor names \"{name}\", which is not a governed toolset — ignored"
+                "[agent-defs] org toolset floor names \"{}\", which is not a governed toolset — ignored",
+                raw.trim()
             );
             continue;
-        }
-        if !out.iter().any(|kept| kept == name) {
-            out.push(name.to_string());
+        };
+        for name in names {
+            if !out.iter().any(|kept| kept == name) {
+                out.push(name.to_string());
+            }
         }
     }
     out
@@ -247,7 +296,8 @@ async fn disabled_toolsets_of(pg: &PgPool, id: &str) -> Result<Vec<String>, sqlx
 const MAX_TOOLSETS: usize = 40;
 
 /// Clean and bless a disabled-toolsets list (fleet.defs.$id PATCH): trim each
-/// name, drop repeats keeping the first, and refuse anything outside
+/// name, expand a retired one into what it closed ([`RETIRED_TOOLSETS`]),
+/// drop repeats keeping the first, and refuse anything else outside
 /// [`GOVERNED_TOOLSETS`] — naming the first stranger, because an operator who
 /// mistyped one of eight names needs to know WHICH.
 pub fn validate_toolsets(names: &[String]) -> Result<Vec<String>, String> {
@@ -256,12 +306,13 @@ pub fn validate_toolsets(names: &[String]) -> Result<Vec<String>, String> {
     }
     let mut out: Vec<String> = Vec::with_capacity(names.len());
     for raw in names {
-        let name = raw.trim();
-        if !GOVERNED_TOOLSETS.contains(&name) {
-            return Err(format!("unknown toolset \"{name}\""));
-        }
-        if !out.iter().any(|kept| kept == name) {
-            out.push(name.to_string());
+        let Some(expanded) = toolset_names(raw) else {
+            return Err(format!("unknown toolset \"{}\"", raw.trim()));
+        };
+        for name in expanded {
+            if !out.iter().any(|kept| kept == name) {
+                out.push(name.to_string());
+            }
         }
     }
     Ok(out)
@@ -1184,6 +1235,99 @@ mod tests {
         assert_eq!(
             merge_org_floor(&serde_json::json!("terminal"), None),
             vec!["todo".to_string(), "clarify".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_retired_name_expands_to_what_it_closed_and_never_reopens_anything() {
+        // The composites close their members, `search` reads as the stricter
+        // `web`, and the no-op names vanish — in a def's list and in the org
+        // floor alike.
+        assert_eq!(
+            validate_toolsets(&["safe".into(), "web".into(), "coding".into()]).unwrap(),
+            vec![
+                "web".to_string(),
+                "vision".to_string(),
+                "image_gen".to_string()
+            ]
+        );
+        assert_eq!(
+            validate_toolsets(&["debugging".into(), "project".into(), "desktop_ui".into()])
+                .unwrap(),
+            vec![
+                "terminal".to_string(),
+                "web".to_string(),
+                "file".to_string()
+            ]
+        );
+        assert_eq!(
+            merge_org_floor(&serde_json::json!(["search"]), Some("safe")),
+            vec![
+                "todo".to_string(),
+                "clarify".to_string(),
+                "web".to_string(),
+                "vision".to_string(),
+                "image_gen".to_string()
+            ],
+            "an org floor that closed a composite must not reopen its members"
+        );
+        // Every expansion lands on governed names only, and no retired name
+        // is still governed — the two tables never overlap.
+        for (old, members) in RETIRED_TOOLSETS {
+            assert!(
+                !GOVERNED_TOOLSETS.contains(old),
+                "{old} is retired AND governed"
+            );
+            for m in *members {
+                assert!(
+                    GOVERNED_TOOLSETS.contains(m),
+                    "{old} expands to ungoverned {m}"
+                );
+            }
+        }
+    }
+
+    /// The snapshot is Hermes' own `CONFIGURABLE_TOOLSETS` at the pinned
+    /// version (the chassis smoke re-reads it from the live image and fails on
+    /// drift). The governed list is that list minus the names the snapshot
+    /// says Talaria leaves alone, each with its reason — so a Hermes switch
+    /// that appears in the snapshot without a decision here fails this test.
+    #[test]
+    fn the_governed_list_is_hermes_own_switches_minus_the_unwired() {
+        #[derive(Deserialize)]
+        struct Snapshot {
+            configurable: Vec<String>,
+            #[serde(rename = "notGoverned")]
+            not_governed: std::collections::BTreeMap<String, String>,
+        }
+        let snap: Snapshot = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../scripts/hermes-toolsets.json"
+        )))
+        .expect("scripts/hermes-toolsets.json parses");
+        for name in snap.not_governed.keys() {
+            assert!(
+                snap.configurable.contains(name),
+                "notGoverned names {name}, which Hermes does not offer"
+            );
+        }
+        let mut want: Vec<&str> = snap
+            .configurable
+            .iter()
+            .map(String::as_str)
+            .filter(|n| !snap.not_governed.contains_key(*n))
+            .collect();
+        want.sort_unstable();
+        let mut got = GOVERNED_TOOLSETS.to_vec();
+        got.sort_unstable();
+        assert_eq!(
+            got, want,
+            "GOVERNED_TOOLSETS drifted from the Hermes snapshot"
+        );
+        assert_eq!(
+            GOVERNED_TOOLSETS.to_vec(),
+            got,
+            "kept alphabetical, the editor's reading order"
         );
     }
 

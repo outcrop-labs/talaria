@@ -464,10 +464,10 @@ source.
 
 Source: [`api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs`](../../api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs)
 
-> /api/skills/marketplace — the Hermes Atlas skill catalog for the Studio's
-> picker: GET ?q= (the ranked list, filtered), GET detail?repo= (one GitHub
-> repo's discovered skills), POST install (write them into an owner's skill
-> root). Reads are any member's (the Studio is a member surface, like the
+> /api/skills/marketplace — Hermes' official skills index for the Studio's
+> picker: GET ?q= (the mirrored catalog, searched), GET detail?id=&owner=
+> (one skill's files and its Skills Guard verdict — the preview), POST
+> install (scan, then write it into an owner's skill root). The list reads
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -478,36 +478,36 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs`](../
 
 Source: [`api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs`](../../api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs)
 
-> /api/skills/marketplace — the Hermes Atlas skill catalog for the Studio's
-> picker: GET ?q= (the ranked list, filtered), GET detail?repo= (one GitHub
-> repo's discovered skills), POST install (write them into an owner's skill
-> root). Reads are any member's (the Studio is a member surface, like the
+> /api/skills/marketplace — Hermes' official skills index for the Studio's
+> picker: GET ?q= (the mirrored catalog, searched), GET detail?id=&owner=
+> (one skill's files and its Skills Guard verdict — the preview), POST
+> install (scan, then write it into an owner's skill root). The list reads
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{repo, skills}` | 200, 400, 502 | — |
+| GET | `session` | — | `{id, name, repo, commit, dir, upstream, summary, fileCount, files, scan}` | 200, 400, 403, 404, 502 | — |
 
 ## `/api/skills/marketplace/install`
 
 Source: [`api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs`](../../api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs)
 
-> /api/skills/marketplace — the Hermes Atlas skill catalog for the Studio's
-> picker: GET ?q= (the ranked list, filtered), GET detail?repo= (one GitHub
-> repo's discovered skills), POST install (write them into an owner's skill
-> root). Reads are any member's (the Studio is a member surface, like the
+> /api/skills/marketplace — Hermes' official skills index for the Studio's
+> picker: GET ?q= (the mirrored catalog, searched), GET detail?id=&owner=
+> (one skill's files and its Skills Guard verdict — the preview), POST
+> install (scan, then write it into an owner's skill root). The list reads
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apiskillsmarketplaceinstall-body) | `{ok, owner, repo, results}` | 200, 400, 403, 502 | — |
+| POST | `session` | [body](#post-apiskillsmarketplaceinstall-body) | `{ok, owner, id, name, status, scan}` | 200, 400, 403, 404, 422, 502 | — |
 
 ### POST `/api/skills/marketplace/install` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `owner` | `string(1, 80)` |  |
-| `repo` | `string(1, 200)` |  |
+| `id` | `string(1, 400)` |  |
 
 ## `/api/vision/describe`
 

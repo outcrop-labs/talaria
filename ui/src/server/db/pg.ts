@@ -3993,6 +3993,91 @@ alter table tasks drop column if exists conversation_id`,
   // agent's next write stamps them.
   `alter table agent_created_google_docs
      add column if not exists last_agent_write_at timestamptz`,
+  // ── Toolset vocabulary: Hermes' own switches only (2026-10-22) ──────────
+  // The governed toolset list carried Hermes composites (safe, debugging,
+  // search), a posture (coding) and GUI-only surfaces (project, desktop_ui).
+  // Hermes disables tool by tool, so a closed composite closed its MEMBERS
+  // while their own rows read open, and the other three closed nothing on an
+  // API-server agent. The list is now Hermes' CONFIGURABLE_TOOLSETS; a stored
+  // retired name becomes the governed names it closed (search reads as web,
+  // the stricter of the two), so the editor shows what the agent really has
+  // and nothing that was closed opens. The api expands the same names on
+  // read and write for anything this misses (the env twin, an older tab).
+  `-- deliberate: rewrites agent_defs.disabled_toolsets in place, expanding retired toolset
+   -- names into the governed names they closed; what Hermes closes stays the same or stricter.
+   update agent_defs d set disabled_toolsets = (
+     select coalesce(jsonb_agg(m.name order by m.first), '[]'::jsonb)
+     from (
+       select x.name, min(x.pos) as first
+       from (
+         select e.ord * 10 + u.ord as pos, u.name
+         from jsonb_array_elements_text(d.disabled_toolsets) with ordinality as e(raw, ord)
+         cross join lateral unnest(case e.raw
+             when 'debugging' then array['terminal', 'web', 'file']
+             when 'safe' then array['web', 'vision', 'image_gen']
+             when 'search' then array['web']
+             when 'coding' then array[]::text[]
+             when 'project' then array[]::text[]
+             when 'desktop_ui' then array[]::text[]
+             else array[e.raw] end) with ordinality as u(name, ord)
+       ) x
+       group by x.name
+     ) m
+   )
+   where jsonb_typeof(d.disabled_toolsets) = 'array'
+     and d.disabled_toolsets ?| array['debugging', 'safe', 'search', 'coding', 'project', 'desktop_ui']`,
+  `-- deliberate: the org-wide toolset floor gets the same expansion; it is stored sorted and
+   -- without the todo/clarify pair, so the rewrite keeps both properties.
+   update app_settings s set value = (
+     select coalesce(jsonb_agg(m.name order by m.name), '[]'::jsonb)
+     from (
+       select distinct u.name
+       from jsonb_array_elements_text(s.value) as e(raw)
+       cross join lateral unnest(case e.raw
+             when 'debugging' then array['terminal', 'web', 'file']
+             when 'safe' then array['web', 'vision', 'image_gen']
+             when 'search' then array['web']
+             when 'coding' then array[]::text[]
+             when 'project' then array[]::text[]
+             when 'desktop_ui' then array[]::text[]
+             else array[e.raw] end) as u(name)
+       where u.name not in ('todo', 'clarify')
+     ) m
+   ), updated_at = now()
+   where s.key = 'agents.mandatory_disabled_toolsets'
+     and jsonb_typeof(s.value) = 'array'
+     and s.value ?| array['debugging', 'safe', 'search', 'coding', 'project', 'desktop_ui']`,
+  // ── Skills marketplace: Hermes' official index, mirrored (2026-10-22) ───
+  // The marketplace scraped a third-party site's HTML for a ranked list of
+  // repos. Hermes publishes its own skills index (the JSON its own skills
+  // search reads, rebuilt daily): one row per skill with its source, trust
+  // level and GitHub location. The skills-index-refresh job mirrors the rows
+  // Talaria can install into this table and the picker searches it here.
+  // identifier is Hermes' own and the install's only input; path is the
+  // skill directory inside repo (exact = false marks a skills.sh slug the
+  // index never resolved, found by name at fetch time); rank is the index's
+  // own order, which lists Hermes' official skills first.
+  `create table if not exists skills_index_entries (
+     identifier text primary key,
+     name text not null,
+     description text not null default '',
+     source text not null,
+     trust_level text not null default 'community',
+     repo text not null,
+     path text not null default '',
+     exact boolean not null default true,
+     tags jsonb not null default '[]'::jsonb,
+     rank integer not null default 0,
+     synced_at timestamptz not null default now(),
+     search tsvector generated always as (
+       setweight(to_tsvector('simple', coalesce(name, '')), 'A') ||
+       setweight(to_tsvector('simple', tags), 'B') ||
+       setweight(to_tsvector('simple', replace(replace(repo, '/', ' '), '-', ' ')), 'B') ||
+       setweight(to_tsvector('simple', coalesce(description, '')), 'C')
+     ) stored
+   )`,
+  `create index if not exists skills_index_entries_search_idx on skills_index_entries using gin (search)`,
+  `create index if not exists skills_index_entries_rank_idx on skills_index_entries (rank)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
