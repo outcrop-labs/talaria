@@ -89,7 +89,7 @@ fn toolsets_block(floor: &[String]) -> Value {
 
 // doc: The roster also carries `toolsets`, the agent editor's vocabulary:
 // doc: `governed`, every Hermes toolset an operator may disable on an agent
-// doc: (28 names, alphabetical); `mandatoryDisabled`, the whole floor the
+// doc: (22 names, alphabetical); `mandatoryDisabled`, the whole floor the
 // doc: renderer closes on every agent whatever its def says — `todo` and
 // doc: `clarify`, because Talaria's own MCP versions are the ones a person
 // doc: sees, plus the org-wide floor an admin sets on `PUT
@@ -215,7 +215,21 @@ mod tests {
         // A fresh install's floor: the pair, and no org part.
         let wire = wire(&["todo", "clarify"]);
         let governed = names(&wire["toolsets"]["governed"]);
-        assert_eq!(governed.len(), 28, "28 governed toolsets, got {governed:?}");
+        assert_eq!(governed.len(), 22, "22 governed toolsets, got {governed:?}");
+        // Hermes' own switches only: no composite, posture or GUI surface.
+        for retired in [
+            "safe",
+            "debugging",
+            "search",
+            "coding",
+            "project",
+            "desktop_ui",
+        ] {
+            assert!(
+                !governed.iter().any(|g| g == retired),
+                "{retired} is still offered"
+            );
+        }
         let mut alphabetical = governed.clone();
         alphabetical.sort();
         assert_eq!(governed, alphabetical, "governed ships alphabetical");

@@ -13,7 +13,7 @@ and the community. Core ships with none enabled.
 
 ```
 apps/<slug>/
-  talaria.json   manifest — name, icon, version, description, surfaces
+  talaria.json   manifest — name, icon, version, description, surfaces (+ slug, sdk)
   app.ts         UI surfaces (Svelte 5) — default-exports defineApp({...});
                  required only when talaria.json declares a surface
   *.svelte       one component per surface (plus whatever else you need)
@@ -26,10 +26,16 @@ The programming model — `defineApp`, the app server, the document store, MCP t
 is the [SDK docset](./sdk/README.md). Scaffold with `bun talaria app new <slug>`. An app with no
 UI (a server or agent tools only) declares no surfaces and ships no `app.ts`.
 
+The manifest's rules — required `name`, the `surfaces` shape, an optional `slug` and an optional
+`sdk` version range — are published as [`sdk/talaria.schema.json`](./sdk/talaria.schema.json).
+Install and update refuse a manifest that breaks them, with the reason; an installed app whose
+manifest breaks them is listed in Manage → Apps as **broken manifest**, never enabled, and can
+still be uninstalled.
+
 Every path under `/api/apps/<slug>/` is the app's own. The host's routes about an app live under
-`/api/app-host/` — `POST <slug>/rebuild`, which Manage → Apps calls to compile and probe an app
-before enabling it, and the two loopback-only routes the api's fitness plane reads app harnesses
-through (below).
+`/api/app-host/<slug>/`: `POST …/rebuild`, which Manage → Apps calls to compile and probe an app
+before enabling it, and `POST …/lifecycle`, which only the api calls during an update; plus the two
+loopback-only routes the api's fitness plane reads app harnesses through (below).
 
 ## Surfaces
 
@@ -50,9 +56,24 @@ slug is whatever this instance installed the app as, and the SDK's hooks bind to
 ## Lifecycle
 
 1. **Install** — the app's codebase lands in `apps/`:
-   - from the **marketplace** (Manage → Apps → Discover): one click shallow-clones the repo;
-   - from **any https git URL** with a `talaria.json` at its root;
+   - from the **marketplace** (Manage → Apps → Discover): one click fetches the repo;
+   - from **any https git URL** with a `talaria.json` at its root, at its default branch or a
+     ref you name (a branch, tag or commit);
    - or by hand: drop/clone a directory into `apps/`.
+
+   An install from git fetches the one commit into a staging directory, checks `talaria.json`,
+   and only then moves it into `apps/<slug>`. The slug is the one the manifest declares, else
+   the repository's name without a `talaria-app-` prefix (or an override you give); a slug that
+   is taken or reserved is refused. The repository, the ref and the commit are recorded
+   (`app_sources`), and the install asks the host to build the app and answers with the outcome.
+
+   **Private repositories.** A github.com repository the GitHub connection
+   ([WORKBENCH.md](./WORKBENCH.md)) can see is fetched with a token scoped to that one
+   repository and to reading its contents — including the private repos `request_repo` creates.
+   Another host's private repository needs a **workspace secret** holding an https token whose
+   *Spendable at* list names that host; name it in the install (`secret`). The token reaches git
+   through `GIT_ASKPASS` for that host only — never in the URL, a command line or `.git/config`
+   — and a missing credential is an error, never a prompt.
 2. **Build** — this instance compiles the app against the host runtime (`/runtime/rt-*.js`)
    and starts a dedicated Postgres container for its data. Dev loads sources through Vite
    (HMR); production serves the compiled chunk. A failed build stays on that app.
@@ -69,13 +90,24 @@ slug is whatever this instance installed the app as, and the SDK's hooks bind to
    the app's views and passes the app `ctx.access { admin, work, manage, settings }`, so an app
    route behind the manage surface checks `ctx.access.manage` itself
    ([server.md](./sdk/server.md#grants)). The compiled client is served under the same rule.
-5. **Uninstall** — disables the app, deletes its MCP server row and every grant on it, stops and
-   removes its database container, forgets the database password, and deletes the codebase and
-   its build output. It also tries to delete the app's data directory, every time; the
-   `wipeData` flag `DELETE /api/admin/apps` accepts changes nothing today. The Postgres files in
-   that directory belong to the database container's user, not Talaria's, so they can outlive
-   the attempt — count on uninstall neither to keep an app's data nor to erase it. Audited, like
-   enable/disable/install.
+5. **Update** — Manage → Apps shows where each app installed from git came from (repository,
+   ref, commit), checks whether the ref now points at a newer commit (`git ls-remote`), and
+   offers **Update** (`PUT /api/admin/apps {app, update: true, ref?}`, admin, audited). An
+   update fetches the new commit into `apps/.<slug>.next`, builds and load-probes it there while
+   the live app keeps serving, then swaps the two directories in one step (`renameat2`
+   `RENAME_EXCHANGE`: `apps/<slug>` is never missing, so the host never mistakes the app for
+   uninstalled). The previous version stays as `apps/.<slug>.prev`. A version that fails to
+   build or load — before the swap or after it — is rolled back automatically: the app keeps
+   running the previous commit and stays enabled, and the answer says why. An update never
+   touches the app's data. Atomic swap needs Linux; elsewhere update refuses.
+6. **Uninstall** — disables the app, deletes its MCP server row and every grant on it, stops and
+   removes its database container, and deletes the codebase, any update staging directories,
+   its build output, its compose file and its source record. Its **data is kept** — the
+   Postgres files, `db.env` and the sealed password — so reinstalling the same slug reattaches
+   it (the install says so). With `wipeData: true` the app's store is emptied while its database
+   still runs, the database is stopped, and the whole data directory is deleted (through a
+   throwaway container when its files belong to the database container's user), along with the
+   password. Manage → Apps asks which. Audited, like enable/disable/install/update.
 
 
 ## The marketplace
@@ -97,16 +129,25 @@ The runtime safety boundary is the user session — see the
 2. Anyone can now install it from its git URL.
 3. To appear in the marketplace, submit it to the catalog index (`outcrop-labs/talaria-apps`).
 
-Version bumps ship as git commits; an instance updates by re-pulling the app directory and
-rebuilding (managed update flows are on the roadmap).
+Version bumps ship as git commits; an instance shows **update available** when the installed
+ref moves, and an admin updates it in one click (Lifecycle → Update above). Declare `sdk` (for
+example `"^1.0"`) so a host whose SDK is outside that range refuses the app with a clear reason
+rather than failing to build it.
 
 ## Operational notes
 
 - `TALARIA_APPS_DIR` overrides where app codebases live (default: `apps/` beside `ui/`).
 - `TALARIA_APP_BUILDS_DIR` holds compiled chunks; `TALARIA_APP_DATA_DIR` holds each app's
   Postgres volume, compose file, `db.env` and the MCP tool catalog its load probe wrote. Both
-  default beside the apps dir. Uninstall deletes an app's build output and tries to delete its
-  data directory (see Uninstall above).
+  default beside the apps dir. Uninstall deletes an app's build output and keeps its data
+  directory unless asked to wipe it (see Uninstall above).
+- `TALARIA_APPS_LOCAL_SOURCES=1` lets install and update read a repository on this machine
+  (`file:///…`, or `http://` to loopback). Off by default and not for production: it exists so a
+  development stack can exercise the git install and update path without a remote. `talaria dev`
+  passes it from `ui/.env` to the api.
+- The api calls the host back to build an installed app and to stage and switch an update, at
+  `TALARIA_APP_HOST_URL` (default: loopback on the host's `PORT`; `server-entry.ts` sets it for
+  the api it spawns), with the same root-derived service credential `/api/internal/*` takes.
 - `/app-builds/<slug>/…` serves only `app.js`, `app.css` and `assets/**` of the app's current
   build, and only to a session holding one of the app's views. The compiled `server.js` and
   `mcp.js` never leave the host.

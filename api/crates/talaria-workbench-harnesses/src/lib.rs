@@ -25,6 +25,10 @@ pub struct Harness {
     /// A cheap command that proves the binary runs in the sandbox, surfaced
     /// by the workbench doctor for agents to self-verify.
     pub probe: &'static str,
+    /// One short model call through the harness: proves it can AUTHENTICATE,
+    /// which `probe` cannot (`--version` calls no model). `<model>` is the
+    /// provider-qualified model; no session, tools, skills or rules load.
+    pub auth_probe: &'static str,
     /// What a driving agent should understand: sessions, resume, results.
     pub guide: &'static str,
 }
@@ -37,10 +41,11 @@ pub const OMP: Harness = Harness {
     continue_invoke: "npx -y @oh-my-pi/pi-coding-agent@latest -p --auto-approve --session-dir <sessionDir> -c --model <model> \"<task>\"",
     continue_json_invoke: "npx -y @oh-my-pi/pi-coding-agent@latest --mode json --auto-approve --session-dir <sessionDir> -c --model <model> \"<task>\"",
     probe: "npx -y @oh-my-pi/pi-coding-agent@latest --version",
+    auth_probe: "npx -y @oh-my-pi/pi-coding-agent@latest -p --no-session --no-tools --no-skills --no-rules --no-extensions --no-title --model <model> \"Reply with the single word OK.\"",
     guide: "You are the orchestrator; Oh My Pi (omp) is the pair programmer. First turn: jsonRun. Later turns: continueJsonRun (`-c`) on the same --session-dir. One scoped ask per turn (a function, a failing test, a review of the last diff), then read the JSON events and steer. Never --no-session, never the TUI, never one-shot the feature. --auto-approve skips tool prompts. omp picks its own models for the work (a fast model for subagents and small steps, a reasoning model for planning and review); do not pass a different --model. Hash-anchored edits, LSP, subagents, and a browser live inside omp; do not reimplement them. Git over https:// just works. After the change is right: git diff, verify, finish_job.",
 };
 
-/// The provider omp's models.json declares; model ids on the command line and
+/// The provider omp's models.yml declares; model ids on the command line and
 /// in the role env carry it as a prefix.
 pub const PROVIDER: &str = "talaria";
 
@@ -113,14 +118,43 @@ ln -sfn "$real" "$bin/bun"
 /// The MCP pass-through file omp reads inside [`PI_CODING_AGENT_DIR`].
 pub const MCP_CONFIG_FILE: &str = "mcp.json";
 
+/// The model catalog omp reads inside [`PI_CODING_AGENT_DIR`]: `models.yml`,
+/// not `models.json`. omp converts a `models.json` into `models.yml` ONCE —
+/// only while no `models.yml` exists — and reads the YAML from then on, so a
+/// rendered `models.json` reached an agent's omp on its first run and never
+/// again: a changed role model or key name stayed whatever the first run saw.
+pub const MODELS_CONFIG_FILE: &str = "models.yml";
+
+/// The env var the workbench credential reaches the sandbox under, and the
+/// name models.yml's `apiKey` gives omp to read it from.
+///
+/// NOT `OPENAI_API_KEY`. Hermes strips its provider names — `OPENAI_API_KEY`,
+/// `OPENAI_BASE_URL`, `ANTHROPIC_*` and the rest — from the env of every
+/// command its terminal runs, and `terminal.env_passthrough` refuses to put
+/// them back (Hermes `tools/environments/local_env_policy.py`,
+/// `tools/env_passthrough.py`). The key used to ride `OPENAI_API_KEY`, so omp
+/// started from the agent's terminal — the only way an agent starts it — had
+/// no key: present for `docker exec`, gone for the agent. A `TALARIA_` name is
+/// not Hermes's, so it survives the scrub; `talaria-agent-secrets` keeps a
+/// per-agent secret from taking it.
+///
+/// And a BARE name: omp resolves an `apiKey` by looking up an env var with
+/// exactly that name, and sends the value as written when there is none —
+/// `"$OPENAI_API_KEY"` named no variable, so it went out as the literal text
+/// `$OPENAI_API_KEY`.
+pub const WORKBENCH_KEY_ENV: &str = "TALARIA_WORKBENCH_API_KEY";
+
 // The harness reaches the same org gateway the personas do, but on its OWN
 // credential (`workbench-gateway`, minted into the fleet .env as
-// LLM_WORKBENCH_API_KEY by fleet-brain). It must: a harness run is spend NO
+// LLM_WORKBENCH_API_KEY by fleet-brain, handed to the sandbox as
+// [`WORKBENCH_KEY_ENV`]). It must: a harness run is spend NO
 // Talaria flow ever sees — no chat/channel/ticket row is written for it — so
 // the gateway is the only place it can enter the ledger, while the personas'
-// key has to stay unmetered there because the flow that drove the turn already
-// writes its row. One shared credential can only be one of those two things,
-// so harness runs were either invisible or doubled every persona turn.
+// key had to stay unmetered there while a chat flow wrote each persona turn's
+// row. One shared credential could only be one of those two things, so harness
+// runs were either invisible or doubled every persona turn. (Each agent now
+// has its own key, metered call by call at the relay; the workbench key still
+// keeps a harness run's spend apart from the agent's own.)
 //
 // NO FALLBACK TO THE PERSONAS' KEY. This used to read
 // `${LLM_WORKBENCH_API_KEY:-${LLM_API_KEY}}` so an operator-overridden fleet
@@ -130,14 +164,16 @@ pub const MCP_CONFIG_FILE: &str = "mcp.json";
 // the fleet-wide, unmetered persona key out of its own environment. The
 // sandbox gets the workbench key and nothing else; an operator on a raw
 // upstream sets LLM_WORKBENCH_API_KEY explicitly.
+//
+// No base URL rides the env: models.yml carries the gateway's URL as a
+// literal (`OPENAI_BASE_URL` was never read by omp, and Hermes strips it).
 pub fn gateway_env() -> Map<String, Value> {
-    [
-        ("OPENAI_BASE_URL", "${LLM_BASE_URL}"),
-        ("OPENAI_API_KEY", "${LLM_WORKBENCH_API_KEY}"),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), Value::String(v.into())))
-    .collect()
+    let mut env = Map::new();
+    env.insert(
+        WORKBENCH_KEY_ENV.into(),
+        Value::String("${LLM_WORKBENCH_API_KEY}".into()),
+    );
+    env
 }
 
 /// The container env omp needs: gateway auth plus its config dir.
@@ -265,7 +301,7 @@ impl OmpRoles {
         env
     }
 
-    /// Every distinct model, default first: what models.json declares.
+    /// Every distinct model, default first: what models.yml declares.
     pub fn model_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = Vec::new();
         for m in [&self.default, &self.smol, &self.slow, &self.plan]
@@ -351,7 +387,7 @@ async fn role_model(pg: &PgPool, weight: &str) -> Result<Option<String>, String>
 /// Getting a stale answer is the failure this exists to make loud, so a
 /// forgotten bump is the one way it can still be quiet; the writability
 /// check in `doctor` is the backstop for that.
-pub const SANDBOX_SHAPE: &str = "2026-10-01.bun-global+own-hook";
+pub const SANDBOX_SHAPE: &str = "2026-10-22.models-yml+workbench-key";
 
 /// Where the render leaves it, read-only, inside the container.
 pub const SANDBOX_SHAPE_FILE: &str = "/opt/workbench-config/render-shape";
@@ -378,7 +414,7 @@ mod tests {
     fn omp_env_carries_the_workbench_key_only_and_its_config_dir() {
         let env = omp_env();
         assert_eq!(
-            env.get("OPENAI_API_KEY").and_then(Value::as_str),
+            env.get(WORKBENCH_KEY_ENV).and_then(Value::as_str),
             Some("${LLM_WORKBENCH_API_KEY}")
         );
         assert!(
@@ -387,12 +423,54 @@ mod tests {
             "the personas' key never reaches the sandbox env"
         );
         assert_eq!(
-            env.get("OPENAI_BASE_URL").and_then(Value::as_str),
-            Some("${LLM_BASE_URL}")
-        );
-        assert_eq!(
             env.get("PI_CODING_AGENT_DIR").and_then(Value::as_str),
             Some(PI_CODING_AGENT_DIR)
+        );
+        assert_eq!(
+            env.len(),
+            2,
+            "nothing else rides the container env: {env:?}"
+        );
+    }
+
+    #[test]
+    fn the_workbench_key_rides_a_name_hermes_does_not_strip() {
+        // Hermes strips its provider names from every terminal child, and
+        // env_passthrough cannot re-allow them. The key used to be one.
+        for gone in ["OPENAI_API_KEY", "OPENAI_BASE_URL"] {
+            assert!(
+                !omp_env().contains_key(gone),
+                "{gone} never reaches a command the agent runs"
+            );
+        }
+        assert!(WORKBENCH_KEY_ENV.starts_with("TALARIA_"));
+        // omp looks the apiKey up as an env var NAME; a `$` makes it a literal.
+        assert!(
+            WORKBENCH_KEY_ENV
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_'),
+            "a bare env-var name: {WORKBENCH_KEY_ENV}"
+        );
+    }
+
+    #[test]
+    fn the_auth_probe_makes_one_bare_model_call() {
+        let line = fill_cmd(OMP.auth_probe, Some("qwen3:14b"), "/unused");
+        assert!(line.contains("--model talaria/qwen3:14b"), "{line}");
+        assert!(line.contains(" -p "), "print mode, not the TUI: {line}");
+        for flag in [
+            "--no-session",
+            "--no-tools",
+            "--no-skills",
+            "--no-rules",
+            "--no-extensions",
+        ] {
+            assert!(line.contains(flag), "{flag} missing: {line}");
+        }
+        assert!(!line.contains("<model>"));
+        assert!(
+            !line.contains("--auto-approve"),
+            "no tools load, so nothing needs approving"
         );
     }
 

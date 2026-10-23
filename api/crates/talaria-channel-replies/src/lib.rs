@@ -33,7 +33,7 @@ use talaria_gateway::fleet_chat::{AgentStreamEvent, AgentStreamParser, chat_payl
 use talaria_gateway::guard::{
     GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
 };
-use talaria_gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
+use talaria_gateway::usage::TurnAttribution;
 use talaria_mentions::{Mentionee, notify_mentions};
 use talaria_notify::NotifyDeps;
 use talaria_refs::ref_blocks;
@@ -814,31 +814,6 @@ pub async fn trigger_agent_replies(
     }
 }
 
-/// Data-URL image parts are excluded from the char estimate — they'd wildly
-/// inflate it and providers meter images separately anyway.
-fn prompt_chars(messages: &Value) -> usize {
-    let mut n = 0usize;
-    let Some(list) = messages.as_array() else {
-        return n;
-    };
-    for m in list {
-        match m.get("content") {
-            Some(Value::String(s)) => n += talaria_body::utf16_len(s),
-            Some(Value::Array(parts)) => {
-                for p in parts {
-                    if p.get("type").and_then(|t| t.as_str()) == Some("text")
-                        && let Some(t) = p.get("text").and_then(|t| t.as_str())
-                    {
-                        n += talaria_body::utf16_len(t);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    n
-}
-
 async fn stream_reply(
     deps: &NotifyDeps,
     channel_id: &str,
@@ -848,8 +823,21 @@ async fn stream_reply(
     routed_model: &str,
     messages: &Value,
 ) {
-    // the comms loop picks no effort level
-    let upstream = proxy_chat(&chat_payload(routed_model, messages, None), None).await;
+    // The comms loop picks no effort level. Every call the agent makes for
+    // this reply is metered at the relay as this channel's spend.
+    let attribution = TurnAttribution {
+        pg: deps.pg.clone(),
+        agent_model: model.to_string(),
+        source: "channel".into(),
+        ref_id: Some(channel_id.to_string()),
+        task_id: None,
+    };
+    let upstream = proxy_chat(
+        &chat_payload(routed_model, messages, None),
+        None,
+        Some(attribution),
+    )
+    .await;
     if !(200..300).contains(&upstream.status) {
         let _ = update_channel_message(
             deps,
@@ -861,47 +849,11 @@ async fn stream_reply(
         .await;
         return;
     }
-    let prompt_chars = prompt_chars(messages);
     let mut content = String::new();
     let mut tool_names: Vec<String> = Vec::new();
-    let mut usage: Option<(i64, i64)> = None;
     let mut last_flush: i64 = 0;
     let mut parser = AgentStreamParser::new();
     let mut stream = upstream.body;
-    let ledger = |usage: Option<(i64, i64)>, content: &str| {
-        let counts = TokenCounts {
-            prompt_tokens: usage
-                .map(|u| u.0)
-                .unwrap_or_else(|| estimate_tokens(prompt_chars)),
-            completion_tokens: usage
-                .map(|u| u.1)
-                .unwrap_or_else(|| estimate_tokens(talaria_body::utf16_len(content))),
-            ..TokenCounts::default()
-        };
-        let tier = if routed_model != model {
-            routed_model.get(model.len() + 1..).map(str::to_string)
-        } else {
-            None
-        };
-        let pg = deps.pg.clone();
-        let model = model.to_string();
-        let ref_id = channel_id.to_string();
-        tokio::spawn(async move {
-            let _ = record_usage(
-                &pg,
-                &UsageInput {
-                    agent_model: &model,
-                    source: "channel",
-                    ref_id: Some(&ref_id),
-                    task_id: None,
-                    tier: tier.as_deref(),
-                    counts,
-                    estimated: usage.is_none(),
-                },
-            )
-            .await;
-        });
-    };
 
     let outcome: Result<(), String> = async {
         use futures_util::StreamExt;
@@ -913,10 +865,8 @@ async fn stream_reply(
             for ev in parser.feed(&chunk) {
                 match ev {
                     AgentStreamEvent::Content { text } => content.push_str(&text),
-                    AgentStreamEvent::Usage {
-                        prompt_tokens,
-                        completion_tokens,
-                    } => usage = Some((prompt_tokens, completion_tokens)),
+                    // The relay metered every call behind these counts.
+                    AgentStreamEvent::Usage { .. } => {}
                     AgentStreamEvent::Tool { name, .. } => tool_names.push(name),
                     AgentStreamEvent::Reasoning { .. } => {}
                     // A channel reply is one request with no steer or stop, so
@@ -939,10 +889,7 @@ async fn stream_reply(
         for ev in parser.finish() {
             match ev {
                 AgentStreamEvent::Content { text } => content.push_str(&text),
-                AgentStreamEvent::Usage {
-                    prompt_tokens,
-                    completion_tokens,
-                } => usage = Some((prompt_tokens, completion_tokens)),
+                AgentStreamEvent::Usage { .. } => {}
                 AgentStreamEvent::Tool { name, .. } => tool_names.push(name),
                 AgentStreamEvent::Reasoning { .. } => {}
                 AgentStreamEvent::RunStarted { .. } | AgentStreamEvent::Stopped => {}
@@ -966,7 +913,6 @@ async fn stream_reply(
 
     match outcome {
         Ok(()) => {
-            ledger(usage, &content);
             // Confab guard. annotate/strict pin findings onto the message
             // (republished, so viewers see the caveat live); strict also
             // redacts leaked secrets from the saved copy.
@@ -1066,7 +1012,6 @@ async fn stream_reply(
         Err(e) => {
             tracing::warn!("[channels] agent reply stream failed: {e}");
             let _ = update_channel_message(deps, channel_id, message_id, &content, "error").await;
-            ledger(usage, &content);
         }
     }
 }

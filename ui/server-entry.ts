@@ -585,17 +585,18 @@ async function ensureRustApi() {
     )
     return
   }
+  // TALARIA_APP_HOST_URL: where the api calls this process back — an app
+  // install's build, an update's stage and switch (talaria-apps `AppHost`),
+  // and the /api/app-host/harnesses routes the fitness sweep reads app
+  // harnesses from and replays their fixtures through. Loopback when this
+  // process listens on every address; the address it listens on otherwise.
+  // An operator's value wins.
+  const selfHost = host === '0.0.0.0' || host === '::' || host === '' ? '127.0.0.1' : host.includes(':') ? `[${host}]` : host
   apiChild = spawn(bin, [], {
-    // TALARIA_APP_HOST_URL: where the api reaches THIS process — the
-    // loopback-only /api/app-host/harnesses routes the fitness sweep reads
-    // app harnesses from and replays their fixtures through. Stated here
-    // because only this process knows the port it listens on (PORT defaults
-    // to 3000 here and the api's own default is the dev 5273). An operator's
-    // value wins.
     env: {
       ...process.env,
       TALARIA_API_PORT: String(API_PORT),
-      TALARIA_APP_HOST_URL: process.env.TALARIA_APP_HOST_URL || `http://127.0.0.1:${port}`,
+      TALARIA_APP_HOST_URL: process.env.TALARIA_APP_HOST_URL || `http://${selfHost}:${port}`,
     },
     stdio: 'inherit',
   })

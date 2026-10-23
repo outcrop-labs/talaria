@@ -1,7 +1,7 @@
 // POST /api/fleet/agents/{id}/control. Lifecycle control for one agent —
 // this agent's managers, and admins (docs/PERMISSIONS.md, "Agent managers").
 //   up | stop | restart   the managed service (renders first on `up`)
-//   roll                  zero-downtime replacement — detached
+//   roll                  recreate the container in place — detached
 // `up`/`unretire`/`roll` return IMMEDIATELY; the roster's polled container
 // health shows the warm-up ('starting') phase instead of blocking the call.
 
@@ -12,10 +12,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_defs::agent_def_by_id;
 use talaria_api_facades::fleet::create::delete_agent_forever;
-use talaria_api_facades::fleet::docker::{
-    active_slot, browser_enabled_for_department, fleet_remove, fleet_restart, fleet_stop, fleet_up,
-    install_browser, prune_bundled_skills, wait_healthy,
-};
+use talaria_api_facades::fleet::docker::{fleet_remove, fleet_restart, fleet_stop, fleet_up};
 use talaria_api_facades::fleet::reconcile::roll_agent;
 use talaria_api_facades::fleet::render::render_fleet;
 use talaria_audit::{AuditEntry, log_audit};
@@ -94,14 +91,13 @@ pub async fn post(
                 Ok(sb) => sb,
                 Err(e) => return Ok(catch(e)),
             };
-            if let Err(e) = render_fleet(&state.pg, &sb, None).await {
+            if let Err(e) = render_fleet(&state.pg, &sb).await {
                 return Ok(catch(e));
             }
             if let Err(e) = fleet_up(&state.pg, &def.department).await {
                 return Ok(catch(e));
             }
             // Don't block on health — the roster shows the warm-up phase.
-            spawn_health_prune(&state.pg, &def.department);
             Json(json!({ "ok": true, "warming": true })).into_response()
         }
         "stop" => match fleet_stop(&state.pg, &def.department).await {
@@ -109,8 +105,9 @@ pub async fn post(
             Err(e) => catch(e),
         },
         "restart" => {
-            // Quick bounce (brief downtime; in-flight replies drop). For a
-            // no-downtime reboot use 'roll'.
+            // Quick bounce of the existing container (brief downtime; the
+            // same env and image). 'roll' recreates it from the current
+            // render instead.
             if !def.managed {
                 return Ok(house_error(StatusCode::BAD_REQUEST, "not a managed agent"));
             }
@@ -120,9 +117,10 @@ pub async fn post(
             }
         }
         "roll" => {
-            // Zero-downtime replacement — fresh container, old one drains.
-            // Long (health wait + drain), so it runs detached; the roster's
-            // health polling tells the story.
+            // Recreate in place — the container stops gracefully and a fresh
+            // one starts from the current render. Long (pull, stop, health
+            // wait), so it runs detached; the roster's health polling tells
+            // the story.
             if !def.managed {
                 return Ok(house_error(StatusCode::BAD_REQUEST, "not a managed agent"));
             }
@@ -198,7 +196,7 @@ pub async fn post(
                 Ok(sb) => sb,
                 Err(e) => return Ok(catch(e)),
             };
-            match render_fleet(&state.pg, &sb, None).await {
+            match render_fleet(&state.pg, &sb).await {
                 // manifest drops it; bridge hot-reloads
                 Ok(render) => Json(json!({ "ok": true, "render": render.agents })).into_response(),
                 Err(e) => catch(e),
@@ -238,40 +236,19 @@ pub async fn post(
                 Ok(sb) => sb,
                 Err(e) => return Ok(catch(e)),
             };
-            if let Err(e) = render_fleet(&state.pg, &sb, None).await {
+            if let Err(e) = render_fleet(&state.pg, &sb).await {
                 return Ok(catch(e));
             }
             if def.managed {
                 if let Err(e) = fleet_up(&state.pg, &def.department).await {
                     return Ok(catch(e));
                 }
-                spawn_health_prune(&state.pg, &def.department);
                 return Ok(Json(json!({ "ok": true, "warming": true })).into_response());
             }
             Json(json!({ "ok": true })).into_response()
         }
         _ => internal("[fleet] control: unknown action", &action),
     })
-}
-
-/// wait_healthy, then prune_bundled_skills on success — 120s health
-/// window, slot resolved per call. A browsing agent's Chromium rides along
-/// here: it is not in the image, the image's own browsers path is in the
-/// container layer, and this fresh container is the one that needs it. Both
-/// steps are best-effort and already detached, so the install's minutes cost
-/// the caller nothing.
-fn spawn_health_prune(pg: &sqlx::PgPool, department: &str) {
-    let pg = pg.clone();
-    let dept = department.to_string();
-    tokio::spawn(async move {
-        if wait_healthy(&pg, &dept, 120_000).await {
-            let slot = active_slot(&pg, &dept).await;
-            prune_bundled_skills(&dept, slot).await;
-            if browser_enabled_for_department(&pg, &dept).await {
-                install_browser(&dept, slot).await;
-            }
-        }
-    });
 }
 
 /// The catch arm's sentence — the em dash is part of the wire contract.

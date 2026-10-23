@@ -1,7 +1,11 @@
 // The Summarizer harness: one plain line per agent skill, saying what it
-// teaches. Shown under the skill's title everywhere skills are listed, and
-// persisted keyed to a hash of the SKILL.md, so this runs once per skill
-// version and never on a read path.
+// teaches — for a skill whose SKILL.md declares no frontmatter
+// `description:`. A skill that declares one is listed with its own words
+// and never reaches this harness (talaria-agent-skills reads the
+// description the way Hermes parses it). The line is shown under the
+// skill's title wherever skills are listed, and persisted keyed to a hash
+// of the SKILL.md, so this runs once per skill version and never on a read
+// path.
 //
 // FIRE-AND-FORGET IS THE POINT: when the model gives us nothing usable, the
 // caller writes nothing and the stored summary from the previous version

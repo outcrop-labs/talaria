@@ -42,7 +42,7 @@ use serde_json::json;
 
 use talaria_api_facades::decide::{
     self, ALL_WIRES, DECIDE_PROVIDERS, DecidePatch, NoAnswer, Question, configured,
-    providers_public, shadow, sites, tools,
+    providers_public, shadow, sites,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
@@ -83,10 +83,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         // itself stays in the room's own settings, because two spellings of one
         // switch is how they come to disagree.
         "speechRooms": speech_rooms(&state.pg).await,
-        // Tool-offer pruning's measurement, which has its OWN switch:
-        // configuring a decision model is not consent to put every agent turn
-        // through a question per offered tool. See talaria-decide::tools.
-        "toolShadow": tools::shadow_enabled(&state.pg).await,
     }))
     .into_response())
 }
@@ -214,17 +210,6 @@ pub async fn put(
         return Ok(Json(json!({ "sites": sites::sites_public(&state.pg).await })).into_response());
     }
 
-    // Its own key rather than a field on the config row: the measurement is
-    // not part of "which decision model", and an operator switching providers
-    // should not silently re-enable it.
-    let tool_shadow = match obj.get("toolShadow") {
-        Some(_) => match talaria_body::boolean_member(obj, "toolShadow") {
-            Ok(v) => Some(v),
-            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
-        },
-        None => None,
-    };
-
     let next = match decide::set_decide_config(
         &state,
         DecidePatch {
@@ -246,12 +231,6 @@ pub async fn put(
             ));
         }
     };
-
-    if let Some(on) = tool_shadow {
-        talaria_api_facades::gateway::settings::set_setting(&state.pg, tools::SETTING, &json!(on))
-            .await
-            .ok();
-    }
 
     // The audit carries the shape, never the secret — `next` is the stored row
     // and the stored row holds a sealed key, so the entry is built from the
@@ -280,7 +259,6 @@ pub async fn put(
     Ok(Json(json!({
         "config": decide::decide_config_public(&state.pg).await,
         "configured": configured(&cfg),
-        "toolShadow": tools::shadow_enabled(&state.pg).await,
     }))
     .into_response())
 }

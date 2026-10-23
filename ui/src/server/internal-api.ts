@@ -10,10 +10,36 @@
 // happened (the build failed either way), and the api reconciles the same
 // state on its own boot — a call that does not land is a warning in the log,
 // not a failure to propagate.
+import { timingSafeEqual } from 'node:crypto'
+import { json } from './http'
 import { rustApiUrl } from './rust-proxy'
 import { internalToken } from './secretbox'
 
 export const INTERNAL_HEADER = 'x-talaria-internal'
+
+/** Whether `request` carries the root-derived service credential — the api
+ *  calling the host back (talaria-apps `AppHost`: an install's build, an
+ *  update's stage and activate). Compared in constant time; a host that
+ *  cannot derive the token (no root) admits nothing. */
+export function isInternalCall(request: Request): boolean {
+  const presented = request.headers.get(INTERNAL_HEADER)?.trim() ?? ''
+  if (!presented) return false
+  let want: string
+  try {
+    want = internalToken()
+  } catch {
+    return false
+  }
+  const a = Buffer.from(presented)
+  const b = Buffer.from(want)
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+
+/** The api, or the 403 to answer — the TS twin of Rust's `require_internal`. */
+export function requireInternal(request: Request): Response | null {
+  if (isInternalCall(request)) return null
+  return json({ error: 'internal route: only the api may call it' }, { status: 403 })
+}
 
 /** A reconcile is a few queries and, at worst, a roll that is spawned, not
  *  awaited — it answers in well under this. */

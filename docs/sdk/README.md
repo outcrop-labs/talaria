@@ -35,6 +35,7 @@ Apps run **fully trusted**, like platform code — admins install only what they
 trust (the marketplace labels Outcrop-maintained apps **official**). The safety
 boundary is the *session*: client calls run as the signed-in user; server handlers receive an
 authenticated user and the app surfaces they hold (`ctx.access`), and `ctx.api` calls the platform
-as that user; agent tools receive a gateway-authenticated agent identity. All existing
+as that user; agent tools receive the calling agent, flagged proven only when it called on its own
+key, and the person it acts for. All existing
 permissions, ACLs, and audit logging apply unchanged — an app can never do more than the person
 using it.

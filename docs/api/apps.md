@@ -7,11 +7,12 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-5 routes.
+6 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/app-host/{app}/harnesses/{id}/cases/{name}`](#apiapp-hostappharnessesidcasesname) | POST | `internal` |
+| [`/api/app-host/{app}/lifecycle`](#apiapp-hostapplifecycle) | POST | `internal` |
 | [`/api/app-host/{app}/rebuild`](#apiapp-hostapprebuild) | POST | `admin` |
 | [`/api/app-host/harnesses`](#apiapp-hostharnesses) | GET | `internal` |
 | [`/api/apps`](#apiapps) | GET | `session` |
@@ -34,14 +35,28 @@ Source: [`ui/src/routes/api/app-host.$app.harnesses.$id.cases.$name.ts`](../../u
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `internal` | — | `…` | 200, 400, 404, 503 | — |
 
+## `/api/app-host/{app}/lifecycle`
+
+Source: [`ui/src/routes/api/app-host.$app.lifecycle.ts`](../../ui/src/routes/api/app-host.$app.lifecycle.ts)
+
+> POST /api/app-host/<slug>/lifecycle — the host's steps of an app update and
+> uninstall, called only by the api (talaria-apps `AppHost`) with its
+> root-derived service credential; no session reaches it. Body: { step }.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `internal` | — | `{ok}` | 200, 400 | — |
+
 ## `/api/app-host/{app}/rebuild`
 
 Source: [`ui/src/routes/api/app-host.$app.rebuild.ts`](../../ui/src/routes/api/app-host.$app.rebuild.ts)
 
 > POST /api/app-host/<slug>/rebuild — compile and load-probe one app now, and
 > start its database (admin). Manage → Apps calls it before Enable and from
-> Rebuild. It answers the build's outcome rather than failing the request: a
-> broken app is an answer ({ ok: false, error }), not a server error.
+> Rebuild; the api calls it with its service credential right after an
+> install placed the app, and after an update that had to swap back. It
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

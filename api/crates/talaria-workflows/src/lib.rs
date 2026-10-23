@@ -176,9 +176,8 @@ pub async fn delete_workflow(pg: &PgPool, id: &str) -> Result<(), sqlx::Error> {
 
 // ── The match half ───────────────────────────────────────────────────────────
 
-/// What a match is decided against, borrowed: the heartbeat holds the
-/// tickets it just fetched and should not have to clone them to classify
-/// them.
+/// What a match is decided against, borrowed: a caller holding the ticket it
+/// just fetched should not have to clone it to classify it.
 pub struct MatchTarget<'a> {
     pub title: &'a str,
     pub description: Option<&'a str>,
@@ -186,8 +185,7 @@ pub struct MatchTarget<'a> {
     pub board_id: &'a str,
 }
 
-/// The workflow payload delivered WITH the work (dispatch + heartbeat +
-/// get_ticket). `skills`/`toolkits` ride as the row's jsonb, passthrough —
+/// The workflow payload delivered WITH the work (dispatch + get_ticket). `skills`/`toolkits` ride as the row's jsonb, passthrough —
 /// same reason as the CRUD half.
 #[derive(serde::Serialize)]
 pub struct WorkflowDelivery {
@@ -242,8 +240,8 @@ pub fn match_workflow(h: &Workflow, t: &MatchTarget<'_>) -> bool {
     !facets.is_empty() && facets.iter().all(|f| *f)
 }
 
-/// The match against a list the caller already holds. Batch callers (the
-/// heartbeat walks every servable ticket) MUST use this with one
+/// The match against a list the caller already holds. Batch callers (any
+/// walk over many tickets) MUST use this with one
 /// `list_workflows()` hoisted out of their loop — `workflows_for_task` per
 /// ticket re-reads the whole table each time. Kept as the single expression
 /// of the match so the hot path cannot drift from the one-off path.

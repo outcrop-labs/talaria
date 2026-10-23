@@ -1,18 +1,20 @@
 // Boot sweep + directory watch: compile every installed app whose source
 // hash does not match current.json, then load its modules. Failures stay on
-// that app, mark it failed, and drop it from the enabled set.
-import { watch } from 'node:fs'
-import { appSql, dropAppDatabase } from '../app-db'
+// that app, mark it failed, and drop it from the enabled set. An app an
+// update holds (update.ts) is left alone until the update lets go.
+import { existsSync, watch } from 'node:fs'
+import { appSql, stopAppDatabase } from '../app-db'
 import { isolateApp } from '../app-isolate'
 import { failHealth, probeLoad } from '../app-health'
 import { buildApp } from './build'
-import { appsDir, listInstalledApps, slugOk } from './paths'
+import { appDir, appsDir, listInstalledApps, slugOk } from './paths'
 import { readCurrent } from './status'
+import { isHeld } from './update'
 
 const inflight = new Map<string, Promise<void>>()
 
 export async function reconcileApp(slug: string): Promise<void> {
-  if (!slugOk(slug)) return
+  if (!slugOk(slug) || isHeld(slug)) return
   const running = inflight.get(slug)
   if (running) return running
   const job = (async () => {
@@ -52,9 +54,18 @@ export async function startAppBuilds(): Promise<void> {
       if (typeof filename !== 'string') return
       const slug = filename.split('/')[0] ?? ''
       if (!slugOk(slug)) return
-      void reconcileApp(slug)
-      const still = new Set(listInstalledApps().map((a) => a.slug))
-      if (!still.has(slug)) void dropAppDatabase(slug)
+      // A directory that is there is (re)built: a new app, or one whose
+      // manifest changed. One that left apps/ is not built — that only wrote
+      // a failed pointer back into app-builds/ after uninstall removed it —
+      // and its database stops. Its data stays: the api's uninstall is the
+      // one place data is deleted, and only when asked. An update swaps the
+      // tree in one step (talaria-apps `exchange`), so an updating app never
+      // reads as gone here, and a held one is left to the update.
+      if (existsSync(appDir(slug))) {
+        void reconcileApp(slug)
+        return
+      }
+      if (!isHeld(slug)) void stopAppDatabase(slug)
     })
   } catch (e) {
     console.error('[app-build] watch', e)

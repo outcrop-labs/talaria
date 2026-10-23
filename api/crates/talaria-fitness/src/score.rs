@@ -237,9 +237,10 @@ pub struct FitnessSlot {
     pub label: String,
     pub hint: String,
     pub requires: Vec<String>,
-    /// False for a reserved role (`MODEL_ROLES[].wired === false`) or a
-    /// non-assignable platform agent (the briefer, which is always the owner's
-    /// own assistant). A verdict is still produced — telling an admin now that
+    /// False for a reserved role (`MODEL_ROLES[].wired === false`), the
+    /// vision role (wired, but no harness reaches it), or a non-assignable
+    /// platform agent (the briefer, which is always the owner's own
+    /// assistant). A verdict is still produced — telling an admin now that
     /// their pick cannot see is strictly more useful than telling them the week
     /// the surface ships — but the UI shows it as inert.
     pub live: bool,
@@ -267,7 +268,12 @@ pub fn fitness_slots() -> Vec<FitnessSlot> {
             label: r.label.to_string(),
             hint: r.hint.to_string(),
             requires: r.requires.iter().map(|c| c.to_string()).collect(),
-            live: r.wired,
+            // `vision` is wired — its model is each blind fleet agent's
+            // Hermes image reader — but no Talaria harness can reach it, so
+            // a sweep has nothing to say about it. Live, it would be a matrix
+            // column of `unbound` that drags every row summary down to it;
+            // it gets a verdict and no column, like a reserved role.
+            live: r.wired && r.role != "vision",
         })
         .collect();
     out.extend(PLATFORM_AGENTS.iter().map(|a| FitnessSlot {
@@ -1866,15 +1872,20 @@ mod tests {
             slots.iter().filter(|s| s.kind == SlotKind::Agent).count(),
             10
         );
-        // The reserved roles and the non-assignable briefer are still slots —
-        // they just say they are inert.
-        assert!(
-            !slots
+        // The reserved roles, the vision role (wired, but reached by no
+        // harness) and the non-assignable briefer are still slots — they just
+        // say they are inert.
+        let role_live = |id: &str| {
+            slots
                 .iter()
-                .find(|s| s.id == "vision")
-                .expect("vision role")
+                .find(|s| s.kind == SlotKind::Role && s.id == id)
+                .unwrap_or_else(|| panic!("{id} role"))
                 .live
-        );
+        };
+        assert!(MODEL_ROLES[7].wired);
+        assert!(!role_live("vision"));
+        assert!(!role_live("image-generation"));
+        assert!(role_live("utility"));
         assert!(
             !slots
                 .iter()

@@ -6,15 +6,15 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-339 routes across 24 groups.
+338 routes across 24 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
 | [`account`](./account.md) | Sign-in, session, profile, members. | 18 |
 | [`activity`](./activity.md) | What happened, what it cost, what the machine is doing, what needs you. | 11 |
-| [`admin`](./admin.md) | Instance administration (admin session required). | 26 |
-| [`agents`](./agents.md) | Agent CRUD, registration, heartbeats, skills, runs. | 29 |
-| [`apps`](./apps.md) | The app platform surface, the app-server gateway, and the host's own app routes. | 5 |
+| [`admin`](./admin.md) | Instance administration (admin session required). | 27 |
+| [`agents`](./agents.md) | Agent CRUD, skills, runs. | 27 |
+| [`apps`](./apps.md) | The app platform surface, the app-server gateway, and the host's own app routes. | 6 |
 | [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views, workchains. | 19 |
 | [`brief`](./brief.md) | The personal brief: items, replies, delegation. | 5 |
 | [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 32 |
@@ -23,7 +23,7 @@
 | [`inbox`](./inbox.md) | The focus inbox and its command surface. | 7 |
 | [`integrations`](./integrations.md) | Connected accounts — Google Workspace and the rest. | 42 |
 | [`internal`](./internal.md) | Service-to-service calls from the app host — never a user's or an agent's. | 1 |
-| [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, blueprints, search. | 21 |
+| [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, blueprints, search. | 20 |
 | [`llm`](./llm.md) | The OpenAI-compatible wire (llm.v1.*). | 2 |
 | [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 16 |
 | [`models`](./models.md) | Model providers, gateway API keys, local backends. | 5 |
@@ -49,7 +49,6 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 | `admin` | an admin session (`require_admin`) |
 | `agent` | an agent credential (`tak_` key, `require_agent`/`agent_caller`) |
 | `dual` | session path and agent path both reach the handler |
-| `fleet` | internal fleet key (`fleet_caller`/`check_fleet_key`) |
 | `internal` | the root-derived service credential (`x-talaria-internal`) between the app host and the api — `require_internal` on the api's routes, `requireInternal` (loopback only) on the host's — never a user or agent |
 | `bearer-key` | a personal LLM-gateway API key (`authenticate_key`) |
 

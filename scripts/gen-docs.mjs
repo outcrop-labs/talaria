@@ -58,6 +58,7 @@ const TS_RESIDENT_FILES = [
   'ui/src/routes/api/app-host.$app.rebuild.ts',
   'ui/src/routes/api/app-host.harnesses.ts',
   'ui/src/routes/api/app-host.$app.harnesses.$id.cases.$name.ts',
+  'ui/src/routes/api/app-host.$app.lifecycle.ts',
 ]
 const CHECK = process.argv.includes('--check')
 
@@ -71,7 +72,7 @@ const GROUPS = {
   account: { segs: ['auth', 'me', 'join', 'users'], blurb: 'Sign-in, session, profile, members.' },
   activity: { segs: ['activity', 'history', 'notifications', 'unreads', 'push', 'alerts', 'home', 'cost', 'host'], blurb: 'What happened, what it cost, what the machine is doing, what needs you.' },
   admin: { segs: ['admin'], blurb: 'Instance administration (admin session required).' },
-  agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'vision', 'runs'], blurb: 'Agent CRUD, registration, heartbeats, skills, runs.' },
+  agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'runs'], blurb: 'Agent CRUD, skills, runs.' },
   apps: { segs: ['apps', 'app-host'], blurb: 'The app platform surface, the app-server gateway, and the host\'s own app routes.' },
   boards: { segs: ['boards', 'workchains'], blurb: 'Kanban boards, members, statuses, labels, views, workchains.' },
   brief: { segs: ['brief'], blurb: 'The personal brief: items, replies, delegation.' },
@@ -304,7 +305,7 @@ function handlerWithHelpers(stripped, span, locals, depth = 2, seen = new Set(),
 const KNOWN_HEADER_TAKERS = new Set([
   'require_user', 'require_admin', 'require_perm', 'require_view',
   'require_agent_manager', 'require_agent_manager_by_model', 'require_agent_reader',
-  'agent_caller', 'require_agent', 'fleet_caller', 'check_fleet_key', 'require_internal',
+  'agent_caller', 'require_agent', 'require_internal',
   // Coding accounts' three gates, each a thin wrapper classified below:
   // the broker's per-agent scope, the feature toggle, and "may edit this
   // agent" (agents.manage OR the agent's owner).
@@ -339,7 +340,6 @@ function authClassRust(combined, locals, fileRaw) {
   if (has('require_internal(')) return { auth: 'internal' }
   if (has('broker_agent(') || has('broker_caller(')) return { auth: 'agent' }
   if (has('require_agent_editor(') || has('require_feature(') || has('require_share_rights(')) return { auth: 'session' }
-  if (has('check_fleet_key(') || has('fleet_caller(')) return { auth: 'fleet' }
   if (has('authenticate_key(')) return { auth: 'bearer-key' }
   if (has('require_agent(')) return { auth: 'agent' }
   // acting_user is session.rs's assistant-proxying-a-human resolver — the
@@ -593,16 +593,28 @@ function bodySchemaRust(combined, sigText, fileRaw) {
     }
     // THE EARLY-RETURN SPELLING of the same union: `if obj.contains_key("app")
     // { …; return …; }` with no `else`, the other body read by the rest of the
-    // handler. The arm ends in a return, so everything after it is the second
-    // variant; helpers appended past the handler's own text are not part of it.
+    // handler. Each such arm ends in a return, so a CHAIN of them (`update`,
+    // then `app`, then the rest — PUT /api/admin/apps) is one variant per arm,
+    // and everything after the last arm is the final variant; helpers
+    // appended past the handler's own text are not part of it.
     const handlerEnd = combined.parts[0].text.length
-    const endsInReturn = ifClose !== -1 && /\breturn\b[^;]*;\s*$/.test(text.slice(ifOpen + 1, ifClose))
-    if (endsInReturn && !/^\s*else\b/.test(text.slice(ifClose + 1))) {
-      const inIf = fields.filter((f) => f.offset > ifOpen && f.offset < ifClose)
-      const after = fields.filter((f) => f.offset > ifClose && f.offset < handlerEnd)
-      const outside = fields.filter((f) => !inIf.includes(f) && !after.includes(f))
-      if (inIf.length && after.length && !outside.length) {
-        return { kind: 'union', branches: [inIf, after].map((b) => ({ kind: 'fields', fields: b.map(strip) })) }
+    const arms = []
+    const armRe = new RegExp(`if\\s+${objVar}\\.contains_key\\(`, 'g')
+    for (let a; (a = armRe.exec(text)); ) {
+      if (arms.length && a.index < arms[arms.length - 1][1]) continue // nested in the previous arm
+      const pOpen = text.indexOf('(', a.index)
+      const open = text.indexOf('{', matchDelimRust(text, pOpen))
+      const close = matchDelimRust(text, open)
+      if (close === -1 || !/\breturn\b[^;]*;\s*$/.test(text.slice(open + 1, close))) break
+      if (/^\s*else\b/.test(text.slice(close + 1))) break
+      arms.push([open, close])
+    }
+    if (arms.length) {
+      const branches = arms.map(([open, close]) => fields.filter((f) => f.offset > open && f.offset < close))
+      const after = fields.filter((f) => f.offset > arms[arms.length - 1][1] && f.offset < handlerEnd)
+      const covered = new Set([...branches.flat(), ...after])
+      if (branches.every((b) => b.length) && after.length && fields.every((f) => covered.has(f))) {
+        return { kind: 'union', branches: [...branches, after].map((b) => ({ kind: 'fields', fields: b.map(strip) })) }
       }
     }
   }
@@ -847,7 +859,7 @@ function extractRoute(file) {
 
 const KNOWN_REQUEST_TAKERS = new Set([
   'requireUser', 'requireAdmin', 'requireInternal', 'requirePerm', 'requireView', 'requireAgent',
-  'agentCaller', 'fleetCaller', 'checkFleetKey', 'authenticateKey',
+  'agentCaller', 'authenticateKey',
   'actingUser', 'getSessionUser', 'updateSessionUser', 'taskActor',
   'parseBody', 'destroySession',
 ])
@@ -858,7 +870,6 @@ function authClassTS(clean, methodRaw) {
   const view = clean.match(/requireView\(\s*request,\s*'([^']+)'/)
   // The api on this machine, with the root-derived service credential.
   if (has('requireInternal(')) return { auth: 'internal' }
-  if (has('fleetCaller(') || has('checkFleetKey(')) return { auth: 'fleet' }
   if (has('authenticateKey(')) return { auth: 'bearer-key' }
   if (has('requireAgent(')) return { auth: 'agent' }
   const session = has('requireUser(') || has('requireAdmin(') || has('requirePerm(') || has('requireView(')
@@ -1013,7 +1024,6 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 | \`admin\` | an admin session (\`require_admin\`) |
 | \`agent\` | an agent credential (\`tak_\` key, \`require_agent\`/\`agent_caller\`) |
 | \`dual\` | session path and agent path both reach the handler |
-| \`fleet\` | internal fleet key (\`fleet_caller\`/\`check_fleet_key\`) |
 | \`internal\` | the root-derived service credential (\`x-talaria-internal\`) between the app host and the api — \`require_internal\` on the api's routes, \`requireInternal\` (loopback only) on the host's — never a user or agent |
 | \`bearer-key\` | a personal LLM-gateway API key (\`authenticate_key\`) |`
 

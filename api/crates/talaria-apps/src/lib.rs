@@ -1,34 +1,43 @@
 // Talaria apps — the ADMIN half of the registry (the read
-// plane lives in users.rs): enablement, runtime install from git, the
-// marketplace catalog, and the app-data wipe. Apps are self-contained
-// TypeScript codebases under apps/<slug>/ that this instance compiles and
-// runs without a host rebuild; their surfaces and MCP dispatch stay TS
-// (rule 10) — this module owns the registry state around them.
+// plane lives in users.rs): enablement, the lifecycle around an app's code
+// (install, update, uninstall), the marketplace catalog, and the MCP rows.
+// Apps are self-contained TypeScript codebases under apps/<slug>/ that this
+// instance compiles and runs without a host rebuild; their surfaces and MCP
+// dispatch stay TS (rule 10) — this crate owns the registry state around
+// them, and asks the app host to build (`host`).
 //
 //   enablement   admin-controlled set in app_settings; disabled apps have no
 //                nav presence and their server routes 404
-//   install      marketplace/git: shallow-clone a repo into apps/<slug> —
-//                the UI process compiles it and spawns its Postgres
+//   lifecycle    install from git with a read-only credential, update with an
+//                atomic swap and rollback, uninstall that keeps data unless
+//                asked (`lifecycle`, `git`, `source`)
 //   catalog      the marketplace feed — JSON, source URL configurable,
 //                always through the SSRF guard
 
+pub mod git;
+pub mod host;
+pub mod lifecycle;
+pub mod source;
+
+pub use host::AppHost;
+pub use lifecycle::{
+    DataLeft, InstallRequest, Installed, PlatformCredentials, SourceRecord, UpdateCheck, Updated,
+    install_app, source_records, uninstall_app, update_app, update_checks,
+};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::time::Duration;
 
 use serde_json::Value;
 use sqlx::PgPool;
 
-use talaria_agent_auth::now_ms;
 use talaria_gateway::settings::{get_setting, set_setting};
 use talaria_secretbox::SecretBox;
 use talaria_users::{
-    app_build_status, app_builds_dir, app_data_dir, apps_dir, discovered_apps, enable_block_reason,
-    slug_ok,
+    app_build_status, app_data_dir, discovered_apps, enable_block_reason, slug_ok,
 };
 
 const ENABLED_KEY: &str = "apps_enabled";
-const INSTALLED_KEY: &str = "apps_installed";
 const CATALOG_URL_KEY: &str = "apps_catalog_url";
 const DEFAULT_CATALOG: &str =
     "https://raw.githubusercontent.com/outcrop-labs/talaria-apps/main/index.json";
@@ -101,6 +110,9 @@ pub struct AppFacts {
     pub enabled: bool,
     /// The last compile or load failed, and why (`current.json`).
     pub failed: Option<String>,
+    /// The probe's checked catalog (`mcp_catalog_path`): the `tools` and
+    /// `last_probe` columns it fills. None before the probe has written one.
+    pub catalog: Option<(Value, Value)>,
 }
 
 /// What a sync makes of one app's MCP registry row.
@@ -162,11 +174,30 @@ pub fn app_mcp_plan(apps: &[AppFacts], rows: &[String]) -> BTreeMap<String, AppM
     plan
 }
 
-/// What one sync changed: the app server names that serve, and the rows that
-/// went from serving to off or back (their carriers are rolled).
-struct Synced {
-    serving: Vec<String>,
-    flipped: Vec<String>,
+/// What one sync changed: the app server names that serve, the rows that
+/// went from serving to off or back, and the serving rows whose catalog
+/// changed. The carriers of both lists are rolled, each row once.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyncReport {
+    pub serving: Vec<String>,
+    /// Registry ids of rows that turned off, or back on.
+    pub flipped: Vec<String>,
+    /// Registry ids of rows that kept serving with a different catalog.
+    pub retooled: Vec<String>,
+}
+
+/// Did a serving row's catalog change? Only a catalog the probe wrote can
+/// change one: with no catalog file the row keeps its own `tools`, and a file
+/// that says what the row already holds changes nothing. Compared as JSON
+/// values, so key order (jsonb keeps its own) is not a change.
+///
+/// A running Hermes reads an MCP server's tools/list once, when it starts
+/// (the roll comment in `talaria_mcp_apply`), so an app update that adds,
+/// renames or removes a tool, or edits a description or a schema, reaches
+/// an agent only by a roll — and a catalog that did not change must roll
+/// nobody: every host boot and every probe re-sends the same file.
+pub fn catalog_changed(stored: &Value, fresh: Option<&Value>) -> bool {
+    fresh.is_some_and(|f| f != stored)
 }
 
 /// The installed apps, with the enabled set's verdict and each build's status.
@@ -184,6 +215,7 @@ pub fn app_facts(enabled: &BTreeSet<String>) -> Vec<AppFacts> {
             AppFacts {
                 enabled: enabled.contains(&a.slug),
                 failed,
+                catalog: read_mcp_catalog(&a.slug),
                 slug: a.slug,
                 name: a.name,
                 description: a.description,
@@ -207,7 +239,7 @@ fn sync_enabled_set(stored: Option<Value>) -> Result<BTreeSet<String>, sqlx::Err
 async fn sync_app_mcp_rows(
     pg: &PgPool,
     facts: impl FnOnce(&BTreeSet<String>) -> Vec<AppFacts>,
-) -> Result<Synced, sqlx::Error> {
+) -> Result<SyncReport, sqlx::Error> {
     let mut tx = pg.begin().await?;
     sqlx::query("select pg_advisory_xact_lock($1)")
         .bind(MCP_SYNC_LOCK)
@@ -224,18 +256,17 @@ async fn sync_app_mcp_rows(
         .await?;
     let enabled = sync_enabled_set(stored)?;
     let apps = facts(&enabled);
-    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        "select id::text, app_slug::text, app_off from mcp_servers where app_slug is not null",
+    // (id, slug, app_off, tools, the admin's enabled switch)
+    let rows: Vec<(String, String, Option<String>, Value, bool)> = sqlx::query_as(
+        "select id::text, app_slug::text, app_off, tools, enabled from mcp_servers \
+         where app_slug is not null",
     )
     .fetch_all(&mut *tx)
     .await?;
-    let slugs: Vec<String> = rows.iter().map(|(_, slug, _)| slug.clone()).collect();
-    let mut synced = Synced {
-        serving: Vec::new(),
-        flipped: Vec::new(),
-    };
+    let slugs: Vec<String> = rows.iter().map(|(_, slug, ..)| slug.clone()).collect();
+    let mut synced = SyncReport::default();
     for (slug, row) in app_mcp_plan(&apps, &slugs) {
-        let had = rows.iter().find(|(_, s, _)| *s == slug);
+        let had = rows.iter().find(|(_, s, ..)| *s == slug);
         match row {
             AppMcpRow::Serve { name, description } => {
                 let server = format!("app-{slug}");
@@ -244,7 +275,18 @@ async fn sync_app_mcp_rows(
                 // only by the insert: on an existing row it is the admin's
                 // choice, and an admin who turned the server off keeps it off
                 // across every boot and resync.
-                let (tools, probe) = read_mcp_catalog(&slug).unzip();
+                let (tools, probe) = apps
+                    .iter()
+                    .find(|a| a.slug == slug)
+                    .and_then(|a| a.catalog.clone())
+                    .unzip();
+                // A row that was serving, is on, and gets a different catalog
+                // rolls its carriers so they list the new tools. (A row coming
+                // back from off rolls as flipped; an admin's disabled row is
+                // carried by nobody.)
+                let retooled = had.is_some_and(|(_, _, off, stored, enabled)| {
+                    off.is_none() && *enabled && catalog_changed(stored, tools.as_ref())
+                });
                 let id: String = sqlx::query_scalar(
                     "insert into mcp_servers \
                         (name, label, description, url, all_agents, app_slug, tools, tools_refreshed_at, last_probe, created_by) \
@@ -270,13 +312,20 @@ async fn sync_app_mcp_rows(
                 .bind(probe)
                 .fetch_one(&mut *tx)
                 .await?;
-                if had.is_some_and(|(_, _, off)| off.is_some()) {
+                if had.is_some_and(|(_, _, off, ..)| off.is_some()) {
                     synced.flipped.push(id);
+                } else if retooled {
+                    tracing::info!(
+                        "[apps] {server}: the tool catalog changed; rolling the agents that carry it"
+                    );
+                    synced.retooled.push(id);
                 }
                 synced.serving.push(server);
             }
             AppMcpRow::Off(why) => {
-                let Some((id, _, off)) = had else { continue };
+                let Some((id, _, off, ..)) = had else {
+                    continue;
+                };
                 if off.as_deref() == Some(why.as_str()) {
                     continue;
                 }
@@ -327,13 +376,24 @@ pub async fn sync_app_mcp_servers_over(
     sb: &SecretBox,
     facts: impl FnOnce(&BTreeSet<String>) -> Vec<AppFacts>,
 ) -> Result<Vec<String>, sqlx::Error> {
+    Ok(sync_app_mcp_servers_report(pg, sb, facts).await?.serving)
+}
+
+/// The same sync, answering everything it changed (`SyncReport`): the rows
+/// whose carriers it rolled, not only the servers that serve.
+pub async fn sync_app_mcp_servers_report(
+    pg: &PgPool,
+    sb: &SecretBox,
+    facts: impl FnOnce(&BTreeSet<String>) -> Vec<AppFacts>,
+) -> Result<SyncReport, sqlx::Error> {
     let synced = sync_app_mcp_rows(pg, facts).await?;
     // After the commit, so each replacement renders the state it was rolled
-    // for.
-    for id in &synced.flipped {
+    // for: a flipped row's tools arrive or leave, a retooled row's catalog is
+    // the one the agent lists.
+    for id in synced.flipped.iter().chain(&synced.retooled) {
         talaria_mcp_apply::roll_agents_for_server(pg, sb, id).await;
     }
-    Ok(synced.serving)
+    Ok(synced)
 }
 
 /// Delete an app's MCP registry row, and with it, by cascade, every agent
@@ -413,14 +473,14 @@ pub async fn disable_broken_apps(pg: &PgPool, sb: &SecretBox) {
     }
 }
 
-fn app_db_container(slug: &str) -> String {
+pub(crate) fn app_db_container(slug: &str) -> String {
     let instance = std::env::var("TALARIA_WORKTREE")
         .or_else(|_| std::env::var("TALARIA_DEVBOX"))
         .unwrap_or_else(|_| "talaria".into());
     format!("talaria-appdb-{instance}-{slug}")
 }
 
-async fn stop_app_db(slug: &str) {
+pub(crate) async fn stop_app_db(slug: &str) {
     let file = app_data_dir().join(slug).join("docker-compose.yml");
     let project = app_db_container(slug);
     if file.exists() {
@@ -444,7 +504,7 @@ async fn stop_app_db(slug: &str) {
         .await;
 }
 
-async fn forget_app_db_password(pg: &PgPool, slug: &str) {
+pub(crate) async fn forget_app_db_password(pg: &PgPool, slug: &str) {
     let mut stored = get_setting(pg, "app_db_passwords", Value::Object(Default::default())).await;
     if let Some(obj) = stored.as_object_mut()
         && obj.remove(slug).is_some()
@@ -467,125 +527,6 @@ pub fn install_slug(url: &str, slug_override: Option<&str>) -> Result<String, St
     let derived = derived.strip_prefix("talaria-app-").unwrap_or(&derived);
     talaria_users::slug_installable(derived)?;
     Ok(derived.to_string())
-}
-
-/// Install an app by shallow-cloning its git repo into apps/<slug>.
-/// This instance compiles it and spawns its Postgres — no host rebuild.
-pub async fn install_app_from_git(
-    pg: &PgPool,
-    url: &str,
-    slug_override: Option<&str>,
-) -> Result<String, String> {
-    let u = url.trim();
-    let https_ok = u
-        .strip_prefix("https://")
-        .is_some_and(|rest| !rest.is_empty() && !rest.contains(char::is_whitespace));
-    if !https_ok {
-        return Err("install URL must be https://".into());
-    }
-    let derived = install_slug(u, slug_override)?;
-    let derived = derived.as_str();
-    let target = apps_dir().join(derived);
-    if !target.starts_with(apps_dir()) {
-        return Err("bad target path".into());
-    }
-    if target.exists() {
-        return Err(format!("apps/{derived} already exists"));
-    }
-    let clone = tokio::time::timeout(Duration::from_secs(60), async {
-        tokio::process::Command::new("git")
-            .args(["clone", "--depth", "1", u, &target.to_string_lossy()])
-            .stdin(std::process::Stdio::null())
-            .output()
-            .await
-    })
-    .await
-    .map_err(|_| "git clone …: timed out after 60s".to_string())?
-    .map_err(|e| format!("git clone …: {e}"))?;
-    if !clone.status.success() {
-        let stderr = String::from_utf8_lossy(&clone.stderr);
-        return Err(format!("git clone failed: {}", stderr.trim()));
-    }
-    let manifest_ok = tokio::fs::metadata(target.join("talaria.json"))
-        .await
-        .map(|m| m.is_file())
-        .unwrap_or(false);
-    if !manifest_ok {
-        let _ = tokio::fs::remove_dir_all(&target).await;
-        return Err("that repository is not a Talaria app (no talaria.json at its root)".into());
-    }
-    let mut installed = installed_sources(pg).await;
-    let Some(obj) = installed.as_object_mut() else {
-        return Err("apps_installed setting is corrupt".into());
-    };
-    obj.insert(
-        derived.to_string(),
-        serde_json::json!({
-            "source": u,
-            "installedAt": talaria_agent_auth::epoch_ms_to_iso(now_ms()),
-        }),
-    );
-    set_setting(pg, INSTALLED_KEY, &installed)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(derived.to_string())
-}
-
-/// Remove an app's codebase, its Postgres container, build artifacts, and
-/// enablement + install record. Data wipe is the caller's confirm.
-pub async fn uninstall_app(pg: &PgPool, sb: &SecretBox, slug: &str) -> Result<(), String> {
-    if !slug_ok(slug) {
-        return Err("bad slug".into());
-    }
-    set_app_enabled(pg, sb, slug, false).await?;
-    let target: PathBuf = apps_dir().join(slug);
-    if !target.starts_with(apps_dir()) {
-        return Err("bad target path".into());
-    }
-    // The one place an app's MCP row is deleted, taking its grants with it.
-    // Turning the app off above already took the server off its agents.
-    remove_app_mcp_server(pg, sb, slug)
-        .await
-        .map_err(|e| format!("could not remove the app's MCP server: {e}"))?;
-    let _ = tokio::fs::remove_file(mcp_catalog_path(slug)).await;
-    stop_app_db(slug).await;
-    forget_app_db_password(pg, slug).await;
-    let _ = tokio::fs::remove_dir_all(&target).await;
-    let _ = tokio::fs::remove_dir_all(app_builds_dir().join(slug)).await;
-    let _ = tokio::fs::remove_dir_all(app_data_dir().join(slug)).await;
-    let mut installed = installed_sources(pg).await;
-    if let Some(obj) = installed.as_object_mut() {
-        obj.remove(slug);
-    }
-    set_setting(pg, INSTALLED_KEY, &installed)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Where each installed app came from: slug →
-/// { source, installedAt }.
-pub async fn installed_sources(pg: &PgPool) -> Value {
-    get_setting(pg, INSTALLED_KEY, serde_json::json!({})).await
-}
-
-/// Wipe every document in one app's store — TRUNCATE in its own Postgres.
-pub async fn wipe_app_data(_pg: &PgPool, slug: &str) -> Result<u64, sqlx::Error> {
-    let _ = tokio::process::Command::new("docker")
-        .args([
-            "exec",
-            &app_db_container(slug),
-            "psql",
-            "-U",
-            "talaria",
-            "-d",
-            "talaria",
-            "-c",
-            "truncate docs",
-        ])
-        .output()
-        .await;
-    Ok(0)
 }
 
 // ── Marketplace catalog ──────────────────────────────────────────────────────
@@ -688,6 +629,7 @@ pub async fn fetch_catalog(pg: &PgPool) -> (Vec<Value>, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use talaria_users::app_builds_dir;
 
     #[test]
     fn a_sync_reads_the_enabled_set_by_the_gates_rule() {
@@ -713,6 +655,35 @@ mod tests {
     /// The shape the TS probe writes (`syncAppMcpCatalog`): the checked
     /// tools and the probe line, copied into the row as they are.
     #[test]
+    fn only_a_different_catalog_from_the_probe_is_a_change() {
+        use serde_json::json;
+        let stored = json!([{ "name": "crm_find", "description": "Find a contact.",
+            "inputSchema": { "type": "object", "properties": { "q": { "type": "string" } } } }]);
+        // No catalog file: the row keeps its own tools, nothing changed.
+        assert!(!catalog_changed(&stored, None));
+        // The same catalog, keys in another order (jsonb keeps its own): no change.
+        let reordered = json!([{ "inputSchema": { "properties": { "q": { "type": "string" } }, "type": "object" },
+            "description": "Find a contact.", "name": "crm_find" }]);
+        assert!(!catalog_changed(&stored, Some(&reordered)));
+        // A tool added, renamed or removed, a description or a schema edited.
+        for fresh in [
+            json!([{ "name": "crm_find", "description": "Find a contact.", "inputSchema": { "type": "object", "properties": { "q": { "type": "string" } } } },
+                   { "name": "crm_add", "description": "Add one.", "inputSchema": { "type": "object", "properties": {} } }]),
+            json!([{ "name": "crm_search", "description": "Find a contact.", "inputSchema": { "type": "object", "properties": { "q": { "type": "string" } } } }]),
+            json!([]),
+            json!([{ "name": "crm_find", "description": "Find a person.", "inputSchema": { "type": "object", "properties": { "q": { "type": "string" } } } }]),
+            json!([{ "name": "crm_find", "description": "Find a contact.", "inputSchema": { "type": "object", "properties": { "q": { "type": "number" } } } }]),
+            json!([{ "name": "crm_find", "description": "Find a contact.", "inputSchema": { "type": "object", "properties": { "q": { "type": "string" } } },
+                     "outputSchema": { "type": "object" } }]),
+        ] {
+            assert!(catalog_changed(&stored, Some(&fresh)), "{fresh}");
+        }
+        // A row created before its first probe holds `[]`; the first catalog
+        // is a change.
+        assert!(catalog_changed(&json!([]), Some(&stored)));
+    }
+
+    #[test]
     fn a_probe_catalog_fills_both_columns() {
         let raw = r#"{
             "tools": [{"name": "crm_find", "description": "Find a contact", "inputSchema": {"type": "object"}}],
@@ -737,6 +708,7 @@ mod tests {
 
     fn app(slug: &str, enabled: bool, mcp: bool, failed: Option<&str>) -> AppFacts {
         AppFacts {
+            catalog: None,
             slug: slug.into(),
             name: format!("{slug} app"),
             description: String::new(),
