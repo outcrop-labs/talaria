@@ -70,13 +70,24 @@ data so you still have realistic agents/boards/tickets to work against.
    api healthy on `:54xx`, its app still dialling main's `:5274`.
 5. Seeds the fleet config plane the way `talaria setup` seeds the primary's:
    `fleet/skills`, `fleet/hooks`, `fleet/agents`, **`fleet/chassis.yml` from
-   `scripts/chassis.template.yml`** and a blank `fleet/.env`. `fleet/` is
-   gitignored, so a fresh checkout has none of it — and without the chassis the
-   first fleet render 500s with `fleet chassis missing`. An existing chassis is
-   kept; it is your config.
+   the worktree's own `scripts/chassis.template.yml`** and a blank `fleet/.env`.
+   `fleet/` is gitignored, so a fresh checkout has none of it — and without the
+   chassis the first fleet render 500s with `fleet chassis missing`. The
+   template is the base ref's, so the chassis matches the renderer the worktree
+   runs; a base ref without one falls back to the invoking checkout's. An
+   existing chassis is kept; it is your config.
 6. Symlinks `node_modules` from main (fast; no reinstall).
 
 It prints the exact `talaria dev` command and the teardown steps.
+
+**The setup is the invoking checkout's, not the base ref's.** `bun talaria worktree`
+and the `talaria` shim run the CLI of the checkout you call them from — usually the
+primary, on `main` — so `talaria worktree <name> origin/rc` writes `ui/.env` and
+picks ports by `main`'s rules, however far `rc` has moved. A stack cut that way on
+2026-10-22 got no `TALARIA_FLEET_PROJECT`, because the primary's CLI predated it.
+When the running `cli/src/cmd/worktree.ts` differs from the base ref's, the command
+ends with a warning that says so: bring the invoking checkout up to the base ref and
+recut, or check the new `ui/.env` against step 4.
 
 ## Rules of the road
 
