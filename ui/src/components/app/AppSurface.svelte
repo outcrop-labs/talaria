@@ -32,7 +32,8 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import { useEnabledApps } from '@/lib/apps'
+  import { useEnabledApps, type AppManifest } from '@/lib/apps'
+  import { setAppContext } from '@/lib/app-context'
   import AppCrash from './AppCrash.svelte'
 
   let { slug, surface }: { slug: string; surface: Surface } = $props()
@@ -43,6 +44,22 @@
   const compPromise = $derived.by(() => {
     void retry
     return surfaceComponent(slug, surface, app?.build?.key)
+  })
+
+  // The surface learns which app it is from the host, never from its own
+  // source: `useApp()` and the SDK's slug-less hooks read this. Getters, so a
+  // refetched manifest reaches a surface that is already mounted. The surface
+  // only renders once `app` resolved, so `manifest` is never read undefined.
+  setAppContext({
+    get slug() {
+      return slug
+    },
+    get surface() {
+      return surface
+    },
+    get manifest() {
+      return app as AppManifest
+    },
   })
 </script>
 

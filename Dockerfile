@@ -110,7 +110,7 @@ LABEL org.opencontainers.image.title="Talaria" \
       org.opencontainers.image.created="${CREATED}"
 
 # docker CLI + compose v2: the app drives the host daemon through the mounted
-# socket (fleet render/up, docker exec for agent memory/media/crons).
+# socket (fleet render/up, docker exec for agent memory/media).
 # git: app installs (git clone from the marketplace). tzdata: the app renders
 # local times. libgcc + libstdc++: the bun binary links them (they come free
 # with the node-based build stages but not with bare alpine — same set the

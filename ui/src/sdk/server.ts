@@ -2,9 +2,10 @@
 //
 // apps/<slug>/server.ts default-exports defineAppServer(...): one fetch
 // handler mounted at /api/apps/<slug>/*. The host authenticates the request
-// (session cookie), checks the app is enabled and the user may reach it,
-// then hands over with a context: the signed-in user, the sub-path, and a
-// per-app document store (namespaced Postgres, no migrations needed).
+// (session cookie), checks the app is enabled and the user holds at least one
+// of its surfaces, then hands over with a context: the signed-in user, which
+// surfaces and permissions they hold, the sub-path, and a per-app document
+// store (namespaced Postgres, no migrations needed).
 import { json } from '@/server/http'
 import type { SessionUser } from '@/server/auth/session'
 import type { AppStore } from '@/server/app-store'
@@ -24,8 +25,19 @@ export type { SessionUser, AppStore }
 export type { AppDoc } from '@/server/app-store'
 
 export interface AppRequestContext {
-  /** The signed-in user this request runs as. Role/permission checks are yours to apply. */
+  /** The signed-in user this request runs as. */
   user: SessionUser
+  /** Which of this app's surfaces the caller holds. Each surface is its own
+   *  grant (the settings tab follows the manage grant); the host admits a
+   *  caller who holds at least one, so a route behind your Manage surface
+   *  must check `access.manage` itself. An admin holds every surface the app
+   *  ships; a surface the app doesn't ship is always false. */
+  access: { admin: boolean; work: boolean; manage: boolean; settings: boolean }
+  /** The caller's effective platform permissions (`boards.create`,
+   *  `kb.edit`, …) — person, team and org defaults resolved. */
+  perms: readonly string[]
+  /** Whether the caller holds `perm`. Admins hold every permission. */
+  can: (perm: string) => boolean
   /** This app's slug. */
   app: string
   /** Path after /api/apps/<slug>/ — e.g. "items/123". */

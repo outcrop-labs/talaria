@@ -93,7 +93,7 @@ describe('maybeProxy', () => {
       '/api/workbench/flow',
       '/api/mcp/gw/github',
       '/api/fleet/defs',
-      '/api/agents/register',
+      '/api/agents',
       '/api/keys',
       '/api/teams',
       '/api/models',

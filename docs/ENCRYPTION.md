@@ -19,6 +19,22 @@ working that repo, written by `prepare_env` once the checkout exists and removed
 when the job ends — never
 a file under `fleet/`.
 
+A credential written inline in an agent's Hermes config (a platform token, a
+named provider's key, an `Authorization` header) is not stored as written
+either. Federation seals each one the render would emit as one of that agent's
+per-agent secrets (`CONFIG_<PATH>`) and stores a `${CONFIG_<PATH>}` handle in
+the config. The render delivers the value through the agent's `secrets.env`, and
+Hermes expands the handle when it loads `config.yaml`. Inline credentials the
+render never emits are dropped: a model spec's `api_key`, which the render
+always points at the gateway; an authored MCP server's credentials, which the
+render replaces with the MCP gateway; and the API server's own `key`, which
+Hermes replaces with the `API_SERVER_KEY` Talaria calls the agent with. The
+top-level `secrets:` block is left as written, because Hermes reads it
+unexpanded and it holds secret-manager references, not credentials. A hire
+from a template copies the template's sealed values (as ciphertext) only
+when the hirer manages the template; otherwise the clone's config loses
+those settings. The rules live in `talaria_agent_secrets::plan_config_seal`.
+
 **Do not maintain that list by hand anywhere.** `secretHealth()` in
 `server/secret-health.ts` enumerates every store, and **Admin → Secrets** shows
 what this instance actually holds, per row, with whether it can still be

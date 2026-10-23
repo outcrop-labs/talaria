@@ -28,6 +28,11 @@
 //                             copies of a third of it (which is what they
 //                             were: closed-only, so an archived ticket sailed
 //                             through).
+//   • a WORKCHAIN step whose earlier step is still open → moving it to the
+//                             active column or review is refused until that
+//                             step is signed off (the work clause,
+//                             `agent_work_refusal`); comments, fields and
+//                             triage still land
 //   • COMMENTS, and this is the one place the three conditions come APART:
 //                               · CLOSED ticket   → comment still lands. That
 //                                 is the agent's channel on work it can no
@@ -132,6 +137,10 @@ const OFF_THE_TABLE = 'closed (done / failed / cancelled), ARCHIVED, or on an AR
 /** For every write door: the ticket patch, add_time, log_usage, add_dependency,
  *  report_outcome, report_gap's taskId. */
 const LIVE_ONLY = `Only a LIVE ticket accepts it — one that is ${OFF_THE_TABLE} refuses this with 403, like every other agent write.`
+
+/** For the status moves that ARE work (the active column, review): a workchain
+ *  step waits for the step before it (`agent_safe_patch`'s chain clause). */
+const CHAIN_WAIT = 'A workchain step whose earlier step is still open waits its turn: moving it to the active column or to review returns 403 until a person signs that step off.'
 
 /** Every ticket door accepts this. The assignment title shows the ref; list_tickets returns both. */
 const TICKET_ADDR =
@@ -528,7 +537,7 @@ server.registerTool(
   'triage_ticket',
   {
     description:
-      `Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back. Restarting your own blocked ticket, taking anything out of quality_review, and any write at all to a ticket a person has taken off the table — ${OFF_THE_TABLE} — are a person's call and return 403. ${BOARD_STATUS_KEYS} So once you have parked or reported, stop moving the ticket. ${COMMENT_INSTEAD} Assigning and marking done are human-only.`,
+      `Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back. Restarting your own blocked ticket, taking anything out of quality_review, and any write at all to a ticket a person has taken off the table — ${OFF_THE_TABLE} — are a person's call and return 403. ${BOARD_STATUS_KEYS} So once you have parked or reported, stop moving the ticket. ${CHAIN_WAIT} ${COMMENT_INSTEAD} Assigning and marking done are human-only.`,
     inputSchema: {
       taskId: z.string().describe(TICKET_ADDR),
       title: z.string().min(1).max(300).optional(),
@@ -568,7 +577,7 @@ server.registerTool(
   'report_outcome',
   {
     description:
-      `Report the outcome of work on a ticket and hand it to the board's review column ("Quality review" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review, triage_ticket cannot take it back out, so add anything further as a comment. ${LIVE_ONLY} ${COMMENT_INSTEAD}`,
+      `Report the outcome of work on a ticket and hand it to the board's review column ("Quality review" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review, triage_ticket cannot take it back out, so add anything further as a comment. ${LIVE_ONLY} ${CHAIN_WAIT} ${COMMENT_INSTEAD}`,
     inputSchema: {
       taskId: z.string().describe(TICKET_ADDR),
       outcome: z.string().max(50_000).describe('What was accomplished'),

@@ -67,6 +67,16 @@ export function onUserEvent(fn: Listener): () => void {
   }
 }
 
+/** A component's subscription to the firehose, for exactly its lifetime:
+ *  the shared connection opens with the first subscriber and closes with the
+ *  last. Call during component init. Events carry ids only — the listener's
+ *  job is to refetch (invalidate a query), never to patch content. This is
+ *  the door the SDK hands apps, so an app surface that shows run state does
+ *  not open a second EventSource (a second Redis subscriber) of its own. */
+export function useUserEvents(fn: Listener): void {
+  $effect(() => onUserEvent((event) => fn(event)))
+}
+
 /** The app-wide invalidation map, one line per event: what refetches when
  *  the firehose ticks. Mounted once (AppLayout) so a badge or a list moves
  *  no matter WHICH page the person is on — a room they haven't entered, a

@@ -24,6 +24,12 @@
 //      scripts/hermes-skill-authority.json (replaced / keepExact / apple/) is
 //      a weekly Hermes add that would teach the fleet a parallel workspace.
 //
+//   4. ARE HERMES' TOOLSET SWITCHES STILL THE ONES TALARIA GOVERNS? The image's
+//      own CONFIGURABLE_TOOLSETS against scripts/hermes-toolsets.json — the
+//      snapshot talaria-agent-defs' GOVERNED_TOOLSETS is tested against. A new
+//      switch (or a renamed one) fails here until someone governs it or says
+//      why not.
+//
 // WHAT THIS DELIBERATELY DOES NOT ASSERT: that the agent is HEALTHY. Hermes
 // only starts its API server — the thing behind `/health` — once it has a
 // reachable model, so a health assertion would make this test require a live
@@ -248,6 +254,43 @@ async function main() {
       }
     }
 
+    // ── 4. Hermes' toolset switches vs the governed snapshot ──────────────
+    // GOVERNED_TOOLSETS is held to the JSON by a cargo test; this holds the
+    // JSON to the image. The interpreter is the image's own venv, -I so
+    // nothing on the container's cwd can shadow the import.
+    const listToolsets = [
+      'import json, sys',
+      'sys.path.insert(0, "/opt/hermes")',
+      'from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS',
+      'print(json.dumps([key for key, _label, _desc in CONFIGURABLE_TOOLSETS]))',
+    ].join('; ')
+    const snapshot = JSON.parse(readFileSync(join(REPO, 'scripts', 'hermes-toolsets.json'), 'utf8'))
+    const { stdout: tsOut } = await docker(['exec', CONTAINER, '/opt/hermes/.venv/bin/python', '-I', '-c', listToolsets])
+      .catch((e) => ({ stdout: '', err: e }))
+    let live = null
+    try {
+      live = JSON.parse(tsOut.trim().split('\n').pop() || 'null')
+    } catch {
+      live = null
+    }
+    if (!Array.isArray(live)) {
+      fail("could not read Hermes' CONFIGURABLE_TOOLSETS from the image — the import path moved; an unreadable list is not a pass")
+    } else {
+      const added = live.filter((n) => !snapshot.configurable.includes(n))
+      const gone = snapshot.configurable.filter((n) => !live.includes(n))
+      if (added.length || gone.length) {
+        fail(
+          "Hermes' toolset switches drifted from scripts/hermes-toolsets.json" +
+            (added.length ? `\n  new in the image: ${added.join(', ')}` : '') +
+            (gone.length ? `\n  gone from the image: ${gone.join(', ')}` : '') +
+            '\nRefresh `configurable`, then govern each new name in talaria-agent-defs (GOVERNED_TOOLSETS) ' +
+            'or add it to `notGoverned` with the reason.',
+        )
+      } else {
+        log(`toolset switches match the snapshot (${live.length}) ✓`)
+      }
+    }
+
     // ── 2. does it stop cleanly ───────────────────────────────────────────
     log(`stopping (timeout ${STOP_TIMEOUT_S}s)…`)
     const started = Date.now()
@@ -271,7 +314,7 @@ async function main() {
       return
     }
     log(`stopped cleanly in ${took}s, exit 0 ✓`)
-    if (!process.exitCode) log('PASS — the chassis boots, ships classified skills, and stops cleanly')
+    if (!process.exitCode) log('PASS — the chassis boots, ships classified skills, offers the snapshotted toolset switches, and stops cleanly')
   } catch (e) {
     fail(e?.message ?? String(e))
   } finally {

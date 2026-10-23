@@ -65,6 +65,10 @@ ui/.tanstack/
 # Vite dep-optimizer cache (created when the dev server runs from ui/)
 ui/.vite/
 
+# Scratch workspace ui/src/sdk/client-docs.test.ts typechecks the doc
+# examples in; removed after the run, ignored in case a run is killed.
+ui/.sdk-doc-examples-*/
+
 # OMC agent state (never commit)
 .omc/
 ui/.omc/
