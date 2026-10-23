@@ -1,4 +1,4 @@
-// sdk-reference — what the two SDK entry points export, and what
+// sdk-reference — what the SDK entry points export, and what
 // docs/sdk/reference.md claims they export, entry point by entry point.
 //
 // Pure functions, stdlib only (`bun run check` runs with no node_modules).
@@ -224,7 +224,7 @@ export function diffReference(exportsByEntry, ref) {
   }
   const all = new Set([...exportsByEntry.values()].flatMap((m) => [...m.keys()]))
   for (const p of ref.prose) {
-    if (!all.has(p.name)) ghosts.push(`${p.name} — named in prose at line ${p.line}, exported by neither entry point`)
+    if (!all.has(p.name)) ghosts.push(`${p.name} — named in prose at line ${p.line}, exported by no entry point`)
   }
   for (const p of ref.problems) kinds.push(`line ${p.line}: ${p.text}`)
   return { missing, ghosts: [...new Set(ghosts)], kinds, dupes }

@@ -1,8 +1,8 @@
 # SDK reference
 
-Every export from both entry points, one row each. **This file is enforced**:
-`bun run check` parses the exports out of `ui/src/sdk/index.ts` and
-`ui/src/sdk/server.ts`, entry point by entry point, and fails if a row names a
+Every export from every entry point, one row each. **This file is enforced**:
+`bun run check` parses the exports out of `ui/src/sdk/index.ts`,
+`ui/src/sdk/server.ts` and `ui/src/sdk/testing.ts`, entry point by entry point, and fails if a row names a
 symbol its entry point doesn't export, if an export has no row under its own
 entry point's headings, or if a row's kind (fn, const, class, comp, type) is
 not what the source declares. Guides live beside this file; the row is the
@@ -13,6 +13,7 @@ Import them as:
 ```ts
 import { Button, useAppQuery } from '@talaria/sdk'          // client
 import { defineAppServer, z } from '@talaria/sdk/server'    // server
+import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp.ts
 ```
 
 ## `@talaria/sdk` — app definition
@@ -175,8 +176,20 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | :--- | :--- | :--- |
 | `defineAppMcp` | fn | Declare agent-callable tools; default-export from mcp.ts |
 | `AppMcp` | type | The tools map `defineAppMcp` takes |
-| `AppMcpTool` | type | One tool: name, description, inputSchema, handler |
-| `AppMcpContext` | type | Tool handler ctx: app, agent, store |
+| `AppMcpTool` | type | One tool: name, description, inputSchema, outputSchema, handler |
+| `AppMcpContext` | type | Tool handler ctx: app, agent, caller, actingUserId, store, signal |
+| `AppMcpCaller` | type | Who calls: the agent's name and id, and whether that is proven (its own key, not the org-wide one) |
+| `toolResult` | fn | A whole MCP result for a handler to return: content blocks, structuredContent, isError |
+| `AppToolResult` / `AppToolContent` | types | What `toolResult` makes, and one content block (text, image, audio, resource_link, resource) |
+| `isUnresolvedHandle` | fn | Whether a value still carries a `«secret:…»` handle the gateway could not resolve |
+
+## `@talaria/sdk/testing` — unit tests of MCP tools
+
+| symbol | kind | what it is |
+| :--- | :--- | :--- |
+| `callAppTool` | fn | Call one tool of an mcp.ts as the gateway would, with no host; answers what the agent receives |
+| `AppToolCallOptions` / `AppToolCallResult` | types | `callAppTool`'s context (caller, actingUserId, store, timeoutSecs, signal, tools) and its answer |
+| `memoryStore` | fn | An in-memory document store with the installed store's interface and answers |
 
 ## `@talaria/sdk/server` — activity harnesses
 

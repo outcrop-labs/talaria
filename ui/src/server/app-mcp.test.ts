@@ -191,14 +191,15 @@ describe('syncAppMcpCatalog', () => {
 
 describe('dispatchAppMcp', () => {
   const rpc = (method: string, params?: Record<string, unknown>) => ({ jsonrpc: '2.0', id: 1, method, params })
+  const facts = { caller: { name: 'agent-a', id: 'def-a', proven: true }, actingUserId: null }
 
   it('lists and calls only the tools that passed', async () => {
     state.module = { default: { tools: [tool(), tool({ name: 'crm_broken', description: '' })] } }
-    const list = await mcp.dispatchAppMcp('crm', rpc('tools/list'), 'agent-a', null)
+    const list = await mcp.dispatchAppMcp('crm', rpc('tools/list'), facts, null)
     expect((list.body as { result: { tools: Array<{ name: string }> } }).result.tools.map((t) => t.name)).toEqual(['crm_find'])
-    const call = await mcp.dispatchAppMcp('crm', rpc('tools/call', { name: 'crm_broken', arguments: {} }), 'agent-a', null)
+    const call = await mcp.dispatchAppMcp('crm', rpc('tools/call', { name: 'crm_broken', arguments: {} }), facts, null)
     expect((call.body as { error: { message: string } }).error.message).toBe('tool "crm_broken" is not available here')
-    const ok = await mcp.dispatchAppMcp('crm', rpc('tools/call', { name: 'crm_find', arguments: { q: 'ada' } }), 'agent-a', null)
+    const ok = await mcp.dispatchAppMcp('crm', rpc('tools/call', { name: 'crm_find', arguments: { q: 'ada' } }), facts, null)
     expect((ok.body as { result: { content: Array<{ text: string }> } }).result.content[0]!.text).toBe('ok')
   })
 })

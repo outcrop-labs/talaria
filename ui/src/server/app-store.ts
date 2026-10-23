@@ -4,6 +4,7 @@
 // migrations, invisible to other apps.
 import { randomUUID } from 'node:crypto'
 import { appSql } from './app-db'
+import { isDocId } from './app-doc-id'
 
 export interface AppDoc<T = Record<string, unknown>> {
   id: string
@@ -12,14 +13,10 @@ export interface AppDoc<T = Record<string, unknown>> {
   updatedAt: string
 }
 
-/** The ids `insert` mints (`randomUUID`), the only ids a doc can have: the
- *  docs table's `id` column is `uuid`. Anything else names no document, and
- *  `get`/`update`/`remove` answer so without asking Postgres — which would
- *  refuse the cast (22P02) and turn an app's `items/123` into a 500 "app
- *  crashed" instead of its own 404. */
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-export const isDocId = (id: unknown): id is string => typeof id === 'string' && UUID.test(id)
+// The id rule lives in a leaf the in-memory store (`memoryStore`,
+// @talaria/sdk/testing) shares, so a unit test's store refuses exactly the ids
+// this one does.
+export { isDocId }
 
 export interface AppStore {
   list<T = Record<string, unknown>>(collection: string, opts?: { limit?: number; offset?: number; newestFirst?: boolean }): Promise<AppDoc<T>[]>

@@ -16,9 +16,9 @@ import { skeletonFiles } from '../../../cli/src/cmd/app/skeleton'
 // rendered "No items yet" over a failed read. A document is not a build
 // target, so each of those shipped and stayed.
 //
-// So every `svelte` fence in client.md, ui-kit.md, getting-started.md and the
-// quick guide in apps/README.md, every `ts` fence there that imports
-// @talaria/sdk or @talaria/sdk/server, and every file
+// So every `svelte` fence in client.md, ui-kit.md, getting-started.md, mcp.md
+// and the quick guide in apps/README.md, every `ts` fence there that imports
+// @talaria/sdk, @talaria/sdk/server or @talaria/sdk/testing, and every file
 // `talaria app new` writes are copied out VERBATIM and run through two passes:
 // the Svelte compiler (syntax, runes), then svelte-check against the real SDK
 // under the ui's own tsconfig (types, props, unused imports). A rename in the
@@ -33,7 +33,7 @@ const UI = fileURLToPath(new URL('../../', import.meta.url))
 const REPO = join(UI, '..')
 // Repo-relative. apps/README.md is the guide an author meets first, beside
 // their own app, so its examples are held to the same bar.
-const DOC_FILES = ['docs/sdk/client.md', 'docs/sdk/ui-kit.md', 'docs/sdk/getting-started.md', 'apps/README.md']
+const DOC_FILES = ['docs/sdk/client.md', 'docs/sdk/ui-kit.md', 'docs/sdk/getting-started.md', 'docs/sdk/mcp.md', 'apps/README.md']
 
 interface Example {
   /** Where it came from, for the failure message. */
@@ -56,7 +56,7 @@ function fences(doc: string): Example[] {
     const code = lines.slice(start, end).join('\n') + '\n'
     i = end
     const lang = open[1]
-    if (lang === 'ts' && !/from '@talaria\/sdk(?:\/server)?'/.test(code)) continue
+    if (lang === 'ts' && !/from '@talaria\/sdk(?:\/server|\/testing)?'/.test(code)) continue
     const named = /^(?:<!--|\/\/)\s*apps\/<slug>\/([\w.-]+\.(?:svelte|ts))/.exec(code)?.[1]
     const file = named ?? `example-${start}.${lang === 'svelte' ? 'svelte' : 'ts'}`
     out.push({ origin: `${doc}:${start}`, path: `${base}/${file}`, code })

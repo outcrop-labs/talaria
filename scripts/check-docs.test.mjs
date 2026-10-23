@@ -188,7 +188,7 @@ check('the diff: a wrong kind, a missing export and a ghost', () => {
 check('the diff: a ghost named in prose, and a symbol with two rows under one entry point', () => {
   const md = '## `@talaria/sdk`\n| symbol | kind | what |\n| :--- | :--- | :--- |\n| `A` | fn | see `KeyHint` |\n| `A` | fn | again |'
   const d = diffReference(exportsOf({ '@talaria/sdk': { A: 'fn' } }), parseReference(md))
-  eq(d.ghosts, ['KeyHint — named in prose at line 4, exported by neither entry point'])
+  eq(d.ghosts, ['KeyHint — named in prose at line 4, exported by no entry point'])
   eq(d.dupes, ['A — listed twice under @talaria/sdk (lines 4 and 5)'])
 })
 
@@ -197,7 +197,7 @@ check('an unresolved runtime re-export fits any value kind, never comp or type',
   eq([kindFits('fn', 'const'), kindFits('comp', 'comp')], [false, true])
 })
 
-check('the real tree: both entry points match docs/sdk/reference.md', () => {
+check('the real tree: every entry point matches docs/sdk/reference.md', () => {
   const resolveModule = (spec) => {
     if (!spec.startsWith('@/')) return null
     const base = join(ROOT, 'ui/src', spec.slice(2))
@@ -207,6 +207,7 @@ check('the real tree: both entry points match docs/sdk/reference.md', () => {
   const byEntry = new Map([
     ['@talaria/sdk', sdkExports(readFileSync(join(ROOT, 'ui/src/sdk/index.ts'), 'utf8'), resolveModule)],
     ['@talaria/sdk/server', sdkExports(readFileSync(join(ROOT, 'ui/src/sdk/server.ts'), 'utf8'), resolveModule)],
+    ['@talaria/sdk/testing', sdkExports(readFileSync(join(ROOT, 'ui/src/sdk/testing.ts'), 'utf8'), resolveModule)],
   ])
   const d = diffReference(byEntry, parseReference(readFileSync(join(ROOT, 'docs/sdk/reference.md'), 'utf8')))
   eq(d, { missing: [], ghosts: [], kinds: [], dupes: [] })

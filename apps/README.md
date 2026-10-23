@@ -164,8 +164,10 @@ export default defineAppMcp({
       description: 'Search things by name. Returns matching { id, name }.',
       inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
       async handler(args, ctx) {
-        // ctx.agent  the calling agent's name (gateway-authenticated)
-        // ctx.store  the same per-app document store server.ts uses
+        // ctx.caller        the calling agent: { name, id, proven }
+        // ctx.actingUserId  the person it acts for, or null
+        // ctx.store         the same per-app document store server.ts uses
+        // ctx.signal        aborts at the server's timeout or when the agent leaves
         const query = String(args.query ?? '').toLowerCase()
         const things = await ctx.store.list<{ name?: string }>('things', { limit: 500 })
         return things

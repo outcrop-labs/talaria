@@ -11,6 +11,7 @@ import { json } from '@/server/http'
 import type { SessionUser } from '@/server/auth/session'
 import type { AppStore } from '@/server/app-store'
 import type { PlatformApi, PlatformApiInit } from '@/server/app-context'
+import type { TOOL_RESULT } from '@/server/app-mcp-call'
 
 export { json }
 // What `ctx.api` throws on a non-2xx answer: `status` and the server's own
@@ -90,15 +91,62 @@ export const defineAppServer = (server: AppServer): AppServer => server
 // AGENTS can call. The host registers them as an MCP server in the registry,
 // so the whole granular governance applies unchanged — per-agent tool
 // subsets, per-person allowances, gateway enforcement. Calls dispatch
-// in-process (no network hop); the handler gets the calling agent's name and
-// the same per-app store the HTTP server uses.
+// in-process (no network hop); the handler gets who is calling and for whom,
+// the same per-app store the HTTP server uses, and a signal that aborts at
+// the server's deadline. `@talaria/sdk/testing` runs a tool the same way in a
+// unit test, with no host.
+
+/** Who is calling a tool: an agent of the fleet. */
+export interface AppMcpCaller {
+  /** The agent's fleet name (its model id). */
+  name: string
+  /** The agent's id (`agent_defs.id`) — null for a caller on the org-wide
+   *  legacy key, whose identity is the name it claimed. */
+  id: string | null
+  /** True only when the call arrived on this agent's own gateway key. False
+   *  on the org-wide legacy key, where `name` is whatever the caller's
+   *  `X-Agent-Name` header said: identified, not proven. Decide nothing that
+   *  matters — whose data, what may change — on an unproven caller. */
+  proven: boolean
+}
 
 export interface AppMcpContext {
   /** This app's slug. */
   app: string
-  /** The calling agent's name (fleet identity, gateway-authenticated). */
+  /** The calling agent's name — `caller.name`, kept for tools written before
+   *  `caller`. A name alone proves nothing; read `caller.proven`. */
   agent: string
+  /** Who is calling, and whether the gateway proved it. */
+  caller: AppMcpCaller
+  /** The person the agent is acting for — a personal assistant's owner —
+   *  when the gateway knows it, else null. Null for an org agent (it acts for
+   *  the org) and for an unproven caller. Scope a person's data by this, as
+   *  a server route scopes by `ctx.user`. */
+  actingUserId: string | null
   store: AppStore
+  /** Aborts at the server's deadline — its timeout in Manage → MCP, 120 s
+   *  unless an admin set one — or when the agent disconnects. Pass it to long
+   *  work (`fetch`, `runHarness`); the gateway answers at that moment either
+   *  way, and nothing the handler returns afterwards reaches anyone. */
+  signal: AbortSignal
+}
+
+/** One MCP content block, as a `toolResult` carries it. */
+export type AppToolContent =
+  | { type: 'text'; text: string }
+  | { type: 'image' | 'audio'; data: string; mimeType: string }
+  | { type: 'resource_link'; uri: string; name: string; title?: string; description?: string; mimeType?: string }
+  | { type: 'resource'; resource: { uri: string; mimeType?: string; text?: string; blob?: string } }
+
+/** A whole MCP tool result, made by `toolResult(...)`. */
+export interface AppToolResult {
+  readonly content?: AppToolContent[]
+  /** Typed data a client reads without parsing text. Checked against the
+   *  tool's `outputSchema` when it declares one. */
+  readonly structuredContent?: Record<string, unknown>
+  /** A failure the agent should see and adapt to, without a throw. */
+  readonly isError?: boolean
+  readonly [TOOL_RESULT]: true
 }
 
 export interface AppMcpTool {
@@ -106,7 +154,14 @@ export interface AppMcpTool {
   description: string
   /** JSON Schema for the arguments (defaults to an empty object schema). */
   inputSchema?: Record<string, unknown>
-  /** Return value is serialized for the agent (string passes through as-is). */
+  /** JSON Schema (`type: "object"`) for the tool's structured result. A tool
+   *  that declares one answers structured: return the object (or
+   *  `toolResult({ structuredContent })`), and it is checked against this
+   *  before the agent sees it. */
+  outputSchema?: Record<string, unknown>
+  /** A string reaches the agent as text; `toolResult(...)` as the whole MCP
+   *  result; any other value as its JSON (as `structuredContent` too, when
+   *  the tool declares an `outputSchema`). Throw to fail. */
   handler: (args: Record<string, unknown>, ctx: AppMcpContext) => unknown | Promise<unknown>
 }
 
@@ -115,6 +170,12 @@ export interface AppMcp {
 }
 
 export const defineAppMcp = (mcp: AppMcp): AppMcp => mcp
+
+// The whole MCP result, for a handler that needs more than one text block —
+// content blocks, `structuredContent`, an `isError` without a throw — and the
+// test for a `«secret:…»` handle the gateway could not resolve, which reaches
+// the handler as text rather than a credential.
+export { toolResult, isUnresolvedHandle } from '@/server/app-mcp-call'
 
 // ── Activity harnesses ─────────────────────────────────────────────────────
 // defineHarness(...) declares a MODEL CALL Talaria makes on the app's behalf —
