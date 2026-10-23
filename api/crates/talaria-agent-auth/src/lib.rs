@@ -196,7 +196,7 @@ fn warn_once(key: &str, line: &str) {
     tracing::warn!("{line}");
 }
 
-/// Resolve the calling agent from its credential (agentCaller — requireName):
+/// Resolve the calling agent from its credential (agentCaller):
 ///   • Ok(None)     no agent credential presented — dual-auth routes fall
 ///                  through to session auth exactly as before
 ///   • Err(resp)    a credential WAS presented and rejected; return it,
@@ -216,7 +216,7 @@ pub async fn agent_caller(
     pg: &PgPool,
     headers: &HeaderMap,
 ) -> Result<Option<AgentCaller>, Response> {
-    resolve(pg, headers, true).await
+    resolve(pg, headers).await
 }
 
 /// The calling agent or a ready-to-return 401/403, for agent-only routes.
@@ -228,47 +228,6 @@ pub async fn require_agent(pg: &PgPool, headers: &HeaderMap) -> Result<AgentCall
     }
 }
 
-/// Identity for the FLEET-PLANE endpoints whose subject is in the URL
-/// (register, heartbeat). Same validation as `agent_caller`, except a legacy
-/// caller that sent no x-agent-name resolves with an EMPTY model instead of
-/// a 400: the pre-per-key plugin doesn't send the header, and the subject is
-/// the URL anyway. A caller we CAN name must still match the subject — that
-/// is what stops agent A reading agent B's work. The unnamed shape arrives
-/// as `model: ""`.
-pub async fn fleet_caller(
-    pg: &PgPool,
-    headers: &HeaderMap,
-) -> Result<Option<AgentCaller>, Response> {
-    resolve(pg, headers, false).await
-}
-
-/// Any credential the fleet holds — a per-agent one, or the org-wide key
-/// while the window is open. For the
-/// fleet-plane endpoints that carry their subject in the URL and so need no
-/// caller identity. Retirement is `agent_defs.enabled = false` and it does
-/// NOT delete the agent_keys row, so the join onto agent_defs is what makes
-/// "retiring an agent revokes its access" true here as well.
-pub async fn check_fleet_key(pg: &PgPool, headers: &HeaderMap) -> Result<bool, sqlx::Error> {
-    let Some(secret) = presented(headers) else {
-        return Ok(false);
-    };
-    if secret.starts_with(KEY_PREFIX) {
-        let row: Option<(i32,)> = sqlx::query_as(
-            "select 1 from agent_keys k join agent_defs d on d.id = k.agent_id \
-             where k.key_hash = $1 and d.enabled",
-        )
-        .bind(sha256_hex(&secret))
-        .fetch_optional(pg)
-        .await?;
-        return Ok(row.is_some());
-    }
-    let shared = std::env::var("TALARIA_AGENT_KEY")
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    Ok(!shared.is_empty() && legacy_open() && eq(&secret, &shared))
-}
-
 fn legacy_open() -> bool {
     std::env::var("TALARIA_AGENT_KEY_LEGACY")
         .unwrap_or_else(|_| "on".into())
@@ -276,11 +235,7 @@ fn legacy_open() -> bool {
         != "off"
 }
 
-async fn resolve(
-    pg: &PgPool,
-    headers: &HeaderMap,
-    require_name: bool,
-) -> Result<Option<AgentCaller>, Response> {
+async fn resolve(pg: &PgPool, headers: &HeaderMap) -> Result<Option<AgentCaller>, Response> {
     let Some(secret) = presented(headers) else {
         return Ok(None);
     };
@@ -363,17 +318,10 @@ async fn resolve(
     // caller gets no identity and therefore no per-agent access — refused,
     // not waved through.
     let Some(claimed) = claimed else {
-        if require_name {
-            return Err(house_error(
-                StatusCode::BAD_REQUEST,
-                "x-agent-name required",
-            ));
-        }
-        return Ok(Some(AgentCaller {
-            id: None,
-            model: String::new(),
-            legacy: true,
-        }));
+        return Err(house_error(
+            StatusCode::BAD_REQUEST,
+            "x-agent-name required",
+        ));
     };
     // The claimed name is resolved, never taken on faith: a retired or
     // invented name must not authenticate.

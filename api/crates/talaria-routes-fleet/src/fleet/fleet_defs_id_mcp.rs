@@ -524,7 +524,7 @@ pub async fn post(
     let mut warning: Option<String> = None;
     if (touched_registry || created) && apply && def.managed {
         let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
-        let _ = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb, None).await;
+        let _ = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb).await;
         match roll_agent(&state.pg, &sb, &def.department).await {
             Ok(None) => applied = true,
             Ok(Some(w)) => warning = Some(w),
@@ -533,7 +533,7 @@ pub async fn post(
     } else if touched_registry || created {
         // Not rolling: still re-render so the next start carries the change.
         let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
-        let _ = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb, None).await;
+        let _ = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb).await;
     }
     let mut out = Map::new();
     out.insert("ok".into(), json!(true));

@@ -137,7 +137,7 @@
       <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
         <div class="min-w-0 flex-1 basis-56">
           <div class="font-sans text-sm text-fg">Roll every agent</div>
-          <div class="font-sans text-xs text-muted">A fresh container each; the old one finishes its replies first.</div>
+          <div class="font-sans text-xs text-muted">A fresh container each, in place: a minute or so offline per agent while it restarts.</div>
         </div>
         <Button
           variant="outline"

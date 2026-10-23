@@ -1,8 +1,17 @@
-// Fleet reconciliation. A ROLL is the blue/green cutover: render the incoming
-// slot alongside the active one, bring it up, wait for real health, flip the
-// manifest, drain, retire the old container. In-flight replies never hit a
-// dead container, and an unhealthy replacement never takes over — the old
-// container keeps serving and the roll reports why.
+// Fleet reconciliation. A ROLL recreates an agent's container IN PLACE:
+// re-render, pull the image if the host lacks it, stop the running container
+// gracefully, start a fresh one from the render on the same state volume, and
+// wait for real health. The agent is offline for the restart — `proxy_chat`
+// holds a turn up to two minutes across it.
+//
+// WHY NOT BLUE/GREEN. This used to start the replacement beside the live
+// container and cut over once it was healthy. Every Hermes since v2026.4.30
+// takes an `flock` on `/opt/data/gateway.lock` in the agent's state volume —
+// one gateway per HERMES_HOME — so the replacement, sharing that volume,
+// logged "Cannot reserve gateway profiles: Gateway runtime already owns
+// profile /opt/data" on every s6 respawn, never bound :8642, and was
+// discarded after 120s. A roll of a running agent could never pass, and
+// nothing it was meant to deliver (a rotated key, a new image) landed.
 
 use sqlx::PgPool;
 
@@ -13,15 +22,13 @@ use talaria_secretbox::SecretBox;
 
 use futures_util::future::BoxFuture;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
-use talaria_update_layout::roll_drain_ms;
 
-/// The departments THIS process is mid-roll on. A roll reads `active_slot`,
-/// takes `max(gateway_port)+1`, renders an overlay, cuts over and removes
-/// the old slot, and none of that is written back until the cutover — so
-/// two rolls of one department interleave into each other's slot and port,
-/// and the second removes the container the first just made live. Same
-/// guard shape as chat-persist's `CONTINUING`: the set closes the in-process
-/// window; the advisory lock below is the cross-instance one.
+/// The departments THIS process is mid-roll on. Two rolls of one department
+/// would recreate the container under each other (and race the move of a
+/// legacy `-b` agent home), so a roll holds its department here for its
+/// whole run. Same guard shape as chat-persist's `CONTINUING`: the set
+/// closes the in-process window; the advisory lock below is the
+/// cross-instance one.
 static ROLLING: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
 /// Whether a roll of this department is in flight in this process — what
@@ -175,28 +182,29 @@ pub fn merge_roll_records(local: Vec<RollRecord>, remote: Vec<RollRecord>) -> Ve
     out
 }
 
-/// Overlay: (slug, slot, port) when rolling.
+/// The renderer, wired from the api binary so this crate does not depend on
+/// fleet-render: (rendered agent count, warnings).
 pub static RENDER_FLEET: OnceLock<
     Arc<
-        dyn Fn(
-                sqlx::PgPool,
-                SecretBox,
-                Option<(String, Slot, i64)>,
-            ) -> BoxFuture<'static, Result<(usize, Vec<String>), String>>
+        dyn Fn(sqlx::PgPool, SecretBox) -> BoxFuture<'static, Result<(usize, Vec<String>), String>>
             + Send
             + Sync,
     >,
 > = OnceLock::new();
-pub static NEXT_FREE_PORT: OnceLock<
-    Arc<dyn Fn(sqlx::PgPool) -> BoxFuture<'static, Result<i64, String>> + Send + Sync>,
-> = OnceLock::new();
+
+/// How long a recreated container gets to report healthy: the chassis
+/// healthcheck's 60s start period plus five 15s probes, then headroom for
+/// a slow first boot of a freshly pulled image.
+const ROLL_HEALTH_WAIT_MS: u64 = 180_000;
 
 /// The roll verdict. `Err` is a failed step (the caller decides what that
 /// means); `Ok(Some(error))` is a deliberate soft failure with a sentence
 /// for the UI.
 ///
-/// Everything a running agent's config bakes in at process start — MCP
-/// servers above all — becomes live only through this.
+/// What a roll is FOR: everything a container fixes at creation — its env
+/// (a rotated key, the Developer switch), its image, its limits. A
+/// config.yaml change does not need one: the render rewrites the file in
+/// place and Hermes reloads it on its own.
 pub async fn roll_agent(
     pg: &PgPool,
     sb: &SecretBox,
@@ -294,93 +302,98 @@ async fn roll_agent_locked(
             "no managed agent in department \"{department}\""
         )));
     };
-    let old_slot = if active.as_deref() == Some("b") {
-        Slot::B
-    } else {
-        Slot::A
-    };
-    let new_slot = if old_slot == Slot::A {
-        Slot::B
-    } else {
-        Slot::A
-    };
-    let new_port = {
-        let f = NEXT_FREE_PORT
-            .get()
-            .ok_or_else(|| "next_free_port not wired".to_string())?;
-        f(pg.clone()).await?
-    };
 
-    // 1. Overlay render: both slots in the compose file; manifest still old.
-    {
-        let f = RENDER_FLEET
-            .get()
-            .ok_or_else(|| "fleet render not wired".to_string())?;
-        f(
-            pg.clone(),
-            sb.clone(),
-            Some((slug.clone(), new_slot, new_port)),
-        )
-        .await?;
+    // An agent a blue/green roll left in `agent-<dept>-b` comes home to
+    // `agent-<dept>`: point the def back at slot a so the render names the
+    // home service (and the manifest dials it), pull the home service's
+    // image if the host lacks it, and only then retire the -b container —
+    // compose no longer addresses it — the graceful way. The pull comes
+    // first because the first roll after a pin bump is the one that pulls
+    // gigabytes: done after the retire, the agent would be offline for the
+    // whole download, and a failed pull would leave it with no container.
+    // The home container starts below, on the same volume, once -b has let
+    // go of the gateway lock.
+    //
+    // A failure before -b stopped puts the def back on b and re-renders, so
+    // the agent stays where it was, still serving (a failed stop brings the
+    // drained gateway back up). A -b that stopped but would not be removed
+    // no longer serves or holds the lock, so the move home goes on and the
+    // leftover is named in the log.
+    if active.as_deref() == Some("b") {
+        let legacy = talaria_fleet_docker::slot_container(department, Slot::B);
+        set_active_slot(pg, &slug, "a").await?;
+        let ready = match render(pg, sb).await {
+            Ok(_) => talaria_fleet_docker::pull_agent_image(pg, department).await,
+            Err(e) => Err(e),
+        };
+        let moved = match ready {
+            Ok(()) => match talaria_fleet_docker::retire_container(&legacy).await {
+                Ok(()) => Ok(()),
+                Err(e) if talaria_fleet_docker::container_running(&legacy).await => Err(e),
+                Err(e) => {
+                    tracing::warn!(
+                        "[fleet] {legacy} stopped but was not removed ({e}) — moving {department} home anyway; remove it by hand"
+                    );
+                    Ok(())
+                }
+            },
+            Err(e) => Err(e),
+        };
+        if let Err(e) = moved {
+            let _ = set_active_slot(pg, &slug, "b").await;
+            let _ = render(pg, sb).await;
+            return Err(e);
+        }
+    } else {
+        render(pg, sb).await?;
     }
-    // 2. Bring the incoming slot up and wait for real health.
-    talaria_fleet_docker::fleet_up_slot(pg, department, new_slot).await?;
-    if !talaria_fleet_docker::wait_healthy_slot(department, new_slot, 120_000).await {
-        let _ = talaria_fleet_docker::remove_container_by_name(
-            &talaria_fleet_docker::slot_container(department, new_slot),
-        )
-        .await;
-        {
-            let f = RENDER_FLEET
-                .get()
-                .ok_or_else(|| "fleet render not wired".to_string())?;
-            f(pg.clone(), sb.clone(), None).await?
-        }; // back to steady state; the old container never blinked
+
+    // The roll itself: pull if the host lacks the image (a failed pull stops
+    // here with the running container untouched — for a legacy -b agent the
+    // pull already ran above), stop gracefully, recreate.
+    talaria_fleet_docker::fleet_recreate(pg, department).await?;
+    if !talaria_fleet_docker::wait_healthy(pg, department, ROLL_HEALTH_WAIT_MS).await {
         return Ok(Some(format!(
-            "{display_name}: replacement never became healthy — kept the old container"
+            "{display_name}: the recreated container did not report healthy within {}s — see its logs",
+            ROLL_HEALTH_WAIT_MS / 1000
         )));
     }
     // Toolkit-first by default: strip the image's bundled note-tool skills the
     // moment the newcomer is healthy (Talaria-managed skills are untouched).
-    let _ = talaria_fleet_docker::prune_bundled_skills(department, new_slot).await;
-    // Chromium is not in the image, and the path the image points Playwright at
-    // is in the container layer — so the browser a browsing agent needs is
-    // installed per container, and THIS is the container. Detached: the install
-    // is minutes of download and a roll must not hold the cutover for it. The
-    // slot is already healthy, so the agent answers while Chromium lands behind
-    // it; a browser turn before then fails the way it did before this existed.
+    let _ = talaria_fleet_docker::prune_bundled_skills(department, Slot::A).await;
+    // The browser toolset's one-shot setup, for a browsing agent, in the
+    // container that just came up. Detached: it is minutes of download and a
+    // roll must not hold its verdict for it; the agent answers while it lands.
     if talaria_fleet_docker::browser_enabled_for_department(pg, department).await {
         let dept = department.to_string();
         tokio::spawn(async move {
-            let _ = talaria_fleet_docker::install_browser(&dept, new_slot).await;
+            let _ = talaria_fleet_docker::install_browser(&dept, Slot::A).await;
         });
     }
-    // 3. Cutover: incoming slot becomes active (new port), manifest re-renders.
-    sqlx::query("update agent_defs set active_slot = $2, gateway_port = $3 where slug = $1")
-        .bind(&slug)
-        .bind(if new_slot == Slot::B { "b" } else { "a" })
-        .bind(new_port)
+    Ok(None)
+}
+
+/// One render through the wired edge.
+async fn render(pg: &PgPool, sb: &SecretBox) -> Result<(usize, Vec<String>), String> {
+    let f = RENDER_FLEET
+        .get()
+        .ok_or_else(|| "fleet render not wired".to_string())?;
+    f(pg.clone(), sb.clone()).await
+}
+
+async fn set_active_slot(pg: &PgPool, slug: &str, slot: &str) -> Result<(), String> {
+    sqlx::query("update agent_defs set active_slot = $2 where slug = $1")
+        .bind(slug)
+        .bind(slot)
         .execute(pg)
         .await
-        .map_err(|e| e.to_string())?;
-    {
-        let f = RENDER_FLEET
-            .get()
-            .ok_or_else(|| "fleet render not wired".to_string())?;
-        f(pg.clone(), sb.clone(), None).await?
-    };
-    // 4. Drain in-flight replies on the old container, then retire it.
-    tokio::time::sleep(std::time::Duration::from_millis(roll_drain_ms())).await;
-    let _ = talaria_fleet_docker::remove_container_by_name(&talaria_fleet_docker::slot_container(
-        department, old_slot,
-    ))
-    .await;
-    Ok(None)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Propagate an identity-level change (e.g. the org profile) to the live
 /// fleet: re-render every managed soul, then ROLL running agents one at a
-/// time so nobody's conversation ever hits a dead container. Agents someone
+/// time, so only one agent is restarting at any moment. Agents someone
 /// deliberately stopped stay stopped (they read the new render on next
 /// start).
 #[derive(Debug, serde::Serialize)]
@@ -403,7 +416,7 @@ pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileRes
         let f = RENDER_FLEET
             .get()
             .ok_or_else(|| "fleet render not wired".to_string())?;
-        f(pg.clone(), sb.clone(), None).await?
+        f(pg.clone(), sb.clone()).await?
     };
     let managed: Vec<(String, String)> = sqlx::query_as(
         "select department, display_name from agent_defs where managed and enabled order by slug",
@@ -431,9 +444,9 @@ pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileRes
     let mut already_running = Vec::new();
     let mut warnings = render.1.clone();
     for (department, display_name) in &managed {
-        // Mid-roll, the department has an incoming slot the roll is still
-        // waiting on; starting its steady-state service here would race
-        // the cutover. The roll's own re-render covers it.
+        // Mid-roll, the department's container is being recreated (and a
+        // legacy -b agent moved home); starting its service here would race
+        // the roll. The roll's own render covers it.
         if is_rolling(department) {
             already_running.push(display_name.clone());
             continue;
@@ -485,7 +498,7 @@ pub async fn roll_running_agents(
         let f = RENDER_FLEET
             .get()
             .ok_or_else(|| "fleet render not wired".to_string())?;
-        f(pg.clone(), sb.clone(), None).await?
+        f(pg.clone(), sb.clone()).await?
     };
     let managed: Vec<(String, String)> = sqlx::query_as(
         "select department, display_name from agent_defs where managed and enabled order by slug",
@@ -520,9 +533,10 @@ pub async fn roll_running_agents(
 
 // ── Roll the whole fleet ─────────────────────────────────────────────────────
 
-/// How many departments roll at once. Each roll is a second container
-/// starting beside the first — a fleet of twenty rolling together would
-/// double the host's load in one breath.
+/// How many departments roll at once. Each roll is a container stopping and
+/// a fresh one booting — a fleet of twenty rolling together would put twenty
+/// cold Hermes boots on the host in one breath, and take twenty agents
+/// offline at once.
 pub fn roll_concurrency() -> usize {
     std::env::var("TALARIA_FLEET_ROLL_CONCURRENCY")
         .ok()
@@ -684,7 +698,7 @@ mod tests {
         let now = now_ms();
         record_roll(rec("reg-a", RollState::Rolling, now));
         record_roll(RollRecord {
-            detail: Some("x: replacement never became healthy".into()),
+            detail: Some("x: the recreated container did not report healthy".into()),
             ..rec("reg-a", RollState::Failed, now)
         });
         // An outcome older than the window is gone on the next read; a
@@ -707,7 +721,7 @@ mod tests {
         assert_eq!(a.state, RollState::Failed);
         assert_eq!(
             a.detail.as_deref(),
-            Some("x: replacement never became healthy")
+            Some("x: the recreated container did not report healthy")
         );
         assert!(!records.iter().any(|r| r.department == "reg-old"));
         assert!(records.iter().any(|r| r.department == "reg-stuck"));

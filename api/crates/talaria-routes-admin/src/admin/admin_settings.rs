@@ -7,7 +7,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
-use talaria_agent_defs::{GOVERNED_TOOLSETS, MANDATORY_DISABLED, ORG_FLOOR_ENV, ORG_FLOOR_SETTING};
+use talaria_agent_defs::{
+    GOVERNED_TOOLSETS, MANDATORY_DISABLED, ORG_FLOOR_ENV, ORG_FLOOR_SETTING, toolset_names,
+};
 use talaria_api_facades::gateway::settings::{get_setting, set_setting};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, utf16_len, zod_type_name};
@@ -95,16 +97,22 @@ fn split_org_floor(names: &[String]) -> (Vec<String>, Vec<String>) {
     let mut strangers: Vec<String> = Vec::new();
     for raw in names {
         let name = raw.trim();
-        if name.is_empty() || MANDATORY_DISABLED.contains(&name) {
+        if name.is_empty() {
             continue;
         }
-        if !GOVERNED_TOOLSETS.contains(&name) {
+        // A retired name (`safe`, `debugging`, …) stands for the governed
+        // toolsets it closed — read as those, never refused or dropped, so a
+        // stored floor keeps closing what it closed.
+        let Some(expanded) = toolset_names(name) else {
             if !strangers.iter().any(|s| s == name) {
                 strangers.push(name.to_string());
             }
             continue;
-        }
-        if !kept.iter().any(|k| k == name) {
+        };
+        for name in expanded {
+            if MANDATORY_DISABLED.contains(&name) || kept.iter().any(|k| k == name) {
+                continue;
+            }
             kept.push(name.to_string());
         }
     }
@@ -545,6 +553,13 @@ mod tests {
         assert_eq!(
             floor(json!({ "mandatoryDisabledToolsets": ["todo", "clarify"] })).unwrap(),
             Some(vec![])
+        );
+        // A retired composite stores as the governed toolsets it closed, so
+        // an older panel tab cannot write a name the editor no longer shows
+        // and the floor still closes what it closed.
+        assert_eq!(
+            floor(json!({ "mandatoryDisabledToolsets": ["safe", "coding", "web"] })).unwrap(),
+            Some(vec!["image_gen".into(), "vision".into(), "web".into()])
         );
     }
 

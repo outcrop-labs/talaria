@@ -766,7 +766,7 @@ pub async fn post(
         });
     }
 
-    let (upstream, prompt_chars) = send_turn(
+    let (upstream, prompt_chars, on_session) = send_turn(
         pinned,
         &agent_model,
         &routed_model,
@@ -784,6 +784,7 @@ pub async fn post(
         agent_model: agent_model.clone(),
         prompt_chars,
         tier: body.tier.clone(),
+        on_session,
         plan: plan_meta.clone(),
         research_prompt,
         work_prompts,
