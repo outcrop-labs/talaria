@@ -205,11 +205,15 @@ with `runHarness`.
 - **It must:** name only guard rules that exist; keep its floor inside `requires` and empty
   unless it refuses; for a JSON harness, list `json` in `requires`, because the floor is derived
   from it; keep fixture names distinct; give a widening a reason; keep a temperature between 0
-  and 1. Its id must not be a builtin harness's id or one that another enabled app registers;
-  when two apps claim one id, the app whose slug sorts first keeps it.
-- **A harness that fails a check** is skipped. The app keeps running. The reason shows on the
-  app's row in Manage → Apps as "N harnesses skipped", with one line per file.
-- **Only enabled apps count.** Disabling an app removes its columns.
+  and 1, and a JSON harness's `repair` a whole number from 0 to 5. Its id must not be a builtin
+  harness's id or one that another enabled app registers; when two apps claim one id, the app
+  whose slug sorts first keeps it.
+- **A harness file that does not compile, or fails a check,** is skipped. The app still builds
+  and keeps running. The reason shows on the app's row in Manage → Apps as "N harnesses
+  skipped", with one line per file. The rows are rewritten whenever an app is enabled, disabled
+  or rebuilt, so an id one app takes from another shows on the app that lost it.
+- **Only enabled apps count.** Disabling an app removes its columns; its row reads "N harnesses ·
+  not registered" until it is enabled again.
 - **How the sweep reaches it.** The api never loads app code. It reads the list from the app host
   (`GET /api/app-host/harnesses`) and replays each fixture there
   (`POST /api/app-host/<slug>/harnesses/<id>/cases/<name>`). Both routes answer only a loopback

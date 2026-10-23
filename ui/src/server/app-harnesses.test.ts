@@ -15,10 +15,13 @@ import {
   checkAppHarness,
   checkAppHarnessesOf,
   listAppHarnesses,
+  onceEach,
+  refreshAppHarnessReports,
   replayAppCase,
   wireOf,
   type AppHarness,
   type AppHarnessLayer,
+  type AppHarnessReport,
 } from './app-harnesses'
 
 // ── A fixture app ────────────────────────────────────────────────────────────
@@ -63,7 +66,7 @@ const raw = (over: Record<string, unknown>): Record<string, unknown> => ({
 const layerOf = (
   apps: Record<string, Record<string, () => Promise<unknown>>>,
   enabled: string[] = Object.keys(apps),
-  warn = vi.fn(),
+  warn: (message: string) => void = vi.fn(),
 ): Partial<AppHarnessLayer> => ({
   enabled: async () => enabled.map((slug) => ({ slug, name: slug.toUpperCase() })),
   files: async (slug) =>
@@ -135,12 +138,44 @@ describe('checkAppHarness', () => {
     ['an unknown tool policy', raw({ tools: 'all' }), /tool policy/],
     ['two fixtures with one name', raw({ evals: [triage.evals![0], triage.evals![0]] }), /two fixtures are named/],
     ['an empty floor note', raw({ floor: { capabilities: [], refuseBelow: false, note: '' } }), /no note/],
+    // Every field wireOf puts on the wire is checked here: one it could not
+    // carry used to cost every app's harnesses, not this one's.
+    ['a repair of NaN', raw({ output: { kind: 'json', schema: TRIAGE, repair: Number.NaN } }), /repair NaN is not a whole number of turns/],
+    ['a repair of Infinity', raw({ output: { kind: 'json', schema: TRIAGE, repair: Number.POSITIVE_INFINITY } }), /repair Infinity/],
+    ['a negative repair', raw({ output: { kind: 'json', schema: TRIAGE, repair: -1 } }), /repair -1/],
+    ['a fractional repair', raw({ output: { kind: 'json', schema: TRIAGE, repair: 1.5 } }), /repair 1.5/],
+    ['a repair past what a u32 holds', raw({ output: { kind: 'json', schema: TRIAGE, repair: 5_000_000_000 } }), /from 0 to 5/],
+    ['a repair that is not a number', raw({ output: { kind: 'json', schema: TRIAGE, repair: '1' } }), /repair 1 is not/],
+    ['a model chain that is not a list', raw({ model: { chain: 3 } }), /model chain is not a list/],
+    ['a model chain of numbers', raw({ model: { chain: [1, 2] } }), /model chain is not a list/],
+    ['a model pin that is not a name', raw({ model: { pin: 7 } }), /model pin/],
+    ['a model role that is not a name', raw({ model: { role: {} } }), /model role/],
+    ['a suppliable that is not a list', raw({ floor: { capabilities: [], refuseBelow: false, note: 'x', suppliable: 3 } }), /suppliable/],
+    ['a widening whose requires is not a list', raw({ widen: { requires: 5, note: 'x' } }), /widens on nothing/],
   ]
 
   it.each(BAD)('refuses %s', (_why, value, sentence) => {
     const checked = checkAppHarness(value)
     expect(checked.ok).toBe(false)
     if (!checked.ok) expect(checked.problems.join('; ')).toMatch(sentence)
+  })
+
+  it('accepts the repair counts and model specs the wire carries', () => {
+    for (const repair of [0, 1, 5]) expect(checkAppHarness(raw({ output: { kind: 'json', schema: TRIAGE, repair } })).ok).toBe(true)
+    expect(checkAppHarness(raw({ model: { pin: 'titler', role: 'utility', chain: ['pin', 'role'] } })).ok).toBe(true)
+    expect(checkAppHarness(raw({ model: { pin: null, role: null, chain: null } })).ok).toBe(true)
+  })
+
+  it('reports a definition whose checking throws, rather than throwing', () => {
+    const hostile = raw({})
+    Object.defineProperty(hostile, 'requires', {
+      enumerable: true,
+      get: () => {
+        throw new Error('a getter that throws')
+      },
+    })
+    const checked = checkAppHarness(hostile)
+    expect(checked).toMatchObject({ ok: false, problems: ['it could not be checked: a getter that throws'] })
   })
 })
 
@@ -194,6 +229,60 @@ describe('listAppHarnesses', () => {
     ])
   })
 
+  it('lists a file the app build could not compile as skipped, with the compiler’s sentence', async () => {
+    const listing = await listAppHarnesses({
+      ...layerOf({}, ['support']),
+      files: async () => [
+        { file: 'broken.ts', compileError: 'harnesses/broken.ts:2:0: ERROR: Unexpected end of file', load: () => Promise.reject(new Error('x')) },
+        { file: 'triage.ts', load: async () => ({ default: triage }) },
+      ],
+    })
+    expect(listing.harnesses.map((h) => h.file)).toEqual(['triage.ts'])
+    expect(listing.problems).toEqual([
+      { app: 'support', file: 'broken.ts', id: null, reason: 'it failed to compile: harnesses/broken.ts:2:0: ERROR: Unexpected end of file' },
+    ])
+  })
+
+  it("never lets one app's malformed harness cost another app's — every listed harness goes on the wire", async () => {
+    const listing = await listAppHarnesses(
+      layerOf({
+        alpha: { 'triage.ts': async () => ({ default: triage }) },
+        beta: {
+          'chain.ts': async () => ({ default: raw({ id: 'beta:chain', model: { chain: 3 } }) }),
+          'nan.ts': async () => ({ default: raw({ id: 'beta:nan', output: { kind: 'json', schema: TRIAGE, repair: Number.NaN } }) }),
+          'huge.ts': async () => ({ default: raw({ id: 'beta:huge', output: { kind: 'json', schema: TRIAGE, repair: 2 ** 33 } }) }),
+        },
+      }),
+    )
+    expect(listing.harnesses.map((h) => h.def.id)).toEqual(['support:triage'])
+    expect(listing.problems.map((p) => p.file)).toEqual(['chain.ts', 'huge.ts', 'nan.ts'])
+    // What the route answers: it maps every listed harness through wireOf,
+    // and the api decodes `repair` as a u32.
+    const wire = JSON.parse(JSON.stringify(listing.harnesses.map(wireOf))) as Array<{ repair: unknown }>
+    expect(wire.every((w) => Number.isInteger(w.repair) && (w.repair as number) >= 0 && (w.repair as number) <= 0xffff_ffff)).toBe(true)
+  })
+
+  it('warns once per distinct skip, however often the api lists', async () => {
+    const sink = vi.fn()
+    const warn = onceEach(sink)
+    const layer = layerOf(
+      {
+        support: {
+          'triage.ts': async () => ({ default: triage }),
+          'broken.ts': async () => ({ default: raw({ id: 'support:broken', guard: { rules: ['nope'] } }) }),
+        },
+      },
+      ['support'],
+      warn,
+    )
+    for (let i = 0; i < 5; i++) await listAppHarnesses(layer)
+    expect(sink).toHaveBeenCalledTimes(1)
+    expect(sink.mock.calls[0]![0]).toContain('harnesses/broken.ts skipped — guard rule "nope" does not exist')
+    // A different problem with the same file is news, and is logged.
+    warn('app "support": harnesses/broken.ts skipped — something else')
+    expect(sink).toHaveBeenCalledTimes(2)
+  })
+
   it('reports an app whose harness modules cannot even be listed, and keeps the others', async () => {
     const listing = await listAppHarnesses({
       ...layerOf({ good: { 'triage.ts': async () => ({ default: triage }) } }, ['bad', 'good']),
@@ -227,6 +316,40 @@ describe('checkAppHarnessesOf — the load probe’s report', () => {
     const enabled = vi.fn(async () => [])
     expect(await checkAppHarnessesOf('plain', { enabled, files: async () => [] })).toEqual({ registered: [], problems: [] })
     expect(enabled).not.toHaveBeenCalled()
+  })
+})
+
+describe('refreshAppHarnessReports — every enabled app’s report, when the set changes', () => {
+  const apps = {
+    zeta: { 'triage.ts': async () => ({ default: triage }) },
+    alpha: { 'triage.ts': async () => ({ default: triage }), 'other.ts': async () => ({ default: raw({ id: 'alpha:other' }) }) },
+  }
+  const refresh = async (enabled: string[]) => {
+    const written = new Map<string, AppHarnessReport>()
+    await refreshAppHarnessReports(layerOf(apps, enabled), (slug, report) => written.set(slug, report))
+    return written
+  }
+
+  it('moves a contested id to the app that sorts first, and shows the skip on the app that lost it', async () => {
+    // zeta alone holds the id.
+    expect(await refresh(['zeta'])).toEqual(new Map([['zeta', { registered: ['support:triage'], problems: [] }]]))
+    // alpha is enabled and sorts first: it takes the id, and zeta's report
+    // says so — it used to keep "1 harness" from its own probe.
+    expect(await refresh(['alpha', 'zeta'])).toEqual(
+      new Map([
+        ['alpha', { registered: ['alpha:other', 'support:triage'], problems: [] }],
+        ['zeta', { registered: [], problems: ['harnesses/triage.ts: app "alpha" already registers "support:triage"'] }],
+      ]),
+    )
+    // alpha is switched off: zeta has it back, and alpha's report is left as
+    // it was (Manage → Apps says a disabled app's harnesses are not registered).
+    expect(await refresh(['zeta'])).toEqual(new Map([['zeta', { registered: ['support:triage'], problems: [] }]]))
+  })
+
+  it('reads the enabled set once', async () => {
+    const enabled = vi.fn(async () => [{ slug: 'zeta', name: 'Zeta' }])
+    await refreshAppHarnessReports({ ...layerOf(apps), enabled }, () => {})
+    expect(enabled).toHaveBeenCalledTimes(1)
   })
 })
 

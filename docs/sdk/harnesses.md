@@ -125,7 +125,9 @@ see the deep contract in [HARNESSES.md](../HARNESSES.md).
 
 Files under `harnesses/` register while the app is enabled.
 
-- **Build.** The app build compiles them into `harnesses.js`, one chunk per file.
+- **Build.** The app build compiles them into `harnesses.js`, one chunk per file. A file that does
+  not compile — a syntax error, an import that does not resolve — is left out and named, and the
+  app still builds.
 - **Load probe.** On every build and every enable, the probe loads each file and checks its
   default export against the rules the platform holds its own harnesses to:
   - The guard rules it names exist.
@@ -135,11 +137,15 @@ Files under `harnesses/` register while the app is enabled.
   - Fixture names are distinct.
   - A widening has a reason.
   - A temperature is between 0 and 1.
+  - A JSON harness's `repair` is a whole number from 0 to 5, and the `model` spec's `pin`, `role`
+    and `chain` are names and a list of names.
   - The id is not a builtin harness's id, nor one another enabled app registers. Between two
     apps, the slug that sorts first keeps it.
-- **A file that fails a check, or throws on import,** is skipped and logged. The app stays
-  enabled, and its row in **Manage → Apps** says "N harnesses skipped" with the reason for each
-  file.
+- **A file that does not compile, fails a check, or throws on import,** is skipped and logged once.
+  The app stays enabled, and its row in **Manage → Apps** says "N harnesses skipped" with the
+  reason for each file. The rows follow the enabled set: enable an app whose slug sorts first and
+  claims your id, and your row names the file it took. A disabled app's row says its harnesses are
+  not registered.
 - **Each harness that passes** gets a column in the fitness matrix, labelled
   `<App name> · <label>`. That column scores this harness alone: it never joins a role, a
   platform agent or a fleet column, whatever its `model` spec names. Your app picks its model.

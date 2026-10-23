@@ -125,15 +125,19 @@
   </span>
 {/snippet}
 
-<!-- The activity harnesses the app ships (harnesses/*.ts), as the last load
-     probe checked them: the ones registered for model fitness, and the ones
-     skipped. -->
+<!-- The activity harnesses the app ships (harnesses/*.ts), as the host last
+     checked them against the enabled apps: the ones registered for model
+     fitness, and the ones skipped. A disabled app registers none — its count
+     is what it would register once enabled. -->
 {#snippet harnessChips(a: InstalledApp)}
   {@const registered = a.build?.harnesses?.registered ?? []}
   {@const skipped = a.build?.harnesses?.problems ?? []}
-  {#if registered.length > 0}
-    <Chip title={`Activity harnesses scored in Models → Fitness:\n${registered.join('\n')}`}>
-      {registered.length} harness{registered.length === 1 ? '' : 'es'}
+  {@const n = `${registered.length} harness${registered.length === 1 ? '' : 'es'}`}
+  {#if registered.length > 0 && a.enabled}
+    <Chip title={`Activity harnesses scored in Models → Fitness:\n${registered.join('\n')}`}>{n}</Chip>
+  {:else if registered.length > 0}
+    <Chip title={`Not registered while ${a.name} is disabled: enable it to score them in Models → Fitness.\n${registered.join('\n')}`}>
+      {n} · not registered
     </Chip>
   {/if}
   {#if skipped.length > 0 && a.build?.status !== 'failed'}

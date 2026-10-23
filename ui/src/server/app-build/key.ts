@@ -17,8 +17,10 @@ import { clientSpecifiers, serverSpecifiers } from '@/app-runtime/specifiers'
  *  2. app.js keeps its default export (preserveEntrySignatures 'strict') and
  *     each shared import maps to its own runtime file (clientRuntimePath);
  *  3. harnesses/*.ts compile into harnesses.js, one lazy chunk per file
- *     under _harnesses/, which the host registers for fitness. */
-export const BUILD_RECIPE = 3
+ *     under _harnesses/, which the host registers for fitness;
+ *  4. a harness file that does not compile is left out of harnesses.js and
+ *     named in its `skipped` export, instead of failing the app's build. */
+export const BUILD_RECIPE = 4
 
 const SKIP: Record<string, true> = { node_modules: true, '.git': true, dist: true }
 

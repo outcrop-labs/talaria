@@ -12,6 +12,7 @@ workspace = true
 talaria-agent-auth = { workspace = true }
 talaria-agent-defs = { workspace = true }
 talaria-agent-web-search = { workspace = true }
+talaria-app-harnesses = { workspace = true }
 talaria-apps = { workspace = true }
 talaria-audit = { workspace = true }
 talaria-auth-config = { workspace = true }
