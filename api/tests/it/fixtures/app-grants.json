@@ -1,0 +1,371 @@
+{
+  "about": [
+    "The app grant rule, pinned across the two runtimes. Rust reads this file in talaria-users' unit tests",
+    "(app_grant_views, app_views_of, resolve_view_grants, enabled_slugs_from, discovered_apps_in); TS reads it",
+    "in ui/src/server/app-grants.fixture.test.ts (appGrantViews, appGrantViewsOf, appAccess, enabledSlugsFrom,",
+    "listInstalledApps). The junction is `appGrants`: Rust must resolve each viewer's grants to that list, and",
+    "TS must turn that list into `access`. `appGrants: null` (an `appsUnreadable` viewer) is the session's answer",
+    "when the enabled apps could not be read: Rust still resolves the core denials, and TS must hold no app on it.",
+    "Change the rule on both sides, then here."
+  ],
+  "apps": [
+    {
+      "slug": "bare",
+      "name": "Bare",
+      "surfaces": {},
+      "views": []
+    },
+    {
+      "slug": "crm",
+      "name": "CRM",
+      "surfaces": {
+        "work": "CRM",
+        "manage": "CRM Admin",
+        "settings": "CRM"
+      },
+      "views": [
+        "/x/crm",
+        "/x/crm/manage"
+      ]
+    },
+    {
+      "slug": "draft",
+      "name": "Draft",
+      "surfaces": {
+        "work": "Draft"
+      },
+      "views": [
+        "/x/draft"
+      ]
+    },
+    {
+      "slug": "notes",
+      "name": "Notes",
+      "surfaces": {
+        "work": "Notes",
+        "settings": "Notes"
+      },
+      "views": [
+        "/x/notes",
+        "/x/notes/manage"
+      ]
+    },
+    {
+      "slug": "ops",
+      "name": "Ops",
+      "surfaces": {
+        "manage": "Ops"
+      },
+      "views": [
+        "/x/ops/manage"
+      ]
+    },
+    {
+      "slug": "prefs",
+      "name": "Prefs",
+      "surfaces": {
+        "settings": "Prefs"
+      },
+      "views": [
+        "/x/prefs/manage"
+      ]
+    },
+    {
+      "slug": "wiki",
+      "name": "Wiki",
+      "surfaces": {
+        "work": "Wiki"
+      },
+      "views": [
+        "/x/wiki"
+      ]
+    }
+  ],
+  "enabled": [
+    "bare",
+    "crm",
+    "notes",
+    "ops",
+    "prefs",
+    "wiki"
+  ],
+  "appViews": [
+    "/x/crm",
+    "/x/notes",
+    "/x/wiki",
+    "/x/crm/manage",
+    "/x/notes/manage",
+    "/x/ops/manage",
+    "/x/prefs/manage"
+  ],
+  "viewers": [
+    {
+      "about": "a member granted nothing",
+      "explicitDenied": [],
+      "allowed": [],
+      "appGrants": [],
+      "access": {}
+    },
+    {
+      "about": "a member granted only CRM's work view",
+      "explicitDenied": [],
+      "allowed": [
+        "/x/crm"
+      ],
+      "appGrants": [
+        "/x/crm"
+      ],
+      "access": {
+        "crm": {
+          "admin": false,
+          "work": true,
+          "manage": false,
+          "settings": false
+        }
+      }
+    },
+    {
+      "about": "a member granted only CRM's manage view: the settings tab follows it",
+      "explicitDenied": [],
+      "allowed": [
+        "/x/crm/manage"
+      ],
+      "appGrants": [
+        "/x/crm/manage"
+      ],
+      "access": {
+        "crm": {
+          "admin": false,
+          "work": false,
+          "manage": true,
+          "settings": true
+        }
+      }
+    },
+    {
+      "about": "an app with work and settings but no manage surface: its manage view grants the settings tab",
+      "explicitDenied": [],
+      "allowed": [
+        "/x/notes/manage"
+      ],
+      "appGrants": [
+        "/x/notes/manage"
+      ],
+      "access": {
+        "notes": {
+          "admin": false,
+          "work": false,
+          "manage": false,
+          "settings": true
+        }
+      }
+    },
+    {
+      "about": "a settings-only app, granted",
+      "explicitDenied": [],
+      "allowed": [
+        "/x/prefs/manage"
+      ],
+      "appGrants": [
+        "/x/prefs/manage"
+      ],
+      "access": {
+        "prefs": {
+          "admin": false,
+          "work": false,
+          "manage": false,
+          "settings": true
+        }
+      }
+    },
+    {
+      "about": "a grant an explicit denial overrides, beside one it does not",
+      "explicitDenied": [
+        "/x/wiki"
+      ],
+      "allowed": [
+        "/x/wiki",
+        "/x/ops/manage"
+      ],
+      "appGrants": [
+        "/x/ops/manage"
+      ],
+      "access": {
+        "ops": {
+          "admin": false,
+          "work": false,
+          "manage": true,
+          "settings": false
+        }
+      }
+    },
+    {
+      "about": "grants for a disabled app, an uninstalled one and a core view hold no app",
+      "explicitDenied": [],
+      "allowed": [
+        "/x/draft",
+        "/x/gone/manage",
+        "/agents"
+      ],
+      "appGrants": [],
+      "access": {}
+    },
+    {
+      "about": "the enabled apps could not be read: the core views still resolve, and no app is held whatever was granted",
+      "appsUnreadable": true,
+      "explicitDenied": [
+        "/boards",
+        "/x/wiki"
+      ],
+      "allowed": [
+        "/x/crm",
+        "/x/crm/manage",
+        "/x/prefs/manage",
+        "/agents"
+      ],
+      "appGrants": null,
+      "denied": [
+        "/boards",
+        "/x/wiki",
+        "/teams",
+        "/models",
+        "/mcp",
+        "/templates",
+        "/studio",
+        "/observability",
+        "/apps"
+      ],
+      "access": {}
+    },
+    {
+      "about": "an admin holds every surface an app ships by role, with an empty grant list",
+      "admin": true,
+      "explicitDenied": [],
+      "allowed": [],
+      "appGrants": [],
+      "access": {
+        "bare": {
+          "admin": true,
+          "work": false,
+          "manage": false,
+          "settings": false
+        },
+        "crm": {
+          "admin": true,
+          "work": true,
+          "manage": true,
+          "settings": true
+        },
+        "notes": {
+          "admin": true,
+          "work": true,
+          "manage": false,
+          "settings": true
+        },
+        "ops": {
+          "admin": true,
+          "work": false,
+          "manage": true,
+          "settings": false
+        },
+        "prefs": {
+          "admin": true,
+          "work": false,
+          "manage": false,
+          "settings": true
+        },
+        "wiki": {
+          "admin": true,
+          "work": true,
+          "manage": false,
+          "settings": false
+        }
+      }
+    }
+  ],
+  "enabledSetting": [
+    {
+      "about": "no row",
+      "absent": true,
+      "slugs": []
+    },
+    {
+      "about": "a stored null",
+      "stored": null,
+      "slugs": []
+    },
+    {
+      "about": "an empty list",
+      "stored": [],
+      "slugs": []
+    },
+    {
+      "about": "a list of slugs",
+      "stored": [
+        "crm",
+        "wiki"
+      ],
+      "slugs": [
+        "crm",
+        "wiki"
+      ]
+    },
+    {
+      "about": "a bare string",
+      "stored": "crm",
+      "error": true
+    },
+    {
+      "about": "an object",
+      "stored": {
+        "crm": true
+      },
+      "error": true
+    },
+    {
+      "about": "a list with a non-string",
+      "stored": [
+        "crm",
+        7
+      ],
+      "error": true
+    },
+    {
+      "about": "a number",
+      "stored": 42,
+      "error": true
+    }
+  ],
+  "manifests": [
+    {
+      "about": "a plain UTF-8 manifest",
+      "dir": "plain",
+      "bytesBase64": "eyJuYW1lIjoiUGxhaW4iLCJzdXJmYWNlcyI6eyJ3b3JrIjoiUGxhaW4ifX0=",
+      "listed": true
+    },
+    {
+      "about": "Latin-1 bytes are not UTF-8: not an app on either side",
+      "dir": "latin1",
+      "bytesBase64": "eyJuYW1lIjoiQ2Fm6SIsInN1cmZhY2VzIjp7IndvcmsiOiJDYWbpIn19",
+      "listed": false
+    },
+    {
+      "about": "a byte-order mark is not JSON: not an app on either side",
+      "dir": "bom",
+      "bytesBase64": "77u/eyJuYW1lIjoiQm9tIiwic3VyZmFjZXMiOnsid29yayI6IkJvbSJ9fQ==",
+      "listed": false
+    },
+    {
+      "about": "no name, no app",
+      "dir": "noname",
+      "bytesBase64": "eyJzdXJmYWNlcyI6eyJ3b3JrIjoiWCJ9fQ==",
+      "listed": false
+    },
+    {
+      "about": "not JSON",
+      "dir": "broken",
+      "bytesBase64": "eyJuYW1lIjo=",
+      "listed": false
+    }
+  ]
+}

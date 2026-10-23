@@ -81,7 +81,7 @@ Source: [`api/crates/talaria-routes-integrations/src/teams/teams_id_access.rs`](
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `deniedViews` | `string[]?(1, 60, 40)` |  |
-| `allowedManageViews` | `string[]?(1, 60, 10)` |  |
+| `allowedManageViews` | `string[]?(1, 80, 200)` |  |
 
 ## `/api/teams/{id}/agents`
 

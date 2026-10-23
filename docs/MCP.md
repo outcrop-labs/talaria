@@ -58,9 +58,11 @@ listener on 5280. The fleet key + agent name identify the caller, and the gatewa
   leaves out), and connecting rolls every agent that carries the server — team grants included —
   onto the live upstream.
 
-Registry changes that alter what a *running* agent carries trigger **blue/green rolls** (Hermes
-wires MCP at process start): the replacement container comes up healthy before cutover, replies
-drain, nobody's conversation dies. Tool-subset changes enforce per-call and need no roll.
+Registry changes that alter what a *running* agent carries re-render its `config.yaml` in place,
+which a running Hermes picks up by itself (it reconciles `mcp_servers` by name about once a
+minute), and also trigger an **in-place roll**: the container is recreated on the new render, the
+agent is offline for the restart, and chats wait for it. Tool-subset changes enforce per-call and
+need no roll.
 
 ## Access rules
 

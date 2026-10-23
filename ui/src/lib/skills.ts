@@ -83,47 +83,88 @@ export async function deleteSkill(owner: string, name: string): Promise<void> {
   await delJson<{ ok: true }>(`/api/skills/${owner}/${name}`)
 }
 
-// ── The marketplace (Hermes Atlas's ranked catalog, installed from GitHub) ──
+// ── The marketplace (Hermes' official skills index, scanned before install) ──
+
+export type TrustLevel = 'builtin' | 'trusted' | 'community'
 
 export interface MarketplaceEntry {
-  /** GitHub owner/name — the install identity. */
-  repo: string
-  org: string
+  /** Hermes' catalog identifier — the install's only input. */
+  id: string
   name: string
   description: string
-  /** The catalog's own display form ("290.0K"). */
-  stars: string
-  rank: number
+  /** official | github | skills.sh */
+  source: string
+  /** As the index states it. */
+  trustLevel: TrustLevel | string
+  /** GitHub owner/name the skill's files live in. */
+  repo: string
+  /** The skill directory inside `repo` ("" = the repo root). */
+  path: string
+  tags: string[]
 }
 
+/** One Skills Guard finding, as Hermes reports it. */
+export interface ScanFinding {
+  patternId: string
+  severity: 'critical' | 'high' | 'medium' | 'low' | string
+  category: string
+  file: string
+  line: number
+  match: string
+  description: string
+}
+
+/** Hermes' Skills Guard verdict on one fetched skill, and its install
+ *  decision: only `allowed === true` installs (null is Hermes' "ask"). */
+export interface ScanReport {
+  scanner: string
+  verdict: 'safe' | 'caution' | 'dangerous' | string
+  trustLevel: TrustLevel | string
+  allowed: boolean | null
+  reason: string
+  summary: string
+  findings: ScanFinding[]
+  image: string
+}
+
+/** The preview: the skill as it would install, with its scan. */
 export interface MarketplaceSkill {
+  id: string
   name: string
+  repo: string
+  commit: string
+  dir: string
+  /** owner/repo/path when an official stub was followed upstream. */
+  upstream: string | null
   summary: string
   fileCount: number
   files: string[]
+  scan: ScanReport
 }
 
 export interface InstallOutcome {
+  ok: true
+  owner: string
+  id: string
   name: string
   status: 'installed' | 'exists'
+  scan: ScanReport
 }
 
 /** The catalog read, keyed by the live query text. */
 export const marketplaceKey = (q: string) => ['skills-marketplace', q] as const
 
-/** One repo's discovered skills (the api caches the tarball scan). */
-export function marketplaceDetail(repo: string): Promise<{ repo: string; skills: MarketplaceSkill[] }> {
-  return getJson(`/api/skills/marketplace/detail?repo=${encodeURIComponent(repo)}`)
+/** Fetch and scan one catalog skill for `owner` (the destination's edit
+ *  gate applies — only someone who could install it may preview it). The
+ *  api caches both halves, so the install that follows re-reads them. */
+export function marketplaceDetail(owner: string, id: string): Promise<MarketplaceSkill> {
+  return getJson(`/api/skills/marketplace/detail?owner=${encodeURIComponent(owner)}&id=${encodeURIComponent(id)}`)
 }
 
-/** Install into an owner's root. `skills` absent installs every discovered
- *  skill; per-skill statuses come back (`exists` = left untouched). */
-export function installMarketplaceSkills(
-  owner: string,
-  repo: string,
-  skills?: string[],
-): Promise<{ ok: true; owner: string; repo: string; results: InstallOutcome[] }> {
-  return postJson('/api/skills/marketplace/install', { owner, repo, skills })
+/** Install into an owner's root. The api scans first and refuses (422) what
+ *  Hermes' install policy blocks; `exists` = left untouched. */
+export function installMarketplaceSkill(owner: string, id: string): Promise<InstallOutcome> {
+  return postJson('/api/skills/marketplace/install', { owner, id })
 }
 
 /** Rename the skill's directory without touching content. PUTs write to a

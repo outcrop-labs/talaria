@@ -93,8 +93,10 @@ const MIGRATIONS: string[] = [
      unique (conversation_id, seq)
    )`,
   `create index if not exists messages_conv_idx on messages(conversation_id, seq)`,
-  // Fleet agent registry — Talaria's own "brain" (ripped from mission-control's
-  // agents table). Agents register + heartbeat to Talaria, not MC.
+  // Fleet agent registry — the retired mission-control heartbeat's table.
+  // Nothing registers or heartbeats any more (those routes are gone); it stays,
+  // with the personal-agent / fleet-create cleanup that touches it, until a
+  // contract migration drops it.
   `create table if not exists fleet_agents (
      id uuid primary key default gen_random_uuid(),
      name text unique not null,
@@ -496,8 +498,8 @@ const MIGRATIONS: string[] = [
      ) x
    ) t
    where u.endpoint is null and u.agent_model = t.agent_model and u.llm_model = t.llm_model`,
-  // Per-ticket token spend: agents report usage against the ticket they're
-  // working (MCP log_usage → POST /api/tasks/:id/usage).
+  // Per-ticket token spend: the ticket a metered row was spent working on.
+  // (Agents once self-reported here through MCP log_usage; that tool is gone.)
   `alter table usage_events add column if not exists task_id uuid`,
   `create index if not exists usage_events_task_idx on usage_events(task_id) where task_id is not null`,
   // ── Talaria LLM gateway: one org endpoint over the whole model stack ────────
@@ -1141,7 +1143,8 @@ const MIGRATIONS: string[] = [
   // Custom board statuses. category carries the workflow semantics: open
   // (intake), active (working), review (the agent-review catch), done
   // (terminal). agent_start marks columns that constitute assignment approval
-  // for agents (heartbeat pickup). BLOCKED is a system status — always
+  // for agents (the pickup columns work dispatch starts sessions from).
+  // BLOCKED is a system status — always
   // present, never stored here. No rows = the shipped default set.
   `create table if not exists board_statuses (
     id uuid primary key default gen_random_uuid(),
@@ -3691,8 +3694,10 @@ alter table tasks drop column if exists conversation_id`,
   // Talaria already pins `todo` and `clarify` shut for every agent (its own
   // versions are the ones a person can see and answer); this column is the
   // operator's list ON TOP of that pair, and the first thing it governs is
-  // `browser`: a browsing agent costs a multi-minute Chromium install on
-  // every roll, so an agent that should not browse says so here and skips it.
+  // `browser`: an agent that should not browse says so here. (Until
+  // 2026-10-22 that also skipped a multi-minute Chromium install Talaria ran
+  // after every roll; that step is gone, because Hermes v0.22.4 ships its
+  // browser in the image.)
   //
   // jsonb and not text[]: the def wire carries the list as a JSON array and
   // the renderer merges it as one, so the column stores the shape both ends
@@ -3990,6 +3995,151 @@ alter table tasks drop column if exists conversation_id`,
   // agent's next write stamps them.
   `alter table agent_created_google_docs
      add column if not exists last_agent_write_at timestamptz`,
+  // ── Toolset vocabulary: Hermes' own switches only (2026-10-22) ──────────
+  // The governed toolset list carried Hermes composites (safe, debugging,
+  // search), a posture (coding) and GUI-only surfaces (project, desktop_ui).
+  // Hermes disables tool by tool, so a closed composite closed its MEMBERS
+  // while their own rows read open, and the other three closed nothing on an
+  // API-server agent. The list is now Hermes' CONFIGURABLE_TOOLSETS; a stored
+  // retired name becomes the governed names it closed (search reads as web,
+  // the stricter of the two), so the editor shows what the agent really has
+  // and nothing that was closed opens. The api expands the same names on
+  // read and write for anything this misses (the env twin, an older tab).
+  `-- deliberate: rewrites agent_defs.disabled_toolsets in place, expanding retired toolset
+   -- names into the governed names they closed; what Hermes closes stays the same or stricter.
+   update agent_defs d set disabled_toolsets = (
+     select coalesce(jsonb_agg(m.name order by m.first), '[]'::jsonb)
+     from (
+       select x.name, min(x.pos) as first
+       from (
+         select e.ord * 10 + u.ord as pos, u.name
+         from jsonb_array_elements_text(d.disabled_toolsets) with ordinality as e(raw, ord)
+         cross join lateral unnest(case e.raw
+             when 'debugging' then array['terminal', 'web', 'file']
+             when 'safe' then array['web', 'vision', 'image_gen']
+             when 'search' then array['web']
+             when 'coding' then array[]::text[]
+             when 'project' then array[]::text[]
+             when 'desktop_ui' then array[]::text[]
+             else array[e.raw] end) with ordinality as u(name, ord)
+       ) x
+       group by x.name
+     ) m
+   )
+   where jsonb_typeof(d.disabled_toolsets) = 'array'
+     and d.disabled_toolsets ?| array['debugging', 'safe', 'search', 'coding', 'project', 'desktop_ui']`,
+  `-- deliberate: the org-wide toolset floor gets the same expansion; it is stored sorted and
+   -- without the todo/clarify pair, so the rewrite keeps both properties.
+   update app_settings s set value = (
+     select coalesce(jsonb_agg(m.name order by m.name), '[]'::jsonb)
+     from (
+       select distinct u.name
+       from jsonb_array_elements_text(s.value) as e(raw)
+       cross join lateral unnest(case e.raw
+             when 'debugging' then array['terminal', 'web', 'file']
+             when 'safe' then array['web', 'vision', 'image_gen']
+             when 'search' then array['web']
+             when 'coding' then array[]::text[]
+             when 'project' then array[]::text[]
+             when 'desktop_ui' then array[]::text[]
+             else array[e.raw] end) as u(name)
+       where u.name not in ('todo', 'clarify')
+     ) m
+   ), updated_at = now()
+   where s.key = 'agents.mandatory_disabled_toolsets'
+     and jsonb_typeof(s.value) = 'array'
+     and s.value ?| array['debugging', 'safe', 'search', 'coding', 'project', 'desktop_ui']`,
+  // ── Skills marketplace: Hermes' official index, mirrored (2026-10-22) ───
+  // The marketplace scraped a third-party site's HTML for a ranked list of
+  // repos. Hermes publishes its own skills index (the JSON its own skills
+  // search reads, rebuilt daily): one row per skill with its source, trust
+  // level and GitHub location. The skills-index-refresh job mirrors the rows
+  // Talaria can install into this table and the picker searches it here.
+  // identifier is Hermes' own and the install's only input; path is the
+  // skill directory inside repo (exact = false marks a skills.sh slug the
+  // index never resolved, found by name at fetch time); rank is the index's
+  // own order, which lists Hermes' official skills first.
+  `create table if not exists skills_index_entries (
+     identifier text primary key,
+     name text not null,
+     description text not null default '',
+     source text not null,
+     trust_level text not null default 'community',
+     repo text not null,
+     path text not null default '',
+     exact boolean not null default true,
+     tags jsonb not null default '[]'::jsonb,
+     rank integer not null default 0,
+     synced_at timestamptz not null default now(),
+     search tsvector generated always as (
+       setweight(to_tsvector('simple', coalesce(name, '')), 'A') ||
+       setweight(to_tsvector('simple', tags), 'B') ||
+       setweight(to_tsvector('simple', replace(replace(repo, '/', ' '), '-', ' ')), 'B') ||
+       setweight(to_tsvector('simple', coalesce(description, '')), 'C')
+     ) stored
+   )`,
+  `create index if not exists skills_index_entries_search_idx on skills_index_entries using gin (search)`,
+  `create index if not exists skills_index_entries_rank_idx on skills_index_entries (rank)`,
+  // ── Every agent call is metered at the relay (2026-10-22) ──────────────
+  // THE CONVERSATION A CALL BELONGS TO. Hermes stamps every LLM call it makes
+  // with `x-talaria-session` (the rendered `providers.talaria`
+  // `session_affinity_header`): the main loop, compression, titles, vision,
+  // a delegated subagent (its parent's key) and a cron (`cron_<job id>`).
+  // The relay books one row per upstream call and keeps that key on it, so a
+  // cron's spend is per job and a turn's rows can be joined to the flow that
+  // drove it. Null on rows from before, on operator keys, and on an agent
+  // call made outside any conversation.
+  `alter table usage_events add column if not exists affinity_key text`,
+  `create index if not exists usage_events_affinity_idx
+     on usage_events (agent_model, affinity_key) where affinity_key is not null`,
+  // WHICH FLOW A KEY BELONGS TO. The chat transport writes one row per key
+  // a Talaria-driven turn runs under — a pinned conversation's id, a work
+  // session's run id, the completions arm's `X-Hermes-Session-Id` — and the
+  // relay copies `source`/`ref_id`/`task_id` from it onto every row it books
+  // under that key. This replaced the flow-level ledger rows (one per turn,
+  // from Hermes' main-loop counters) and the Redis turn register that made
+  // the relay skip every call while a turn was open.
+  `create table if not exists usage_attributions (
+     agent_model text not null,
+     affinity_key text not null,
+     source text not null,
+     ref_id uuid,
+     task_id uuid,
+     updated_at timestamptz not null default now(),
+     primary key (agent_model, affinity_key)
+   )`,
+  // WHICH CONVERSATION A HERMES KEY NAMES. On v0.22 the key Hermes stamps on
+  // a Talaria-driven turn's calls is its own digest (`gwk_…`) of the session's
+  // route, computable only inside Hermes. The agent's talaria-events plugin
+  // reads it at the start of each turn and reports it with the conversation's
+  // own id (POST /api/agents/affinity); the relay follows this row to the
+  // conversation's `usage_attributions` row.
+  `create table if not exists usage_affinity_keys (
+     agent_model text not null,
+     affinity_key text not null,
+     conversation_key text not null,
+     updated_at timestamptz not null default now(),
+     primary key (agent_model, affinity_key)
+   )`,
+  // TALARIA'S OWN ENTRY LEAVES `gateway_unmetered_keys`. Every render used to
+  // force the personas' fleet-wide key (`fleet-gateway`) onto that list, so
+  // the relay would skip the calls a chat flow ledgered as one row. No flow
+  // ledgers an agent's spend now, and that key is still what agents run on
+  // for a render whose per-agent keys could not be minted. Left on the list,
+  // those calls would be booked nowhere. Only that one entry goes; an
+  // operator's own entries stand. The relay reads this key through its 15s
+  // hot-settings window, which bounds how long a running api serves the old
+  // list after boot.
+  `update app_settings
+     set value = coalesce((
+       select jsonb_agg(v)
+       from jsonb_array_elements(value) as t(v)
+       where v #>> '{}' <> 'fleet-gateway'
+     ), '[]'::jsonb),
+     updated_at = now()
+   where key = 'gateway_unmetered_keys'
+     and jsonb_typeof(value) = 'array'
+     and value @> '["fleet-gateway"]'::jsonb`,
   // ── The workbench's PR and repo-request fixes (2026-10-22) ──────────────
   // THE PR A JOB OPENED, BY NUMBER. finish_job returned prNumber and kept
   // only the URL, so pr_status and a revise round (which reuses the open PR

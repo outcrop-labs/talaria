@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { spawn, type ChildProcess } from 'node:child_process'
 import { readFile, stat } from 'node:fs/promises'
 import { readFileSync, existsSync } from 'node:fs'
-import { join, extname, resolve, sep } from 'node:path'
+import { join, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
@@ -149,29 +149,12 @@ async function tryServeStatic(req: IncomingMessage, res: ServerResponse): Promis
   }
 }
 
-async function tryServeAppBuilds(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
-  const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
-  const pathname = decodeURIComponent(url.pathname)
-  if (!pathname.startsWith('/app-builds/') || pathname.includes('..')) return false
-  const root = resolve(process.env.TALARIA_APP_BUILDS_DIR || join(__dirname, '..', 'app-builds'))
-  const filePath = resolve(root, pathname.slice('/app-builds/'.length))
-  if (filePath !== root && !filePath.startsWith(root + sep)) return false
-  try {
-    const fileStat = await stat(filePath)
-    if (!fileStat.isFile()) return false
-    const ext = extname(filePath).toLowerCase()
-    const data = await readFile(filePath)
-    res.writeHead(200, {
-      'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-      'Content-Length': data.length,
-      'Cache-Control': 'public, max-age=31536000, immutable',
-    })
-    res.end(data)
-    return true
-  } catch {
-    return false
-  }
-}
+// /app-builds/* is NOT served from here. An app's compiled client is behind
+// that app's grant, so it goes through the fetch handler like any request
+// that needs a session: server/app-builds-door.ts serves app.js, app.css and
+// assets/** to a session granted the app, and nothing else (this used to
+// stream every file under the builds directory — server.js, mcp.js and
+// current.json included — before any session check).
 
 // A query string is NOT safe to log verbatim. Several routes carry live
 // credentials in it: the OAuth callbacks (/api/auth/google/callback,
@@ -336,7 +319,6 @@ function waitForDrain(res: ServerResponse): Promise<void> {
 
 async function requestHandler(req: IncomingMessage, res: ServerResponse) {
   if (req.method === 'GET' || req.method === 'HEAD') {
-    if (await tryServeAppBuilds(req, res)) return
     if (await tryServeStatic(req, res)) return
   }
 

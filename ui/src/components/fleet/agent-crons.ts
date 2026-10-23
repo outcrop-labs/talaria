@@ -15,6 +15,10 @@
 import { confirm } from '@/components/ui/confirm.svelte'
 import { delJson, errorMessage, postJson, putJson } from '@/lib/fetch-json'
 
+/** The agent's own cap on a scheduled prompt: Hermes's `/api/jobs` refuses a
+ *  longer one, and the api bounds its prompt members by the same number. */
+export const MAX_CRON_PROMPT = 5_000
+
 export interface CronJob {
   id: string
   name: string
@@ -133,6 +137,19 @@ export interface CronPatch {
   prompt: string
 }
 
+/** What an edit sends: only the fields the form changed. An untouched field
+ *  is never re-sent — a rename must not re-time a schedule, and a prompt
+ *  written before the 5,000-character cap (the CLI had none) must not block
+ *  a rename or a reschedule. The schedule compares against Hermes's own
+ *  display string, which is what the form was seeded from. */
+export function editPatch(job: Pick<CronJob, 'name' | 'schedule' | 'prompt'>, draft: CronPatch): Partial<CronPatch> {
+  const patch: Partial<CronPatch> = {}
+  if (draft.name !== job.name.trim()) patch.name = draft.name
+  if (draft.schedule !== job.schedule.trim()) patch.schedule = draft.schedule
+  if (draft.prompt !== job.prompt.trim()) patch.prompt = draft.prompt
+  return patch
+}
+
 /** A panel's own state, which the hook drives: the inline error channel —
  *  the failure message, rendered where the rows are — and the in-flight flag
  *  its controls disable on. Declare it with `$state({ err: null, busy: false })`;
@@ -193,7 +210,7 @@ export function useCronMutations(opts: CronMutationOptions) {
         await postJson(cronsOf(agentId), input)
       }),
 
-    edit: (agentId: string, jobId: string, patch: CronPatch) =>
+    edit: (agentId: string, jobId: string, patch: Partial<CronPatch>) =>
       run('edit', async () => {
         await putJson(`${cronsOf(agentId)}/${jobId}`, patch)
       }),

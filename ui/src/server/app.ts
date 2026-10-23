@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import { compileRoute, matchRoute, type ApiMethod, type ApiRoute } from './api-route'
 import { json } from './http'
 import { maybeProxy } from './rust-proxy'
+import { APP_BUILDS_PREFIX, serveAppBuild } from './app-builds-door'
 
 const modules = import.meta.glob<{ Route?: ApiRoute }>('../routes/api/**/*.ts', { eager: true })
 
@@ -50,6 +51,9 @@ async function loadShell(): Promise<string | null> {
 
 async function handle(request: Request): Promise<Response> {
   const url = new URL(request.url)
+  // An app's compiled client, behind the app's own grant (app-builds-door.ts).
+  // Ahead of the decode below: the door decodes each segment itself.
+  if (url.pathname.startsWith(APP_BUILDS_PREFIX)) return serveAppBuild(request)
   const pathname = decodeURIComponent(url.pathname)
   const method = request.method.toUpperCase() as ApiMethod
 

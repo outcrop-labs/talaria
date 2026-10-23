@@ -712,9 +712,10 @@ pub fn base_world() -> SandboxWorld {
                 bytes: 44_100,
                 content: None,
             },
-            // AN IMAGE, so `describe_image` has something to read and
-            // `fetch_attachment` has a third mime to refuse. Its "content" is
-            // what the vision model sees.
+            // AN IMAGE, so `fetch_attachment` has a third mime to hand back.
+            // Its "content" stands in for what reading the picture yields —
+            // the model's own eyes in production, or Hermes' `vision_analyze`
+            // for a model that cannot see.
             SandboxAttachment {
                 upload_id: "up-failing-tests".into(),
                 filename: "ci-run.png".into(),

@@ -11,7 +11,7 @@
   function dockSections(
     user: SessionUser,
     appsRows: { slug: string; icon: string; surfaces: { work?: string; manage?: string } }[],
-    denied: readonly string[],
+    grants: { denied: readonly string[]; appGrants: readonly string[] | null },
   ) {
     const appWork = appsRows.flatMap((a) => {
       const item = appWorkItem(a)
@@ -25,7 +25,7 @@
     // navSections appends app manage entries to the section whose id is
     // 'manage', which we keep in the result so the SIDEBAR and the dock see
     // one derivation, not two.
-    const sections = navSections(NAV, appWork, appManage, { isAdmin: user.role === 'admin', denied })
+    const sections = navSections(NAV, appWork, appManage, { isAdmin: user.role === 'admin', ...grants })
     return {
       row: sections.filter((s) => s.id !== 'manage'),
       manage: sections.find((s) => s.id === 'manage') ?? null,
@@ -48,7 +48,7 @@
   import { isUnder } from '@/lib/route-tabs'
   import { badgeTitle, useNavBadges } from '@/lib/nav-badges.svelte'
   import { useEnabledApps } from '@/lib/apps'
-  import { useDeniedViews } from '@/lib/session'
+  import { useAppGrants, useDeniedViews } from '@/lib/session'
   import { manageArea, MANAGE_HOME } from '@/lib/manage-area'
   import { cn } from '@/lib/cn'
   import { p, route } from '@/router'
@@ -73,6 +73,7 @@
   let { user, onLogout }: { user: SessionUser; onLogout: () => void } = $props()
 
   const denied = useDeniedViews()
+  const appGrants = useAppGrants()
   const badges = useNavBadges(() => route.pathname)
 
   // Same apps doctrine as the rail: keep the query, default off it. `{ data:
@@ -96,11 +97,12 @@
   // lights for the manage half the same way.
   const onSystemHere = $derived(isUnder(route.pathname, '/settings') || isUnder(route.pathname, '/admin'))
 
-  const { row, manage: manageSection } = $derived(dockSections(user, appsList.rows, denied.current))
+  const grants = $derived({ denied: denied.current, appGrants: appGrants.current })
+  const { row, manage: manageSection } = $derived(dockSections(user, appsList.rows, grants))
   // The gear's two questions — does this viewer have a manage area at all,
   // and is the route inside it — asked of the same helper the sidebar asks.
   const manage = $derived(
-    manageArea(NAV, appsList.rows, { isAdmin: user.role === 'admin', denied: denied.current }, route.pathname),
+    manageArea(NAV, appsList.rows, { isAdmin: user.role === 'admin', ...grants }, route.pathname),
   )
   const activePath = $derived(
     // The manage section's items join the contest even though they have no

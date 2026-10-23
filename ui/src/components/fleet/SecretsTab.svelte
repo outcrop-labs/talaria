@@ -18,6 +18,8 @@
     name: string
     updatedBy: string | null
     updatedAt: string
+    /** Why this name is refused now — present only on a row saved before the rule. */
+    refused?: string
   }
 
   // Per-agent secrets: UI-configured env vars, encrypted at rest, write-only
@@ -191,7 +193,7 @@
     {#snippet children(secrets)}
       <ul class="divide-y divide-line rounded-lg border border-line" use:listStagger>
         {#each secrets as s (s.name)}
-          <li class="flex items-center gap-3 px-3.5 py-2.5 transition-colors dither-fill">
+          <li class="flex flex-wrap items-center gap-x-3 gap-y-1 px-3.5 py-2.5 transition-colors dither-fill">
             <code class="font-mono text-sm text-fg">{s.name}</code>
             <span class="font-mono text-xs text-muted">••••••••</span>
             <span class="ml-auto shrink-0 font-mono text-[11px] text-muted">
@@ -205,6 +207,15 @@
             >
               <Trash2 size={14} />
             </button>
+            {#if s.refused}
+              <!-- Saved before the rule that refuses this name. It still loads
+                   into the container (nothing was taken away), but no tool of
+                   the agent's can read it — so say why, beside the remove. -->
+              <p class="flex basis-full items-start gap-1 font-sans text-xs text-warning">
+                <AlertTriangle size={12} class="mt-0.5 shrink-0" aria-hidden="true" />
+                <span>Would be refused today: {s.refused}. It still loads into the container until you remove it.</span>
+              </p>
+            {/if}
           </li>
         {/each}
       </ul>

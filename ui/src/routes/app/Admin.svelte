@@ -15,6 +15,8 @@
   import Tabs from '@/components/ui/Tabs.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import RetrievalPanel from '@/components/admin/RetrievalPanel.svelte'
+  import AgentWebSearchPanel from '@/components/admin/AgentWebSearchPanel.svelte'
+  import SearchEndpointPanel from '@/components/admin/SearchEndpointPanel.svelte'
   import StoragePanel from '@/components/admin/StoragePanel.svelte'
   import SecretsPanel from '@/components/admin/SecretsPanel.svelte'
   import WorkspaceSecretsPanel from '@/components/admin/WorkspaceSecretsPanel.svelte'
@@ -26,6 +28,7 @@
   import { claimViewTitle } from '@/lib/view-title.svelte'
   import { GATEABLE_VIEWS, MANAGE_VIEWS } from '@/lib/nav'
   import { useEnabledApps } from '@/lib/apps'
+  import { appGrantViewsOf } from '@/lib/app-grants'
   import AdminCompanyNamePanel from './AdminCompanyNamePanel.svelte'
   import AdminEmailPanel from './AdminEmailPanel.svelte'
   import AdminEncryptionPanel from './AdminEncryptionPanel.svelte'
@@ -70,12 +73,16 @@
   // that never happened.
   const appsList = listQuery(useEnabledApps(), { title: 'Could not load installed apps', variant: 'inline' })
   const enabledApps = $derived(appsList.rows)
-  const appViews = $derived([
-    ...enabledApps.filter((a) => a.surfaces.work).map((a) => ({ to: `/x/${a.slug}`, label: a.surfaces.work! })),
-    ...enabledApps.filter((a) => a.surfaces.manage).map((a) => ({ to: `/x/${a.slug}/manage`, label: a.surfaces.manage! })),
-  ])
+  // Each surface is its own grant; a settings tab rides the manage grant, so
+  // a settings-only app is offered too (app-grants.ts). Each option is named
+  // for the app and what it opens ("CRM · work", "CRM · settings"): the
+  // surfaces' own labels are often the same word.
+  const appViews = $derived(appGrantViewsOf(enabledApps))
   const workViews = GATEABLE_VIEWS
-  const manageViews = $derived([...MANAGE_VIEWS.map((v) => ({ ...v, sub: 'manage' })), ...appViews.map((v) => ({ ...v, sub: 'app' }))])
+  const manageViews = $derived([
+    ...MANAGE_VIEWS.map((v) => ({ ...v, sub: 'manage' })),
+    ...appViews.map((v) => ({ to: v.to, label: v.title, sub: 'app' })),
+  ])
   // The last admin cannot be demoted — not even by themselves (the server
   // enforces it too; this only keeps the control from offering it).
   const adminsRemaining = $derived((users ?? []).filter((u) => u.role === 'admin').length)
@@ -132,6 +139,12 @@
         <AdminCodingAccountsPanel />
         <AdminGuardrailsPanel />
         <AdminOutreachPanel />
+      {/if}
+      {#if tab === 'search'}
+        <!-- The workspace search URL first: research reads it, and the agent
+             setting below can pick it (SearXNG) by reference. -->
+        <SearchEndpointPanel />
+        <AgentWebSearchPanel />
       {/if}
       {#if tab === 'retrieval'}<RetrievalPanel />{/if}
       {#if tab === 'storage'}<StoragePanel />{/if}
