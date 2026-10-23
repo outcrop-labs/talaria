@@ -4168,6 +4168,28 @@ alter table tasks drop column if exists conversation_id`,
   // `enabled`, which is the admin's own switch and which the sync no longer
   // touches on an existing row. Null = serving (always null for a non-app row).
   `alter table mcp_servers add column if not exists app_off text`,
+  // WHERE EACH INSTALLED APP'S CODE CAME FROM, AND WHICH COMMIT RUNS. Install
+  // from git records the repository (host + path), the ref asked for (null =
+  // the default branch) and the commit fetched; update moves sha and keeps
+  // the commit it replaced in previous_sha (the tree apps/.<slug>.prev
+  // holds). secret names the workspace secret a host other than the GitHub
+  // connection's is read with — a name, never a value. Written only by
+  // talaria-apps (install_app, update_app, uninstall_app); replaces the
+  // apps_installed setting, which kept a URL and a time and no commit.
+  `create table if not exists app_sources (
+     slug text primary key,
+     url text not null,
+     host text not null,
+     repo text not null,
+     git_ref text,
+     sha text,
+     previous_sha text,
+     secret text,
+     installed_at timestamptz not null default now(),
+     installed_by text,
+     updated_at timestamptz not null default now(),
+     updated_by text
+   )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

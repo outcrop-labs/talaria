@@ -1,34 +1,43 @@
 // Talaria apps — the ADMIN half of the registry (the read
-// plane lives in users.rs): enablement, runtime install from git, the
-// marketplace catalog, and the app-data wipe. Apps are self-contained
-// TypeScript codebases under apps/<slug>/ that this instance compiles and
-// runs without a host rebuild; their surfaces and MCP dispatch stay TS
-// (rule 10) — this module owns the registry state around them.
+// plane lives in users.rs): enablement, the lifecycle around an app's code
+// (install, update, uninstall), the marketplace catalog, and the MCP rows.
+// Apps are self-contained TypeScript codebases under apps/<slug>/ that this
+// instance compiles and runs without a host rebuild; their surfaces and MCP
+// dispatch stay TS (rule 10) — this crate owns the registry state around
+// them, and asks the app host to build (`host`).
 //
 //   enablement   admin-controlled set in app_settings; disabled apps have no
 //                nav presence and their server routes 404
-//   install      marketplace/git: shallow-clone a repo into apps/<slug> —
-//                the UI process compiles it and spawns its Postgres
+//   lifecycle    install from git with a read-only credential, update with an
+//                atomic swap and rollback, uninstall that keeps data unless
+//                asked (`lifecycle`, `git`, `source`)
 //   catalog      the marketplace feed — JSON, source URL configurable,
 //                always through the SSRF guard
 
+pub mod git;
+pub mod host;
+pub mod lifecycle;
+pub mod source;
+
+pub use host::AppHost;
+pub use lifecycle::{
+    DataLeft, InstallRequest, Installed, PlatformCredentials, SourceRecord, UpdateCheck, Updated,
+    install_app, source_records, uninstall_app, update_app, update_checks,
+};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::time::Duration;
 
 use serde_json::Value;
 use sqlx::PgPool;
 
-use talaria_agent_auth::now_ms;
 use talaria_gateway::settings::{get_setting, set_setting};
 use talaria_secretbox::SecretBox;
 use talaria_users::{
-    app_build_status, app_builds_dir, app_data_dir, apps_dir, discovered_apps, enable_block_reason,
-    slug_ok,
+    app_build_status, app_data_dir, discovered_apps, enable_block_reason, slug_ok,
 };
 
 const ENABLED_KEY: &str = "apps_enabled";
-const INSTALLED_KEY: &str = "apps_installed";
 const CATALOG_URL_KEY: &str = "apps_catalog_url";
 const DEFAULT_CATALOG: &str =
     "https://raw.githubusercontent.com/outcrop-labs/talaria-apps/main/index.json";
@@ -413,14 +422,14 @@ pub async fn disable_broken_apps(pg: &PgPool, sb: &SecretBox) {
     }
 }
 
-fn app_db_container(slug: &str) -> String {
+pub(crate) fn app_db_container(slug: &str) -> String {
     let instance = std::env::var("TALARIA_WORKTREE")
         .or_else(|_| std::env::var("TALARIA_DEVBOX"))
         .unwrap_or_else(|_| "talaria".into());
     format!("talaria-appdb-{instance}-{slug}")
 }
 
-async fn stop_app_db(slug: &str) {
+pub(crate) async fn stop_app_db(slug: &str) {
     let file = app_data_dir().join(slug).join("docker-compose.yml");
     let project = app_db_container(slug);
     if file.exists() {
@@ -444,7 +453,7 @@ async fn stop_app_db(slug: &str) {
         .await;
 }
 
-async fn forget_app_db_password(pg: &PgPool, slug: &str) {
+pub(crate) async fn forget_app_db_password(pg: &PgPool, slug: &str) {
     let mut stored = get_setting(pg, "app_db_passwords", Value::Object(Default::default())).await;
     if let Some(obj) = stored.as_object_mut()
         && obj.remove(slug).is_some()
@@ -467,125 +476,6 @@ pub fn install_slug(url: &str, slug_override: Option<&str>) -> Result<String, St
     let derived = derived.strip_prefix("talaria-app-").unwrap_or(&derived);
     talaria_users::slug_installable(derived)?;
     Ok(derived.to_string())
-}
-
-/// Install an app by shallow-cloning its git repo into apps/<slug>.
-/// This instance compiles it and spawns its Postgres — no host rebuild.
-pub async fn install_app_from_git(
-    pg: &PgPool,
-    url: &str,
-    slug_override: Option<&str>,
-) -> Result<String, String> {
-    let u = url.trim();
-    let https_ok = u
-        .strip_prefix("https://")
-        .is_some_and(|rest| !rest.is_empty() && !rest.contains(char::is_whitespace));
-    if !https_ok {
-        return Err("install URL must be https://".into());
-    }
-    let derived = install_slug(u, slug_override)?;
-    let derived = derived.as_str();
-    let target = apps_dir().join(derived);
-    if !target.starts_with(apps_dir()) {
-        return Err("bad target path".into());
-    }
-    if target.exists() {
-        return Err(format!("apps/{derived} already exists"));
-    }
-    let clone = tokio::time::timeout(Duration::from_secs(60), async {
-        tokio::process::Command::new("git")
-            .args(["clone", "--depth", "1", u, &target.to_string_lossy()])
-            .stdin(std::process::Stdio::null())
-            .output()
-            .await
-    })
-    .await
-    .map_err(|_| "git clone …: timed out after 60s".to_string())?
-    .map_err(|e| format!("git clone …: {e}"))?;
-    if !clone.status.success() {
-        let stderr = String::from_utf8_lossy(&clone.stderr);
-        return Err(format!("git clone failed: {}", stderr.trim()));
-    }
-    let manifest_ok = tokio::fs::metadata(target.join("talaria.json"))
-        .await
-        .map(|m| m.is_file())
-        .unwrap_or(false);
-    if !manifest_ok {
-        let _ = tokio::fs::remove_dir_all(&target).await;
-        return Err("that repository is not a Talaria app (no talaria.json at its root)".into());
-    }
-    let mut installed = installed_sources(pg).await;
-    let Some(obj) = installed.as_object_mut() else {
-        return Err("apps_installed setting is corrupt".into());
-    };
-    obj.insert(
-        derived.to_string(),
-        serde_json::json!({
-            "source": u,
-            "installedAt": talaria_agent_auth::epoch_ms_to_iso(now_ms()),
-        }),
-    );
-    set_setting(pg, INSTALLED_KEY, &installed)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(derived.to_string())
-}
-
-/// Remove an app's codebase, its Postgres container, build artifacts, and
-/// enablement + install record. Data wipe is the caller's confirm.
-pub async fn uninstall_app(pg: &PgPool, sb: &SecretBox, slug: &str) -> Result<(), String> {
-    if !slug_ok(slug) {
-        return Err("bad slug".into());
-    }
-    set_app_enabled(pg, sb, slug, false).await?;
-    let target: PathBuf = apps_dir().join(slug);
-    if !target.starts_with(apps_dir()) {
-        return Err("bad target path".into());
-    }
-    // The one place an app's MCP row is deleted, taking its grants with it.
-    // Turning the app off above already took the server off its agents.
-    remove_app_mcp_server(pg, sb, slug)
-        .await
-        .map_err(|e| format!("could not remove the app's MCP server: {e}"))?;
-    let _ = tokio::fs::remove_file(mcp_catalog_path(slug)).await;
-    stop_app_db(slug).await;
-    forget_app_db_password(pg, slug).await;
-    let _ = tokio::fs::remove_dir_all(&target).await;
-    let _ = tokio::fs::remove_dir_all(app_builds_dir().join(slug)).await;
-    let _ = tokio::fs::remove_dir_all(app_data_dir().join(slug)).await;
-    let mut installed = installed_sources(pg).await;
-    if let Some(obj) = installed.as_object_mut() {
-        obj.remove(slug);
-    }
-    set_setting(pg, INSTALLED_KEY, &installed)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Where each installed app came from: slug →
-/// { source, installedAt }.
-pub async fn installed_sources(pg: &PgPool) -> Value {
-    get_setting(pg, INSTALLED_KEY, serde_json::json!({})).await
-}
-
-/// Wipe every document in one app's store — TRUNCATE in its own Postgres.
-pub async fn wipe_app_data(_pg: &PgPool, slug: &str) -> Result<u64, sqlx::Error> {
-    let _ = tokio::process::Command::new("docker")
-        .args([
-            "exec",
-            &app_db_container(slug),
-            "psql",
-            "-U",
-            "talaria",
-            "-d",
-            "talaria",
-            "-c",
-            "truncate docs",
-        ])
-        .output()
-        .await;
-    Ok(0)
 }
 
 // ── Marketplace catalog ──────────────────────────────────────────────────────
@@ -688,6 +578,7 @@ pub async fn fetch_catalog(pg: &PgPool) -> (Vec<Value>, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use talaria_users::app_builds_dir;
 
     #[test]
     fn a_sync_reads_the_enabled_set_by_the_gates_rule() {

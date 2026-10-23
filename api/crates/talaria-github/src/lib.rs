@@ -350,6 +350,29 @@ fn install_tokens() -> &'static TokenCache {
 pub const REPO_TOKEN_PERMISSIONS: &str =
     r#"{"contents":"write","pull_requests":"write","metadata":"read"}"#;
 
+/// The permissions a READ-ONLY repo token asks for: a clone or a fetch of the
+/// repository and nothing else. App install and update use it
+/// (talaria-apps): this instance reads a plugin's code from a repository the
+/// GitHub connection can see, and must not be able to push to it.
+pub const REPO_READ_PERMISSIONS: &str = r#"{"contents":"read","metadata":"read"}"#;
+
+/// What a repo-scoped token may do. `Write` is the workbench's job token
+/// ([`REPO_TOKEN_PERMISSIONS`]); `Read` a clone's ([`REPO_READ_PERMISSIONS`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoAccess {
+    Write,
+    Read,
+}
+
+impl RepoAccess {
+    pub fn permissions(self) -> &'static str {
+        match self {
+            RepoAccess::Write => REPO_TOKEN_PERMISSIONS,
+            RepoAccess::Read => REPO_READ_PERMISSIONS,
+        }
+    }
+}
+
 /// What `pr_status` reads with, and nothing it could write with: the pull
 /// request, its check runs and commit statuses, and the reviews. Checks and
 /// statuses are not in [`REPO_TOKEN_PERMISSIONS`] (a push never needs them),
@@ -398,6 +421,18 @@ pub async fn installation_token(
     installation_token_with(sb, cfg, installation_id, repo, REPO_TOKEN_PERMISSIONS).await
 }
 
+/// [`installation_token`] for either access: `Write` is the workbench's job
+/// token, `Read` a clone's ([`REPO_READ_PERMISSIONS`], never widened).
+pub async fn installation_token_for(
+    sb: &SecretBox,
+    cfg: &GithubConfig,
+    installation_id: &str,
+    repo: Option<&str>,
+    access: RepoAccess,
+) -> Result<String, String> {
+    installation_token_with(sb, cfg, installation_id, repo, access.permissions()).await
+}
+
 /// [`installation_token`] narrowed to `permissions` instead of the push
 /// set. The cache keys on the permission set too: a read token must never
 /// be served where a push token was asked for, or the other way round.
@@ -439,11 +474,15 @@ async fn installation_token_with(
         .await
         .map_err(|e| format!("github installation token: {e}"))?;
     if res.status().as_u16() == 422
+        && permissions != REPO_READ_PERMISSIONS
         && let Some(repo) = repo
     {
         // The narrowed ask named a permission this installation lacks (or
         // the repo is not in this installation — the retry answers that
-        // too). Once more on the installation's own grants.
+        // too). Once more on the installation's own grants. A READ-ONLY
+        // token is never widened this way: the installation's own grants may
+        // include write, and a clone that cannot get a read-only token gets
+        // no token.
         tracing::warn!(
             "[github] narrowed installation token for {repo} was refused (422) — retrying on the installation's own grants; check the App has {permissions}"
         );
@@ -619,6 +658,18 @@ pub async fn github_token(
     repo: Option<&str>,
 ) -> Result<Option<String>, String> {
     repo_token(pg, sb, repo, REPO_TOKEN_PERMISSIONS).await
+}
+
+/// [`github_token`] for either access. In App mode a `repo` token is narrowed
+/// to `access` ([`REPO_READ_PERMISSIONS`] for `Read`); PAT mode passes the PAT
+/// through whatever the access, because a PAT cannot be narrowed.
+pub async fn github_token_for(
+    pg: &PgPool,
+    sb: &SecretBox,
+    repo: Option<&str>,
+    access: RepoAccess,
+) -> Result<Option<String>, String> {
+    repo_token(pg, sb, repo, access.permissions()).await
 }
 
 /// [`github_token`] with the repo-scoped token narrowed to `permissions`.
@@ -2090,6 +2141,26 @@ mod tests {
         // A name with a quote in it cannot break the body.
         let odd = access_tokens_body("acme/wid\"gets", false);
         assert!(serde_json::from_str::<serde_json::Value>(&odd).is_ok());
+    }
+
+    /// The token app install and update clone with: one repository, read
+    /// access to its contents, nothing that writes.
+    #[test]
+    fn a_read_token_asks_for_contents_read_and_nothing_that_writes() {
+        use super::{RepoAccess, access_tokens_body_for};
+        let body =
+            access_tokens_body_for("acme/talaria-app-crm", Some(RepoAccess::Read.permissions()));
+        assert_eq!(
+            body,
+            r#"{"repositories":["talaria-app-crm"],"permissions":{"contents":"read","metadata":"read"}}"#
+        );
+        let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        let perms = v["permissions"].as_object().unwrap();
+        assert!(perms.values().all(|p| p == "read"), "{perms:?}");
+        assert_eq!(
+            access_tokens_body_for("acme/x", Some(RepoAccess::Write.permissions())),
+            access_tokens_body("acme/x", true)
+        );
     }
 
     use super::*;

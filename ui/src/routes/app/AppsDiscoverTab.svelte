@@ -10,7 +10,7 @@
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { cn } from '@/lib/cn'
-  import { fetchAdminApps, post } from './apps'
+  import { fetchAdminApps, post, shortSha } from './apps'
 
   let { isAdmin }: { isAdmin: boolean } = $props()
 
@@ -21,23 +21,46 @@
     staleTime: 5 * 60_000,
   }))
   let gitUrl = $state('')
+  let gitRef = $state('')
+  let gitSecret = $state('')
   let busy = $state<string | null>(null)
   let notice = $state<string | null>(null)
 
   const installed = $derived(new Set((query.data?.apps ?? []).map((a) => a.slug)))
 
-  const install = async (url: string, slug?: string) => {
+  type InstallAnswer = {
+    error?: string
+    slug?: string
+    sha?: string
+    keptData?: boolean
+    build?: { ok: boolean; error?: string } | null
+    buildError?: string
+  }
+
+  const install = async (url: string, slug?: string, extra: { ref?: string; secret?: string } = {}) => {
     busy = slug ?? url
     notice = null
     try {
-      const r = await post({ installUrl: url, ...(slug ? { slug } : {}) })
+      const r = (await post({
+        installUrl: url,
+        ...(slug ? { slug } : {}),
+        ...(extra.ref ? { ref: extra.ref } : {}),
+        ...(extra.secret ? { secret: extra.secret } : {}),
+      })) as InstallAnswer
       if (r.error) {
         void alert({ title: 'Install failed', message: r.error })
       } else {
-        notice = `Installed apps/${r.slug}. This instance will compile it and start its database; enable it under Installed.`
+        const built = r.build?.ok
+          ? 'It built and loaded; enable it under Installed.'
+          : `It did not build: ${r.build?.error ?? r.buildError ?? 'unknown error'}. Fix the app and Rebuild, or uninstall it.`
+        const kept = r.keptData ? ' The data a previous install kept is attached again.' : ''
+        notice = `Installed apps/${r.slug} at ${shortSha(r.sha)}. ${built}${kept}`
         gitUrl = ''
+        gitRef = ''
+        gitSecret = ''
         await qc.invalidateQueries({ queryKey: ['admin-apps'] })
         await qc.invalidateQueries({ queryKey: ['admin-apps-catalog'] })
+        await qc.invalidateQueries({ queryKey: ['admin-apps-updates'] })
       }
     } finally {
       busy = null
@@ -115,16 +138,23 @@
     <div class="rounded-lg border border-line bg-panel p-4">
       <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Install from Git</div>
       <p class="mb-3 font-sans text-xs text-muted">
-        Any https git repository with a <code class="text-fg">talaria.json</code> at its root. The code becomes part of this
-        deployment and runs fully trusted, so install only repositories you trust.
+        Any https git repository with a <code class="text-fg">talaria.json</code> at its root. A private GitHub repository
+        the GitHub connection can see is read with a read-only token; another host's private repository needs a workspace
+        secret that holds a token and lists that host. The code becomes part of this deployment and runs fully trusted, so
+        install only repositories you trust.
       </p>
-      <div class="flex gap-2">
+      <div class="flex flex-wrap gap-2">
         <Input
           bind:value={gitUrl}
           placeholder="https://github.com/you/talaria-app-yourthing"
-          class="flex-1"
+          class="min-w-64 flex-1"
         />
-        <Button disabled={!/^https:\/\/.+/.test(gitUrl.trim()) || busy !== null} onclick={() => void install(gitUrl.trim())}>
+        <Input bind:value={gitRef} placeholder="ref (default branch)" class="w-40" />
+        <Input bind:value={gitSecret} placeholder="workspace secret (optional)" class="w-52" />
+        <Button
+          disabled={!/^(https|http|file):\/\/.+/.test(gitUrl.trim()) || busy !== null}
+          onclick={() => void install(gitUrl.trim(), undefined, { ref: gitRef.trim(), secret: gitSecret.trim() })}
+        >
           Install
         </Button>
       </div>

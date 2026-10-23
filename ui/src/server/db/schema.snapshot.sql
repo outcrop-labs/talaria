@@ -212,6 +212,20 @@ CREATE TABLE public.app_settings (
     value jsonb NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.app_sources (
+    slug text NOT NULL,
+    url text NOT NULL,
+    host text NOT NULL,
+    repo text NOT NULL,
+    git_ref text,
+    sha text,
+    previous_sha text,
+    secret text,
+    installed_at timestamp with time zone DEFAULT now() NOT NULL,
+    installed_by text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_by text
+);
 CREATE TABLE public.artifact_folders (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     name text DEFAULT 'Untitled'::text NOT NULL,
@@ -1563,6 +1577,8 @@ ALTER TABLE ONLY public.app_data
     ADD CONSTRAINT app_data_pkey PRIMARY KEY (app, collection, id);
 ALTER TABLE ONLY public.app_settings
     ADD CONSTRAINT app_settings_pkey PRIMARY KEY (key);
+ALTER TABLE ONLY public.app_sources
+    ADD CONSTRAINT app_sources_pkey PRIMARY KEY (slug);
 ALTER TABLE ONLY public.artifact_folders
     ADD CONSTRAINT artifact_folders_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.artifact_links

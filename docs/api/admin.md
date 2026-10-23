@@ -83,16 +83,17 @@
 Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_apps.rs)
 
 > /api/admin/apps. App administration. GET → installed apps (+ ?catalog=1
-> for the marketplace feed). Reads are open to anyone granted the /apps
-> Manage view; mutations (enable/disable, install, uninstall, catalog
-> source) stay admin-only — installing an app adds CODE to the deployment.
+> for the marketplace feed, ?updates=1 for whether each app's source has a
+> newer commit). Reads are open to anyone granted the /apps Manage view;
+> mutations (enable/disable, install, update, uninstall, catalog source) and
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `view:/apps` | — | `{apps, catalog, catalogUrl}` | 200 | — |
-| POST | `admin` | [body](#post-apiadminapps-body) | `{slug}` | 200, 400 | audit |
+| GET | `session` + `view:/apps` | — | `{apps, catalog, catalogUrl, updates}` | 200, 403 | — |
+| POST | `admin` | [body](#post-apiadminapps-body) | `{slug, sha, keptData, build, buildError}` | 200, 400 | audit |
 | PUT | `admin` | [body](#put-apiadminapps-body) | `{ok, catalogUrl}` | 200, 400 | audit |
-| DELETE | `admin` | [body](#delete-apiadminapps-body) | `{ok}` | 200, 400 | audit |
+| DELETE | `admin` | [body](#delete-apiadminapps-body) | `{ok, data}` | 200, 400 | audit |
 
 ### POST `/api/admin/apps` body
 
@@ -100,15 +101,25 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/cr
 | :--- | :--- | :--- |
 | `installUrl` | `url` | installUrl: a required URL; slug: optional override, 1..64 chars. |
 | `slug` | `string?(64)` |  |
+| `ref` | `string?(200)` | ref: a branch, tag or commit to install (default: the default branch). |
+| `secret` | `string?(200)` | secret: a workspace secret holding an https token for a host other than the GitHub connection's (its Spendable at list must name the host). |
 
 ### PUT `/api/admin/apps` body — variant 1
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `app` | `string(1)` |  |
-| `enabled` | `bool` |  |
+| `update` | `bool` |  |
+| `ref` | `string?(200)` | ref: follow another branch, tag or commit from now on (default: the recorded one). |
 
 ### PUT `/api/admin/apps` body — variant 2
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `app` | `string(1)` |  |
+| `enabled` | `bool` |  |
+
+### PUT `/api/admin/apps` body — variant 3
 
 | field | schema | notes |
 | :--- | :--- | :--- |
@@ -118,7 +129,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/cr
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `app` | `string(1)` | app: required, min 1 char; wipeData: optional boolean. |
+| `app` | `string(1)` | app: required, min 1 char; wipeData: optional boolean — true deletes the data the app stored, absent or false keeps it for a reinstall. |
 | `wipeData` | `bool?` |  |
 
 ## `/api/admin/coding-accounts`
