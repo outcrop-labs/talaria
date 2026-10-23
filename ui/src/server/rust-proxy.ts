@@ -36,8 +36,9 @@ const PREFIXES = ['/api/'] as const
 //   point agents straight at :5274), but the proxy never routes an app
 //   server's traffic anywhere else. Bare /api/apps is NOT a resident — it is
 //   the discovery listing, and it serves from Rust like everything else.
-//   The app host's own routes about an app (/api/app-host/{slug}/…, today
-//   rebuild: compile and probe the app's modules) — same reason: the
+//   The app host's own routes about an app (/api/app-host/{slug}/…: rebuild,
+//   which compiles and probes the app's modules, and lifecycle, the api's
+//   calls back for an update's stage and switch) — same reason: the
 //   builder and the probe load app code. They sit under their own prefix so
 //   they never take a path from the app's namespace above.
 //   healthz — the app process's own liveness answer; the Rust api carries

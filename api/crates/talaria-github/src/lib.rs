@@ -326,6 +326,29 @@ fn install_tokens() -> &'static TokenCache {
 pub const REPO_TOKEN_PERMISSIONS: &str =
     r#"{"contents":"write","pull_requests":"write","metadata":"read"}"#;
 
+/// The permissions a READ-ONLY repo token asks for: a clone or a fetch of the
+/// repository and nothing else. App install and update use it
+/// (talaria-apps): this instance reads a plugin's code from a repository the
+/// GitHub connection can see, and must not be able to push to it.
+pub const REPO_READ_PERMISSIONS: &str = r#"{"contents":"read","metadata":"read"}"#;
+
+/// What a repo-scoped token may do. `Write` is the workbench's job token
+/// ([`REPO_TOKEN_PERMISSIONS`]); `Read` a clone's ([`REPO_READ_PERMISSIONS`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoAccess {
+    Write,
+    Read,
+}
+
+impl RepoAccess {
+    pub fn permissions(self) -> &'static str {
+        match self {
+            RepoAccess::Write => REPO_TOKEN_PERMISSIONS,
+            RepoAccess::Read => REPO_READ_PERMISSIONS,
+        }
+    }
+}
+
 /// The body of an access_tokens request: the one repository, and — on the
 /// first try — the narrowed permissions. GitHub answers 422 when the request
 /// names a permission the installation was never granted, so the caller
@@ -333,12 +356,20 @@ pub const REPO_TOKEN_PERMISSIONS: &str =
 /// installation's own grants (logged, so an operator can see the App is
 /// missing a permission the workbench expects).
 pub fn access_tokens_body(repo: &str, narrowed: bool) -> String {
+    access_tokens_body_for(repo, narrowed.then_some(RepoAccess::Write))
+}
+
+/// [`access_tokens_body`] for either access: the one repository, narrowed to
+/// `access`'s permissions, or (None) the installation's own grants.
+pub fn access_tokens_body_for(repo: &str, access: Option<RepoAccess>) -> String {
     let name = repo.rsplit('/').next().unwrap_or(repo);
     let repos = serde_json::to_string(&[name]).expect("a repo name serializes");
-    if narrowed {
-        format!(r#"{{"repositories":{repos},"permissions":{REPO_TOKEN_PERMISSIONS}}}"#)
-    } else {
-        format!(r#"{{"repositories":{repos}}}"#)
+    match access {
+        Some(access) => format!(
+            r#"{{"repositories":{repos},"permissions":{}}}"#,
+            access.permissions()
+        ),
+        None => format!(r#"{{"repositories":{repos}}}"#),
     }
 }
 
@@ -358,9 +389,24 @@ pub async fn installation_token(
     installation_id: &str,
     repo: Option<&str>,
 ) -> Result<String, String> {
-    let key = match repo {
-        Some(r) => format!("{installation_id}#{r}"),
-        None => installation_id.to_string(),
+    installation_token_for(sb, cfg, installation_id, repo, RepoAccess::Write).await
+}
+
+/// [`installation_token`] for either access. A `Read` token is never widened:
+/// when GitHub refuses the narrowed ask there is no retry on the
+/// installation's own grants (which may include write), and the caller gets
+/// the error — a clone that cannot get a read-only token gets no token.
+pub async fn installation_token_for(
+    sb: &SecretBox,
+    cfg: &GithubConfig,
+    installation_id: &str,
+    repo: Option<&str>,
+    access: RepoAccess,
+) -> Result<String, String> {
+    let key = match (repo, access) {
+        (Some(r), RepoAccess::Write) => format!("{installation_id}#{r}"),
+        (Some(r), RepoAccess::Read) => format!("{installation_id}#{r}#read"),
+        (None, _) => installation_id.to_string(),
     };
     if let Some((token, expires_at)) = install_tokens().lock().unwrap().get(&key)
         && *expires_at > now_ms() + 60_000
@@ -390,10 +436,11 @@ pub async fn installation_token(
         }
         req.send()
     };
-    let mut res = mint(repo.map(|r| access_tokens_body(r, true)))
+    let mut res = mint(repo.map(|r| access_tokens_body_for(r, Some(access))))
         .await
         .map_err(|e| format!("github installation token: {e}"))?;
     if res.status().as_u16() == 422
+        && access == RepoAccess::Write
         && let Some(repo) = repo
     {
         // The narrowed ask named a permission this installation lacks (or
@@ -563,6 +610,18 @@ pub async fn github_token(
     sb: &SecretBox,
     repo: Option<&str>,
 ) -> Result<Option<String>, String> {
+    github_token_for(pg, sb, repo, RepoAccess::Write).await
+}
+
+/// [`github_token`] for either access. In App mode a `repo` token is narrowed
+/// to `access` ([`REPO_READ_PERMISSIONS`] for `Read`); PAT mode passes the PAT
+/// through whatever the access, because a PAT cannot be narrowed.
+pub async fn github_token_for(
+    pg: &PgPool,
+    sb: &SecretBox,
+    repo: Option<&str>,
+    access: RepoAccess,
+) -> Result<Option<String>, String> {
     let cfg = get_github_config(pg).await;
     if cfg.mode.as_deref() == Some("pat") {
         return pat_token(sb, &cfg);
@@ -595,7 +654,7 @@ pub async fn github_token(
         }
     }
     Ok(Some(
-        installation_token(sb, &cfg, &installation_id, repo).await?,
+        installation_token_for(sb, &cfg, &installation_id, repo, access).await?,
     ))
 }
 
@@ -1458,6 +1517,25 @@ mod tests {
         // A name with a quote in it cannot break the body.
         let odd = access_tokens_body("acme/wid\"gets", false);
         assert!(serde_json::from_str::<serde_json::Value>(&odd).is_ok());
+    }
+
+    /// The token app install and update clone with: one repository, read
+    /// access to its contents, nothing that writes.
+    #[test]
+    fn a_read_token_asks_for_contents_read_and_nothing_that_writes() {
+        use super::{RepoAccess, access_tokens_body_for};
+        let body = access_tokens_body_for("acme/talaria-app-crm", Some(RepoAccess::Read));
+        assert_eq!(
+            body,
+            r#"{"repositories":["talaria-app-crm"],"permissions":{"contents":"read","metadata":"read"}}"#
+        );
+        let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        let perms = v["permissions"].as_object().unwrap();
+        assert!(perms.values().all(|p| p == "read"), "{perms:?}");
+        assert_eq!(
+            access_tokens_body_for("acme/x", Some(RepoAccess::Write)),
+            access_tokens_body("acme/x", true)
+        );
     }
 
     use super::*;

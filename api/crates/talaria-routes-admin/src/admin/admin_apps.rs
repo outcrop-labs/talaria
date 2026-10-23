@@ -1,23 +1,47 @@
 // /api/admin/apps. App administration. GET → installed apps (+ ?catalog=1
-// for the marketplace feed). Reads are open to anyone granted the /apps
-// Manage view; mutations (enable/disable, install, uninstall, catalog
-// source) stay admin-only — installing an app adds CODE to the deployment.
+// for the marketplace feed, ?updates=1 for whether each app's source has a
+// newer commit). Reads are open to anyone granted the /apps Manage view;
+// mutations (enable/disable, install, update, uninstall, catalog source) and
+// the update check stay admin-only — installing or updating an app adds CODE
+// to the deployment, and a check spends a credential.
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use serde_json::Value;
+use serde_json::{Value, json};
 use talaria_apps::{
-    catalog_url, enabled_app_slugs, fetch_catalog, install_app_from_git, installed_sources,
-    set_app_enabled, set_catalog_url, uninstall_app, wipe_app_data,
+    AppHost, InstallRequest, PlatformCredentials, catalog_url, enabled_app_slugs, fetch_catalog,
+    install_app, set_app_enabled, set_catalog_url, source_records, uninstall_app, update_app,
+    update_checks,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::parse;
-use talaria_error::{house_error, internal, object_or_400};
+use talaria_error::{house_error, object_or_400};
 use talaria_session::{actor_of, require_admin, require_view, secretbox_or_500};
 use talaria_state::AppState;
-use talaria_users::{app_build_status, discovered_apps};
+use talaria_users::{app_build_status, broken_apps, discovered_apps};
+
+/// The app host as this api calls it (`talaria_apps::host`), with the
+/// root-derived service credential its lifecycle routes take.
+fn app_host(state: &AppState) -> AppHost {
+    AppHost::new(state.cfg.secret_root.internal_token())
+}
+
+/// One source record as the listing serves it: where the app came from and
+/// the commit it runs. The workspace secret it is read with stays out.
+fn git_of(rec: &talaria_apps::SourceRecord) -> Value {
+    json!({
+        "url": rec.url,
+        "host": rec.host,
+        "repo": rec.repo,
+        "ref": rec.git_ref,
+        "sha": rec.sha,
+        "previousSha": rec.previous_sha,
+        "installedAt": rec.installed_at,
+        "updatedAt": rec.updated_at,
+    })
+}
 
 pub async fn get(
     State(state): State<AppState>,
@@ -25,30 +49,41 @@ pub async fn get(
     uri: Uri,
 ) -> Result<Response, Response> {
     // The one admin-family read that /apps Manage holders share with admins.
-    require_view(&state, &headers, "/apps").await?;
+    let viewer = require_view(&state, &headers, "/apps").await?;
+    let query = talaria_api_facades::google::oauth::query_pairs(uri.query());
+    // ?updates=1 is admin-only: each check spends the app's read credential.
+    let want_updates = query.get("updates").map(String::as_str) == Some("1");
+    if want_updates && viewer.role != "admin" {
+        return Ok(house_error(
+            StatusCode::FORBIDDEN,
+            "only an admin may check apps for updates",
+        ));
+    }
     let enabled = enabled_app_slugs(&state.pg).await;
-    let sources = installed_sources(&state.pg).await;
+    let sources = source_records(&state.pg).await;
+    let source_of = |slug: &str| {
+        sources
+            .get(slug)
+            .map(|r| (Value::String(r.url.clone()), git_of(r)))
+            .unwrap_or((Value::Null, Value::Null))
+    };
 
-    let apps = discovered_apps()
+    let mut apps = discovered_apps()
         .into_iter()
         .map(|a| {
             let mut surfaces = serde_json::Map::new();
             if let Some(w) = &a.work {
-                surfaces.insert("work".into(), serde_json::json!(w));
+                surfaces.insert("work".into(), json!(w));
             }
             if let Some(m) = &a.manage {
-                surfaces.insert("manage".into(), serde_json::json!(m));
+                surfaces.insert("manage".into(), json!(m));
             }
             if let Some(s) = &a.settings {
-                surfaces.insert("settings".into(), serde_json::json!(s));
+                surfaces.insert("settings".into(), json!(s));
             }
-            let source = sources
-                .get(&a.slug)
-                .and_then(|s| s.get("source"))
-                .cloned()
-                .unwrap_or(Value::Null);
+            let (source, git) = source_of(&a.slug);
             let build = app_build_status(&a.slug);
-            serde_json::json!({
+            json!({
                 "slug": a.slug,
                 "name": a.name,
                 "icon": a.icon,
@@ -58,15 +93,32 @@ pub async fn get(
                 "mcp": a.mcp,
                 "enabled": enabled.contains(&a.slug),
                 "source": source,
+                "git": git,
                 "build": build,
             })
         })
         .collect::<Vec<_>>();
+    // An installed directory whose talaria.json the rules refuse: listed with
+    // the reason, never enabled, and still removable.
+    for b in broken_apps() {
+        let (source, git) = source_of(&b.slug);
+        apps.push(json!({
+            "slug": b.slug,
+            "name": b.slug,
+            "icon": "⬡",
+            "description": "",
+            "version": "",
+            "surfaces": {},
+            "mcp": false,
+            "enabled": false,
+            "source": source,
+            "git": git,
+            "build": app_build_status(&b.slug),
+            "broken": b.reason,
+        }));
+    }
     // ?catalog=1
-    let want_catalog = talaria_api_facades::google::oauth::query_pairs(uri.query())
-        .get("catalog")
-        .map(String::as_str)
-        == Some("1");
+    let want_catalog = query.get("catalog").map(String::as_str) == Some("1");
     let catalog = if want_catalog {
         let (apps, error) = fetch_catalog(&state.pg).await;
         let mut m = serde_json::Map::new();
@@ -78,10 +130,24 @@ pub async fn get(
     } else {
         Value::Null
     };
-    Ok(Json(serde_json::json!({
+    // ?updates=1 (admin): `git ls-remote` against each app's recorded ref.
+    let updates = if want_updates {
+        let sb = secretbox_or_500(&state, "[admin/apps] secretbox unavailable").await?;
+        let actor = actor_of(&viewer);
+        let creds = PlatformCredentials {
+            pg: &state.pg,
+            sb: &sb,
+            actor: &actor,
+        };
+        serde_json::to_value(update_checks(&state.pg, &creds).await).unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    Ok(Json(json!({
         "apps": apps,
         "catalog": catalog,
         "catalogUrl": catalog_url(&state.pg).await,
+        "updates": updates,
     }))
     .into_response())
 }
@@ -101,12 +167,78 @@ pub async fn put(
     let sb = secretbox_or_500(&state, "[admin/apps] secretbox unavailable").await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
-    // Two bodies on one PUT, dispatched by key presence: { app, enabled }
-    // toggles an app, { catalogUrl } (nullable — null resets to the default
-    // source) sets the catalog source. A body naming NONE of the keys answers
-    // 400 rather than silently falling into the catalog arm and resetting the
+    // Three bodies on one PUT, dispatched by key presence: { app, update }
+    // updates an app to its source's newer commit, { app, enabled } toggles
+    // an app, { catalogUrl } (nullable — null resets to the default source)
+    // sets the catalog source. A body naming NONE of the keys answers 400
+    // rather than silently falling into the catalog arm and resetting the
     // source; a catalogUrl that is a string but not a URL answers the field's
     // own sentence ("Invalid URL").
+    if obj.contains_key("update") {
+        let app = match talaria_body::string_member(obj, "app", 1, usize::MAX) {
+            Ok(a) => a,
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        };
+        match talaria_body::boolean_member(obj, "update") {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(house_error(StatusCode::BAD_REQUEST, "update must be true"));
+            }
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        }
+        // ref: follow another branch, tag or commit from now on (default: the recorded one).
+        let git_ref = match talaria_body::optional_string_member(obj, "ref", 200) {
+            Ok(r) => r,
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        };
+        let creds = PlatformCredentials {
+            pg: &state.pg,
+            sb: &sb,
+            actor: &actor,
+        };
+        let host = app_host(&state);
+        let outcome =
+            match update_app(&state.pg, &creds, &host, &app, git_ref.as_deref(), &actor).await {
+                Ok(o) => o,
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+            };
+        if !outcome.up_to_date {
+            log_audit(
+                &state.pg,
+                AuditEntry {
+                    actor: &actor,
+                    action: if outcome.ok {
+                        "app.update"
+                    } else {
+                        "app.update-failed"
+                    },
+                    target_type: "app",
+                    target_id: Some(&app),
+                    target_label: outcome.error.as_deref(),
+                    before: Some(json!({ "sha": outcome.from })),
+                    after: Some(json!({
+                        "sha": if outcome.ok { outcome.to.clone() } else { outcome.from.clone() },
+                        "ref": outcome.git_ref,
+                        "attempted": outcome.to,
+                        "rolledBack": outcome.rolled_back,
+                    })),
+                },
+            )
+            .await;
+        }
+        return Ok(Json(json!({
+            "ok": outcome.ok,
+            "slug": outcome.slug,
+            "from": outcome.from,
+            "to": outcome.to,
+            "ref": outcome.git_ref,
+            "upToDate": outcome.up_to_date,
+            "rolledBack": outcome.rolled_back,
+            "error": outcome.error,
+            "build": outcome.build,
+        }))
+        .into_response());
+    }
     if obj.contains_key("app") || obj.contains_key("enabled") {
         let app = match talaria_body::string_member(obj, "app", 1, usize::MAX) {
             Ok(a) => a,
@@ -116,6 +248,12 @@ pub async fn put(
             Ok(e) => e,
             Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
+        if enabled && let Some(b) = broken_apps().into_iter().find(|b| b.slug == app) {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                &format!("{app} cannot be enabled: {}", b.reason),
+            ));
+        }
         if let Err(msg) = set_app_enabled(&state.pg, &sb, &app, enabled).await {
             return Ok(house_error(StatusCode::BAD_REQUEST, &msg));
         }
@@ -132,13 +270,13 @@ pub async fn put(
             },
         )
         .await;
-        return Ok(Json(serde_json::json!({ "ok": true })).into_response());
+        return Ok(Json(json!({ "ok": true })).into_response());
     }
     let next_url = match obj.get("catalogUrl") {
         None => {
             return Ok(house_error(
                 StatusCode::BAD_REQUEST,
-                "body must name app + enabled, or catalogUrl",
+                "body must name app + update, app + enabled, or catalogUrl",
             ));
         }
         Some(Value::Null) => None,
@@ -172,7 +310,7 @@ pub async fn put(
     )
     .await;
     let url = catalog_url(&state.pg).await;
-    Ok(Json(serde_json::json!({ "ok": true, "catalogUrl": url })).into_response())
+    Ok(Json(json!({ "ok": true, "catalogUrl": url })).into_response())
 }
 
 pub async fn post(
@@ -181,6 +319,8 @@ pub async fn post(
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
     let user = require_admin(&state, &headers).await?;
+    let actor = actor_of(&user);
+    let sb = secretbox_or_500(&state, "[admin/apps] secretbox unavailable").await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     // installUrl: a required URL; slug: optional override, 1..64 chars.
@@ -206,23 +346,58 @@ pub async fn post(
         Ok(s) => s,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // ref: a branch, tag or commit to install (default: the default branch).
+    let git_ref = match talaria_body::optional_string_member(obj, "ref", 200) {
+        Ok(r) => r,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    // secret: a workspace secret holding an https token for a host other than
+    // the GitHub connection's (its Spendable at list must name the host).
+    let secret = match talaria_body::optional_string_member(obj, "secret", 200) {
+        Ok(s) => s,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    let creds = PlatformCredentials {
+        pg: &state.pg,
+        sb: &sb,
+        actor: &actor,
+    };
+    let host = app_host(&state);
+    let req = InstallRequest {
+        url: &install_url,
+        slug: slug_override.as_deref(),
+        git_ref: git_ref.as_deref(),
+        secret: secret.as_deref(),
+        actor: &actor,
+    };
     Ok(
-        match install_app_from_git(&state.pg, &install_url, slug_override.as_deref()).await {
-            Ok(slug) => {
+        match install_app(&state.pg, &creds, Some(&host), req).await {
+            Ok(installed) => {
                 log_audit(
                     &state.pg,
                     AuditEntry {
-                        actor: &actor_of(&user),
+                        actor: &actor,
                         action: "app.install",
                         target_type: "app",
-                        target_id: Some(&slug),
+                        target_id: Some(&installed.slug),
                         target_label: Some(&install_url),
                         before: None,
-                        after: None,
+                        after: Some(json!({
+                            "sha": installed.sha,
+                            "ref": git_ref,
+                            "keptData": installed.kept_data,
+                        })),
                     },
                 )
                 .await;
-                Json(serde_json::json!({ "slug": slug })).into_response()
+                Json(json!({
+                    "slug": installed.slug,
+                    "sha": installed.sha,
+                    "keptData": installed.kept_data,
+                    "build": installed.build,
+                    "buildError": installed.build_error,
+                }))
+                .into_response()
             }
             Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
         },
@@ -238,7 +413,8 @@ pub async fn delete(
     let sb = secretbox_or_500(&state, "[admin/apps] secretbox unavailable").await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
-    // app: required, min 1 char; wipeData: optional boolean.
+    // app: required, min 1 char; wipeData: optional boolean — true deletes
+    // the data the app stored, absent or false keeps it for a reinstall.
     let app = match talaria_body::string_member(obj, "app", 1, usize::MAX) {
         Ok(a) => a,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
@@ -247,12 +423,11 @@ pub async fn delete(
         Ok(w) => w.unwrap_or(false),
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    if let Err(msg) = uninstall_app(&state.pg, &sb, &app).await {
-        return Ok(house_error(StatusCode::BAD_REQUEST, &msg));
-    }
-    if wipe_data && let Err(e) = wipe_app_data(&state.pg, &app).await {
-        return Ok(internal("[admin/apps] data wipe failed", e));
-    }
+    let host = app_host(&state);
+    let data = match uninstall_app(&state.pg, &sb, Some(&host), &app, wipe_data).await {
+        Ok(d) => d,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
     log_audit(
         &state.pg,
         AuditEntry {
@@ -262,9 +437,9 @@ pub async fn delete(
             target_id: Some(&app),
             target_label: None,
             before: None,
-            after: None,
+            after: Some(json!({ "wipeData": wipe_data, "data": data })),
         },
     )
     .await;
-    Ok(Json(serde_json::json!({ "ok": true })).into_response())
+    Ok(Json(json!({ "ok": true, "data": data })).into_response())
 }

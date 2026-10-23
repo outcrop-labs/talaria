@@ -207,10 +207,15 @@ only apps they trust — the marketplace labels apps maintained by Outcrop Labs 
 
 ## Publishing
 
-Push your app to a public https git repository with `talaria.json` at the root (repo name
-`talaria-app-<slug>` is the convention — the prefix is stripped on install). Anyone can then install
-it from **Manage → Apps → Discover → Install from Git**. To be listed in the marketplace, submit it
-to the catalog index (`outcrop-labs/talaria-apps`).
+Push your app to an https git repository with `talaria.json` at the root (repo name
+`talaria-app-<slug>` is the convention — the prefix is stripped on install, unless the manifest
+declares its own `slug`). Anyone can then install it from **Manage → Apps → Discover → Install
+from Git**: a public repository as is, a private GitHub repository the instance's GitHub
+connection can see with a read-only token, and another host's private repository with a
+workspace secret that holds a token. Each commit you push shows as **update available** on the
+instances that installed it, and an admin updates in one click (a version that fails to build is
+rolled back). To be listed in the marketplace, submit it to the catalog index
+(`outcrop-labs/talaria-apps`). The manifest's full rules: `docs/sdk/talaria.schema.json`.
 
 Scaffold a new app with `bun talaria app new <slug>`. Core ships none enabled.
 

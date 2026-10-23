@@ -111,6 +111,7 @@ const API_ENV_VARS = [
   'PORT',
   'TALARIA_FLEET_PROJECT',
   'TALARIA_WORKTREE',
+  'TALARIA_APPS_LOCAL_SOURCES',
 ] as const
 
 /** The connection facts the Rust api reads, lifted out of ui/.env with the
@@ -146,7 +147,12 @@ const API_ENV_VARS = [
  *  (`talaria-mcp-<instance>-<name>`). The app side reads it from ui/.env, so
  *  without the lift the api named the main instance's container — uninstall
  *  stopped a container that was not this worktree's and left its own
- *  running. */
+ *  running.
+ *
+ *  TALARIA_APPS_LOCAL_SOURCES=1 lets the api install and update apps from a
+ *  repository on this machine (file://, or http:// to loopback) — a dev
+ *  stack's way to exercise the git install and update path without a
+ *  remote. The api is the one that reads it, so ui/.env has to reach it. */
 export function apiEnv(shell: Record<string, string | undefined>, uiEnv: string): Record<string, string> {
   const env: Record<string, string> = {}
   for (const varName of API_ENV_VARS) {

@@ -56,6 +56,7 @@ const TS_RESIDENT_FILES = [
   'ui/src/routes/api/healthz.ts',
   'ui/src/routes/api/apps.$app.$.ts',
   'ui/src/routes/api/app-host.$app.rebuild.ts',
+  'ui/src/routes/api/app-host.$app.lifecycle.ts',
 ]
 const CHECK = process.argv.includes('--check')
 
@@ -591,16 +592,28 @@ function bodySchemaRust(combined, sigText, fileRaw) {
     }
     // THE EARLY-RETURN SPELLING of the same union: `if obj.contains_key("app")
     // { …; return …; }` with no `else`, the other body read by the rest of the
-    // handler. The arm ends in a return, so everything after it is the second
-    // variant; helpers appended past the handler's own text are not part of it.
+    // handler. Each such arm ends in a return, so a CHAIN of them (`update`,
+    // then `app`, then the rest — PUT /api/admin/apps) is one variant per arm,
+    // and everything after the last arm is the final variant; helpers
+    // appended past the handler's own text are not part of it.
     const handlerEnd = combined.parts[0].text.length
-    const endsInReturn = ifClose !== -1 && /\breturn\b[^;]*;\s*$/.test(text.slice(ifOpen + 1, ifClose))
-    if (endsInReturn && !/^\s*else\b/.test(text.slice(ifClose + 1))) {
-      const inIf = fields.filter((f) => f.offset > ifOpen && f.offset < ifClose)
-      const after = fields.filter((f) => f.offset > ifClose && f.offset < handlerEnd)
-      const outside = fields.filter((f) => !inIf.includes(f) && !after.includes(f))
-      if (inIf.length && after.length && !outside.length) {
-        return { kind: 'union', branches: [inIf, after].map((b) => ({ kind: 'fields', fields: b.map(strip) })) }
+    const arms = []
+    const armRe = new RegExp(`if\\s+${objVar}\\.contains_key\\(`, 'g')
+    for (let a; (a = armRe.exec(text)); ) {
+      if (arms.length && a.index < arms[arms.length - 1][1]) continue // nested in the previous arm
+      const pOpen = text.indexOf('(', a.index)
+      const open = text.indexOf('{', matchDelimRust(text, pOpen))
+      const close = matchDelimRust(text, open)
+      if (close === -1 || !/\breturn\b[^;]*;\s*$/.test(text.slice(open + 1, close))) break
+      if (/^\s*else\b/.test(text.slice(close + 1))) break
+      arms.push([open, close])
+    }
+    if (arms.length) {
+      const branches = arms.map(([open, close]) => fields.filter((f) => f.offset > open && f.offset < close))
+      const after = fields.filter((f) => f.offset > arms[arms.length - 1][1] && f.offset < handlerEnd)
+      const covered = new Set([...branches.flat(), ...after])
+      if (branches.every((b) => b.length) && after.length && fields.every((f) => covered.has(f))) {
+        return { kind: 'union', branches: [...branches, after].map((b) => ({ kind: 'fields', fields: b.map(strip) })) }
       }
     }
   }
@@ -847,7 +860,7 @@ const KNOWN_REQUEST_TAKERS = new Set([
   'requireUser', 'requireAdmin', 'requirePerm', 'requireView', 'requireAgent',
   'agentCaller', 'fleetCaller', 'checkFleetKey', 'authenticateKey',
   'actingUser', 'getSessionUser', 'updateSessionUser', 'taskActor',
-  'parseBody', 'destroySession',
+  'parseBody', 'destroySession', 'requireInternal',
 ])
 
 function authClassTS(clean, methodRaw) {
@@ -855,6 +868,7 @@ function authClassTS(clean, methodRaw) {
   const perms = [...clean.matchAll(/(?:requirePerm\(request,\s*|hasPerm\(\s*[\w.]+,\s*)'([\w.-]+)'/g)].map((m) => m[1])
   const view = clean.match(/requireView\(\s*request,\s*'([^']+)'/)
   if (has('fleetCaller(') || has('checkFleetKey(')) return { auth: 'fleet' }
+  if (has('requireInternal(')) return { auth: 'internal' }
   if (has('authenticateKey(')) return { auth: 'bearer-key' }
   if (has('requireAgent(')) return { auth: 'agent' }
   const session = has('requireUser(') || has('requireAdmin(') || has('requirePerm(') || has('requireView(')
