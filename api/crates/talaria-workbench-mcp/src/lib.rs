@@ -1913,18 +1913,20 @@ fn agent_terminal_argv<'a>(script: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
     argv
 }
 
-/// `HOME` as Hermes sets it for its terminal's commands in a container.
+/// `HOME` as Hermes sets it for its terminal's commands in a container
+/// ([`devenv::AGENT_TERMINAL_HOME`]; a test holds the two together).
 const AGENT_TERMINAL_HOME_ENV: &str = "HOME=/opt/data/home";
 
 /// Run the harness probe in the agent's own sandbox and say what happened.
 ///
 /// As the AGENT USER, in the shell its terminal gives a command
 /// ([`agent_terminal_argv`]): the stricter environment, and the one that
-/// used to fail while a probe in a plain shell passed — first because mise's
-/// shims reached only a profile Hermes's terminal never reads, then because
-/// bun sat in a directory its login shell drops from PATH. The boot hook links
-/// bun into /usr/local/bin for exactly that, so a probe that passes here
-/// passes for the agent.
+/// used to fail while a probe in a plain shell passed — first because
+/// prepare_env's mise block sat only in the passwd home's profile, which this
+/// probe's login shell (HOME at the terminal home) never read, then because
+/// bun sat in a directory its login shell drops from PATH. prepare_env now
+/// writes the block into both homes, and the boot hook links bun into
+/// /usr/local/bin, so a probe that passes here passes for the agent.
 ///
 /// Ok(version) is the harness's own version line. Err is the reason it could
 /// not run, which is the whole point of the check.
@@ -2829,6 +2831,16 @@ async fn log_wtool_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_probe_and_prepare_env_agree_on_the_terminal_home() {
+        // The probe runs in the HOME prepare_env writes the mise block for;
+        // two spellings of one Hermes fact must not drift apart.
+        assert_eq!(
+            AGENT_TERMINAL_HOME_ENV,
+            format!("HOME={}", devenv::AGENT_TERMINAL_HOME)
+        );
+    }
 
     #[test]
     fn the_auth_probe_verdict_reads_omps_exit_and_last_word() {
