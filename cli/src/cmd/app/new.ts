@@ -24,7 +24,7 @@ export function runAppNew(
   if (existsSync(dest)) ctx.log.die(`${dest} already exists`)
 
   mkdirSync(dest, { recursive: true })
-  const files = skeletonFiles({ slug, name, icon })
+  const files = skeletonFiles({ name, icon })
   for (const [rel, body] of Object.entries(files)) {
     writeFileSync(join(dest, rel), body)
   }

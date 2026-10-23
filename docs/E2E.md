@@ -36,7 +36,7 @@ fleet env is readable, the suite falls back to the org-wide key, `E2E_AGENT_KEY`
 itself was not made.
 
 **No container is ever started.** An MCP edit on an agent defaults to `apply: true`,
-which re-renders the fleet and then *rolls* the agent: a blue-green container swap that
+which re-renders the fleet and then *rolls* the agent: an in-place container recreate that
 pulls the Hermes image and joins the `talaria` docker network. That is fleet
 reconciliation, not the MCP surface, and in CI it has neither the image nor the network.
 So chapter 5 adds `apply: false` to each request its MCP tab sends (`page.route`), and

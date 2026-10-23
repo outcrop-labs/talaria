@@ -283,8 +283,9 @@ Two docker networks, one socket — this is the "right shape"
   host-loopback ports the dev stack publishes — and in this mode the renderer
   doesn't publish those ports at all (the manifest never dials them, and
   installs sharing a host would collide on the identical allocations).
-  Memory, media and crons go through `docker exec` and never touched the
-  network anyway.
+  Crons ride the same manifest dial as chat (Hermes's `/api/jobs` on the
+  agent's API server); memory and media go through `docker exec` and never
+  touch the network.
 - **Isolation**: only the app joins the fleet network. Agent containers are
   model-driven and semi-trusted; they can reach the app, never postgres,
   redis, or storage.

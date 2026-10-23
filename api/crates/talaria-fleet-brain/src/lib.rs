@@ -6,10 +6,10 @@
 // Two halves: the ROUTING half (the model-set question and the config
 // transform) and the PROVISIONING half (ensure_gateway_brain — the two
 // fleet-wide gateway keys minted into the Talaria-owned fleet .env, the two
-// key-list settings, and the LLM_* lines the containers interpolate — plus
-// ensure_agent_gateway_keys / set_agent_gateway_models: ONE key per enabled
-// agent, `agent:<slug>`, stamped as LLM_API_KEY_<SLUG> and scoped to the
-// model ids that agent's rendered config asks for).
+// key-list settings, and the LLM_BASE_URL/LLM_API_KEY lines the containers
+// interpolate — plus ensure_agent_gateway_keys / set_agent_gateway_models:
+// ONE key per enabled agent, `agent:<slug>`, stamped as LLM_API_KEY_<SLUG>
+// and scoped to the model ids that agent's rendered config asks for).
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -27,7 +27,7 @@ use talaria_llm_keys::mint_key;
 // agent key unmetered because the flow that drove the turn writes the row.
 // Sandbox harnesses get the workbench key instead (workbench-harnesses).
 const GATEWAY_BASE_URL: &str = "${LLM_BASE_URL}";
-const GATEWAY_API_KEY: &str = "${LLM_API_KEY}";
+pub const GATEWAY_API_KEY: &str = "${LLM_API_KEY}";
 
 // Imported agents carry legacy litellm-router model names. Map them to the real
 // provider model ids Talaria's gateway serves. As agents are redesigned they use
@@ -70,8 +70,10 @@ pub async fn gateway_model_set(pg: &PgPool) -> GatewayModels {
 
 /// An LLM model spec inside an agent config: has a model name and some endpoint
 /// marker (base_url / provider / key_env / api_key). MCP servers (url + headers,
-/// no `model`) and other blocks are left untouched.
-fn is_model_spec(o: &Value) -> bool {
+/// no `model`) and other blocks are left untouched. Public because sealing an
+/// agent's config literals (talaria-agent-secrets) must agree with this walk on
+/// which `api_key` the render overwrites.
+pub fn is_model_spec(o: &Value) -> bool {
     let Some(obj) = o.as_object() else {
         return false;
     };
@@ -283,6 +285,11 @@ async fn default_gateway_model(pg: &PgPool) -> Option<String> {
 #[derive(Debug, Clone)]
 pub struct GatewayBrain {
     pub url: Option<String>,
+    /// The gateway's default model — None while no endpoint serves one, which
+    /// the render warns about. Read for that question only: it is NOT
+    /// provisioned into the fleet .env as `LLM_MODEL` any more, because
+    /// Hermes deliberately ignores that variable (it takes its model from
+    /// config.yaml alone) and its own config migration clears it.
     pub model: Option<String>,
     pub key_rotated: bool,
     /// False when the operator pointed the fleet at a non-gateway upstream.
@@ -359,7 +366,7 @@ pub async fn ensure_gateway_brain(pg: &PgPool) -> Result<GatewayBrain, String> {
         // Operator override: a raw upstream. Respect it — no gateway brain.
         return Ok(GatewayBrain {
             url: Some(cur),
-            model: read_env_line(&content, "LLM_MODEL").filter(|m| !m.is_empty()),
+            model: None,
             key_rotated: false,
             managed: false,
         });
@@ -400,13 +407,7 @@ pub async fn ensure_gateway_brain(pg: &PgPool) -> Result<GatewayBrain, String> {
         next = upsert_env_line(&next, WORKBENCH_KEY_ENV, &k.secret);
     }
 
-    let mut model = read_env_line(&next, "LLM_MODEL").filter(|m| !m.is_empty());
-    if model.is_none()
-        && let Some(m) = default_gateway_model(pg).await
-    {
-        next = upsert_env_line(&next, "LLM_MODEL", &m);
-        model = Some(m);
-    }
+    let model = default_gateway_model(pg).await;
 
     if next != content {
         // The file holds the fleet's gateway secrets: written private from
@@ -602,6 +603,53 @@ pub async fn set_agent_gateway_models(
         .map_err(|e| format!("{AGENT_MODELS_SETTING} write failed: {e}"))
 }
 
+/// The row the render writes BEFORE it lands any config.yaml: each scoped
+/// agent may ask for what its stored scope allows AND what its new one
+/// does (the new ids first), and a slug the render dropped keeps its stored
+/// entry until [`set_agent_gateway_models`] narrows the row afterwards.
+/// Pure over the stored row so the merge is pinned without a database.
+pub fn widened_agent_gateway_models_json(current: &Value, scopes: &[AgentGatewayScope]) -> Value {
+    let mut out = current.as_object().cloned().unwrap_or_default();
+    for s in scopes {
+        let mut models = s.models.clone();
+        let stored = out
+            .get(&s.slug)
+            .and_then(|e| e.get("models"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str);
+        for m in stored {
+            if !models.iter().any(|x| x == m) {
+                models.push(m.to_string());
+            }
+        }
+        out.insert(
+            s.slug.clone(),
+            json!({ "model": s.model, "models": models }),
+        );
+    }
+    Value::Object(out)
+}
+
+/// Write [`widened_agent_gateway_models_json`] — the first half of the
+/// render's widen-then-narrow (see the scope write in render_fleet).
+/// Unchanged content is not rewritten.
+pub async fn widen_agent_gateway_models(
+    pg: &PgPool,
+    scopes: &[AgentGatewayScope],
+) -> Result<(), String> {
+    use talaria_gateway::agent_keys::AGENT_MODELS_SETTING;
+    let current = get_setting(pg, AGENT_MODELS_SETTING, Value::Null).await;
+    let next = widened_agent_gateway_models_json(&current, scopes);
+    if current == next {
+        return Ok(());
+    }
+    set_setting(pg, AGENT_MODELS_SETTING, &next)
+        .await
+        .map_err(|e| format!("{AGENT_MODELS_SETTING} write failed: {e}"))
+}
+
 /// Write a file ATOMICALLY and with its mode set before any byte lands:
 /// the content goes to a sibling temp file opened with `mode`, is flushed,
 /// and is renamed over the target. A reader (docker compose, the chat
@@ -657,10 +705,158 @@ pub async fn write_atomic(path: &std::path::Path, bytes: &[u8], mode: u32) -> Re
     result
 }
 
+/// Rewrite a file IN PLACE — same inode — for a file a container holds
+/// through a single-file bind mount (an agent's config.yaml and SOUL.md).
+/// Such a bind pins the inode that existed when the container was created,
+/// so [`write_atomic`]'s rename lands on the host and never reaches the
+/// container: it keeps reading the orphaned old file until it is recreated.
+///
+/// What a racing reader can see, and why each is safe for Hermes:
+/// - **Never an empty file.** Nothing truncates first: the new bytes go over
+///   the old ones at offset 0, and only then is a shorter file cut to length.
+/// - **The new bytes followed by the old tail**, for the instant between that
+///   write and the cut. The caller makes that state unparseable (the render
+///   ends config.yaml with a YAML `...` document end), and Hermes keeps
+///   serving its last good config through a parse error.
+/// - **A stale read cached under a signature that never changes again.**
+///   Hermes caches config.yaml on `(mtime, size, inode, ctime)`; a same-size
+///   rewrite inside one coarse mtime tick could leave a mid-write read cached
+///   for good. The mtime is set explicitly once every byte has landed, so the
+///   final signature always differs from anything a reader saw before.
+///
+/// Writers are serialized by an exclusive `flock` on the file itself (two
+/// renders racing in place would interleave; Hermes never locks it), and a
+/// write whose bytes are already there is skipped — no signature change, no
+/// reload, for every agent a render did not touch. Answers whether it wrote.
+/// A missing file has no container holding it yet, so it is created
+/// atomically.
+pub async fn write_in_place(
+    path: &std::path::Path,
+    bytes: &[u8],
+    mode: u32,
+) -> Result<bool, String> {
+    let owned = path.to_path_buf();
+    let data = bytes.to_vec();
+    let wrote = tokio::task::spawn_blocking(move || rewrite_in_place(&owned, &data, mode))
+        .await
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    match wrote {
+        InPlace::Missing => write_atomic(path, bytes, mode).await.map(|()| true),
+        InPlace::Unchanged => Ok(false),
+        InPlace::Written => Ok(true),
+        InPlace::Failed(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+enum InPlace {
+    Missing,
+    Unchanged,
+    Written,
+    Failed(std::io::Error),
+}
+
+fn rewrite_in_place(path: &std::path::Path, bytes: &[u8], mode: u32) -> InPlace {
+    use std::io::Read;
+    use std::os::unix::fs::{FileExt, PermissionsExt};
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return InPlace::Missing,
+        Err(e) => return InPlace::Failed(e),
+    };
+    let step = || -> std::io::Result<bool> {
+        // Released when `file` drops, on every path out of here.
+        file.lock()?;
+        let mut current = Vec::new();
+        (&file).read_to_end(&mut current)?;
+        let perms = std::fs::Permissions::from_mode(mode);
+        if current == bytes {
+            if file.metadata()?.permissions().mode() & 0o7777 != mode {
+                file.set_permissions(perms)?;
+            }
+            return Ok(false);
+        }
+        file.write_all_at(bytes, 0)?;
+        if bytes.len() < current.len() {
+            file.set_len(bytes.len() as u64)?;
+        }
+        file.sync_data()?;
+        file.set_permissions(perms)?;
+        file.set_modified(std::time::SystemTime::now())?;
+        Ok(true)
+    };
+    match step() {
+        Ok(true) => InPlace::Written,
+        Ok(false) => InPlace::Unchanged,
+        Err(e) => InPlace::Failed(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn write_in_place_keeps_the_inode_skips_the_unchanged_and_shrinks_clean() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = std::env::temp_dir().join(format!(
+            "talaria-write-in-place-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let target = dir.join("config.yaml");
+
+        // Missing: created (atomically), and that counts as a write.
+        assert!(
+            write_in_place(&target, b"a: 1\nb: 22222\n...\n", 0o644)
+                .await
+                .unwrap()
+        );
+        let ino = tokio::fs::metadata(&target).await.unwrap().ino();
+
+        // Same bytes: nothing written, signature untouched.
+        let before = tokio::fs::metadata(&target).await.unwrap();
+        assert!(
+            !write_in_place(&target, b"a: 1\nb: 22222\n...\n", 0o644)
+                .await
+                .unwrap()
+        );
+        let after = tokio::fs::metadata(&target).await.unwrap();
+        assert_eq!(before.mtime_nsec(), after.mtime_nsec());
+        assert_eq!(before.ctime_nsec(), after.ctime_nsec());
+
+        // Shorter: same inode (what a single-file bind still sees), the
+        // whole new content and nothing of the old tail.
+        assert!(
+            write_in_place(&target, b"a: 2\n...\n", 0o644)
+                .await
+                .unwrap()
+        );
+        let meta = tokio::fs::metadata(&target).await.unwrap();
+        assert_eq!(meta.ino(), ino, "rewritten in place, not renamed over");
+        assert_eq!(tokio::fs::read(&target).await.unwrap(), b"a: 2\n...\n");
+
+        // Longer: same inode again.
+        assert!(
+            write_in_place(&target, b"a: 3\nc: [1, 2, 3]\n...\n", 0o644)
+                .await
+                .unwrap()
+        );
+        assert_eq!(tokio::fs::metadata(&target).await.unwrap().ino(), ino);
+        assert_eq!(
+            tokio::fs::read(&target).await.unwrap(),
+            b"a: 3\nc: [1, 2, 3]\n...\n"
+        );
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
 
     #[tokio::test]
     async fn write_atomic_lands_the_bytes_private_and_leaves_no_temp_behind() {
@@ -837,6 +1033,50 @@ mod tests {
         assert_eq!(s.model, "x-eng");
         assert!(s.models.is_empty());
         assert_eq!(agent_gateway_models_json(&[]), json!({}));
+    }
+
+    #[test]
+    fn the_widened_row_allows_both_scopes_until_the_narrow_write() {
+        // A model switch on `analyst`, a new agent, and a slug this render
+        // dropped: while the configs land, every id either render routes to
+        // is allowed, and nothing stored is lost yet.
+        let stored = json!({
+            "analyst": { "model": "analyst", "models": ["old-main", "shared-aux"] },
+            "gone": { "model": "gone", "models": ["m"] }
+        });
+        let scopes = vec![
+            AgentGatewayScope {
+                slug: "analyst".into(),
+                model: "analyst".into(),
+                models: vec!["new-main".into(), "shared-aux".into()],
+            },
+            AgentGatewayScope {
+                slug: "fresh".into(),
+                model: "fresh".into(),
+                models: vec!["n".into()],
+            },
+        ];
+        let wide = widened_agent_gateway_models_json(&stored, &scopes);
+        assert_eq!(
+            wide,
+            json!({
+                "analyst": { "model": "analyst", "models": ["new-main", "shared-aux", "old-main"] },
+                "gone": { "model": "gone", "models": ["m"] },
+                "fresh": { "model": "fresh", "models": ["n"] }
+            })
+        );
+        let s = talaria_gateway::agent_keys::scope_of(&wide, "analyst").unwrap();
+        for id in ["old-main", "new-main", "shared-aux"] {
+            assert!(talaria_gateway::agent_keys::model_in_scope(&s, id), "{id}");
+        }
+        // Widening an already-current row changes nothing (no rewrite), and
+        // a missing or malformed row widens to exactly the new scope.
+        let narrow = agent_gateway_models_json(&scopes);
+        assert_eq!(widened_agent_gateway_models_json(&narrow, &scopes), narrow);
+        assert_eq!(
+            widened_agent_gateway_models_json(&Value::Null, &scopes),
+            narrow
+        );
     }
 
     #[test]

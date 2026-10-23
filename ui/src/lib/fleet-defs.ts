@@ -279,7 +279,7 @@ export interface FleetRollStart {
   error?: string
 }
 
-/** Queue a blue/green roll of every running managed agent (`all`: every
+/** Queue an in-place roll of every running managed agent (`all`: every
  *  managed enabled agent, stopped ones included). Answers as soon as the
  *  batch is decided; `useFleetRoll` carries the progress. Failures resolve
  *  as `{ error }` so the strip can render the sentence in place. */

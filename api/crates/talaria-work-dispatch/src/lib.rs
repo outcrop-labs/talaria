@@ -4,8 +4,10 @@
 // tools/harness like a developer at a desk (run, read, steer, test, repeat),
 // until the ticket reaches review/blocked/done, the agent stops progressing,
 // or the turn cap lands. One turn is never the budget for real work. Matched
-// task WORKFLOWS ride along; the plugin heartbeat remains the pull-side
-// safety net.
+// task WORKFLOWS ride along; the sixty-second redispatch sweep below is the
+// safety net for a push that never landed. A workchain step whose
+// predecessor is still live is not dispatched at all (see the gate in
+// `maybe_dispatch_ticket`).
 //
 // THE DRIVE POSTURE. This process enqueues the session AND drives it —
 // insert, publish, detached drive, all here. The shared-table shape is what
@@ -94,8 +96,8 @@ pub async fn dispatch_ticket_work(
             Err(e) => {
                 // The claim is the only thing standing between a retried
                 // request and two agents on one ticket, so a store we cannot
-                // read is a dispatch we do not make. The heartbeat is the
-                // pull-side safety net for exactly this.
+                // read is a dispatch we do not make. The redispatch sweep
+                // offers the ticket again within a minute.
                 tracing::error!(
                     "{LOG} {}: could not check for a live session with {agent_model}, not dispatching: {e}",
                     task.id
@@ -193,10 +195,16 @@ pub async fn dispatch_ticket_work(
 /// an agent still listed as an assignee on a board that has since revoked its
 /// grant gets no fresh work session.
 ///
+/// THE WORKCHAIN ORDER is the ticket's other question, asked once before any
+/// agent is looked at: a step whose predecessor is still live is nobody's
+/// work yet, so it starts no session and leaves no wait mark, whatever its
+/// column says. `talaria_tasks::workchain_blocked` is the one derive.
+///
 /// IT IS STILL ASKED AGAIN INSIDE THE SESSION, on every turn. This gate is
 /// about whether to START; a run may sit in the queue, park, or be reclaimed
 /// after a deploy, and the first thing every step does is put the same
-/// question to `agent_ticket_refusal` again.
+/// question to `agent_work_refusal` (the authority clauses plus the chain
+/// order) again.
 ///
 /// Fire-and-forget: nothing a dispatch failure can do may reach a caller.
 /// Errors are logged here rather than swallowed silently.
@@ -218,6 +226,25 @@ pub async fn maybe_dispatch_ticket(
     };
     if !meta.pickup_keys.contains(&task.status) {
         return;
+    }
+    // THE WORKCHAIN ORDER, before any per-agent side effect (the RAM wait
+    // mark below would otherwise tell a person a blocked step is queued for
+    // memory). A chain we cannot read is a dispatch we do not make — the
+    // sweep asks again in a minute.
+    let metas = HashMap::from([(task.board_id.clone(), meta.clone())]);
+    match tasks::workchain_blocked(pg, &metas, std::slice::from_ref(&task.id)).await {
+        Ok(blocked) if blocked.contains(&task.id) => {
+            tracing::debug!("{LOG} {}: {}", task.id, tasks::WORKCHAIN_WAIT);
+            return;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(
+                "{LOG} {}: could not read its workchain order, not dispatching: {e}",
+                task.id
+            );
+            return;
+        }
     }
     let target = tasks::AgentWriteTarget {
         board_id: task.board_id.clone(),
@@ -424,8 +451,8 @@ pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) {
     // (the same status_meta the gate itself reads), and only tickets that
     // pass the column question here are offered and counted; everything
     // else is reported as parked, which is what it is.
-    let mut pickup_by_board: HashMap<String, Option<Vec<String>>> = HashMap::new();
-    let mut offered = 0usize;
+    let mut meta_by_board: HashMap<String, Option<statuses::StatusMeta>> = HashMap::new();
+    let mut in_pickup: Vec<DispatchTicket> = Vec::new();
     let mut parked = 0usize;
     for (id, board_id, status, assignees, archived_at) in rows {
         let Some(assignees) = assignees.filter(|v| !v.is_null()) else {
@@ -435,11 +462,11 @@ pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) {
         if assignees.is_empty() {
             continue;
         }
-        let pickup = match pickup_by_board.entry(board_id.clone()) {
-            std::collections::hash_map::Entry::Occupied(o) => o.get().clone(),
+        let meta = match meta_by_board.entry(board_id.clone()) {
+            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
             std::collections::hash_map::Entry::Vacant(v) => {
-                let keys = match statuses::status_meta(pg, &board_id).await {
-                    Ok(meta) => Some(meta.pickup_keys),
+                let meta = match statuses::status_meta(pg, &board_id).await {
+                    Ok(meta) => Some(meta),
                     // A board whose statuses cannot be read is a board whose
                     // tickets are not dispatched this pass — the same law as
                     // the gate's own read, said here instead of unsaid.
@@ -451,33 +478,68 @@ pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) {
                         None
                     }
                 };
-                v.insert(keys.clone());
-                keys
+                v.insert(meta)
             }
         };
-        if !pickup.is_some_and(|keys| keys.contains(&status)) {
+        if !meta
+            .as_ref()
+            .is_some_and(|m| m.pickup_keys.contains(&status))
+        {
             parked += 1;
             continue;
         }
-        let task = DispatchTicket {
+        in_pickup.push(DispatchTicket {
             id,
             board_id,
             status,
             assignees,
             archived_at,
-        };
+        });
+    }
+    // THE WORKCHAIN ORDER, asked once for the whole pass: a step behind a
+    // live predecessor is waiting its turn, not stuck, and counting it as
+    // re-offered would be the 2026-09-22 lie again. maybe_dispatch_ticket
+    // asks the same question per ticket anyway; this batch is what keeps
+    // the count honest. A chain we cannot read stands the pass down.
+    let metas: HashMap<String, statuses::StatusMeta> = meta_by_board
+        .into_iter()
+        .filter_map(|(board, meta)| meta.map(|m| (board, m)))
+        .collect();
+    let ids: Vec<String> = in_pickup.iter().map(|t| t.id.clone()).collect();
+    let blocked = match tasks::workchain_blocked(pg, &metas, &ids).await {
+        Ok(blocked) => blocked,
+        Err(e) => {
+            tracing::error!("{LOG} sweep could not read workchain order, not offering: {e}");
+            return;
+        }
+    };
+    let mut offered = 0usize;
+    let mut waiting = 0usize;
+    for task in in_pickup {
+        if blocked.contains(&task.id) {
+            waiting += 1;
+            continue;
+        }
         // Re-offering is the whole point: every internal gate (agent
-        // refusal, the generation walk) re-decides from live state.
+        // refusal, the chain order, the generation walk) re-decides from
+        // live state.
         maybe_dispatch_ticket(pg, deps, &task, None).await;
         offered += 1;
     }
-    if offered > 0 || parked > 0 {
+    if offered > 0 || parked > 0 || waiting > 0 {
         let parked_note = if parked > 0 {
             format!(" ({parked} parked outside pickup columns)")
         } else {
             String::new()
         };
-        tracing::info!("{LOG} sweep re-offered {offered} ticket(s) to their agents{parked_note}");
+        let waiting_note = if waiting > 0 {
+            format!(" ({waiting} waiting on an earlier workchain step)")
+        } else {
+            String::new()
+        };
+        tracing::info!(
+            "{LOG} sweep re-offered {offered} ticket(s) to their agents{parked_note}{waiting_note}"
+        );
     }
 }
 

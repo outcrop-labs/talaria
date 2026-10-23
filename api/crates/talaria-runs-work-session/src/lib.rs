@@ -82,7 +82,7 @@ pub const WORK_SESSION_KIND: &str = "work-session";
 /// moment the ticket leaves the working statuses.
 ///
 /// IT IS IN THE CHECKPOINT, so it SURVIVES A RESUME — without that, a
-/// restart mid-session loses the count, the heartbeat re-dispatches, and the
+/// restart mid-session loses the count, the sweep re-dispatches, and the
 /// agent gets a fresh twelve turns on work it had already spent twelve turns
 /// on.
 pub const MAX_SESSION_TURNS: i64 = 12;
@@ -296,10 +296,11 @@ fn as_checkpoint(raw: &Value) -> Result<Option<WorkSessionCheckpoint>, String> {
 /// a hand-rolled spelling once omitted BOTH archival clauses and the board's
 /// agent policy, so a person archiving the ticket, archiving its board, or
 /// revoking the agent's grant did not stop the live session already running.
-/// `agent_ticket_refusal` answers authority, `working_keys` answers "still in
-/// play", assignment is the one thing left that is genuinely local to a
-/// session — and `stop` carries the reason so the activity line says WHY the
-/// session ended instead of just naming a column.
+/// `agent_work_refusal` answers authority and the workchain order,
+/// `working_keys` answers "still in play", assignment is the one thing left
+/// that is genuinely local to a session — and `stop` carries the reason so
+/// the activity line says WHY the session ended instead of just naming a
+/// column.
 ///
 /// IT IS ASKED ON EVERY TURN, and durability makes that MORE load-bearing
 /// rather than less: a resumed session has been away for as long as a deploy
@@ -480,10 +481,12 @@ async fn real_session_state(
         archived_at: task.archived_at.clone(),
     };
     let subject = talaria_agent_auth::AgentSubject::Model(agent_model.clone());
-    if let Some(stop) =
-        tasks::agent_ticket_refusal(&pg, &target, &subject, tasks::AgentIntent::Write)
-            .await
-            .map_err(|e| e.to_string())?
+    // The WORK question, not just the write one: a workchain step whose
+    // predecessor went live again (a person reopened it, or wired a new edge
+    // in front of it) stops here, on the next turn, with the chain's reason.
+    if let Some(stop) = tasks::agent_work_refusal(&pg, &task_id, &target, &subject)
+        .await
+        .map_err(|e| e.to_string())?
     {
         return Ok(Some(SessionState {
             task,
@@ -1255,7 +1258,7 @@ fn continue_prompt(turn: i64, status: &str) -> String {
         "[Work session — turn {turn}/{MAX_SESSION_TURNS}] You're mid-work on this ticket (status: \
          \"{status}\"). Continue like a developer: next step, run it, read the result, adjust. \
          Verify before you finish — tests, your own diff, and for UI work drive it in a real \
-         browser (Playwright) and attach evidence. When genuinely done: report_outcome. If stuck: \
+         browser (your browser tools) and attach evidence. When genuinely done: report_outcome. If stuck: \
          status \"blocked\" + comment. End with your status line."
     )
 }
@@ -1469,8 +1472,8 @@ pub async fn work_session_step(
                 &task_id,
                 "talaria",
                 &format!(
-                    "work session hit the {MAX_SESSION_TURNS}-turn cap — leaving the ticket to the \
-                     agent/heartbeat"
+                    "work session hit the {MAX_SESSION_TURNS}-turn cap — leaving the ticket where \
+                     it is; the redispatch sweep offers it again after five quiet minutes"
                 ),
                 attempt > *stage_attempt,
             )

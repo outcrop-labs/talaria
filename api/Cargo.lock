@@ -3568,7 +3568,6 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
- "talaria-fleet-docker",
  "talaria-gateway",
  "tokio",
  "tracing",
@@ -3660,6 +3659,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-fleet-brain",
  "talaria-fleet-layout",
  "talaria-secretbox",
  "tokio",
@@ -3674,6 +3674,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "sha1 0.10.7",
  "sha2 0.11.0",
  "sqlx",
@@ -3693,6 +3694,17 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-body",
+]
+
+[[package]]
+name = "talaria-agent-web-search"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sqlx",
+ "talaria-fleet-layout",
+ "talaria-secretbox",
+ "talaria-settings",
 ]
 
 [[package]]
@@ -3718,16 +3730,6 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
- "uuid",
-]
-
-[[package]]
-name = "talaria-agents-registry"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "sqlx",
  "uuid",
 ]
 
@@ -3795,7 +3797,6 @@ dependencies = [
  "talaria-agent-secrets",
  "talaria-agent-skills",
  "talaria-agent-writes",
- "talaria-agents-registry",
  "talaria-alerts",
  "talaria-api-facades",
  "talaria-api-routes",
@@ -4807,7 +4808,6 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
- "talaria-agents-registry",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-users",
@@ -4865,6 +4865,7 @@ dependencies = [
  "sqlx",
  "talaria-agent-defs",
  "talaria-agent-managers",
+ "talaria-agent-secrets",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-gateway",
@@ -4894,9 +4895,11 @@ dependencies = [
  "serde_yaml_ng",
  "sqlx",
  "talaria-agent-defs",
+ "talaria-agent-secrets",
  "talaria-fleet-create",
  "talaria-fleet-layout",
  "talaria-gateway",
+ "talaria-secretbox",
  "tokio",
  "tracing",
 ]
@@ -4936,7 +4939,6 @@ dependencies = [
  "sqlx",
  "talaria-fleet-docker",
  "talaria-secretbox",
- "talaria-update-layout",
  "tokio",
  "tracing",
 ]
@@ -4954,6 +4956,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-defs",
  "talaria-agent-secrets",
+ "talaria-agent-web-search",
  "talaria-coding-accounts",
  "talaria-fleet-brain",
  "talaria-fleet-budget",
@@ -4963,7 +4966,9 @@ dependencies = [
  "talaria-guard-coaching",
  "talaria-mcp",
  "talaria-mcp-service",
+ "talaria-model-efforts",
  "talaria-org",
+ "talaria-persona",
  "talaria-search",
  "talaria-secretbox",
  "talaria-workbench",
@@ -5621,6 +5626,7 @@ dependencies = [
  "talaria-approvals",
  "talaria-artifacts",
  "talaria-attribution",
+ "talaria-audit",
  "talaria-channel-replies",
  "talaria-comms-decay",
  "talaria-config",
@@ -5669,6 +5675,7 @@ dependencies = [
  "talaria-runs-work-session",
  "talaria-scheduler",
  "talaria-secretbox",
+ "talaria-skills-marketplace",
  "talaria-state",
  "talaria-tasks",
  "talaria-tasks-types",
@@ -6558,6 +6565,7 @@ dependencies = [
  "sqlx",
  "talaria-agent-auth",
  "talaria-agent-defs",
+ "talaria-agent-web-search",
  "talaria-api-facades",
  "talaria-apps",
  "talaria-audit",
@@ -6728,7 +6736,6 @@ dependencies = [
  "talaria-agent-role-templates",
  "talaria-agent-secrets",
  "talaria-agent-skills",
- "talaria-agents-registry",
  "talaria-api-facades",
  "talaria-approvals",
  "talaria-artifacts",
@@ -7252,10 +7259,15 @@ name = "talaria-skills-marketplace"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "futures-util",
  "serde",
  "serde_json",
- "talaria-agent-skills",
+ "serde_yaml_ng",
+ "sqlx",
+ "talaria-fleet-layout",
  "talaria-safe-fetch",
+ "talaria-scheduler",
+ "talaria-settings",
  "tar",
  "tokio",
  "tracing",
@@ -7352,7 +7364,6 @@ dependencies = [
  "talaria-tasks-types",
  "talaria-ticket-chat",
  "talaria-workchains",
- "talaria-workflows",
  "tokio",
  "tracing",
  "uuid",
@@ -7718,6 +7729,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-secrets",
  "talaria-approvals",
  "talaria-artifacts",
  "talaria-attribution",

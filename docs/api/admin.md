@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-26 routes.
+27 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -61,6 +61,8 @@
 | [`/api/admin/rag`](#apiadminrag) | PUT | `admin` |
 | [`/api/admin/search`](#apiadminsearch) | GET | `admin` |
 | [`/api/admin/search`](#apiadminsearch) | PUT | `admin` |
+| [`/api/admin/search/agents`](#apiadminsearchagents) | GET | `admin` |
+| [`/api/admin/search/agents`](#apiadminsearchagents) | PUT | `admin` |
 | [`/api/admin/secrets`](#apiadminsecrets) | GET | `admin` |
 | [`/api/admin/secrets`](#apiadminsecrets) | DELETE | `admin` |
 | [`/api/admin/settings`](#apiadminsettings) | GET | `admin` |
@@ -582,6 +584,29 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_search.rs`](../../api/
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `url` | `string(0, 300)` | url max 300 — empty is a real instruction. |
+
+## `/api/admin/search/agents`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_search_agents.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_search_agents.rs)
+
+> /api/admin/search/agents. AGENT WEB SEARCH — the one provider every fleet
+> agent's own Hermes searches with (talaria-agent-web-search). GET is the
+> setting with its keys MASKED (which vendors hold one, never the value),
+> the backends this build offers, and what the render hands every agent
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `…` | 200 | — |
+| PUT | `admin` | [body](#put-apiadminsearchagents-body) | `…` | 200, 400 | audit |
+
+### PUT `/api/admin/search/agents` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `backend` | `nullish` |  |
+| `extractBackend` | `nullish` |  |
+| `allowKeylessPublicTiers` | `bool?` |  |
 
 ## `/api/admin/secrets`
 

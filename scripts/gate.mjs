@@ -112,6 +112,11 @@ function classify(files, readPkg) {
   }
   const pkgs = new Set()
   for (const file of files) {
+    // The ui suite compiles the SDK docs' examples and every file `talaria app
+    // new` writes (ui/src/sdk/client-docs.test.ts, server.test.ts), so an edit
+    // to either runs it — the same list as ci.yml's ui surface. A scaffolder
+    // file is also cli source, which the chain below still selects.
+    if (file.startsWith('docs/sdk/') || file.startsWith('cli/src/cmd/app/')) plan.ui = true
     if (file.startsWith('ui/') || file.startsWith('apps/')) {
       plan.ui = true
     } else if (file.startsWith('mcp/')) {
@@ -192,6 +197,15 @@ function selfTest() {
   assert(surfaces.ui && surfaces.mcp && surfaces.cli, 'ui, apps, mcp, cli each select their surface')
   assert(surfaces.desktopTypecheck && surfaces.desktopCargo, 'desktop svelte and rust select separately')
   assert(surfaces.mobile, 'a kotlin source file selects the mobile surface')
+
+  const sdkDocs = classify(['docs/sdk/client.md'], stub)
+  assert(sdkDocs.ui && !sdkDocs.cli, 'an SDK doc runs the ui suite, which compiles its examples')
+
+  const scaffold = classify(['cli/src/cmd/app/skeleton.ts'], stub)
+  assert(scaffold.ui && scaffold.cli, 'the app scaffolder runs the ui suite (it compiles the scaffold) and the cli')
+
+  const cliOnly = classify(['cli/src/ports.ts'], stub)
+  assert(cliOnly.cli && !cliOnly.ui, 'other cli source does not run the ui suite')
 
   const mobileDocs = classify(['mobile/README.md', 'mobile/tools/devbox-install.sh'], stub)
   assert(!mobileDocs.mobile, 'a mobile readme or provisioner script is not a gradle build')

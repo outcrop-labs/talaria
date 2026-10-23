@@ -31,6 +31,7 @@ talaria-retrieval-http = { workspace = true }
 talaria-google-pending = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-approvals = { workspace = true }
+talaria-audit = { workspace = true }
 talaria-digest = { workspace = true }
 talaria-fleet-preflight = { workspace = true }
 talaria-fleet-reconcile = { workspace = true }
@@ -39,6 +40,7 @@ talaria-fleet-resources = { workspace = true }
 talaria-mcp = { workspace = true }
 talaria-mcp-apply = { workspace = true }
 talaria-mcp-library = { workspace = true }
+talaria-skills-marketplace = { workspace = true }
 talaria-model-info = { workspace = true }
 talaria-notify = { workspace = true }
 talaria-outreach = { workspace = true }
