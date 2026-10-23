@@ -3722,16 +3722,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "talaria-agents-registry"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "sqlx",
- "uuid",
-]
-
-[[package]]
 name = "talaria-alerts"
 version = "0.1.0"
 dependencies = [
@@ -3795,7 +3785,6 @@ dependencies = [
  "talaria-agent-secrets",
  "talaria-agent-skills",
  "talaria-agent-writes",
- "talaria-agents-registry",
  "talaria-alerts",
  "talaria-api-facades",
  "talaria-api-routes",
@@ -4807,7 +4796,6 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
- "talaria-agents-registry",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-users",
@@ -6730,7 +6718,6 @@ dependencies = [
  "talaria-agent-role-templates",
  "talaria-agent-secrets",
  "talaria-agent-skills",
- "talaria-agents-registry",
  "talaria-api-facades",
  "talaria-approvals",
  "talaria-artifacts",
@@ -7355,7 +7342,6 @@ dependencies = [
  "talaria-tasks-types",
  "talaria-ticket-chat",
  "talaria-workchains",
- "talaria-workflows",
  "tokio",
  "tracing",
  "uuid",

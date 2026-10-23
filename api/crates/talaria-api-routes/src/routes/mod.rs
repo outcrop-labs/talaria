@@ -94,20 +94,10 @@ pub fn router(state: AppState) -> Router {
             "/api/agents",
             get(talaria_routes_fleet::agents::agents::get).fallback(|| async { method_not_allowed("GET") }),
         )
-        // The fleet-plane pair agents themselves call (MC-compatible):
-        // register with the org key, then heartbeat for assigned work.
-        .route(
-            "/api/agents/register",
-            post(talaria_routes_fleet::agents::agents_register::post).fallback(|| async { method_not_allowed("POST") }),
-        )
         .route(
             "/api/agents/{id}/conversations",
             get(talaria_routes_comms::comms::agents_id_conversations::get)
                 .fallback(|| async { method_not_allowed("GET") }),
-        )
-        .route(
-            "/api/agents/{id}/heartbeat",
-            get(talaria_routes_fleet::agents::agents_id_heartbeat::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/apps",
@@ -1306,9 +1296,8 @@ pub fn router(state: AppState) -> Router {
         )
         // The fleet family. The hire lifecycle (create + the hire queue),
         // the read plane (overview, containers, defs, endpoints, crons), the
-        // admin verbs (render, reconcile, federate), the per-agent control
-        // surface (lifecycle, crons, secrets), and the fleet-plane pair
-        // agents call themselves (register + heartbeat, registered above).
+        // admin verbs (render, reconcile, federate), and the per-agent
+        // control surface (lifecycle, crons, secrets).
         .route(
             "/api/fleet/create",
             post(talaria_routes_fleet::fleet::fleet_create::post).fallback(|| async { method_not_allowed("POST") }),
