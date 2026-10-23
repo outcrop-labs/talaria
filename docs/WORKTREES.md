@@ -44,10 +44,17 @@ data so you still have realistic agents/boards/tickets to work against.
 
 1. `git worktree add ../talaria-<name> -b wt/<name>` off your current `HEAD`.
 2. Brings up an isolated Postgres + Redis under compose project `talaria-wt-<name>`
-   on **deterministic per-name ports** (app `53xx`, api `54xx`, Postgres `56xx`,
-   Redis `65xx`).
+   on **deterministic per-slot ports** (app `53xx`, api `54xx`, Postgres `56xx`,
+   Redis `65xx`), and reserves the slot's ports for what its api spawns and
+   renders: the toolkit MCP (`57xx`), the omp auth bridge (`58xx`), and a
+   hundred agent gateway ports from `20000 + slot·100`. Those three used to be
+   one fixed number for every stack (`:5280`, `:5276`, and `:8770` upward), so
+   the moment two stacks ran agents, the second api adopted the first stack's
+   toolkit (its agents' tool calls answered `401`) and the second stack's first
+   agent could not publish `:8770` (`port is already allocated`).
 3. Seeds the new DB with `pg_dump` of your main DB (a snapshot — later changes on
-   main don't propagate). It waits for main's `talaria` database to answer
+   main don't propagate), then clears the copied agents' gateway ports so this
+   stack's first render assigns its own rather than publishing onto main's. It waits for main's `talaria` database to answer
    `pg_isready` first: the container existing is not the same as the database
    existing, and a worktree created moments after `talaria dev` used to die
    mid-way with `FATAL: database "talaria" does not exist` — after both
@@ -58,7 +65,9 @@ data so you still have realistic agents/boards/tickets to work against.
    (`TALARIA_API_PORT`, `TALARIA_RUST_API_URL` — `talaria dev` only derives the
    url when nothing names it, and main's env names it, hardcoded to `:5274` by
    `talaria setup`), its fleet's callback url and compose project
-   (`TALARIA_GATEWAY_SELF_URL`, `TALARIA_FLEET_PROJECT`), and the
+   (`TALARIA_GATEWAY_SELF_URL`, `TALARIA_FLEET_PROJECT`), its toolkit,
+   omp-auth and gateway ports (`TALARIA_MCP_PORT`, `TALARIA_OMP_AUTH_PORT`,
+   `TALARIA_GATEWAY_PORT_BASE`, lifted into the api by `talaria dev`), and the
    `TALARIA_WORKTREE` marker — **copying the encryption root key**
    (`TALARIA_SECRET_KEY`, or `AUTH_SECRET` if that's what you use) so the seeded
    secrets decrypt. This is the one thing shared, and it's a read-only root — see

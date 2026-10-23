@@ -26,7 +26,7 @@ Reset a wedged stack with `bun talaria reset <mode>`; snapshot and restore with
 |---|---|
 | dev UI | 5273 |
 | Rust api | 5274 |
-| a worktree stack | app `53xx`, api `54xx`, Postgres `56xx`, Redis `65xx` — deterministic per name |
+| a worktree stack | app `53xx`, api `54xx`, Postgres `56xx`, Redis `65xx`, toolkit `57xx`, omp auth `58xx`, agent gateways from `20000 + slot·100` — one slot per stack |
 
 ## The gates, and what each proves
 

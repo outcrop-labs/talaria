@@ -447,6 +447,21 @@ describe('talaria dev — the env the rust api gets', () => {
     expect(apiEnv({ TALARIA_WORKTREE: 'from-shell' }, uiEnv).TALARIA_WORKTREE).toBe('from-shell')
   })
 
+  test("a worktree's toolkit, omp-auth and gateway ports reach the api that spawns and renders them", () => {
+    const env = apiEnv(
+      {},
+      `${uiEnv}\nTALARIA_MCP_PORT=5705\nTALARIA_OMP_AUTH_PORT=5805\nTALARIA_GATEWAY_PORT_BASE=20500\n`,
+    )
+    expect(env.TALARIA_MCP_PORT).toBe('5705')
+    expect(env.TALARIA_OMP_AUTH_PORT).toBe('5805')
+    expect(env.TALARIA_GATEWAY_PORT_BASE).toBe('20500')
+    // main's checkout names none, and the api keeps its defaults
+    const bare = apiEnv({}, 'DATABASE_URL=x\n')
+    for (const k of ['TALARIA_MCP_PORT', 'TALARIA_OMP_AUTH_PORT', 'TALARIA_GATEWAY_PORT_BASE']) {
+      expect(k in bare).toBe(false)
+    }
+  })
+
   test('the main checkout (no worktree name anywhere) passes none', () => {
     expect('TALARIA_WORKTREE' in apiEnv({}, 'DATABASE_URL=x\n')).toBe(false)
   })
