@@ -583,7 +583,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_schedule.rs
 | :--- | :--- | :--- |
 | `name` | `string trimmed(1, 80)` | The same bounds the fleet door takes, because it is the same job. |
 | `schedule` | `string trimmed(1, 120)` |  |
-| `prompt` | `string trimmed(1, 20000)` |  |
+| `prompt` | `string trimmed(1, 5000)` | The agent's own cap: Hermes's /api/jobs refuses a longer prompt (talaria_agent_crons::MAX_PROMPT_CHARS). |
 
 ## `/api/conversations/{id}/schedules`
 
@@ -592,7 +592,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_schedules.r
 > /api/conversations/{id}/schedules.
 > GET → what this thread has put its agent on a timer for. Two halves: the
 > rows Talaria wrote when the schedule was created (name, schedule, when,
-> which job), and the live state only the agent's own jobs.json knows — is it
+> which job), and the live state only the agent's own scheduler knows — is it
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

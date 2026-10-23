@@ -104,7 +104,7 @@ detached branch persisted server-side, so a reply survives a reload mid-stream (
 | Browser | opaque `sid` cookie → Redis `sess:<sid>` | sessions patchable in place; a role change lands without re-login |
 | Google OAuth | redirect `…/api/auth/google/callback` | tokens hand-rolled (no SDK); hosted-domain and Workspace gates; the first identity through a claimable instance claims it |
 | Password | email + scrypt hash in `user_password_credentials` | accounts created/removed by admins (Admin → People); timing-equalized misses |
-| Agent | `tak_…` per-agent key (`x-api-key`) | `agent-auth.ts` `resolve()` — the key *proves* identity; `x-agent-name` can narrow, never grant. `agentCaller` (requires the name), `fleetCaller` (URL-subject plane), `requireAgent` |
+| Agent | `tak_…` per-agent key (`x-api-key`) | `agent-auth.ts` `resolve()` — the key *proves* identity; `x-agent-name` can narrow, never grant. `agentCaller` (requires the name), `requireAgent` |
 | Legacy shared key | org-wide `TALARIA_AGENT_KEY` | resolves `legacy: true` — identified but untrusted; anything granting privilege refuses it. Close with `TALARIA_AGENT_KEY_LEGACY=off` |
 | LLM gateway | `tlk_…` per-user bearer key | sha256-stored, mint gated by the `models.mint-keys` permission |
 
@@ -172,16 +172,80 @@ multiplexer.
   / `agents{<model>}`, on the same `agent_model` window its chat turns land in) and refuses
   any model outside the set its rendered config routes to (`gateway_agent_models`, written
   by the render). No container holds a fleet-wide gateway secret.
+- **Hermes' own controls are rendered, not re-implemented.** Each `config.yaml` arms Hermes'
+  tool-loop guard (`tool_loop_guardrails.hard_stop_enabled` — `api_server` counts as attended, so
+  the hard stops are off unless rendered), routes each persona tier
+  (`platforms.api_server.extra.model_routes`: `<persona>-<tier>` → the tier's upstream id),
+  carries each model's configured effort (`agent.reasoning_overrides`, and
+  `model_overrides.<provider>.<id>.supports_reasoning: false` — the provider id the model's
+  routed spec names, `custom` today — for a model nobody vouches levels for, so Hermes does not
+  fill in `medium`), and turns off Hermes' model-written session titles
+  (`auxiliary.title_generation.model_upgrade_enabled: false`). A turn's own effort pick travels
+  as `model_options.reasoning_effort`, the one spelling Hermes' API server reads. A pinned
+  session runs the agent's main model whatever tier a message picks (Hermes fixes a session's
+  model at its first turn), so such a turn carries no tier effort and is booked as the main model.
 - Each agent presents its own `tak_` key; the renderer rewrites `fleet/.env` from the DB
   every render (0600 in a 0700 dir).
-- **Blue/green rolls** (api/src/fleet/reconcile.rs): the incoming slot comes up on a fresh port,
-  must pass `docker inspect` health within 120s (a sick newcomer is discarded; the old
-  container never stopped serving), then cutover is one `UPDATE agent_defs` + re-render —
-  traffic shifts on the next manifest read — a drain window (default 45s), then the old slot
-  is removed. `proxyChat` re-reads the manifest per attempt and holds a turn up to two
-  minutes across a restart.
+- **Rolls recreate in place** (`talaria-fleet-reconcile`): re-render, pull the agent's image
+  if the host lacks it (`compose pull --policy missing`; a failed pull leaves the running
+  container alone), then `compose up -d --force-recreate --no-deps agent-<dept>` and wait up
+  to 180s for `docker inspect` health. The old container's gateway is drained first, through
+  its own supervisor (`s6-svc -d` then `s6-svwait -D` inside the container): a plain `docker
+  stop` never drains Hermes, because s6-overlay revives the SIGTERMed gateway and KILLs
+  everything 3s later. Down through s6, it holds cron and `/v1` runs up to its 30s drain floor
+  and exits; every stop, restart and remove Talaria does goes the same way. The render also
+  gives every service `stop_grace_period: 45s` (the chassis may override it) as the outer
+  bound. There is no second container: every Hermes since
+  v2026.4.30 holds an `flock` on `/opt/data/gateway.lock` in the state volume, so a second
+  container on the same volume exits on start and never serves — which is why the blue/green
+  roll this replaced never completed for a running agent. The agent is offline for the
+  restart; `proxyChat` re-reads the manifest per attempt and holds a turn up to two minutes
+  across it. An agent an old blue/green roll left in the `agent-<dept>-b` service
+  (`agent_defs.active_slot = 'b'`) moves back to `agent-<dept>` on its next roll: the render
+  names the home service, its image is pulled while `-b` still serves (a failed pull puts the
+  agent back on `-b`), and only then is `-b` drained and removed. A stop, restart or recreate
+  that fails before it reaches the container brings the drained gateway back up
+  (`s6-svc -u`), so a failed step never leaves an agent running without one.
+- **Config edits reach running agents without a roll.** A render rewrites each agent's
+  `config.yaml` *in place* (same inode, under an `flock`, unchanged bytes skipped), because
+  the container sees it through a single-file `:ro` bind that pins whichever inode existed
+  at container start — a temp-file rename never reaches it. Hermes re-reads the file when its
+  `(mtime, size, inode, ctime)` signature changes, and the writer bumps the mtime last so the
+  final signature is always new. A reader that races the write sees either a parse error
+  (Hermes keeps serving its last good config; the rendered file ends in the YAML `...`
+  document-end marker so a stale tail after a shrink cannot parse) or a mix of two renders
+  for one load. SOUL.md goes through the same writer. Because a written config is live at
+  once, the render widens each agent's gateway scope to its old models plus its new ones
+  before it writes any `config.yaml`, and narrows it to the new set after the last one, so a
+  model change never meets a relay that refuses the id Hermes just switched to. Environment,
+  image, limits and plugin changes still need a roll: rotate-key, the Developer switch and
+  MCP timeout or URL edits roll as before. Agents created before in-place writes still hold
+  the inode of an orphaned `config.yaml` and need one roll: image installs get it from the
+  post-deploy fleet roll; checkout and dev installs never roll the fleet on upgrade, so run
+  **Roll all** (`POST /api/fleet/roll`) once.
+- **The Hermes image is pinned** to a tag and digest (`scripts/chassis.template.yml`, and the
+  last entry of `HERMES_IMAGE_DEFAULTS` in `talaria-fleet-render`, which is
+  `HERMES_IMAGE_PIN`). A host's `fleet/chassis.yml` is copied from the template once and never
+  rewritten, so it keeps the default it was seeded with. The render therefore reads a chassis
+  image of `${HERMES_IMAGE:-<x>}`, where `<x>` is any default a stock template ever shipped (the
+  pre-pin `:latest` or any past pin), as never chosen, and renders the current pin. Any other
+  image an operator wrote stays theirs, and `HERMES_IMAGE` in `fleet/.env` overrides both (set
+  it to hold agents on an older stock pin). A host pulls a pin it does not have on the next
+  roll or start. On an image install the post-deploy fleet roll moves running agents onto it;
+  on a checkout or dev install, run **Roll all** after upgrading. To bump the pin:
+  1. **Append** the new `nousresearch/hermes-agent:<tag>@sha256:<digest>` to
+     `HERMES_IMAGE_DEFAULTS`. Never edit or drop an entry, or hosts seeded with it stay on it.
+  2. Set the same string as the template default and as the `FROM` default in
+     `scripts/workbench.Dockerfile` and `scripts/build-workbench-image.sh`. Tests fail if they
+     disagree.
+  3. Check the new version's config keys against the render.
+  4. Check what the drain relies on in the new image: the gateway's s6 service is still
+     `/run/service/gateway-default`, `s6-svc` and `s6-svwait` are still under `/command`, and a
+     container drained with `s6-svc -d` and then recreated starts its gateway on its own (Hermes
+     still records the gateway as running). If Hermes ever records that stop as deliberate,
+     every roll and restart yields a container whose gateway never starts.
 - **Rolling the whole fleet** (`POST /api/fleet/roll`, admin): every running managed agent
-  is queued through the same blue/green roll, `TALARIA_FLEET_ROLL_CONCURRENCY` (default 2)
+  is queued through the same in-place roll, `TALARIA_FLEET_ROLL_CONCURRENCY` (default 2)
   departments at a time so twenty agents never double the host's load at once; departments
   already mid-roll are skipped and named. The request answers at once; the live picture
   (`GET /api/fleet/roll`: rolling / idle / failed / done per agent, with each failure's
@@ -192,8 +256,14 @@ multiplexer.
   network probes the gateway/MCP base URLs (api/src/fleet/preflight.rs) — the host's view proves
   nothing.
 - **Crons live in the agent**, not in Talaria: Hermes' own scheduler ticks inside the
-  container; Talaria reads it for truth and mutates through `docker exec`
-  (api/src/agent_crons.rs). Their spend is metered at the relay: a turn Talaria drives is
+  container; Talaria reads and changes the jobs through Hermes's cron REST on the agent's own
+  API server (`/api/jobs`, the chat door and bearer —
+  [`talaria-agent-crons`](../api/crates/talaria-agent-crons/src/lib.rs)). Run-now only marks a
+  job due for the next tick (≤60s), and is refused on a paused job, which Hermes's `run`
+  would resume for good. The admin frequency floor judges the schedule Hermes parsed — a job
+  is written paused, checked, then started — and refuses any shape it cannot read (a 6-field
+  cron, an unreadable field).
+  Their spend is metered at the relay: a turn Talaria drives is
   ledgered once by the flow that drove it, so the chat transport counts each such turn in
   Redis (`talaria:turn:v1:<agent model>`) while it is open, and a call on an agent's key with
   no turn counted — a cron — is booked by the relay under the agent as `unattended`, into the
@@ -230,8 +300,13 @@ same render pins Nous-hosted connectors (`tools.connectors.enabled`) and the Nou
 (`nous.guest`) off: SaaS goes through the MCP gateway, and models through the LLM gateway.
 
 Work delivery is **push-side**: the app dispatches durable work sessions to agents
-(`work-dispatch.ts`). The Python plugin in `plugin/talaria/` is vestigial — nothing mounts
-it; its heartbeat reference is the legacy mission-control contract.
+(`talaria-work-dispatch`): on the task write that hands an agent work (the ticket enters an
+agent-start column, or gains an agent assignee), on a workchain hand-off, and from a sixty-second
+sweep that re-offers anything a push missed. A workchain step whose predecessor is still open is
+not dispatched — the gate asks `talaria_tasks::workchain_blocked` before any session starts, and
+the session asks it again on every turn. The agent cannot start it by hand either: moving it into a
+working column or review, or binding a workbench job to it, is refused the same way. Agents do not
+poll for work.
 
 ## The MCP gateway
 

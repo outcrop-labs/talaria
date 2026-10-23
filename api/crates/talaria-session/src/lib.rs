@@ -454,10 +454,13 @@ pub async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<Sess
     Ok(user)
 }
 
-/// Signed-in user whose view is NOT DENIED. Denial-based, so a member sees a
-/// view by default and only a deniedViews entry (or a prefix of one — 'x'
-/// denies 'x/anything') takes it away; admins are exempt. The same
-/// resolution the nav and route gates use.
+/// Signed-in user whose view is NOT DENIED. Denial-based for a core view, so
+/// a member sees it by default and only a deniedViews entry (or a prefix of
+/// one — 'x' denies 'x/anything') takes it away; an app route opens only on
+/// the app view that governs it, held by grant (`ViewGrants::denies`).
+/// Admins are exempt. The same resolution the nav and route gates use. When
+/// the enabled apps cannot be read, a core view still answers as ever and an
+/// app route answers 503: a broken app setting shuts the apps, not the rest.
 pub async fn require_view(
     state: &AppState,
     headers: &HeaderMap,
@@ -465,17 +468,23 @@ pub async fn require_view(
 ) -> Result<SessionUser, Response> {
     let user = require_user(state, headers).await?;
     if user.role != "admin" {
-        let denied = talaria_users::denied_views(&state.pg, &user.id, &user.role)
+        let grants = talaria_users::view_grants(&state.pg, &user.id, &user.role)
             .await
             .map_err(|e| internal("[session] view-denial read failed", e))?;
-        if denied
-            .iter()
-            .any(|v| v == view || view.starts_with(&format!("{v}/")))
-        {
-            return Err(talaria_error::house_error(
-                StatusCode::FORBIDDEN,
-                "forbidden",
-            ));
+        match grants.denies(view) {
+            Some(false) => {}
+            Some(true) => {
+                return Err(talaria_error::house_error(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                ));
+            }
+            None => {
+                return Err(talaria_error::house_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "could not check your access to this app — try again",
+                ));
+            }
         }
     }
     Ok(user)

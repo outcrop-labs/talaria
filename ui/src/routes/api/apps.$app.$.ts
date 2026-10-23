@@ -1,35 +1,35 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
-import { requireUser } from '@/server/api-guard'
-import { appServerModule, enabledAppSlugs } from '@/server/apps'
+import { appServerModule } from '@/server/apps'
+import { authorizeApp, canFor } from '@/server/app-access'
 import { storeFor } from '@/server/app-store'
-import { deniedViews } from '@/server/users'
 import type { AppServer } from '@/sdk/server'
 import { isolateApp } from '@/server/app-isolate'
 
 // The app-server gateway: /api/apps/<slug>/* dispatches into the app's own
-// server.ts. The host does the trust work FIRST — session, app enabled, user
-// not view-denied — then hands the app a context. A throw in the app is
-// isolated: the host stays up, the client gets a structured 500.
+// server.ts. The host does the trust work FIRST — the session and the grants
+// as Rust resolves them, the app enabled, at least one of the app's surfaces
+// granted (server/app-access.ts) — then hands the app a context that says
+// which surfaces the caller holds, so the app can refuse its manage
+// endpoints to a work-only caller. A throw in the app is isolated: the host
+// stays up, the client gets a structured 500.
 const dispatch = async ({ request, params }: { request: Request; params: { app: string; _splat?: string } }) => {
-  const gate = await requireUser(request)
-  if (gate instanceof Response) return gate
-  const user = gate
   const app = params.app
-  if (!(await enabledAppSlugs()).includes(app)) return json({ error: 'no such app' }, { status: 404 })
-  const denied = await deniedViews(user.id, user.role)
-  if (denied.some((v) => v === `/x/${app}` || `/x/${app}`.startsWith(v + '/'))) {
-    return json({ error: 'forbidden' }, { status: 403 })
-  }
+  const gate = await authorizeApp(request, app)
+  if (!gate.ok) return gate.response
+  const caller = gate.caller
   const ran = await isolateApp(app, 'server', async () => {
     const mod = (await appServerModule(app)) as { default?: AppServer } | null
     if (!mod?.default?.fetch) return json({ error: 'this app has no server' }, { status: 404 })
     return mod.default.fetch(request, {
-      user,
+      user: caller.user,
       app,
       path: params._splat ?? '',
       url: new URL(request.url),
       store: storeFor(app),
+      access: { ...caller.access },
+      perms: [...caller.perms],
+      can: canFor(caller),
     })
   })
   if (!ran.ok) return json({ error: 'app crashed', detail: ran.error }, { status: 500 })

@@ -96,7 +96,7 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     ));
     let _ = talaria_fleet_create::RENDER_FLEET.set(std::sync::Arc::new(|pg, sb| {
         Box::pin(async move {
-            talaria_fleet_render::render_fleet(&pg, &sb, None)
+            talaria_fleet_render::render_fleet(&pg, &sb)
                 .await
                 .map(|_| ())
         })
@@ -130,32 +130,17 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
                 talaria_approvals::announce_approval(&deps, &key).await;
             })
         }));
-    // THE ROLL'S OWN TWO EDGES. `roll_agent` reaches the renderer through
-    // them — a roll renders the incoming slot, brings it up, flips the
-    // manifest, then re-renders — and an edge nothing sets is a roll that
-    // returns "… not wired" into callers that discard it: the roster never
-    // changes, the logs stay silent, and the agent keeps running the config
-    // the operator just replaced. Same completeness rule as the job table
-    // above, one layer down.
-    let _ = talaria_fleet_reconcile::RENDER_FLEET.set(std::sync::Arc::new(|pg, sb, roll| {
+    // THE ROLL'S OWN EDGE. `roll_agent` reaches the renderer through it — a
+    // roll renders, then recreates the container on that render — and an
+    // edge nothing sets is a roll that returns "… not wired" into callers
+    // that discard it: the roster never changes, the logs stay silent, and
+    // the agent keeps running the config the operator just replaced. Same
+    // completeness rule as the job table above, one layer down.
+    let _ = talaria_fleet_reconcile::RENDER_FLEET.set(std::sync::Arc::new(|pg, sb| {
         Box::pin(async move {
-            let overlay =
-                roll.as_ref()
-                    .map(|(slug, slot, port)| talaria_fleet_render::RollOverlay {
-                        slug,
-                        slot: *slot,
-                        port: *port,
-                    });
-            talaria_fleet_render::render_fleet(&pg, &sb, overlay)
+            talaria_fleet_render::render_fleet(&pg, &sb)
                 .await
                 .map(|render| (render.agents.len(), render.warnings))
-        })
-    }));
-    let _ = talaria_fleet_reconcile::NEXT_FREE_PORT.set(std::sync::Arc::new(|pg| {
-        Box::pin(async move {
-            talaria_fleet_render::next_free_port(&pg)
-                .await
-                .map_err(|e| e.to_string())
         })
     }));
     let _ = talaria_fleet_docker::PREFLIGHT.set(|pool| {
@@ -717,6 +702,11 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         state.pg.clone(),
         talaria_mcp_library::library(),
     );
+    // skills-index-refresh mirrors Hermes' official skills index into the
+    // marketplace's catalog table (leased; a 304 most runs — the index is
+    // rebuilt daily). Optional like the MCP mirror: its absence is a slower
+    // first marketplace open, which nudges its own sync.
+    talaria_skills_marketplace::register_skills_index_refresh_job(state.pg.clone());
     talaria_mcp::pkg::register_pkg_reconcile_job(state.pg.clone());
     talaria_mcp::calls::register_mcp_calls_prune_job(state.pg.clone());
     talaria_mcp::health::register_mcp_health_job(state.pg.clone(), sb.clone(), rt.clone());
@@ -896,6 +886,10 @@ mod tests {
             "mcp-library-refresh fell out of the job table"
         );
         assert!(
+            names.contains(&JobName::SkillsIndexRefresh),
+            "skills-index-refresh fell out of the job table"
+        );
+        assert!(
             names.contains(&JobName::McpHealth),
             "mcp-health fell out of the job table — a revoked key or a dead MCP host would read healthy forever"
         );
@@ -926,8 +920,8 @@ mod tests {
             "update-reconcile must stay optional: dormant installs legitimately run it as a no-op"
         );
 
-        // THE ROLL'S EDGES, the same completeness rule one layer down. These
-        // OnceLocks are how the reconcile crate reaches the renderer, and an
+        // THE ROLL'S EDGE, the same completeness rule one layer down. This
+        // OnceLock is how the reconcile crate reaches the renderer, and an
         // unwired one makes `roll_agent` return "… not wired" — a sentence
         // the control route discards while answering `{"rolling": true}`.
         // Nothing else in the crate graph runs boot, so this is the only
@@ -935,11 +929,7 @@ mod tests {
         // their agents never changed.
         assert!(
             talaria_fleet_reconcile::RENDER_FLEET.get().is_some(),
-            "the roll's overlay renderer fell out of the boot wiring — every roll would silently do nothing"
-        );
-        assert!(
-            talaria_fleet_reconcile::NEXT_FREE_PORT.get().is_some(),
-            "the roll's port allocator fell out of the boot wiring — every roll would silently do nothing"
+            "the roll's renderer fell out of the boot wiring — every roll would silently do nothing"
         );
         assert!(
             talaria_update_job::ROLL_FLEET.get().is_some(),

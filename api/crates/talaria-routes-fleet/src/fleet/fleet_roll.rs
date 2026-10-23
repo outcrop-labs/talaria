@@ -1,5 +1,5 @@
 // /api/fleet/roll — roll every agent container at once, in-platform. Admin.
-//   POST  queue a blue/green roll of every managed, enabled agent that is
+//   POST  queue an in-place roll of every managed, enabled agent that is
 //         running (`{"all": true}`: every managed enabled agent). Answers at
 //         once; the rolls run detached, TALARIA_FLEET_ROLL_CONCURRENCY
 //         (default 2) departments at a time, departments already mid-roll

@@ -230,7 +230,7 @@ pub async fn put(
     let user_id = user.id.clone();
     tokio::spawn(async move {
         // Config truth first…
-        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb_, None).await;
+        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb_).await;
         // …then the live cutover.
         roll_agent_for_user(&pg, &sb_, &user_id).await;
     });
