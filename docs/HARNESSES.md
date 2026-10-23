@@ -38,10 +38,12 @@ failure behavior — it *declares* them, and `run_harness` honors the declaratio
 | `api/crates/talaria-harness/src/recorded.rs` | Run any harness against written-down replies: no gateway, no fleet, no DB, no clock. |
 | `api/crates/talaria-harness-prompt-rules/src/lib.rs` | The prompt clauses more than one harness states — the untrusted-input boundary, and the list of harnesses that carry it. |
 
-The TS twin of the layer (`ui/src/server/harness/`) is the **app-author plane**: `ui/sdk/server.ts`
-re-exports its types as `@talaria/sdk`'s server contract, and app-shipped harnesses are TS by the
-api's rule 10 — customer code, never port surface (the fitness consequence is a recorded divergence
-in [`RUST-MIGRATION.md`](./RUST-MIGRATION.md)). A platform harness is written in Rust.
+The TS twin of the layer (`ui/src/server/harness/`) is the **app-author plane**: `ui/src/sdk/server.ts`
+re-exports it as `@talaria/sdk`'s server contract — `defineHarness`, `runHarness` and the types — and
+app-shipped harnesses are TS by the api's rule 10 — customer code, never port surface (the fitness
+consequence is a recorded divergence in [`RUST-MIGRATION.md`](./RUST-MIGRATION.md)). Today an app
+harness runs only from its own app's `server.ts`; see [Shipping one from an app](#how-to-add-a-harness)
+below. A platform harness is written in Rust.
 
 **One chokepoint, and the architecture holds it.** The hand-written-harness census this file used
 to cite left with the port — the last entry it carried (`channel-replies`, a live persona
@@ -137,7 +139,8 @@ The titler, the summarizer and the librarian declare an empty floor. They have t
 the self-host has, and a titler that *refuses* leaves every conversation wearing a truncated first
 message forever — a worse product than a clumsy name.
 
-Two harnesses refuse today, and both are cases where degrading silently is worse than stopping:
+Two harnesses declare a refusing floor of their own, and both are cases where degrading silently is
+worse than stopping:
 
 - **`judge`** (`json`, `json-strict`, `instruction-following`) — a judge that degrades returns
   verdicts that are trusted and wrong, and its verdicts move tickets. With `mode: 'enforcing'` (the
@@ -147,6 +150,13 @@ Two harnesses refuse today, and both are cases where degrading silently is worse
 - **`research-search`** (`search`) — a model with no live web search does not fail. It answers from
   memory, with no sources, in exactly the same confident voice, and the brief reads like a researched
   one.
+
+**Every JSON harness also gets a derived floor.** `define_harness` (and its TS twin, the
+`defineHarness` the SDK re-exports) adds `json` to `floor.capabilities` and sets `refuseBelow` whenever
+the output is JSON, without overwriting the author's note. So a model a probe measured — or an admin
+declared — unable to produce JSON is refused instead of handed a parser it cannot feed; an untested
+model still runs, and a fact the gateway only learned never refuses (see
+[the capability model](#the-capability-model)).
 
 `capabilities` is the non-negotiable **subset** of `requires`, and it must be **empty unless
 `refuseBelow` is true**. The runner only ever reads it when the harness refuses, so a populated list
@@ -251,7 +261,7 @@ Two sharp edges, both locked by the registry's unit tests:
   bad. That is what put the judge on `zero_tool_claim` and `fabricated_outage` — rules structurally
   wrong for a verdict, which *describes* claimed work rather than doing any — and inflated
   `guard_findings.model`, the per-model confabulation rate the fitness page reads, for whichever
-  model the admin had chosen to judge with. All 35 harnesses name their rules. A harness that
+  model the admin had chosen to judge with. All 40 harnesses name their rules. A harness that
   genuinely wants all of them says so by listing them.
 
 Redaction runs on the raw reply and then **re-applies the whole contract, `verify` included**, so a
@@ -264,14 +274,14 @@ to validate would be the worst of both.
 `{ requires: Capability[]; note: string }`. Set it and `render` is called with `widened: true` only
 when every capability listed is **known-true from a probe** for the resolved model. Both branches
 must be real answers: `widened: false` is the product working, not a degraded mode with an apology in
-it. Eleven of the 35 harnesses widen; the titler deliberately does not, because a wider prompt would
+it. Eleven of the 40 harnesses widen; the titler deliberately does not, because a wider prompt would
 only buy a longer name.
 
 ### `ground`
 
 `(input) => Grounding | null` — the turn's real tool record, from the harness's own input.
 `ungrounded_ref` ("cites a link/UUID that wasn't in any tool result") is the
-highest-value rule in `api/src/gateway/guard.rs` and it **could not fire from any harness**, by construction: a
+highest-value rule in `api/crates/talaria-gateway/src/guard.rs` and it **could not fire from any harness**, by construction: a
 harness turn contains no tool messages, so the record the runner derives has no backing tools and the
 rule declined every time. Research's synthesis stage *is* handed the search hits and the numbered
 source registry — those are the tool results for that turn — and `ground` is how it says so.
@@ -381,7 +391,7 @@ learned from one must never be credited to the other. Three writers, three prove
 | Source | Written by | Expires |
 | --- | --- | --- |
 | `probe` | The tier-1 probe suite — Talaria's own measurement. | Never; a probe fact stands until someone re-measures. |
-| `learned` | the gateway's parameter learner (`api/src/gateway/params.rs`), from what an upstream 400 said. Only ever `false`. | 30 days — the release valve on what was a one-way ratchet. |
+| `learned` | the gateway's parameter learner (`api/crates/talaria-gateway/src/params.rs`), from what an upstream 400 said. Only ever `false`. | 30 days — the release valve on what was a one-way ratchet. |
 | `declared` | An admin, or a model catalog. | Never; it is a human's word until the human changes it. |
 
 ### Unknown is not false at the floor. Unknown does not widen.
@@ -423,7 +433,7 @@ capability counts as missing only if every member says missing, and counts as ea
 member says earned.
 
 A fleet persona is not a catalog model — `routing_for` answers with no endpoints for one — so
-`api/src/persona.rs` resolves the endpoint and upstream model behind it (its agent version's
+`api/crates/talaria-persona/src/lib.rs` resolves the endpoint and upstream model behind it (its agent version's
 `config.main`, or the alias for the tier being called) and the persona inherits that probe. Without
 it, `widened` was structurally always false on personas, which is exactly where the marquee widening
 case runs: the Inbox command harness runs on the owner's personal assistant.
@@ -513,15 +523,16 @@ the guard block off, declares a floor it never enforces, refuses on a capability
 require, spells the Utility fallback as its own `role`, widens without a note, or ships no eval
 fixtures.
 
-**Shipping one from an app** is the same contract in a different home: `apps/<slug>/harnesses/*.ts`,
-one harness per file, default-exported, loaded for enabled apps only and checked structurally before
-it joins the app host's registry — a broken app is a logged skip, never an empty admin page. The
-api's own registry cannot see them (rule 10); the fitness plane counts and excludes exactly that set
-(the recorded divergence). See [`docs/sdk/harnesses.md`](./sdk/harnesses.md). The third layer,
-admin-custom, is deliberately empty: a workbench harness is
-declarative and can live as a JSON row, but an activity harness carries code (`render`, `verify`,
-`check`), and Talaria does not run code out of a database row. What an admin *can* customize is the
-model each harness runs on.
+**Shipping one from an app** is the same contract in a different home, and today it has one road:
+the app's own `server.ts` imports the harness and calls `runHarness` (the bridge in
+[`docs/sdk/harnesses.md`](./sdk/harnesses.md)). Nothing compiles, loads, registers or scores
+`apps/<slug>/harnesses/*.ts`: the TS app-harness registry went with d79b7290 and has not been
+restored, and the api's own registry cannot see app code (rule 10). So an app harness has no row in
+Admin, no column in the fitness matrix, and fixtures nothing replays; its `harness_runs` rows are
+dropped from the value view's workload (the recorded divergence in
+[`RUST-MIGRATION.md`](./RUST-MIGRATION.md)). The third layer, admin-custom, is deliberately empty:
+an activity harness carries code (`render`, `verify`, `check`), and Talaria does not run code out of
+a database row. What an admin *can* customize is the model each platform harness runs on.
 
 **If an admin should be able to assign this harness a model**, it needs a `PLATFORM_AGENTS` entry and
 `model.pin` pointing at it; the registry's tests lock the harness↔platform-agent correspondence in both
@@ -576,7 +587,7 @@ Rules of thumb, all of them learned the hard way:
 ### Bands
 
 `band` splits a suite into `easy` / `standard` / `hard`, reported separately by the fitness suite
-(`api/src/fitness/score.rs`). It defaults to `standard`.
+(`api/crates/talaria-fitness/src/score.rs`). It defaults to `standard`.
 
 One flat pass rate cannot tell *competent, loses the hard edge cases* from *unreliable on the basics*,
 and those are different purchasing decisions: a 70% that is easy 100 / standard 100 / hard 20 is a
@@ -593,18 +604,19 @@ Harnesses declare `tools: 'own'` when the tool loop *is* the feature (`work-sess
 model that says so having called nothing.
 
 A harness declares `dry_run` and the fitness suite supplies the loop, against an isolated in-memory
-world (`api/src/fitness/toolbox/`):
+world (`api/crates/talaria-fitness-toolbox/`, over the world in `api/crates/talaria-fitness-world/`):
 
 | Surface | Caller | Tools | World |
 | --- | --- | --- | --- |
-| `dry_run.tools` (`toolbox/talaria_tools.rs`) | **Hermes agents**, over MCP | Talaria's real MCP toolkit — every registered tool, names, descriptions **and argument names copied from `mcp/src/index.ts`** and locked by the sync test at the foot of that file | boards, tickets, attachments, channels, teammates, the knowledgebase, documents, Google, research runs, board governance |
-| `dry_run.workspace` (`toolbox/hermes_tools.rs`) | **Hermes coding harnesses** (Claude Code, Codex, Aider …) | the base coding surface: `list_files`, `read_file`, `search`, `write_file`, `run_tests` | a small repository, per fixture, with the fixture's own pass oracle |
+| `dry_run.tools` (`talaria-fitness-talaria-tools`) | **Hermes agents**, over MCP | Talaria's real MCP toolkit — every registered tool, names, descriptions **and argument names copied from `mcp/src/index.ts`** and locked by the sync test at the foot of that file | boards, tickets, attachments, channels, teammates, the knowledgebase, documents, Google, research runs, board governance |
+| `dry_run.workspace` (`talaria-fitness-toolbox/src/hermes_tools.rs`) | **the `workbench:*` coding harnesses** — a proxy for the coding agent a Developer Agent drives in its sandbox (Oh My Pi) | the base coding surface: `list_files`, `read_file`, `search`, `write_file`, `run_tests` | a small repository, per fixture, with the fixture's own pass oracle |
 | `def.tool_defs` | **native platform agents** — a harness in this repo, loop run in-process | whatever the harness puts on the request. Today: one web-search tool, supplied by the org's MCP registry | the live web, through the registered supplier |
 
-**Know which surface a verdict is about.** The first two are the *Hermes* surface: a containerized
-persona holding the whole workspace toolkit, whose loop Talaria never sees. The third is what *Talaria
-itself* hands a model, and it is one tool long — that shortness is a finding, not a gap in the docs. A
-deployment can be good at one and useless at the other: a gateway that strips `tools` from a request
+**Know which surface a verdict is about.** The first is the *Hermes* surface: a containerized
+persona holding the whole workspace toolkit, whose loop Talaria never sees. The second stands in for
+a coding agent's own file tools — Oh My Pi's, on the workbench — on a loop Talaria drives: evidence
+about the model, not a replay of that run. The third is what *Talaria itself* hands a model, and it
+is one tool long — that shortness is a finding, not a gap in the docs. A deployment can be good at one and useless at the other: a gateway that strips `tools` from a request
 kills every native harness and leaves every persona untouched, because the persona's loop never
 travels through that gateway.
 
@@ -615,11 +627,11 @@ single-shot harness's fixture receives, so a check reaching for `ctx.calls` sees
 
 A tool registered in `mcp/src/index.ts` is not real to the fitness suite until it is
 
-1. **modelled** in `api/src/fitness/toolbox/talaria_tools.rs` (real description, real argument names),
-2. **backed** by a handler in `api/src/fitness/toolbox/sandbox.rs` over the in-memory world, and
+1. **modelled** in `api/crates/talaria-fitness-talaria-tools/src/lib.rs` (real description, real argument names),
+2. **backed** by a handler in `api/crates/talaria-fitness-toolbox/src/sandbox.rs` over the in-memory world, and
 3. **exercised** by a sandbox test or a harness's `dry_run.tools` surface.
 
-The sync test at the foot of `talaria_tools.rs` reads `mcp/src/index.ts` and fails on drift in a
+The sync test at the foot of `talaria-fitness-talaria-tools/src/lib.rs` reads `mcp/src/index.ts` and fails on drift in a
 name, a description or an argument name; the sandbox holds the handlers.
 
 This is not a style rule. The audit found the toolkit at forty-four tools with sixteen simulated —
@@ -640,12 +652,13 @@ takes a `channelId`; production 404s on a name. A `dry_run.tools` surface with t
 lister makes a model guess an id and then scores the guess — our gap, charged to the model. This is
 the single most common way a fixture ends up measuring the harness instead of the candidate.
 
-The same bar applies to plugin harnesses: a plugin that ships tools ships their simulated backends and
-their fixtures. The platform is held to it first, in CI, because a rule the platform exempts itself
+The same bar will apply to plugin harnesses once the suite replays them again (today nothing does — see
+*Shipping one from an app* above): a plugin that ships tools ships their simulated backends and their
+fixtures. The platform is held to it first, in CI, because a rule the platform exempts itself
 from is a rule nobody follows.
 
 Two things are deliberately *not* claimed. The loop is **ours**, not the persona's (production runs
-Hermes's), so what it measures is the decision — given these tools and this situation, what did the
+Hermes's, or Oh My Pi's on the workbench), so what it measures is the decision — given these tools and this situation, what did the
 model do — rather than end-to-end harness driving. And `run_tests` **does not execute code**: it
 applies the fixture's own predicate to the current file contents, because running model-written code
 inside a benchmark is a sandbox-escape surface and a flake source. The model cannot tell the
@@ -653,15 +666,15 @@ difference; a reader of the verdict should be able to.
 
 ## The fitness suite
 
-`api/src/fitness/` answers, per install: *for each role and each harness in my Talaria, is this model
+`api/crates/talaria-fitness/` answers, per install: *for each role and each harness in my Talaria, is this model
 good enough, and where exactly does it break?* Three tiers, cheapest first, so a bad model is rejected
 in seconds rather than dollars. The surface is **Admin → Models → Fitness**
-(`ui/src/routes/app/ModelsFitnessPanel.svelte` over `api/src/routes/admin/admin_model_fitness.rs`).
+(`ui/src/routes/app/ModelsFitnessPanel.svelte` over `api/crates/talaria-routes-admin/src/admin/admin_model_fitness.rs`).
 The route is plumbing — the admin gate, the query string, the body validation, the audit line, the
-status code — and holds no decisions: `api/src/fitness/surface.rs` orchestrates, archives and
+status code — and holds no decisions: `api/crates/talaria-fitness/src/surface.rs` orchestrates, archives and
 assembles every payload, so every decision lives where the unit tests can reach it.
 
-### Tier 1 — probes (`api/src/fitness/probes.rs`)
+### Tier 1 — probes (`api/crates/talaria-fitness/src/probes.rs`)
 
 Ten probes on a gateway-served candidate, priced before an admin presses anything — cheap calls that
 establish model-level facts and write the capability record. The two tool probes skip on a fleet
@@ -682,7 +695,7 @@ traffic must not move the production numbers it will be compared against).
 where Talaria can neither place its tools nor see the call. `vision` skips everywhere while
 `Message.content` is a string. A skip is never a `false`.
 
-### Tier 2 — harness conformance (`api/src/fitness/evals.rs`)
+### Tier 2 — harness conformance (`api/crates/talaria-fitness/src/evals.rs`)
 
 Replay every registered harness's fixtures through `run_harness` with the candidate pinned. It is a
 driver, not a subsystem: `registry.rs` enumerates, `define.rs` supplies the fixtures, `run.rs` already
@@ -704,10 +717,10 @@ do.
 judge's zod-plus-verify are both `true` and mean different things. It is aggregated per harness, which
 is the only reading that means anything.
 
-### Tier 3 — adversarial (`api/src/fitness/adversarial.rs`)
+### Tier 3 — adversarial (`api/crates/talaria-fitness/src/adversarial.rs`)
 
 Opt-in and expensive. Provokes the four failure modes the guardrail registry
-(`api/src/gateway/guard.rs`) already fires on in production —
+(`api/crates/talaria-gateway/src/guard.rs`) already fires on in production —
 zero-tool claims, ungrounded refs, fabricated outages, secret echoes — and scores every generation
 with `run_guardrails` over that same shipped registry. **No new detection logic, ever**, because
 `guard_findings` is the observed half of the fitness page and this tier is the benched half; they can
@@ -726,7 +739,7 @@ fixtures change between runs cannot compare two models, and comparing two models
 requirement. The adversary must itself be a strong model, and the UI says so — a 7B red-teamer writes
 limp follow-ups and the candidate reports a safety record it did not earn.
 
-### Bands, per slot (`api/src/fitness/score.rs`)
+### Bands, per slot (`api/crates/talaria-fitness/src/score.rs`)
 
 The verdict is **per slot, never one number for a model**. A slot is a thing an admin actually picks a
 model for, and Talaria has exactly two kinds: the 11 `MODEL_ROLES` assignments and the
@@ -758,7 +771,7 @@ been *measured*, so an unmeasured required capability, or a sweep with the guard
 slot at `workable` with a reason naming the button to press. Neither ever pushes a slot to `unfit`:
 absence of evidence is not evidence of absence in that direction either.
 
-### Price against performance (`api/src/fitness/value.rs`)
+### Price against performance (`api/crates/talaria-fitness/src/value.rs`)
 
 A band says whether a model *can* hold a slot. It does not say what holding it costs, and it weighs the
 harness a fleet runs four thousand times a day exactly like the one that runs on Sundays. So the Cost &
@@ -820,7 +833,7 @@ Stop is per run, so dropping a hopeless candidate does not cost the other two.
 
 ### One spelling per model
 
-`gateway_models` (`api/src/me.rs`) offers each model **once**, as `<endpoint>/<model>`. It used to offer both spellings,
+`gateway_models` (`api/crates/talaria-me/src/lib.rs`, over `catalog_of` in `api/crates/talaria-gateway/src/models.rs`) offers each model **once**, as `<endpoint>/<model>`. It used to offer both spellings,
 which put `claude-opus-5` and `anthropic/claude-opus-5` on consecutive rows of every picker and of the
 matrix — one deployment, one capability key, two entries. The qualified form is canonical because it
 names *where* the model runs, which is the thing capability is measured about (`capability_key` is
@@ -834,7 +847,7 @@ round-robin **pool**, a routing target no qualified id can express. Bare ids sta
 stored spelling onto the offered one so a role assignment and an archived report still line up with the
 row an admin is looking at.
 
-### Tested vs observed (`api/src/fitness/observed.rs`)
+### Tested vs observed (`api/crates/talaria-fitness/src/observed.rs`)
 
 Two tables already carried production fitness signal and nobody was reading them as such:
 `harness_runs` (one row per harness exit) and `guard_findings` (one row per filed finding, with a
@@ -860,6 +873,7 @@ being compared against.
   the reproductions behind every claim above.
 - [`docs/sdk/`](./sdk/README.md) — the app-developer surface.
 - [`API-CONVENTIONS.md`](./API-CONVENTIONS.md) — the route dialect, and the other invariants CI holds.
-- [`WORKBENCH.md`](./WORKBENCH.md) — **workbench** harnesses, which are a different contract with a
-  similar name: a coding CLI an agent drives inside a sandbox, declared as shell templates and env.
+- [`WORKBENCH.md`](./WORKBENCH.md) — the **workbench** coding harness, a different contract with a
+  similar name: Oh My Pi, the coding CLI a Developer Agent drives inside its sandbox, declared in code
+  (`api/crates/talaria-workbench-harnesses`) as shell templates and env — one harness, no registry.
   Neither is a specialization of the other.

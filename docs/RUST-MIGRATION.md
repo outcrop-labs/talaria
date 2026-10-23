@@ -125,7 +125,11 @@ purpose**, decided against the TS route it replaced. This list is the contract
   `unmeasured` list), and the estimate's fixture-derived arithmetic plus the
   note branch the unmeasured count selects all exclude exactly that set.
   On an install with no enabled app harnesses, nothing is excluded.
-  (`fitness/surface.rs`, `fitness/value.rs`)
+  (`fitness/surface.rs`, `fitness/value.rs`) Today nothing loads that set
+  at all: the TS app-harness registry went with d79b7290, so an app harness
+  runs only when its own `server.ts` imports it and calls `runHarness`
+  ([sdk/harnesses.md](./sdk/harnesses.md)), and only those runs reach
+  `harness_runs`.
 - **Fitness `clear` works.** The TS-era route 500'd on every model — its
   report-clearing write put SQL NULL into a NOT NULL column — while the run
   rows and transcripts cleared fine. The api's `clear` deletes its rows and

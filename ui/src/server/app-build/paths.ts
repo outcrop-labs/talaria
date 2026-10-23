@@ -1,5 +1,5 @@
 // Where app source and app build artifacts live. Env overrides match the
-// Rust twins (api/src/users.rs). process.cwd() is ui/ in both vite dev and
+// Rust twins (api/crates/talaria-users). process.cwd() is ui/ in both vite dev and
 // server-entry — never import.meta.url, which this file's bundled form
 // would resolve from dist/server/.
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'

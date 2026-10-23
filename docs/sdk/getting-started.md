@@ -9,15 +9,18 @@ webhooks. Authors write against `@talaria/sdk`; they never write Rust.
 ```
 apps/<slug>/
   talaria.json   manifest — name, icon, version, description, surfaces
-  app.ts         UI surfaces — default-exports defineApp({...})
+  app.ts         UI surfaces — default-exports defineApp({...}); only when talaria.json declares one
   *.svelte       one component per surface (plus whatever else you need)
-  server.ts      optional API — default-exports defineAppServer({...})
+  server.ts      optional API — default-exports defineAppServer({...}) → /api/apps/<slug>/*
   mcp.ts         optional agent tools — default-exports defineAppMcp({...})
-  harnesses/     optional activity harnesses — one defineHarness per file
+  harnesses/     optional activity harnesses — one defineHarness per file, run from server.ts
 ```
 
 Scaffold one with `bun talaria app new <slug>`, or drop a directory under `apps/` (or install
-from **Manage → Apps**). Enable it in **Manage → Apps**.
+from **Manage → Apps**). Enable it in **Manage → Apps**. An app with no UI (a server or agent
+tools only) declares no surfaces and ships no `app.ts` ([server.md](./server.md#an-app-with-no-ui)).
+A harness runs only when your `server.ts` imports it and calls `runHarness`; nothing loads
+`harnesses/` on its own ([harnesses.md](./harnesses.md)).
 
 ## The manifest
 
@@ -40,12 +43,14 @@ Surfaces are opt-in; ship any combination:
 | `settings` | a Settings tab (for people with access); one page, no routes below it | follows the manage grant |
 
 Apps are **explicit-grant**: enabling one gives members nothing until an admin adds its views
-per person in **Admin → People** — the same checklist that governs core Manage views. The work
-and manage surfaces are separate grants, and each covers the routes below it: a member with only
-the work grant reaches `/x/<slug>/items/42` and never `/x/<slug>/manage/…`. The app API gateway
-admits anyone holding one of the app's surfaces and tells your server which in `ctx.access`, so
-a route only the manage surface uses should check it ([server.md](./server.md)). Routes below a
-surface: [client.md](./client.md#routes-inside-your-app).
+per person in **Admin → People**, or per team in **Manage → Teams** — the same checklist that
+governs core Manage views. The work and manage surfaces are separate grants, and each covers the
+routes below it: a member with only the work grant reaches `/x/<slug>/items/42` and never
+`/x/<slug>/manage/…`. An app that ships settings without a manage surface is still granted
+through `/x/<slug>/manage`. The app API gateway admits anyone holding any of the app's surfaces
+and tells your server which in `ctx.access`, so a route only the manage surface uses must check
+`ctx.access.manage` itself ([server.md](./server.md#grants)). Routes below a surface:
+[client.md](./client.md#routes-inside-your-app).
 
 ## Declare the surfaces
 
@@ -91,13 +96,15 @@ session, the theme.
 
 ## Ten minutes to a real app
 
-1. `bun talaria app new <slug>` — writes `apps/<slug>/` (work surface, server, MCP starter).
+1. `bun talaria app new <slug>` — writes `apps/<slug>/` (a work surface with a list and a record
+   page below it, a server, an MCP starter).
 2. Replace the surface with yours ([ui-kit.md](./ui-kit.md), [client.md](./client.md)).
 3. Grow the API ([server.md](./server.md)) — or call platform APIs from the client and skip
    a server entirely.
 4. Optional: give agents tools ([mcp.md](./mcp.md)) or model calls
    ([harnesses.md](./harnesses.md)).
-5. Enable in **Manage → Apps**; grant views in **Admin → People**.
+5. Enable in **Manage → Apps**; grant views in **Admin → People** (or to a team in
+   **Manage → Teams**).
 
 Publishing and the marketplace: [APPS.md](../APPS.md).
 

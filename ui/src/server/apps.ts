@@ -3,7 +3,7 @@
 // the admin-controlled set in app_settings. Loaders pull independently
 // built artifacts (or Vite HMR in dev). The LIFECYCLE — enable/disable,
 // git install, uninstall, the marketplace catalog — is the Rust twin's
-// (api/src/apps.rs, behind /api/admin/apps).
+// (api/crates/talaria-apps, behind /api/admin/apps).
 import { getSetting } from './audit'
 import { listInstalledApps } from './app-build/paths'
 import { appHasMcp, loadAppServer } from './app-load'
