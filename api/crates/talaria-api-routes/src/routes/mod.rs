@@ -257,8 +257,7 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/tasks/{id}/usage",
             get(talaria_routes_boards::tasks::tasks_id_usage::get)
-                .post(talaria_routes_boards::tasks::tasks_id_usage::post)
-                .fallback(|| async { method_not_allowed("GET, POST") }),
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/tasks/{id}/watchers",
@@ -1709,18 +1708,13 @@ pub fn router(state: AppState) -> Router {
             "/api/join",
             get(talaria_routes_integrations::account::join::get).fallback(|| async { method_not_allowed("GET") }),
         )
-        // The agent-memory surface (admin or the assistant's owner), the
-        // live web-search door both agents and sessions reach, and the
+        // The agent-memory surface (admin or the assistant's owner) and the
         // org's template library with its one-template verbs.
         .route(
             "/api/memory/{id}",
             get(talaria_routes_knowledge::knowledge::memory_id::get)
                 .put(talaria_routes_knowledge::knowledge::memory_id::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
-        )
-        .route(
-            "/api/search",
-            post(talaria_routes_knowledge::knowledge::search::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/templates",

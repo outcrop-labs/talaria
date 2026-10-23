@@ -709,13 +709,14 @@ fn prose_sources(text: &str, seen: &mut Vec<String>, out: &mut Vec<Value>) {
 /// fallback. Bounded and deduped by URL: the row is a trail, not the result
 /// set.
 ///
-/// STRUCTURED INCLUDES A TRUNCATED PAYLOAD. `/api/search` answers ten
-/// `{title, url, snippet, engine}` rows, pretty-printed by the MCP server —
-/// comfortably past the plugin's 4000-char clamp — so the common case is a
-/// payload that `serde_json` refuses. `parse_loose` has already rewound it to
-/// its last whole result, which is why prose is the LAST resort rather than
-/// the usual one: the prose walk can only label a chip by its host, and the
-/// snippet the engine wrote is the part a reader actually uses.
+/// STRUCTURED INCLUDES A TRUNCATED PAYLOAD. Hermes's own `web_search`
+/// answers `{success, data: {web: [{title, url, description, position}]}}`
+/// pretty-printed (indent 2), and a full page of rows runs past the plugin's
+/// 4000-char clamp — so a common case is a payload that `serde_json`
+/// refuses. `parse_loose` has already rewound it to its last whole result,
+/// which is why prose is the LAST resort rather than the usual one: the prose
+/// walk can only label a chip by its host, and the snippet the engine wrote is
+/// the part a reader actually uses.
 fn sources_from(result_v: &Value, raw: &str) -> Vec<Value> {
     let mut seen = Vec::new();
     let mut out = Vec::new();
@@ -2758,9 +2759,9 @@ mod tests {
         assert_eq!(chips[0]["href"], "https://www.nytimes.com:443/a");
     }
 
-    /// THE CLAMP IS THE NORMAL CASE for a search. `/api/search` answers ten
-    /// rows and the MCP server pretty-prints them, so the payload that
-    /// reaches the tool-events door is a prefix of JSON. Read as prose it
+    /// THE CLAMP IS A NORMAL CASE for a search. A search tool that answers
+    /// ten pretty-printed rows runs past the plugin's clamp, so the payload
+    /// that reaches the tool-events door is a prefix of JSON. Read as prose it
     /// yields six chips labelled by host with no snippet; repaired, it
     /// yields the engine's own titles and snippets.
     #[test]

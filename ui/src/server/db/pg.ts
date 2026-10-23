@@ -498,8 +498,8 @@ const MIGRATIONS: string[] = [
      ) x
    ) t
    where u.endpoint is null and u.agent_model = t.agent_model and u.llm_model = t.llm_model`,
-  // Per-ticket token spend: agents report usage against the ticket they're
-  // working (MCP log_usage → POST /api/tasks/:id/usage).
+  // Per-ticket token spend: the ticket a metered row was spent working on.
+  // (Agents once self-reported here through MCP log_usage; that tool is gone.)
   `alter table usage_events add column if not exists task_id uuid`,
   `create index if not exists usage_events_task_idx on usage_events(task_id) where task_id is not null`,
   // ── Talaria LLM gateway: one org endpoint over the whole model stack ────────
@@ -3694,8 +3694,10 @@ alter table tasks drop column if exists conversation_id`,
   // Talaria already pins `todo` and `clarify` shut for every agent (its own
   // versions are the ones a person can see and answer); this column is the
   // operator's list ON TOP of that pair, and the first thing it governs is
-  // `browser`: a browsing agent costs a multi-minute Chromium install on
-  // every roll, so an agent that should not browse says so here and skips it.
+  // `browser`: an agent that should not browse says so here. (Until
+  // 2026-10-22 that also skipped a multi-minute Chromium install Talaria ran
+  // after every roll; that step is gone, because Hermes v0.22.4 ships its
+  // browser in the image.)
   //
   // jsonb and not text[]: the def wire carries the list as a JSON array and
   // the renderer merges it as one, so the column stores the shape both ends

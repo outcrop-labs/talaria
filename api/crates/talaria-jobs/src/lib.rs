@@ -72,19 +72,10 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_outreach::register_outreach_job(Arc::new(OutreachDeps {
         state: state.clone(),
     }));
-    let _ =
-        talaria_web_search::CALL_MCP_TOOL.set(std::sync::Arc::new(|pg, sb, server, tool, args| {
-            Box::pin(async move {
-                talaria_mcp::registry::call_mcp_tool(&pg, &sb, &server, &tool, &args)
-                    .await
-                    .map(|out| (out.structured, out.text))
-            })
-        }));
     // The research harness's search loop dispatches to a registered MCP
-    // supplier through its own hook, and nothing set it: every org whose
-    // search supplier was a registered (non-platform) server got "The search
-    // tool failed" on every round. Same dispatcher, the tuple the other way
-    // round (text, structured).
+    // supplier through its own hook: without it, every org whose search
+    // supplier was a registered (non-platform) server got "The search tool
+    // failed" on every round. The tuple is (text, structured).
     let _ = talaria_harness_defs::CALL_MCP_TOOL.set(std::sync::Arc::new(
         |pg, sb, server, tool, args| {
             Box::pin(async move {

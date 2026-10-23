@@ -152,9 +152,9 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_decide.rs`](../../api/
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{providers, wires, config, configured, shadow, sites, speechRooms, toolShadow}` | 200 | — |
+| GET | `admin` | — | `{providers, wires, config, configured, shadow, sites, speechRooms}` | 200 | — |
 | POST | `admin` | [body](#post-apiadmindecide-body) | `{ok, kind, reason}` | 200, 400 | audit |
-| PUT | `admin` | [body](#put-apiadmindecide-body) | `{config, configured, toolShadow}` | 200, 400 | audit |
+| PUT | `admin` | [body](#put-apiadmindecide-body) | `{config, configured}` | 200, 400 | audit |
 
 ### POST `/api/admin/decide` body
 
@@ -174,7 +174,6 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_decide.rs`](../../api/
 | `wire` | `enum(…)` |  |
 | `apiKey` | `string? nullable(500)` |  |
 | `timeoutMs` | `number?(250, 60000)` |  |
-| `toolShadow` | `bool` |  |
 
 ## `/api/admin/domains`
 

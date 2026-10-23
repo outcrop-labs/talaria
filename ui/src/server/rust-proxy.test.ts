@@ -100,7 +100,7 @@ describe('maybeProxy', () => {
       '/api/notifications',
       '/api/me',
       '/api/me/events',
-      '/api/search',
+      '/api/rag/search',
       '/api/memory/00000000-0000-4000-8000-000000000000',
       '/api/definitely-not-a-route-the-table-never-knew',
     ]) {
