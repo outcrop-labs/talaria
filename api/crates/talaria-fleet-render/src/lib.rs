@@ -1550,6 +1550,18 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         if let Some(url) = &agent_search_url {
             env.insert("SEARXNG_URL".into(), json!(url));
         }
+        // The picked web vendor's key, under the exact name its Hermes
+        // provider reads, interpolated from the fleet .env — the value never
+        // lands in the compose file.
+        for var in &web_search_keys {
+            env.insert(
+                (*var).into(),
+                json!(format!(
+                    "${{{}}}",
+                    talaria_agent_web_search::fleet_env_var(var)
+                )),
+            );
+        }
         // A credential git cannot get must FAIL, not wait: with the terminal
         // prompt enabled (git's default), a push to a repo the helper declines
         // falls through to a username prompt that sits forever in a harness
