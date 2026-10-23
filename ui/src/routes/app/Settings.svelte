@@ -10,12 +10,13 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import Panel from '@/components/ui/Panel.svelte'
-  import { useDeniedViews, useSession } from '@/lib/session'
+  import { useAppGrants, useSession } from '@/lib/session'
   import { putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import AssistantSection from '@/components/assistant/AssistantSection.svelte'
   import AppSurface from '@/components/app/AppSurface.svelte'
   import { useEnabledApps } from '@/lib/apps'
+  import { appAccess } from '@/lib/app-grants'
   import Tabs from '@/components/ui/Tabs.svelte'
   import { fly, staggerIn } from '@/lib/motion'
   import { claimViewTitle } from '@/lib/view-title.svelte'
@@ -72,14 +73,16 @@
     else void navigate('/settings/:tab', { params: { tab: t } })
   }
   // Enabled apps with a settings surface get their own tab, labeled by the
-  // app — only for people granted the app (apps are explicit-grant).
+  // app — only for people granted it. A settings tab follows the app's
+  // MANAGE grant (app-grants.ts); it used to follow the work view, which a
+  // settings-only app never has, so its tab showed for every member.
   // A failed /api/apps used to remove app settings TABS with no trace — the
   // settings for an app you have simply were not there.
   const appsList = listQuery(useEnabledApps(), { title: 'Could not load app settings tabs', variant: 'inline' })
-  const deniedForApps = useDeniedViews()
+  const appGrants = useAppGrants()
   const appTabs = $derived(
     appsList.rows
-      .filter((a) => a.surfaces.settings && !deniedForApps.current.includes(`/x/${a.slug}`))
+      .filter((a) => appAccess(a, { isAdmin: user?.role === 'admin', appGrants: appGrants.current }).settings)
       .map((a) => ({ id: `app:${a.slug}` as SettingsTab, label: a.surfaces.settings! })),
   )
 
@@ -171,7 +174,9 @@
       <McpConnectionsSection />
     {/if}
     {#if tab === 'keys'}<ApiKeysSection />{/if}
-    {#if tab.startsWith('app:')}<AppSurface slug={tab.slice(4)} surface="settings" />{/if}
+    <!-- Only a tab this person was granted mounts its surface: the URL alone
+         (/settings/app:<slug>) is not a grant. -->
+    {#if tab.startsWith('app:') && appTabs.some((t) => t.id === tab)}<AppSurface slug={tab.slice(4)} surface="settings" />{/if}
     </div>
     {/key}
   </div>

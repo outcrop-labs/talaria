@@ -231,17 +231,19 @@ async fn managing_an_agent_opens_the_agents_view_by_itself() {
     let stranger = user(&pg, "view", "view-stranger", "member").await;
     let (id, _, _) = agent(&pg, "view", "view", None).await;
 
-    let denied = talaria_users::denied_views(&pg, &stranger, "member")
+    let denied = talaria_users::view_grants(&pg, &stranger, "member")
         .await
-        .unwrap();
+        .unwrap()
+        .denied;
     assert!(denied.iter().any(|v| v == "/agents"));
 
     add_manager(&pg, &id, &manager, Some(&manager))
         .await
         .unwrap();
-    let denied = talaria_users::denied_views(&pg, &manager, "member")
+    let denied = talaria_users::view_grants(&pg, &manager, "member")
         .await
-        .unwrap();
+        .unwrap()
+        .denied;
     assert!(
         !denied.iter().any(|v| v == "/agents"),
         "a manager reaches the surface their agent lives on"

@@ -25,6 +25,11 @@ export function appSrc(slug: string, file: string): string {
   return join(appsDir(), slug, file)
 }
 
+/** A build key is the hex digest app-build/key.ts writes (`sourceKey`). */
+const BUILD_KEY_RE = /^[0-9a-f]{1,64}$/
+
+export const buildKeyOk = (s: string): boolean => BUILD_KEY_RE.test(s)
+
 export function appBuildKeyDir(slug: string, key: string): string {
   return join(appBuildsDir(), slug, key)
 }
@@ -40,6 +45,13 @@ export interface InstalledApp {
   hasMcp: boolean
 }
 
+// A manifest that is not UTF-8 is not an app. `readFileSync(…, 'utf8')`
+// decoded bad bytes to U+FFFD and admitted the app, while Rust's
+// `discovered_apps_in` skips it, so the two hosts disagreed about which apps
+// exist. Fatal, and the BOM kept, so a byte-order mark fails JSON.parse the
+// way it fails serde_json (api/tests/it/fixtures/app-grants.json pins both).
+const MANIFEST_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+
 export function listInstalledApps(): InstalledApp[] {
   const dir = appsDir()
   if (!existsSync(dir) || !statSync(dir).isDirectory()) return []
@@ -48,7 +60,7 @@ export function listInstalledApps(): InstalledApp[] {
     if (!slugOk(name) || !statSync(join(dir, name)).isDirectory()) continue
     const raw = (() => {
       try {
-        return JSON.parse(readFileSync(join(dir, name, 'talaria.json'), 'utf8')) as {
+        return JSON.parse(MANIFEST_DECODER.decode(readFileSync(join(dir, name, 'talaria.json')))) as {
           name?: unknown
           icon?: unknown
           description?: unknown
