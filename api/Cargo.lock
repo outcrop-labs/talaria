@@ -5627,6 +5627,7 @@ dependencies = [
  "talaria-approvals",
  "talaria-artifacts",
  "talaria-attribution",
+ "talaria-audit",
  "talaria-channel-replies",
  "talaria-comms-decay",
  "talaria-config",

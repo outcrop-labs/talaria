@@ -81,6 +81,14 @@ rebuilding (managed update flows are on the roadmap).
   0600 `db.env` — never on `docker run -e` and never derived from `TALARIA_SECRET_KEY`.
   `talaria backup` dumps each app DB into the snapshot. The document store (`ctx.store`)
   is the API; app authors never see a connection string.
+- The container is `talaria-appdb-<instance>-<slug>`, where the instance is `TALARIA_WORKTREE`,
+  `TALARIA_DEVBOX` or `talaria`. The app side and the Rust api must name the same one, so
+  `talaria dev` passes the worktree name to the api. Inside the product image
+  (`TALARIA_INSTALL=image`) the host reaches the DB by container name on its own network.
+  Dev and a checkout install (`server-entry.ts` on the host) reach it on the loopback port
+  the container publishes. `TALARIA_APP_DB_NETWORK` names the network outright: the DB joins it
+  with no published port, and the host dials it by container name, so set it only on a host
+  that is on that network.
 
 - A throw in an app's UI, server, or MCP is isolated — when it is awaited: the pane shows the
   crash, the rest of Talaria keeps running. The boundary is the exception boundary, not a process

@@ -1390,6 +1390,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         fleet_env_passthrough(&mut routed, &secret_names);
 
         fleet_approvals(&mut routed, def.developer);
+        fleet_nous_off(&mut routed);
         fleet_delegation(&mut routed, def.max_children);
         fleet_disabled_toolsets(&mut routed, &toolset_floor, &def.disabled_toolsets);
         fleet_tool_loop_guardrails(&mut routed);
@@ -1969,35 +1970,104 @@ fn def_raw_config(config: &Value) -> Value {
         .unwrap_or_else(|| Value::Object(Map::new()))
 }
 
-/// Fleet agents are driven through the api — an "unattended platform" in
-/// Hermes' approval model — and cron jobs run the same way: nobody is ever
-/// present to approve. The two modes decide what Hermes does when a tool
-/// call needs an approval nobody can give: `approve` waves it through,
-/// `deny` refuses it. Only approval-gated calls are touched either way —
-/// `execute_code`, and a terminal command Hermes' own classifier calls
-/// dangerous (`rm -rf`, a pipe to a shell, a credential read); file, browser,
-/// web, memory and every MCP call are not approval-gated and work under
-/// both. The explicit `deny` is what makes the no-person case a refusal
-/// rather than a prompt that stalls until it times out.
+/// How long Hermes holds a flagged call open waiting for an answer. Talaria
+/// refuses every approval request on a turn it drives within seconds
+/// (talaria-gateway's `fleet_approvals`); this is the backstop for a
+/// request nobody is left to answer — the stream that carried it dropped, the
+/// api restarted mid-turn. Hermes refuses the call when it runs out, and the
+/// session's next turn queues behind the wait, so a minute rather than
+/// Hermes' own five.
+const APPROVAL_TIMEOUT_SECS: u64 = 60;
+
+/// The approval policy, written whole every render: a def cannot author its
+/// way around any of these keys, and every other key in its `approvals` block
+/// is left alone.
 ///
-/// A Developer Agent gets `approve`: the sandbox is the point, the
-/// container is its boundary, and the harness runs code all day. Every other
-/// agent gets `deny`: with the closed toolset default it has no shell to
-/// begin with, and the manager who opens `terminal` for it gets ordinary
-/// commands and a refused dangerous one, which is the confirmation step
-/// Talaria's chain otherwise never has. The one thing `deny` closes that an
-/// operator might want is `execute_code` on a non-Developer agent — that is
-/// the Developer switch's job, and the toolset editor says so.
+/// Hermes gates two kinds of call behind an approval: `execute_code`, and a
+/// terminal command its own classifier calls dangerous (`rm -rf`, a pipe to a
+/// shell, a credential read). File, browser, web, memory and every MCP call
+/// are not approval-gated. WHO ANSWERS depends on how the turn reached the
+/// agent:
+///
+/// - A cron, or an api turn with no stream attached, has nobody to ask, so
+///   `cron_mode` / `unattended_mode` decide on the spot: `approve` waves the
+///   call through, `deny` refuses it.
+/// - A STREAMED turn (every chat, channel reply and work session Talaria
+///   drives) registers an approval notifier, and Hermes treats that turn as
+///   attended. A flagged terminal command goes to `mode` first (`smart` by
+///   default: an LLM guardian that can approve what this agent's policy
+///   refuses), then to an `approval.request` frame on the stream, and waits
+///   `timeout` for an answer. `execute_code` still resolves from
+///   `unattended_mode` there.
+///
+/// So all four keys are pinned, to one policy per agent:
+///
+/// - A Developer Agent gets `mode: off` and `approve`: the sandbox is the
+///   point, the container is its boundary, and the harness runs code all
+///   day. Flagged commands run without a prompt on every path; Hermes'
+///   hardline floor and an authored `approvals.deny` list still hold. So do
+///   the gates Hermes never lets anything auto-approve (a write to a
+///   project's AGENTS.md / CLAUDE.md / SOUL.md, an untrusted MCP server's
+///   write tool, a saved card fill): they still ask, and Talaria's door
+///   answers `deny`, as it does for every request.
+/// - Every other agent gets `mode: manual` and `deny`. No guardian, so no
+///   model ever approves a command. A streamed turn's request reaches
+///   Talaria's door, which answers `deny` and records it; an unattended path
+///   refuses at once. With the closed toolset default such an agent has no
+///   shell to begin with, and the manager who opens `terminal` for it gets
+///   ordinary commands and a refused dangerous one. The one thing `deny`
+///   closes that an operator might want is `execute_code` on a non-Developer
+///   agent. That is the Developer switch's job, and the toolset editor says
+///   so.
 fn fleet_approvals(routed: &mut Map<String, Value>, developer: bool) {
     let mut cfg = routed
         .get("approvals")
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let mode = if developer { "approve" } else { "deny" };
-    cfg.insert("unattended_mode".into(), json!(mode));
-    cfg.insert("cron_mode".into(), json!(mode));
+    let (mode, unattended) = if developer {
+        ("off", "approve")
+    } else {
+        ("manual", "deny")
+    };
+    cfg.insert("mode".into(), json!(mode));
+    cfg.insert("timeout".into(), json!(APPROVAL_TIMEOUT_SECS));
+    cfg.insert("unattended_mode".into(), json!(unattended));
+    cfg.insert("cron_mode".into(), json!(unattended));
     routed.insert("approvals".into(), Value::Object(cfg));
+}
+
+/// Nous-hosted connectors and the Nous free-tier identity, off on every agent.
+/// Hermes ships both on: `tools.connectors.enabled` puts `manage_connections`
+/// (part of the api-server toolset) in front of the model, and `nous.guest`
+/// lets the container mint an anonymous Nous account on the first connector
+/// action. Both are routes around Talaria. A connector reaches a third-party
+/// account outside the MCP gateway's allowlist, credential custody and audit,
+/// and a guest identity is an account at a provider nobody here chose.
+/// Operators reach SaaS through the MCP registry and models through /models,
+/// so both keys are pinned off; the rest of each block stays the def's.
+fn fleet_nous_off(routed: &mut Map<String, Value>) {
+    let mut tools = routed
+        .get("tools")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut connectors = tools
+        .get("connectors")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    connectors.insert("enabled".into(), json!(false));
+    tools.insert("connectors".into(), Value::Object(connectors));
+    routed.insert("tools".into(), Value::Object(tools));
+
+    let mut nous = routed
+        .get("nous")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    nous.insert("guest".into(), json!(false));
+    routed.insert("nous".into(), Value::Object(nous));
 }
 
 /// How many subagents this agent may run at once — the def's `max_children`,
@@ -3002,41 +3072,105 @@ service:
 
     #[test]
     fn fleet_approvals_follows_the_developer_switch_and_preserves_the_rest() {
-        // No authored approvals block, an ordinary agent: both modes land as
-        // deny — nobody is present to approve, so the answer is a refusal,
-        // not a stalled prompt — and nothing else appears.
+        // No authored approvals block, an ordinary agent: no guardian
+        // (`manual`), and both unattended modes deny, so a flagged command is
+        // refused on every path; the streamed path's request waits a minute
+        // at most for Talaria's answer.
         let mut routed = Map::new();
         routed.insert("model".into(), json!("x"));
         fleet_approvals(&mut routed, false);
         assert_eq!(
             routed.get("approvals"),
-            Some(&json!({ "unattended_mode": "deny", "cron_mode": "deny" }))
+            Some(&json!({
+                "mode": "manual", "timeout": 60,
+                "unattended_mode": "deny", "cron_mode": "deny"
+            }))
         );
 
-        // A Developer Agent gets approve: the sandbox runs code all day.
+        // A Developer Agent gets approvals off and approve: the sandbox runs
+        // code all day, streamed turn or not.
         let mut dev = Map::new();
         dev.insert("model".into(), json!("x"));
         fleet_approvals(&mut dev, true);
         assert_eq!(
             dev.get("approvals"),
-            Some(&json!({ "unattended_mode": "approve", "cron_mode": "approve" }))
+            Some(&json!({
+                "mode": "off", "timeout": 60,
+                "unattended_mode": "approve", "cron_mode": "approve"
+            }))
         );
 
-        // An authored block keeps its other keys; the two modes are
-        // overridden wherever a def tried to set them itself — a def cannot
-        // author its own way to approve.
+        // An authored block keeps its other keys; the four policy keys are
+        // overridden wherever a def tried to set them itself. A def cannot
+        // author its own way to approve, and in particular cannot bring back
+        // the `smart` guardian that approves what `deny` refuses.
         let mut authored = Map::new();
         authored.insert(
             "approvals".into(),
-            json!({ "mode": "smart", "timeout": 300, "unattended_mode": "approve" }),
+            json!({
+                "mode": "smart", "timeout": 300, "unattended_mode": "approve",
+                "deny": ["git push --force*"]
+            }),
         );
         fleet_approvals(&mut authored, false);
         assert_eq!(
             authored.get("approvals"),
             Some(&json!({
-                "mode": "smart", "timeout": 300,
-                "unattended_mode": "deny", "cron_mode": "deny"
+                "mode": "manual", "timeout": 60,
+                "unattended_mode": "deny", "cron_mode": "deny",
+                "deny": ["git push --force*"]
             }))
+        );
+    }
+
+    #[test]
+    fn approvals_off_is_quoted_so_a_yaml_one_point_one_reader_keeps_the_string() {
+        // A bare `off` is a boolean in YAML 1.1. Hermes happens to read a
+        // false `mode` as "off" too, but the rendered file should say what it
+        // means rather than lean on that.
+        let mut dev = Map::new();
+        fleet_approvals(&mut dev, true);
+        let text = yaml11_emit(&Value::Object(dev));
+        assert!(text.contains("mode: 'off'"), "{text}");
+        assert!(text.contains("unattended_mode: approve"), "{text}");
+    }
+
+    #[test]
+    fn nous_connectors_and_guest_identity_are_pinned_off_and_nothing_else_moves() {
+        // Nothing authored: both blocks appear with the one key each.
+        let mut bare = Map::new();
+        fleet_nous_off(&mut bare);
+        assert_eq!(
+            bare.get("tools"),
+            Some(&json!({ "connectors": { "enabled": false } }))
+        );
+        assert_eq!(bare.get("nous"), Some(&json!({ "guest": false })));
+
+        // A def that turned them on is overridden; its other keys in both
+        // blocks, and a sibling block under `tools`, survive.
+        let mut authored = Map::new();
+        authored.insert(
+            "tools".into(),
+            json!({
+                "connectors": { "enabled": true, "extra": 1 },
+                "tool_search": { "enabled": true }
+            }),
+        );
+        authored.insert(
+            "nous".into(),
+            json!({ "guest": true, "anthropic_wire": "chat" }),
+        );
+        fleet_nous_off(&mut authored);
+        assert_eq!(
+            authored.get("tools"),
+            Some(&json!({
+                "connectors": { "enabled": false, "extra": 1 },
+                "tool_search": { "enabled": true }
+            }))
+        );
+        assert_eq!(
+            authored.get("nous"),
+            Some(&json!({ "guest": false, "anthropic_wire": "chat" }))
         );
     }
 
