@@ -11,6 +11,7 @@ import {
   toolResult,
 } from './app-mcp-call'
 import { memoryStore } from './app-store-memory'
+import { readCallVerdict } from './mcp-jsonrpc'
 import type { AppMcpTool } from '@/sdk/server'
 
 // THE QUESTION THIS FILE PINS DOWN: what one app tool call is, with no host
@@ -88,7 +89,7 @@ describe('what a handler returns, as the agent receives it', () => {
       result: { content: [{ type: 'text', text: 'three' }], structuredContent: { count: 3 } },
     })
     const refused = shapeToolAnswer(counted, { count: 'three' }) as { error: { message: string } }
-    expect(refused.error.message).toMatch(/^tool "crm_find" returned structuredContent its outputSchema refuses:\n/)
+    expect(refused.error.message).toBe('tool "crm_find" returned structuredContent its outputSchema refuses (1 × invalid_type)')
     expect((shapeToolAnswer(counted, 'three') as { error: { message: string } }).error.message).toContain('must return a JSON object')
     expect((shapeToolAnswer(counted, toolResult({ content: [{ type: 'text', text: 'x' }] })) as { error: { message: string } }).error.message).toContain(
       'declares an outputSchema but returned no structuredContent',
@@ -97,6 +98,20 @@ describe('what a handler returns, as the agent receives it', () => {
     expect(shapeToolAnswer(counted, toolResult({ content: [{ type: 'text', text: 'CRM down' }], isError: true }))).toEqual({
       result: { content: [{ type: 'text', text: 'CRM down' }], isError: true },
     })
+  })
+
+  it('a refused result is named by issue kind only: the record keeps no key, path or value of it', async () => {
+    const strict = tool({
+      outputSchema: { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'], additionalProperties: false },
+      handler: async () => ({ count: 'forty-two-contacts', secretKey: 'sk-live-0123456789', nested: { apiToken: 'tok-abcdef' } }),
+    })
+    const r = await runAppTools('crm', [strict], callOf('crm_find'), facts)
+    const verdict = readCallVerdict(r.body, false, [])
+    expect(verdict).toEqual({
+      outcome: 'error',
+      error: 'tool "crm_find" returned structuredContent its outputSchema refuses (1 × invalid_type, 1 × unrecognized_keys)',
+    })
+    for (const leak of ['secretKey', 'sk-live', 'nested', 'apiToken', 'tok-abcdef', 'forty-two', 'count']) expect(verdict.error).not.toContain(leak)
   })
 
   it('a value with no JSON is the server’s error, not a crash', () => {
@@ -176,7 +191,7 @@ describe('a call, under its deadline', () => {
     expect(r.cut).toBe('deadline')
   })
 
-  it('a caller who leaves cuts the call; one already gone never starts the wait', async () => {
+  it('a caller who leaves cuts the call, and the answer says the caller left, not the time limit', async () => {
     const gone = new AbortController()
     let reason: unknown
     const t = tool({ handler: (_a, ctx) => new Promise((resolve) => ctx.signal.addEventListener('abort', () => resolve((reason = ctx.signal.reason)))) })
@@ -184,8 +199,33 @@ describe('a call, under its deadline', () => {
     const r = await runAppTools('crm', [t], callOf('crm_find'), { ...facts, signal: gone.signal })
     expect(r.cut).toBe('caller')
     expect((reason as DOMException).name).toBe('AbortError')
-    const again = await runAppTools('crm', [t], callOf('crm_find'), { ...facts, signal: gone.signal })
-    expect(again.cut).toBe('caller')
+    const text = (r.body as { result: { content: Array<{ text: string }>; isError: boolean } }).result
+    expect(text).toEqual({
+      content: [{ type: 'text', text: 'tool "crm_find" was cut off: the caller disconnected before it finished, and it may have done part of its work' }],
+      isError: true,
+    })
+    expect(text.content[0]!.text).not.toContain('time limit')
+  })
+
+  it('a caller already gone when dispatch begins never starts the handler', async () => {
+    const gone = new AbortController()
+    gone.abort(new DOMException('left during access resolution', 'AbortError'))
+    let ran = false
+    const t = tool({
+      inputSchema: { type: 'object', properties: { q: { type: 'string' } } },
+      handler: async () => {
+        ran = true // a side effect: a write, a send, a charge
+        return 'done'
+      },
+    })
+    const r = await runAppTools('crm', [t], callOf('crm_find', { q: 'ada' }), { ...facts, signal: gone.signal })
+    // Past the microtask the handler would have started in.
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(ran).toBe(false)
+    expect(r.cut).toBe('caller')
+    expect(r.body).toMatchObject({ result: { isError: true, content: [{ text: 'tool "crm_find" was not started: the caller had already disconnected' }] } })
+    // tools/list and the rest of the envelope still answer: only a call is cut.
+    expect((await runAppTools('crm', [t], { jsonrpc: '2.0', id: 2, method: 'tools/list' }, { ...facts, signal: gone.signal })).cut).toBeNull()
   })
 
   it('a call that finishes in time is not cut, and its timer does not outlive it', async () => {

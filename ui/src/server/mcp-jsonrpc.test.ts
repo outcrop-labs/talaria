@@ -141,6 +141,63 @@ describe('a body that is not JSON', () => {
       expect(jsonSyntaxError(bytes(ok)), ok).toBeNull()
     }
   })
+
+  // The answers below are serde_json 1.0.151's (the api's Cargo.lock pin), read
+  // off `from_slice::<Value>` and the gateway's `error_byte_offset` for the
+  // same bytes. Each is what JSON.parse alone gets wrong.
+  /** serde's sentence for a body, as the -32700 must carry it, and the offset. */
+  const serde = (body: Uint8Array, message: string, line: number, column: number, offset: number) => {
+    const label = new TextDecoder().decode(body).slice(0, 60)
+    expect(jsonSyntaxError(body), label).toEqual({ message, offset })
+    const msg = refusal(body)
+    expect(msg, label).toContain(`not valid JSON: ${message} at line ${line} column ${column}.`)
+    expect(msg, label).toContain(`offset ${offset} |`)
+  }
+
+  it('nesting past serde’s recursion limit is refused at the 128th array or object, as the Rust gateway refuses it', () => {
+    expect(readRpcBody(bytes('['.repeat(127) + ']'.repeat(127))).ok).toBe(true)
+    expect(readRpcBody(bytes('{"a":'.repeat(127) + '1' + '}'.repeat(127))).ok).toBe(true)
+    serde(bytes('['.repeat(128) + ']'.repeat(128)), 'recursion limit exceeded', 1, 128, 128)
+    serde(bytes('['.repeat(128)), 'recursion limit exceeded', 1, 128, 128)
+    serde(bytes('{"a":'.repeat(128) + '1' + '}'.repeat(128)), 'recursion limit exceeded', 1, 636, 636)
+    serde(bytes('[{"a":'.repeat(64) + '1' + '}]'.repeat(64)), 'recursion limit exceeded', 1, 380, 380)
+    const deepArgument = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{"v":${'['.repeat(130)}${']'.repeat(130)}}}}`
+    serde(bytes(deepArgument), 'recursion limit exceeded', 1, 209, 209)
+  })
+
+  it('a lone surrogate escape is refused, in serde’s words and at serde’s offset; a pair parses', () => {
+    serde(bytes('"\\ud800"'), 'unexpected end of hex escape', 1, 8, 8)
+    serde(bytes('"\\ud800x"'), 'unexpected end of hex escape', 1, 8, 8)
+    serde(bytes('"\\ud800\\n"'), 'unexpected end of hex escape', 1, 9, 9)
+    serde(bytes('"\\udc00"'), 'lone leading surrogate in hex escape', 1, 7, 7)
+    serde(bytes('"\\ud800\\u0041"'), 'lone leading surrogate in hex escape', 1, 13, 13)
+    serde(bytes('"\\ud800\\ud800"'), 'lone leading surrogate in hex escape', 1, 13, 13)
+    serde(bytes('"\\ud800\\uzzzz"'), 'invalid escape', 1, 13, 13)
+    serde(bytes('{"\\ud800":1}'), 'unexpected end of hex escape', 1, 9, 9)
+    serde(bytes('"\\ud800'), 'EOF while parsing a string', 1, 7, 7)
+    serde(bytes('"\\ud800\\'), 'EOF while parsing a string', 1, 8, 8)
+    serde(bytes('"\\ud800\\u00'), 'EOF while parsing a string', 1, 11, 11)
+    // A tools/call whose argument carries half an emoji never reaches a handler.
+    const halfEmoji = '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{"q":"a\\ud83dz"}}}'
+    serde(bytes(halfEmoji), 'unexpected end of hex escape', 1, 93, 93)
+    for (const ok of ['"\\ud800\\udc00"', '"\\uDBFF\\uDFFF"', '"\\ud83d\\ude00"']) {
+      const r = readRpcBody(bytes(ok))
+      expect(r.ok, ok).toBe(true)
+    }
+  })
+
+  it('an overlong form, an encoded surrogate or a code point past U+10FFFF is refused where serde refuses it', () => {
+    serde(cat('"a', [0xe0, 0x80, 0x80], 'b"'), 'invalid unicode code point', 1, 7, 7)
+    serde(cat('"a', [0xed, 0xa0, 0x80], 'b"'), 'invalid unicode code point', 1, 7, 7)
+    serde(cat('"', [0xf0, 0x80, 0x80, 0x80], '"'), 'invalid unicode code point', 1, 6, 6)
+    serde(cat('"', [0xf4, 0x90, 0x80, 0x80], '"'), 'invalid unicode code point', 1, 6, 6)
+    serde(cat('"', [0xe0, 0x80], '\\n', [0x80], '"'), 'invalid unicode code point', 1, 7, 7)
+    serde(cat('{"a":1,\n"k', [0xed, 0xa0, 0x80], '":2}'), 'invalid unicode code point', 2, 6, 14)
+    // The edges of each narrowed range are UTF-8.
+    for (const ok of [[0xe0, 0xa0, 0x80], [0xed, 0x9f, 0xbf], [0xf0, 0x90, 0x80, 0x80], [0xf4, 0x8f, 0xbf, 0xbf]]) {
+      expect(readRpcBody(cat('"', ok, '"')).ok, ok.join(' ')).toBe(true)
+    }
+  })
 })
 
 describe('a body that parsed but is not one request', () => {
