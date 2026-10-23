@@ -7,7 +7,9 @@
 // A session turn can also be reached while it runs: steer_run pushes words
 // into it and stop_run interrupts it, both naming the run id the stream
 // announced. They live here because they go through the same door with the
-// same bearer as the turn itself.
+// same bearer as the turn itself — as does agent_request, the plain json call
+// other crates make on that door (talaria-agent-crons drives Hermes's own
+// `/api/jobs` with it).
 //
 // Every Hermes persona turn in the tree is sent from here to the agent's own
 // container, which then talks to a provider we do not control the request
@@ -29,6 +31,10 @@ use crate::provider::http;
 use crate::usage::{TurnRegistration, register_turn};
 use crate::vault::{SecretVault, seal_content};
 use talaria_fleet_layout::{ManifestEntry, describe_agent, read_manifest};
+
+/// The verb of an `agent_request`, re-exported so a caller names one without
+/// a reqwest dependency of its own.
+pub use reqwest::Method;
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -736,6 +742,56 @@ pub async fn stop_run(agent_model: &str, run_id: &str) -> Result<(), String> {
 /// answer here rather than something to wait out.
 async fn agent_entry(model: &str) -> Option<ManifestEntry> {
     read_manifest().await.into_iter().find(|m| m.model == model)
+}
+
+/// What an agent's API server answered: the status as-is, and the body as
+/// json (`Null` when it was empty or not json).
+#[derive(Debug, Clone)]
+pub struct AgentAnswer {
+    pub status: u16,
+    pub body: Value,
+}
+
+/// One json request to an agent's own API server, through the same door and
+/// with the same bearer as a turn — for the control-plane surfaces Hermes
+/// serves there (its `/api/jobs` cron REST is the first). `window` bounds the
+/// whole exchange, body included: the caller knows how long its call may
+/// legitimately take.
+///
+/// `Err` means NO ANSWER — no manifest row, a refused or reset connection, or
+/// silence past the window. Any status is an answer and comes back `Ok`; what
+/// a refusal means is the caller's to read, so this never interprets it.
+pub async fn agent_request(
+    agent_model: &str,
+    method: Method,
+    path: &str,
+    body: Option<&Value>,
+    window: Duration,
+) -> Result<AgentAnswer, String> {
+    let Some(entry) = agent_entry(agent_model).await else {
+        return Err("not in the fleet manifest".into());
+    };
+    let mut req = with_bearer(
+        &entry,
+        http().request(method, format!("{}{path}", entry.url)),
+    );
+    if let Some(body) = body {
+        req = req.json(body);
+    }
+    let exchange = async {
+        let res = req.send().await?;
+        let status = res.status().as_u16();
+        let bytes = res.bytes().await?;
+        Ok::<_, reqwest::Error>((status, bytes))
+    };
+    match tokio::time::timeout(window, exchange).await {
+        Ok(Ok((status, bytes))) => Ok(AgentAnswer {
+            status,
+            body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        }),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(format!("no answer within {}s", window.as_secs())),
+    }
 }
 
 /// What Hermes is holding for one pinned conversation: how much of the

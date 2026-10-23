@@ -88,7 +88,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs`]
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons.rs)
 
 > /api/fleet/agents/{id}/crons. One agent's native Hermes cron jobs. GET →
-> jobs (read from the container's jobs.json). POST → create. Admin, or the
+> jobs (read from the agent's own `/api/jobs`). POST → create. Admin, or the
 > owner of a personal assistant.
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -102,7 +102,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons.rs`](.
 | :--- | :--- | :--- |
 | `name` | `string trimmed(1, 80)` |  |
 | `schedule` | `string trimmed(1, 120)` |  |
-| `prompt` | `string trimmed(1, 20000)` |  |
+| `prompt` | `string trimmed(1, 5000)` | The agent's own cap: Hermes's /api/jobs refuses a longer prompt (talaria_agent_crons::MAX_PROMPT_CHARS). |
 
 ## `/api/fleet/agents/{id}/crons/{jobId}`
 
@@ -110,8 +110,9 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons_jobid.
 
 > /api/fleet/agents/{id}/crons/{jobId}. One cron job: DELETE → remove. POST
 > { action } → pause | resume | run ("run" queues it for the next scheduler
-> tick, ≤60s). PUT { name? schedule? prompt? } → edit in place. Admin or
-> owner.
+> tick, ≤60s; a paused job is refused, because Hermes's run would resume it
+> for good). PUT { name? schedule? prompt? } → edit in place. Admin or
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -131,7 +132,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons_jobid.
 | :--- | :--- | :--- |
 | `name` | `string?(80)` |  |
 | `schedule` | `string?(120)` |  |
-| `prompt` | `string?(20000)` |  |
+| `prompt` | `string?(5000)` | The agent's own cap: Hermes's /api/jobs refuses a longer prompt (talaria_agent_crons::MAX_PROMPT_CHARS). |
 
 ## `/api/fleet/agents/{id}/secrets`
 
@@ -223,7 +224,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_crons.rs`](../../api/c
 | `agentIds` | `uuid[](64)` | agentIds: min(1).max(64) — the helper carries the max; the min (a fleet cron with no agents is nothing) is checked here. |
 | `name` | `string trimmed(1, 80)` |  |
 | `schedule` | `string trimmed(1, 120)` |  |
-| `prompt` | `string trimmed(1, 20000)` |  |
+| `prompt` | `string trimmed(1, 5000)` | The agent's own cap: Hermes's /api/jobs refuses a longer prompt (talaria_agent_crons::MAX_PROMPT_CHARS). |
 
 ## `/api/fleet/defs`
 

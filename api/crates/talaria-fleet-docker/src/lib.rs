@@ -235,8 +235,8 @@ pub async fn remove_container_by_name(name: &str) -> Result<(), String> {
 }
 
 /// `docker exec` into a container. Args never touch a shell (argv only —
-/// cron prompts are data, not command lines). On failure stderr is the half a
-/// caller wants: it is what `docker exec` itself reported.
+/// what a caller passes is data, not a command line). On failure stderr is
+/// the half a caller wants: it is what `docker exec` itself reported.
 pub async fn docker_exec(
     container: &str,
     command: &[&str],
