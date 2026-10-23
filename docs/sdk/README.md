@@ -7,10 +7,13 @@ Everything a [Talaria app](../APPS.md) imports. Two entry points:
 | `@talaria/sdk` | client: UI kit, session + data hooks, fetch helpers, motion | `app.ts`, `*.svelte` |
 | `@talaria/sdk/server` | server: app server, document store, MCP tools, harnesses | `server.ts`, `mcp.ts`, `harnesses/*.ts` |
 
-The stack is **Svelte 5 (runes) + sv-router + @tanstack/svelte-query v6 + Tailwind 4**. Both
-entry points resolve from the host at build time — an app **installs nothing**; `svelte`,
-svelte-query, zod, and `@lucide/svelte` (icons) all resolve from the host, exactly one copy in
-the deployment. Import `svelte` and icons freely; import everything else through the SDK.
+The stack is **Svelte 5 (runes) + @tanstack/svelte-query v6 + Tailwind 4**, rendered inside the
+host's own router. Both entry points resolve from the host at build time — an app **installs
+nothing**; `svelte`, svelte-query, zod, and `@lucide/svelte` (icons) all resolve from the host,
+exactly one copy in the deployment. Import `svelte` and icons freely; import everything else
+through the SDK — routing included: an app's routes are the host's, reached through
+`useAppRoute`, `appHref` and `appNavigate` ([client.md](./client.md#routes-inside-your-app)),
+never by importing a router of its own.
 
 ## The docset
 

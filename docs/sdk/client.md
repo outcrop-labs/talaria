@@ -14,7 +14,7 @@ as `contacts-app` runs as `contacts-app`. The host tells the surface instead:
 <script lang="ts">
   import { useApp } from '@talaria/sdk'
 
-  const app = useApp() // { slug, surface, manifest } — read live, don't destructure
+  const app = useApp() // { slug, surface, manifest, rest, query } — read live, don't destructure
 </script>
 
 <p>{app.manifest.name} ({app.slug}), {app.surface} surface</p>
@@ -26,6 +26,74 @@ running after its surface closed keeps talking to its own app. To reach another 
 or from a component rendered outside any surface, pass the slug as the first argument. The
 hooks read Svelte context, so they run during a component's init and never in a plain `.ts`
 module; hand such a module the verbs a component got from `useAppApi()` instead.
+
+## Routes inside your app
+
+An app owns every route below its surfaces. `/x/<slug>/<rest>` renders the work surface and
+`/x/<slug>/manage/<rest>` the manage surface, each mounted once for every `<rest>`: a list, its
+record pages and its tabs are real addresses, which a person can link, bookmark, reload and step
+through with Back and Forward. A settings tab is one page, with no routes below it; put deeper
+admin pages on the manage surface. Who may open a route follows its surface: a member with the
+work grant reaches `/x/<slug>/items/42` but not `/x/<slug>/manage/fields`, and a member with
+only the manage grant the reverse.
+
+```svelte
+<script lang="ts">
+  import { Button, QueryState, SkeletonRows, appHref, appNavigate, useAppQuery, useAppRoute } from '@talaria/sdk'
+
+  type Item = { id: string; data: { title: string } }
+
+  const route = useAppRoute() // live: rest, segments, query, match()
+  // On /x/<slug>/items/42 this is { id: '42' }; on the list at /x/<slug>, null.
+  const open = $derived(route.match('items/:id'))
+  const sort = $derived(route.query.get('sort') === 'new' ? 'new' : 'title')
+  const items = useAppQuery<{ items: Item[] }>(() => `items?sort=${sort}`)
+
+  // A filter is part of the address too; replace, so Back skips the flips.
+  const flip = () => appNavigate(`?sort=${sort === 'new' ? 'title' : 'new'}`, { replace: true })
+</script>
+
+{#if open}
+  <a href={appHref()}>← All items</a>
+  <p>Item {open.id}</p>
+  <a href={appHref('fields', { surface: 'manage' })}>Edit the fields</a>
+{:else}
+  <Button size="sm" onclick={() => void flip()}>Sort by {sort === 'new' ? 'title' : 'newest'}</Button>
+  <QueryState query={items}>
+    {#snippet skeleton()}<SkeletonRows rows={4} />{/snippet}
+    {#snippet children(data)}
+      {#each data.items as item (item.id)}
+        <a href={appHref(`items/${encodeURIComponent(item.id)}`)}>{item.data.title}</a>
+      {/each}
+    {/snippet}
+  </QueryState>
+{/if}
+```
+
+- `useAppRoute()` returns where the surface is: `rest` is the path below it as the URL spells it
+  (`items/42`, or `''` at the surface's own address), `segments` the same path split and
+  decoded, and `query` the address's query as a `URLSearchParams`. Read them in the template or
+  in `$derived` and they follow every navigation. Call it during component init, like the other
+  hooks.
+- `route.match(pattern)` returns the params of `rest` against a pattern, or null on any other
+  route. Literal segments compare exactly, `:name` captures one segment, and a final `*name`
+  captures whatever is left (`docs/*path`). Captures are decoded; `match('')` is the surface's
+  own address. The params are typed from the pattern, so `open.id` above is a `string`.
+- `appHref(path?, { surface? })` is the href for a route of this app, relative to the surface the
+  page shows: on the work surface `appHref('items/42')` is `/x/<slug>/items/42`, and on the manage
+  surface it is `/x/<slug>/manage/items/42`. `appHref()` is the surface's own address. `path` may
+  carry a `?query` and a `#hash`; its segments go into the URL as given, so encode an id that may
+  hold a slash. `{ surface: 'work' | 'manage' }` links into the app's other surface, which is how
+  a settings tab links anywhere deeper. A plain `<a href>` is the link: the host router takes the
+  click, and a middle-click still opens a new tab.
+- `appNavigate(path?, { surface?, replace? })` goes there from code, after a save or for a
+  filter; `replace` skips the history entry. It resolves once the router has moved there.
+- Paths are relative to the surface, not to the current route: `appHref('?tab=notes')` is the
+  surface's own address with that query. To change only the query where you are, pass the rest
+  along: `` appNavigate(`${route.rest}?tab=notes`) ``.
+- `manage` is the manage surface's own segment, so the work surface cannot have a route named
+  `manage`. Don't reach for the host's router or `window.history` directly: an address outside
+  `/x/<slug>` is not your app's.
 
 ## Session
 

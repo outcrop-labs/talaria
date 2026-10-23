@@ -48,6 +48,8 @@ function mountSurface(slug: string): { move: (to: string) => void } {
     },
     surface: 'work',
     manifest: {} as AppContext['manifest'],
+    rest: '',
+    query: new URLSearchParams(),
   })
   return { move: (to) => (current = to) }
 }

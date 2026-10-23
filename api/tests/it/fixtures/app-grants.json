@@ -283,6 +283,188 @@
       }
     }
   ],
+  "routes": {
+    "about": [
+      "Which view governs a client route, and who reaches it. An app owns every route below its surfaces:",
+      "/x/<slug>/<anything> is the work view's and /x/<slug>/manage/<anything> the manage view's, so a",
+      "work-only member reaches /x/crm/a/b and never /x/crm/manage/a, and a manage-only member the reverse.",
+      "Paths compare ASCII-case-insensitively, as the client router matches a static segment: it mounts the",
+      "manage surface at /x/crm/MANAGE. TS asserts appViewFor and isViewDenied (the route gate and the nav);",
+      "Rust asserts app_view_for and ViewGrants::denies. Each viewer below is a member holding those app",
+      "views, with /teams denied; `open` names the viewers the path is open to."
+    ],
+    "viewers": {
+      "work": {
+        "denied": [
+          "/teams"
+        ],
+        "appGrants": [
+          "/x/crm"
+        ]
+      },
+      "manage": {
+        "denied": [
+          "/teams"
+        ],
+        "appGrants": [
+          "/x/crm/manage"
+        ]
+      },
+      "none": {
+        "denied": [
+          "/teams"
+        ],
+        "appGrants": []
+      }
+    },
+    "paths": [
+      {
+        "path": "/x/crm",
+        "view": "/x/crm",
+        "open": [
+          "work"
+        ]
+      },
+      {
+        "path": "/x/crm/",
+        "view": "/x/crm",
+        "open": [
+          "work"
+        ]
+      },
+      {
+        "path": "/x/crm/items",
+        "view": "/x/crm",
+        "open": [
+          "work"
+        ]
+      },
+      {
+        "path": "/x/crm/items/42",
+        "view": "/x/crm",
+        "open": [
+          "work"
+        ]
+      },
+      {
+        "path": "/x/crm/a/b/c",
+        "view": "/x/crm",
+        "open": [
+          "work"
+        ]
+      },
+      {
+        "path": "/x/crm/managers",
+        "view": "/x/crm",
+        "open": [
+          "work"
+        ]
+      },
+      {
+        "path": "/x/crm/items/manage",
+        "view": "/x/crm",
+        "open": [
+          "work"
+        ]
+      },
+      {
+        "path": "/x/crm//manage",
+        "view": "/x/crm",
+        "open": [
+          "work"
+        ]
+      },
+      {
+        "path": "/x/crm/manage",
+        "view": "/x/crm/manage",
+        "open": [
+          "manage"
+        ]
+      },
+      {
+        "path": "/x/crm/manage/",
+        "view": "/x/crm/manage",
+        "open": [
+          "manage"
+        ]
+      },
+      {
+        "path": "/x/crm/manage/fields",
+        "view": "/x/crm/manage",
+        "open": [
+          "manage"
+        ]
+      },
+      {
+        "path": "/x/crm/manage/a/b",
+        "view": "/x/crm/manage",
+        "open": [
+          "manage"
+        ]
+      },
+      {
+        "path": "/x/crm/MANAGE/fields",
+        "view": "/x/crm/manage",
+        "open": [
+          "manage"
+        ]
+      },
+      {
+        "path": "/X/CRM/items",
+        "view": "/x/crm",
+        "open": [
+          "work"
+        ]
+      },
+      {
+        "path": "/x/wiki/a/b",
+        "view": "/x/wiki",
+        "open": []
+      },
+      {
+        "path": "/x/wiki/manage/a",
+        "view": "/x/wiki/manage",
+        "open": []
+      },
+      {
+        "path": "/teams/t1",
+        "view": null,
+        "open": []
+      },
+      {
+        "path": "/TEAMS",
+        "view": null,
+        "open": []
+      },
+      {
+        "path": "/agents",
+        "view": null,
+        "open": [
+          "work",
+          "manage",
+          "none"
+        ]
+      },
+      {
+        "path": "/x",
+        "view": null,
+        "open": [
+          "work",
+          "manage",
+          "none"
+        ]
+      },
+      {
+        "path": "/x/",
+        "view": null,
+        "open": [
+          "work",
+          "manage",
+          "none"
+        ]
+      }
+    ]
+  },
   "enabledSetting": [
     {
       "about": "no row",

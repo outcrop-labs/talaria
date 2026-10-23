@@ -16,12 +16,15 @@ import type { Component, ComponentProps } from 'svelte'
 
 // ── App definition ─────────────────────────────────────────────────────────
 export interface AppSurfaces {
-  /** The app's main view at /x/<slug>: a tile in the top dock's Apps group. */
+  /** The app's main view at /x/<slug>, and every route below it
+   *  (/x/<slug>/items/42): a tile in the top dock's Apps group. */
   work?: Component
-  /** Admin-ish controls at /x/<slug>/manage, listed in the manage area behind
-   *  the dock's gear (default-denied for members, grantable). */
+  /** Admin-ish controls at /x/<slug>/manage and the routes below it, listed
+   *  in the manage area behind the dock's gear (default-denied for members,
+   *  grantable). */
   manage?: Component
-  /** A tab added to the Settings page of people who have access. */
+  /** A tab added to the Settings page of people with the manage grant; one
+   *  page, with no routes below it. */
   settings?: Component
 }
 
@@ -143,3 +146,20 @@ export { api, appApi, appQueryKey, type ApiInit, type AppApi, type AppApiInit } 
 export type { AppContext, AppSurfaceName } from '@/lib/app-context'
 export type { AppManifest } from '@/lib/apps'
 export { useApp, useAppApi, useAppQuery, useAppInvalidate, type AppQueryOptions } from '@/lib/app-hooks'
+
+// ── Routes inside the app ──────────────────────────────────────────────────
+// An app owns every route below its surfaces: /x/<slug>/<rest> renders the
+// work surface and /x/<slug>/manage/<rest> the manage surface, so a list, its
+// record pages and its tabs are real addresses — linkable, bookmarkable, and
+// stepped through by Back and Forward. `useAppRoute()` says where the surface
+// is; `appHref` and `appNavigate` go elsewhere in the app, relative to the
+// surface. A settings tab is one page, with no routes below it.
+export {
+  useAppRoute,
+  appHref,
+  appNavigate,
+  type AppRoute,
+  type AppHrefOptions,
+  type AppNavigateOptions,
+  type RouteParams,
+} from '@/lib/app-route'

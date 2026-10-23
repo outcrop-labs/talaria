@@ -922,9 +922,14 @@ pub struct ViewGrants {
 
 /// The app view that governs `path` — `/x/<slug>/manage` for the manage
 /// surface and anything under it, `/x/<slug>` for every other path under
-/// the app — or `None` when `path` is not an app route. The TS twin is
-/// `appViewFor` in ui/src/lib/app-grants.ts.
+/// the app — or `None` when `path` is not an app route. An app owns every
+/// route below its surfaces, so `/x/crm/deals/7` is the work view's and
+/// `/x/crm/manage/fields/7` the manage view's. Paths compare ASCII-case-
+/// insensitively, as the client router matches a static segment (it mounts
+/// the manage surface at `/x/crm/MANAGE`). The TS twin is `appViewFor` in
+/// ui/src/lib/app-grants.ts; both read the fixture's `routes` cases.
 pub fn app_view_for(path: &str) -> Option<String> {
+    let path = path.to_ascii_lowercase();
     let rest = path.strip_prefix("/x/")?;
     let mut parts = rest.split('/');
     let slug = parts.next().filter(|s| !s.is_empty())?;
@@ -939,16 +944,21 @@ impl ViewGrants {
     /// `isViewDenied` holds in ui/src/lib/app-grants.ts. A core view is
     /// closed when it, or a view above it, is denied ('x' denies
     /// 'x/anything'). An app route opens only on the exact view that governs
-    /// it, held by grant. `None` when `view` is an app route and the enabled
-    /// apps could not be read: nobody may read that as open.
+    /// it (`app_view_for`), held by grant. Paths compare ASCII-case-
+    /// insensitively, as the client router matches them. `None` when `view`
+    /// is an app route and the enabled apps could not be read: nobody may
+    /// read that as open.
     pub fn denies(&self, view: &str) -> Option<bool> {
         match app_view_for(view) {
             Some(app) => self.app_grants.as_ref().map(|held| !held.contains(&app)),
-            None => Some(
-                self.denied
-                    .iter()
-                    .any(|v| v == view || view.starts_with(&format!("{v}/"))),
-            ),
+            None => {
+                let view = view.to_ascii_lowercase();
+                Some(
+                    self.denied
+                        .iter()
+                        .any(|v| *v == view || view.starts_with(&format!("{v}/"))),
+                )
+            }
         }
     }
 }
@@ -1524,6 +1534,38 @@ mod tests {
                     "{about}: {v} held={is_held} denied={denied}"
                 );
                 assert_eq!(g.denies(v), Some(!is_held), "{about}: {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_route_below_an_app_surface_answers_to_that_surface() {
+        // The fixture's `routes` cases, which the TS route gate and nav read
+        // too (ui/src/server/app-grants.fixture.test.ts): a work-only member
+        // reaches /x/crm/a/b and never /x/crm/manage/a, a manage-only member
+        // the reverse.
+        let f = fixture();
+        let viewers = f["routes"]["viewers"].as_object().expect("routes.viewers");
+        let paths = f["routes"]["paths"].as_array().expect("routes.paths");
+        assert!(!viewers.is_empty() && !paths.is_empty());
+        for c in paths {
+            let path = c["path"].as_str().expect("path");
+            assert_eq!(
+                app_view_for(path),
+                c["view"].as_str().map(String::from),
+                "the view governing {path}"
+            );
+            let open = strings(&c["open"]);
+            for (name, v) in viewers {
+                let g = ViewGrants {
+                    denied: strings(&v["denied"]),
+                    app_grants: Some(strings(&v["appGrants"])),
+                };
+                assert_eq!(
+                    g.denies(path),
+                    Some(!open.contains(name)),
+                    "{path} for the {name} viewer"
+                );
             }
         }
     }

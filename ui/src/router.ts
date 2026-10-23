@@ -1,5 +1,6 @@
 import { createRouter } from 'sv-router'
 import NotFound from './routes/NotFound.svelte'
+import { splitHref } from '@/lib/route-tabs'
 
 // Server-path anchors vs. sv-router's global click interceptor.
 //
@@ -45,8 +46,22 @@ if (typeof document !== 'undefined') {
 //   routes/kb.space.$slug.tsx   → '/kb/space/:slug'
 //   routes/_app.tsx             → layout: AppLayout
 //   routes/_app/<view>.tsx      → '/<view>'
-//   routes/_app/x.$app.*.tsx    → '/x/:app'(+/manage)
+//   routes/_app/x.$app.*.tsx    → '/x/:app'(+/manage, and the routes below each)
 //   routes/_app/boards/*        → '/boards', '/boards/:boardId(/:taskId)'
+
+// The app shell, as a layout. Two route groups wear it (the core views under
+// '/', the app surfaces under '/x'); both lazy-import the same module, so the
+// router resolves one component and the shell stays mounted between them.
+const shell = () => import('./routes/app/AppLayout.svelte')
+const shellHooks = {
+  onError(error: unknown) {
+    // A lazy chunk that no longer exists after a deploy lands here, as
+    // does a throw from a route module's top level. Log it; the shell's
+    // <svelte:boundary> is the visible net.
+    console.error('[router]', error)
+  },
+}
+
 export const { p, navigate, isActive, preload, route } = createRouter({
   '/login': () => import('./routes/Login.svelte'),
   '/claim': () => import('./routes/Claim.svelte'),
@@ -193,12 +208,6 @@ export const { p, navigate, isActive, preload, route } = createRouter({
     // models, MCP, spend and apps, with each view's own page one click away
     // in the sidebar docked beside it.
     '/manage': () => import('./routes/app/Manage.svelte'),
-    '/x': {
-      '/:app': {
-        '/': () => import('./routes/app/XAppView.svelte'),
-        '/manage': () => import('./routes/app/XAppManage.svelte'),
-      },
-    },
     '/settings': {
       '/': () => import('./routes/app/Settings.svelte'),
       '/:tab': () => import('./routes/app/Settings.svelte'),
@@ -207,22 +216,53 @@ export const { p, navigate, isActive, preload, route } = createRouter({
       '/': () => import('./routes/app/Admin.svelte'),
       '/:tab': () => import('./routes/app/Admin.svelte'),
     },
-    layout: () => import('./routes/app/AppLayout.svelte'),
-    hooks: {
-      onError(error) {
-        // A lazy chunk that no longer exists after a deploy lands here, as
-        // does a throw from a route module's top level. Log it; the shell's
-        // <svelte:boundary> is the visible net.
-        console.error('[router]', error)
+    layout: shell,
+    hooks: shellHooks,
+  },
+  // AN APP OWNS EVERY ROUTE BELOW ITS SURFACES. /x/<slug>/<rest> is the work
+  // surface and /x/<slug>/manage/<rest> the manage surface, each mounted once
+  // with <rest> handed to it (AppSurface → useAppRoute), so an app's list, its
+  // record pages and its tabs are real, linkable addresses. The route gate
+  // reads the same split (appViewFor in lib/app-grants.ts): a work grant opens
+  // /x/<slug>/a/b and never /x/<slug>/manage/a. A settings tab is one page and
+  // has no routes below it.
+  //
+  // WHY THIS GROUP SITS OUTSIDE '/'. sv-router treats a catch-all inside the
+  // '/' layout group as a FALLBACK, and the top-level '*' below beats it — so
+  // nested here, /x/<slug>/items 404'd. As its own group it is an ordinary
+  // match. The same shell and hooks wear it; the same component either way.
+  //
+  // The catch-alls are bare '*', not '*rest': a named one makes sv-router
+  // decode the rest, and a malformed escape (/x/crm/%zz) throws inside its
+  // matcher and blanks the page. AppSurface reads the rest off the pathname
+  // and the SDK decodes it once, per segment.
+  '/x': {
+    '/:app': {
+      '/': () => import('./routes/app/XAppView.svelte'),
+      '/manage': {
+        '/': () => import('./routes/app/XAppManage.svelte'),
+        '*': () => import('./routes/app/XAppManage.svelte'),
       },
+      '*': () => import('./routes/app/XAppView.svelte'),
     },
+    layout: shell,
+    hooks: shellHooks,
   },
   '*': NotFound,
 })
 
-/** Navigate to a server-supplied href (alert / notification / activity links).
- *  The typed `navigate` wants a route-path literal; these arrive as plain
- *  strings (possibly with a query string). One widening cast here instead of
- *  an unsound one at every call site. */
-export const navigateHref = (href: string, options?: { replace?: boolean }): Promise<unknown> =>
-  (navigate as unknown as (path: string, options?: { replace?: boolean }) => Promise<unknown>)(href, options)
+/** Navigate to a server-supplied href (alert / notification / activity links)
+ *  or an app's own (appNavigate). The typed `navigate` wants a route-path
+ *  literal; these arrive as plain strings, often with a query string
+ *  (`/artifacts?a=<id>`), which `navigate` would match as part of the path —
+ *  so the query and hash go in its options (splitHref). One widening cast
+ *  here instead of an unsound one at every call site. */
+export const navigateHref = (href: string, options?: { replace?: boolean }): Promise<unknown> => {
+  const { pathname, search, hash } = splitHref(href)
+  type Untyped = (path: string, options?: { replace?: boolean; search?: string; hash?: string }) => Promise<unknown>
+  return (navigate as unknown as Untyped)(pathname, {
+    ...options,
+    ...(search ? { search } : {}),
+    ...(hash ? { hash } : {}),
+  })
+}

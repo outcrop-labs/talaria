@@ -107,3 +107,22 @@ export function pathId(pathname: string, base: string): string | null {
   if (!rest || rest.includes('/')) return null
   return decodeURIComponent(rest)
 }
+
+/** An href's parts as the router's `navigate` takes them: the path, then the
+ *  query and the hash, each with its leading `?` / `#` ('' when absent).
+ *
+ *  sv-router's `navigate` matches its whole first argument as a path, so
+ *  `navigate('/artifacts?a=1')` matched no route — the last segment was
+ *  `artifacts?a=1` — rendered Not Found, and wrote the `?` into the address
+ *  as `%3F`. A query or hash has to ride in its options instead. */
+export function splitHref(href: string): { pathname: string; search: string; hash: string } {
+  const hashAt = href.indexOf('#')
+  const hash = hashAt < 0 ? '' : href.slice(hashAt)
+  const head = hashAt < 0 ? href : href.slice(0, hashAt)
+  const queryAt = head.indexOf('?')
+  return {
+    pathname: queryAt < 0 ? head : head.slice(0, queryAt),
+    search: queryAt < 0 ? '' : head.slice(queryAt),
+    hash,
+  }
+}

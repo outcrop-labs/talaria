@@ -35,13 +35,17 @@ Surfaces are opt-in; ship any combination:
 
 | surface | where it appears | access |
 | :--- | :--- | :--- |
-| `work` | a tile in the top dock's Apps group → `/x/<slug>` | admins; members need an explicit grant |
-| `manage` | the manage area behind the dock's gear: the `/manage` overview and its sidebar → `/x/<slug>/manage` | admins; members need an explicit grant |
-| `settings` | a Settings tab (for people with access) | follows the work-view grant |
+| `work` | a tile in the top dock's Apps group → `/x/<slug>`, and every route below it | admins; members need an explicit grant |
+| `manage` | the manage area behind the dock's gear: the `/manage` overview and its sidebar → `/x/<slug>/manage`, and every route below it | admins; members need an explicit grant |
+| `settings` | a Settings tab (for people with access); one page, no routes below it | follows the manage grant |
 
 Apps are **explicit-grant**: enabling one gives members nothing until an admin adds its views
-per person in **Admin → People** — the same checklist that governs core Manage views. The app
-API gateway enforces the grant server-side.
+per person in **Admin → People** — the same checklist that governs core Manage views. The work
+and manage surfaces are separate grants, and each covers the routes below it: a member with only
+the work grant reaches `/x/<slug>/items/42` and never `/x/<slug>/manage/…`. The app API gateway
+admits anyone holding one of the app's surfaces and tells your server which in `ctx.access`, so
+a route only the manage surface uses should check it ([server.md](./server.md)). Routes below a
+surface: [client.md](./client.md#routes-inside-your-app).
 
 ## Declare the surfaces
 

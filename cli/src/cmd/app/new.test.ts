@@ -32,7 +32,7 @@ describe('displayName', () => {
 describe('skeletonFiles', () => {
   test('embeds no slug anywhere: the installing instance decides it', () => {
     const files = skeletonFiles({ name: 'My App', icon: '◈' })
-    expect(Object.keys(files).sort()).toEqual(['Work.svelte', 'app.ts', 'mcp.ts', 'server.ts', 'talaria.json'])
+    expect(Object.keys(files).sort()).toEqual(['Item.svelte', 'Work.svelte', 'app.ts', 'mcp.ts', 'server.ts', 'talaria.json'])
     expect(JSON.parse(files['talaria.json']!)).toEqual({
       name: 'My App',
       icon: '◈',
@@ -61,6 +61,19 @@ describe('skeletonFiles', () => {
     expect(empty).toBeGreaterThan(work.indexOf('<QueryState'))
     expect(work.indexOf('title="No items yet"')).toBeGreaterThan(empty)
     expect(work).not.toContain('query.isLoading')
+  })
+
+  test('an item has an address of its own below the surface', () => {
+    const files = skeletonFiles({ name: 'My App', icon: '◈' })
+    const work = files['Work.svelte']!
+    // /x/<slug>/items/<id>: the list links each item there, and the surface
+    // routes off the address — never off component state a reload would lose.
+    expect(work).toContain("route.match('items/:id')")
+    expect(work).toContain('href={appHref(`items/${item.id}`)}')
+    expect(work).toContain('<ItemPage id={open.id} />')
+    expect(files['Item.svelte']).toContain('href={appHref()}')
+    expect(files['server.ts']).toContain("method === 'GET'")
+    expect(files['server.ts']).toContain("store.get('items', id)")
   })
 
   test('every write catches and says what failed', () => {
