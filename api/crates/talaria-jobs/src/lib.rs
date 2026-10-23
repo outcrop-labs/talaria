@@ -154,6 +154,53 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         let state = spend_state.clone();
         Box::pin(async move { talaria_price_oracle::keys_for(&state).await })
     }));
+    // WHERE A REFUSED APPROVAL IS RECORDED. The fleet chat door refuses
+    // every Hermes approval request on a streamed turn (talaria-gateway's
+    // fleet_approvals), and the gateway crate holds no pool. Unwired, the
+    // answer still goes out and nothing is recorded.
+    let record_pg = state.pg.clone();
+    let _ = talaria_gateway::fleet_approvals::RECORD_APPROVAL.set(Arc::new(move |r| {
+        let pg = record_pg.clone();
+        Box::pin(async move {
+            // `model` is unique, so this is the agent's own def or nothing.
+            let agent_id = match sqlx::query_scalar::<_, String>(
+                "select id::text from agent_defs where model = $1",
+            )
+            .bind(&r.agent_model)
+            .fetch_optional(&pg)
+            .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!(
+                        "{LOG} approval record: def for {} unreadable: {e}",
+                        r.agent_model
+                    );
+                    None
+                }
+            };
+            talaria_audit::log_audit(
+                &pg,
+                talaria_audit::AuditEntry {
+                    actor: "talaria",
+                    action: "agent.approval_denied",
+                    target_type: "agent",
+                    target_id: agent_id.as_deref(),
+                    target_label: Some(&r.agent_model),
+                    before: None,
+                    after: Some(serde_json::json!({
+                        "choice": talaria_gateway::fleet_approvals::ANSWER,
+                        "description": r.description,
+                        "command": r.command,
+                        "runId": r.run_id,
+                        "answered": r.failure.is_none(),
+                        "error": r.failure,
+                    })),
+                },
+            )
+            .await;
+        })
+    }));
     // THE RUN ASSEMBLY plan-draft, research, and reindex enqueue through.
     // The seam and its constructor (`work_dispatch::dispatch_deps`, which is
     // `real_run_deps` — the same assembly agent-hire calls directly) both
