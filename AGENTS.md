@@ -44,7 +44,8 @@ backups, deploys. The full command table is generated at
 [`docs/CLI-REFERENCE.md`](./docs/CLI-REFERENCE.md).
 
 Ports: dev UI **5273**, Rust api **5274**. Worktree stacks get deterministic per-name ports
-for every service they own, api included (app `53xx`, api `54xx`, Postgres `56xx`, Redis `65xx`).
+for every service they own, api included (app `53xx`, api `54xx`, Postgres `56xx`, Redis `65xx`,
+toolkit `57xx`, omp auth `58xx`, agent gateways from `20000 + slot·100`).
 
 ## The rules that aren't style
 

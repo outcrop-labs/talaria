@@ -42,7 +42,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use talaria_agent_auth::ensure_agent_api_key;
-use talaria_fleet_layout::GATEWAY_PORT_BASE;
 use talaria_secretbox::SecretBox;
 use talaria_workbench_harnesses::{
     MCP_CONFIG_FILE, MODELS_CONFIG_FILE, PI_CODING_AGENT_DIR, WORKBENCH_KEY_ENV,
@@ -166,11 +165,10 @@ pub async fn ensure_gateway_ports(
     .fetch_all(pg)
     .await?;
     let mut map: HashMap<String, i64> = existing.into_iter().collect();
-    let mut next = map
-        .values()
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(GATEWAY_PORT_BASE);
+    let mut next = next_gateway_port(
+        map.values().copied().max(),
+        talaria_fleet_layout::gateway_port_base(),
+    );
     for slug in slugs {
         if map.contains_key(slug) {
             continue;
@@ -185,6 +183,15 @@ pub async fn ensure_gateway_ports(
         map.insert(slug.clone(), port);
     }
     Ok(map)
+}
+
+/// The first port a new agent gets: past the highest ever assigned, and never
+/// below this stack's base. The floor is what keeps a second stack's agents
+/// off the first stack's ports, since a seeded or fresh database starts with
+/// none of its own; ports already handed out (even below a later, higher
+/// base) are kept where they are.
+fn next_gateway_port(highest_assigned: Option<i64>, base: i64) -> i64 {
+    highest_assigned.map_or(base, |m| (m + 1).max(base))
 }
 
 /// Per-agent additions beyond the uniform chassis, keyed by slug.
@@ -2693,6 +2700,20 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_agent_port_continues_past_the_highest_and_never_starts_below_the_base() {
+        let base = talaria_fleet_layout::GATEWAY_PORT_BASE;
+        // An empty database starts at the stack's base, default or its own.
+        assert_eq!(next_gateway_port(None, base), base);
+        assert_eq!(next_gateway_port(None, 20300), 20300);
+        // Ports already handed out are never reused: continue past the highest.
+        assert_eq!(next_gateway_port(Some(base + 4), base), base + 5);
+        assert_eq!(next_gateway_port(Some(20310), 20300), 20311);
+        // A seeded row below this stack's base (main's 8770, copied into a
+        // worktree) does not pull the next agent down onto main's ports.
+        assert_eq!(next_gateway_port(Some(8771), 20300), 20300);
+    }
 
     #[test]
     fn an_operators_search_url_reaches_an_agent_only_where_it_can() {
