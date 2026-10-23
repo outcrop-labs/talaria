@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { getSetting, logAudit, setSetting } from './audit'
 import { isolateApp } from './app-isolate'
-import { appSrc, slugOk } from './app-build/paths'
+import { appSrc, clientlessError, declaredSurfaces, slugOk } from './app-build/paths'
 import { readCurrent, writeCurrent } from './app-build/status'
 import {
   appClientArtifact,
@@ -40,10 +40,11 @@ export function moduleHasSurfaces(mod: unknown): boolean {
   return ['work', 'manage', 'settings'].some((k) => surfaces[k] != null)
 }
 
-/** Built app.js is ESM. Node cannot import it (it wants /runtime/rt-*.js);
- *  presence of an export is the compile contract we can check here. */
+/** Built app.js is ESM. Node cannot import it (it wants /runtime/rt-*.js),
+ *  so the contract checked here is the one the host relies on: a default
+ *  export, the defineApp surfaces it mounts. */
 export function clientArtifactOk(source: string): boolean {
-  return source.length > 32 && /\bexport\b/.test(source)
+  return source.length > 32 && /\bexport\s*(?:default\b|\{[^}]*\bas\s+default\b)/.test(source)
 }
 
 
@@ -96,19 +97,25 @@ export async function failHealth(slug: string, error: string): Promise<void> {
 export async function probeLoad(slug: string): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!slugOk(slug)) return { ok: false, error: 'bad slug' }
   if (!appHasClient(slug) && !existsSync(appSrc(slug, 'app.ts'))) {
-    return { ok: false, error: 'app.ts is required' }
-  }
-  const client = await isolateApp(slug, 'load client', () => loadAppClient(slug))
-  if (!client.ok) return { ok: false, error: `app.ts failed to load: ${client.error}` }
-  if (client.value) {
-    if (!moduleHasSurfaces(client.value)) {
-      return { ok: false, error: 'app.ts must default-export defineApp({ work | manage | settings })' }
-    }
+    // No client: right for a server- or MCP-only app (talaria.json declares
+    // no surfaces) — the rule build.ts applies to the build itself.
+    const serverSide =
+      appHasServer(slug) || existsSync(appSrc(slug, 'server.ts')) || appHasMcp(slug) || existsSync(appSrc(slug, 'mcp.ts'))
+    const error = clientlessError(declaredSurfaces(slug), serverSide)
+    if (error) return { ok: false, error }
   } else {
-    const artifact = appClientArtifact(slug)
-    if (!artifact) return { ok: false, error: 'app.js is missing from the current build' }
-    if (!clientArtifactOk(readFileSync(artifact, 'utf8'))) {
-      return { ok: false, error: 'app.js is not an ESM client bundle' }
+    const client = await isolateApp(slug, 'load client', () => loadAppClient(slug))
+    if (!client.ok) return { ok: false, error: `app.ts failed to load: ${client.error}` }
+    if (client.value) {
+      if (!moduleHasSurfaces(client.value)) {
+        return { ok: false, error: 'app.ts must default-export defineApp({ work | manage | settings })' }
+      }
+    } else {
+      const artifact = appClientArtifact(slug)
+      if (!artifact) return { ok: false, error: 'app.js is missing from the current build' }
+      if (!clientArtifactOk(readFileSync(artifact, 'utf8'))) {
+        return { ok: false, error: 'app.js has no default export (defineApp)' }
+      }
     }
   }
   if (appHasServer(slug) || existsSync(appSrc(slug, 'server.ts'))) {

@@ -71,9 +71,19 @@ describe('clientArtifactOk', () => {
   it('accepts an ESM bundle with an export', () => {
     expect(clientArtifactOk('const x = 1;\nexport { x as default };\n')).toBe(true)
   })
+  it("accepts Rollup's minified default export and a plain one", () => {
+    expect(clientArtifactOk('import*as r from"/runtime/rt-svelte-internal-client.js";const t={work:1};export{t as default};')).toBe(true)
+    expect(clientArtifactOk('const surfaces = { work: 1 };\nexport default surfaces;\n')).toBe(true)
+  })
   it('rejects empty or non-module output', () => {
     expect(clientArtifactOk('')).toBe(false)
     expect(clientArtifactOk('(function(){var app=1})();')).toBe(false)
+  })
+  it('rejects a bundle whose entry lost its default export', () => {
+    // What Vite's default preserveEntrySignatures (false) produced: the
+    // entry's code, its imports, and no export at all.
+    expect(clientArtifactOk('import*as r from"/runtime/rt-svelte.js";const t={work:function(){}};r.from_html("");')).toBe(false)
+    expect(clientArtifactOk('const work = 1;\nconst manage = 2;\nexport { work, manage };\n')).toBe(false)
   })
 })
 

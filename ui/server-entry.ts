@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { spawn, type ChildProcess } from 'node:child_process'
 import { readFile, stat } from 'node:fs/promises'
 import { readFileSync, existsSync } from 'node:fs'
-import { join, extname, resolve, sep } from 'node:path'
+import { join, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
@@ -120,7 +120,15 @@ const MIME_TYPES: Record<string, string> = {
 
 async function tryServeStatic(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
-  const pathname = decodeURIComponent(url.pathname)
+  // A malformed escape is no file: the fetch handler answers it (a 400 under
+  // /api). A throw here was an unhandled rejection that left the request
+  // hanging with no answer at all.
+  let pathname: string
+  try {
+    pathname = decodeURIComponent(url.pathname)
+  } catch {
+    return false
+  }
   if (pathname.includes('..')) return false
 
   const filePath = join(CLIENT_DIR, pathname)
@@ -149,29 +157,12 @@ async function tryServeStatic(req: IncomingMessage, res: ServerResponse): Promis
   }
 }
 
-async function tryServeAppBuilds(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
-  const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
-  const pathname = decodeURIComponent(url.pathname)
-  if (!pathname.startsWith('/app-builds/') || pathname.includes('..')) return false
-  const root = resolve(process.env.TALARIA_APP_BUILDS_DIR || join(__dirname, '..', 'app-builds'))
-  const filePath = resolve(root, pathname.slice('/app-builds/'.length))
-  if (filePath !== root && !filePath.startsWith(root + sep)) return false
-  try {
-    const fileStat = await stat(filePath)
-    if (!fileStat.isFile()) return false
-    const ext = extname(filePath).toLowerCase()
-    const data = await readFile(filePath)
-    res.writeHead(200, {
-      'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-      'Content-Length': data.length,
-      'Cache-Control': 'public, max-age=31536000, immutable',
-    })
-    res.end(data)
-    return true
-  } catch {
-    return false
-  }
-}
+// /app-builds/* is NOT served from here. An app's compiled client is behind
+// that app's grant, so it goes through the fetch handler like any request
+// that needs a session: server/app-builds-door.ts serves app.js, app.css and
+// assets/** to a session granted the app, and nothing else (this used to
+// stream every file under the builds directory — server.js, mcp.js and
+// current.json included — before any session check).
 
 // A query string is NOT safe to log verbatim. Several routes carry live
 // credentials in it: the OAuth callbacks (/api/auth/google/callback,
@@ -334,12 +325,27 @@ function waitForDrain(res: ServerResponse): Promise<void> {
   })
 }
 
+/** A signal that aborts when the response closes before it finished — the
+ *  client hung up (closed tab, dropped connection, a fetch it aborted). Read
+ *  off the RESPONSE: the request's own 'close' fires as soon as its body has
+ *  been read, which is every request, so it says nothing about the client. A
+ *  response that finished closes too, with writableFinished set, and aborts
+ *  nothing. The same rule as the vite dev middleware (vite.config.ts). */
+function clientGone(res: ServerResponse): AbortSignal {
+  const gone = new AbortController()
+  res.once('close', () => {
+    if (!res.writableFinished) gone.abort(new DOMException('the client disconnected', 'AbortError'))
+  })
+  return gone.signal
+}
+
 async function requestHandler(req: IncomingMessage, res: ServerResponse) {
   if (req.method === 'GET' || req.method === 'HEAD') {
-    if (await tryServeAppBuilds(req, res)) return
     if (await tryServeStatic(req, res)) return
   }
 
+  // Armed before the body is read, so a client that leaves mid-upload is seen.
+  const signal = clientGone(res)
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
   const headers = new Headers()
   for (const [k, v] of Object.entries(req.headers)) {
@@ -359,7 +365,10 @@ async function requestHandler(req: IncomingMessage, res: ServerResponse) {
 
   // `duplex: 'half'` is an undici extension this TS's DOM lib doesn't know —
   // cast the init rather than drop it (the runtime needs it for the body).
-  const request = new Request(url.toString(), { method: req.method, headers, body, duplex: 'half' } as RequestInit)
+  // `signal` aborts when the caller goes away before the answer is done
+  // (clientGone): an app's server reads it as ctx.signal, and a proxied read
+  // stops waiting on the api for nobody.
+  const request = new Request(url.toString(), { method: req.method, headers, body, duplex: 'half', signal } as RequestInit)
   const ctx = requestContext(req, url)
   let isEventStream = false
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null

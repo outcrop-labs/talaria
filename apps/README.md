@@ -66,7 +66,7 @@ export default defineApp({ work: Work })
 <!-- Work.svelte -->
 <script lang="ts">
   import { Button, useAppQuery } from '@talaria/sdk'
-  const things = useAppQuery('my-app', 'things')
+  const things = useAppQuery('things')
 </script>
 
 {#each things.data ?? [] as t (t.id)}
@@ -108,8 +108,8 @@ export default defineAppServer({
 
 The host authenticates every request, verifies the app is enabled, and checks the user may reach
 this app **before** your handler runs. Role/permission decisions beyond that are yours
-(`ctx.user.role`, or call platform APIs). On the client, `appApi('<slug>')` /
-`useAppQuery('<slug>', 'things')` are pre-bound to these routes.
+(`ctx.user.role`, or call platform APIs). On the client, `useAppApi()` /
+`useAppQuery('things')` are pre-bound to these routes, under the slug the app was installed as.
 
 ### mcp.ts — tools for agents
 
