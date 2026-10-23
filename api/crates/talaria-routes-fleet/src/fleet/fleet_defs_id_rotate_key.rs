@@ -58,7 +58,7 @@ pub async fn post(
     // another render, so that IS the caller's problem; the roll is not —
     // it is detached, and its verdict goes to the audit trail like every
     // other roll's.
-    if let Err(e) = render_fleet(&state.pg, &sb, None).await {
+    if let Err(e) = render_fleet(&state.pg, &sb).await {
         return Ok(internal("[fleet/defs/rotate-key] render failed", e));
     }
     // `roll_agent_for_model` itself rolls only a managed+enabled agent; a

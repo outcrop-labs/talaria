@@ -93,8 +93,10 @@ const MIGRATIONS: string[] = [
      unique (conversation_id, seq)
    )`,
   `create index if not exists messages_conv_idx on messages(conversation_id, seq)`,
-  // Fleet agent registry — Talaria's own "brain" (ripped from mission-control's
-  // agents table). Agents register + heartbeat to Talaria, not MC.
+  // Fleet agent registry — the retired mission-control heartbeat's table.
+  // Nothing registers or heartbeats any more (those routes are gone); it stays,
+  // with the personal-agent / fleet-create cleanup that touches it, until a
+  // contract migration drops it.
   `create table if not exists fleet_agents (
      id uuid primary key default gen_random_uuid(),
      name text unique not null,
@@ -1141,7 +1143,8 @@ const MIGRATIONS: string[] = [
   // Custom board statuses. category carries the workflow semantics: open
   // (intake), active (working), review (the agent-review catch), done
   // (terminal). agent_start marks columns that constitute assignment approval
-  // for agents (heartbeat pickup). BLOCKED is a system status — always
+  // for agents (the pickup columns work dispatch starts sessions from).
+  // BLOCKED is a system status — always
   // present, never stored here. No rows = the shipped default set.
   `create table if not exists board_statuses (
     id uuid primary key default gen_random_uuid(),

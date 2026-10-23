@@ -11,7 +11,9 @@ ticket.
 
 ## Path
 
-1. `doctor` if you have not yet this session — read the `guide` and run the `probe`.
+1. `doctor` if you have not yet this session. It runs the harness for you (the version
+   probe, then one model call through the gateway); read its `checks` and the `guide`,
+   and do what `next` says.
 2. `start_job` with the ticket, repo, effort, and (for standard/heavy) a plan.
 3. Clone into the `workdir`. Work only there, only on the branch it cut.
 4. First turn: `jsonRun` (else `run`) in the workdir. One scoped ask. Fill `<task>`.

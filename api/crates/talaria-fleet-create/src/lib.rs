@@ -358,12 +358,14 @@ pub async fn delete_agent_forever(
         return Err("retire the agent first. Delete is for retired agents only.".into());
     }
 
-    // Containers first (should already be gone after retire; both slots,
-    // best-effort).
+    // Containers first (should already be gone after retire; both service
+    // names, a legacy -b included; best-effort, and graceful — never a
+    // SIGKILL).
     for slot in [talaria_fleet_docker::Slot::A, talaria_fleet_docker::Slot::B] {
-        let _ = talaria_fleet_docker::remove_container_by_name(
-            &talaria_fleet_docker::slot_container(&department, slot),
-        )
+        let _ = talaria_fleet_docker::retire_container(&talaria_fleet_docker::slot_container(
+            &department,
+            slot,
+        ))
         .await;
     }
 

@@ -26,8 +26,9 @@ Talaria makes agents teammates, with everything that word implies:
 - **Identity.** Configure your organization once and every agent anchors to it. Your agents introduce
   themselves as part of *your company*, never as somebody's platform.
 - **Management.** Hire an agent from a plain-language description (Muse designs the identity, soul,
-  and starter skills for review). Its internals are version-controlled with diff-and-restore. Changes
-  deploy blue/green with zero downtime. Every person also gets their own personal assistant.
+  and starter skills for review). Its internals are version-controlled with diff-and-restore. Config
+  changes reach the running agent in place; the rest roll its container. Every person also gets their
+  own personal assistant.
 - **Accountability.** Agents create and triage work but can't self-assign or self-complete. Sign-off
   is a human's, enforced at the protocol layer. An optional QA judge reviews agent work; a confab
   guard catches fabricated claims.

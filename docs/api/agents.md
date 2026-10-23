@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-29 routes.
+27 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -24,9 +24,7 @@
 | [`/api/agent/whoami`](#apiagentwhoami) | GET | `agent` |
 | [`/api/agents`](#apiagents) | GET | `session` |
 | [`/api/agents/{id}/conversations`](#apiagentsidconversations) | GET | `session` |
-| [`/api/agents/{id}/heartbeat`](#apiagentsidheartbeat) | GET | `fleet` |
 | [`/api/agents/cron-output`](#apiagentscron-output) | POST | `agent` |
-| [`/api/agents/register`](#apiagentsregister) | POST | `fleet` |
 | [`/api/agents/subagent-events`](#apiagentssubagent-events) | POST | `agent` |
 | [`/api/agents/tool-events`](#apiagentstool-events) | POST | `agent` |
 | [`/api/agents/uploads`](#apiagentsuploads) | POST | `agent` |
@@ -262,17 +260,6 @@ Source: [`api/crates/talaria-routes-comms/src/comms/agents_id_conversations.rs`]
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{conversations}` | 200, 404 | — |
 
-## `/api/agents/{id}/heartbeat`
-
-Source: [`api/crates/talaria-routes-fleet/src/agents/agents_id_heartbeat.rs`](../../api/crates/talaria-routes-fleet/src/agents/agents_id_heartbeat.rs)
-
-> GET /api/agents/{id}/heartbeat. Refresh last_seen and return the agent's
-> assigned work (tasks assigned to it, across boards). MC-compatible.
-
-| Method | Auth | Body | Returns | Status | Flags |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `fleet` | — | `{work_items}` | 200, 401, 403, 404 | — |
-
 ## `/api/agents/cron-output`
 
 Source: [`api/crates/talaria-routes-fleet/src/agents/cron_output.rs`](../../api/crates/talaria-routes-fleet/src/agents/cron_output.rs)
@@ -286,28 +273,6 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/cron_output.rs`](../../api/
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `agent` | — | `{ok, messageId}` | 200, 400, 404 | — |
-
-## `/api/agents/register`
-
-Source: [`api/crates/talaria-routes-fleet/src/agents/agents_register.rs`](../../api/crates/talaria-routes-fleet/src/agents/agents_register.rs)
-
-> POST /api/agents/register. An agent registers with Talaria (MC-compatible
-> contract, so the existing plugin works repointed). Agent-key auth: the
-> registry row is bound to the caller's PROVEN identity — a `tak_` caller
-> registers only its own model, a legacy caller only the name it asserted
-> …
-
-| Method | Auth | Body | Returns | Status | Flags |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `fleet` | [body](#post-apiagentsregister-body) | `{agent, registered}` | 200, 400, 401, 403 | — |
-
-### POST `/api/agents/register` body
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `name` | `string(1, 200)` |  |
-| `role` | `string?(80)` |  |
-| `framework` | `string?(80)` |  |
 
 ## `/api/agents/subagent-events`
 

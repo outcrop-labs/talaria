@@ -34,8 +34,8 @@
 # removing `cap_add` entirely fails it with the init diagnosis, and removing only
 # the `- KILL` line fails it with exit 137 after the stop timeout.
 #
-# The image is public (`nousresearch/hermes-agent:latest`), so this needs no
-# registry credentials. No LLM, key or network egress is needed either: the
+# The image is public (the Hermes pin in the chassis template), so this needs
+# no registry credentials. No LLM, key or network egress is needed either: the
 # synthetic agent points at a base_url that never answers, on purpose. See the
 # header of scripts/chassis-boot-smoke.mjs for why that is sufficient.
 name: chassis
@@ -96,9 +96,16 @@ jobs:
           install-dir: ui
 
       # Pull explicitly rather than letting `compose up` do it, so a registry
-      # problem reports as a pull failure instead of as a boot timeout.
+      # problem reports as a pull failure instead of as a boot timeout. The
+      # image is the chassis template's own pin (its `${HERMES_IMAGE:-…}`
+      # default), read from the file so this job always boots what production
+      # renders, never a fresh `:latest` no host runs.
       - name: Pull the agent image
-        run: docker pull nousresearch/hermes-agent:latest
+        run: |
+          pin="$(sed -nE 's/^ *image: \$\{HERMES_IMAGE:-(.+)\}$/\1/p' scripts/chassis.template.yml)"
+          test -n "$pin" || { echo "no pinned image default in scripts/chassis.template.yml"; exit 1; }
+          echo "pulling $pin"
+          docker pull "$pin"
 
       - name: Boot the chassis and stop it
         run: bun scripts/chassis-boot-smoke.mjs

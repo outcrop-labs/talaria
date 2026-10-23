@@ -267,7 +267,7 @@
             size="sm"
             disabled={anyRolling || rollConfirming}
             onclick={() => (rollConfirming = true)}
-            title="Roll every running agent: a fresh container each, the old one finishes its replies first"
+            title="Roll every running agent: a fresh container each, recreated in place"
           >
             <Repeat size={14} />
             Roll all
@@ -321,7 +321,7 @@
                 Roll {runningCount === 1 ? 'the one running agent' : `all ${runningCount} running agents`}?
               </p>
               <p class="font-sans text-xs text-muted">
-                Each gets a fresh container beside its current one; the old one finishes its replies before it goes. A few roll at a time so the host stays responsive. Agents already mid-roll are skipped.
+                Each container is recreated in place: it stops, a fresh one starts on the current render, and the agent is offline for the minute or so that takes (chats wait for it). A few roll at a time so the host stays responsive. Agents already mid-roll are skipped.
               </p>
             </div>
             <CloseButton label="Cancel" onClick={() => (rollConfirming = false)} />

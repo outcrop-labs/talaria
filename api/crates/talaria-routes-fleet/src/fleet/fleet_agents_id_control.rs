@@ -1,7 +1,7 @@
 // POST /api/fleet/agents/{id}/control. Lifecycle control for one agent —
 // this agent's managers, and admins (docs/PERMISSIONS.md, "Agent managers").
 //   up | stop | restart   the managed service (renders first on `up`)
-//   roll                  zero-downtime replacement — detached
+//   roll                  recreate the container in place — detached
 // `up`/`unretire`/`roll` return IMMEDIATELY; the roster's polled container
 // health shows the warm-up ('starting') phase instead of blocking the call.
 
@@ -94,7 +94,7 @@ pub async fn post(
                 Ok(sb) => sb,
                 Err(e) => return Ok(catch(e)),
             };
-            if let Err(e) = render_fleet(&state.pg, &sb, None).await {
+            if let Err(e) = render_fleet(&state.pg, &sb).await {
                 return Ok(catch(e));
             }
             if let Err(e) = fleet_up(&state.pg, &def.department).await {
@@ -109,8 +109,9 @@ pub async fn post(
             Err(e) => catch(e),
         },
         "restart" => {
-            // Quick bounce (brief downtime; in-flight replies drop). For a
-            // no-downtime reboot use 'roll'.
+            // Quick bounce of the existing container (brief downtime; the
+            // same env and image). 'roll' recreates it from the current
+            // render instead.
             if !def.managed {
                 return Ok(house_error(StatusCode::BAD_REQUEST, "not a managed agent"));
             }
@@ -120,9 +121,10 @@ pub async fn post(
             }
         }
         "roll" => {
-            // Zero-downtime replacement — fresh container, old one drains.
-            // Long (health wait + drain), so it runs detached; the roster's
-            // health polling tells the story.
+            // Recreate in place — the container stops gracefully and a fresh
+            // one starts from the current render. Long (pull, stop, health
+            // wait), so it runs detached; the roster's health polling tells
+            // the story.
             if !def.managed {
                 return Ok(house_error(StatusCode::BAD_REQUEST, "not a managed agent"));
             }
@@ -198,7 +200,7 @@ pub async fn post(
                 Ok(sb) => sb,
                 Err(e) => return Ok(catch(e)),
             };
-            match render_fleet(&state.pg, &sb, None).await {
+            match render_fleet(&state.pg, &sb).await {
                 // manifest drops it; bridge hot-reloads
                 Ok(render) => Json(json!({ "ok": true, "render": render.agents })).into_response(),
                 Err(e) => catch(e),
@@ -238,7 +240,7 @@ pub async fn post(
                 Ok(sb) => sb,
                 Err(e) => return Ok(catch(e)),
             };
-            if let Err(e) = render_fleet(&state.pg, &sb, None).await {
+            if let Err(e) = render_fleet(&state.pg, &sb).await {
                 return Ok(catch(e));
             }
             if def.managed {

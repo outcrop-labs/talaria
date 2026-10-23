@@ -7,8 +7,8 @@
 // about this wire shape worth knowing. The stored half (name, schedule, when,
 // which job) is Talaria's row and is always there. The live half (`enabled`,
 // `state`, `nextRunAt`, `lastRunAt`, `lastStatus`) is read from the agent's
-// own jobs.json at request time and is null whenever the container cannot be
-// asked — a rolling agent, a stopped one, a box with no docker. A surface
+// own scheduler (`/api/jobs` on its API server) at request time and is null
+// whenever the agent cannot be asked — a rolling agent, a stopped one. A surface
 // that read a null live half as "no schedule" would tell its owner their
 // nightly digest had vanished every time their agent restarted, so
 // `scheduleTone` below keeps "cannot ask" as its own answer.

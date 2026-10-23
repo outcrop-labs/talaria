@@ -96,20 +96,6 @@ explanation. Two more sections fill in over time: **asked for help with** (work 
 and couldn't do — **Build it** turns the gap into a skill) and **Work routed to**
 (workflows that ride along when matching tickets dispatch).
 
-**Marketplace** installs a ready-made skill instead. It searches Hermes' own official skills
-index — Hermes' optional skills, the GitHub repos Hermes curates, and skills.sh — from a copy
-Talaria refreshes every six hours, and each card says how far Hermes trusts its source
-(**builtin**, **trusted** or **community**). The **+** fetches that one skill from GitHub and
-runs Hermes' own security scanner (Skills Guard) over it before anything is written: Hermes'
-rules decide, so a community skill with any high-risk finding — reading credential files,
-piping a download into a shell, hidden unicode — is not installed, and a trusted one is refused
-only for a critical finding. A refused skill opens its scan report (each finding with its file
-and line); nothing lands in the destination. A skill with a clean scan installs on the click. One
-that Hermes' rules allow but whose scan still found something opens the same report first, and
-installs only when you press **Install** there, as Hermes' own install shows the report and asks.
-Installing needs edit rights on the destination — that agent, or the shared root for
-**Every agent**.
-
-A term you'll meet around agents: a **roll** is a zero-downtime replacement — a fresh
-container comes up beside the old one and takes over only once healthy, so the old one
-finishes the replies it's holding.
+A term you'll meet around agents: a **roll** replaces the agent's container in place — it
+stops, finishing what it can, and a fresh one starts on the agent's current settings. The
+agent is offline for the minute or so that takes; a chat sent meanwhile waits for it.

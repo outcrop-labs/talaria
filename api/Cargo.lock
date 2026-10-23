@@ -3568,7 +3568,6 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
- "talaria-fleet-docker",
  "talaria-gateway",
  "tokio",
  "tracing",
@@ -3723,16 +3722,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "talaria-agents-registry"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "sqlx",
- "uuid",
-]
-
-[[package]]
 name = "talaria-alerts"
 version = "0.1.0"
 dependencies = [
@@ -3796,7 +3785,6 @@ dependencies = [
  "talaria-agent-secrets",
  "talaria-agent-skills",
  "talaria-agent-writes",
- "talaria-agents-registry",
  "talaria-alerts",
  "talaria-api-facades",
  "talaria-api-routes",
@@ -4808,7 +4796,6 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
- "talaria-agents-registry",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-users",
@@ -4938,7 +4925,6 @@ dependencies = [
  "sqlx",
  "talaria-fleet-docker",
  "talaria-secretbox",
- "talaria-update-layout",
  "tokio",
  "tracing",
 ]
@@ -4965,7 +4951,9 @@ dependencies = [
  "talaria-guard-coaching",
  "talaria-mcp",
  "talaria-mcp-service",
+ "talaria-model-efforts",
  "talaria-org",
+ "talaria-persona",
  "talaria-search",
  "talaria-secretbox",
  "talaria-workbench",
@@ -6732,7 +6720,6 @@ dependencies = [
  "talaria-agent-role-templates",
  "talaria-agent-secrets",
  "talaria-agent-skills",
- "talaria-agents-registry",
  "talaria-api-facades",
  "talaria-approvals",
  "talaria-artifacts",
@@ -7362,7 +7349,6 @@ dependencies = [
  "talaria-tasks-types",
  "talaria-ticket-chat",
  "talaria-workchains",
- "talaria-workflows",
  "tokio",
  "tracing",
  "uuid",
@@ -7737,6 +7723,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-secrets",
  "talaria-approvals",
  "talaria-artifacts",
  "talaria-attribution",

@@ -80,8 +80,7 @@
 #     gets disabled. Not this file's problem.
 #   - Build (`vite build`) and any deploy. `svelte-check` already covers the
 #     type surface; a full build roughly triples the runtime for a weaker signal.
-#   - `plugin/` — no build or typecheck to run at all. `scripts/`
-#     is not typechecked either; it is EXECUTED, by the invariants job.
+#   - Typechecking `scripts/`. It is EXECUTED instead, by the invariants job.
 #   - `paths:` filters ON THE TRIGGERS. Still out, and now for a reason that
 #     survives contact: a workflow-level filter is as coarse as the whole file,
 #     and one of these jobs — invariants, seconds, no install — has to see

@@ -1,11 +1,11 @@
-// Applying MCP registry changes to RUNNING agents. A config re-render isn't
-// enough: Hermes
-// establishes its MCP connections at process start, so a newly granted server
-// never appears inside a live container. The fix is the fleet's blue/green
-// roll — the current container keeps serving until its replacement is
-// healthy, in-flight replies drain, then cutover — applied to exactly the
-// agents a change touches. Rolls run sequentially off a deduped queue: a
-// burst of registry edits becomes one roll per department.
+// Applying MCP registry changes to RUNNING agents. The render rewrites each
+// agent's config.yaml in place, and a running Hermes reconciles its
+// `mcp_servers` against it by NAME about once a minute — so a granted or
+// revoked server lands on its own. What that reconcile does not pick up is a
+// changed timeout, URL or header under an unchanged name, so the change is
+// also followed by the fleet's roll (an in-place recreate), applied to
+// exactly the agents a change touches. Rolls run sequentially off a deduped
+// queue: a burst of registry edits becomes one roll per department.
 
 use serde_json::json;
 use sqlx::PgPool;
