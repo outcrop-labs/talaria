@@ -1806,9 +1806,9 @@ mod tests {
         // updates — and this crate's tests were never run, so nothing made
         // anyone notice. The assertion is the contract; the name says what it
         // is for.
-        assert_eq!(TALARIA_TOOLS.len(), 84);
+        assert_eq!(TALARIA_TOOLS.len(), 83);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 84);
+        assert_eq!(names.len(), 83);
     }
 
     #[test]

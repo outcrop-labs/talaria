@@ -247,8 +247,7 @@ fn rerender_fleet(state: &AppState) {
                 return;
             }
         };
-        if let Err(e) = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb, None).await
-        {
+        if let Err(e) = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb).await {
             tracing::warn!("[model-roles] vision role saved; fleet re-render failed: {e}");
         }
     });

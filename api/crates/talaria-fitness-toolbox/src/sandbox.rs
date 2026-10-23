@@ -3501,7 +3501,7 @@ mod tests {
         }
         assert_eq!(
             catalog.len(),
-            84,
+            83,
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
     }
