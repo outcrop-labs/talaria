@@ -1,0 +1,16 @@
+[package]
+name = "talaria-agent-web-search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-fleet-layout = { workspace = true }
+talaria-secretbox = { workspace = true }
+talaria-settings = { workspace = true }

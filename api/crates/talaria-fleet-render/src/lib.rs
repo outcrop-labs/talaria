@@ -446,6 +446,40 @@ async fn ensure_hermes_env_keys(
     (unkeyed, warnings)
 }
 
+/// Unseal the agent web-search vendor key(s) into the fleet .env as
+/// `TALARIA_WEB_<VAR>` lines (rewritten whole each render, so a cleared or
+/// switched vendor leaves nothing behind) and return the Hermes env names
+/// that now have a value to interpolate. A key that cannot be opened is
+/// named in the warnings and left out: the agent then reports the vendor's
+/// own missing-key error rather than receiving an empty variable.
+async fn ensure_web_search_env(
+    sb: &SecretBox,
+    plan: &talaria_agent_web_search::WebRender,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<&'static str>, String> {
+    let mut delivered: Vec<(&'static str, String)> = Vec::new();
+    for (var, sealed) in &plan.keys {
+        match sb.open(sealed) {
+            Ok(v) if talaria_agent_web_search::fleet_env_value_ok(&v) => delivered.push((*var, v)),
+            Ok(_) => warnings.push(format!(
+                "agent web search: the stored {var} is not a value Talaria can write to the fleet .env — re-enter it on Admin → Search"
+            )),
+            Err(e) => warnings.push(format!(
+                "agent web search: {var} could not be unsealed ({e}) — re-enter it on Admin → Search"
+            )),
+        }
+    }
+    let env_path = talaria_fleet_layout::fleet_env();
+    let current = tokio::fs::read_to_string(&env_path)
+        .await
+        .unwrap_or_default();
+    let next = talaria_agent_web_search::fleet_env_with(&current, &delivered);
+    if next != current {
+        write_fleet_env(&env_path, &next).await?;
+    }
+    Ok(delivered.into_iter().map(|(var, _)| var).collect())
+}
+
 fn unkeyed_warning(slug: &str, why: &str) -> String {
     format!(
         "{slug}: HERMES_KEY_{} could not be minted ({why}) — service left out of the compose file rather than rendered with an open API",
@@ -956,47 +990,10 @@ async fn set_executable(path: &Path) {
     let _ = tokio::fs::set_permissions(path, perms).await;
 }
 
-/// TALARIA_AGENT_DIAL=container (docker/compose.yml deployments): the app runs
-/// ON the fleet network and dials compose service names, so loopback port
-/// publishing is skipped entirely — every install sharing one docker host
-/// allocates identical ports from the same seed data and would collide.
-fn dial_is_container() -> bool {
-    matches!(std::env::var("TALARIA_AGENT_DIAL"), Ok(v) if v == "container")
-}
-
-/// The operator's search endpoint AS AN AGENT CONTAINER CAN REACH IT, or None.
-/// The app's spelling is the app's view: on a host-run dev app a loopback
-/// address means the laptop, which an agent reaches as host.docker.internal
-/// (the chassis declares it); in a containerized stack a loopback address is
-/// the app container itself and reaches nothing from an agent, so it is
-/// withheld rather than rendered wrong. Any other host passes through as-is.
-fn agent_search_url(app_url: &str, container_dial: bool) -> Option<String> {
-    let url = app_url.trim();
-    if url.is_empty() {
-        return None;
-    }
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return Some(url.to_string());
-    };
-    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h, Some(p)),
-        _ => (authority, None),
-    };
-    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "0.0.0.0") {
-        return Some(url.to_string());
-    }
-    if container_dial {
-        return None;
-    }
-    let port = port.map(|p| format!(":{p}")).unwrap_or_default();
-    let path = if path.is_empty() {
-        String::new()
-    } else {
-        format!("/{path}")
-    };
-    Some(format!("{scheme}://host.docker.internal{port}{path}"))
-}
+// The deployment's dial mode, and the operator's search URL as an agent
+// container reaches it, live in talaria-fleet-layout: Admin → Search reads the
+// same rule back, so the panel says what this render does.
+use talaria_fleet_layout::{agent_search_url, dial_is_container};
 
 // ── The render loop ───────────────────────────────────────────────────────────
 
@@ -1074,10 +1071,17 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     let targets = managed_agents(pg).await.map_err(|e| e.to_string())?;
     let agent_search_url =
         agent_search_url(&talaria_search::search_url(pg).await, dial_is_container());
+    // The operator's agent web-search choice (Admin → Search), the same for
+    // every agent in this render: the `web:` keys merged into each config
+    // below, and the vendor key delivered through the fleet .env.
+    let web_search = talaria_agent_web_search::render(
+        &talaria_agent_web_search::read(pg).await,
+        agent_search_url.is_some(),
+    );
     let mut result = RenderResult {
         agents: Vec::new(),
         files: Vec::new(),
-        warnings: Vec::new(),
+        warnings: web_search.warnings.clone(),
     };
 
     // The fleet's default brain is Talaria's own gateway. Best-effort — never
@@ -1125,6 +1129,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     talaria_mcp_service::ensure_mcp_service();
     ensure_fleet_env_key().await?;
     ensure_agent_env_keys(pg, sb, &targets).await?;
+    let web_search_keys = ensure_web_search_env(sb, &web_search, &mut result.warnings).await?;
     // The compose bearer, minted where missing; a slug that cannot be keyed
     // is skipped in the service loop below — named in the warnings, never
     // rendered with an empty `API_SERVER_KEY`.
@@ -1538,9 +1543,24 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         // used to bolt a second `web_search` onto every agent over MCP and run
         // its own SearXNG to answer it; now the agent searches with what it
         // has, and an endpoint the operator configured here reaches it too.
-        // Nothing set → nothing rendered → Hermes resolves its own floor.
+        // Nothing set → nothing rendered → Hermes resolves its own floor. A
+        // URL rendered here also switches that keyless floor off (the `web:`
+        // merge above), unless Admin → Search allowed it. Rendered is not
+        // reachable: nothing probes the URL from an agent.
         if let Some(url) = &agent_search_url {
             env.insert("SEARXNG_URL".into(), json!(url));
+        }
+        // The picked web vendor's key, under the exact name its Hermes
+        // provider reads, interpolated from the fleet .env — the value never
+        // lands in the compose file.
+        for var in &web_search_keys {
+            env.insert(
+                (*var).into(),
+                json!(format!(
+                    "${{{}}}",
+                    talaria_agent_web_search::fleet_env_var(var)
+                )),
+            );
         }
         // A credential git cannot get must FAIL, not wait: with the terminal
         // prompt enabled (git's default), a push to a repo the helper declines
@@ -2764,30 +2784,6 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_operators_search_url_reaches_an_agent_only_where_it_can() {
-        // Nothing configured: nothing rendered — Hermes resolves its own floor.
-        assert_eq!(agent_search_url("", false), None);
-        assert_eq!(agent_search_url("   ", true), None);
-        // A real host passes through untouched, container or not.
-        assert_eq!(
-            agent_search_url("https://search.corp.example/", true).as_deref(),
-            Some("https://search.corp.example/")
-        );
-        // Loopback on a host-run app is the laptop, which an agent spells
-        // host.docker.internal; the port and any path survive.
-        assert_eq!(
-            agent_search_url("http://127.0.0.1:8888", false).as_deref(),
-            Some("http://host.docker.internal:8888")
-        );
-        assert_eq!(
-            agent_search_url("http://localhost:8080/searx", false).as_deref(),
-            Some("http://host.docker.internal:8080/searx")
-        );
-        // Loopback in a containerized stack is the app container itself —
-        // withheld, never rendered wrong.
-        assert_eq!(agent_search_url("http://127.0.0.1:8888", true), None);
-    }
     use serde_json::json;
 
     const CHASSIS: &str = "\

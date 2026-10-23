@@ -3697,6 +3697,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-agent-web-search"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sqlx",
+ "talaria-fleet-layout",
+ "talaria-secretbox",
+ "talaria-settings",
+]
+
+[[package]]
 name = "talaria-agent-writes"
 version = "0.1.0"
 dependencies = [
@@ -4946,6 +4957,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-defs",
  "talaria-agent-secrets",
+ "talaria-agent-web-search",
  "talaria-coding-accounts",
  "talaria-fleet-brain",
  "talaria-fleet-budget",
@@ -6555,6 +6567,7 @@ dependencies = [
  "sqlx",
  "talaria-agent-auth",
  "talaria-agent-defs",
+ "talaria-agent-web-search",
  "talaria-api-facades",
  "talaria-apps",
  "talaria-audit",

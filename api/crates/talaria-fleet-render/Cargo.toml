@@ -16,6 +16,7 @@ sqlx = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-agent-defs = { workspace = true }
 talaria-agent-secrets = { workspace = true }
+talaria-agent-web-search = { workspace = true }
 talaria-coding-accounts = { workspace = true }
 talaria-fleet-docker = { workspace = true }
 talaria-fleet-layout = { workspace = true }

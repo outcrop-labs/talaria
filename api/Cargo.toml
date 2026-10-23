@@ -198,6 +198,8 @@ talaria-agent-secrets = { path = "crates/talaria-agent-secrets" }
 
 talaria-agent-skills = { path = "crates/talaria-agent-skills" }
 
+talaria-agent-web-search = { path = "crates/talaria-agent-web-search" }
+
 talaria-agent-writes = { path = "crates/talaria-agent-writes" }
 
 talaria-alerts = { path = "crates/talaria-alerts" }
