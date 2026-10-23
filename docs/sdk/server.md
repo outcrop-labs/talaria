@@ -143,8 +143,13 @@ try {
 The path must start with `/api/`. It can't name an app's own server (`/api/apps/…`), the host's
 app routes (`/api/app-host/…`), the app-MCP gateway or the service-to-service prefix
 (`/api/internal`); those throw a `TypeError`. A read has a
-30-second deadline to the answer's headers, which `timeoutMs` changes; a write has none. Every
-call follows `ctx.signal`, and any `signal` you pass as well.
+30-second deadline to the answer's headers, which `timeoutMs` changes; a write has none.
+
+A read follows `ctx.signal`: when the caller leaves, it is cut. A write (`POST`, `PUT`, `PATCH`,
+`DELETE`) does not. It runs to completion even after the caller closes the tab, the same rule the
+platform keeps for the browser's own writes, because a change half made for nobody is worse than
+one finished for nobody. A `signal` you pass cuts any call, a write included, so pass
+`signal: ctx.signal` only for a write you want stopped when the caller leaves.
 
 ## Secrets
 
@@ -177,8 +182,9 @@ instance.
 
 `ctx.signal` aborts when the caller disconnects before your answer is done, such as a closed tab
 or an aborted fetch. Pass it to long work, `runHarness` and your own `fetch` calls, so that work
-stops instead of spending for nobody. `ctx.api` already follows it. A handler that throws because
-the caller left isn't logged as a crash.
+stops instead of spending for nobody. `ctx.api` already follows it on reads, and deliberately
+not on writes ([Platform data](#platform-data)). A handler that throws because the
+caller left isn't logged as a crash.
 
 ## An app with no UI
 

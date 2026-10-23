@@ -78,7 +78,9 @@ export interface PlatformApiInit {
   method?: string
   body?: unknown
   headers?: HeadersInit
-  /** Combined with the request's own signal: either aborts the call. */
+  /** Your own signal: it aborts the call, a write included. A read also
+   *  follows the caller's (`ctx.signal`); a write does not, so pass
+   *  `ctx.signal` here only to cut a write when the caller leaves. */
   signal?: AbortSignal
   /** Deadline to the response's headers, in ms. Reads default to 30s, the
    *  same ceiling the proxy puts on a browser's reads; writes have none, as
@@ -163,13 +165,18 @@ export function platformApi(request: Request, apiBase: () => string | undefined 
       }
     }
 
-    // The caller's signal and the app's own cut the whole call; the deadline
-    // guards only the wait for the response's headers (cleared when they
-    // land), the split the proxy makes for the browser's requests.
+    // The proxy's rule for the browser's own requests (rust-proxy.ts): the
+    // caller leaving cuts a READ, since nobody is waiting for it, and never a
+    // WRITE — a task, a fleet verb or an install half done because a tab
+    // closed is worse than one finished for nobody. The app's own signal is
+    // the app's choice and cuts either. The deadline guards only the wait for
+    // the response's headers (cleared when they land), reads by default.
+    const read = method === 'GET' || method === 'HEAD'
     const deadline = new AbortController()
-    const signals: AbortSignal[] = [request.signal, deadline.signal]
+    const signals: AbortSignal[] = [deadline.signal]
+    if (read && request.signal) signals.push(request.signal)
     if (init.signal) signals.push(init.signal)
-    const timeoutMs = init.timeoutMs ?? (method === 'GET' || method === 'HEAD' ? READ_DEADLINE_MS : undefined)
+    const timeoutMs = init.timeoutMs ?? (read ? READ_DEADLINE_MS : undefined)
     const timer =
       timeoutMs === undefined
         ? undefined

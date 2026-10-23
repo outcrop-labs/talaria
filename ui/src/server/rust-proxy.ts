@@ -108,6 +108,17 @@ const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-req
 const READ_DEADLINE_MS = 30_000
 const READ_METHODS = new Set(['GET', 'HEAD'])
 
+/** Whether a failed upstream fetch is the CALLER's abort — not our read
+ *  deadline, not a transport failure. The composed signal names the first
+ *  source that fired, so a deadline that fired first stays a 502 even if the
+ *  caller then leaves; and the error must be that abort itself (fetch rejects
+ *  with the signal's reason), so a refused connection that happens to race a
+ *  closing tab is still logged as the outage it is. */
+function callerLeft(e: Error, caller: AbortSignal | null | undefined, sent: AbortSignal | undefined): boolean {
+  if (!caller?.aborted || sent === undefined || sent.reason !== caller.reason) return false
+  return e === caller.reason || e.name === 'AbortError'
+}
+
 export async function maybeProxy(request: Request, pathname: string): Promise<Response | null> {
   const base = rustApiUrl()
   if (base === undefined || STAY_TS.some((r) => r.test(pathname))) return null
@@ -161,6 +172,13 @@ export async function maybeProxy(request: Request, pathname: string): Promise<Re
   if (timer !== undefined) clearTimeout(timer)
 
   if (res instanceof Error) {
+    // The caller left before the api answered: the read was cut on purpose
+    // (above), the api is fine, and nobody is waiting for an answer. That is
+    // not an outage, so it is neither logged as one nor answered 502 — the
+    // `unreachable` line below is what an operator reads to spot a down api,
+    // and SPA navigations and cancelled queries abort reads all day. 499 is
+    // the app gateway's answer for the same moment (apps.$app.$.ts).
+    if (callerLeft(res, request.signal, signal)) return new Response(null, { status: 499 })
     // Fixed sentence, the one this boundary already uses — the fetch error
     // names the Rust api's host:port, which is topology, not a key holder's
     // business. Same shape as llm.v1.chat.completions.ts's own 502.

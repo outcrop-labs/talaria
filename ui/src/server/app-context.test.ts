@@ -154,24 +154,67 @@ describe('platformApi (ctx.api)', () => {
     expect(err.status).toBe(503)
   })
 
-  it('follows the request\'s signal: a caller who leaves cuts the call', async () => {
-    const gone = new AbortController()
-    let seen: AbortSignal | undefined
+  // The proxy's rule (rust-proxy.ts) for the browser's own requests, held
+  // for the app's: the caller leaving cuts a READ and never a WRITE.
+  const hangingFetch = () => {
+    const seen: AbortSignal[] = []
+    const settle: Array<() => void> = []
     vi.stubGlobal(
       'fetch',
       vi.fn(
         (_url: URL, init: RequestInit) =>
-          new Promise<Response>((_res, reject) => {
-            seen = init.signal ?? undefined
+          new Promise<Response>((resolve, reject) => {
+            seen.push(init.signal!)
+            settle.push(() => resolve(new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } })))
             init.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true })
           }),
       ),
     )
-    const pending = platformApi(caller({}, gone.signal), BASE)('/api/boards', { method: 'POST', body: {} })
-    await Promise.resolve()
-    expect(seen?.aborted).toBe(false)
+    return { seen, settle }
+  }
+
+  it('a caller who leaves cuts a read', async () => {
+    const { seen } = hangingFetch()
+    const gone = new AbortController()
+    const pending = platformApi(caller({}, gone.signal), BASE)('/api/boards')
+    await vi.waitFor(() => expect(seen).toHaveLength(1))
+    expect(seen[0]!.aborted).toBe(false)
     gone.abort(new DOMException('the client disconnected', 'AbortError'))
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('a caller who leaves does NOT cut a write: it runs to completion, as the proxy\'s writes do', async () => {
+    const { seen, settle } = hangingFetch()
+    const gone = new AbortController()
+    const api = platformApi(caller({}, gone.signal), BASE)
+    const writes = ['POST', 'PUT', 'PATCH', 'DELETE'].map((method) => api('/api/boards/b1/tasks', { method, body: { title: 'x' } }))
+    await vi.waitFor(() => expect(seen).toHaveLength(4))
+    gone.abort(new DOMException('the client disconnected', 'AbortError'))
+    await Promise.resolve()
+    for (const s of seen) expect(s.aborted).toBe(false)
+    // The api answers after the tab closed; the app still gets the answer.
+    for (const done of settle) done()
+    expect(await Promise.all(writes)).toEqual([{ ok: true }, { ok: true }, { ok: true }, { ok: true }])
+  })
+
+  it('a caller who has already left still gets their write sent', async () => {
+    const { seen, settle } = hangingFetch()
+    const gone = new AbortController()
+    gone.abort(new DOMException('the client disconnected', 'AbortError'))
+    const write = platformApi(caller({}, gone.signal), BASE)('/api/boards', { method: 'POST', body: {} })
+    await vi.waitFor(() => expect(seen).toHaveLength(1))
+    expect(seen[0]!.aborted).toBe(false)
+    settle[0]!()
+    expect(await write).toEqual({ ok: true })
+  })
+
+  it('the app\'s own signal cuts a write: passing ctx.signal is how an app opts in', async () => {
+    const { seen } = hangingFetch()
+    const gone = new AbortController()
+    const write = platformApi(caller({}, gone.signal), BASE)('/api/boards', { method: 'POST', body: {}, signal: gone.signal })
+    await vi.waitFor(() => expect(seen).toHaveLength(1))
+    gone.abort(new DOMException('the client disconnected', 'AbortError'))
+    await expect(write).rejects.toMatchObject({ name: 'AbortError' })
   })
 
   it('puts a deadline on reads and none on writes, unless told otherwise', async () => {

@@ -67,7 +67,8 @@ export interface AppRequestContext {
    *  session cookie goes along, so every permission and ACL applies as in
    *  the core UI. Resolves to the parsed JSON (null for an empty body);
    *  throws an `HttpError` (status + the server's sentence) on non-2xx.
-   *  Follows `signal`. */
+   *  A read follows `signal`; a write runs to completion after the caller
+   *  leaves, unless you pass `signal` to it yourself. */
   api: PlatformApi
   /** A workspace secret's value — `ctx.secret('crm')` or
    *  `ctx.secret('crm.api_key')` — or null. Resolves only for a vault doc an
