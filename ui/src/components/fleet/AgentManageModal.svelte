@@ -130,10 +130,10 @@
                       <li>The current key stops working the moment you confirm. There is no undo and no grace period.</li>
                       {#if willRoll}
                         <li>
-                          The fleet is re-rendered on the new key and the running container is rolled: a fresh one comes up
-                          beside it and traffic cuts over once it is healthy. Until then the old container is locked out, so a
-                          toolkit call or a workbench session in flight on the old key fails and has to be retried;
-                          conversations carry on in the new container.
+                          The fleet is re-rendered on the new key and the running container is rolled: it stops (finishing
+                          what it can), a fresh one starts in its place, and the roll waits for it to report healthy. Until
+                          then the agent is locked out, so a toolkit call or a workbench session in flight on the old key
+                          fails and has to be retried; conversations wait for the new container and carry on there.
                         </li>
                         <li>If the roll fails, the agent is left on a dead key: roll it again from the roster, or stop and start it.</li>
                       {:else}

@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-26 routes.
+27 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -61,6 +61,8 @@
 | [`/api/admin/rag`](#apiadminrag) | PUT | `admin` |
 | [`/api/admin/search`](#apiadminsearch) | GET | `admin` |
 | [`/api/admin/search`](#apiadminsearch) | PUT | `admin` |
+| [`/api/admin/search/agents`](#apiadminsearchagents) | GET | `admin` |
+| [`/api/admin/search/agents`](#apiadminsearchagents) | PUT | `admin` |
 | [`/api/admin/secrets`](#apiadminsecrets) | GET | `admin` |
 | [`/api/admin/secrets`](#apiadminsecrets) | DELETE | `admin` |
 | [`/api/admin/settings`](#apiadminsettings) | GET | `admin` |
@@ -168,9 +170,9 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_decide.rs`](../../api/
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{providers, wires, config, configured, shadow, sites, speechRooms, toolShadow}` | 200 | — |
+| GET | `admin` | — | `{providers, wires, config, configured, shadow, sites, speechRooms}` | 200 | — |
 | POST | `admin` | [body](#post-apiadmindecide-body) | `{ok, kind, reason}` | 200, 400 | audit |
-| PUT | `admin` | [body](#put-apiadmindecide-body) | `{config, configured, toolShadow}` | 200, 400 | audit |
+| PUT | `admin` | [body](#put-apiadmindecide-body) | `{config, configured}` | 200, 400 | audit |
 
 ### POST `/api/admin/decide` body
 
@@ -190,7 +192,6 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_decide.rs`](../../api/
 | `wire` | `enum(…)` |  |
 | `apiKey` | `string? nullable(500)` |  |
 | `timeoutMs` | `number?(250, 60000)` |  |
-| `toolShadow` | `bool` |  |
 
 ## `/api/admin/domains`
 
@@ -436,7 +437,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_model_roles.rs`](../..
 > /api/admin/model-roles. Model Roles — which model handles each activity
 > class. GET → the catalog of roles + current assignments + assignable
 > models + fitness issues. PUT { role, model|null } → assign (null = back
-> to auto). Admins only.
+> to auto); a `vision` assignment also re-renders the fleet. Admins only.
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -604,6 +605,29 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_search.rs`](../../api/
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `url` | `string(0, 300)` | url max 300 — empty is a real instruction. |
+
+## `/api/admin/search/agents`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_search_agents.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_search_agents.rs)
+
+> /api/admin/search/agents. AGENT WEB SEARCH — the one provider every fleet
+> agent's own Hermes searches with (talaria-agent-web-search). GET is the
+> setting with its keys MASKED (which vendors hold one, never the value),
+> the backends this build offers, and what the render hands every agent
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `…` | 200 | — |
+| PUT | `admin` | [body](#put-apiadminsearchagents-body) | `…` | 200, 400 | audit |
+
+### PUT `/api/admin/search/agents` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `backend` | `nullish` |  |
+| `extractBackend` | `nullish` |  |
+| `allowKeylessPublicTiers` | `bool?` |  |
 
 ## `/api/admin/secrets`
 

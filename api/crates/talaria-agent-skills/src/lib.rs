@@ -261,26 +261,73 @@ pub struct OwnerSkills {
     pub skills: Vec<SkillSummary>,
 }
 
+/// The `description:` an agentskills.io frontmatter block declares — the
+/// line Hermes itself reads for the skill (agent/skill_utils.py parses the
+/// leading `---` fence as YAML and strips the value's quotes), so the
+/// listing can serve exactly what the agent sees. `None` when there is no
+/// fence, no closing fence, or no non-empty description; YAML that does not
+/// parse falls back to `key: value` lines, as Hermes' own reader does.
+/// Capped at 160 characters like every other listing line.
+pub fn frontmatter_description(md: &str) -> Option<String> {
+    let md = md.strip_prefix('\u{feff}').unwrap_or(md);
+    let mut lines = md.split('\n');
+    if lines.next().map(str::trim) != Some("---") {
+        return None;
+    }
+    let mut block: Vec<&str> = Vec::new();
+    let mut closed = false;
+    for line in lines {
+        if line.trim() == "---" {
+            closed = true;
+            break;
+        }
+        block.push(line);
+    }
+    if !closed {
+        return None;
+    }
+    let yaml = block.join("\n");
+    let raw: Option<String> = match serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&yaml) {
+        Ok(serde_yaml_ng::Value::Mapping(map)) => map.get("description").and_then(|v| match v {
+            serde_yaml_ng::Value::String(s) => Some(s.clone()),
+            serde_yaml_ng::Value::Number(n) => Some(n.to_string()),
+            serde_yaml_ng::Value::Bool(b) => Some(b.to_string()),
+            _ => None,
+        }),
+        Ok(_) => None,
+        Err(_) => block.iter().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            (key.trim() == "description").then(|| value.trim().to_string())
+        }),
+    };
+    let cleaned = raw?
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!cleaned.is_empty()).then(|| cleaned.chars().take(160).collect())
+}
+
 /// Mechanical fallback while the Summarizer hasn't produced a line yet.
 /// agentskills.io frontmatter (a leading `---` fence) is parsed as such:
-/// its `description:` wins and its other keys (`name:` especially) are
-/// never prose. Without frontmatter, the first prose line wins, with a
-/// bare `description:` line still honored anywhere else in the body.
+/// its `description:` wins ([`frontmatter_description`]) and its other keys
+/// (`name:` especially) are never prose. Without frontmatter, the first
+/// prose line wins, with a bare `description:` line still honored anywhere
+/// else in the body.
 pub fn summarize_fallback(md: &str) -> String {
+    if let Some(described) = frontmatter_description(md) {
+        return described;
+    }
     let mut lines = md.split('\n');
     // A free peek — split is lazy, so this never advances `lines` — and
-    // the matching next() consumes the opening fence itself.
+    // the matching next() consumes the opening fence (and the rest of the
+    // block, which carried no description) itself.
     if md.split('\n').next().map(str::trim) == Some("---") {
         lines.next();
         for line in lines.by_ref() {
-            let t = line.trim();
-            if t == "---" {
+            if line.trim() == "---" {
                 break;
-            }
-            if let Some(rest) = t.strip_prefix("description:").map(str::trim_start)
-                && !rest.is_empty()
-            {
-                return rest.chars().take(160).collect();
             }
         }
     }
@@ -304,8 +351,12 @@ pub fn summarize_fallback(md: &str) -> String {
     String::new()
 }
 
-/// `listAllSkills` — every owner, every skill, one pass. Persistent
-/// Summarizer one-liners are keyed to the content hash, so a changed skill
+/// `listAllSkills` — every owner, every skill, one pass. A skill whose
+/// frontmatter declares a `description:` is listed with exactly that line —
+/// the one Hermes shows the agent — and is never summarized: an LLM
+/// paraphrase beside the author's own words is the UI saying one thing and
+/// the agent reading another. Only a skill with no description gets a
+/// Summarizer one-liner, keyed to the content hash, so a changed skill
 /// serves the mechanical first-line summary once while its regeneration runs
 /// in the background — the listing never blocks on a model.
 pub async fn list_all_skills(state: &AppState) -> Result<Vec<OwnerSkills>, sqlx::Error> {
@@ -346,17 +397,23 @@ pub async fn list_all_skills(state: &AppState) -> Result<Vec<OwnerSkills>, sqlx:
                 let md = tokio::fs::read_to_string(dir.join("SKILL.md"))
                     .await
                     .unwrap_or_default();
-                let row = stored.get(&format!("{}/{}", o.owner, name));
-                let fresh = row.is_some_and(|r| !md.is_empty() && r.hash == skill_hash(&md));
-                if !fresh && !md.trim().is_empty() {
-                    queue_summary(state.clone(), o.owner.clone(), name.clone(), md.clone());
-                }
+                let description = match frontmatter_description(&md) {
+                    Some(declared) => declared,
+                    None => {
+                        let row = stored.get(&format!("{}/{}", o.owner, name));
+                        let fresh =
+                            row.is_some_and(|r| !md.is_empty() && r.hash == skill_hash(&md));
+                        if !fresh && !md.trim().is_empty() {
+                            queue_summary(state.clone(), o.owner.clone(), name.clone(), md.clone());
+                        }
+                        match row {
+                            Some(r) if fresh => r.summary.clone(),
+                            _ => summarize_fallback(&md),
+                        }
+                    }
+                };
                 skills.push(SkillSummary {
-                    description: if fresh {
-                        row.expect("fresh checked row").summary.clone()
-                    } else {
-                        summarize_fallback(&md)
-                    },
+                    description,
                     platform: if o.owner == SHARED && platform.contains(&name) {
                         Some(true)
                     } else {
@@ -681,6 +738,53 @@ mod tests {
         // An unclosed fence consumes the document — the honest empty,
         // not a leaked `name:`.
         assert_eq!(summarize_fallback("---\nname: x\n"), "");
+    }
+
+    #[test]
+    fn a_declared_description_is_read_the_way_hermes_reads_it() {
+        // Quoted, folded and plain scalars all come back as the author's
+        // words — the quotes Hermes strips are stripped here too.
+        assert_eq!(
+            frontmatter_description("---\nname: x\ndescription: \"Quoted line.\"\n---\n# X\n")
+                .as_deref(),
+            Some("Quoted line.")
+        );
+        assert_eq!(
+            frontmatter_description(
+                "---\ndescription: >\n  Folded across\n  two lines.\nname: x\n---\n"
+            )
+            .as_deref(),
+            Some("Folded across two lines.")
+        );
+        assert_eq!(
+            frontmatter_description("\u{feff}---\ndescription: After a BOM\n---\n").as_deref(),
+            Some("After a BOM")
+        );
+        // YAML that does not parse still yields its `description:` line.
+        assert_eq!(
+            frontmatter_description("---\ndescription: colon: inside\n  bad: [\n---\n").as_deref(),
+            Some("colon: inside")
+        );
+        // No fence, an unclosed fence, or an empty description: nothing
+        // declared, so the listing summarizes instead.
+        assert_eq!(
+            frontmatter_description("# Title\n\ndescription: body line\n"),
+            None
+        );
+        assert_eq!(
+            frontmatter_description("---\ndescription: never closed\n"),
+            None
+        );
+        assert_eq!(
+            frontmatter_description("---\nname: x\ndescription: \"\"\n---\n"),
+            None
+        );
+        // The listing cap holds.
+        let long = format!("---\ndescription: {}\n---\n", "a".repeat(400));
+        assert_eq!(
+            frontmatter_description(&long).map(|d| d.chars().count()),
+            Some(160)
+        );
     }
 
     #[test]

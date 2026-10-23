@@ -766,7 +766,8 @@ pub async fn post(
         });
     }
 
-    let (upstream, prompt_chars) = send_turn(
+    let upstream = send_turn(
+        &state.pg,
         pinned,
         &agent_model,
         &routed_model,
@@ -782,7 +783,6 @@ pub async fn post(
     // it completes even if the client disconnects.
     let persist_meta = PersistMeta {
         agent_model: agent_model.clone(),
-        prompt_chars,
         tier: body.tier.clone(),
         plan: plan_meta.clone(),
         research_prompt,

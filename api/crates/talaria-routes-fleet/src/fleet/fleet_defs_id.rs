@@ -259,15 +259,13 @@ pub async fn patch(
     // The pinned flip changes how TALARIA drives the agent — which Hermes
     // endpoint the next turn goes to — and nothing in the container, so it
     // takes effect on the next turn with no roll. The Developer switch is
-    // the one that rolls: a running Hermes wires its MCP servers and
-    // container env at start, so that change lands by re-rendering the
-    // incoming slot (blue/green). Fire-and-forget, never the caller's
-    // problem.
+    // the one that rolls: it changes the container's env and image, which
+    // only a recreate delivers. Fire-and-forget, never the caller's problem.
     //
-    // A toolset change rolls for the same reason and in the same stroke: the
-    // disabled list is read into the harness at start, and opening `browser`
-    // also has to pay for the Chromium install the post-health step runs on a
-    // fresh container. Both switches in one PATCH are still ONE roll.
+    // A toolset change rolls in the same stroke. Hermes itself reads
+    // `agent.disabled_toolsets` per request from the config.yaml the render
+    // just rewrote in place, so the roll is not what closes a toolset. Both
+    // switches in one PATCH are still ONE roll.
     //
     // THE ROLL NEVER FAILS THE PATCH. The switch is already stored by the
     // time the roll is queued, and a box the api cannot open is the roll's

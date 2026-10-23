@@ -84,9 +84,9 @@ export interface AgentDef {
    *  history, so its compaction and session search cover the whole thread. */
   pinnedSessions: boolean
   /** Hermes toolsets this agent does NOT get. Empty for most agents; `browser`
-   *  here is what keeps a non-browsing agent from paying for a Chromium
-   *  install on every roll. `todo` and `clarify` are off for every agent
-   *  whatever this says — Talaria's own versions are the ones a person sees. */
+   *  here keeps an agent that should not browse off the web. `todo` and
+   *  `clarify` are off for every agent whatever this says — Talaria's own
+   *  versions are the ones a person sees. */
   disabledToolsets: string[]
   /** Template overrides — this agent always formats tickets/plans on these. */
   ticketTemplateId: string | null
@@ -279,7 +279,7 @@ export interface FleetRollStart {
   error?: string
 }
 
-/** Queue a blue/green roll of every running managed agent (`all`: every
+/** Queue an in-place roll of every running managed agent (`all`: every
  *  managed enabled agent, stopped ones included). Answers as soon as the
  *  batch is decided; `useFleetRoll` carries the progress. Failures resolve
  *  as `{ error }` so the strip can render the sentence in place. */
