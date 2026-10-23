@@ -228,8 +228,8 @@ TALARIA_S3_SECRET_KEY=${rand(24)}
 # give agents a brain; the app itself runs fine without.
 LLM_BASE_URL=
 LLM_API_KEY=
-LLM_MODEL=
-#HERMES_IMAGE=nousresearch/hermes-agent:latest
+# Overrides the chassis's pinned Hermes image (tag + digest):
+#HERMES_IMAGE=nousresearch/hermes-agent:<tag>@sha256:<digest>
 `,
     )
     ctx.log.ok('fleet/.env generated (add your LLM endpoint before starting agents)')

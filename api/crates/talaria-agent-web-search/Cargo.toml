@@ -1,5 +1,5 @@
 [package]
-name = "talaria-agents-registry"
+name = "talaria-agent-web-search"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-serde = { workspace = true }
-sqlx = { workspace = true }
-uuid = { workspace = true }
 serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-fleet-layout = { workspace = true }
+talaria-secretbox = { workspace = true }
+talaria-settings = { workspace = true }

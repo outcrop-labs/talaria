@@ -253,6 +253,37 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
     tx.commit().await.map_err(|e| e.to_string())?;
     def.managed = true;
 
+    // A template's config can name sealed literals (`${CONFIG_…}`, see
+    // talaria_agent_secrets::plan_config_seal). They are the template's
+    // secrets, and an agent's secrets are its managers' (docs/PERMISSIONS.md,
+    // "Agent managers"): the hirer manages the clone and could read them out
+    // of its environment. So the clone takes them along, before the version
+    // that names them, only when the hirer may already change the template.
+    // Otherwise they are left out of the clone and its first version's note
+    // says where.
+    let (config, note) = match template_id {
+        Some(template_id) if !talaria_agent_secrets::config_secret_handles(&config).is_empty() => {
+            if takes_template_secrets(pg, manager, template_id).await? {
+                talaria_agent_secrets::copy_config_secrets(pg, template_id, &def.id, &config)
+                    .await?;
+                (config, note)
+            } else {
+                let (kept, withheld) = talaria_agent_secrets::withhold_config_secrets(&config);
+                if withheld.is_empty() {
+                    // Handles outside `raw` only: nothing a render emits.
+                    (config, note)
+                } else {
+                    let note = format!(
+                        "{note}; left out the template's sealed credentials at {} — only its managers can pass them on",
+                        withheld.join(", ")
+                    );
+                    (kept, note)
+                }
+            }
+        }
+        _ => (config, note),
+    };
+
     add_version_if_changed(
         pg,
         &def.id,
@@ -274,6 +305,34 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
     // hire run, a personal assistant) lands with a manager and none of them
     // can forget.
     Ok(CreatedAgent { def, key_created })
+}
+
+/// May this hirer take a template's sealed config secrets into the clone?
+/// Only one who may already change the template: an admin or one of its
+/// managers. A hire nobody can be traced to lands admin-managed, so only
+/// those who manage every agent, the template included, can reach the
+/// clone, and it takes them too.
+async fn takes_template_secrets(
+    pg: &PgPool,
+    manager: Option<&str>,
+    template_id: &str,
+) -> Result<bool, String> {
+    let Some(user) = manager else {
+        return Ok(true);
+    };
+    let role: Option<String> = sqlx::query_scalar("select role from users where id = $1::uuid")
+        .bind(user)
+        .fetch_optional(pg)
+        .await
+        .map_err(|e| e.to_string())?;
+    talaria_agent_managers::manages_agent(
+        pg,
+        user,
+        role.as_deref().unwrap_or("member"),
+        template_id,
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// The "already exists" resume: a re-entered `create` stage finds the def the
@@ -358,12 +417,14 @@ pub async fn delete_agent_forever(
         return Err("retire the agent first. Delete is for retired agents only.".into());
     }
 
-    // Containers first (should already be gone after retire; both slots,
-    // best-effort).
+    // Containers first (should already be gone after retire; both service
+    // names, a legacy -b included; best-effort, and graceful — never a
+    // SIGKILL).
     for slot in [talaria_fleet_docker::Slot::A, talaria_fleet_docker::Slot::B] {
-        let _ = talaria_fleet_docker::remove_container_by_name(
-            &talaria_fleet_docker::slot_container(&department, slot),
-        )
+        let _ = talaria_fleet_docker::retire_container(&talaria_fleet_docker::slot_container(
+            &department,
+            slot,
+        ))
         .await;
     }
 

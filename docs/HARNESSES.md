@@ -79,7 +79,13 @@ let result = run_harness(
 4. **Render**, with one `RenderContext` (`{ widened, model }`) that `verify` later sees too.
 5. **Call**, through the transport `pickTransport` chose — gateway or fleet persona. Structured runs
    carry the JSON anchor in the prompt *and* `response_format` where the model is not known to refuse
-   it; the two are belt and braces, not alternatives.
+   it; the two are belt and braces, not alternatives. A **fleet persona** takes neither
+   `response_format` nor `temperature`: Hermes' API server reads `model`, `messages`, `stream` and
+   `model_options` off a turn and nothing else, so `persona_payload` sends neither, a JSON request
+   comes back `contract_dropped` (the prompt anchor carries it, as on a gateway that strips the
+   parameter), and the persona samples at its own settings. A harness that needs a pinned temperature
+   belongs on a gateway model. The effort pick rides as `model_options.reasoning_effort` on both of
+   the persona's arms.
 6. **Parse, then repair.** One extractor, one schema check, one `verify`, then one re-ask with the
    parser's own sentence.
 7. **Guard**, with an honest `Available` for the transport that actually ran, then redact the value
@@ -729,14 +735,17 @@ resolution chain over instrumented dependencies and records which roles it asked
 copying the step order into a file where it would become an eighth spelling of the same policy.
 
 A verdict is produced for **every slot**; the matrix draws a **column only for the ones a harness can
-reach**. The five it drops are `unbound` for every model forever, and they were dead for
-two different reasons that the one "reserved" chip flattened: four are reserved *roles* whose surfaces
-do not exist yet (vision, image-generation, embedding, reranker), and the fifth is the **briefer**,
+reach**. The five it drops are `unbound` for every model forever, and they are dead for
+three different reasons that the one "reserved" chip used to flatten: three are reserved *roles* whose
+surfaces do not exist yet (image-generation, embedding, reranker); **vision** is wired but reached by no
+harness — its model is rendered into each fleet agent whose own models are not known to see, as that
+agent's Hermes image reader (`auxiliary.vision`, behind Hermes' `vision_analyze`), so it is exercised
+inside Hermes rather than by a Talaria harness, and `fitness_slots` keeps it inert by name; and the fifth is the **briefer**,
 which is not reserved at all — it ships, it writes the daily brief every morning and follows it all
 day, and its model is fixed by design because a brief reads one person's own views and answers in
 their own assistant's voice. Its harnesses take their model from the subject of the call, so they are
 scored under the report's `unbound` bucket and shown there in the model's report. Scoring is unchanged
-and the role-assignment checks still warn an admin who points a blind model at the reserved vision role.
+and the role-assignment checks still warn an admin who points a blind model at the vision role.
 
 `ready` / `workable` / `unfit`, plus `untested` (nothing measured this) and `unbound` (no harness
 reaches this slot — which must read as "no evidence", never as an empty green cell). `unfit` always

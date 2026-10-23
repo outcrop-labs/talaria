@@ -1,6 +1,7 @@
 // /api/fleet/agents/{id}/crons/{jobId}. One cron job: DELETE → remove. POST
 // { action } → pause | resume | run ("run" queues it for the next scheduler
-// tick, ≤60s). PUT { name? schedule? prompt? } → edit in place. Admin or
+// tick, ≤60s; a paused job is refused, because Hermes's run would resume it
+// for good). PUT { name? schedule? prompt? } → edit in place. Admin or
 // owner.
 
 use axum::Json;
@@ -72,7 +73,9 @@ pub async fn put(
             &talaria_body::too_small_msg(1),
         ));
     }
-    let prompt = match optional_max_string_member(obj, "prompt", 20_000) {
+    // The agent's own cap: Hermes's /api/jobs refuses a longer prompt
+    // (talaria_agent_crons::MAX_PROMPT_CHARS).
+    let prompt = match optional_max_string_member(obj, "prompt", 5_000) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };

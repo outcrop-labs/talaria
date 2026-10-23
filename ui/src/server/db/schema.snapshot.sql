@@ -1164,6 +1164,20 @@ CREATE TABLE public.skill_summaries (
     summary text NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.skills_index_entries (
+    identifier text NOT NULL,
+    name text NOT NULL,
+    description text DEFAULT ''::text NOT NULL,
+    source text NOT NULL,
+    trust_level text DEFAULT 'community'::text NOT NULL,
+    repo text NOT NULL,
+    path text DEFAULT ''::text NOT NULL,
+    exact boolean DEFAULT true NOT NULL,
+    tags jsonb DEFAULT '[]'::jsonb NOT NULL,
+    rank integer DEFAULT 0 NOT NULL,
+    synced_at timestamp with time zone DEFAULT now() NOT NULL,
+    search tsvector GENERATED ALWAYS AS ((((setweight(to_tsvector('simple'::regconfig, COALESCE(name, ''::text)), 'A'::"char") || setweight(to_tsvector('simple'::regconfig, tags), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, replace(replace(repo, '/'::text, ' '::text), '-'::text, ' '::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(description, ''::text)), 'C'::"char"))) STORED
+);
 CREATE TABLE public.task_activity (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     task_id uuid NOT NULL,
@@ -1306,6 +1320,20 @@ CREATE TABLE public.uploads (
     uploaded_by uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.usage_affinity_keys (
+    agent_model text NOT NULL,
+    affinity_key text NOT NULL,
+    conversation_key text NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.usage_attributions (
+    agent_model text NOT NULL,
+    affinity_key text NOT NULL,
+    source text NOT NULL,
+    ref_id uuid,
+    task_id uuid,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.usage_events (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     agent_model text NOT NULL,
@@ -1327,7 +1355,8 @@ CREATE TABLE public.usage_events (
     cost_provider text,
     cost_variant text,
     cost_fetched_at timestamp with time zone,
-    generation_id text
+    generation_id text,
+    affinity_key text
 );
 CREATE TABLE public.user_agent_access (
     user_id uuid NOT NULL,
@@ -1406,7 +1435,8 @@ CREATE TABLE public.workbench_jobs (
     merged_testing_at timestamp with time zone,
     workspace_cleared_at timestamp with time zone,
     queued_at timestamp with time zone,
-    queued_reason text
+    queued_reason text,
+    pr_number bigint
 );
 CREATE TABLE public.workbench_profiles (
     slug text NOT NULL,
@@ -1440,7 +1470,11 @@ CREATE TABLE public.workbench_repo_requests (
     status text DEFAULT 'pending'::text NOT NULL,
     decided_by text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    visibility text DEFAULT 'private'::text NOT NULL,
+    app_slug text,
+    responsible_user_id uuid,
+    decision_note text
 );
 CREATE TABLE public.workbench_repos (
     agent_id uuid NOT NULL,
@@ -1745,6 +1779,8 @@ ALTER TABLE ONLY public.secret_keys
     ADD CONSTRAINT secret_keys_pkey PRIMARY KEY (version);
 ALTER TABLE ONLY public.skill_summaries
     ADD CONSTRAINT skill_summaries_pkey PRIMARY KEY (owner, name);
+ALTER TABLE ONLY public.skills_index_entries
+    ADD CONSTRAINT skills_index_entries_pkey PRIMARY KEY (identifier);
 ALTER TABLE ONLY public.task_activity
     ADD CONSTRAINT task_activity_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.task_coding_pins
@@ -1779,6 +1815,10 @@ ALTER TABLE ONLY public.templates
     ADD CONSTRAINT templates_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.uploads
     ADD CONSTRAINT uploads_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.usage_affinity_keys
+    ADD CONSTRAINT usage_affinity_keys_pkey PRIMARY KEY (agent_model, affinity_key);
+ALTER TABLE ONLY public.usage_attributions
+    ADD CONSTRAINT usage_attributions_pkey PRIMARY KEY (agent_model, affinity_key);
 ALTER TABLE ONLY public.usage_events
     ADD CONSTRAINT usage_events_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.user_agent_access
@@ -1892,6 +1932,8 @@ CREATE UNIQUE INDEX runs_approval_key_idx ON public.runs USING btree (approval_k
 CREATE UNIQUE INDEX runs_one_live_per_kind ON public.runs USING btree (kind) WHERE ((state = ANY (ARRAY['queued'::text, 'running'::text, 'awaiting'::text])) AND (kind = ANY (ARRAY['rag-reindex'::text, 'rag-backfill'::text])));
 CREATE INDEX runs_owner_active_idx ON public.runs USING btree (owner_user_id, state, updated_at DESC) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text, 'awaiting'::text]));
 CREATE INDEX runs_reclaim_idx ON public.runs USING btree (lease_expires_at NULLS FIRST, created_at) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text]));
+CREATE INDEX skills_index_entries_rank_idx ON public.skills_index_entries USING btree (rank);
+CREATE INDEX skills_index_entries_search_idx ON public.skills_index_entries USING gin (search);
 CREATE INDEX task_activity_task_idx ON public.task_activity USING btree (task_id, created_at DESC);
 CREATE INDEX task_coding_pins_account_idx ON public.task_coding_pins USING btree (account_id);
 CREATE INDEX task_workchain_edges_from ON public.task_workchain_edges USING btree (workchain_id, from_step);
@@ -1900,6 +1942,7 @@ CREATE UNIQUE INDEX task_workchain_steps_one_chain ON public.task_workchain_step
 CREATE INDEX tasks_assignee_idx ON public.tasks USING btree (assigned_to);
 CREATE INDEX tasks_board_idx ON public.tasks USING btree (board_id, status, updated_at DESC);
 CREATE INDEX tasks_parent_idx ON public.tasks USING btree (parent_id);
+CREATE INDEX usage_events_affinity_idx ON public.usage_events USING btree (agent_model, affinity_key) WHERE (affinity_key IS NOT NULL);
 CREATE INDEX usage_events_agent_idx ON public.usage_events USING btree (agent_model, created_at DESC);
 CREATE INDEX usage_events_created_idx ON public.usage_events USING btree (created_at DESC);
 CREATE INDEX usage_events_task_idx ON public.usage_events USING btree (task_id) WHERE (task_id IS NOT NULL);
@@ -2244,6 +2287,8 @@ ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_repo_requests
     ADD CONSTRAINT workbench_repo_requests_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.workbench_repo_requests
+    ADD CONSTRAINT workbench_repo_requests_responsible_user_id_fkey FOREIGN KEY (responsible_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_repo_requests
     ADD CONSTRAINT workbench_repo_requests_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_repos
