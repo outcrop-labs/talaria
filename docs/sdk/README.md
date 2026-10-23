@@ -22,20 +22,19 @@ never by importing a router of its own.
 | [getting-started.md](./getting-started.md) | Anatomy, surfaces, your first app in ten minutes |
 | [ui-kit.md](./ui-kit.md) | Every component group and when to use what |
 | [client.md](./client.md) | Session hooks, data fetching, talking to your app server |
-| [server.md](./server.md) | The fetch handler, the context, the document store |
+| [server.md](./server.md) | The fetch handler, the context, grants, the document store, the platform API, secrets |
 | [mcp.md](./mcp.md) | Tools your app gives the org's agents |
 | [harnesses.md](./harnesses.md) | Activity harnesses: model calls Talaria runs for you |
 | [reference.md](./reference.md) | Every export, one row each — enforced against the source |
 
 Scaffold a new app with `bun talaria app new <slug>`.
 
-
-
 ## Security model
 
 Apps run **fully trusted**, like platform code — admins install only what they
 trust (the marketplace labels Outcrop-maintained apps **official**). The safety
 boundary is the *session*: client calls run as the signed-in user; server handlers receive an
-authenticated user; agent tools receive a gateway-authenticated agent identity. All existing
+authenticated user and the app surfaces they hold (`ctx.access`), and `ctx.api` calls the platform
+as that user; agent tools receive a gateway-authenticated agent identity. All existing
 permissions, ACLs, and audit logging apply unchanged — an app can never do more than the person
 using it.

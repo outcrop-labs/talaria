@@ -60,8 +60,9 @@ only once the list reads `api.crm.com talaria-app://crm`. When a handle does not
 list, an agent without a grant on the secret, an expired secret, or an agent still calling with
 the org-wide `TALARIA_AGENT_KEY` instead of its own key — **your handler receives the handle text
 itself**, `«secret:crm.api_key»`, in place of the value. The gateway logs why for the operator and
-never tells the agent. Check for the `«secret:` prefix before you spend an argument as a
-credential, and fail with a sentence that names the secret, rather than sending the handle
+never tells the agent. The handle text can sit anywhere in a string, inside a header value or a
+URL as well as on its own, so check whether an argument contains `«secret:` before you spend it as
+a credential, and fail with a sentence that names the secret, rather than sending the handle
 upstream and returning the auth error you get back.
 
 `inputSchema` is checked before your handler runs: a call whose arguments do not satisfy it is
