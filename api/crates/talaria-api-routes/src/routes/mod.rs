@@ -94,20 +94,10 @@ pub fn router(state: AppState) -> Router {
             "/api/agents",
             get(talaria_routes_fleet::agents::agents::get).fallback(|| async { method_not_allowed("GET") }),
         )
-        // The fleet-plane pair agents themselves call (MC-compatible):
-        // register with the org key, then heartbeat for assigned work.
-        .route(
-            "/api/agents/register",
-            post(talaria_routes_fleet::agents::agents_register::post).fallback(|| async { method_not_allowed("POST") }),
-        )
         .route(
             "/api/agents/{id}/conversations",
             get(talaria_routes_comms::comms::agents_id_conversations::get)
                 .fallback(|| async { method_not_allowed("GET") }),
-        )
-        .route(
-            "/api/agents/{id}/heartbeat",
-            get(talaria_routes_fleet::agents::agents_id_heartbeat::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/apps",
@@ -267,8 +257,7 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/tasks/{id}/usage",
             get(talaria_routes_boards::tasks::tasks_id_usage::get)
-                .post(talaria_routes_boards::tasks::tasks_id_usage::post)
-                .fallback(|| async { method_not_allowed("GET, POST") }),
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/tasks/{id}/watchers",
@@ -1038,6 +1027,12 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
+            "/api/admin/search/agents",
+            get(talaria_routes_admin::admin::admin_search_agents::get)
+                .put(talaria_routes_admin::admin::admin_search_agents::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
             "/api/admin/secrets",
             get(talaria_routes_admin::admin::admin_secrets::get)
                 .delete(talaria_routes_admin::admin::admin_secrets::delete)
@@ -1306,9 +1301,8 @@ pub fn router(state: AppState) -> Router {
         )
         // The fleet family. The hire lifecycle (create + the hire queue),
         // the read plane (overview, containers, defs, endpoints, crons), the
-        // admin verbs (render, reconcile, federate), the per-agent control
-        // surface (lifecycle, crons, secrets), and the fleet-plane pair
-        // agents call themselves (register + heartbeat, registered above).
+        // admin verbs (render, reconcile, federate), and the per-agent
+        // control surface (lifecycle, crons, secrets).
         .route(
             "/api/fleet/create",
             post(talaria_routes_fleet::fleet::fleet_create::post).fallback(|| async { method_not_allowed("POST") }),
@@ -1647,6 +1641,10 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::agents::cron_output::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/agents/affinity",
+            post(talaria_routes_fleet::agents::affinity::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/agents/uploads",
             // A screenshot rides as base64 in the body, so this route owns its
             // own cap: the extractor's hidden 2 MB default would refuse every
@@ -1714,18 +1712,13 @@ pub fn router(state: AppState) -> Router {
             "/api/join",
             get(talaria_routes_integrations::account::join::get).fallback(|| async { method_not_allowed("GET") }),
         )
-        // The agent-memory surface (admin or the assistant's owner), the
-        // live web-search door both agents and sessions reach, and the
+        // The agent-memory surface (admin or the assistant's owner) and the
         // org's template library with its one-template verbs.
         .route(
             "/api/memory/{id}",
             get(talaria_routes_knowledge::knowledge::memory_id::get)
                 .put(talaria_routes_knowledge::knowledge::memory_id::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
-        )
-        .route(
-            "/api/search",
-            post(talaria_routes_knowledge::knowledge::search::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/templates",
@@ -1768,9 +1761,10 @@ pub fn router(state: AppState) -> Router {
                 .delete(talaria_routes_fleet::agents::skills_owner_name::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
         )
-        // The skills marketplace (Hermes Atlas's ranked catalog): the list,
-        // one repo's discovered skills, and the per-owner install. Static
-        // "marketplace" segments outrank the {owner}/{name} captures above.
+        // The skills marketplace (Hermes' official skills index, mirrored):
+        // the list, one skill's fetched files and Skills Guard verdict, and
+        // the scanned per-owner install. Static "marketplace" segments
+        // outrank the {owner}/{name} captures above.
         .route(
             "/api/skills/marketplace",
             get(talaria_routes_fleet::agents::skills_marketplace::get_list)
@@ -1843,15 +1837,11 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::agents::agent_message_user::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
-        // The Muse, the image describer, the personal assistant, and the
-        // local-inference observability plane.
+        // The Muse, the personal assistant, and the local-inference
+        // observability plane.
         .route(
             "/api/muse",
             post(talaria_routes_fleet::agents::muse::post).fallback(|| async { method_not_allowed("POST") }),
-        )
-        .route(
-            "/api/vision/describe",
-            post(talaria_routes_fleet::agents::vision_describe::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/me/assistant",

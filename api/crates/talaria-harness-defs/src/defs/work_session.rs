@@ -28,7 +28,7 @@
 //   runs TWELVE turns, which is `MAX_SESSION_TURNS` exactly (six measured a
 //   shorter session than the one an agent actually runs and then asked
 //   whether the ticket had been finished; both models swept failed exactly
-//   the two fixtures a session cut off mid-work fails), and benches EIGHTEEN
+//   the two fixtures a session cut off mid-work fails), and benches SEVENTEEN
 //   of the persona's tools: the seven readers and writers the procedure
 //   names, `create_ticket` (deliberately present — see the side-finding
 //   fixture), the two escape hatches whose MISUSE is worth measuring, and the
@@ -862,7 +862,7 @@ pub fn work_session_harness() -> HarnessDefinition {
         // failed "hands a finished ticket to review" and "ends with the status
         // line" — exactly the shape of a session cut off mid-work.
         max_turns: Some(12),
-        // EIGHTEEN — the working set the header spells out, listers included.
+        // SEVENTEEN — the working set the header spells out, listers included.
         tools: vec![
             "list_boards",
             // THE LAST TOOL IN THE TOOLKIT NEVER PUT IN FRONT OF A MODEL.
@@ -881,7 +881,6 @@ pub fn work_session_harness() -> HarnessDefinition {
             "report_gap",
             "report_problem",
             "add_time",
-            "log_usage",
             "add_dependency",
             "search_knowledge",
             "post_to_channel",

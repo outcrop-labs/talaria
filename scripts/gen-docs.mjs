@@ -69,7 +69,7 @@ const GROUPS = {
   account: { segs: ['auth', 'me', 'join', 'users'], blurb: 'Sign-in, session, profile, members.' },
   activity: { segs: ['activity', 'history', 'notifications', 'unreads', 'push', 'alerts', 'home', 'cost', 'host'], blurb: 'What happened, what it cost, what the machine is doing, what needs you.' },
   admin: { segs: ['admin'], blurb: 'Instance administration (admin session required).' },
-  agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'vision', 'runs'], blurb: 'Agent CRUD, registration, heartbeats, skills, runs.' },
+  agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'runs'], blurb: 'Agent CRUD, skills, runs.' },
   apps: { segs: ['apps', 'app-host'], blurb: 'The app platform surface, the app-server gateway, and the host\'s own app routes.' },
   boards: { segs: ['boards', 'workchains'], blurb: 'Kanban boards, members, statuses, labels, views, workchains.' },
   brief: { segs: ['brief'], blurb: 'The personal brief: items, replies, delegation.' },
@@ -301,7 +301,7 @@ function handlerWithHelpers(stripped, span, locals, depth = 2, seen = new Set(),
 const KNOWN_HEADER_TAKERS = new Set([
   'require_user', 'require_admin', 'require_perm', 'require_view',
   'require_agent_manager', 'require_agent_manager_by_model', 'require_agent_reader',
-  'agent_caller', 'require_agent', 'fleet_caller', 'check_fleet_key',
+  'agent_caller', 'require_agent',
   // Coding accounts' three gates, each a thin wrapper classified below:
   // the broker's per-agent scope, the feature toggle, and "may edit this
   // agent" (agents.manage OR the agent's owner).
@@ -334,7 +334,6 @@ function authClassRust(combined, locals, fileRaw) {
   // (the snapshot route audits who read a credential).
   if (has('broker_agent(') || has('broker_caller(')) return { auth: 'agent' }
   if (has('require_agent_editor(') || has('require_feature(') || has('require_share_rights(')) return { auth: 'session' }
-  if (has('check_fleet_key(') || has('fleet_caller(')) return { auth: 'fleet' }
   if (has('authenticate_key(')) return { auth: 'bearer-key' }
   if (has('require_agent(')) return { auth: 'agent' }
   // acting_user is session.rs's assistant-proxying-a-human resolver — the
@@ -792,7 +791,7 @@ function extractRoute(file) {
 
 const KNOWN_REQUEST_TAKERS = new Set([
   'requireUser', 'requireAdmin', 'requirePerm', 'requireView', 'requireAgent',
-  'agentCaller', 'fleetCaller', 'checkFleetKey', 'authenticateKey',
+  'agentCaller', 'authenticateKey',
   'actingUser', 'getSessionUser', 'updateSessionUser', 'taskActor',
   'parseBody', 'destroySession',
 ])
@@ -801,7 +800,6 @@ function authClassTS(clean, methodRaw) {
   const has = (s) => clean.includes(s)
   const perms = [...clean.matchAll(/(?:requirePerm\(request,\s*|hasPerm\(\s*[\w.]+,\s*)'([\w.-]+)'/g)].map((m) => m[1])
   const view = clean.match(/requireView\(\s*request,\s*'([^']+)'/)
-  if (has('fleetCaller(') || has('checkFleetKey(')) return { auth: 'fleet' }
   if (has('authenticateKey(')) return { auth: 'bearer-key' }
   if (has('requireAgent(')) return { auth: 'agent' }
   const session = has('requireUser(') || has('requireAdmin(') || has('requirePerm(') || has('requireView(')
@@ -956,7 +954,6 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 | \`admin\` | an admin session (\`require_admin\`) |
 | \`agent\` | an agent credential (\`tak_\` key, \`require_agent\`/\`agent_caller\`) |
 | \`dual\` | session path and agent path both reach the handler |
-| \`fleet\` | internal fleet key (\`fleet_caller\`/\`check_fleet_key\`) |
 | \`bearer-key\` | a personal LLM-gateway API key (\`authenticate_key\`) |`
 
 const GENERATED_BANNER = (extra = '') =>

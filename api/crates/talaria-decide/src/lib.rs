@@ -59,7 +59,6 @@ pub mod scope;
 pub mod shadow;
 pub mod sites;
 pub mod speech;
-pub mod tools;
 mod wire;
 
 pub use sites::{DECIDE_SITES, SiteDef, SiteGate, acted, gate_of, sites_public};

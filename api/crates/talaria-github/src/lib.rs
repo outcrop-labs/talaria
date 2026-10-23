@@ -35,6 +35,30 @@ use talaria_secretbox::SecretBox;
 const KEY: &str = "github_config";
 const GH: &str = "https://api.github.com";
 
+tokio::task_local! {
+    /// The GitHub REST origin for the calls one task makes. Production never
+    /// sets it, so every request goes to api.github.com; a test scopes it to
+    /// a loopback stub with [`with_api_base`]. Task-local rather than a
+    /// global so tests running in parallel each talk to their own stub.
+    static API_BASE: String;
+}
+
+fn api_base() -> String {
+    API_BASE
+        .try_with(Clone::clone)
+        .unwrap_or_else(|_| GH.to_string())
+}
+
+/// Run `f` with every GitHub call it makes sent to `base` instead of
+/// api.github.com. A TEST SEAM, nothing else: this crate's tests and the
+/// workbench's point it at a loopback stub so the PR and repo-creation flows
+/// run end to end with no GitHub. Calls made from a task `f` spawns are not
+/// covered (task-locals do not cross `tokio::spawn`).
+#[doc(hidden)]
+pub async fn with_api_base<F: std::future::Future>(base: impl Into<String>, f: F) -> F::Output {
+    API_BASE.scope(base.into(), f).await
+}
+
 /// The whole config shape. Defaults merge per key — top-level over
 /// top-level, `app` keys over `app` keys — which is what the per-field
 /// extraction below performs.
@@ -197,7 +221,7 @@ async fn gh(
         .request(
             reqwest::Method::from_bytes(method.as_bytes())
                 .map_err(|_| format!("github method: {method}"))?,
-            format!("{GH}{path}"),
+            format!("{}{path}", api_base()),
         )
         .header("accept", "application/vnd.github+json")
         .header("x-github-api-version", "2022-11-28")
@@ -326,6 +350,14 @@ fn install_tokens() -> &'static TokenCache {
 pub const REPO_TOKEN_PERMISSIONS: &str =
     r#"{"contents":"write","pull_requests":"write","metadata":"read"}"#;
 
+/// What `pr_status` reads with, and nothing it could write with: the pull
+/// request, its check runs and commit statuses, and the reviews. Checks and
+/// statuses are not in [`REPO_TOKEN_PERMISSIONS`] (a push never needs them),
+/// so a PR's CI is unreadable on a private repo with that token. This one
+/// never leaves the api process.
+pub const PR_STATUS_PERMISSIONS: &str =
+    r#"{"pull_requests":"read","checks":"read","statuses":"read","metadata":"read"}"#;
+
 /// The body of an access_tokens request: the one repository, and — on the
 /// first try — the narrowed permissions. GitHub answers 422 when the request
 /// names a permission the installation was never granted, so the caller
@@ -333,12 +365,17 @@ pub const REPO_TOKEN_PERMISSIONS: &str =
 /// installation's own grants (logged, so an operator can see the App is
 /// missing a permission the workbench expects).
 pub fn access_tokens_body(repo: &str, narrowed: bool) -> String {
+    access_tokens_body_for(repo, narrowed.then_some(REPO_TOKEN_PERMISSIONS))
+}
+
+fn access_tokens_body_for(repo: &str, permissions: Option<&str>) -> String {
     let name = repo.rsplit('/').next().unwrap_or(repo);
     let repos = serde_json::to_string(&[name]).expect("a repo name serializes");
-    if narrowed {
-        format!(r#"{{"repositories":{repos},"permissions":{REPO_TOKEN_PERMISSIONS}}}"#)
-    } else {
-        format!(r#"{{"repositories":{repos}}}"#)
+    match permissions {
+        Some(permissions) => {
+            format!(r#"{{"repositories":{repos},"permissions":{permissions}}}"#)
+        }
+        None => format!(r#"{{"repositories":{repos}}}"#),
     }
 }
 
@@ -358,8 +395,21 @@ pub async fn installation_token(
     installation_id: &str,
     repo: Option<&str>,
 ) -> Result<String, String> {
+    installation_token_with(sb, cfg, installation_id, repo, REPO_TOKEN_PERMISSIONS).await
+}
+
+/// [`installation_token`] narrowed to `permissions` instead of the push
+/// set. The cache keys on the permission set too: a read token must never
+/// be served where a push token was asked for, or the other way round.
+async fn installation_token_with(
+    sb: &SecretBox,
+    cfg: &GithubConfig,
+    installation_id: &str,
+    repo: Option<&str>,
+    permissions: &str,
+) -> Result<String, String> {
     let key = match repo {
-        Some(r) => format!("{installation_id}#{r}"),
+        Some(r) => format!("{installation_id}#{r}#{permissions}"),
         None => installation_id.to_string(),
     };
     if let Some((token, expires_at)) = install_tokens().lock().unwrap().get(&key)
@@ -368,18 +418,13 @@ pub async fn installation_token(
         return Ok(token.clone());
     }
 
-    let private_key_enc = cfg.private_key_enc.as_deref().unwrap_or_default();
-    let jwt = {
-        let key = sb
-            .open(private_key_enc)
-            .map_err(|e| format!("github app key unseal: {e}"))?;
-        app_jwt(&cfg.app_id, &key)?
-    };
+    let jwt = app_jwt_for(sb, cfg)?;
+    let base = api_base();
 
     let mint = |body: Option<String>| {
         let mut req = http()
             .post(format!(
-                "{GH}/app/installations/{installation_id}/access_tokens"
+                "{base}/app/installations/{installation_id}/access_tokens"
             ))
             .header("accept", "application/vnd.github+json")
             .header("x-github-api-version", "2022-11-28")
@@ -390,7 +435,7 @@ pub async fn installation_token(
         }
         req.send()
     };
-    let mut res = mint(repo.map(|r| access_tokens_body(r, true)))
+    let mut res = mint(repo.map(|r| access_tokens_body_for(r, Some(permissions))))
         .await
         .map_err(|e| format!("github installation token: {e}"))?;
     if res.status().as_u16() == 422
@@ -400,9 +445,9 @@ pub async fn installation_token(
         // the repo is not in this installation — the retry answers that
         // too). Once more on the installation's own grants.
         tracing::warn!(
-            "[github] narrowed installation token for {repo} was refused (422) —              retrying on the installation's own grants; check the App has              contents, pull_requests and metadata"
+            "[github] narrowed installation token for {repo} was refused (422) — retrying on the installation's own grants; check the App has {permissions}"
         );
-        res = mint(Some(access_tokens_body(repo, false)))
+        res = mint(Some(access_tokens_body_for(repo, None)))
             .await
             .map_err(|e| format!("github installation token: {e}"))?;
     }
@@ -552,6 +597,16 @@ fn pat_token(sb: &SecretBox, cfg: &GithubConfig) -> Result<Option<String>, Strin
     }
 }
 
+/// The App JWT for this connection — the credential the `/app` and
+/// `/orgs/{org}/installation` endpoints take.
+fn app_jwt_for(sb: &SecretBox, cfg: &GithubConfig) -> Result<String, String> {
+    let private_key_enc = cfg.private_key_enc.as_deref().unwrap_or_default();
+    let key = sb
+        .open(private_key_enc)
+        .map_err(|e| format!("github app key unseal: {e}"))?;
+    app_jwt(&cfg.app_id, &key)
+}
+
 /// A usable token for repo operations. PAT passes through; App mode mints a
 /// per-installation token — `repo` routes a multi-org setup to the
 /// installation that owns it AND scopes the token to that one repository.
@@ -562,6 +617,16 @@ pub async fn github_token(
     pg: &PgPool,
     sb: &SecretBox,
     repo: Option<&str>,
+) -> Result<Option<String>, String> {
+    repo_token(pg, sb, repo, REPO_TOKEN_PERMISSIONS).await
+}
+
+/// [`github_token`] with the repo-scoped token narrowed to `permissions`.
+async fn repo_token(
+    pg: &PgPool,
+    sb: &SecretBox,
+    repo: Option<&str>,
+    permissions: &str,
 ) -> Result<Option<String>, String> {
     let cfg = get_github_config(pg).await;
     if cfg.mode.as_deref() == Some("pat") {
@@ -595,7 +660,7 @@ pub async fn github_token(
         }
     }
     Ok(Some(
-        installation_token(sb, &cfg, &installation_id, repo).await?,
+        installation_token_with(sb, &cfg, &installation_id, repo, permissions).await?,
     ))
 }
 
@@ -1120,49 +1185,211 @@ fn enc(segment: &str) -> String {
     out
 }
 
-/// Create a repo in an org (App must hold org Administration permission).
-/// Token routes to the installation on that org when multi-install.
+// ── Repo creation (request_repo → a human approves → the App creates) ───────
+
+/// Who may see a repository Talaria creates. Private unless the request or
+/// the approver says otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RepoVisibility {
+    #[default]
+    Private,
+    Public,
+}
+
+impl RepoVisibility {
+    pub fn parse(s: &str) -> Option<RepoVisibility> {
+        match s {
+            "private" => Some(RepoVisibility::Private),
+            "public" => Some(RepoVisibility::Public),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RepoVisibility::Private => "private",
+            RepoVisibility::Public => "public",
+        }
+    }
+}
+
+/// Why this connection cannot create repos at all, or None when it can try.
+/// The whole decision `request_repo`, `doctor` and the approval share, so an
+/// agent is refused for the same reason the approval would have failed with.
+pub fn repo_creation_blocker(cfg: &GithubConfig) -> Option<String> {
+    if cfg.repo_creation_orgs.is_empty() {
+        return Some(
+            "repo creation is off — no org is approved for it (an admin lists orgs on the GitHub panel in Admin → Org)"
+                .into(),
+        );
+    }
+    if cfg.mode.as_deref() != Some("app") {
+        return Some(
+            "repo creation needs the GitHub App connection, and this instance connects GitHub with a personal access token — an admin can switch the GitHub panel in Admin → Org to App mode"
+                .into(),
+        );
+    }
+    if cfg.app_id.is_empty() || cfg.private_key_enc.is_none() || cfg.installation_ids.is_empty() {
+        return Some(
+            "the GitHub App connection is incomplete (App ID, private key and at least one installation are needed) — an admin finishes it in Admin → Org"
+                .into(),
+        );
+    }
+    None
+}
+
+/// [`repo_creation_blocker`], then the org allowlist.
+pub fn repo_creation_refusal(cfg: &GithubConfig, org: &str) -> Option<String> {
+    if let Some(why) = repo_creation_blocker(cfg) {
+        return Some(why);
+    }
+    if !cfg.repo_creation_orgs.iter().any(|o| o == org) {
+        return Some(format!(
+            "org \"{org}\" is not approved for repo creation (approved: {})",
+            cfg.repo_creation_orgs.join(", ")
+        ));
+    }
+    None
+}
+
+/// Where the App stands on one org, asked of GitHub rather than inferred
+/// from a cache of repos (an org with no repos yet never appeared in one).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrgInstallation {
+    /// Installed there, and that installation is one this connection uses.
+    Selected(String),
+    /// Installed there, but the admin has not selected that installation.
+    NotSelected(String),
+    /// GitHub knows no installation of this App on that org.
+    NotInstalled,
+}
+
+impl OrgInstallation {
+    /// The sentence a refusal carries, or None when repos can be created.
+    pub fn refusal(&self, org: &str) -> Option<String> {
+        match self {
+            OrgInstallation::Selected(_) => None,
+            OrgInstallation::NotSelected(id) => Some(format!(
+                "the GitHub App is installed on {org} (installation {id}), but this connection does not use that installation — an admin selects it on the GitHub panel in Admin → Org"
+            )),
+            OrgInstallation::NotInstalled => Some(format!(
+                "the GitHub App is not installed on {org} — install it on that org from the App's GitHub page, then select the installation in Admin → Org"
+            )),
+        }
+    }
+}
+
+/// `GET /orgs/{org}/installation` with the App JWT: the one installation
+/// that owns that org. Picking "any installation" is how a token minted for
+/// one org was sent to create a repo in another.
+async fn org_installation_with(
+    jwt: &str,
+    org: &str,
+    selected: &[String],
+) -> Result<OrgInstallation, String> {
+    let res = gh(
+        &format!("/orgs/{}/installation", enc(org)),
+        jwt,
+        "GET",
+        None,
+    )
+    .await?;
+    let status = res.status().as_u16();
+    if status == 404 {
+        return Ok(OrgInstallation::NotInstalled);
+    }
+    if !res.status().is_success() {
+        let text = res.text().await.unwrap_or_default();
+        return Err(format!(
+            "GitHub GET /orgs/{org}/installation → {status}: {}",
+            truncate_utf16(&text, 200)
+        ));
+    }
+    let j: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| format!("github decode: {e}"))?;
+    let id = match j.get("id") {
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        _ => {
+            return Err(format!(
+                "GitHub GET /orgs/{org}/installation: no id in reply"
+            ));
+        }
+    };
+    Ok(if selected.iter().any(|s| s == &id) {
+        OrgInstallation::Selected(id)
+    } else {
+        OrgInstallation::NotSelected(id)
+    })
+}
+
+/// Where the App stands on `org`. Err is GitHub or the connection failing,
+/// never an answer about the org.
+pub async fn org_installation(
+    pg: &PgPool,
+    sb: &SecretBox,
+    org: &str,
+) -> Result<OrgInstallation, String> {
+    let cfg = get_github_config(pg).await;
+    let jwt = app_jwt_for(sb, &cfg)?;
+    org_installation_with(&jwt, org, &cfg.installation_ids).await
+}
+
+/// Create a repo in an org (the App must hold the org's Administration
+/// permission), with the token of the installation GitHub says owns that
+/// org. A missing or unselected installation is refused with the fix.
 pub async fn create_repo(
     pg: &PgPool,
     sb: &SecretBox,
     org: &str,
     name: &str,
     description: &str,
+    visibility: RepoVisibility,
 ) -> Result<CreatedRepo, String> {
     let cfg = get_github_config(pg).await;
+    let created = create_repo_in(sb, &cfg, org, name, description, visibility).await?;
+    // Pool changed.
+    *repo_install_cache().lock().unwrap() = None;
+    Ok(created)
+}
+
+async fn create_repo_in(
+    sb: &SecretBox,
+    cfg: &GithubConfig,
+    org: &str,
+    name: &str,
+    description: &str,
+    visibility: RepoVisibility,
+) -> Result<CreatedRepo, String> {
     if cfg.mode.as_deref() != Some("app") {
         return Err("repo creation requires the GitHub App connection".into());
     }
-    // Route by any repo we know in that org, else first installation.
-    let cache = repo_install_cache().lock().unwrap().clone();
-    let in_org = cache.as_ref().and_then(|c| {
-        c.map
-            .iter()
-            .find(|(repo, _)| repo.starts_with(&format!("{org}/")))
-            .map(|(_, inst)| inst.clone())
-    });
-    let token = match in_org {
-        Some(inst) => installation_token(sb, &cfg, &inst, None).await?,
-        None => github_token(pg, sb, None)
-            .await?
-            .ok_or("GitHub is not connected")?,
+    let jwt = app_jwt_for(sb, cfg)?;
+    let installation = match org_installation_with(&jwt, org, &cfg.installation_ids).await? {
+        OrgInstallation::Selected(id) => id,
+        other => return Err(other.refusal(org).unwrap_or_default()),
     };
+    let token = installation_token(sb, cfg, &installation, None).await?;
+    let body = serde_json::json!({
+        "name": name,
+        "description": truncate_utf16(description, 300),
+        "private": visibility == RepoVisibility::Private,
+        "auto_init": true,
+    })
+    .to_string();
     let res = gh(
-        &format!("/orgs/{org}/repos"),
+        &format!("/orgs/{}/repos", enc(org)),
         &token,
         "POST",
-        Some(&format!(
-            r#"{{"name":"{}","description":"{}","private":true,"auto_init":true}}"#,
-            name,
-            json_escape(truncate_utf16(description, 300))
-        )),
+        Some(&body),
     )
     .await?;
     if res.status().as_u16() == 403 {
-        return Err(
-            "the App lacks the org's Administration permission. Grant it in the App settings, then re-approve."
-                .into(),
-        );
+        return Err(format!(
+            "the App's installation on {org} lacks the org's Administration permission. Grant it in the App settings, then re-approve."
+        ));
     }
     if !res.status().is_success() {
         let status = res.status().as_u16();
@@ -1176,8 +1403,6 @@ pub async fn create_repo(
         .json()
         .await
         .map_err(|e| format!("github decode: {e}"))?;
-    // Pool changed.
-    *repo_install_cache().lock().unwrap() = None;
     Ok(CreatedRepo {
         full_name: j
             .get("full_name")
@@ -1192,15 +1417,10 @@ pub async fn create_repo(
     })
 }
 
+#[derive(Debug)]
 pub struct CreatedRepo {
     pub full_name: String,
     pub url: String,
-}
-
-/// The minimal JSON string escape — bodies built by format! still need their
-/// interpolated strings quote-safe.
-fn json_escape(s: &str) -> String {
-    serde_json::to_string(s).unwrap_or_else(|_| format!("\"{s}\""))
 }
 
 // ── Repo operations (the platform-owned git flow) ────────────────────────────
@@ -1284,46 +1504,458 @@ pub async fn branch_ahead(
     Ok(cmp.get("ahead_by").and_then(|v| v.as_i64()).unwrap_or(0))
 }
 
-pub struct CreatedPullRequest {
+// ── Pull requests: open one, or keep using the one the branch already has ───
+
+/// A pull request by its number and page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestRef {
     pub url: String,
     pub number: i64,
 }
 
-#[allow(clippy::too_many_arguments)] // the request's inputs are GitHub's own — all eight name one
-pub async fn create_pull_request(
-    pg: &PgPool,
-    sb: &SecretBox,
-    repo: &str,
-    head: &str,
-    base: &str,
-    title: &str,
-    body: &str,
-    draft: bool,
-) -> Result<CreatedPullRequest, String> {
-    let token = github_token(pg, sb, Some(repo))
-        .await?
-        .ok_or("GitHub is not connected")?;
-    let pr = gh_json(
-        &format!("/repos/{repo}/pulls"),
-        &token,
-        "POST",
-        Some(&format!(
-            r#"{{"head":{},"base":{},"title":{},"body":{},"draft":{draft}}}"#,
-            json_escape(head),
-            json_escape(base),
-            json_escape(title),
-            json_escape(body)
-        )),
-    )
-    .await?;
-    Ok(CreatedPullRequest {
+fn pr_ref_of(pr: &serde_json::Value) -> Option<PullRequestRef> {
+    Some(PullRequestRef {
+        number: pr.get("number").and_then(|v| v.as_i64())?,
         url: pr
             .get("html_url")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string(),
-        number: pr.get("number").and_then(|v| v.as_i64()).unwrap_or(0),
     })
+}
+
+/// The number at the end of a PR page URL (`…/pull/42` → 42) — how a job
+/// row written before `pr_number` existed still names its PR.
+pub fn pr_number_from_url(url: &str) -> Option<i64> {
+    let (_, tail) = url.trim_end_matches('/').rsplit_once("/pull/")?;
+    tail.parse().ok().filter(|n| *n > 0)
+}
+
+/// The open PR whose head is `branch` in `repo`, if there is one. GitHub
+/// allows one open PR per head and base, so a branch with an open PR is a
+/// branch whose next push already updates it.
+async fn find_open_pull_request_with(
+    token: &str,
+    repo: &str,
+    branch: &str,
+) -> Result<Option<PullRequestRef>, String> {
+    let owner = repo.split('/').next().unwrap_or(repo);
+    let reply = gh_json(
+        &format!(
+            "/repos/{repo}/pulls?state=open&per_page=1&head={}",
+            enc(&format!("{owner}:{branch}"))
+        ),
+        token,
+        "GET",
+        None,
+    )
+    .await?;
+    Ok(reply
+        .as_array()
+        .and_then(|prs| prs.first())
+        .and_then(pr_ref_of))
+}
+
+pub async fn find_open_pull_request(
+    pg: &PgPool,
+    sb: &SecretBox,
+    repo: &str,
+    branch: &str,
+) -> Result<Option<PullRequestRef>, String> {
+    let token = github_token(pg, sb, Some(repo))
+        .await?
+        .ok_or("GitHub is not connected")?;
+    find_open_pull_request_with(&token, repo, branch).await
+}
+
+/// What `finish_job` asks for: the PR to open, and the note to leave on the
+/// PR instead when the branch already has one.
+pub struct PullRequestAsk<'a> {
+    pub head: &'a str,
+    pub base: &'a str,
+    pub title: &'a str,
+    pub body: &'a str,
+    pub draft: bool,
+    /// Posted as a comment on an existing PR, so a revise round's summary
+    /// lands where its reviewer reads.
+    pub update_note: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenedPullRequest {
+    pub url: String,
+    pub number: i64,
+    /// The branch already had this PR open, so none was created.
+    pub reused: bool,
+    /// The update note landed as a PR comment (only ever true when reused).
+    pub commented: bool,
+}
+
+/// Open the PR for `ask.head` — or, when the branch already has an open one
+/// (a revise round pushing to the PR a reviewer bounced), keep that PR and
+/// comment on it. Opening a second PR for the same head is a 422 from
+/// GitHub, and that refusal left the job `started` with nothing to show.
+pub async fn open_or_update_pull_request(
+    pg: &PgPool,
+    sb: &SecretBox,
+    repo: &str,
+    ask: &PullRequestAsk<'_>,
+) -> Result<OpenedPullRequest, String> {
+    let token = github_token(pg, sb, Some(repo))
+        .await?
+        .ok_or("GitHub is not connected")?;
+    open_or_update_pull_request_with(&token, repo, ask).await
+}
+
+async fn open_or_update_pull_request_with(
+    token: &str,
+    repo: &str,
+    ask: &PullRequestAsk<'_>,
+) -> Result<OpenedPullRequest, String> {
+    if let Some(pr) = find_open_pull_request_with(token, repo, ask.head).await? {
+        return Ok(reuse_pull_request(token, repo, pr, ask.update_note).await);
+    }
+    let body = serde_json::json!({
+        "head": ask.head,
+        "base": ask.base,
+        "title": ask.title,
+        "body": ask.body,
+        "draft": ask.draft,
+    })
+    .to_string();
+    let res = gh(&format!("/repos/{repo}/pulls"), token, "POST", Some(&body)).await?;
+    let status = res.status().as_u16();
+    if !res.status().is_success() {
+        let text = res.text().await.unwrap_or_default();
+        // Opened between the lookup and this POST: GitHub's 422 says a PR
+        // already exists for the head, and that PR is this job's.
+        if status == 422
+            && text.contains("already exists")
+            && let Some(pr) = find_open_pull_request_with(token, repo, ask.head).await?
+        {
+            return Ok(reuse_pull_request(token, repo, pr, ask.update_note).await);
+        }
+        return Err(format!(
+            "GitHub POST /repos/{repo}/pulls → {status}: {}",
+            truncate_utf16(&text, 200)
+        ));
+    }
+    let pr: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| format!("github decode: {e}"))?;
+    let opened = pr_ref_of(&pr).ok_or("github pull request: no number in reply")?;
+    Ok(OpenedPullRequest {
+        url: opened.url,
+        number: opened.number,
+        reused: false,
+        commented: false,
+    })
+}
+
+/// Keep `pr`, and leave the note on it. The comment is the courtesy, not
+/// the operation: a failure to post it is logged and said in the answer,
+/// and the PR is still this job's.
+async fn reuse_pull_request(
+    token: &str,
+    repo: &str,
+    pr: PullRequestRef,
+    note: &str,
+) -> OpenedPullRequest {
+    let commented = if note.trim().is_empty() {
+        false
+    } else {
+        let body = serde_json::json!({ "body": note }).to_string();
+        match gh_json(
+            &format!("/repos/{repo}/issues/{}/comments", pr.number),
+            token,
+            "POST",
+            Some(&body),
+        )
+        .await
+        {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!("[github] could not comment on {repo}#{}: {e}", pr.number);
+                false
+            }
+        }
+    };
+    OpenedPullRequest {
+        url: pr.url,
+        number: pr.number,
+        reused: true,
+        commented,
+    }
+}
+
+// ── PR status (read-only: Talaria never merges, comments or re-runs) ────────
+
+/// Check-run conclusions that mean the check did not pass.
+const FAILING_CONCLUSIONS: [&str; 5] = [
+    "failure",
+    "timed_out",
+    "cancelled",
+    "action_required",
+    "startup_failure",
+];
+
+/// One verdict over a head commit's check runs and commit statuses:
+/// `failing` if any failed, else `pending` if any has not finished, else
+/// `passing` if there was anything to pass, else `none`.
+pub fn checks_verdict(runs: &[serde_json::Value], statuses: &[serde_json::Value]) -> &'static str {
+    let run_failed = runs.iter().any(|r| {
+        r.get("conclusion")
+            .and_then(|v| v.as_str())
+            .is_some_and(|c| FAILING_CONCLUSIONS.contains(&c))
+    });
+    let status_failed = statuses.iter().any(|s| {
+        matches!(
+            s.get("state").and_then(|v| v.as_str()),
+            Some("failure" | "error")
+        )
+    });
+    if run_failed || status_failed {
+        return "failing";
+    }
+    let run_pending = runs
+        .iter()
+        .any(|r| r.get("status").and_then(|v| v.as_str()) != Some("completed"));
+    let status_pending = statuses
+        .iter()
+        .any(|s| s.get("state").and_then(|v| v.as_str()) == Some("pending"));
+    if run_pending || status_pending {
+        return "pending";
+    }
+    if runs.is_empty() && statuses.is_empty() {
+        "none"
+    } else {
+        "passing"
+    }
+}
+
+/// The review decision from the REST reviews list: each reviewer's latest
+/// approving, change-requesting or dismissed review counts (a later plain
+/// comment does not undo an approval, as on GitHub). Any reviewer still
+/// requesting changes → `changes_requested`; else any approval →
+/// `approved`; else any review at all → `commented`; else `none`. Answers
+/// the decision and each reviewer's latest review, oldest reviewer first.
+pub fn review_decision(reviews: &[serde_json::Value]) -> (&'static str, Vec<serde_json::Value>) {
+    let mut order: Vec<String> = Vec::new();
+    let mut decisive: HashMap<String, String> = HashMap::new();
+    let mut latest: HashMap<String, serde_json::Value> = HashMap::new();
+    for r in reviews {
+        let by = r
+            .get("user")
+            .and_then(|u| u.get("login"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let state = r.get("state").and_then(|v| v.as_str()).unwrap_or_default();
+        if state == "PENDING" {
+            continue;
+        }
+        if !order.contains(&by) {
+            order.push(by.clone());
+        }
+        if matches!(state, "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED") {
+            decisive.insert(by.clone(), state.to_string());
+        }
+        latest.insert(
+            by.clone(),
+            serde_json::json!({
+                "by": by,
+                "state": state.to_lowercase(),
+                "submittedAt": r.get("submitted_at").cloned().unwrap_or(serde_json::Value::Null),
+            }),
+        );
+    }
+    let decision = if decisive.values().any(|s| s == "CHANGES_REQUESTED") {
+        "changes_requested"
+    } else if decisive.values().any(|s| s == "APPROVED") {
+        "approved"
+    } else if order.is_empty() {
+        "none"
+    } else {
+        "commented"
+    };
+    let reviews = order.iter().filter_map(|by| latest.remove(by)).collect();
+    (decision, reviews)
+}
+
+/// A PR's state, its head commit's checks and its review decision — every
+/// call a GET. `pr_status`'s whole answer, minus the job fields.
+pub async fn pull_request_status(
+    pg: &PgPool,
+    sb: &SecretBox,
+    repo: &str,
+    number: i64,
+) -> Result<serde_json::Value, String> {
+    let token = repo_token(pg, sb, Some(repo), PR_STATUS_PERMISSIONS)
+        .await?
+        .ok_or("GitHub is not connected")?;
+    pull_request_status_with(&token, repo, number).await
+}
+
+async fn pull_request_status_with(
+    token: &str,
+    repo: &str,
+    number: i64,
+) -> Result<serde_json::Value, String> {
+    use serde_json::{Value, json};
+    let pr = gh_json(&format!("/repos/{repo}/pulls/{number}"), token, "GET", None).await?;
+    let str_at = |v: &Value, path: &[&str]| -> Value {
+        let mut cur = v;
+        for key in path {
+            match cur.get(key) {
+                Some(next) => cur = next,
+                None => return Value::Null,
+            }
+        }
+        cur.clone()
+    };
+    let merged = pr.get("merged").and_then(Value::as_bool) == Some(true)
+        || pr.get("merged_at").is_some_and(Value::is_string);
+    let state = if merged {
+        "merged".to_string()
+    } else {
+        pr.get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string()
+    };
+    let head_sha = pr
+        .get("head")
+        .and_then(|h| h.get("sha"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    // Checks and reviews are read separately and a failure to read one is
+    // SAID, not thrown: the PR's own state is still worth having, and a
+    // 403 here is almost always the App missing a read permission.
+    let mut errors: Vec<String> = Vec::new();
+    let unreadable = |what: &str, permission: &str, e: String| -> String {
+        if e.contains("→ 403") || e.contains("→ 404") {
+            format!(
+                "{what} unreadable — the GitHub App needs the {permission} (read) permission ({e})"
+            )
+        } else {
+            format!("{what} unreadable: {e}")
+        }
+    };
+    let mut runs: Vec<Value> = Vec::new();
+    let mut statuses: Vec<Value> = Vec::new();
+    if !head_sha.is_empty() {
+        match gh_json(
+            &format!("/repos/{repo}/commits/{head_sha}/check-runs?per_page=100"),
+            token,
+            "GET",
+            None,
+        )
+        .await
+        {
+            Ok(j) => {
+                runs = j
+                    .get("check_runs")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+            }
+            Err(e) => errors.push(unreadable("check runs", "Checks", e)),
+        }
+        match gh_json(
+            &format!("/repos/{repo}/commits/{head_sha}/status"),
+            token,
+            "GET",
+            None,
+        )
+        .await
+        {
+            Ok(j) => {
+                statuses = j
+                    .get("statuses")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+            }
+            Err(e) => errors.push(unreadable("commit statuses", "Commit statuses", e)),
+        }
+    }
+    let (decision, reviews) = match gh_json(
+        &format!("/repos/{repo}/pulls/{number}/reviews?per_page=100"),
+        token,
+        "GET",
+        None,
+    )
+    .await
+    {
+        Ok(j) => {
+            let (d, r) = review_decision(j.as_array().map(Vec::as_slice).unwrap_or_default());
+            (d.to_string(), r)
+        }
+        Err(e) => {
+            errors.push(unreadable("reviews", "Pull requests", e));
+            ("unknown".to_string(), Vec::new())
+        }
+    };
+    // Nothing read and a read failed: the honest verdict is that nobody
+    // knows, never `none` (which says there are no checks).
+    let checks_unread = errors
+        .iter()
+        .any(|e| e.starts_with("check runs") || e.starts_with("commit statuses"));
+    let verdict = if checks_unread && runs.is_empty() && statuses.is_empty() {
+        "unknown"
+    } else {
+        checks_verdict(&runs, &statuses)
+    };
+    let run_wire: Vec<Value> = runs
+        .iter()
+        .map(|r| {
+            json!({
+                "name": str_at(r, &["name"]),
+                "status": str_at(r, &["status"]),
+                "conclusion": str_at(r, &["conclusion"]),
+                "url": str_at(r, &["html_url"]),
+            })
+        })
+        .collect();
+    let status_wire: Vec<Value> = statuses
+        .iter()
+        .map(|s| {
+            json!({
+                "context": str_at(s, &["context"]),
+                "state": str_at(s, &["state"]),
+                "url": str_at(s, &["target_url"]),
+            })
+        })
+        .collect();
+    let requested: Vec<Value> = pr
+        .get("requested_reviewers")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().map(|u| str_at(u, &["login"])).collect())
+        .unwrap_or_default();
+    let mut out = json!({
+        "repo": repo,
+        "number": number,
+        "url": str_at(&pr, &["html_url"]),
+        "title": str_at(&pr, &["title"]),
+        "state": state,
+        "draft": pr.get("draft").and_then(Value::as_bool).unwrap_or(false),
+        "base": str_at(&pr, &["base", "ref"]),
+        "head": str_at(&pr, &["head", "ref"]),
+        "headSha": head_sha,
+        "mergeable": str_at(&pr, &["mergeable"]),
+        "mergedAt": str_at(&pr, &["merged_at"]),
+        "checks": { "verdict": verdict, "runs": run_wire, "statuses": status_wire },
+        "reviewDecision": decision,
+        "reviews": reviews,
+        "requestedReviewers": requested,
+    });
+    if !errors.is_empty() {
+        out["errors"] = json!(errors);
+    }
+    Ok(out)
 }
 
 /// THE CLONE URL AN AGENT IS GIVEN — and it never carries the token. The
@@ -1461,6 +2093,578 @@ mod tests {
     }
 
     use super::*;
+
+    // ── A loopback GitHub: the workspace's stub-listener pattern ─────────────
+    //
+    // Each test binds its own listener on 127.0.0.1:0 and scopes its calls to
+    // it with `with_api_base`, so nothing here ever reaches api.github.com and
+    // tests in parallel never share a stub. The route closure answers each
+    // request by method and path; `seen` records what was asked, in order.
+
+    #[derive(Debug, Clone)]
+    struct Seen {
+        method: String,
+        path: String,
+        auth: String,
+        body: String,
+    }
+
+    type Route = dyn Fn(&Seen, usize) -> (u16, String) + Send + Sync;
+
+    async fn stub(
+        route: impl Fn(&Seen, usize) -> (u16, String) + Send + Sync + 'static,
+    ) -> (String, std::sync::Arc<Mutex<Vec<Seen>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback listener binds");
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let seen = std::sync::Arc::new(Mutex::new(Vec::<Seen>::new()));
+        let log = seen.clone();
+        let route: std::sync::Arc<Route> = std::sync::Arc::new(route);
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let (log, route) = (log.clone(), route.clone());
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    let (head, body) = loop {
+                        let n = sock.read(&mut chunk).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        let text = String::from_utf8_lossy(&buf).to_string();
+                        if let Some(end) = text.find("\r\n\r\n") {
+                            let len = text[..end]
+                                .lines()
+                                .find_map(|l| {
+                                    let (k, v) = l.split_once(':')?;
+                                    k.eq_ignore_ascii_case("content-length")
+                                        .then(|| v.trim().parse::<usize>().ok())?
+                                })
+                                .unwrap_or(0);
+                            if buf.len() >= end + 4 + len {
+                                break (
+                                    text[..end].to_string(),
+                                    text[end + 4..end + 4 + len].to_string(),
+                                );
+                            }
+                        }
+                    };
+                    let mut words = head.lines().next().unwrap_or_default().split(' ');
+                    let method = words.next().unwrap_or_default().to_string();
+                    let path = words.next().unwrap_or_default().to_string();
+                    let auth = head
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("authorization")
+                                .then(|| v.trim().to_string())
+                        })
+                        .unwrap_or_default();
+                    let req = Seen {
+                        method,
+                        path,
+                        auth,
+                        body,
+                    };
+                    let n = {
+                        let mut log = log.lock().unwrap();
+                        log.push(req.clone());
+                        log.len() - 1
+                    };
+                    let (status, answer) = route(&req, n);
+                    let reply = format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{answer}",
+                        answer.len()
+                    );
+                    let _ = sock.write_all(reply.as_bytes()).await;
+                    let _ = sock.shutdown().await;
+                });
+            }
+        });
+        (base, seen)
+    }
+
+    fn ask<'a>(note: &'a str) -> PullRequestAsk<'a> {
+        PullRequestAsk {
+            head: "talaria/tala-7-fix-login",
+            base: "main",
+            title: "[TALA-7] Fix login",
+            body: "the body",
+            draft: false,
+            update_note: note,
+        }
+    }
+
+    const PR_LOOKUP: &str =
+        "/repos/acme/widgets/pulls?state=open&per_page=1&head=acme%3Atalaria%2Ftala-7-fix-login";
+
+    #[tokio::test]
+    async fn a_branch_with_an_open_pr_reuses_it_and_never_opens_a_second() {
+        let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", PR_LOOKUP) => (
+                200,
+                r#"[{"number":7,"html_url":"https://github.com/acme/widgets/pull/7"}]"#.into(),
+            ),
+            ("POST", "/repos/acme/widgets/issues/7/comments") => (201, "{}".into()),
+            _ => (500, r#"{"message":"unexpected"}"#.into()),
+        })
+        .await;
+        let opened = with_api_base(
+            base,
+            open_or_update_pull_request_with(
+                "tok",
+                "acme/widgets",
+                &ask("round two: fixed the review"),
+            ),
+        )
+        .await
+        .expect("the existing PR is reused");
+        assert_eq!(
+            opened,
+            OpenedPullRequest {
+                url: "https://github.com/acme/widgets/pull/7".into(),
+                number: 7,
+                reused: true,
+                commented: true,
+            }
+        );
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            !seen
+                .iter()
+                .any(|r| r.method == "POST" && r.path == "/repos/acme/widgets/pulls"),
+            "no second PR was asked for: {seen:?}"
+        );
+        let comment = seen
+            .iter()
+            .find(|r| r.path.ends_with("/issues/7/comments"))
+            .expect("the summary was left on the PR");
+        let body: serde_json::Value = serde_json::from_str(&comment.body).unwrap();
+        assert_eq!(body["body"], "round two: fixed the review");
+        assert_eq!(comment.auth, "Bearer tok");
+    }
+
+    #[tokio::test]
+    async fn a_branch_without_a_pr_gets_one_opened() {
+        let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", PR_LOOKUP) => (200, "[]".into()),
+            ("POST", "/repos/acme/widgets/pulls") => (
+                201,
+                r#"{"number":8,"html_url":"https://github.com/acme/widgets/pull/8"}"#.into(),
+            ),
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let opened = with_api_base(
+            base,
+            open_or_update_pull_request_with("tok", "acme/widgets", &ask("unused")),
+        )
+        .await
+        .expect("a PR opens");
+        assert_eq!(opened.number, 8);
+        assert!(!opened.reused && !opened.commented);
+        let seen = seen.lock().unwrap().clone();
+        let post = seen.iter().find(|r| r.method == "POST").expect("one POST");
+        let body: serde_json::Value = serde_json::from_str(&post.body).unwrap();
+        assert_eq!(body["head"], "talaria/tala-7-fix-login");
+        assert_eq!(body["base"], "main");
+        assert_eq!(body["title"], "[TALA-7] Fix login");
+        assert_eq!(body["draft"], false);
+        assert_eq!(seen.len(), 2, "lookup then create, nothing else: {seen:?}");
+    }
+
+    #[tokio::test]
+    async fn a_pr_opened_between_lookup_and_create_is_found_not_thrown() {
+        // GitHub's own refusal for a second PR on a head: 422, "already exists".
+        let (base, _) = stub(|req, n| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", PR_LOOKUP) if n == 0 => (200, "[]".into()),
+            ("GET", PR_LOOKUP) => (
+                200,
+                r#"[{"number":9,"html_url":"https://github.com/acme/widgets/pull/9"}]"#.into(),
+            ),
+            ("POST", "/repos/acme/widgets/pulls") => (
+                422,
+                r#"{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"A pull request already exists for acme:talaria/tala-7-fix-login."}]}"#.into(),
+            ),
+            _ => (201, "{}".into()),
+        })
+        .await;
+        let opened = with_api_base(
+            base,
+            open_or_update_pull_request_with("tok", "acme/widgets", &ask("note")),
+        )
+        .await
+        .expect("the race resolves to the PR that exists");
+        assert_eq!((opened.number, opened.reused), (9, true));
+    }
+
+    #[tokio::test]
+    async fn any_other_create_failure_is_an_error_with_githubs_words() {
+        let (base, _) = stub(|req, _| match req.method.as_str() {
+            "GET" => (200, "[]".into()),
+            _ => (
+                422,
+                r#"{"message":"Validation Failed","errors":[{"message":"No commits between main and talaria/tala-7-fix-login"}]}"#.into(),
+            ),
+        })
+        .await;
+        let err = with_api_base(
+            base,
+            open_or_update_pull_request_with("tok", "acme/widgets", &ask("note")),
+        )
+        .await
+        .expect_err("not a reuse");
+        assert!(err.contains("422") && err.contains("No commits"), "{err}");
+    }
+
+    #[test]
+    fn a_pr_number_reads_off_its_page_url() {
+        assert_eq!(
+            pr_number_from_url("https://github.com/acme/widgets/pull/42"),
+            Some(42)
+        );
+        assert_eq!(
+            pr_number_from_url("https://github.com/acme/widgets/pull/42/"),
+            Some(42)
+        );
+        assert_eq!(pr_number_from_url("https://github.com/acme/widgets"), None);
+        assert_eq!(
+            pr_number_from_url("https://github.com/acme/widgets/pull/x"),
+            None
+        );
+    }
+
+    // ── Repo creation routes to the org's own installation (B13) ─────────────
+
+    fn app_cfg(installations: &[&str], orgs: &[&str], sb: &SecretBox) -> GithubConfig {
+        let pem = include_str!("../../../tests/it/fixtures/github-jwt-traditional.pem");
+        GithubConfig {
+            mode: Some("app".into()),
+            pat_token_enc: None,
+            app_id: "12345".into(),
+            installation_ids: installations.iter().map(|s| s.to_string()).collect(),
+            private_key_enc: Some(sb.seal(pem).expect("the key seals")),
+            repo_creation_orgs: orgs.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn test_box() -> SecretBox {
+        SecretBox::from_parts(
+            [7u8; 32],
+            HashMap::from([(1u32, talaria_secretbox::new_dek().expect("entropy"))]),
+            Some(1),
+        )
+    }
+
+    #[tokio::test]
+    async fn create_repo_uses_the_installation_github_names_for_the_org() {
+        // Two installations; the FIRST is another org's. The org is new and
+        // empty, so no cache could have routed it — GitHub is asked instead.
+        let sb = test_box();
+        let cfg = app_cfg(&["90001", "90002"], &["plugins"], &sb);
+        let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/orgs/plugins/installation") => (200, r#"{"id":90002}"#.into()),
+            ("POST", "/app/installations/90002/access_tokens") => {
+                (201, r#"{"token":"inst-90002"}"#.into())
+            }
+            ("POST", "/orgs/plugins/repos") => (
+                201,
+                r#"{"full_name":"plugins/talaria-app-notes","html_url":"https://github.com/plugins/talaria-app-notes"}"#.into(),
+            ),
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let created = with_api_base(
+            base,
+            create_repo_in(
+                &sb,
+                &cfg,
+                "plugins",
+                "talaria-app-notes",
+                "notes",
+                RepoVisibility::Public,
+            ),
+        )
+        .await
+        .expect("the repo is created");
+        assert_eq!(created.full_name, "plugins/talaria-app-notes");
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            seen[0].auth.starts_with("Bearer ey"),
+            "the lookup carries the App JWT"
+        );
+        let post = seen
+            .iter()
+            .find(|r| r.path == "/orgs/plugins/repos")
+            .expect("the create");
+        assert_eq!(
+            post.auth, "Bearer inst-90002",
+            "minted on the org's own installation"
+        );
+        assert!(
+            !seen
+                .iter()
+                .any(|r| r.path.contains("/installations/90001/")),
+            "the other org's installation is never touched: {seen:?}"
+        );
+        let body: serde_json::Value = serde_json::from_str(&post.body).unwrap();
+        assert_eq!(body["private"], false, "public was asked for");
+        assert_eq!(body["auto_init"], true);
+    }
+
+    #[tokio::test]
+    async fn create_repo_refuses_an_org_the_app_is_not_installed_on() {
+        let sb = test_box();
+        let cfg = app_cfg(&["90011"], &["elsewhere"], &sb);
+        let (base, seen) = stub(|req, _| match req.path.as_str() {
+            "/orgs/elsewhere/installation" => (404, r#"{"message":"Not Found"}"#.into()),
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let err = with_api_base(
+            base,
+            create_repo_in(&sb, &cfg, "elsewhere", "x", "", RepoVisibility::Private),
+        )
+        .await
+        .expect_err("refused");
+        assert!(err.contains("not installed on elsewhere"), "{err}");
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "nothing minted, nothing posted"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_repo_refuses_an_installation_the_admin_did_not_select() {
+        let sb = test_box();
+        let cfg = app_cfg(&["90021"], &["side"], &sb);
+        let (base, _) = stub(|req, _| match req.path.as_str() {
+            "/orgs/side/installation" => (200, r#"{"id":90099}"#.into()),
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let err = with_api_base(
+            base,
+            create_repo_in(&sb, &cfg, "side", "x", "", RepoVisibility::Private),
+        )
+        .await
+        .expect_err("refused");
+        assert!(
+            err.contains("installation 90099") && err.contains("does not use"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_private_repo_is_the_default_and_a_403_names_the_permission() {
+        let sb = test_box();
+        let cfg = app_cfg(&["90031"], &["acme"], &sb);
+        let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/orgs/acme/installation") => (200, r#"{"id":"90031"}"#.into()),
+            ("POST", "/app/installations/90031/access_tokens") => (201, r#"{"token":"t"}"#.into()),
+            ("POST", "/orgs/acme/repos") => {
+                (403, r#"{"message":"Resource not accessible"}"#.into())
+            }
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let err = with_api_base(
+            base,
+            create_repo_in(&sb, &cfg, "acme", "x", "", RepoVisibility::default()),
+        )
+        .await
+        .expect_err("403");
+        assert!(err.contains("Administration permission"), "{err}");
+        let post = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.path == "/orgs/acme/repos")
+            .cloned()
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&post.body).unwrap();
+        assert_eq!(body["private"], true);
+    }
+
+    #[test]
+    fn repo_creation_is_refused_up_front_outside_app_mode() {
+        let sb = test_box();
+        let mut cfg = app_cfg(&["1"], &["acme"], &sb);
+        assert_eq!(repo_creation_refusal(&cfg, "acme"), None);
+        let other = repo_creation_refusal(&cfg, "other").expect("not on the list");
+        assert!(other.contains("approved: acme"), "{other}");
+        cfg.mode = Some("pat".into());
+        let pat = repo_creation_blocker(&cfg).expect("PAT mode cannot create");
+        assert!(pat.contains("GitHub App"), "{pat}");
+        cfg.mode = Some("app".into());
+        cfg.repo_creation_orgs.clear();
+        assert!(repo_creation_blocker(&cfg).unwrap().contains("off"));
+        let mut partial = app_cfg(&[], &["acme"], &sb);
+        partial.installation_ids.clear();
+        assert!(
+            repo_creation_blocker(&partial)
+                .unwrap()
+                .contains("incomplete")
+        );
+        assert_eq!(
+            RepoVisibility::parse("public"),
+            Some(RepoVisibility::Public)
+        );
+        assert_eq!(RepoVisibility::parse("internal"), None);
+        assert_eq!(RepoVisibility::default().as_str(), "private");
+    }
+
+    // ── PR status: read-only, every call a GET ────────────────────────────────
+
+    #[test]
+    fn the_checks_verdict_fails_on_any_failure_and_waits_on_any_run() {
+        use serde_json::json;
+        let ok = json!({"status":"completed","conclusion":"success"});
+        let skipped = json!({"status":"completed","conclusion":"skipped"});
+        let bad = json!({"status":"completed","conclusion":"failure"});
+        let running = json!({"status":"in_progress","conclusion":null});
+        assert_eq!(checks_verdict(&[], &[]), "none");
+        assert_eq!(checks_verdict(&[ok.clone(), skipped], &[]), "passing");
+        assert_eq!(
+            checks_verdict(&[ok.clone(), running.clone()], &[]),
+            "pending"
+        );
+        assert_eq!(checks_verdict(&[running, bad], &[]), "failing");
+        assert_eq!(
+            checks_verdict(std::slice::from_ref(&ok), &[json!({"state":"error"})]),
+            "failing"
+        );
+        assert_eq!(
+            checks_verdict(&[ok], &[json!({"state":"pending"})]),
+            "pending"
+        );
+        assert_eq!(
+            checks_verdict(
+                &[json!({"status":"completed","conclusion":"timed_out"})],
+                &[]
+            ),
+            "failing"
+        );
+    }
+
+    #[test]
+    fn the_review_decision_follows_each_reviewers_latest_verdict() {
+        use serde_json::json;
+        let r = |who: &str, state: &str| json!({"user":{"login":who},"state":state,"submitted_at":"2026-10-22T00:00:00Z"});
+        assert_eq!(review_decision(&[]).0, "none");
+        assert_eq!(review_decision(&[r("ann", "COMMENTED")]).0, "commented");
+        assert_eq!(review_decision(&[r("ann", "APPROVED")]).0, "approved");
+        // A later comment does not undo an approval.
+        assert_eq!(
+            review_decision(&[r("ann", "APPROVED"), r("ann", "COMMENTED")]).0,
+            "approved"
+        );
+        // Changes requested, then approved by the same person: approved.
+        assert_eq!(
+            review_decision(&[r("ann", "CHANGES_REQUESTED"), r("ann", "APPROVED")]).0,
+            "approved"
+        );
+        // One reviewer still asking for changes outweighs another's approval.
+        let (decision, latest) = review_decision(&[
+            r("ann", "APPROVED"),
+            r("bob", "CHANGES_REQUESTED"),
+            r("bob", "COMMENTED"),
+        ]);
+        assert_eq!(decision, "changes_requested");
+        assert_eq!(latest.len(), 2);
+        assert_eq!(latest[1]["by"], "bob");
+        assert_eq!(latest[1]["state"], "commented");
+        // A dismissed change request no longer blocks.
+        assert_eq!(
+            review_decision(&[r("bob", "CHANGES_REQUESTED"), r("bob", "DISMISSED")]).0,
+            "commented"
+        );
+        // A draft (PENDING) review is nobody's verdict yet.
+        assert_eq!(review_decision(&[r("cy", "PENDING")]).0, "none");
+    }
+
+    #[tokio::test]
+    async fn pr_status_reads_state_checks_and_reviews_and_writes_nothing() {
+        let (base, seen) = stub(|req, _| match req.path.as_str() {
+            "/repos/acme/widgets/pulls/7" => (
+                200,
+                r#"{"number":7,"html_url":"https://github.com/acme/widgets/pull/7","title":"[TALA-7] Fix login","state":"open","merged":false,"merged_at":null,"draft":false,"mergeable":true,"base":{"ref":"main"},"head":{"ref":"talaria/tala-7-fix-login","sha":"abc123"},"requested_reviewers":[{"login":"dee"}]}"#.into(),
+            ),
+            "/repos/acme/widgets/commits/abc123/check-runs?per_page=100" => (
+                200,
+                r#"{"total_count":2,"check_runs":[{"name":"test","status":"completed","conclusion":"failure","html_url":"https://ci/1"},{"name":"lint","status":"completed","conclusion":"success","html_url":"https://ci/2"}]}"#.into(),
+            ),
+            "/repos/acme/widgets/commits/abc123/status" => {
+                (200, r#"{"state":"pending","total_count":0,"statuses":[]}"#.into())
+            }
+            "/repos/acme/widgets/pulls/7/reviews?per_page=100" => (
+                200,
+                r#"[{"user":{"login":"ann"},"state":"CHANGES_REQUESTED","submitted_at":"2026-10-22T01:00:00Z"}]"#.into(),
+            ),
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let status = with_api_base(base, pull_request_status_with("tok", "acme/widgets", 7))
+            .await
+            .expect("status reads");
+        assert_eq!(status["state"], "open");
+        assert_eq!(status["headSha"], "abc123");
+        assert_eq!(status["checks"]["verdict"], "failing");
+        assert_eq!(status["checks"]["runs"][0]["name"], "test");
+        assert_eq!(status["checks"]["runs"][0]["conclusion"], "failure");
+        assert_eq!(status["reviewDecision"], "changes_requested");
+        assert_eq!(status["requestedReviewers"][0], "dee");
+        assert!(status.get("errors").is_none());
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 4);
+        assert!(
+            seen.iter().all(|r| r.method == "GET"),
+            "pr_status never writes: {seen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pr_status_says_merged_and_names_a_missing_checks_permission() {
+        let (base, _) = stub(|req, _| match req.path.as_str() {
+            "/repos/acme/widgets/pulls/5" => (
+                200,
+                r#"{"number":5,"state":"closed","merged":true,"merged_at":"2026-10-22T02:00:00Z","head":{"ref":"b","sha":"def"},"base":{"ref":"main"}}"#.into(),
+            ),
+            p if p.contains("/check-runs") => (403, r#"{"message":"Resource not accessible by integration"}"#.into()),
+            p if p.ends_with("/status") => (403, r#"{"message":"Resource not accessible by integration"}"#.into()),
+            p if p.contains("/reviews") => (200, "[]".into()),
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let status = with_api_base(base, pull_request_status_with("tok", "acme/widgets", 5))
+            .await
+            .expect("a PR state is still an answer");
+        assert_eq!(status["state"], "merged");
+        assert_eq!(status["checks"]["verdict"], "unknown");
+        assert_eq!(status["reviewDecision"], "none");
+        let errors = status["errors"].as_array().expect("the gap is said");
+        assert!(
+            errors[0]
+                .as_str()
+                .unwrap()
+                .contains("Checks (read) permission"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_status_token_asks_for_reads_only() {
+        let body = access_tokens_body_for("acme/widgets", Some(PR_STATUS_PERMISSIONS));
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let perms = v["permissions"].as_object().unwrap();
+        assert!(perms.values().all(|p| p == "read"), "{perms:?}");
+        assert_eq!(perms.get("checks").and_then(|p| p.as_str()), Some("read"));
+        assert_eq!(v["repositories"], serde_json::json!(["widgets"]));
+    }
 
     #[test]
     fn next_link_path_extracts_the_path() {

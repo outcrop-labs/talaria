@@ -778,7 +778,7 @@ fn spawn_audit_and_render(
             },
         )
         .await;
-        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb, None).await;
+        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb).await;
     });
 }
 

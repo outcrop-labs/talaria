@@ -18,6 +18,7 @@ pub mod admin_permissions;
 pub mod admin_platform_agents;
 pub mod admin_rag;
 pub mod admin_search;
+pub mod admin_search_agents;
 pub mod admin_secrets;
 pub mod admin_settings;
 pub mod admin_storage;
