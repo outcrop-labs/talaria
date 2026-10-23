@@ -36,6 +36,10 @@ const PREFIXES = ['/api/'] as const
 //   point agents straight at :5274), but the proxy never routes an app
 //   server's traffic anywhere else. Bare /api/apps is NOT a resident — it is
 //   the discovery listing, and it serves from Rust like everything else.
+//   The app host's own routes about an app (/api/app-host/{slug}/…, today
+//   rebuild: compile and probe the app's modules) — same reason: the
+//   builder and the probe load app code. They sit under their own prefix so
+//   they never take a path from the app's namespace above.
 //   healthz — the app process's own liveness answer; the Rust api carries
 //   its own at the same path for whoever asks it there.
 // The one-time resident admin.update (the git-checkout updater that rebuilt
@@ -45,8 +49,17 @@ const PREFIXES = ['/api/'] as const
 const STAY_TS = [
   /^\/api\/mcp\/gw\/app-/,
   /^\/api\/apps\//,
+  /^\/api\/app-host\//,
   /^\/api\/healthz$/,
 ] as const
+
+// THE SERVICE-TO-SERVICE PREFIX, which this origin never forwards. The api's
+// /api/internal/* routes answer only the root-derived credential this host
+// presents on its own calls (internal-api.ts); a request that ARRIVES here
+// for one is a browser's, an agent's or an app's, and none of them is the
+// host. Refused at the edge with the api's own 404, so the prefix is not even
+// an oracle from outside.
+const INTERNAL_PREFIX = /^\/api\/internal(\/|$)/
 
 // The default target: in-box loopback on the same port `talaria dev` and
 // server-entry.ts bind their api to. Both wire the env explicitly when they
@@ -103,7 +116,19 @@ const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-req
 const READ_DEADLINE_MS = 30_000
 const READ_METHODS = new Set(['GET', 'HEAD'])
 
+/** Whether a failed upstream fetch is the CALLER's abort — not our read
+ *  deadline, not a transport failure. The composed signal names the first
+ *  source that fired, so a deadline that fired first stays a 502 even if the
+ *  caller then leaves; and the error must be that abort itself (fetch rejects
+ *  with the signal's reason), so a refused connection that happens to race a
+ *  closing tab is still logged as the outage it is. */
+function callerLeft(e: Error, caller: AbortSignal | null | undefined, sent: AbortSignal | undefined): boolean {
+  if (!caller?.aborted || sent === undefined || sent.reason !== caller.reason) return false
+  return e === caller.reason || e.name === 'AbortError'
+}
+
 export async function maybeProxy(request: Request, pathname: string): Promise<Response | null> {
+  if (INTERNAL_PREFIX.test(pathname)) return json({ error: 'not found' }, { status: 404 })
   const base = rustApiUrl()
   if (base === undefined || STAY_TS.some((r) => r.test(pathname))) return null
   if (!PREFIXES.some((p) => pathname.startsWith(p))) return null
@@ -123,17 +148,21 @@ export async function maybeProxy(request: Request, pathname: string): Promise<Re
   if (!headers.has('x-forwarded-host')) headers.set('x-forwarded-host', incoming.host)
 
   // The body is buffered BEFORE the timer starts, so a long upload spends its
-  // minutes in the buffer (guarded by the caller's own disconnect signal),
-  // not against the read deadline — writes are exempt regardless, but a
-  // future reader of this ordering should not have to rediscover it.
+  // minutes in the buffer, not against the read deadline — writes are exempt
+  // regardless, but a future reader of this ordering should not have to
+  // rediscover it.
   const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.arrayBuffer()
 
-  // Composed by hand rather than one AbortSignal.any so the deadline half can
-  // be armed for reads only: `request.signal` stays live for the whole body
-  // (the caller's disconnect still cuts an SSE relay), while `timer` guards
-  // only the wait for the response itself, and only on reads.
+  // READS ONLY, both halves. `request.signal` aborts when the caller hangs
+  // up (server-entry.ts and the vite middleware wire it to the socket), and
+  // on a read that is the right answer: nobody is waiting, so the wait for a
+  // response — or an SSE relay's body — is cut. A WRITE keeps running after
+  // its caller leaves, as it always has: a fleet verb or an install half done
+  // because a tab closed is worse than one finished for nobody. `timer`
+  // guards only the wait for the response itself; composed by hand so it can
+  // be cleared the moment the response lands.
   let timer: ReturnType<typeof setTimeout> | undefined
-  let signal: AbortSignal | undefined = request.signal ?? undefined
+  let signal: AbortSignal | undefined
   if (READ_METHODS.has(request.method)) {
     const deadline = new AbortController()
     timer = setTimeout(() => deadline.abort(new Error('upstream did not answer in time')), READ_DEADLINE_MS)
@@ -152,6 +181,13 @@ export async function maybeProxy(request: Request, pathname: string): Promise<Re
   if (timer !== undefined) clearTimeout(timer)
 
   if (res instanceof Error) {
+    // The caller left before the api answered: the read was cut on purpose
+    // (above), the api is fine, and nobody is waiting for an answer. That is
+    // not an outage, so it is neither logged as one nor answered 502 — the
+    // `unreachable` line below is what an operator reads to spot a down api,
+    // and SPA navigations and cancelled queries abort reads all day. 499 is
+    // the app gateway's answer for the same moment (apps.$app.$.ts).
+    if (callerLeft(res, request.signal, signal)) return new Response(null, { status: 499 })
     // Fixed sentence, the one this boundary already uses — the fetch error
     // names the Rust api's host:port, which is topology, not a key holder's
     // business. Same shape as llm.v1.chat.completions.ts's own 502.

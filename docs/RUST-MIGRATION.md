@@ -4,9 +4,10 @@ The backend is the `api/` crate — axum, sqlx, redis-rs, hand-rolled reqwest
 clients. It owns every `/api/*` route, the SSE streams, and the scheduler. The
 SvelteKit server (bun) stays the SPA host forever: it serves the app and hands
 `/api/*` to the api on loopback, which is what keeps cookies same-origin
-(rule 7). Three residents stay TS, permanent by rule: the app dispatch
-(`/api/apps/…` subtree — bare `/api/apps` is the api's), the app-MCP gateway
-branch (`/api/mcp/gw/app-*`), and `healthz`. The one-time fourth (`admin/update`,
+(rule 7). Four residents stay TS, permanent by rule: the app dispatch
+(`/api/apps/…` subtree — bare `/api/apps` is the api's), the host's own app
+routes (`/api/app-host/…`, which build and probe app code), the app-MCP gateway
+branch (`/api/mcp/gw/app-*`), and `healthz`. The one-time fifth (`admin/update`,
 the git-checkout updater that rebuilt `ui/dist` and restarted the very process
 serving it) retired with its updater: the update surface is the api's
 (`/api/admin/updates` rolls containers — see [`UPDATES.md`](./UPDATES.md)).

@@ -9,7 +9,7 @@ import { appBuildKeyDir } from './app-build/paths'
 
 let ssrLoad: ((abs: string) => Promise<unknown>) | null = null
 
-export function setSsrLoader(fn: (abs: string) => Promise<unknown>): void {
+export function setSsrLoader(fn: ((abs: string) => Promise<unknown>) | null): void {
   ssrLoad = fn
 }
 

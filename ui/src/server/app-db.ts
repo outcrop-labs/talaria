@@ -10,7 +10,9 @@ import { spawn } from 'node:child_process'
 import postgres, { type Sql } from 'postgres'
 import { getSetting, setSetting } from './audit'
 import { open, seal, secretboxFailure } from './secretbox'
-import { slugOk, appsDir } from './app-build/paths'
+import { slugOk, appDataDir } from './app-build/paths'
+
+export { appDataDir }
 
 const PASSWORDS_KEY = 'app_db_passwords'
 const DEFAULT_IMAGE = 'docker.io/library/postgres:16-alpine'
@@ -25,13 +27,24 @@ export function appDbContainer(slug: string): string {
   return `talaria-appdb-${instanceId()}-${slug}`
 }
 
-export function appDataDir(slug: string): string {
-  const root = process.env.TALARIA_APP_DATA_DIR || join(appsDir(), '..', 'app-data')
-  return join(root, slug)
+/** Is this process the product image? Only the image says so
+ *  (TALARIA_INSTALL=image, its Dockerfile ENV). There it shares a network
+ *  with app DBs and dials them by container name. A checkout install runs the
+ *  same server-entry.ts (TALARIA_RUNTIME=prod-server) on the host, where a
+ *  container name does not resolve, so it dials the published loopback port
+ *  like dev does. Counting prod-server as the image sent a checkout install's
+ *  first store call to an unresolvable host and refused to enable the app. */
+export function inImage(): boolean {
+  return process.env.TALARIA_INSTALL === 'image'
 }
 
-function inImage(): boolean {
-  return process.env.TALARIA_INSTALL === 'image' || process.env.TALARIA_RUNTIME === 'prod-server'
+/** Does this process dial app DBs by container name on a shared network,
+ *  rather than on the loopback port the container publishes? In the image,
+ *  and wherever TALARIA_APP_DB_NETWORK names the network: runningNetwork()
+ *  attaches the DB there and composeYaml then publishes no port, so a
+ *  loopback dial has nothing to reach. */
+export function dialsByName(): boolean {
+  return inImage() || Boolean(process.env.TALARIA_APP_DB_NETWORK)
 }
 
 function composeFile(slug: string): string {
@@ -85,7 +98,13 @@ function readPasswordFile(path: string): string | null {
   return pass || null
 }
 
-function writePasswordFile(path: string, password: string): void {
+/** Write the app DB's db.env (0600). The app's data directory is created
+ *  first (0700): a fresh app reaches this on its first store call, before
+ *  spawnContainer has made the directory, and writing into a directory that
+ *  does not exist failed that call with ENOENT. */
+export function writeDbEnv(slug: string, password: string): void {
+  mkdirSync(appDataDir(slug), { recursive: true, mode: 0o700 })
+  const path = envFile(slug)
   writeFileSync(path, `POSTGRES_USER=talaria\nPOSTGRES_PASSWORD=${password}\nPOSTGRES_DB=talaria\n`, {
     mode: 0o600,
   })
@@ -117,7 +136,7 @@ async function loadOrCreatePassword(slug: string): Promise<string> {
   if (!sealedOk) {
     await setSetting(PASSWORDS_KEY, { ...stored, [slug]: seal(pass) })
   }
-  writePasswordFile(envFile(slug), pass)
+  writeDbEnv(slug, pass)
   return pass
 }
 
@@ -220,7 +239,7 @@ async function spawnContainer(slug: string, password: string): Promise<void> {
   const name = appDbContainer(slug)
   const dir = appDataDir(slug)
   mkdirSync(join(dir, 'pg'), { recursive: true, mode: 0o700 })
-  writePasswordFile(envFile(slug), password)
+  writeDbEnv(slug, password)
   writeFileSync(
     composeFile(slug),
     composeYaml({ image: await pinnedImage(), container: name, network: await runningNetwork() }),
@@ -243,7 +262,7 @@ export function appDbUrl(_slug: string, port: number | null, host: string, passw
 
 async function connectUrl(slug: string, password: string): Promise<string> {
   const name = appDbContainer(slug)
-  if (inImage()) return appDbUrl(slug, 5432, name, password)
+  if (dialsByName()) return appDbUrl(slug, 5432, name, password)
   const port = await publishedPort(name)
   if (port == null) throw new Error(`app db ${slug} has no published port`)
   return appDbUrl(slug, port, '127.0.0.1', password)

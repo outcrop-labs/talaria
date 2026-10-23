@@ -483,38 +483,59 @@ pub struct DbReach<'a> {
     pub pg: &'a PgPool,
 }
 
+/// One `mcp_servers` row as the reach read selects it: name, enabled, the
+/// cached catalog, and the publishing app's slug (None for every server that
+/// is not an app's).
+pub type RegistryRow = (String, bool, serde_json::Value, Option<String>);
+
+/// The registry rows that may supply a capability, as `ReachServer`s.
+///
+/// AN APP'S TOOLS NEVER SUPPLY ONE. A supplier is called by the platform
+/// itself — web search and the research rounds dispatch it through
+/// `call_mcp_tool` — and app modules run only in the TS host (rule 10), so
+/// that call refuses every app server. An app tool named `crm_web_search`
+/// described as searching "online" used to win the auto-pick (app rows sort
+/// early), or could be pinned, and then every agent search failed. An app
+/// row is dropped here, before matching or pinning can see it: a pin to one
+/// falls through to the platform's own tool, as a pin to a removed server
+/// does.
+pub fn supplier_candidates(rows: Vec<RegistryRow>) -> Vec<ReachServer> {
+    rows.into_iter()
+        .filter(|(_, _, _, app_slug)| app_slug.is_none())
+        .map(|(name, enabled, tools, _)| ReachServer {
+            name,
+            enabled,
+            tools: tools
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|t| {
+                            Some(ReachTool {
+                                name: t.get("name")?.as_str()?.to_string(),
+                                description: t
+                                    .get("description")
+                                    .and_then(|d| d.as_str())
+                                    .map(String::from),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
 impl ReachDeps for DbReach<'_> {
     async fn servers(&self) -> Vec<ReachServer> {
-        let Ok(rows) = sqlx::query_as::<_, (String, bool, serde_json::Value)>(
-            "select name, enabled, tools from mcp_servers order by builtin desc, name",
+        let Ok(rows) = sqlx::query_as::<_, RegistryRow>(
+            "select name, enabled, tools, app_slug from mcp_servers order by builtin desc, name",
         )
         .fetch_all(self.pg)
         .await
         else {
             return Vec::new();
         };
-        rows.into_iter()
-            .map(|(name, enabled, tools)| ReachServer {
-                name,
-                enabled,
-                tools: tools
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|t| {
-                                Some(ReachTool {
-                                    name: t.get("name")?.as_str()?.to_string(),
-                                    description: t
-                                        .get("description")
-                                        .and_then(|d| d.as_str())
-                                        .map(String::from),
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            })
-            .collect()
+        supplier_candidates(rows)
     }
 
     async fn providers(&self) -> Providers {
@@ -759,6 +780,68 @@ mod tests {
             &[("search_knowledge", Some("Search the org knowledge base."))],
         );
         assert_eq!(supplier_for("search", &[rag], &Providers::new(), &[]), None);
+    }
+
+    /// An app's `crm_web_search` that describes itself as searching "online"
+    /// matches the rule by name and description, and app rows sort ahead of
+    /// `exa`. It must never be the supplier: the platform caller cannot reach
+    /// app tools, so picking it failed every agent search. A pin to it falls
+    /// through to the platform's own tool.
+    #[test]
+    fn an_apps_tool_never_supplies_a_capability() {
+        let row = |name: &str, tool: &str, desc: &str, app: Option<&str>| -> RegistryRow {
+            (
+                name.into(),
+                true,
+                serde_json::json!([{ "name": tool, "description": desc }]),
+                app.map(String::from),
+            )
+        };
+        let rows = vec![
+            row(
+                "app-crm",
+                "crm_web_search",
+                "Search the web for contacts online.",
+                Some("crm"),
+            ),
+            row(
+                "exa",
+                "web_search",
+                "Search the live web for current information.",
+                None,
+            ),
+        ];
+        let servers = supplier_candidates(rows.clone());
+        assert_eq!(
+            servers.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["exa"]
+        );
+        assert_eq!(
+            supplier_for("search", &servers, &Providers::new(), &[]),
+            Some(sup("exa", "web_search"))
+        );
+
+        // Only the app row registered: nothing from the registry, the
+        // platform's own tool is the floor.
+        let platform = [PlatformSupply {
+            capability: "search",
+            server: PLATFORM_SERVER,
+            tool: "web_search",
+        }];
+        let only_app = supplier_candidates(rows[..1].to_vec());
+        assert!(only_app.is_empty());
+        assert_eq!(
+            supplier_for("search", &only_app, &Providers::new(), &platform),
+            Some(sup(PLATFORM_SERVER, "web_search"))
+        );
+
+        // An admin pin to the app's tool is a pin to nothing callable.
+        let mut pinned = Providers::new();
+        pinned.insert("search".into(), Some(sup("app-crm", "crm_web_search")));
+        assert_eq!(
+            supplier_for("search", &only_app, &pinned, &platform),
+            Some(sup(PLATFORM_SERVER, "web_search"))
+        );
     }
 
     #[test]

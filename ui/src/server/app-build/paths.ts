@@ -21,9 +21,22 @@ export function appBuildsDir(): string {
   return process.env.TALARIA_APP_BUILDS_DIR || join(dirname(appsDir()), 'app-builds')
 }
 
+/** One app's data directory: its database files and the records the host
+ *  keeps about it (the MCP catalog). Never served over HTTP, unlike
+ *  `appBuildsDir()`. Rust twin: talaria-users `app_data_dir`. */
+export function appDataDir(slug: string): string {
+  const root = process.env.TALARIA_APP_DATA_DIR || join(appsDir(), '..', 'app-data')
+  return join(root, slug)
+}
+
 export function appSrc(slug: string, file: string): string {
   return join(appsDir(), slug, file)
 }
+
+/** A build key is the hex digest app-build/key.ts writes (`sourceKey`). */
+const BUILD_KEY_RE = /^[0-9a-f]{1,64}$/
+
+export const buildKeyOk = (s: string): boolean => BUILD_KEY_RE.test(s)
 
 export function appBuildKeyDir(slug: string, key: string): string {
   return join(appBuildsDir(), slug, key)
@@ -40,6 +53,13 @@ export interface InstalledApp {
   hasMcp: boolean
 }
 
+// A manifest that is not UTF-8 is not an app. `readFileSync(…, 'utf8')`
+// decoded bad bytes to U+FFFD and admitted the app, while Rust's
+// `discovered_apps_in` skips it, so the two hosts disagreed about which apps
+// exist. Fatal, and the BOM kept, so a byte-order mark fails JSON.parse the
+// way it fails serde_json (api/tests/it/fixtures/app-grants.json pins both).
+const MANIFEST_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+
 export function listInstalledApps(): InstalledApp[] {
   const dir = appsDir()
   if (!existsSync(dir) || !statSync(dir).isDirectory()) return []
@@ -48,7 +68,7 @@ export function listInstalledApps(): InstalledApp[] {
     if (!slugOk(name) || !statSync(join(dir, name)).isDirectory()) continue
     const raw = (() => {
       try {
-        return JSON.parse(readFileSync(join(dir, name, 'talaria.json'), 'utf8')) as {
+        return JSON.parse(MANIFEST_DECODER.decode(readFileSync(join(dir, name, 'talaria.json')))) as {
           name?: unknown
           icon?: unknown
           description?: unknown
@@ -80,4 +100,22 @@ export function listInstalledApps(): InstalledApp[] {
     })
   }
   return out.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** The surfaces an app's talaria.json declares (work, manage, settings) —
+ *  empty for a server- or MCP-only app, or one whose manifest is not an app.
+ *  An app that declares none ships no client, and app.ts is optional. */
+export function declaredSurfaces(slug: string): Array<'work' | 'manage' | 'settings'> {
+  const app = listInstalledApps().find((a) => a.slug === slug)
+  if (!app) return []
+  return (['work', 'manage', 'settings'] as const).filter((k) => app.surfaces[k] !== undefined)
+}
+
+/** Why an app with no app.ts cannot be built or enabled, or null when it
+ *  can: it declares no surface, and it has a server.ts or an mcp.ts to run.
+ *  One rule for the build (build.ts) and the load probe (app-health.ts). */
+export function clientlessError(declared: readonly string[], hasServerSide: boolean): string | null {
+  if (declared.length > 0) return `talaria.json declares surfaces (${declared.join(', ')}), so app.ts is required`
+  if (!hasServerSide) return 'an app needs at least one of app.ts, server.ts or mcp.ts'
+  return null
 }

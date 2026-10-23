@@ -356,39 +356,3 @@ export async function usableAgentGate(userId: string, role: Role): Promise<(mode
 export async function canUseAgentModel(userId: string, role: Role, model: string): Promise<boolean> {
   return (await usableAgentGate(userId, role))(model)
 }
-
-// Manage-section routes: default DENIED for members, granted explicitly via
-// allowed_manage_views. Kept here (not imported from lib/nav) so the server
-// module stays client-import-free. Enabled apps extend this set dynamically
-// with EVERY app view (work and manage) — apps are explicit-grant only, an
-// admin adds each one per person.
-const MANAGE_VIEW_ROUTES = ['/agents', '/teams', '/models', '/mcp', '/templates', '/studio', '/observability', '/apps']
-
-const allManageRoutes = async (): Promise<string[]> => {
-  const { appViewRoutes } = await import('./apps')
-  return [...MANAGE_VIEW_ROUTES, ...(await appViewRoutes())]
-}
-
-/** Views a member may NOT reach: their explicit work-view denials PLUS every
- *  Manage view they haven't been granted. Admins are never restricted. */
-export async function deniedViews(userId: string, role: Role): Promise<string[]> {
-  if (role === 'admin') return []
-  const sql = await db()
-  const rows = (await sql`
-    select denied_views as "deniedViews", allowed_manage_views as "allowedManageViews" from users where id = ${userId}
-  `) as unknown as Array<{ deniedViews: string[]; allowedManageViews: string[] | null }>
-  const allowed = new Set(rows[0]?.allowedManageViews ?? [])
-  return [...(rows[0]?.deniedViews ?? []), ...(await allManageRoutes()).filter((v) => !allowed.has(v))]
-}
-
-/** Replace a member's granted Manage views. */
-export async function setAllowedManageViews(userId: string, views: string[]): Promise<void> {
-  const sql = await db()
-  const valid = await allManageRoutes()
-  await sql`update users set allowed_manage_views = ${views.filter((v) => valid.includes(v))} where id = ${userId}`
-}
-
-export async function setDeniedViews(userId: string, views: string[]): Promise<void> {
-  const sql = await db()
-  await sql`update users set denied_views = ${views} where id = ${userId}`
-}

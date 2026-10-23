@@ -33,6 +33,14 @@ export default defineAppMcp({
 | `inputSchema` | JSON Schema (the MCP wire shape — not zod) |
 | `handler(args, ctx)` | The call. `ctx.store` is your document store; `ctx.agent` is the calling agent's name |
 
+**Each tool is checked when the app loads, and a tool that fails is left out — never the app.**
+A name is required, unique within the app, at most 200 characters, and only letters, digits, `_`
+and `-` (an agent's model sees it as a function name, and providers refuse a whole request over
+one with a space or a dot). A description is required. `inputSchema`, when given, describes an
+object and is at most 32 KiB of JSON. `handler` is a function. A tool that fails any of these is
+not listed, not callable and not in the registry's catalog; the reason is logged and shown on the
+app's server card in **Manage → MCP**, and the app's other tools keep working.
+
 Return JSON-serializable values; throw `Error('reason')` to fail — the message is what the
 agent sees. Keep results small: this lands in a model's context.
 

@@ -373,7 +373,8 @@ const CENSUS = [
     // The ONE HTTP door for browser code: every request the app makes to its
     // own API goes through a verb in ui/src/lib/fetch-json.ts. Server files
     // fetch upstream services all the time (OAuth exchanges, MCP relays,
-    // safeFetch) and the SDK is its own published door — both excluded below.
+    // safeFetch), excluded below. The SDK is NOT a second door: since the
+    // client-parity pass its `api()` and `appApi()` are built on these verbs.
     pattern: /\bfetch\s*\(/g,
     what: 'a hand-rolled client fetch, bypassing the one HTTP door',
     fix: [
@@ -389,10 +390,11 @@ const CENSUS = [
       'frame rules than the chat parser. One door, one decision: non-2xx rejects with the server\'s',
       'own sentence, and every caller catches or deliberately swallows it in writing.',
       '',
-      'The two counted files below are the doors themselves, at their exact call counts — if the',
-      'door is renamed or emptied, the stale-census half of this check fails instead of the rule',
-      'going quietly inert. A fetch anywhere else in client code is a new stanza. If you believe',
-      'you need one, say so in the PR.',
+      'The counted file below is the door itself, at its exact call count — if the door is renamed',
+      'or emptied, the stale-census half of this check fails instead of the rule going quietly',
+      'inert. A fetch anywhere else in client code is a new stanza — the published SDK included:',
+      'it used to carry its own weaker copy (no status, no deadline, no streams) on the belief that',
+      "it could not import the app's door, and it can. If you believe you need one, say so in the PR.",
     ],
     exempt: (path) =>
       path.startsWith('ui/src/server/') ||
@@ -403,7 +405,6 @@ const CENSUS = [
       !path.startsWith('ui/src/'), // the mcp/ and cli/ trees are not the browser app
     sites: {
       'ui/src/lib/fetch-json.ts': 8, // the door: getJson, getJsonOr404, getJsonOr, getText, getBlob, sendJson, postStream, getStream
-      'ui/src/sdk/index.ts': 1, // the published SDK's own door — it cannot import the app's
     },
   },
   {
@@ -431,14 +432,9 @@ const CENSUS = [
       'divergent error contracts. PR 2 collapsed all of it into fetch-json; the audit line was',
       '"Invariant rule: the stanza lives only in fetch-json.ts", and this census is that line,',
       'executable.',
-      '',
-      'The SDK entry below is not a second door in the app: it is the same exception',
-      '`raw-client-fetch` above already carries — the published SDK cannot import the app\'s',
-      'door, so it is its own, and its count is exact.',
     ],
     sites: {
       'ui/src/lib/fetch-json.ts': 1, // the door: the one SAME_ORIGIN RequestInit every verb spreads
-      'ui/src/sdk/index.ts': 1, // the published SDK's own door — it cannot import the app's
     },
   },
 ]
@@ -2562,29 +2558,25 @@ const UNSET_SEAM_CENSUS = [
   }
 }
 
-// THE MANAGE-SECTION VIEW GRANTS, PINNED ACROSS THEIR THREE HOMES.
+// THE MANAGE-SECTION VIEW GRANTS, PINNED ACROSS THEIR TWO HOMES.
 //
 // GH #308 shipped exactly this way: /studio was added to nav.ts's
-// MANAGE_VIEWS (what Admin → People offers) but not to the TS server's
-// MANAGE_VIEW_ROUTES (the SPA's gate) nor the Rust const of the same name
-// (the api's authority) — a grant an admin could make that stopped working
-// at the door. No import reaches across any two of the three, so this is a
-// pin: read each list's own spelling and fail when one moves without the
-// others.
+// MANAGE_VIEWS (what Admin → People offers) but not to the Rust const of the
+// same name (the api's authority) — a grant an admin could make that stopped
+// working at the door. No import reaches across the two, so this is a pin:
+// read each list's own spelling and fail when one moves without the other.
+// (A third home, the TS server's MANAGE_VIEW_ROUTES mirror, is gone: the TS
+// host asks the api for a caller's grants instead of resolving its own copy.)
 {
   const navSrc = readFileSync(join(ROOT, 'ui/src/lib/nav.ts'), 'utf8')
   const navBlock = /export const MANAGE_VIEWS[^\n]*= \[([\s\S]*?)\n\]/.exec(navSrc)?.[1]
   const navRoutes = [...(navBlock ?? '').matchAll(/to: '([^']+)'/g)].map((m) => m[1])
-  const usersSrc = readFileSync(join(ROOT, 'ui/src/server/users.ts'), 'utf8')
-  const tsBlock = /const MANAGE_VIEW_ROUTES = \[([^\]]*)\]/.exec(usersSrc)?.[1]
-  const tsRoutes = [...(tsBlock ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
   const rustSrc = readFileSync(join(ROOT, 'api/crates/talaria-users/src/lib.rs'), 'utf8')
   const rustBlock = /pub const MANAGE_VIEW_ROUTES: \[&str; \d+\] = \[([\s\S]*?)\];/.exec(rustSrc)?.[1]
   const rustRoutes = [...(rustBlock ?? '').matchAll(/"([^"]+)"/g)].map((m) => m[1])
 
   const homes = [
     ["ui/src/lib/nav.ts MANAGE_VIEWS (the UI's offer list)", navRoutes],
-    ["ui/src/server/users.ts MANAGE_VIEW_ROUTES (the TS gate's mirror)", tsRoutes],
     ["api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES (the api's authority)", rustRoutes],
   ]
   const canonical = navRoutes
@@ -2604,13 +2596,12 @@ const UNSET_SEAM_CENSUS = [
   if (problems.length) {
     failures.push({
       id: 'manage-view-route-drift',
-      what: 'the manage-section view routes disagree between the UI list, the TS gate, and the Rust api',
+      what: 'the manage-section view routes disagree between the UI list and the Rust api',
       fix: [
-        'Add or remove the route in ALL THREE places — ui/src/lib/nav.ts MANAGE_VIEWS is the',
-        "UI's offer list, ui/src/server/users.ts MANAGE_VIEW_ROUTES the TS gate's mirror, and",
-        "api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES the api's authority (bump its",
-        '[&str; N] to match). A view on one list but not the others is a grant that cannot be',
-        'offered, or one that stops working at the door.',
+        'Add or remove the route in BOTH places — ui/src/lib/nav.ts MANAGE_VIEWS is the',
+        "UI's offer list, and api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES the api's",
+        'authority (bump its [&str; N] to match). A view on one list but not the other is a',
+        'grant that cannot be offered, or one that stops working at the door.',
         ...problems,
       ],
       found: [],

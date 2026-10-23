@@ -55,6 +55,7 @@ const ROUTES_DIR = join(ROOT, 'api/crates/talaria-api-routes/src/routes')
 const TS_RESIDENT_FILES = [
   'ui/src/routes/api/healthz.ts',
   'ui/src/routes/api/apps.$app.$.ts',
+  'ui/src/routes/api/app-host.$app.rebuild.ts',
 ]
 const CHECK = process.argv.includes('--check')
 
@@ -69,7 +70,7 @@ const GROUPS = {
   activity: { segs: ['activity', 'history', 'notifications', 'unreads', 'push', 'alerts', 'home', 'cost', 'host'], blurb: 'What happened, what it cost, what the machine is doing, what needs you.' },
   admin: { segs: ['admin'], blurb: 'Instance administration (admin session required).' },
   agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'vision', 'runs'], blurb: 'Agent CRUD, registration, heartbeats, skills, runs.' },
-  apps: { segs: ['apps'], blurb: 'The app platform surface and the app-server gateway.' },
+  apps: { segs: ['apps', 'app-host'], blurb: 'The app platform surface, the app-server gateway, and the host\'s own app routes.' },
   boards: { segs: ['boards', 'workchains'], blurb: 'Kanban boards, members, statuses, labels, views, workchains.' },
   brief: { segs: ['brief'], blurb: 'The personal brief: items, replies, delegation.' },
   comms: { segs: ['channels', 'chat', 'conversations', 'dms'], blurb: 'Channels, DMs, threads, chat streaming.' },
@@ -77,6 +78,7 @@ const GROUPS = {
   fleet: { segs: ['fleet'], blurb: 'The agent fleet: defs, containers, crons, federation.' },
   inbox: { segs: ['inbox'], blurb: 'The focus inbox and its command surface.' },
   integrations: { segs: ['integrations'], blurb: 'Connected accounts — Google Workspace and the rest.' },
+  internal: { segs: ['internal'], blurb: "Service-to-service calls from the app host — never a user's or an agent's." },
   knowledge: { segs: ['kb', 'rag', 'memory', 'search', 'templates', 'blueprints'], blurb: 'Knowledge base, RAG collections, org templates, blueprints, search.' },
   llm: { segs: ['llm'], blurb: 'The OpenAI-compatible wire (llm.v1.*).' },
   mcp: { segs: ['mcp'], blurb: 'MCP servers, governance, gateway, OAuth.' },
@@ -300,7 +302,7 @@ function handlerWithHelpers(stripped, span, locals, depth = 2, seen = new Set(),
 const KNOWN_HEADER_TAKERS = new Set([
   'require_user', 'require_admin', 'require_perm', 'require_view',
   'require_agent_manager', 'require_agent_manager_by_model', 'require_agent_reader',
-  'agent_caller', 'require_agent', 'fleet_caller', 'check_fleet_key',
+  'agent_caller', 'require_agent', 'fleet_caller', 'check_fleet_key', 'require_internal',
   // Coding accounts' three gates, each a thin wrapper classified below:
   // the broker's per-agent scope, the feature toggle, and "may edit this
   // agent" (agents.manage OR the agent's owner).
@@ -331,6 +333,8 @@ function authClassRust(combined, locals, fileRaw) {
   // for the same admin-or-owner shape.
   // `broker_caller` is the same gate answering the caller's model as well
   // (the snapshot route audits who read a credential).
+  // The app host's root-derived service credential — no session or key reaches it.
+  if (has('require_internal(')) return { auth: 'internal' }
   if (has('broker_agent(') || has('broker_caller(')) return { auth: 'agent' }
   if (has('require_agent_editor(') || has('require_feature(') || has('require_share_rights(')) return { auth: 'session' }
   if (has('check_fleet_key(') || has('fleet_caller(')) return { auth: 'fleet' }
@@ -1006,6 +1010,7 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 | \`agent\` | an agent credential (\`tak_\` key, \`require_agent\`/\`agent_caller\`) |
 | \`dual\` | session path and agent path both reach the handler |
 | \`fleet\` | internal fleet key (\`fleet_caller\`/\`check_fleet_key\`) |
+| \`internal\` | the app host's root-derived service credential (\`x-talaria-internal\`, \`require_internal\`) — never a user or agent |
 | \`bearer-key\` | a personal LLM-gateway API key (\`authenticate_key\`) |`
 
 const GENERATED_BANNER = (extra = '') =>
@@ -1256,7 +1261,7 @@ for (const r of routes) {
 if (routes.some((r) => r.path === APPS_DISPATCH)) {
   const r = routes.find((x) => x.path === APPS_DISPATCH)
   r.methods = [{ method: 'ANY', auth: 'session', body: null, returns: 'app-defined', statuses: null, sse: false, audit: false, note: [] }]
-  r.note = { text: ['The app-server gateway: `/api/apps/<slug>/*` dispatches into the app\'s own `server.ts`.', 'The host authenticates, checks the app is enabled and the user may reach it, then hands over a context (user, sub-path, namespaced store). The contract: the SDK doc.'], trimmed: false, source: 'doc' }
+  r.note = { text: ['The app-server gateway: `/api/apps/<slug>/*` dispatches into the app\'s own `server.ts`. Every path under it is the app\'s; the host\'s own app routes are under `/api/app-host/`.', 'The host authenticates, checks the app is enabled and the user may reach it, then hands over a context (user, grants, sub-path and segments, store, the platform API as the caller, the app\'s secrets, the abort signal). The contract: the SDK doc.'], trimmed: false, source: 'doc' }
 }
 
 // `$param` renders as `{param}`; trailing `$` as `*` — but sort by raw path.

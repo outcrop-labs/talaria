@@ -7,3 +7,10 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+# The internal service credential (`SecretRoot::internal_token`): an
+# HMAC-SHA256 of the root, the same RustCrypto pair the rest of the workspace
+# uses.
+hmac = { workspace = true }
+sha2 = { workspace = true }

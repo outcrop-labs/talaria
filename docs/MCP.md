@@ -14,7 +14,16 @@ access rules. Four kinds of rows:
   research, media). Every agent carries it; you govern per-agent/per-person tool subsets, but its
   identity and lifecycle are the platform's.
 - **App-published servers** (badged **app**) — a [Talaria app](./APPS.md)'s `mcp.ts` tools. Same
-  governance; lifecycle follows the app; calls dispatch in-process.
+  governance; lifecycle follows the app; calls dispatch in-process. The catalog comes from the
+  app's build: its load probe checks each tool and leaves out (and names, on the server's card)
+  any that fails, so the row carries its tools the moment the app is enabled and **Discover
+  tools** answers that catalog. An app that is turned off — by an admin, or by a build that broke
+  — keeps its row and every agent, team and person granted it, but the row is marked **app off**
+  with the reason, no agent carries it (the agents that did roll), and the gateway refuses its
+  tools. When the app is enabled and passes its load probe again, the same row serves the same
+  grants and those agents roll back. Only uninstalling the app deletes the row. An admin's own
+  **Disable server** is never undone by the app's lifecycle. App tools are never picked as an org
+  supplier (web search and the like): the platform's own caller cannot reach them.
 - **Per-user servers** — servers where each person connects their own account (below).
 
 ## Enforcement: the gateway

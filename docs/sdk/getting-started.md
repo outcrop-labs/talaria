@@ -35,13 +35,17 @@ Surfaces are opt-in; ship any combination:
 
 | surface | where it appears | access |
 | :--- | :--- | :--- |
-| `work` | Work section of the nav → `/x/<slug>` | admins; members need an explicit grant |
-| `manage` | Manage section → `/x/<slug>/manage` | admins; members need an explicit grant |
-| `settings` | a Settings tab (for people with access) | follows the work-view grant |
+| `work` | a tile in the top dock's Apps group → `/x/<slug>`, and every route below it | admins; members need an explicit grant |
+| `manage` | the manage area behind the dock's gear: the `/manage` overview and its sidebar → `/x/<slug>/manage`, and every route below it | admins; members need an explicit grant |
+| `settings` | a Settings tab (for people with access); one page, no routes below it | follows the manage grant |
 
 Apps are **explicit-grant**: enabling one gives members nothing until an admin adds its views
-per person in **Admin → People** — the same checklist that governs core Manage views. The app
-API gateway enforces the grant server-side.
+per person in **Admin → People** — the same checklist that governs core Manage views. The work
+and manage surfaces are separate grants, and each covers the routes below it: a member with only
+the work grant reaches `/x/<slug>/items/42` and never `/x/<slug>/manage/…`. The app API gateway
+admits anyone holding one of the app's surfaces and tells your server which in `ctx.access`, so
+a route only the manage surface uses should check it ([server.md](./server.md)). Routes below a
+surface: [client.md](./client.md#routes-inside-your-app).
 
 ## Declare the surfaces
 
@@ -59,24 +63,28 @@ export default defineApp({ work: Work, settings: Settings })
 ```svelte
 <!-- apps/<slug>/Work.svelte -->
 <script lang="ts">
-  import { EmptyState, SkeletonRows, useAppQuery } from '@talaria/sdk'
+  import { EmptyState, QueryState, SkeletonRows, useAppQuery } from '@talaria/sdk'
 
-  const things = useAppQuery<{ things: Array<{ id: string; data: { name: string } }> }>(
-    'my-app',
-    'things',
-  )
+  type Thing = { id: string; data: { name: string } }
+
+  // GET /api/apps/<slug>/things — the slug is the surface's own, never spelled here.
+  const things = useAppQuery<{ things: Thing[] }>('things')
 </script>
 
-{#if things.isLoading}
-  <SkeletonRows />
-{:else if !things.data?.things.length}
-  <EmptyState title="No things yet" />
-{:else}
-  {#each things.data.things as t (t.id)}
-    <div>{t.data.name}</div>
-  {/each}
-{/if}
+<QueryState query={things} isEmpty={(d) => d.things.length === 0} errorTitle="Could not load the things">
+  {#snippet skeleton()}<SkeletonRows />{/snippet}
+  {#snippet empty()}<EmptyState title="No things yet" />{/snippet}
+  {#snippet children(data)}
+    {#each data.things as t (t.id)}
+      <div>{t.data.name}</div>
+    {/each}
+  {/snippet}
+</QueryState>
 ```
+
+`QueryState` gives the read its three honest answers: your skeleton while it loads, the
+failure (with a Retry) when the server could not answer, and the data — or your empty state
+only when the server really answered with nothing. A 500 never reads as "No things yet".
 
 That already reads like the platform because it is the platform: the kit, the query, the
 session, the theme.

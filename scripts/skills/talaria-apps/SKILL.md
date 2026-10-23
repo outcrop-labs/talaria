@@ -13,7 +13,7 @@ Talaria apps are **TypeScript** (Svelte 5 runes) that this instance compiles. Th
 
 An app is a **git repository**, built like any other code you ship: as a workbench job. There is no Talaria checkout in your container, no `apps/` directory to write into, and no `bun talaria` — those belong to the host an admin runs. The path is:
 
-1. Get a ticket for it and `start_job` on the app's repo — a `talaria-app-<slug>` repository (the `talaria-app-` prefix strips on install; the slug is lowercase kebab, `^[a-z0-9][a-z0-9-]{0,63}$`). A new app starts as a new repo a human creates and grants you; the first job scaffolds it. Drive the harness (**workbench-driving**, **oh-my-pi**); never hand-code.
+1. Get a ticket for it and `start_job` on the app's repo — a `talaria-app-<slug>` repository (the `talaria-app-` prefix strips on install; the slug is lowercase kebab, `^[a-z0-9][a-z0-9-]{0,63}$`, and not `layout`, `hooks` or `meta`, which install refuses). A new app starts as a new repo a human creates and grants you; the first job scaffolds it. Drive the harness (**workbench-driving**, **oh-my-pi**); never hand-code.
 2. The anatomy at the repo root: `talaria.json`, `app.ts`, `Work.svelte`, `server.ts`, `mcp.ts` (the last three optional). Build it in the job from the shapes in [references/sdk.md](references/sdk.md).
 3. `finish_job` → the pull request → a human merges. **An admin installs it** from the repo URL (Manage → Apps → install from git, or the marketplace once it is listed), enables it in **Manage → Apps**, and grants views per person in **Admin → People**. You cannot install, enable or grant — put the URL in your outcome and say what to enable.
 4. Read [references/sdk.md](references/sdk.md) before inventing imports.

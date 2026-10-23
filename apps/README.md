@@ -67,7 +67,7 @@ export default defineApp({ work: Work })
 <script lang="ts">
   import { Button, useAppQuery } from '@talaria/sdk'
   // The server below answers { things: [...] } — read the list out of it.
-  const things = useAppQuery<{ things: Array<{ id: string; data: { name: string } }> }>('my-app', 'things')
+  const things = useAppQuery<{ things: Array<{ id: string; data: { name: string } }> }>('things')
 </script>
 
 {#each things.data?.things ?? [] as t (t.id)}
@@ -109,8 +109,8 @@ export default defineAppServer({
 
 The host authenticates every request, verifies the app is enabled, and checks the user may reach
 this app **before** your handler runs. Role/permission decisions beyond that are yours
-(`ctx.user.role`, or call platform APIs). On the client, `appApi('<slug>')` /
-`useAppQuery('<slug>', 'things')` are pre-bound to these routes.
+(`ctx.user.role`, or call platform APIs). On the client, `useAppApi()` /
+`useAppQuery('things')` are pre-bound to these routes, under the slug the app was installed as.
 
 ### mcp.ts — tools for agents
 

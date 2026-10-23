@@ -8,16 +8,25 @@ use std::time::{Duration, Instant};
 
 /// Read one setting; `fallback` when the key is absent or unreadable.
 pub async fn get_setting(pg: &PgPool, key: &str, fallback: serde_json::Value) -> serde_json::Value {
-    match sqlx::query_scalar::<_, serde_json::Value>(
-        "select value from app_settings where key = $1",
-    )
-    .bind(key)
-    .fetch_optional(pg)
-    .await
-    {
+    match try_get_setting(pg, key).await {
         Ok(Some(v)) => v,
         _ => fallback,
     }
+}
+
+/// Read one setting and say when the read failed: `Ok(None)` for an absent
+/// key, `Err` for a database that could not answer. For a reader whose
+/// fallback would be a wrong answer rather than a safe default — the enabled
+/// apps behind a member's view grants (talaria-users `app_view_routes`),
+/// where "no apps" read off a failed query once opened every app to everyone.
+pub async fn try_get_setting(
+    pg: &PgPool,
+    key: &str,
+) -> Result<Option<serde_json::Value>, sqlx::Error> {
+    sqlx::query_scalar::<_, serde_json::Value>("select value from app_settings where key = $1")
+        .bind(key)
+        .fetch_optional(pg)
+        .await
 }
 
 // ── The hot-settings serve window ────────────────────────────────────────────

@@ -25,6 +25,8 @@ export interface StatusInput {
   enabled: boolean
   builtin: boolean
   appSlug: string | null
+  /** App servers: why the app is not serving (null/absent = serving). */
+  appOff?: string | null
   package: unknown | null
   pkgStatus: string | null
   authMode: 'org' | 'per-user'
@@ -37,6 +39,7 @@ export interface StatusInput {
 
 export type StatusKind =
   | 'disabled'
+  | 'app-off'
   | 'pulling'
   | 'image-failed'
   | 'needs-oauth-app'
@@ -72,6 +75,9 @@ const chip = (
  *  without, then what the last discovery found, then the good news. */
 export function serverStatus(s: StatusInput): ServerStatus {
   if (!s.enabled) return chip('disabled', 'disabled', 'muted')
+  // The admin left it on, but its app cannot serve: no agent carries it, and
+  // the grants wait for the app.
+  if (s.appOff) return chip('app-off', 'app off', 'muted', s.appOff)
   if (s.pkgStatus === 'pulling') return chip('pulling', 'pulling image', 'muted')
   if (s.pkgStatus === 'error') return chip('image-failed', 'image failed', 'danger', s.probe?.detail ?? null)
   const internal = s.builtin || !!s.appSlug
