@@ -49,7 +49,7 @@ const ROW: &str = "id::text, name, label, description, url, headers, headers_sea
                    required_headers, (oauth is not null) as oauth_enabled, builtin, \
                    app_slug::text, created_by, \
                    (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
-                   package, env_enc::text, last_probe";
+                   package, env_enc::text, last_probe, app_off";
 
 /// A registry row, every column. The jsonb columns ride
 /// as the raw Value — pg owns their key order and the wire answer must carry
@@ -98,6 +98,13 @@ pub struct McpServer {
     /// ok | auth-required | unreachable | error; None = never probed. The
     /// card reads it to say "needs an API key" instead of "Discover tools".
     pub last_probe: Option<Value>,
+    /// App-published servers only: why the app cannot serve right now (turned
+    /// off, failed its build, lost its mcp.ts). Set and cleared by
+    /// talaria-apps `sync_app_mcp_servers` and by nothing else. Kept apart
+    /// from `enabled`, which is the admin's: an off row keeps every grant but
+    /// reaches no agent, and serves again by itself when the app does. None =
+    /// serving (and always None for a non-app row).
+    pub app_off: Option<String>,
 }
 
 /// A registry row as it comes off the wire, in ROW order. A derived struct,
@@ -127,6 +134,7 @@ struct ServerRow {
     package: Option<Value>,
     env_enc: Option<String>,
     last_probe: Option<Value>,
+    app_off: Option<String>,
 }
 
 impl McpServer {
@@ -134,6 +142,12 @@ impl McpServer {
     /// an older insert).
     pub fn is_package(&self) -> bool {
         self.package.as_ref().is_some_and(Value::is_object)
+    }
+
+    /// Whether the server reaches agents at all: the admin left it enabled,
+    /// and, for an app's server, the app is serving (`app_off`).
+    pub fn serving(&self) -> bool {
+        self.enabled && self.app_off.is_none()
     }
 }
 
@@ -162,6 +176,7 @@ fn server_of_row(r: ServerRow) -> McpServer {
         package: r.package.filter(Value::is_object),
         env_enc: r.env_enc,
         last_probe: r.last_probe,
+        app_off: r.app_off,
     }
 }
 
@@ -192,6 +207,7 @@ pub fn server_wire(s: &McpServer, header_keys: &[String]) -> Value {
         // Declarations only — env_enc is never serialized to any wire.
         "package": s.package,
         "probe": s.last_probe,
+        "appOff": s.app_off,
     })
 }
 
@@ -773,12 +789,17 @@ pub async fn update_mcp_server(
         && (patch.url.is_some()
             || patch.headers.is_some()
             || patch.merge_headers.is_some()
-            || patch.enabled.is_some()
             || patch.auth_mode.is_some())
     {
-        // App servers have no upstream to point elsewhere and follow the app's
-        // lifecycle; allAgents/access stay governable like any server.
-        return Err("this server is published by an app; disable the app instead".into());
+        // App servers have no upstream to point elsewhere or credentials to
+        // set. `enabled` stays governable, like allAgents and access: it is
+        // the admin's own switch, kept apart from the app's lifecycle
+        // (`app_off`, which talaria-apps writes), and the app sync never
+        // overrides it. An admin can keep an app and still take its tools
+        // off every agent.
+        return Err(
+            "this server is published by an app; it has no address or credentials to change".into(),
+        );
     }
     if let Some(label) = &patch.label {
         sqlx::query("update mcp_servers set label = $2, updated_at = now() where id::text = $1")
@@ -928,7 +949,7 @@ pub async fn delete_mcp_server(pg: &PgPool, id: &str) -> Result<(), String> {
     }
     if app_slug.is_some() {
         return Err(
-            "this server is published by an app; disable or uninstall the app instead".into(),
+            "this server is published by an app; uninstall the app to remove it (turning the app off takes it off every agent)".into(),
         );
     }
     // A package server's container goes with its row — the reconcile pass
@@ -1248,7 +1269,7 @@ pub async fn effective_mcp_for(
     else {
         return Ok(McpAccess::Denied);
     };
-    if !server.enabled {
+    if !server.serving() {
         return Ok(McpAccess::Denied);
     }
 
@@ -1448,12 +1469,12 @@ pub async fn refresh_mcp_tools(
     };
     if server.app_slug.is_some() {
         // App servers: the catalog comes from the compiled app module —
-        // authors' TS/node code, owned by the app runtime, not something this
-        // registry path can fetch.
-        return Err(format!(
-            "app \"{}\" publishes its catalog from the app module, which stays TS by rule 10 (docs/RUST-MIGRATION.md)",
-            server.app_slug.unwrap_or_default()
-        ));
+        // authors' TS/node code (rule 10) — and the app host's load probe has
+        // already checked it and written it to this row (talaria-apps
+        // `sync_app_mcp_servers`). There is nothing further to ask, so
+        // discovery answers that catalog. It used to answer an error, which
+        // Manage → MCP showed as a 502 on "Discover tools".
+        return Ok(app_catalog(&server));
     }
     // Package servers split by transport: stdio packages converse through
     // the pump (the cached handshake answers initialize); oci-http packages
@@ -1686,6 +1707,13 @@ pub(crate) const TOOL_DESCRIPTION_MAX: usize = 300;
 /// without carrying a document an upstream chose the size of.
 pub(crate) const TOOL_SCHEMA_MAX_BYTES: usize = 32 * 1024;
 
+/// What discovery answers for an app-published server: the catalog its row
+/// holds, bounded like any other. The app host wrote it from the module it
+/// loaded; this registry cannot load app code, and does not pretend to.
+pub(crate) fn app_catalog(server: &McpServer) -> Vec<Value> {
+    bound_catalog(&server.tools)
+}
+
 /// THE CATALOG BOUND — every tool list an upstream answered, whichever path
 /// asked (hosted, package, Workbench), passes through here before it is
 /// stored: a name over `TOOL_NAME_MAX` or empty drops the entry, a
@@ -1885,7 +1913,7 @@ pub async fn servers_for_agent(
              where t.server_id = s.id and ta.agent_model = $1 and t.allowed \
            )) as explicit \
          from mcp_servers s \
-         where s.enabled and not s.builtin and case when s.name = $2 then exists ( \
+         where s.enabled and s.app_off is null and not s.builtin and case when s.name = $2 then exists ( \
            select 1 from agent_defs d where d.model = $1 and d.enabled and d.developer \
          ) else (s.all_agents or exists ( \
            select 1 from mcp_server_agents a where a.server_id = s.id and a.agent_model = $1 \
@@ -2191,6 +2219,7 @@ mod tests {
             package: None,
             env_enc: None,
             last_probe: None,
+            app_off: None,
         };
         let mut keys = crate::org_headers::header_keys(&sb, &server).unwrap();
         keys.sort();
@@ -2207,6 +2236,72 @@ mod tests {
             wire.get("headers").is_none(),
             "no value-bearing headers member at all"
         );
+    }
+
+    /// "Discover tools" on an app server answers the catalog the app host
+    /// wrote — never the rule-10 error the route turned into a 502.
+    #[test]
+    fn an_app_servers_discovery_is_its_stored_catalog() {
+        let server = McpServer {
+            id: "00000000-0000-0000-0000-000000000004".into(),
+            name: "app-crm".into(),
+            label: "CRM".into(),
+            description: None,
+            url: "talaria-app://crm".into(),
+            headers_plain: Map::new(),
+            headers_sealed: None,
+            timeout_secs: None,
+            enabled: true,
+            all_agents: false,
+            auth_mode: "org".into(),
+            tools: json!([
+                { "name": "crm_find", "description": "Find a contact", "inputSchema": { "type": "object" } },
+                { "name": "", "description": "a row nobody can call" },
+            ]),
+            tools_refreshed_ms: None,
+            required_headers: json!([]),
+            oauth_enabled: false,
+            builtin: false,
+            app_slug: Some("crm".into()),
+            created_by: None,
+            created_ms: 0,
+            package: None,
+            env_enc: None,
+            last_probe: None,
+            app_off: None,
+        };
+        let catalog = app_catalog(&server);
+        assert_eq!(catalog.len(), 1, "bounded like any catalog: {catalog:?}");
+        assert_eq!(catalog[0]["name"], "crm_find");
+        let empty = McpServer {
+            tools: json!([]),
+            ..server.clone()
+        };
+        assert!(app_catalog(&empty).is_empty());
+
+        // An app that cannot serve takes its server off every agent, whatever
+        // the admin's flag says. The flag stays the admin's, and the card is
+        // told why.
+        assert!(server.serving());
+        let off = McpServer {
+            app_off: Some("the app failed to build or load: mcp.ts: SyntaxError".into()),
+            ..server
+        };
+        assert!(!off.serving());
+        assert!(off.enabled);
+        let wire = server_wire(&off, &[]);
+        assert_eq!(wire["enabled"], true);
+        assert_eq!(
+            wire["appOff"],
+            "the app failed to build or load: mcp.ts: SyntaxError"
+        );
+        let disabled = McpServer {
+            enabled: false,
+            app_off: None,
+            ..off
+        };
+        assert!(!disabled.serving());
+        assert_eq!(server_wire(&disabled, &[])["appOff"], Value::Null);
     }
 
     #[test]

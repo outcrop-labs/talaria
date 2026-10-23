@@ -4158,6 +4158,16 @@ alter table tasks drop column if exists conversation_id`,
   `alter table workbench_repo_requests
      add column if not exists responsible_user_id uuid references users(id) on delete set null`,
   `alter table workbench_repo_requests add column if not exists decision_note text`,
+  // WHY AN APP'S MCP SERVER IS NOT SERVING. An app that is turned off, fails
+  // its build or loses its mcp.ts used to have its server row DELETED, and the
+  // delete cascaded every agent assignment, team grant and user grant on it:
+  // a build that broke for an hour cost an admin every grant they had made.
+  // Now the row stays and this column says why it is off; agents stop
+  // carrying it, and it serves again, grants intact, when the app does.
+  // Written only by talaria-apps `sync_app_mcp_servers`. Kept apart from
+  // `enabled`, which is the admin's own switch and which the sync no longer
+  // touches on an existing row. Null = serving (always null for a non-app row).
+  `alter table mcp_servers add column if not exists app_off text`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

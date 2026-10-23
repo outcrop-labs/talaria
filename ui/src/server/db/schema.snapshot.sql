@@ -873,7 +873,8 @@ CREATE TABLE public.mcp_servers (
     env_enc text,
     last_probe jsonb,
     headers_sealed text,
-    health_state text
+    health_state text,
+    app_off text
 );
 CREATE TABLE public.mcp_team_access (
     server_id uuid NOT NULL,

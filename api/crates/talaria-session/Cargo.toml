@@ -12,6 +12,7 @@ workspace = true
 talaria-agent-auth = { workspace = true }
 talaria-agent-managers = { workspace = true }
 talaria-body = { workspace = true }
+talaria-config = { workspace = true }
 talaria-error = { workspace = true }
 talaria-secretbox = { workspace = true }
 talaria-state = { workspace = true }

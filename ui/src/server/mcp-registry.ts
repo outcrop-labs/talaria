@@ -55,6 +55,10 @@ export interface McpServer {
   /** Set when a Talaria APP publishes this server (mcp.ts) — lifecycle follows
    *  the app (enable/disable), calls dispatch in-process, access rules here. */
   appSlug: string | null
+  /** App servers only: why the app is not serving (turned off, failed its
+   *  build, lost its mcp.ts). The row and its grants stay; no agent carries
+   *  it. Written by the api's app sync alone. Null = serving. */
+  appOff: string | null
   createdBy: string | null
   createdAt: string
 }
@@ -62,7 +66,7 @@ export interface McpServer {
 const ROW = `id, name, label, description, url, headers, timeout_secs as "timeoutSecs", enabled,
   all_agents as "allAgents", auth_mode as "authMode", tools, tools_refreshed_at as "toolsRefreshedAt",
   required_headers as "requiredHeaders", (oauth is not null) as "oauthEnabled", builtin,
-  app_slug as "appSlug", created_by as "createdBy", created_at as "createdAt"`
+  app_slug as "appSlug", app_off as "appOff", created_by as "createdBy", created_at as "createdAt"`
 
 // Pure read: the builtin rows (the toolkit, the Workbench) are the api's to
 // guarantee — it seeds them at boot and re-ensures on its own list.
@@ -183,6 +187,7 @@ export async function callMcpTool(serverName: string, tool: string, args: Record
     }
   }
   if (!server.enabled) throw new Error(`MCP server "${serverName}" is disabled`)
+  if (server.appOff) throw new Error(`MCP server "${serverName}" is not serving: ${server.appOff}`)
   if (server.authMode === 'per-user') {
     throw new Error(`MCP server "${serverName}" authenticates per user, so a platform stage cannot call it. Register an org-authenticated server for this.`)
   }

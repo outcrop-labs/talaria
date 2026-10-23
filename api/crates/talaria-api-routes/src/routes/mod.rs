@@ -954,6 +954,14 @@ pub fn router(state: AppState) -> Router {
                 .delete(talaria_routes_admin::admin::admin_apps::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
         )
+        // Service-to-service: the app host's own calls, under the
+        // root-derived credential (require_internal). The host's proxy never
+        // forwards /api/internal/* from outside.
+        .route(
+            "/api/internal/apps/mcp-sync",
+            post(talaria_routes_admin::admin::internal_apps_mcp_sync::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
         .route(
             "/api/admin/domains",
             get(talaria_routes_admin::admin::admin_domains::get)

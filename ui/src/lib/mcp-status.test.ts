@@ -33,6 +33,16 @@ describe('serverStatus', () => {
     expect(serverStatus(row({ package: {}, pkgStatus: 'error' })).tone).toBe('danger')
   })
 
+  it('an app server whose app cannot serve says so, after the admin’s own switch', () => {
+    const why = 'the app failed to build or load: mcp.ts: SyntaxError'
+    const off = serverStatus(row({ appSlug: 'crm', appOff: why, probe: { state: 'error', detail: '1 tool; 1 left out', at: '' } }))
+    expect(off).toMatchObject({ kind: 'app-off', label: 'app off', tone: 'muted', detail: why, action: null })
+    // The admin's disable is the admin's, and reads first.
+    expect(serverStatus(row({ appSlug: 'crm', appOff: why, enabled: false })).kind).toBe('disabled')
+    // Serving again: the ordinary verdict.
+    expect(serverStatus(row({ appSlug: 'crm', appOff: null, tools: [{ name: 'crm_find' }] })).kind).toBe('ready')
+  })
+
   it('an org OAuth server that nobody connected asks for the connect — or the app first', () => {
     const dcr = serverStatus(row({ oauthEnabled: true, orgConnected: false, oauthMeta: { dcr: true, clientSet: false, dcrRejected: null } }))
     expect(dcr.kind).toBe('needs-connect')

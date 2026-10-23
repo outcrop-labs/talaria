@@ -53,6 +53,14 @@ const STAY_TS = [
   /^\/api\/healthz$/,
 ] as const
 
+// THE SERVICE-TO-SERVICE PREFIX, which this origin never forwards. The api's
+// /api/internal/* routes answer only the root-derived credential this host
+// presents on its own calls (internal-api.ts); a request that ARRIVES here
+// for one is a browser's, an agent's or an app's, and none of them is the
+// host. Refused at the edge with the api's own 404, so the prefix is not even
+// an oracle from outside.
+const INTERNAL_PREFIX = /^\/api\/internal(\/|$)/
+
 // The default target: in-box loopback on the same port `talaria dev` and
 // server-entry.ts bind their api to. Both wire the env explicitly when they
 // own the api; this default covers everyone else — a bare `vite dev`, a
@@ -120,6 +128,7 @@ function callerLeft(e: Error, caller: AbortSignal | null | undefined, sent: Abor
 }
 
 export async function maybeProxy(request: Request, pathname: string): Promise<Response | null> {
+  if (INTERNAL_PREFIX.test(pathname)) return json({ error: 'not found' }, { status: 404 })
   const base = rustApiUrl()
   if (base === undefined || STAY_TS.some((r) => r.test(pathname))) return null
   if (!PREFIXES.some((p) => pathname.startsWith(p))) return null

@@ -342,3 +342,21 @@ describe('uninitialised module', () => {
     expect(() => sb.currentKeyVersion()).toThrow(/not initialized/)
   })
 })
+
+// The api derives the same credential from the same root (talaria-config
+// `internal_token_matches_the_hosts_derivation_and_admits_only_itself` pins
+// this exact vector). If the two ever disagree, every host → api internal
+// call is refused — the agreement is the test.
+describe('internalToken', () => {
+  const saved = process.env.TALARIA_SECRET_KEY
+  afterEach(() => {
+    process.env.TALARIA_SECRET_KEY = saved
+  })
+
+  it('is the HMAC of the internal context under the root, as the api derives it', () => {
+    process.env.TALARIA_SECRET_KEY = 'root-secret'
+    expect(sb.internalToken()).toBe('341a37f012f6b92e230f409a24288148c425e0e19bba2e9609f50e56479b8326')
+    process.env.TALARIA_SECRET_KEY = 'another-root'
+    expect(sb.internalToken()).toBe('f20889e6131d534ab0c32ee243f34ab2c309c0a446270e865635f482876a3043')
+  })
+})

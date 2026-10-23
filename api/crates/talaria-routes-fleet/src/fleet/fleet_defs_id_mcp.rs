@@ -164,7 +164,9 @@ pub async fn get(
     };
 
     let mut out = Vec::with_capacity(servers.len());
-    for s in servers.iter().filter(|s| s.enabled) {
+    // `serving`: an app server whose app is off is not on any agent, so it is
+    // not on this tab either. Its grants are kept for when the app serves.
+    for s in servers.iter().filter(|s| s.serving()) {
         let assignment = assigned.get(&s.id);
         let granted = if s.name == WORKBENCH_SERVER {
             def.developer.then_some("developer")

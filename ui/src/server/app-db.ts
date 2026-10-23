@@ -10,7 +10,9 @@ import { spawn } from 'node:child_process'
 import postgres, { type Sql } from 'postgres'
 import { getSetting, setSetting } from './audit'
 import { open, seal, secretboxFailure } from './secretbox'
-import { slugOk, appsDir } from './app-build/paths'
+import { slugOk, appDataDir } from './app-build/paths'
+
+export { appDataDir }
 
 const PASSWORDS_KEY = 'app_db_passwords'
 const DEFAULT_IMAGE = 'docker.io/library/postgres:16-alpine'
@@ -23,11 +25,6 @@ function instanceId(): string {
 
 export function appDbContainer(slug: string): string {
   return `talaria-appdb-${instanceId()}-${slug}`
-}
-
-export function appDataDir(slug: string): string {
-  const root = process.env.TALARIA_APP_DATA_DIR || join(appsDir(), '..', 'app-data')
-  return join(root, slug)
 }
 
 /** Is this process the product image? Only the image says so

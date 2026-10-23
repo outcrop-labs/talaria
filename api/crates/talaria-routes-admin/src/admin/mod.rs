@@ -25,3 +25,4 @@ pub mod admin_storage;
 pub mod admin_updates;
 pub mod admin_users;
 pub mod admin_workspace_secrets;
+pub mod internal_apps_mcp_sync;

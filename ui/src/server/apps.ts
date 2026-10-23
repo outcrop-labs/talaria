@@ -7,7 +7,6 @@
 import { getSetting } from './audit'
 import { listInstalledApps } from './app-build/paths'
 import { appHasMcp, loadAppServer } from './app-load'
-import { appMcpCatalogSynced, syncAppMcpCatalog } from './app-mcp'
 
 export interface AppManifest {
   slug: string
@@ -49,12 +48,6 @@ export async function enabledApps(): Promise<AppManifest[]> {
       surfaces: a.surfaces,
       mcp: a.hasMcp || appHasMcp(a.slug),
     }))
-  // An enabled app's registry row is seeded with an empty tool catalog
-  // (api/crates/talaria-apps — Rust cannot load the module). The first read
-  // of the enabled set after enablement is the earliest this process knows
-  // the row exists; write the catalog then, once, and let the dispatcher
-  // keep it current (app-mcp.ts `syncAppMcpCatalog`).
-  for (const a of apps) if (a.mcp && !appMcpCatalogSynced(a.slug)) void syncAppMcpCatalog(a.slug)
   return apps
 }
 
