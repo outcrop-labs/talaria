@@ -198,6 +198,8 @@ talaria-agent-secrets = { path = "crates/talaria-agent-secrets" }
 
 talaria-agent-skills = { path = "crates/talaria-agent-skills" }
 
+talaria-agent-web-search = { path = "crates/talaria-agent-web-search" }
+
 talaria-agent-writes = { path = "crates/talaria-agent-writes" }
 
 talaria-alerts = { path = "crates/talaria-alerts" }
@@ -606,8 +608,6 @@ talaria-uploads = { path = "crates/talaria-uploads" }
 
 talaria-users = { path = "crates/talaria-users" }
 
-talaria-vision = { path = "crates/talaria-vision" }
-
 talaria-web-search = { path = "crates/talaria-web-search" }
 
 talaria-work-dispatch = { path = "crates/talaria-work-dispatch" }
@@ -865,7 +865,6 @@ talaria-update-roll = { workspace = true }
 talaria-update-state = { workspace = true }
 talaria-uploads = { workspace = true }
 talaria-users = { workspace = true }
-talaria-vision = { workspace = true }
 talaria-web-search = { workspace = true }
 talaria-work-dispatch = { workspace = true }
 talaria-work-wait = { workspace = true }

@@ -72,19 +72,10 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_outreach::register_outreach_job(Arc::new(OutreachDeps {
         state: state.clone(),
     }));
-    let _ =
-        talaria_web_search::CALL_MCP_TOOL.set(std::sync::Arc::new(|pg, sb, server, tool, args| {
-            Box::pin(async move {
-                talaria_mcp::registry::call_mcp_tool(&pg, &sb, &server, &tool, &args)
-                    .await
-                    .map(|out| (out.structured, out.text))
-            })
-        }));
     // The research harness's search loop dispatches to a registered MCP
-    // supplier through its own hook, and nothing set it: every org whose
-    // search supplier was a registered (non-platform) server got "The search
-    // tool failed" on every round. Same dispatcher, the tuple the other way
-    // round (text, structured).
+    // supplier through its own hook: without it, every org whose search
+    // supplier was a registered (non-platform) server got "The search tool
+    // failed" on every round. The tuple is (text, structured).
     let _ = talaria_harness_defs::CALL_MCP_TOOL.set(std::sync::Arc::new(
         |pg, sb, server, tool, args| {
             Box::pin(async move {
@@ -149,10 +140,71 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         });
     });
     let _ = talaria_gateway::usage::NUDGE_AUTO_PRICES.set(talaria_price_oracle::nudge_auto_prices);
+    // THE LOST-TURN EDGE. A session whose turn died with its container is
+    // held by Hermes until the lost turn is acknowledged; the session arm
+    // repairs it through this edge (talaria-gateway `fleet_lost_turns`).
+    // Unset, every later turn of that conversation or work session answers
+    // `unknown_execution`, as it did before the edge existed.
+    let lost_turns_pg = state.pg.clone();
+    let _ = talaria_gateway::fleet_lost_turns::RESOLVE_LOST_TURNS.set(Arc::new(
+        move |model: String, session: String| {
+            let pg = lost_turns_pg.clone();
+            Box::pin(async move {
+                talaria_fleet_docker::discard_lost_turns(&pg, &model, &session).await
+            })
+        },
+    ));
     let spend_state = state.clone();
     let _ = talaria_price_oracle::LOAD_SPEND_KEYS.set(std::sync::Arc::new(move || {
         let state = spend_state.clone();
         Box::pin(async move { talaria_price_oracle::keys_for(&state).await })
+    }));
+    // WHERE A REFUSED APPROVAL IS RECORDED. The fleet chat door refuses
+    // every Hermes approval request on a streamed turn (talaria-gateway's
+    // fleet_approvals), and the gateway crate holds no pool. Unwired, the
+    // answer still goes out and nothing is recorded.
+    let record_pg = state.pg.clone();
+    let _ = talaria_gateway::fleet_approvals::RECORD_APPROVAL.set(Arc::new(move |r| {
+        let pg = record_pg.clone();
+        Box::pin(async move {
+            // `model` is unique, so this is the agent's own def or nothing.
+            let agent_id = match sqlx::query_scalar::<_, String>(
+                "select id::text from agent_defs where model = $1",
+            )
+            .bind(&r.agent_model)
+            .fetch_optional(&pg)
+            .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!(
+                        "{LOG} approval record: def for {} unreadable: {e}",
+                        r.agent_model
+                    );
+                    None
+                }
+            };
+            talaria_audit::log_audit(
+                &pg,
+                talaria_audit::AuditEntry {
+                    actor: "talaria",
+                    action: "agent.approval_denied",
+                    target_type: "agent",
+                    target_id: agent_id.as_deref(),
+                    target_label: Some(&r.agent_model),
+                    before: None,
+                    after: Some(serde_json::json!({
+                        "choice": talaria_gateway::fleet_approvals::ANSWER,
+                        "description": r.description,
+                        "command": r.command,
+                        "runId": r.run_id,
+                        "answered": r.failure.is_none(),
+                        "error": r.failure,
+                    })),
+                },
+            )
+            .await;
+        })
     }));
     // THE RUN ASSEMBLY plan-draft, research, and reindex enqueue through.
     // The seam and its constructor (`work_dispatch::dispatch_deps`, which is

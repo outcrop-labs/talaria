@@ -498,8 +498,8 @@ const MIGRATIONS: string[] = [
      ) x
    ) t
    where u.endpoint is null and u.agent_model = t.agent_model and u.llm_model = t.llm_model`,
-  // Per-ticket token spend: agents report usage against the ticket they're
-  // working (MCP log_usage → POST /api/tasks/:id/usage).
+  // Per-ticket token spend: the ticket a metered row was spent working on.
+  // (Agents once self-reported here through MCP log_usage; that tool is gone.)
   `alter table usage_events add column if not exists task_id uuid`,
   `create index if not exists usage_events_task_idx on usage_events(task_id) where task_id is not null`,
   // ── Talaria LLM gateway: one org endpoint over the whole model stack ────────
@@ -3694,8 +3694,10 @@ alter table tasks drop column if exists conversation_id`,
   // Talaria already pins `todo` and `clarify` shut for every agent (its own
   // versions are the ones a person can see and answer); this column is the
   // operator's list ON TOP of that pair, and the first thing it governs is
-  // `browser`: a browsing agent costs a multi-minute Chromium install on
-  // every roll, so an agent that should not browse says so here and skips it.
+  // `browser`: an agent that should not browse says so here. (Until
+  // 2026-10-22 that also skipped a multi-minute Chromium install Talaria ran
+  // after every roll; that step is gone, because Hermes v0.22.4 ships its
+  // browser in the image.)
   //
   // jsonb and not text[]: the def wire carries the list as a JSON array and
   // the renderer merges it as one, so the column stores the shape both ends
@@ -4078,6 +4080,94 @@ alter table tasks drop column if exists conversation_id`,
    )`,
   `create index if not exists skills_index_entries_search_idx on skills_index_entries using gin (search)`,
   `create index if not exists skills_index_entries_rank_idx on skills_index_entries (rank)`,
+  // ── Every agent call is metered at the relay (2026-10-22) ──────────────
+  // THE CONVERSATION A CALL BELONGS TO. Hermes stamps every LLM call it makes
+  // with `x-talaria-session` (the rendered `providers.talaria`
+  // `session_affinity_header`): the main loop, compression, titles, vision,
+  // a delegated subagent (its parent's key) and a cron (`cron_<job id>`).
+  // The relay books one row per upstream call and keeps that key on it, so a
+  // cron's spend is per job and a turn's rows can be joined to the flow that
+  // drove it. Null on rows from before, on operator keys, and on an agent
+  // call made outside any conversation.
+  `alter table usage_events add column if not exists affinity_key text`,
+  `create index if not exists usage_events_affinity_idx
+     on usage_events (agent_model, affinity_key) where affinity_key is not null`,
+  // WHICH FLOW A KEY BELONGS TO. The chat transport writes one row per key
+  // a Talaria-driven turn runs under — a pinned conversation's id, a work
+  // session's run id, the completions arm's `X-Hermes-Session-Id` — and the
+  // relay copies `source`/`ref_id`/`task_id` from it onto every row it books
+  // under that key. This replaced the flow-level ledger rows (one per turn,
+  // from Hermes' main-loop counters) and the Redis turn register that made
+  // the relay skip every call while a turn was open.
+  `create table if not exists usage_attributions (
+     agent_model text not null,
+     affinity_key text not null,
+     source text not null,
+     ref_id uuid,
+     task_id uuid,
+     updated_at timestamptz not null default now(),
+     primary key (agent_model, affinity_key)
+   )`,
+  // WHICH CONVERSATION A HERMES KEY NAMES. On v0.22 the key Hermes stamps on
+  // a Talaria-driven turn's calls is its own digest (`gwk_…`) of the session's
+  // route, computable only inside Hermes. The agent's talaria-events plugin
+  // reads it at the start of each turn and reports it with the conversation's
+  // own id (POST /api/agents/affinity); the relay follows this row to the
+  // conversation's `usage_attributions` row.
+  `create table if not exists usage_affinity_keys (
+     agent_model text not null,
+     affinity_key text not null,
+     conversation_key text not null,
+     updated_at timestamptz not null default now(),
+     primary key (agent_model, affinity_key)
+   )`,
+  // TALARIA'S OWN ENTRY LEAVES `gateway_unmetered_keys`. Every render used to
+  // force the personas' fleet-wide key (`fleet-gateway`) onto that list, so
+  // the relay would skip the calls a chat flow ledgered as one row. No flow
+  // ledgers an agent's spend now, and that key is still what agents run on
+  // for a render whose per-agent keys could not be minted. Left on the list,
+  // those calls would be booked nowhere. Only that one entry goes; an
+  // operator's own entries stand. The relay reads this key through its 15s
+  // hot-settings window, which bounds how long a running api serves the old
+  // list after boot.
+  `update app_settings
+     set value = coalesce((
+       select jsonb_agg(v)
+       from jsonb_array_elements(value) as t(v)
+       where v #>> '{}' <> 'fleet-gateway'
+     ), '[]'::jsonb),
+     updated_at = now()
+   where key = 'gateway_unmetered_keys'
+     and jsonb_typeof(value) = 'array'
+     and value @> '["fleet-gateway"]'::jsonb`,
+  // ── The workbench's PR and repo-request fixes (2026-10-22) ──────────────
+  // THE PR A JOB OPENED, BY NUMBER. finish_job returned prNumber and kept
+  // only the URL, so pr_status and a revise round (which reuses the open PR
+  // instead of asking GitHub for a second one) had to parse it back out.
+  // Null on older rows; readers fall back to the URL.
+  `alter table workbench_jobs add column if not exists pr_number bigint`,
+  // WHAT A REPO REQUEST ASKS FOR, AND WHO IT IS FOR. `visibility` is what
+  // the approval creates (private unless the agent or the approver says
+  // public); `app_slug` names the Talaria app the repo will hold, when it
+  // will; `responsible_user_id` is the human the agent answered to when it
+  // asked (the attribution ladder), so a repo minted for an agent has a
+  // person behind it; `decision_note` is the approver's reason, which a
+  // rejection also posts on the requesting ticket and list_repos reports.
+  `alter table workbench_repo_requests add column if not exists visibility text not null default 'private'`,
+  `alter table workbench_repo_requests add column if not exists app_slug text`,
+  `alter table workbench_repo_requests
+     add column if not exists responsible_user_id uuid references users(id) on delete set null`,
+  `alter table workbench_repo_requests add column if not exists decision_note text`,
+  // WHY AN APP'S MCP SERVER IS NOT SERVING. An app that is turned off, fails
+  // its build or loses its mcp.ts used to have its server row DELETED, and the
+  // delete cascaded every agent assignment, team grant and user grant on it:
+  // a build that broke for an hour cost an admin every grant they had made.
+  // Now the row stays and this column says why it is off; agents stop
+  // carrying it, and it serves again, grants intact, when the app does.
+  // Written only by talaria-apps `sync_app_mcp_servers`. Kept apart from
+  // `enabled`, which is the admin's own switch and which the sync no longer
+  // touches on an existing row. Null = serving (always null for a non-app row).
+  `alter table mcp_servers add column if not exists app_off text`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

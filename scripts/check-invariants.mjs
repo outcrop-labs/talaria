@@ -49,7 +49,12 @@
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { loadAuthority, unclassified as unclassifiedHermes } from './hermes-skill-authority.mjs'
+import {
+  loadAuthority,
+  unclassified as unclassifiedHermes,
+  declaredSignpostNames,
+  replacedPathsNotCatalogued,
+} from './hermes-skill-authority.mjs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -1131,6 +1136,7 @@ for (const rule of CENSUS) {
     ['api/crates/talaria-harness-defs/src/registry.rs', 'fn every_backend_is_exercised_by_a_test_or_a_harness_surface'],
     ['api/crates/talaria-hermes-skills/src/lib.rs', 'fn every_catalogued_hermes_pack_is_classified'],
     ['api/crates/talaria-hermes-skills/src/lib.rs', 'fn every_replaced_pack_has_a_signpost_skill_occupying_the_name'],
+    ['api/crates/talaria-hermes-skills/src/lib.rs', 'fn every_replaced_path_names_a_catalogued_skill_not_a_category'],
   ]
   const missing = ANCHORS.filter(([path, anchor]) => !readFileSync(join(ROOT, path), 'utf8').includes(anchor))
   if (missing.length) {
@@ -1402,12 +1408,14 @@ for (const rule of CENSUS) {
   }
 }
 
-// HERMES BUNDLED SKILLS MUST STAY CLASSIFIED, AND EVERY REPLACED PACK MUST
-// HAVE A TALARIA SIGNPOST occupying the name agents reach for. Hermes adds
-// packs on image updates; a six-line prune array in docker.rs silently let
-// new conflicts in. The catalog is scripts/hermes-skill-authority.json —
-// classify a new path (replaced / keepExact / keepPrefix) before it teaches
-// the fleet a parallel vault. Signposts live in scripts/skills/<signpost>/.
+// HERMES BUNDLED SKILLS MUST STAY CLASSIFIED, AND EVERY SKILL NAME IN A
+// REPLACED PACK MUST BE OCCUPIED BY A TALARIA SIGNPOST. Hermes adds packs on
+// image updates, and its skills_sync defers a bundled skill only when a skill
+// in skills.external_dirs (/opt/skills) carries the same name — so a name
+// with no signpost is a skill Hermes writes onto every agent. The catalog is
+// scripts/hermes-skill-authority.json — classify a new path (replaced /
+// keepExact / keepPrefix) before it teaches the fleet a parallel vault.
+// Signposts live in scripts/skills/<signpost>/.
 {
   const catalogPath = join(ROOT, 'scripts/hermes-skill-authority.json')
   if (!existsSync(catalogPath)) {
@@ -1417,7 +1425,7 @@ for (const rule of CENSUS) {
       fix: [
         'The Hermes bundled-skill authority catalog is the tripwire for packs',
         'the image ships that conflict with Talaria. Restore the file, or the',
-        'fleet will prune an empty list and teach Notion again.',
+        'fleet will stop checking its signposts and teach Notion again.',
       ],
       found: [],
     })
@@ -1436,7 +1444,7 @@ for (const rule of CENSUS) {
           'teach the fleet a parallel workspace by omission.',
           ...unknown.map((u) => `  ${u}`),
         ],
-        found: unknown.map((u) => ({ file: 'scripts/hermes-skill-authority.json', line: 1, excerpt: u })),
+        found: unknown.map((u) => ({ path: 'scripts/hermes-skill-authority.json', line: 1, text: u })),
       })
     }
     const missing = []
@@ -1446,15 +1454,43 @@ for (const rule of CENSUS) {
         missing.push(`${r.path} → scripts/skills/${r.signpost}/SKILL.md (${r.why})`)
       }
     }
+    // A replaced path names one skill directory, never a category. Under a
+    // category prefix, a sibling Hermes adds next week classifies as replaced
+    // while no signpost holds its name, and nothing deletes it any more.
+    const categories = replacedPathsNotCatalogued(cat)
+    if (categories.length) {
+      failures.push({
+        id: 'hermes-skill-replaced-category',
+        what: 'a replaced Hermes path is not a catalogued skill directory',
+        fix: [
+          'Name the skill (email/himalaya), not its category (email). A category',
+          'prefix classifies every sibling Hermes adds as replaced while no',
+          'signpost holds its name, so Hermes syncs it onto every agent.',
+          ...categories.map((p) => `  ${p}`),
+        ],
+        found: categories.map((p) => ({ path: 'scripts/hermes-skill-authority.json', line: 1, text: p })),
+      })
+    }
+    // Every name, not any one: the frontmatter `name:` of each signpost is
+    // what Hermes matches, so a body that merely mentions a name is no cover.
+    const declared = declaredSignpostNames(ROOT)
+    for (const r of replaced) {
+      for (const n of r.names || []) {
+        if (!declared.has(n)) {
+          missing.push(`${r.path} ships "${n}" → no scripts/skills/*/SKILL.md declares name: ${n}`)
+        }
+      }
+    }
     if (missing.length) {
       failures.push({
         id: 'hermes-skill-signpost-missing',
         what: 'replaced Hermes packs without a Talaria signpost skill',
         fix: [
-          'Pruning a pack without occupying the name leaves agents searching',
-          'for "notion" / "github" / "email" and improvising. Add a short',
-          'SKILL.md at scripts/skills/<signpost>/ whose frontmatter name: is',
-          'the Hermes name, pointing at the talaria-toolkit playbook.',
+          'Hermes defers a bundled skill only to a same-named skill in',
+          '/opt/skills, so an unoccupied name is a skill it syncs onto every',
+          'agent. Add a short SKILL.md at scripts/skills/<signpost>/ whose',
+          'frontmatter name: is the Hermes name, pointing at the',
+          'talaria-toolkit playbook.',
           ...missing.map((m) => `  ${m}`),
         ],
         found: [],

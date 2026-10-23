@@ -31,6 +31,7 @@ talaria-retrieval-http = { workspace = true }
 talaria-google-pending = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-approvals = { workspace = true }
+talaria-audit = { workspace = true }
 talaria-digest = { workspace = true }
 talaria-fleet-preflight = { workspace = true }
 talaria-fleet-reconcile = { workspace = true }
@@ -83,5 +84,4 @@ talaria-gateway = { workspace = true }
 talaria-ticket-chat = { workspace = true }
 talaria-harness-defs = { workspace = true }
 talaria-harness = { workspace = true }
-talaria-web-search = { workspace = true }
 talaria-fleet-docker = { workspace = true }

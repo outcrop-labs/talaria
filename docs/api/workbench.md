@@ -399,8 +399,9 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_jobs.rs`](
 Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_repo_requests.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_repo_requests.rs)
 
 > /api/workbench/repo-requests. Agent repo-creation requests. GET → pending
-> queue; PUT → approve (creates the repo via the App, auto-grants it to the
-> requester) or reject. Admin — approval mints real org resources.
+> queue; PUT → approve (creates the repo via the App at the requested or
+> overridden visibility, grants it to the requester) or reject (the note goes
+> on the requesting ticket). Admin — approval mints real org resources.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -413,6 +414,8 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_repo_reque
 | :--- | :--- | :--- |
 | `id` | `uuid` |  |
 | `action` | `enum(approve|reject)` |  |
+| `note` | `string?(500)` | Why the approver decided. A rejection's note is posted on the requesting ticket and shown to the agent in list_repos. |
+| `visibility` | `enum(private|public)?` | Overrides the visibility the agent asked for; absent keeps it. |
 
 ## `/api/workbench/repos/{agentId}`
 

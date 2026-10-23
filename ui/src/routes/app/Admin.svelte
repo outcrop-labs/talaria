@@ -15,6 +15,8 @@
   import Tabs from '@/components/ui/Tabs.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import RetrievalPanel from '@/components/admin/RetrievalPanel.svelte'
+  import AgentWebSearchPanel from '@/components/admin/AgentWebSearchPanel.svelte'
+  import SearchEndpointPanel from '@/components/admin/SearchEndpointPanel.svelte'
   import StoragePanel from '@/components/admin/StoragePanel.svelte'
   import SecretsPanel from '@/components/admin/SecretsPanel.svelte'
   import WorkspaceSecretsPanel from '@/components/admin/WorkspaceSecretsPanel.svelte'
@@ -137,6 +139,12 @@
         <AdminCodingAccountsPanel />
         <AdminGuardrailsPanel />
         <AdminOutreachPanel />
+      {/if}
+      {#if tab === 'search'}
+        <!-- The workspace search URL first: research reads it, and the agent
+             setting below can pick it (SearXNG) by reference. -->
+        <SearchEndpointPanel />
+        <AgentWebSearchPanel />
       {/if}
       {#if tab === 'retrieval'}<RetrievalPanel />{/if}
       {#if tab === 'storage'}<StoragePanel />{/if}

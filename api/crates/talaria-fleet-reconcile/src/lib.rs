@@ -358,18 +358,6 @@ async fn roll_agent_locked(
             ROLL_HEALTH_WAIT_MS / 1000
         )));
     }
-    // Toolkit-first by default: strip the image's bundled note-tool skills the
-    // moment the newcomer is healthy (Talaria-managed skills are untouched).
-    let _ = talaria_fleet_docker::prune_bundled_skills(department, Slot::A).await;
-    // The browser toolset's one-shot setup, for a browsing agent, in the
-    // container that just came up. Detached: it is minutes of download and a
-    // roll must not hold its verdict for it; the agent answers while it lands.
-    if talaria_fleet_docker::browser_enabled_for_department(pg, department).await {
-        let dept = department.to_string();
-        tokio::spawn(async move {
-            let _ = talaria_fleet_docker::install_browser(&dept, Slot::A).await;
-        });
-    }
     Ok(None)
 }
 
@@ -456,29 +444,7 @@ pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileRes
             continue;
         }
         match talaria_fleet_docker::fleet_up(pg, department).await {
-            Ok(_) => {
-                started.push(display_name.clone());
-                // New containers get the bundled note-tool skills stripped once
-                // healthy — toolkit-first is the default from first boot.
-                // Detached: reconcile must not block on health.
-                let dept = department.clone();
-                let pg_bg = pg.clone();
-                tokio::spawn(async move {
-                    if talaria_fleet_docker::wait_healthy(&pg_bg, &dept, 120_000).await {
-                        let slot = talaria_fleet_docker::active_slot(&pg_bg, &dept).await;
-                        let _ = talaria_fleet_docker::prune_bundled_skills(&dept, slot).await;
-                        // A fresh container has no Chromium (the image's
-                        // browsers path is in the layer), so a browsing agent
-                        // installs it here — inside the task that is already
-                        // detached, after the prune it shares a health wait
-                        // with.
-                        if talaria_fleet_docker::browser_enabled_for_department(&pg_bg, &dept).await
-                        {
-                            let _ = talaria_fleet_docker::install_browser(&dept, slot).await;
-                        }
-                    }
-                });
-            }
+            Ok(_) => started.push(display_name.clone()),
             Err(e) => warnings.push(format!("{display_name}: {e}")),
         }
     }

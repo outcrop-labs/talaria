@@ -1254,6 +1254,19 @@ pub async fn set_message_run_id(
     Ok(())
 }
 
+/// The Hermes run behind one assistant row, if the row was driven through a
+/// session. The auto-resume asks it about a dead turn: the run may still be
+/// alive in the container, and then the turn is picked back up rather than
+/// sent a second time.
+pub async fn message_run_id(pg: &PgPool, message_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("select hermes_run_id from messages where id = $1::uuid")
+            .bind(message_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.and_then(|(run,)| run))
+}
+
 /// The conversation's in-flight assistant row and the Hermes run behind it —
 /// what a stop or a steer has to name. `None` is "nothing is streaming", which
 /// is the whole of the refusal both routes answer with.

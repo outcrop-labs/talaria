@@ -69,8 +69,8 @@ const GROUPS = {
   account: { segs: ['auth', 'me', 'join', 'users'], blurb: 'Sign-in, session, profile, members.' },
   activity: { segs: ['activity', 'history', 'notifications', 'unreads', 'push', 'alerts', 'home', 'cost', 'host'], blurb: 'What happened, what it cost, what the machine is doing, what needs you.' },
   admin: { segs: ['admin'], blurb: 'Instance administration (admin session required).' },
-  agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'vision', 'runs'], blurb: 'Agent CRUD, skills, runs.' },
-  apps: { segs: ['apps'], blurb: 'The app platform surface and the app-server gateway.' },
+  agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'runs'], blurb: 'Agent CRUD, skills, runs.' },
+  apps: { segs: ['apps', 'app-host'], blurb: 'The app platform surface, the app-server gateway, and the host\'s own app routes.' },
   boards: { segs: ['boards', 'workchains'], blurb: 'Kanban boards, members, statuses, labels, views, workchains.' },
   brief: { segs: ['brief'], blurb: 'The personal brief: items, replies, delegation.' },
   comms: { segs: ['channels', 'chat', 'conversations', 'dms'], blurb: 'Channels, DMs, threads, chat streaming.' },
@@ -302,7 +302,7 @@ function handlerWithHelpers(stripped, span, locals, depth = 2, seen = new Set(),
 const KNOWN_HEADER_TAKERS = new Set([
   'require_user', 'require_admin', 'require_perm', 'require_view',
   'require_agent_manager', 'require_agent_manager_by_model', 'require_agent_reader',
-  'agent_caller', 'require_agent',
+  'agent_caller', 'require_agent', 'require_internal',
   // Coding accounts' three gates, each a thin wrapper classified below:
   // the broker's per-agent scope, the feature toggle, and "may edit this
   // agent" (agents.manage OR the agent's owner).
@@ -1007,6 +1007,7 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 | \`admin\` | an admin session (\`require_admin\`) |
 | \`agent\` | an agent credential (\`tak_\` key, \`require_agent\`/\`agent_caller\`) |
 | \`dual\` | session path and agent path both reach the handler |
+| \`internal\` | the app host's root-derived service credential (\`x-talaria-internal\`, \`require_internal\`) — never a user or agent |
 | \`bearer-key\` | a personal LLM-gateway API key (\`authenticate_key\`) |`
 
 const GENERATED_BANNER = (extra = '') =>
