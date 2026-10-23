@@ -579,20 +579,31 @@ pub use talaria_mcp_jsonrpc::parse_mcp_response;
 
 // ── The registry write half ─────────────────────────────────────────────────
 
+/// [`ensure_builtin_mcp`]'s toolkit row. A const so the test can hold the
+/// conflict arm to rewriting the url.
+const BUILTIN_TOOLKIT_UPSERT: &str = "insert into mcp_servers (name, label, description, url, all_agents, builtin, created_by) \
+     values ('talaria', 'Talaria toolkit', \
+             'Talaria''s own tools: tickets, documents, knowledge, channels, research, media.', \
+             $1, true, true, 'talaria') \
+     on conflict (name) do update set builtin = true, all_agents = true, enabled = true, url = excluded.url";
+
 /// The Talaria toolkit as a governable system row: every agent carries it,
 /// and the same per-agent/per-person tool subsets apply — enforced by the
 /// gateway like any other server. Identity/lifecycle stay locked.
+///
+/// The url is rewritten on every boot, not only on first insert: it is where
+/// THIS process's toolkit child listens (`TALARIA_MCP_PORT`), and the MCP
+/// gateway proxies every agent toolkit call to it. Kept from an earlier boot,
+/// a seeded database, or before the port moved, it pointed the gateway at
+/// another stack's toolkit, which refused this stack's agent keys (401).
 pub async fn ensure_builtin_mcp(pg: &PgPool) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "insert into mcp_servers (name, label, description, url, all_agents, builtin, created_by) \
-         values ('talaria', 'Talaria toolkit', \
-                 'Talaria''s own tools: tickets, documents, knowledge, channels, research, media.', \
-                 $1, true, true, 'talaria') \
-         on conflict (name) do update set builtin = true, all_agents = true, enabled = true",
-    )
-    .bind(format!("http://127.0.0.1:{}/mcp", talaria_mcp_service::mcp_port()))
-    .execute(pg)
-    .await?;
+    sqlx::query(BUILTIN_TOOLKIT_UPSERT)
+        .bind(format!(
+            "http://127.0.0.1:{}/mcp",
+            talaria_mcp_service::mcp_port()
+        ))
+        .execute(pg)
+        .await?;
     // The Workbench surface — in-process like app servers, but NOT all_agents:
     // access is the agent's Developer Agent switch (see WORKBENCH_SERVER).
     let tools = workbench_catalog();
@@ -2005,6 +2016,21 @@ pub async fn owner_denied(pg: &PgPool, server_id: &str, owner: &str) -> Result<b
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The builtin toolkit row's url is this process's toolkit port, so a
+    /// re-boot must rewrite it: the conflict arm of the upsert carries it.
+    /// (It was insert-only, and a seeded worktree database kept main's port.)
+    #[test]
+    fn the_builtin_toolkit_upsert_rewrites_the_url_on_every_boot() {
+        let (_, conflict) = BUILTIN_TOOLKIT_UPSERT
+            .split_once("on conflict (name) do update set")
+            .expect("the upsert has a conflict arm");
+        assert!(conflict.contains("url = excluded.url"), "{conflict}");
+        // and still re-asserts what makes it the builtin
+        for keep in ["builtin = true", "all_agents = true", "enabled = true"] {
+            assert!(conflict.contains(keep), "{keep}");
+        }
+    }
 
     /// The repoint rule: a different host or port is a different server and
     /// loses every credential; a different path, scheme or case on the same

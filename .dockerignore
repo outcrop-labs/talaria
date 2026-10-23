@@ -29,6 +29,10 @@ fleet
 stack
 logs
 **/.uploads
+# The app platform's dev state: app databases (pg/ is the container user's,
+# db.env is a password) and compiled app builds.
+app-data
+app-builds
 ui/.env*
 **/.env
 !**/.env.example

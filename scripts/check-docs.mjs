@@ -11,6 +11,11 @@
 //   - node_modules, .git, fleet/, logs/, worktrees/ — not documentation or not ours.
 //   - apps/leadworks, playground, .inspect — gitignored client/demo trees.
 //   - ui/.uploads — runtime artifact payloads that happen to be markdown.
+//   - app-data/, app-builds/ — the app platform's runtime state; an app database's
+//     pg/ is owned by the container's user, and reading it killed the walk.
+//
+// A directory the walk cannot read is skipped and named, never a crash
+// (markdown-walk.mjs holds the walk; check-docs.test.mjs pins it).
 //
 // `.claude/` IS walked, and it did not used to be: the exemption's reasoning was
 // that dotted directories are tooling rather than documentation, which is true
@@ -24,31 +29,16 @@
 // file whose CONTENT is wrong is the reader's — and the docset's — problem, not this check.
 //
 
-import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs'
+import { readFileSync, statSync, existsSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
+import { walkMarkdown } from './markdown-walk.mjs'
 import { diffReference, parseReference, sdkExports } from './sdk-reference.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 
-const EXEMPT_DIRS = new Set(['node_modules', 'fleet', 'logs', 'playground', 'worktrees'])
-const EXEMPT_FILES = new Set(['CHANGELOG.md']) // append-only record; frozen links are history
-
-/** Every markdown file under ROOT, minus the exemptions above. */
-function walkMarkdown(dir, acc = []) {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.isDirectory()) {
-      if (entry.name.startsWith('.') && entry.name !== '.github' && entry.name !== '.claude') continue
-      if (EXEMPT_DIRS.has(entry.name)) continue
-      walkMarkdown(join(dir, entry.name), acc)
-    } else if (entry.name.endsWith('.md')) {
-      if (EXEMPT_FILES.has(entry.name)) continue
-      acc.push(join(dir, entry.name))
-    }
-  }
-  return acc
-}
-
-const files = walkMarkdown(ROOT)
+const unreadable = []
+const files = walkMarkdown(ROOT, [], unreadable)
+for (const dir of unreadable) console.log(`docs: skipped ${dir.slice(ROOT.length + 1)} (not readable by this user)`)
 
 const failures = []
 let linksChecked = 0

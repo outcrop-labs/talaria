@@ -5,7 +5,8 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WORKTREE_ENV_KEYS, runWorktree, seedFleetPlane, stripOwnKeys, worktreeSlot } from './worktree'
+import { fileURLToPath } from 'node:url'
+import { CLEAR_SEEDED_GATEWAY_PORTS, WORKTREE_ENV_KEYS, runWorktree, seedFleetPlane, setupDiffers, slotPorts, stripOwnKeys, worktreeSlot } from './worktree'
 import { fakeCtx, type FakeCtx } from '../testing'
 import { CliError } from '../ui'
 
@@ -19,20 +20,48 @@ const attempt = async (fn: () => Promise<unknown>): Promise<string> => {
 }
 
 describe('worktreeSlot', () => {
-  test('first slot with all four ports free', async () => {
+  test('first slot with every port free', async () => {
     const slot = await worktreeSlot(async () => false)
-    expect(slot).toEqual({ app: 5301, api: 5401, pg: 5601, redis: 6501 })
+    expect(slot).toEqual({
+      app: 5301,
+      api: 5401,
+      pg: 5601,
+      redis: 6501,
+      mcp: 5701,
+      ompAuth: 5801,
+      gatewayBase: 20100,
+    })
   })
 
-  test('skips slots where any one of the four is taken', async () => {
+  test('skips slots where any one of the ports is taken', async () => {
     const taken = (p: number): Promise<boolean> =>
-      Promise.resolve(p === 5301 || p === 5402 || p === 5603 || p === 6504)
-    // slot 1: app taken; slot 2: api taken; slot 3: pg taken; slot 4: redis
-    // taken → slot 5. The api port is in this list because it used not to be:
-    // every worktree shared :5274, and `talaria dev` adopts an api already
-    // there, so the second stack proxied to the first stack's database.
+      Promise.resolve(
+        [5301, 5402, 5603, 6504, 5705, 5806, 20700].includes(p),
+      )
+    // slots 1-4: app, api, pg, redis taken; 5: toolkit; 6: omp auth;
+    // 7: the gateway range's first port → slot 8. The api port is in this
+    // list because it used not to be: every worktree shared :5274, and
+    // `talaria dev` adopts an api already there, so the second stack proxied
+    // to the first stack's database. The toolkit, omp-auth and gateway ports
+    // are here for the same reason, one hop further out (see worktreeSlot).
     const slot = await worktreeSlot(taken)
-    expect(slot).toEqual({ app: 5305, api: 5405, pg: 5605, redis: 6505 })
+    expect(slot).toEqual(slotPorts(8))
+  })
+
+  test("a slot's ranges never overlap another slot's, or main's fixed ports", () => {
+    const main = [5273, 5274, 5276, 5280, 5544, 8770]
+    const seen = new Set<number>()
+    for (let c = 1; c <= 89; c++) {
+      const s = slotPorts(c)
+      const gateway = Array.from({ length: 100 }, (_, i) => s.gatewayBase + i)
+      for (const port of [s.app, s.api, s.pg, s.redis, s.mcp, s.ompAuth, ...gateway]) {
+        expect(main).not.toContain(port)
+        expect(seen.has(port)).toBe(false)
+        seen.add(port)
+      }
+    }
+    // main's agents allocate upward from 8770; the worktree ranges start far above.
+    expect(Math.min(...[...seen].filter((p) => p >= 8770))).toBeGreaterThan(8770 + 1000)
   })
 
   test('null when the range is exhausted', async () => {
@@ -155,6 +184,22 @@ describe('runWorktree — happy path', () => {
     // files their containers under the shared `talaria-fleet`.
     expect(lines).toContain(`TALARIA_GATEWAY_SELF_URL=http://host.docker.internal:${port}/api/llm/v1`)
     expect(lines).toContain('TALARIA_FLEET_PROJECT=talaria-wt-demo-fleet')
+    // ...and the api's loopback children and the agents' gateway ports move
+    // with the slot: on the shared :5280 the second stack's agents were served
+    // by the first stack's toolkit (401), and every stack's first agent asked
+    // for :8770.
+    const slotNo = port - 5300
+    expect(lines).toContain(`TALARIA_MCP_PORT=${5700 + slotNo}`)
+    expect(lines).toContain(`TALARIA_OMP_AUTH_PORT=${5800 + slotNo}`)
+    expect(lines).toContain(`TALARIA_GATEWAY_PORT_BASE=${20000 + slotNo * 100}`)
+    // ...and the gateway ports the seed copied from main are cleared in THIS
+    // stack's database, after the restore, so its first render assigns its own.
+    const restore = ctx.calls.findIndex((c) => c.args.includes('-i') && c.args.includes('talaria-pg-demo'))
+    const clear = ctx.calls.findIndex(
+      (c) => c.args.includes('talaria-pg-demo') && c.args.includes(CLEAR_SEEDED_GATEWAY_PORTS),
+    )
+    expect(clear).toBeGreaterThan(restore)
+    expect(ctx.calls.some((c) => c.args.includes(CLEAR_SEEDED_GATEWAY_PORTS) && c.args.includes('talaria-postgres-dev'))).toBe(false)
     // ...and the fleet plane exists for the renderer to write into — a hire
     // against a missing fleet/.env fails rather than inventing one.
     expect(existsSync(join(wt, 'fleet/agents'))).toBe(true)
@@ -165,6 +210,8 @@ describe('runWorktree — happy path', () => {
     // chassis missing" until someone copies the template by hand.
     expect(readFileSync(join(wt, 'fleet/chassis.yml'), 'utf8')).toBe('services:\n  agent:\n    image: hermes\n')
     expect(ctx.logLines).toContainEqual({ kind: 'ok', msg: 'fleet/chassis.yml (from template)' })
+    // A checkout with no worktree.ts of its own has nothing to compare.
+    expect(ctx.logLines.filter((l) => l.kind === 'warn')).toEqual([])
 
     // The strip-list is DERIVED from what the generated block writes, and this
     // is the guard that keeps it so: every KEY= line after the worktree marker
@@ -268,6 +315,74 @@ describe('runWorktree — happy path', () => {
     } finally {
       rmSync(wt, { recursive: true, force: true })
     }
+  })
+})
+
+describe('runWorktree — the base ref\'s own setup', () => {
+  // `talaria worktree` runs the CLI of the checkout it is invoked from — the
+  // primary, usually on main — so a stack cut from rc took main's chassis
+  // and main's env rules, and said nothing. `git worktree add` is planted
+  // here to leave the files a real checkout of the base ref would carry.
+  test("the worktree's own chassis template wins, and a differing setup warns", async () => {
+    const root = mkdtempSync(join(tmpdir(), 'talaria-wt-'))
+    mkdirSync(join(root, 'ui/node_modules'), { recursive: true })
+    mkdirSync(join(root, 'scripts'), { recursive: true })
+    writeFileSync(join(root, 'scripts/chassis.template.yml'), 'image: hermes:older\n')
+    writeFileSync(join(root, 'ui/.env'), 'DATABASE_URL=postgres://t:t@127.0.0.1:5544/talaria\nTALARIA_SECRET_KEY=rootkey\n')
+    const wt = join(root, '..', 'talaria-fromrc')
+    rmSync(wt, { recursive: true, force: true })
+    const ctx = fakeCtx()
+    ctx.root = root
+    const exec = ctx.exec
+    ctx.exec = async (cmd, args, opts) => {
+      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(join(wt, 'scripts'), { recursive: true })
+        writeFileSync(join(wt, 'scripts/chassis.template.yml'), 'image: hermes:pinned\n')
+        mkdirSync(join(wt, 'cli/src/cmd'), { recursive: true })
+        writeFileSync(join(wt, 'cli/src/cmd/worktree.ts'), '// the base ref writes more lines than this CLI does\n')
+      }
+      return exec(cmd, args, opts)
+    }
+    try {
+      await runWorktree(ctx, 'fromrc', 'origin/rc')
+      expect(readFileSync(join(wt, 'fleet/chassis.yml'), 'utf8')).toBe('image: hermes:pinned\n')
+      const warns = ctx.logLines.filter((l) => l.kind === 'warn').map((l) => l.msg)
+      expect(warns).toHaveLength(1)
+      expect(warns[0]).toContain("differs from origin/rc's own cli/src/cmd/worktree.ts")
+    } finally {
+      rmSync(wt, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('setupDiffers', () => {
+  const running = fileURLToPath(new URL('./worktree.ts', import.meta.url))
+  const checkout = (body?: string): string => {
+    const wt = mkdtempSync(join(tmpdir(), 'talaria-wt-own-'))
+    if (body !== undefined) {
+      mkdirSync(join(wt, 'cli/src/cmd'), { recursive: true })
+      writeFileSync(join(wt, 'cli/src/cmd/worktree.ts'), body)
+    }
+    return wt
+  }
+
+  test('the same setup is not a difference', () => {
+    const wt = checkout(readFileSync(running, 'utf8'))
+    expect(setupDiffers(running, wt)).toBe(false)
+    rmSync(wt, { recursive: true, force: true })
+  })
+
+  test('a different setup is', () => {
+    const wt = checkout('// another version\n')
+    expect(setupDiffers(running, wt)).toBe(true)
+    rmSync(wt, { recursive: true, force: true })
+  })
+
+  test('a base ref without the file has nothing to compare', () => {
+    const wt = checkout()
+    expect(setupDiffers(running, wt)).toBe(false)
+    rmSync(wt, { recursive: true, force: true })
   })
 })
 
