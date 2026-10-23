@@ -291,6 +291,37 @@ multiplexer.
   Redis (`talaria:turn:v1:<agent model>`) while it is open, and a call on an agent's key with
   no turn counted — a cron — is booked by the relay under the agent as `unattended`, into the
   same window its budget is judged on.
+- **Hermes sessions** (api/crates/talaria-gateway/src/fleet_chat.rs, fleet_lost_turns.rs) carry
+  every work session (keyed by run id) and the conversations of an agent with **pinned
+  sessions** on (keyed by conversation id). Hermes holds the transcript, and Talaria sends one
+  message per turn. Three rules keep that continuous across agent restarts:
+  - *A session that carried turns before is looked up, never re-created.* If it is gone (a
+    lost state volume, or a deleted session, whose id Hermes never reuses), a chat turn
+    replays the full history the completions way, and so does every later turn. No empty
+    room is left for the next turn to fall into. A work session starts its session again
+    instead, because its steps carry no history to replay.
+  - *A turn lost in a non-graceful restart is repaired in place.* Hermes v0.22 marks such a
+    turn `unknown` and refuses every later turn on that session (`unknown_execution`), leaving
+    each refused turn queued. The session arm withdraws the refused turn
+    (`/v1/runs/{id}/stop`), acknowledges the lost one with `hermes sessions discard` in the
+    container (`/v1/runs/{id}/resolve-unknown` answers 404 for session turns after a restart),
+    and sends the turn again. Hermes' own boundary row tells the agent the earlier turn did not
+    finish.
+  - *A resumed turn the agent still holds is picked up, not re-sent.* A v0.22 session turn
+    keeps running when its stream drops, so the auto-resume asks `GET /v1/runs/{id}` first and
+    lands the run the way its live stream would have: the reply, a stopped turn, or, for a
+    `failed` run, an error row that does not chain. Only a run the container does not know
+    (404) or one Hermes fenced as `unknown` is sent again. The run door keeps only the reply's
+    text: no tool calls or reasoning, `MEDIA:` tags unresolved, and no `approval.request`
+    frames, so a run parked on an approval waits out the agent's approval timeout.
+
+  Pinned sessions stay a per-agent switch, off by default. Two things block making them the
+  default. On a session, a per-message tier is not honoured: the session runs its main model.
+  And session turns are ledgered as character estimates until `session_usage` reads the
+  session stream's `input_tokens`/`output_tokens` usage frame. Conversations from before the
+  switch stay on replay. The first turn after a crash can wait up to five minutes before it runs: the
+  restarted container's gateway gets the same pid and pid-namespace id as the dead one, so
+  Hermes treats the dead turn's transcript lease as live until it expires.
 
 ## Agent work and the guardrails
 

@@ -407,10 +407,10 @@ pub struct PersonaSession {
     /// `POST /api/sessions`, created on first use and resumed after.
     pub id: String,
     /// A turn has gone through this session before, so it MUST still be in
-    /// the container: a fresh create then means the state volume was lost
-    /// (a re-hire on the same slug, a swapped volume, a host restore), and
-    /// the turn takes the completions arm rather than answering from an
-    /// empty room — `proxy_session_turn`'s `history_expected`.
+    /// the container: one that is not there means the state volume was lost
+    /// (a re-hire on the same slug, a swapped volume, a host restore) —
+    /// `proxy_session_turn`'s `history_expected`. The step then starts the
+    /// session again (`open_persona_turn`).
     pub resumed: bool,
 }
 
@@ -1374,12 +1374,13 @@ async fn meter_persona_turn(pg: &sqlx::PgPool, req: &TransportRequest, turn: &Pe
 
 /// Open the persona's stream through the door the caller chose: the
 /// completions arm when no session is keyed, the Hermes session arm when one
-/// is — created on first use, resumed after. Two ways back onto the
-/// completions arm from the session one, both logged, neither an error: a
-/// request carrying history a session cannot hold (`session_turn_parts`),
-/// and a RESUMED session the container no longer has (`proxy_session_turn`
-/// answers `None` — the state volume was lost, and the chat path takes the
-/// same way out). The turn still happens; only its continuity does not.
+/// is — created on first use, resumed after. A request carrying history a
+/// session cannot hold (`session_turn_parts`) goes the completions way,
+/// logged, not an error. A RESUMED session the container no longer has
+/// (`proxy_session_turn` answers `None` — the state volume was lost) starts
+/// again, empty, and only a session Hermes will not recreate falls back to a
+/// completion. The turn still happens; only the continuity before it is
+/// lost.
 async fn open_persona_turn(
     req: &TransportRequest,
     session: Option<&PersonaSession>,
@@ -1404,7 +1405,7 @@ async fn open_persona_turn(
         &req.model,
         &session.id,
         system_message.as_deref(),
-        &Value::String(message),
+        &Value::String(message.clone()),
         req.effort.as_deref(),
         req.hold_ms,
         session.resumed,
@@ -1412,15 +1413,36 @@ async fn open_persona_turn(
     .await
     {
         Some(stream) => Ok(stream),
+        // The room is gone. A session turn's request carries no history of
+        // its own, so a completion would answer from exactly what a fresh
+        // session would — and only the session keeps this step for the next
+        // one. So the session starts again here, empty, and the run's later
+        // steps continue in it. (The transport never makes that empty room
+        // itself: the chat path, which does hold a transcript, must not find
+        // one on its next turn.) An id Hermes refuses to recreate — a deleted
+        // session — leaves the completion.
         None => {
             tracing::warn!(
                 "[transport] {} ({}): session {} was expected to exist and did not — this turn \
-                 is sent as a completion with its full prompt instead",
+                 starts it again, without the earlier transcript",
                 req.model,
                 req.caller,
                 session.id
             );
-            Ok(proxy_chat(&persona_payload(req), req.hold_ms).await)
+            match proxy_session_turn(
+                &req.model,
+                &session.id,
+                system_message.as_deref(),
+                &Value::String(message),
+                req.effort.as_deref(),
+                req.hold_ms,
+                false,
+            )
+            .await
+            {
+                Some(stream) => Ok(stream),
+                None => Ok(proxy_chat(&persona_payload(req), req.hold_ms).await),
+            }
         }
     }
 }

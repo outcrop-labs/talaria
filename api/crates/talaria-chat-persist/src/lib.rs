@@ -18,10 +18,10 @@ use talaria_agent_defs::pinned_sessions_for_model;
 use talaria_body::utf16_len;
 use talaria_conversations::{
     active_streaming_assistant, content_js_length, insert_streaming_assistant,
-    last_user_message_effort, mark_message_resumed, mark_message_stopped, message_still_errored,
-    next_seq, pinned_history_fits, prior_messages, resurrect_streaming_assistant,
-    set_message_guard, set_message_run_id, touch_conversation, unanswered_user_after,
-    update_assistant,
+    last_user_message_effort, mark_message_resumed, mark_message_stopped, message_run_id,
+    message_still_errored, next_seq, pinned_history_fits, prior_messages,
+    resurrect_streaming_assistant, set_message_guard, set_message_run_id, touch_conversation,
+    unanswered_user_after, update_assistant,
 };
 use talaria_fleet_agents::routed_model_for;
 use talaria_fleet_layout::describe_agent;
@@ -29,6 +29,7 @@ use talaria_gateway::fleet_chat::{
     AgentStreamEvent, AgentStreamParser, ChatStream, ToolCall, chat_payload, merge_tool,
     proxy_chat, proxy_session_turn,
 };
+use talaria_gateway::fleet_lost_turns::reattach_session_run;
 use talaria_gateway::guard::{
     Finding, GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
 };
@@ -547,6 +548,34 @@ async fn continue_inner(
     // Decided before the row below exists: a fresh conversation's first
     // assistant row is the one being made here, and it must not count.
     let pinned = pinned_turn(&state.pg, &meta.agent_model, conversation_id, resume).await;
+    // A RESUMED SESSION TURN THE AGENT IS STILL HOLDING IS NOT SENT AGAIN. A
+    // v0.22 session turn outlives the stream that carried it: Hermes shields
+    // the run from its client hanging up, so a stream that died while the
+    // container lived (a network reset, a frozen container that came back)
+    // left the turn running, or finished, in the agent. Re-sending the
+    // message would put it into the session twice and the agent would do the
+    // work twice. The run door says whether the agent still has it, and the
+    // reattached stream lands its reply on this same row, a failed run as
+    // the error row its live stream would have made. A turn the agent no
+    // longer knows died with its container, and one Hermes fenced as
+    // `unknown` waits on the lost-turn repair: both are sent again below.
+    let held = match resume.filter(|_| pinned) {
+        Some(row) => match message_run_id(&state.pg, row).await.ok().flatten() {
+            Some(run) => {
+                let held = reattach_session_run(&meta.agent_model, &run).await;
+                if held.is_some() {
+                    tracing::info!(
+                        "[chat_persist] {row}: {} still holds run {run}; picking it up instead of \
+                         sending the turn again",
+                        meta.agent_model
+                    );
+                }
+                held
+            }
+            None => None,
+        },
+        None => None,
+    };
     let assistant_id = match resume {
         Some(row) => match resurrect_streaming_assistant(&state.pg, row).await {
             Ok(()) => row.to_string(),
@@ -578,15 +607,24 @@ async fn continue_inner(
         Some(e) if efforts_for_model(&state.pg, &routed).await.contains(&e) => Some(e),
         _ => None,
     };
-    let (upstream, prompt_chars, on_session) = send_turn(
-        pinned,
-        &meta.agent_model,
-        &routed,
-        conversation_id,
-        &messages,
-        honored.as_deref(),
-    )
-    .await;
+    let (upstream, prompt_chars, on_session) = match held {
+        // Nothing left this process: the prompt went out with the turn the
+        // agent is finishing, and that attempt's ledger row counted it. A
+        // held turn is a session run, so the session served it: it ran the
+        // main model and is booked as one.
+        Some(stream) => (stream, 0, true),
+        None => {
+            send_turn(
+                pinned,
+                &meta.agent_model,
+                &routed,
+                conversation_id,
+                &messages,
+                honored.as_deref(),
+            )
+            .await
+        }
+    };
     // The row is marked error and the chain STOPS
     // HERE, before any persist. Persisting the error body instead parses zero
     // events, flushes an EMPTY 'complete' row, and the tail re-chains — and
