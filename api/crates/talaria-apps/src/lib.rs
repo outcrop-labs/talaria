@@ -101,6 +101,9 @@ pub struct AppFacts {
     pub enabled: bool,
     /// The last compile or load failed, and why (`current.json`).
     pub failed: Option<String>,
+    /// The probe's checked catalog (`mcp_catalog_path`): the `tools` and
+    /// `last_probe` columns it fills. None before the probe has written one.
+    pub catalog: Option<(Value, Value)>,
 }
 
 /// What a sync makes of one app's MCP registry row.
@@ -162,11 +165,30 @@ pub fn app_mcp_plan(apps: &[AppFacts], rows: &[String]) -> BTreeMap<String, AppM
     plan
 }
 
-/// What one sync changed: the app server names that serve, and the rows that
-/// went from serving to off or back (their carriers are rolled).
-struct Synced {
-    serving: Vec<String>,
-    flipped: Vec<String>,
+/// What one sync changed: the app server names that serve, the rows that
+/// went from serving to off or back, and the serving rows whose catalog
+/// changed. The carriers of both lists are rolled, each row once.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyncReport {
+    pub serving: Vec<String>,
+    /// Registry ids of rows that turned off, or back on.
+    pub flipped: Vec<String>,
+    /// Registry ids of rows that kept serving with a different catalog.
+    pub retooled: Vec<String>,
+}
+
+/// Did a serving row's catalog change? Only a catalog the probe wrote can
+/// change one: with no catalog file the row keeps its own `tools`, and a file
+/// that says what the row already holds changes nothing. Compared as JSON
+/// values, so key order (jsonb keeps its own) is not a change.
+///
+/// A running Hermes reads an MCP server's tools/list once, when it starts
+/// (the roll comment in `talaria_mcp_apply`), so an app update that adds,
+/// renames or removes a tool, or edits a description or a schema, reaches
+/// an agent only by a roll — and a catalog that did not change must roll
+/// nobody: every host boot and every probe re-sends the same file.
+pub fn catalog_changed(stored: &Value, fresh: Option<&Value>) -> bool {
+    fresh.is_some_and(|f| f != stored)
 }
 
 /// The installed apps, with the enabled set's verdict and each build's status.
@@ -184,6 +206,7 @@ pub fn app_facts(enabled: &BTreeSet<String>) -> Vec<AppFacts> {
             AppFacts {
                 enabled: enabled.contains(&a.slug),
                 failed,
+                catalog: read_mcp_catalog(&a.slug),
                 slug: a.slug,
                 name: a.name,
                 description: a.description,
@@ -207,7 +230,7 @@ fn sync_enabled_set(stored: Option<Value>) -> Result<BTreeSet<String>, sqlx::Err
 async fn sync_app_mcp_rows(
     pg: &PgPool,
     facts: impl FnOnce(&BTreeSet<String>) -> Vec<AppFacts>,
-) -> Result<Synced, sqlx::Error> {
+) -> Result<SyncReport, sqlx::Error> {
     let mut tx = pg.begin().await?;
     sqlx::query("select pg_advisory_xact_lock($1)")
         .bind(MCP_SYNC_LOCK)
@@ -224,18 +247,17 @@ async fn sync_app_mcp_rows(
         .await?;
     let enabled = sync_enabled_set(stored)?;
     let apps = facts(&enabled);
-    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        "select id::text, app_slug::text, app_off from mcp_servers where app_slug is not null",
+    // (id, slug, app_off, tools, the admin's enabled switch)
+    let rows: Vec<(String, String, Option<String>, Value, bool)> = sqlx::query_as(
+        "select id::text, app_slug::text, app_off, tools, enabled from mcp_servers \
+         where app_slug is not null",
     )
     .fetch_all(&mut *tx)
     .await?;
-    let slugs: Vec<String> = rows.iter().map(|(_, slug, _)| slug.clone()).collect();
-    let mut synced = Synced {
-        serving: Vec::new(),
-        flipped: Vec::new(),
-    };
+    let slugs: Vec<String> = rows.iter().map(|(_, slug, ..)| slug.clone()).collect();
+    let mut synced = SyncReport::default();
     for (slug, row) in app_mcp_plan(&apps, &slugs) {
-        let had = rows.iter().find(|(_, s, _)| *s == slug);
+        let had = rows.iter().find(|(_, s, ..)| *s == slug);
         match row {
             AppMcpRow::Serve { name, description } => {
                 let server = format!("app-{slug}");
@@ -244,7 +266,18 @@ async fn sync_app_mcp_rows(
                 // only by the insert: on an existing row it is the admin's
                 // choice, and an admin who turned the server off keeps it off
                 // across every boot and resync.
-                let (tools, probe) = read_mcp_catalog(&slug).unzip();
+                let (tools, probe) = apps
+                    .iter()
+                    .find(|a| a.slug == slug)
+                    .and_then(|a| a.catalog.clone())
+                    .unzip();
+                // A row that was serving, is on, and gets a different catalog
+                // rolls its carriers so they list the new tools. (A row coming
+                // back from off rolls as flipped; an admin's disabled row is
+                // carried by nobody.)
+                let retooled = had.is_some_and(|(_, _, off, stored, enabled)| {
+                    off.is_none() && *enabled && catalog_changed(stored, tools.as_ref())
+                });
                 let id: String = sqlx::query_scalar(
                     "insert into mcp_servers \
                         (name, label, description, url, all_agents, app_slug, tools, tools_refreshed_at, last_probe, created_by) \
@@ -270,13 +303,20 @@ async fn sync_app_mcp_rows(
                 .bind(probe)
                 .fetch_one(&mut *tx)
                 .await?;
-                if had.is_some_and(|(_, _, off)| off.is_some()) {
+                if had.is_some_and(|(_, _, off, ..)| off.is_some()) {
                     synced.flipped.push(id);
+                } else if retooled {
+                    tracing::info!(
+                        "[apps] {server}: the tool catalog changed; rolling the agents that carry it"
+                    );
+                    synced.retooled.push(id);
                 }
                 synced.serving.push(server);
             }
             AppMcpRow::Off(why) => {
-                let Some((id, _, off)) = had else { continue };
+                let Some((id, _, off, ..)) = had else {
+                    continue;
+                };
                 if off.as_deref() == Some(why.as_str()) {
                     continue;
                 }
@@ -327,13 +367,24 @@ pub async fn sync_app_mcp_servers_over(
     sb: &SecretBox,
     facts: impl FnOnce(&BTreeSet<String>) -> Vec<AppFacts>,
 ) -> Result<Vec<String>, sqlx::Error> {
+    Ok(sync_app_mcp_servers_report(pg, sb, facts).await?.serving)
+}
+
+/// The same sync, answering everything it changed (`SyncReport`): the rows
+/// whose carriers it rolled, not only the servers that serve.
+pub async fn sync_app_mcp_servers_report(
+    pg: &PgPool,
+    sb: &SecretBox,
+    facts: impl FnOnce(&BTreeSet<String>) -> Vec<AppFacts>,
+) -> Result<SyncReport, sqlx::Error> {
     let synced = sync_app_mcp_rows(pg, facts).await?;
     // After the commit, so each replacement renders the state it was rolled
-    // for.
-    for id in &synced.flipped {
+    // for: a flipped row's tools arrive or leave, a retooled row's catalog is
+    // the one the agent lists.
+    for id in synced.flipped.iter().chain(&synced.retooled) {
         talaria_mcp_apply::roll_agents_for_server(pg, sb, id).await;
     }
-    Ok(synced.serving)
+    Ok(synced)
 }
 
 /// Delete an app's MCP registry row, and with it, by cascade, every agent
@@ -713,6 +764,35 @@ mod tests {
     /// The shape the TS probe writes (`syncAppMcpCatalog`): the checked
     /// tools and the probe line, copied into the row as they are.
     #[test]
+    fn only_a_different_catalog_from_the_probe_is_a_change() {
+        use serde_json::json;
+        let stored = json!([{ "name": "crm_find", "description": "Find a contact.",
+            "inputSchema": { "type": "object", "properties": { "q": { "type": "string" } } } }]);
+        // No catalog file: the row keeps its own tools, nothing changed.
+        assert!(!catalog_changed(&stored, None));
+        // The same catalog, keys in another order (jsonb keeps its own): no change.
+        let reordered = json!([{ "inputSchema": { "properties": { "q": { "type": "string" } }, "type": "object" },
+            "description": "Find a contact.", "name": "crm_find" }]);
+        assert!(!catalog_changed(&stored, Some(&reordered)));
+        // A tool added, renamed or removed, a description or a schema edited.
+        for fresh in [
+            json!([{ "name": "crm_find", "description": "Find a contact.", "inputSchema": { "type": "object", "properties": { "q": { "type": "string" } } } },
+                   { "name": "crm_add", "description": "Add one.", "inputSchema": { "type": "object", "properties": {} } }]),
+            json!([{ "name": "crm_search", "description": "Find a contact.", "inputSchema": { "type": "object", "properties": { "q": { "type": "string" } } } }]),
+            json!([]),
+            json!([{ "name": "crm_find", "description": "Find a person.", "inputSchema": { "type": "object", "properties": { "q": { "type": "string" } } } }]),
+            json!([{ "name": "crm_find", "description": "Find a contact.", "inputSchema": { "type": "object", "properties": { "q": { "type": "number" } } } }]),
+            json!([{ "name": "crm_find", "description": "Find a contact.", "inputSchema": { "type": "object", "properties": { "q": { "type": "string" } } },
+                     "outputSchema": { "type": "object" } }]),
+        ] {
+            assert!(catalog_changed(&stored, Some(&fresh)), "{fresh}");
+        }
+        // A row created before its first probe holds `[]`; the first catalog
+        // is a change.
+        assert!(catalog_changed(&json!([]), Some(&stored)));
+    }
+
+    #[test]
     fn a_probe_catalog_fills_both_columns() {
         let raw = r#"{
             "tools": [{"name": "crm_find", "description": "Find a contact", "inputSchema": {"type": "object"}}],
@@ -737,6 +817,7 @@ mod tests {
 
     fn app(slug: &str, enabled: bool, mcp: bool, failed: Option<&str>) -> AppFacts {
         AppFacts {
+            catalog: None,
             slug: slug.into(),
             name: format!("{slug} app"),
             description: String::new(),

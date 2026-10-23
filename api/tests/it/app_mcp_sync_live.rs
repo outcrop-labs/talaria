@@ -10,9 +10,13 @@
 //   DATABASE_URL=postgres://… cargo test -p talaria-api --test it app_mcp_sync_live:: -- --ignored
 
 use crate::support::{fabricate_user, pg, sweep_user_rows};
+use serde_json::{Value, json};
 use sqlx::postgres::PgPool;
 use std::collections::BTreeSet;
-use talaria_api::apps::{AppFacts, app_facts, remove_app_mcp_server, sync_app_mcp_servers_over};
+use talaria_api::apps::{
+    AppFacts, SyncReport, app_facts, remove_app_mcp_server, sync_app_mcp_servers_over,
+    sync_app_mcp_servers_report,
+};
 use talaria_api::secretbox::SecretBox;
 use talaria_mcp::registry::{ServerPatch, servers_for_agent, update_mcp_server};
 
@@ -32,6 +36,7 @@ async fn sync(pg: &PgPool, enabled: bool, failed: Option<&str>) -> Vec<String> {
         mcp: true,
         enabled,
         failed: failed.map(String::from),
+        catalog: None,
     };
     sync_app_mcp_servers_over(pg, &SecretBox::default(), move |on: &BTreeSet<String>| {
         let mut facts = app_facts(on);
@@ -40,6 +45,34 @@ async fn sync(pg: &PgPool, enabled: bool, failed: Option<&str>) -> Vec<String> {
     })
     .await
     .expect("sync")
+}
+
+/// One sync with this test's app serving a probe catalog of these tools — what
+/// the host's probe writes to `mcp-catalog.json` — answering what it changed.
+async fn sync_catalog(pg: &PgPool, tools: Value) -> SyncReport {
+    let fact = AppFacts {
+        slug: SLUG.into(),
+        name: "Live sync".into(),
+        description: String::new(),
+        mcp: true,
+        enabled: true,
+        failed: None,
+        catalog: Some((
+            tools,
+            json!({ "state": "ok", "detail": "probe", "at": "now" }),
+        )),
+    };
+    sync_app_mcp_servers_report(pg, &SecretBox::default(), move |on: &BTreeSet<String>| {
+        let mut facts = app_facts(on);
+        facts.push(fact);
+        facts
+    })
+    .await
+    .expect("sync")
+}
+
+fn tool(name: &str, description: &str) -> Value {
+    json!({ "name": name, "description": description, "inputSchema": { "type": "object", "properties": {} } })
 }
 
 /// The row's admin switch and app-off reason.
@@ -201,6 +234,43 @@ async fn an_app_server_keeps_its_grants_and_the_admins_switch() {
     assert_eq!(grants(&pg, &id).await, (1, 1, 1));
     assert!(carried(&pg, DIRECT).await);
     assert!(carried(&pg, BY_TEAM).await);
+
+    // THE CATALOG CHANGES: an app update adds a tool. The serving row takes
+    // the new catalog and its carriers roll (a running Hermes lists tools
+    // once, at start); a sync that hands it the same catalog — every boot,
+    // every probe — rolls nobody.
+    let first = sync_catalog(&pg, json!([tool("find", "Find a contact.")])).await;
+    assert!(first.retooled.contains(&id), "{first:?}");
+    let same = sync_catalog(&pg, json!([tool("find", "Find a contact.")])).await;
+    assert!(
+        !same.retooled.contains(&id),
+        "an unchanged catalog rolls nobody: {same:?}"
+    );
+    let added = sync_catalog(
+        &pg,
+        json!([tool("find", "Find a contact."), tool("add", "Add one.")]),
+    )
+    .await;
+    assert!(added.retooled.contains(&id), "{added:?}");
+    assert!(!added.flipped.contains(&id), "{added:?}");
+    let stored: Value = sqlx::query_scalar("select tools from mcp_servers where id::text = $1")
+        .bind(&id)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+    assert_eq!(stored.as_array().map(Vec::len), Some(2));
+    // A description edit is a change too: the model reads it.
+    let edited = sync_catalog(
+        &pg,
+        json!([tool("find", "Find a person."), tool("add", "Add one.")]),
+    )
+    .await;
+    assert!(edited.retooled.contains(&id), "{edited:?}");
+    // An admin's disabled server is carried by nobody: nothing to roll.
+    set_enabled(&pg, &id, false).await;
+    let off = sync_catalog(&pg, json!([tool("find", "Find a person.")])).await;
+    assert!(!off.retooled.contains(&id), "{off:?}");
+    set_enabled(&pg, &id, true).await;
 
     // An app gone from disk without an uninstall: off, never deleted.
     sync_app_mcp_servers_over(&pg, &SecretBox::default(), app_facts)

@@ -167,6 +167,14 @@ export async function callMcpTool(serverName: string, tool: string, args: Record
   // has been handed a map of the workspace's credentials.
   const server = await getMcpServer(serverName)
   if (!server) throw new Error(`MCP server "${serverName}" is not registered`)
+  // Refused before the spend boundary below, so a refusal spends nothing.
+  if (server.appSlug) {
+    // An app's tools serve AGENTS, through the gateway, and nothing else: they
+    // are never an org supplier (web search, research), the rule the Rust
+    // `call_mcp_tool` and both supplier lookups hold. A platform stage has no
+    // agent to be, so an app tool would have no caller to answer to.
+    throw new Error(`MCP server "${serverName}" is an app's; its tools serve agents through the gateway, never a platform stage`)
+  }
   if (caller) {
     const { resolveHandles } = await import('./workspace-secrets')
     // The destination is the server the value is about to reach — an app
@@ -190,14 +198,6 @@ export async function callMcpTool(serverName: string, tool: string, args: Record
   if (server.appOff) throw new Error(`MCP server "${serverName}" is not serving: ${server.appOff}`)
   if (server.authMode === 'per-user') {
     throw new Error(`MCP server "${serverName}" authenticates per user, so a platform stage cannot call it. Register an org-authenticated server for this.`)
-  }
-  if (server.appSlug) {
-    // App servers dispatch IN PROCESS — no socket, no headers. `allowed: null`
-    // is the org's own call rather than an agent's, and the same "as Talaria"
-    // identity the builtin toolkit gets.
-    const { dispatchAppMcp } = await import('./app-mcp')
-    const out = await dispatchAppMcp(server.appSlug, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args } }, 'talaria', null)
-    return readToolResult(out.body, serverName, tool)
   }
 
   const { call } = await orgSession(server)
@@ -290,6 +290,11 @@ export interface EffectiveMcp {
   tools: string[] | null
   /** Headers to speak upstream with (org's, or the acting user's sealed set). */
   upstreamHeaders: Record<string, string>
+  /** The person this agent acts for — a personal assistant's owner, read
+   *  for a PROVEN caller only (`assistantOwnerFor`) — or null. The same
+   *  person the call record attributes the call to; an app's tool handler
+   *  reads it as `ctx.actingUserId`. */
+  actingUserId: string | null
 }
 
 const intersect = (a: string[] | null, b: string[] | null): string[] | null => {
@@ -416,7 +421,7 @@ export async function effectiveMcpFor(agent: AgentSubject, serverName: string): 
     upstreamHeaders = { ...upstreamHeaders, authorization: `Bearer ${bearer}` }
   }
 
-  return { server, tools: intersect(agentTools, userTools), upstreamHeaders }
+  return { server, tools: intersect(agentTools, userTools), upstreamHeaders, actingUserId: owner }
 }
 
 // ── The call record ─────────────────────────────────────────────────────────
@@ -449,6 +454,9 @@ export interface McpCallRecord {
   serverId: string | null
   serverName: string
   agent: AgentSubject
+  /** The JSON-RPC method the row records: `tools/call` unless the gateway
+   *  refused a request BY METHOD (calls.rs `begin_refused_method`). */
+  method?: string
   tool: string | null
   outcome: McpCallOutcome
   /** The HTTP status this resident answered with. */
@@ -477,7 +485,7 @@ export function recordMcpToolCall(row: McpCallRecord): void {
               case when $4::bool then (select d.owner_user_id::text from agent_defs d
                                         where d.model = $3::text and d.owner_user_id is not null
                                         limit 1) end,
-              'tools/call', $5::text, $6::text, $7::smallint, $8::int4, $9::text
+              $10::text, $5::text, $6::text, $7::smallint, $8::int4, $9::text
        where coalesce($1::text, (select s.id::text from mcp_servers s where s.name = $2::text)) is not null`,
       [
         row.serverId,
@@ -489,6 +497,7 @@ export function recordMcpToolCall(row: McpCallRecord): void {
         row.status,
         row.latencyMs,
         row.error === null ? null : [...row.error].slice(0, CALL_ERROR_MAX_CHARS).join(''),
+        [...(row.method ?? 'tools/call')].slice(0, CALL_TOOL_MAX_CHARS).join(''),
       ],
     )
   })().catch((e) => console.warn(`[mcp/calls] could not record ${row.serverName}.${row.tool ?? '?'}: ${(e as Error).message}`))

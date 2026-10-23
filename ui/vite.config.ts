@@ -220,10 +220,11 @@ export default defineConfig({
   resolve: {
     dedupe: ['svelte', '@tanstack/svelte-query', 'sv-router', '@lucide/svelte'],
     // The SDK ids must resolve for app files OUTSIDE the Vite root, where the
-    // tsconfig-paths plugin doesn't reach ('/server' entry listed first — the
-    // bare id would otherwise prefix-match it).
+    // tsconfig-paths plugin doesn't reach (the '/server' and '/testing'
+    // entries listed first — the bare id would otherwise prefix-match them).
     alias: {
       '@talaria/sdk/server': resolve(here, 'src/sdk/server.ts'),
+      '@talaria/sdk/testing': resolve(here, 'src/sdk/testing.ts'),
       '@talaria/sdk': resolve(here, 'src/sdk/index.ts'),
     },
   },

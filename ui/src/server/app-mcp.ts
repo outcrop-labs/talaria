@@ -5,10 +5,10 @@
 // a host glob.
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { z } from 'zod'
 import { storeFor } from './app-store'
-import { dispatchJsonRpc, rpcError, type Rpc } from './mcp-jsonrpc'
-import type { AppMcp, AppMcpTool } from '@/sdk/server'
+import { rpcError, type Rpc } from './mcp-jsonrpc'
+import type { AppMcp, AppMcpCaller } from '@/sdk/server'
+import { catalogOf, checkAppMcpTools, runAppTools, type CallCut, type CheckedAppMcp } from './app-mcp-call'
 import { isolateApp } from './app-isolate'
 import { appHasMcp as hasMcpFile, loadAppMcp } from './app-load'
 import { appDataDir } from './app-build/paths'
@@ -17,97 +17,19 @@ import { resyncAppMcpServers } from './internal-api'
 
 export const appHasMcp = (slug: string): boolean => hasMcpFile(slug)
 
-// ── The checks a tool passes before any agent sees it ──────────────────────
-// Every tool an app declares is checked when its module loads — by the build
-// probe, and by every dispatch. A tool that fails is LEFT OUT and named: not
-// listed, not callable, not in the registry's catalog. It never takes the app
-// (or the app's other tools) down with it; a typo in one tool is that tool's
-// problem. The bounds are the registry's own (`bound_catalog`,
-// api/crates/talaria-mcp/src/registry.rs), which used to clip a third-party
-// catalog silently and let an app's through unchecked.
-
-/** registry.rs `TOOL_NAME_MAX`. */
-export const TOOL_NAME_MAX = 200
-/** registry.rs `TOOL_DESCRIPTION_MAX`: the catalog keeps this much. */
-export const TOOL_DESCRIPTION_MAX = 300
-/** registry.rs `TOOL_SCHEMA_MAX_BYTES`. */
-export const TOOL_SCHEMA_MAX_BYTES = 32 * 1024
-/** What a model API accepts as a function name. An agent's harness turns each
- *  MCP tool into one, and providers refuse the WHOLE request over a name with
- *  a space or a dot in it — so one bad name would break every turn of every
- *  agent carrying the app, not just calls to that tool. */
-const TOOL_NAME_RE = /^[A-Za-z0-9_-]+$/
-
-const EMPTY_SCHEMA = { type: 'object', properties: {} } as const
-
-export interface CheckedAppMcp {
-  /** The tools that passed — the only ones listed, called or catalogued. */
-  tools: AppMcpTool[]
-  /** One sentence per tool left out: which one, and why. */
-  problems: string[]
-}
-
-function toolProblem(t: unknown, seen: ReadonlySet<string>): string | null {
-  if (!t || typeof t !== 'object' || Array.isArray(t)) return 'is not a tool definition'
-  const { name, description, handler, inputSchema } = t as Partial<Record<keyof AppMcpTool, unknown>>
-  if (typeof name !== 'string' || !name) return 'has no name'
-  if (name.length > TOOL_NAME_MAX) return `has a ${name.length}-character name (at most ${TOOL_NAME_MAX})`
-  if (!TOOL_NAME_RE.test(name)) return 'has a name with characters other than letters, digits, _ and -'
-  if (seen.has(name)) return 'is defined twice; only the first definition is kept'
-  if (typeof description !== 'string' || !description.trim()) return 'has no description'
-  if (typeof handler !== 'function') return 'has no handler function'
-  if (inputSchema !== undefined) {
-    if (!inputSchema || typeof inputSchema !== 'object' || Array.isArray(inputSchema)) {
-      return 'has an inputSchema that is not a JSON Schema object'
-    }
-    const type = (inputSchema as Record<string, unknown>).type
-    if (type !== undefined && type !== 'object') {
-      return `has an inputSchema of type ${JSON.stringify(type)}; tool arguments are an object`
-    }
-    let bytes: number
-    try {
-      bytes = Buffer.byteLength(JSON.stringify(inputSchema))
-    } catch {
-      return 'has an inputSchema that is not JSON'
-    }
-    if (bytes > TOOL_SCHEMA_MAX_BYTES) {
-      return `has a ${(bytes / 1024).toFixed(1)} KiB inputSchema (at most ${TOOL_SCHEMA_MAX_BYTES / 1024} KiB)`
-    }
-  }
-  return null
-}
-
-const toolLabel = (t: unknown, i: number): string => {
-  const name = t && typeof t === 'object' ? (t as { name?: unknown }).name : undefined
-  return typeof name === 'string' && name ? JSON.stringify(name.length > 60 ? `${name.slice(0, 60)}…` : name) : `tool #${i + 1}`
-}
-
-/** Check every declared tool; keep the ones that pass, name the rest. */
-export function checkAppMcpTools(tools: readonly unknown[]): CheckedAppMcp {
-  const ok: AppMcpTool[] = []
-  const problems: string[] = []
-  const seen = new Set<string>()
-  tools.forEach((t, i) => {
-    const problem = toolProblem(t, seen)
-    if (problem) {
-      problems.push(`${toolLabel(t, i)} ${problem}`)
-      return
-    }
-    const tool = t as AppMcpTool
-    seen.add(tool.name)
-    ok.push(tool)
-  })
-  return { tools: ok, problems }
-}
-
-/** The catalog the registry row holds for an app server: what tools/list
- *  serves, with descriptions clipped to the registry's bound. */
-export const catalogOf = (tools: readonly AppMcpTool[]): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> =>
-  tools.map((t) => ({
-    name: t.name,
-    description: t.description.slice(0, TOOL_DESCRIPTION_MAX),
-    inputSchema: t.inputSchema ?? { ...EMPTY_SCHEMA },
-  }))
+// The checks a tool passes, the catalog's shape and the call itself live in
+// app-mcp-call.ts — a leaf `@talaria/sdk/testing` runs too, so a unit test
+// calls a tool through exactly the code the gateway does. Re-exported for the
+// probe (app-health.ts) and the existing callers.
+export {
+  TOOL_NAME_MAX,
+  TOOL_DESCRIPTION_MAX,
+  TOOL_SCHEMA_MAX_BYTES,
+  argumentProblem,
+  catalogOf,
+  checkAppMcpTools,
+  type CheckedAppMcp,
+} from './app-mcp-call'
 
 /** The registry row's `last_probe` for an app server, in the shape the api's
  *  `probe_json` writes: `ok` with the tool count, or `error` naming every
@@ -218,31 +140,6 @@ export async function clearAppMcpCatalog(slug: string): Promise<void> {
   if (await isEnabled(slug)) await resyncAppMcpServers(`${slug}: no MCP surface`)
 }
 
-// ── Argument validation against the advertised inputSchema ─────────────────
-// `inputSchema` was advisory: advertised in tools/list, never checked, so the
-// handler was the first code to see a wrong shape. zod's `fromJSONSchema`
-// turns the JSON Schema into a parser (extra properties pass unless the
-// schema forbids them, as JSON Schema says); a schema it cannot convert
-// ($ref, a draft it does not know) falls back to no check rather than
-// refusing every call to that tool. Compiled once per schema object.
-const compiled = new WeakMap<object, z.ZodType | null>()
-
-export function argumentProblem(schema: Record<string, unknown> | undefined, args: Record<string, unknown>): string | null {
-  if (!schema) return null
-  let parser = compiled.get(schema)
-  if (parser === undefined) {
-    try {
-      parser = z.fromJSONSchema(schema as Parameters<typeof z.fromJSONSchema>[0])
-    } catch {
-      parser = null
-    }
-    compiled.set(schema, parser)
-  }
-  if (!parser) return null
-  const r = parser.safeParse(args)
-  return r.success ? null : z.prettifyError(r.error)
-}
-
 /** Why the gateway must refuse this app server outright, or null.
  *
  *  AN APP THAT IS NOT ENABLED SERVES NOTHING, whatever its registry row says.
@@ -267,30 +164,28 @@ export async function appMcpOff(appSlug: string | null | undefined, appOff: stri
   return appOff ? `app "${appSlug}" is not serving: ${appOff}` : null
 }
 
+/** Who is calling, for whom, and until when — what the gateway knows about a
+ *  call besides its arguments (app-mcp-call.ts `AppToolCallFacts`, less the
+ *  store, which is the app's own). */
+export interface AppMcpCallFacts {
+  caller: AppMcpCaller
+  actingUserId: string | null
+  /** The request's signal: aborts when the agent disconnects. */
+  signal?: AbortSignal
+  /** The server row's `timeoutSecs`; null is the 120 s default. */
+  timeoutSecs?: number | null
+}
+
 export async function dispatchAppMcp(
   slug: string,
   rpc: Rpc,
-  agent: string,
+  facts: AppMcpCallFacts,
   allowed: string[] | null,
-): Promise<{ status: number; body: unknown | null }> {
+): Promise<{ status: number; body: unknown | null; cut: CallCut }> {
   const mcp = await loadMcp(slug)
-  if (!mcp) return { status: 404, body: rpcError(rpc.id, -32601, `app "${slug}" has no MCP surface`) }
+  if (!mcp) return { status: 404, body: rpcError(rpc.id, -32601, `app "${slug}" has no MCP surface`), cut: null }
   // Only the tools that passed their checks exist for an agent — listed,
   // callable, or not at all.
   const tools = mcp.tools.filter((t) => allowed === null || allowed.includes(t.name))
-
-  return dispatchJsonRpc(rpc, tools, {
-    serverName: `talaria-app-${slug}`,
-    listEntry: (t: AppMcpTool) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema ?? EMPTY_SCHEMA,
-    }),
-    call: async (tool, args) => {
-      const bad = argumentProblem(tool.inputSchema, args)
-      if (bad) return { text: `invalid arguments for ${tool.name}:\n${bad}`, isError: true }
-      const out = await tool.handler(args, { app: slug, agent, store: storeFor(slug) })
-      return { text: typeof out === 'string' ? out : JSON.stringify(out ?? null, null, 2) }
-    },
-  })
+  return runAppTools(slug, tools, rpc, { ...facts, store: storeFor(slug) })
 }

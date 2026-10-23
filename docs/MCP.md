@@ -22,8 +22,12 @@ access rules. Four kinds of rows:
   with the reason, no agent carries it (the agents that did roll), and the gateway refuses its
   tools. When the app is enabled and passes its load probe again, the same row serves the same
   grants and those agents roll back. Only uninstalling the app deletes the row. An admin's own
-  **Disable server** is never undone by the app's lifecycle. App tools are never picked as an org
-  supplier (web search and the like): the platform's own caller cannot reach them.
+  **Disable server** is never undone by the app's lifecycle. When an update or a rebuild changes
+  the catalog — a tool added, renamed or removed, a description or a schema edited — the agents
+  granted the server roll so they list the new tools; a catalog that did not change rolls nobody.
+  A tool runs under the server's **timeout** (120 s by default) and is answered as cut off when it
+  passes. App tools are never picked as an org supplier (web search and the like): the platform's
+  own caller cannot reach them.
 - **Per-user servers** — servers where each person connects their own account (below).
 
 ## Enforcement: the gateway
