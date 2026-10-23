@@ -373,7 +373,8 @@ const CENSUS = [
     // The ONE HTTP door for browser code: every request the app makes to its
     // own API goes through a verb in ui/src/lib/fetch-json.ts. Server files
     // fetch upstream services all the time (OAuth exchanges, MCP relays,
-    // safeFetch) and the SDK is its own published door — both excluded below.
+    // safeFetch), excluded below. The SDK is NOT a second door: since the
+    // client-parity pass its `api()` and `appApi()` are built on these verbs.
     pattern: /\bfetch\s*\(/g,
     what: 'a hand-rolled client fetch, bypassing the one HTTP door',
     fix: [
@@ -389,10 +390,11 @@ const CENSUS = [
       'frame rules than the chat parser. One door, one decision: non-2xx rejects with the server\'s',
       'own sentence, and every caller catches or deliberately swallows it in writing.',
       '',
-      'The two counted files below are the doors themselves, at their exact call counts — if the',
-      'door is renamed or emptied, the stale-census half of this check fails instead of the rule',
-      'going quietly inert. A fetch anywhere else in client code is a new stanza. If you believe',
-      'you need one, say so in the PR.',
+      'The counted file below is the door itself, at its exact call count — if the door is renamed',
+      'or emptied, the stale-census half of this check fails instead of the rule going quietly',
+      'inert. A fetch anywhere else in client code is a new stanza — the published SDK included:',
+      'it used to carry its own weaker copy (no status, no deadline, no streams) on the belief that',
+      "it could not import the app's door, and it can. If you believe you need one, say so in the PR.",
     ],
     exempt: (path) =>
       path.startsWith('ui/src/server/') ||
@@ -403,7 +405,6 @@ const CENSUS = [
       !path.startsWith('ui/src/'), // the mcp/ and cli/ trees are not the browser app
     sites: {
       'ui/src/lib/fetch-json.ts': 8, // the door: getJson, getJsonOr404, getJsonOr, getText, getBlob, sendJson, postStream, getStream
-      'ui/src/sdk/index.ts': 1, // the published SDK's own door — it cannot import the app's
     },
   },
   {
@@ -431,14 +432,9 @@ const CENSUS = [
       'divergent error contracts. PR 2 collapsed all of it into fetch-json; the audit line was',
       '"Invariant rule: the stanza lives only in fetch-json.ts", and this census is that line,',
       'executable.',
-      '',
-      'The SDK entry below is not a second door in the app: it is the same exception',
-      '`raw-client-fetch` above already carries — the published SDK cannot import the app\'s',
-      'door, so it is its own, and its count is exact.',
     ],
     sites: {
       'ui/src/lib/fetch-json.ts': 1, // the door: the one SAME_ORIGIN RequestInit every verb spreads
-      'ui/src/sdk/index.ts': 1, // the published SDK's own door — it cannot import the app's
     },
   },
 ]

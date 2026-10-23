@@ -2,8 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { sourceKey } from './key'
-
+import { BUILD_RECIPE, sourceKey } from './key'
 
 describe('sourceKey', () => {
   it('is stable for the same sources and host', () => {
@@ -28,5 +27,15 @@ describe('sourceKey', () => {
     mkdirSync(join(dir, 'nested'))
     writeFileSync(join(dir, 'app.ts'), 'export default {}\n')
     expect(sourceKey(dir, 'host-a')).not.toBe(sourceKey(dir, 'host-b'))
+  })
+
+  // Dev and checkout installs have no TALARIA_VERSION, so the host build id
+  // stays put when build.ts changes; the recipe is what moves the key then.
+  it('changes when the build recipe changes, with the same sources and host', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'talaria-app-key-'))
+    writeFileSync(join(dir, 'app.ts'), 'export default {}\n')
+    expect(sourceKey(dir, 'host-1')).toBe(sourceKey(dir, 'host-1', BUILD_RECIPE))
+    expect(sourceKey(dir, 'host-1', BUILD_RECIPE)).not.toBe(sourceKey(dir, 'host-1', BUILD_RECIPE - 1))
+    expect(sourceKey(dir, 'host-1', BUILD_RECIPE + 1)).not.toBe(sourceKey(dir, 'host-1', BUILD_RECIPE))
   })
 })

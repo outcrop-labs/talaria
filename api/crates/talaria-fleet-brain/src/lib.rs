@@ -27,7 +27,7 @@ use talaria_llm_keys::mint_key;
 // agent key unmetered because the flow that drove the turn writes the row.
 // Sandbox harnesses get the workbench key instead (workbench-harnesses).
 const GATEWAY_BASE_URL: &str = "${LLM_BASE_URL}";
-const GATEWAY_API_KEY: &str = "${LLM_API_KEY}";
+pub const GATEWAY_API_KEY: &str = "${LLM_API_KEY}";
 
 // Imported agents carry legacy litellm-router model names. Map them to the real
 // provider model ids Talaria's gateway serves. As agents are redesigned they use
@@ -70,8 +70,10 @@ pub async fn gateway_model_set(pg: &PgPool) -> GatewayModels {
 
 /// An LLM model spec inside an agent config: has a model name and some endpoint
 /// marker (base_url / provider / key_env / api_key). MCP servers (url + headers,
-/// no `model`) and other blocks are left untouched.
-fn is_model_spec(o: &Value) -> bool {
+/// no `model`) and other blocks are left untouched. Public because sealing an
+/// agent's config literals (talaria-agent-secrets) must agree with this walk on
+/// which `api_key` the render overwrites.
+pub fn is_model_spec(o: &Value) -> bool {
     let Some(obj) = o.as_object() else {
         return false;
     };
