@@ -12,7 +12,7 @@ import type { AppMcp, AppMcpTool } from '@/sdk/server'
 import { isolateApp } from './app-isolate'
 import { appHasMcp as hasMcpFile, loadAppMcp } from './app-load'
 import { appDataDir } from './app-build/paths'
-import { getSetting } from './audit'
+import { enabledAppSlugs } from './apps'
 import { resyncAppMcpServers } from './internal-api'
 
 export const appHasMcp = (slug: string): boolean => hasMcpFile(slug)
@@ -172,8 +172,11 @@ export const appMcpCatalogPath = (slug: string): string => join(appDataDir(slug)
 /** slug → the catalog body last written and handed to the api. */
 const catalogWritten = new Map<string, string>()
 
-const isEnabled = async (slug: string): Promise<boolean> =>
-  (await getSetting<string[]>('apps_enabled', [])).includes(slug)
+/** Whether the enabled set names the app, read by the one rule every app
+ *  gate uses (`enabledAppSlugs`, apps.ts): a stored value that is not a list
+ *  of slugs throws. A lenient read matched a slug inside a malformed string
+ *  value — `"crm-suite".includes("crm")`. */
+const isEnabled = async (slug: string): Promise<boolean> => (await enabledAppSlugs()).includes(slug)
 
 /** Write the checked catalog to the app's data directory and, for an enabled app,
  *  ask the api to copy it into the registry row. Never throws — a catalog that
@@ -187,7 +190,10 @@ export async function syncAppMcpCatalog(slug: string, c: CheckedAppMcp): Promise
     // An uninstall removes the file: a remembered catalog whose file is gone
     // is written again.
     if (catalogWritten.get(slug) === body && existsSync(file)) return
-    mkdirSync(appDataDir(slug), { recursive: true })
+    // 0700, as app-db.ts writeDbEnv makes it: the probe often reaches an
+    // app's data directory before its database does, and mkdir never
+    // tightens a directory that already exists.
+    mkdirSync(appDataDir(slug), { recursive: true, mode: 0o700 })
     const at = new Date()
     writeFileSync(`${file}.tmp`, `${JSON.stringify({ tools, probe: catalogProbe(c, at), at: at.toISOString() }, null, 2)}\n`)
     renameSync(`${file}.tmp`, file)
@@ -250,7 +256,14 @@ export function argumentProblem(schema: Record<string, unknown> | undefined, arg
  *  with that reason. */
 export async function appMcpOff(appSlug: string | null | undefined, appOff: string | null = null): Promise<string | null> {
   if (!appSlug) return null
-  if (!(await isEnabled(appSlug))) return `app "${appSlug}" is not enabled`
+  // An enabled set that cannot be read shuts the app's tools, as it shuts the
+  // app's doors (authorizeApp answers 503): never read as enabled.
+  const on = await isEnabled(appSlug).catch((e: Error) => {
+    console.warn(`[app-mcp] ${appSlug}: could not read the enabled apps: ${e.message}`)
+    return null
+  })
+  if (on === null) return `could not check that app "${appSlug}" is enabled — it serves nothing until that reads`
+  if (!on) return `app "${appSlug}" is not enabled`
   return appOff ? `app "${appSlug}" is not serving: ${appOff}` : null
 }
 

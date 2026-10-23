@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -139,6 +139,8 @@ describe('syncAppMcpCatalog', () => {
     // Never into app-builds/, which the host serves to anyone.
     expect(mcp.appMcpCatalogPath('crm')).toBe(join(dataDir, 'crm', 'mcp-catalog.json'))
     expect(existsSync(join(buildsDir, 'crm', 'mcp-catalog.json'))).toBe(false)
+    // The directory the app database's db.env lands in later: owner-only.
+    expect(statSync(join(dataDir, 'crm')).mode & 0o777).toBe(0o700)
     const file = read('crm')
     expect(file.tools.map((t: { name: string }) => t.name)).toEqual(['crm_find'])
     expect(file.probe.state).toBe('error')
@@ -216,5 +218,17 @@ describe('appMcpOff', () => {
     expect(await mcp.appMcpOff('crm', null)).toBeNull()
     expect(await mcp.appMcpOff('other', why)).toBe('app "other" is not enabled')
     expect(await mcp.appMcpOff(null, why)).toBeNull()
+  })
+
+  it('refuses every app while the enabled set is not a list of slugs — never a slug found inside a string', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    for (const malformed of ['crm-suite', { crm: true }, ['crm', 7]]) {
+      state.enabled = malformed as unknown as string[]
+      expect(await mcp.appMcpOff('crm')).toBe('could not check that app "crm" is enabled — it serves nothing until that reads')
+    }
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('the apps_enabled setting is not a list of app slugs'))
+    warn.mockRestore()
+    state.enabled = ['crm']
+    expect(await mcp.appMcpOff('crm')).toBeNull()
   })
 })

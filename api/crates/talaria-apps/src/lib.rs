@@ -193,6 +193,17 @@ pub fn app_facts(enabled: &BTreeSet<String>) -> Vec<AppFacts> {
         .collect()
 }
 
+/// The enabled set a sync reads from the stored `apps_enabled` value, by
+/// `talaria_users::enabled_slugs_from` — the rule every app gate reads it
+/// with. A value that is not a list of slugs fails the sync like a failed
+/// query: read leniently, a malformed value was "no app is enabled" and took
+/// every app's server off every agent.
+fn sync_enabled_set(stored: Option<Value>) -> Result<BTreeSet<String>, sqlx::Error> {
+    talaria_users::enabled_slugs_from(stored)
+        .map(|set| set.into_iter().collect())
+        .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+}
+
 async fn sync_app_mcp_rows(
     pg: &PgPool,
     facts: impl FnOnce(&BTreeSet<String>) -> Vec<AppFacts>,
@@ -204,21 +215,14 @@ async fn sync_app_mcp_rows(
         .await?;
     // Read under the lock, and a failed read fails the sync. It must never
     // read as "no app is enabled", which would take every app's server off
-    // every agent.
-    let enabled: BTreeSet<String> =
-        sqlx::query_scalar::<_, Value>("select value from app_settings where key = $1")
-            .bind(ENABLED_KEY)
-            .fetch_optional(&mut *tx)
-            .await?
-            .and_then(|v| {
-                v.as_array().map(|a| {
-                    a.iter()
-                        .filter_map(Value::as_str)
-                        .map(String::from)
-                        .collect()
-                })
-            })
-            .unwrap_or_default();
+    // every agent. A stored value that is not a list of slugs is a failed
+    // read too, by the rule every app gate reads it with
+    // (`talaria_users::enabled_slugs_from`).
+    let stored = sqlx::query_scalar::<_, Value>("select value from app_settings where key = $1")
+        .bind(ENABLED_KEY)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let enabled = sync_enabled_set(stored)?;
     let apps = facts(&enabled);
     let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
         "select id::text, app_slug::text, app_off from mcp_servers where app_slug is not null",
@@ -684,6 +688,27 @@ pub async fn fetch_catalog(pg: &PgPool) -> (Vec<Value>, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sync_reads_the_enabled_set_by_the_gates_rule() {
+        use serde_json::json;
+        let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
+        assert_eq!(sync_enabled_set(None).unwrap(), set(&[]));
+        assert_eq!(sync_enabled_set(Some(Value::Null)).unwrap(), set(&[]));
+        assert_eq!(
+            sync_enabled_set(Some(json!(["crm", "notes"]))).unwrap(),
+            set(&["crm", "notes"])
+        );
+        // Never "no app is enabled": each of these fails the sync, and the
+        // rows stay as they were.
+        for malformed in [json!("crm-suite"), json!({"crm": true}), json!(["crm", 7])] {
+            let err = sync_enabled_set(Some(malformed.clone())).expect_err("malformed");
+            assert!(
+                err.to_string().contains("not a list of app slugs"),
+                "{malformed}: {err}"
+            );
+        }
+    }
 
     /// The shape the TS probe writes (`syncAppMcpCatalog`): the checked
     /// tools and the probe line, copied into the row as they are.
