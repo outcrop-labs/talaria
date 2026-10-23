@@ -233,9 +233,10 @@ export const { p, navigate, isActive, preload, route } = createRouter({
   // match. The same shell and hooks wear it; the same component either way.
   //
   // The catch-alls are bare '*', not '*rest': a named one makes sv-router
-  // decode the rest, and a malformed escape (/x/crm/%zz) throws inside its
-  // matcher and blanks the page. AppSurface reads the rest off the pathname
-  // and the SDK decodes it once, per segment.
+  // decode the rest, and a malformed escape (/x/crm/%zz) makes its matcher
+  // throw a URIError, so the navigation fails. AppSurface reads the rest off
+  // the pathname and the SDK decodes it once, per segment, keeping a
+  // malformed escape as spelled.
   '/x': {
     '/:app': {
       '/': () => import('./routes/app/XAppView.svelte'),
