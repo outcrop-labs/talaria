@@ -77,10 +77,10 @@ record attributes the call to.
 **A handler runs under a deadline: the server's timeout, 120 s unless an admin set another in
 Manage → MCP.** When it passes, `ctx.signal` aborts and the agent is answered at once with a tool
 error that says the call was cut off; when the agent disconnects first, the signal aborts too and
-the call is recorded as cancelled. Pass the signal to anything long — `fetch(url, { signal:
-ctx.signal })`, `runHarness(…, { signal: ctx.signal })` — so the work stops with the call.
-JavaScript cannot stop a handler that ignores it: that one runs to its end, and nothing it returns
-reaches anyone. A tool that can outlast the default needs an admin to raise the server's timeout.
+the call is recorded as cancelled. A call whose agent left before it began never runs the handler.
+Pass the signal to anything long — `fetch(url, { signal: ctx.signal })`, `runHarness(…, { signal:
+ctx.signal })` — so the work stops with the call. JavaScript cannot stop a handler that ignores
+it: that one runs to its end, and nothing it returns reaches anyone. A tool that can outlast the default needs an admin to raise the server's timeout.
 
 ## Results
 
@@ -131,7 +131,9 @@ export default defineAppMcp({
 the schema before the agent sees it. A result the schema refuses, a tool with an `outputSchema`
 that returns no object, or a `toolResult` whose content is not a block MCP defines, is not a tool
 error but the server's: the agent gets JSON-RPC error -32603 naming the tool and what broke, and
-the call record keeps that sentence. An `isError` result is not checked against the schema.
+the call record keeps that sentence. A schema refusal is named by zod's issue codes and their
+counts (`1 × invalid_type, 1 × unrecognized_keys`), never a key, path or value of the result, so
+the record never holds the tool's data. An `isError` result is not checked against the schema.
 
 ## Secrets in arguments
 
@@ -214,10 +216,11 @@ as it was restarts nobody.
 `@talaria/sdk/testing` runs a tool the way the gateway does, with no host: the load checks, the
 `inputSchema` check, the handler under its deadline and signal, and the shaping of its result.
 `callAppTool(mcp, name, args, ctx?)` answers what the agent would receive — `content`,
-`structuredContent`, `isError`, the joined `text`, and whether the call was `cut` — and rejects
-with the gateway's own sentence where the gateway would answer an error (a tool the checks leave
-out, a result that breaks its `outputSchema`). `memoryStore()` is a document store with the
-installed store's interface and answers, in memory.
+`structuredContent`, `isError`, the joined `text`, whether the call was `cut`, and `cutBy`: the
+`"deadline"` or the `"caller"` leaving (your `signal`) — and rejects with the gateway's own
+sentence where the gateway would answer an error (a tool the checks leave out, a result that
+breaks its `outputSchema`). `memoryStore()` is a document store with the installed store's
+interface and answers, in memory.
 
 ```ts
 // apps/<slug>/mcp.test.ts
@@ -240,9 +243,10 @@ test('an empty store finds nothing', async () => {
 ```
 
 The context defaults to a proven agent (`test-agent`), no acting person, a fresh `memoryStore()`
-and the 120 s deadline; set any of `caller`, `actingUserId`, `store`, `timeoutSecs`, `signal`, or
-`tools` (the agent's granted subset) to test the case it decides. Run an app's tests from `ui/`:
-`TALARIA_APP_TESTS=<slug> bunx vitest run` runs `apps/<slug>/**/*.test.ts` and nothing else.
-`@talaria/sdk/testing` is for tests only: an app build does not resolve it.
+and the 120 s deadline. `caller: { proven: false }` is an agent on the org-wide key, with the
+null `id` the gateway gives it. Set any of `caller`, `actingUserId`, `store`, `timeoutSecs`,
+`signal`, or `tools` (the agent's granted subset) to test the case it decides. Run an app's tests
+from `ui/`: `TALARIA_APP_TESTS=<slug> bunx vitest run` runs `apps/<slug>/**/*.test.ts` and nothing
+else. `@talaria/sdk/testing` is for tests only: an app build does not resolve it.
 
 The starter: `bun talaria app new <slug>` writes an `mcp.ts`.

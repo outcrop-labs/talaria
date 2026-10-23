@@ -137,8 +137,9 @@ export const catalogOf = (tools: readonly AppMcpTool[]): Array<ReturnType<typeof
 // door checks a structured result against the tool's `outputSchema`.
 const compiled = new WeakMap<object, z.ZodType | null>()
 
-/** Why `value` does not satisfy `schema`, in zod's words, or null. */
-export function schemaProblem(schema: Record<string, unknown> | undefined, value: unknown): string | null {
+/** The error `value` raises against `schema`, or null when it passes (or the
+ *  schema has no parser). */
+function schemaError(schema: Record<string, unknown> | undefined, value: unknown): z.ZodError | null {
   if (!schema) return null
   let parser = compiled.get(schema)
   if (parser === undefined) {
@@ -151,7 +152,24 @@ export function schemaProblem(schema: Record<string, unknown> | undefined, value
   }
   if (!parser) return null
   const r = parser.safeParse(value)
-  return r.success ? null : z.prettifyError(r.error)
+  return r.success ? null : r.error
+}
+
+/** Why `value` does not satisfy `schema`, in zod's words, or null. zod quotes
+ *  keys and paths, so this is for the agent's own arguments only; a sentence
+ *  the call record keeps uses `issueKinds`. */
+export function schemaProblem(schema: Record<string, unknown> | undefined, value: unknown): string | null {
+  const e = schemaError(schema, value)
+  return e ? z.prettifyError(e) : null
+}
+
+/** The kinds of issue in a refusal, counted: `2 × invalid_type, 1 ×
+ *  unrecognized_keys`. zod's issue codes only — never a key, a path or a
+ *  value, which belong to the data refused. */
+function issueKinds(e: z.ZodError): string {
+  const counts = new Map<string, number>()
+  for (const issue of e.issues) counts.set(issue.code, (counts.get(issue.code) ?? 0) + 1)
+  return [...counts].map(([code, n]) => `${n} × ${code}`).join(', ')
 }
 
 export const argumentProblem = (schema: Record<string, unknown> | undefined, args: Record<string, unknown>): string | null =>
@@ -284,8 +302,9 @@ export function shapeToolAnswer(tool: AppMcpTool, out: unknown): ToolAnswer {
   // An error result need not hold the schema's contract; anything else must.
   if (schema && !isError) {
     if (structured === undefined) return broken(tool, 'declares an outputSchema but returned no structuredContent')
-    const bad = schemaProblem(schema, JSON.parse(structuredText!))
-    if (bad) return broken(tool, `returned structuredContent its outputSchema refuses:\n${bad}`)
+    // Named by issue kind only: zod's own words quote the result's keys.
+    const bad = schemaError(schema, JSON.parse(structuredText!))
+    if (bad) return broken(tool, `returned structuredContent its outputSchema refuses (${issueKinds(bad)})`)
   }
   if (!content?.length && structuredText !== null) content = [{ type: 'text', text: structuredText }]
   return {
@@ -350,6 +369,13 @@ export async function runAppTools(
     serverName: `talaria-app-${slug}`,
     listEntry,
     call: async (tool, args) => {
+      // A caller already gone (it left while access resolved or credentials
+      // were spent) gets no handler run: its side effects would land for
+      // nobody, on a call recorded as cancelled.
+      if (facts.signal?.aborted) {
+        cut = 'caller'
+        return { text: `tool "${tool.name}" was not started: the caller had already disconnected`, isError: true }
+      }
       const bad = argumentProblem(tool.inputSchema, args)
       if (bad) return { text: `invalid arguments for ${tool.name}:\n${bad}`, isError: true }
       const ctl = new AbortController()
@@ -365,8 +391,7 @@ export async function runAppTools(
         ctl.signal.addEventListener('abort', () => reject(new Cut(facts.signal?.aborted ? 'caller' : 'deadline')), { once: true })
       })
       cutting.catch(() => {})
-      if (facts.signal?.aborted) callerLeft()
-      else facts.signal?.addEventListener('abort', callerLeft, { once: true })
+      facts.signal?.addEventListener('abort', callerLeft, { once: true })
       const ctx: AppMcpContext = {
         app: slug,
         agent: facts.caller.name,
@@ -382,7 +407,13 @@ export async function runAppTools(
       } catch (e) {
         if (e instanceof Cut) {
           cut = e.by
-          return { text: `tool "${tool.name}" did not finish within ${secs} s, this server's time limit; it was cut off and may have done part of its work`, isError: true }
+          // The gateway answers a caller cut with no body (499); this one is
+          // read by a test that aborted `callAppTool`'s signal.
+          const text =
+            e.by === 'caller'
+              ? `tool "${tool.name}" was cut off: the caller disconnected before it finished, and it may have done part of its work`
+              : `tool "${tool.name}" did not finish within ${secs} s, this server's time limit; it was cut off and may have done part of its work`
+          return { text, isError: true }
         }
         throw e
       } finally {
