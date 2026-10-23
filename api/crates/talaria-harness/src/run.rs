@@ -843,10 +843,11 @@ pub async fn execute(
     }
 
     // THE ID ACTUALLY CALLED. `model` stays the BASE persona — it is what the
-    // ledger has to name, because `record_usage` prices a row by finding the
-    // agent def and then the alias named by `tier`, and a routed id matches
-    // neither. `routed` is what goes on the wire, what the capability lookup
-    // asks about, and what the result and the run row name.
+    // ledger has to name: the relay books every call on the agent's key under
+    // the agent's model id, and the turn's attribution is recorded under the
+    // same name, so a routed id would match nothing. `routed` is what goes on
+    // the wire, what the capability lookup asks about, and what the result
+    // and the run row name.
     let routed = match &ctx.tier {
         Some(tier) => format!("{model}-{tier}"),
         None => model.clone(),
@@ -1103,9 +1104,11 @@ pub async fn execute(
     let mut kind: TransportKind;
     let mut tool_names: Vec<String>;
 
-    // The ledger row this turn belongs to, resolved ONCE. `agent_model` is
-    // the base persona and `tier` the alias name, because that is the pair
-    // `record_usage` prices from.
+    // The flow this turn's spend belongs to, resolved ONCE. `agent_model` is
+    // the base persona, the name the relay books the agent's calls under;
+    // `tier` is the alias name, kept for the tests that pin it — the relay
+    // prices the model each call actually ran on, so the ledger no longer
+    // reads it.
     let ledger = LedgerAttribution {
         agent_model: model.clone(),
         source: ctx
@@ -3823,11 +3826,11 @@ mod tests {
 
     #[tokio::test]
     async fn calls_the_tier_id_and_attributes_the_spend_to_the_base_agent() {
-        // `record_usage` prices a row by finding the agent def named by
-        // `agent_model`, then the alias named by `tier`. Hand it the routed
-        // id with a null tier and BOTH lookups miss: the row lands on an
-        // agent that does not exist, with no endpoint class, which means no
-        // price. A tier draft becomes free.
+        // The relay books an agent's calls under the agent's model id, and
+        // the turn's attribution must name the same agent or it joins
+        // nothing: hand it the routed id and the tier draft's spend lands
+        // `unattended`, on no ticket and no run. The wire still carries the
+        // routed id.
         let r = world(World {
             replies: replies(&["drafted"]),
             ..Default::default()

@@ -453,6 +453,40 @@ async fn ensure_hermes_env_keys(
     (unkeyed, warnings)
 }
 
+/// Unseal the agent web-search vendor key(s) into the fleet .env as
+/// `TALARIA_WEB_<VAR>` lines (rewritten whole each render, so a cleared or
+/// switched vendor leaves nothing behind) and return the Hermes env names
+/// that now have a value to interpolate. A key that cannot be opened is
+/// named in the warnings and left out: the agent then reports the vendor's
+/// own missing-key error rather than receiving an empty variable.
+async fn ensure_web_search_env(
+    sb: &SecretBox,
+    plan: &talaria_agent_web_search::WebRender,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<&'static str>, String> {
+    let mut delivered: Vec<(&'static str, String)> = Vec::new();
+    for (var, sealed) in &plan.keys {
+        match sb.open(sealed) {
+            Ok(v) if talaria_agent_web_search::fleet_env_value_ok(&v) => delivered.push((*var, v)),
+            Ok(_) => warnings.push(format!(
+                "agent web search: the stored {var} is not a value Talaria can write to the fleet .env — re-enter it on Admin → Search"
+            )),
+            Err(e) => warnings.push(format!(
+                "agent web search: {var} could not be unsealed ({e}) — re-enter it on Admin → Search"
+            )),
+        }
+    }
+    let env_path = talaria_fleet_layout::fleet_env();
+    let current = tokio::fs::read_to_string(&env_path)
+        .await
+        .unwrap_or_default();
+    let next = talaria_agent_web_search::fleet_env_with(&current, &delivered);
+    if next != current {
+        write_fleet_env(&env_path, &next).await?;
+    }
+    Ok(delivered.into_iter().map(|(var, _)| var).collect())
+}
+
 fn unkeyed_warning(slug: &str, why: &str) -> String {
     format!(
         "{slug}: HERMES_KEY_{} could not be minted ({why}) — service left out of the compose file rather than rendered with an open API",
@@ -963,47 +997,10 @@ async fn set_executable(path: &Path) {
     let _ = tokio::fs::set_permissions(path, perms).await;
 }
 
-/// TALARIA_AGENT_DIAL=container (docker/compose.yml deployments): the app runs
-/// ON the fleet network and dials compose service names, so loopback port
-/// publishing is skipped entirely — every install sharing one docker host
-/// allocates identical ports from the same seed data and would collide.
-fn dial_is_container() -> bool {
-    matches!(std::env::var("TALARIA_AGENT_DIAL"), Ok(v) if v == "container")
-}
-
-/// The operator's search endpoint AS AN AGENT CONTAINER CAN REACH IT, or None.
-/// The app's spelling is the app's view: on a host-run dev app a loopback
-/// address means the laptop, which an agent reaches as host.docker.internal
-/// (the chassis declares it); in a containerized stack a loopback address is
-/// the app container itself and reaches nothing from an agent, so it is
-/// withheld rather than rendered wrong. Any other host passes through as-is.
-fn agent_search_url(app_url: &str, container_dial: bool) -> Option<String> {
-    let url = app_url.trim();
-    if url.is_empty() {
-        return None;
-    }
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return Some(url.to_string());
-    };
-    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h, Some(p)),
-        _ => (authority, None),
-    };
-    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "0.0.0.0") {
-        return Some(url.to_string());
-    }
-    if container_dial {
-        return None;
-    }
-    let port = port.map(|p| format!(":{p}")).unwrap_or_default();
-    let path = if path.is_empty() {
-        String::new()
-    } else {
-        format!("/{path}")
-    };
-    Some(format!("{scheme}://host.docker.internal{port}{path}"))
-}
+// The deployment's dial mode, and the operator's search URL as an agent
+// container reaches it, live in talaria-fleet-layout: Admin → Search reads the
+// same rule back, so the panel says what this render does.
+use talaria_fleet_layout::{agent_search_url, dial_is_container};
 
 // ── The render loop ───────────────────────────────────────────────────────────
 
@@ -1081,10 +1078,17 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     let targets = managed_agents(pg).await.map_err(|e| e.to_string())?;
     let agent_search_url =
         agent_search_url(&talaria_search::search_url(pg).await, dial_is_container());
+    // The operator's agent web-search choice (Admin → Search), the same for
+    // every agent in this render: the `web:` keys merged into each config
+    // below, and the vendor key delivered through the fleet .env.
+    let web_search = talaria_agent_web_search::render(
+        &talaria_agent_web_search::read(pg).await,
+        agent_search_url.is_some(),
+    );
     let mut result = RenderResult {
         agents: Vec::new(),
         files: Vec::new(),
-        warnings: Vec::new(),
+        warnings: web_search.warnings.clone(),
     };
 
     // The fleet's default brain is Talaria's own gateway. Best-effort — never
@@ -1132,6 +1136,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     talaria_mcp_service::ensure_mcp_service();
     ensure_fleet_env_key().await?;
     ensure_agent_env_keys(pg, sb, &targets).await?;
+    let web_search_keys = ensure_web_search_env(sb, &web_search, &mut result.warnings).await?;
     // The compose bearer, minted where missing; a slug that cannot be keyed
     // is skipped in the service loop below — named in the warnings, never
     // rendered with an empty `API_SERVER_KEY`.
@@ -1187,6 +1192,24 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     }
 
     let gw_models = talaria_fleet_brain::gateway_model_set(pg).await;
+    // One capability read per gateway model id per render, however many
+    // agents run on it.
+    let mut sight_of: HashMap<String, Option<bool>> = HashMap::new();
+    // The org's image reader, for the agents whose own model cannot see (see
+    // `image_reader`). A role that cannot be rendered is said so, never
+    // rendered as something else.
+    let vision_reader = match talaria_model_roles::resolve_role_model(pg, "vision").await {
+        Ok(Some(role)) => match image_reader(pg, &role, &gw_models, &mut sight_of).await {
+            Ok(m) => Some(m),
+            Err(why) => {
+                result.warnings.push(format!(
+                    "vision role: {why} — agents whose model cannot see get no image reader"
+                ));
+                None
+            }
+        },
+        _ => None,
+    };
     let mut remapped: Vec<String> = Vec::new();
     let ports = ensure_gateway_ports(
         pg,
@@ -1262,7 +1285,19 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         }
 
         // Un-interweave: all model tiers point at Talaria's gateway.
-        let raw = def_raw_config(&version.config);
+        let mut raw = def_raw_config(&version.config);
+        // How this agent reads an image, from what Talaria knows its models
+        // can see — written into the authored config BEFORE the transform,
+        // so an image-reader spec is routed and key-scoped like every other.
+        if let Value::Object(authored) = &mut raw {
+            let sights = agent_sights(pg, authored, &gw_models, &mut sight_of).await;
+            if fleet_vision(authored, &sights, vision_reader.as_deref()) {
+                result.warnings.push(format!(
+                    "{}: its model cannot read images and there is no image reader to give it (the vision role is unset, or could not be rendered) — an image sent to it goes unread",
+                    def.model
+                ));
+            }
+        }
         let routed = talaria_fleet_brain::route_config_through_gateway(&raw, &gw_models, |m| {
             if !remapped.contains(&m) {
                 remapped.push(m);
@@ -1283,6 +1318,9 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             Value::Object(m) => m,
             _ => Map::new(),
         };
+        if brain_managed {
+            fleet_gateway_provider(&mut routed);
+        }
 
         // The rendered MCP block is BUILT, never merged: the toolkit plus
         // what the registry grants this agent, every one a gateway URL. An
@@ -1369,6 +1407,9 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         skills_out.insert("external_dirs".into(), json!(ext_dirs));
         routed.insert("skills".into(), Value::Object(skills_out));
 
+        // The talaria MCP toolkit rides behind Hermes's tool-search bridge.
+        fleet_tool_search(&mut routed);
+
         // The talaria-events plugin (mounted into every agent above) is
         // enabled in config so Hermes registers its hooks. A user's own
         // enabled list is preserved — ours is added, never replaces.
@@ -1392,6 +1433,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         fleet_env_passthrough(&mut routed, &secret_names);
 
         fleet_approvals(&mut routed, def.developer);
+        fleet_nous_off(&mut routed);
         fleet_delegation(&mut routed, def.max_children);
         fleet_disabled_toolsets(&mut routed, &toolset_floor, &def.disabled_toolsets);
         fleet_tool_loop_guardrails(&mut routed);
@@ -1544,9 +1586,24 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         // used to bolt a second `web_search` onto every agent over MCP and run
         // its own SearXNG to answer it; now the agent searches with what it
         // has, and an endpoint the operator configured here reaches it too.
-        // Nothing set → nothing rendered → Hermes resolves its own floor.
+        // Nothing set → nothing rendered → Hermes resolves its own floor. A
+        // URL rendered here also switches that keyless floor off (the `web:`
+        // merge above), unless Admin → Search allowed it. Rendered is not
+        // reachable: nothing probes the URL from an agent.
         if let Some(url) = &agent_search_url {
             env.insert("SEARXNG_URL".into(), json!(url));
+        }
+        // The picked web vendor's key, under the exact name its Hermes
+        // provider reads, interpolated from the fleet .env — the value never
+        // lands in the compose file.
+        for var in &web_search_keys {
+            env.insert(
+                (*var).into(),
+                json!(format!(
+                    "${{{}}}",
+                    talaria_agent_web_search::fleet_env_var(var)
+                )),
+            );
         }
         // A credential git cannot get must FAIL, not wait: with the terminal
         // prompt enabled (git's default), a push to a repo the helper declines
@@ -1960,6 +2017,26 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     Ok(result)
 }
 
+/// The gateway as the agent's `providers.talaria` entry (fleet-brain's
+/// `gateway_provider_entry`), so Hermes stamps every call it makes to the
+/// gateway with the conversation it belongs to and the relay can meter each
+/// one as that flow's. Merged into an authored `providers:` block — the
+/// def's own entries stand; only this key is Talaria's. Rendered only while
+/// the brain is managed: an operator's raw upstream did not ask for a
+/// session header, and Hermes would send it there.
+fn fleet_gateway_provider(routed: &mut Map<String, Value>) {
+    let mut providers = routed
+        .get("providers")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    providers.insert(
+        talaria_fleet_brain::GATEWAY_PROVIDER.into(),
+        talaria_fleet_brain::gateway_provider_entry(),
+    );
+    routed.insert("providers".into(), Value::Object(providers));
+}
+
 /// The agent's raw config, as authored (version.config.raw ?? {}).
 fn def_raw_config(config: &Value) -> Value {
     config
@@ -1968,35 +2045,405 @@ fn def_raw_config(config: &Value) -> Value {
         .unwrap_or_else(|| Value::Object(Map::new()))
 }
 
-/// Fleet agents are driven through the api — an "unattended platform" in
-/// Hermes' approval model — and cron jobs run the same way: nobody is ever
-/// present to approve. The two modes decide what Hermes does when a tool
-/// call needs an approval nobody can give: `approve` waves it through,
-/// `deny` refuses it. Only approval-gated calls are touched either way —
-/// `execute_code`, and a terminal command Hermes' own classifier calls
-/// dangerous (`rm -rf`, a pipe to a shell, a credential read); file, browser,
-/// web, memory and every MCP call are not approval-gated and work under
-/// both. The explicit `deny` is what makes the no-person case a refusal
-/// rather than a prompt that stalls until it times out.
+// ── How an agent reads an image ──────────────────────────────────────────────
+
+/// One model an agent's own loop can answer on — its main model, a tier
+/// (`model_aliases`, which a `<persona>-<tier>` turn runs) or a fallback — as
+/// the gateway transform routes it: the Hermes provider id its spec runs
+/// under, the gateway model id, and whether Talaria knows it can read an
+/// image. `None` is "nobody has measured it", which is not a no.
+#[derive(Debug, Clone, PartialEq)]
+struct ModelSight {
+    provider: String,
+    model: String,
+    main: bool,
+    sees: Option<bool>,
+}
+
+/// The ROUTED specs an agent's loop can run on, main first, each once. Only
+/// a spec the gateway transform stamped a base URL on counts — that is the
+/// mark of a model the agent's key may ask for. The provider is read off the
+/// spec (the transform stamps `custom` today) because, for `custom`, it is
+/// the section Hermes' capability lookup reads `model_overrides` under. A
+/// NAMED provider is canonicalised to `custom` at runtime, and its own name
+/// reaches only `providers.<name>.models.<id>` — so whoever names the
+/// provider must re-check which key Hermes reads, not assume this one.
+fn runnable_specs(routed: &Value) -> Vec<(String, String, bool)> {
+    fn spec(s: &Value) -> Option<(String, String)> {
+        let model = s
+            .get("base_url")
+            .and(s.get("model"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|m| !m.is_empty())?;
+        let provider = s
+            .get("provider")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .unwrap_or("custom");
+        Some((provider.to_string(), model.to_string()))
+    }
+    let main = routed.get("model").into_iter().map(|s| (s, true));
+    let tiers = routed
+        .get("model_aliases")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|a| a.values())
+        .map(|s| (s, false));
+    let fallbacks = routed
+        .get("fallback_providers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|s| (s, false));
+    let mut out: Vec<(String, String, bool)> = Vec::new();
+    for (s, is_main) in main.chain(tiers).chain(fallbacks) {
+        if let Some((provider, model)) = spec(s)
+            && !out.iter().any(|(p, m, _)| *p == provider && *m == model)
+        {
+            out.push((provider, model, is_main));
+        }
+    }
+    out
+}
+
+/// One gateway model id's sight, over every endpoint that may serve it: a
+/// bare id can land on any member of its pool, and which one is not known
+/// until the call. So it SEES only when every member is known to, and it is
+/// BLIND as soon as one member is known not to — pixels sent to a pool with
+/// a blind member reach that member on some turns, while a description reads
+/// the same on all of them. Anything else, an empty pool included, is
+/// unknown.
+fn pool_sees(facts: &[Option<bool>]) -> Option<bool> {
+    if facts.contains(&Some(false)) {
+        return Some(false);
+    }
+    (!facts.is_empty() && facts.iter().all(|f| *f == Some(true))).then_some(true)
+}
+
+/// Talaria's own `vision` facts for a gateway model id — probe, declared,
+/// catalog or learned, whichever stands (`talaria_capability`) — per endpoint
+/// of the id's routing pool, folded by [`pool_sees`]. A failed read is
+/// unknown, never blind.
+async fn model_sees(pg: &PgPool, model: &str) -> Option<bool> {
+    let routing = talaria_gateway::registry::routing_for(pg, model)
+        .await
+        .ok()?;
+    let mut facts = Vec::with_capacity(routing.endpoints.len());
+    for ep in &routing.endpoints {
+        let key = talaria_capability::capability_key(&ep.name, &routing.upstream_model);
+        let known = talaria_capability::get_capabilities(pg, &key).await;
+        facts.push(known.get("vision").map(|f| f.value));
+    }
+    pool_sees(&facts)
+}
+
+/// [`model_sees`], read once per gateway model id per render however many
+/// agents (and the image reader) ask about it.
+async fn cached_sight(
+    pg: &PgPool,
+    model: &str,
+    seen: &mut HashMap<String, Option<bool>>,
+) -> Option<bool> {
+    if let Some(known) = seen.get(model) {
+        return *known;
+    }
+    let known = model_sees(pg, model).await;
+    seen.insert(model.to_string(), known);
+    known
+}
+
+/// THE ID A RENDERED IMAGE READER ASKS THE GATEWAY FOR, from the `vision`
+/// role. A rendered spec reaches the gateway by a bare model id — that is
+/// what the gateway transform keeps (any id it does not serve is swapped for
+/// the fleet fallback, quite possibly a blind model) and what the agent's key
+/// is scoped to. The role, though, is usually assigned endpoint-qualified
+/// (`<endpoint>/<model>`, the Models page's own spelling whenever one
+/// endpoint serves the model). So a qualified role renders as its bare model
+/// when the bare id cannot land anywhere the admin did not mean: no other
+/// endpoint serves it, or every endpoint that does is known to read images.
+/// A role assigned by its bare id is the admin's own pick of the pool, and
+/// stands unless one of its endpoints is known NOT to read images — the same
+/// hazard [`pool_sees`] calls blind. Anything else is refused with the
+/// reason, never rendered as a guess.
+async fn image_reader(
+    pg: &PgPool,
+    role: &str,
+    models: &talaria_fleet_brain::GatewayModels,
+    seen: &mut HashMap<String, Option<bool>>,
+) -> Result<String, String> {
+    if models.served.contains(role) {
+        return match cached_sight(pg, role, seen).await {
+            Some(false) => Err(format!(
+                "\"{role}\" is served by an endpoint known not to read images"
+            )),
+            _ => Ok(role.to_string()),
+        };
+    }
+    let pinned = talaria_gateway::registry::routing_for(pg, role)
+        .await
+        .map_err(|e| format!("\"{role}\" could not be routed ({e})"))?;
+    let bare = pinned.upstream_model;
+    if pinned.endpoints.len() != 1 || bare == role || !models.served.contains(&bare) {
+        return Err(format!("\"{role}\" is not served by the gateway"));
+    }
+    let pool = talaria_gateway::registry::routing_for(pg, &bare)
+        .await
+        .map(|r| r.endpoints.len())
+        .unwrap_or(0);
+    let sees = cached_sight(pg, &bare, seen).await;
+    if pool == 1 || sees == Some(true) {
+        Ok(bare)
+    } else {
+        Err(format!(
+            "\"{role}\" pins one endpoint, but agents reach a model by its bare id and \"{bare}\" is also served by endpoints not known to read images"
+        ))
+    }
+}
+
+/// Every model the authored config will run on once routed, with its sight.
+/// The routing here is a dry run of the transform the render makes next (no
+/// warnings: the real pass names its own remaps), so a model the gateway does
+/// not serve is judged as the fallback it will actually run as.
+async fn agent_sights(
+    pg: &PgPool,
+    authored: &Map<String, Value>,
+    models: &talaria_fleet_brain::GatewayModels,
+    seen: &mut HashMap<String, Option<bool>>,
+) -> Vec<ModelSight> {
+    let routed = talaria_fleet_brain::route_config_through_gateway(
+        &Value::Object(authored.clone()),
+        models,
+        |_| {},
+    );
+    let mut out = Vec::new();
+    for (provider, model, main) in runnable_specs(&routed) {
+        let sees = cached_sight(pg, &model, seen).await;
+        out.push(ModelSight {
+            provider,
+            model,
+            main,
+            sees,
+        });
+    }
+    out
+}
+
+/// A block of the authored config as an owned map, empty when absent.
+fn block_of(v: Option<&Value>) -> Map<String, Value> {
+    v.and_then(Value::as_object).cloned().unwrap_or_default()
+}
+
+/// Hermes' own test for an EXPLICIT `auxiliary.vision` backend
+/// (`agent/image_routing.py`'s `_explicit_aux_vision_override`): a provider
+/// other than `auto`, a model, or a base URL.
+fn explicit_vision_backend(vision: &Map<String, Value>) -> bool {
+    let text = |k: &str| {
+        vision
+            .get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string()
+    };
+    !matches!(text("provider").to_lowercase().as_str(), "" | "auto")
+        || !text("model").is_empty()
+        || !text("base_url").is_empty()
+}
+
+/// HOW AN AGENT READS AN IMAGE, from Talaria's own capability facts. Every
+/// fleet agent runs `provider: custom` with a gateway model id, which Hermes'
+/// catalog (models.dev) has never heard of — so on its own Hermes treats
+/// every agent model as of unknown sight, describes each attached image with
+/// the agent's own model, and has no describer at all once it learns that
+/// model is blind (its auxiliary auto chain tries OpenRouter, Nous and
+/// DeepInfra next, and no Talaria container carries a key for any of them).
+/// Three renders, in Hermes' own keys:
 ///
-/// A Developer Agent gets `approve`: the sandbox is the point, the
-/// container is its boundary, and the harness runs code all day. Every other
-/// agent gets `deny`: with the closed toolset default it has no shell to
-/// begin with, and the manager who opens `terminal` for it gets ordinary
-/// commands and a refused dangerous one, which is the confirmation step
-/// Talaria's chain otherwise never has. The one thing `deny` closes that an
-/// operator might want is `execute_code` on a non-Developer agent — that is
-/// the Developer switch's job, and the toolset editor says so.
+/// - `model_overrides.<provider>.<model>.supports_vision` for each model the
+///   loop runs on whose sight Talaria knows. Per model rather than one
+///   `model.supports_vision`, which Hermes applies to every model the agent
+///   runs (a tier or a fallback that sees differently included). It is the
+///   answer Hermes' capability lookup gives, which its `auto` image mode
+///   decides by. Unknown renders nothing.
+/// - `auxiliary.vision` — the describer — set to the org's `vision` role
+///   model, when one is served and some model of this agent is not known to
+///   see. Written as a bare `{provider, model}` spec: the gateway transform
+///   that runs next fills the gateway URL and key, and scopes the agent's
+///   key to the model. Hermes calls it to describe a chat image in `text`
+///   mode, and for `vision_analyze`, which is how a blind agent reads an
+///   image a tool handed it as a file path.
+/// - `agent.image_input_mode`: `native` when the main model is known to see
+///   (an explicit describer would otherwise force every image through it —
+///   Hermes' `auto` treats one as the user's chosen image route), `text`
+///   when the describer was rendered for a main model that is not.
+///
+/// HERMES HAS ONE IMAGE MODE PER AGENT, not one per model: a configured mode
+/// is returned before any per-model lookup (`decide_image_input_mode`). So
+/// under a seeing main model, a turn on a tier or a fallback that cannot see
+/// is sent the attached image as pixels too — Hermes strips them after a
+/// rejection it recognises, or the call fails, and either way that turn does
+/// not read the image. The describer rendered for that model still serves
+/// its `vision_analyze`. The other choice, `text` whenever any model of the
+/// agent is not known to see, would put every image the seeing main model
+/// gets through a describer to cover an operator's own tier or fallback pick.
+///
+/// A def that authored any of these keeps its own: its `supports_vision` for
+/// a model, an explicit vision backend of its own, an `image_input_mode`.
+/// An agent with no main model spec is left alone — there is no model to
+/// judge. Returns whether the main model is known to be blind with no reader
+/// to give it, which the render warns about.
+fn fleet_vision(
+    authored: &mut Map<String, Value>,
+    sights: &[ModelSight],
+    reader: Option<&str>,
+) -> bool {
+    let Some(main) = sights.iter().find(|s| s.main) else {
+        return false;
+    };
+
+    if sights.iter().any(|s| s.sees.is_some()) {
+        let mut overrides = block_of(authored.get("model_overrides"));
+        for s in sights {
+            let Some(sees) = s.sees else { continue };
+            let mut section = block_of(overrides.get(&s.provider));
+            let mut entry = block_of(section.get(&s.model));
+            entry
+                .entry("supports_vision")
+                .or_insert_with(|| json!(sees));
+            section.insert(s.model.clone(), Value::Object(entry));
+            overrides.insert(s.provider.clone(), Value::Object(section));
+        }
+        authored.insert("model_overrides".into(), Value::Object(overrides));
+    }
+
+    let mut aux = block_of(authored.get("auxiliary"));
+    let mut vision = block_of(aux.get("vision"));
+    let own_backend = explicit_vision_backend(&vision);
+    let needs_reader = sights.iter().any(|s| s.sees != Some(true));
+    let reader = reader.filter(|_| needs_reader && !own_backend);
+    if let Some(model) = reader {
+        vision.insert("provider".into(), json!("custom"));
+        vision.insert("model".into(), json!(model));
+        aux.insert("vision".into(), Value::Object(vision));
+        authored.insert("auxiliary".into(), Value::Object(aux));
+    }
+
+    let mode = match main.sees {
+        Some(true) => Some("native"),
+        _ if reader.is_some() => Some("text"),
+        _ => None,
+    };
+    let mut agent = block_of(authored.get("agent"));
+    if let Some(mode) = mode
+        && !agent.contains_key("image_input_mode")
+    {
+        agent.insert("image_input_mode".into(), json!(mode));
+        authored.insert("agent".into(), Value::Object(agent));
+    }
+
+    main.sees == Some(false) && reader.is_none() && !own_backend
+}
+
+/// How long Hermes holds a flagged call open waiting for an answer. Talaria
+/// refuses every approval request on a turn it drives within seconds
+/// (talaria-gateway's `fleet_approvals`); this is the backstop for a
+/// request nobody is left to answer — the stream that carried it dropped, the
+/// api restarted mid-turn. Hermes refuses the call when it runs out, and the
+/// session's next turn queues behind the wait, so a minute rather than
+/// Hermes' own five.
+const APPROVAL_TIMEOUT_SECS: u64 = 60;
+
+/// The approval policy, written whole every render: a def cannot author its
+/// way around any of these keys, and every other key in its `approvals` block
+/// is left alone.
+///
+/// Hermes gates two kinds of call behind an approval: `execute_code`, and a
+/// terminal command its own classifier calls dangerous (`rm -rf`, a pipe to a
+/// shell, a credential read). File, browser, web, memory and every MCP call
+/// are not approval-gated. WHO ANSWERS depends on how the turn reached the
+/// agent:
+///
+/// - A cron, or an api turn with no stream attached, has nobody to ask, so
+///   `cron_mode` / `unattended_mode` decide on the spot: `approve` waves the
+///   call through, `deny` refuses it.
+/// - A STREAMED turn (every chat, channel reply and work session Talaria
+///   drives) registers an approval notifier, and Hermes treats that turn as
+///   attended. A flagged terminal command goes to `mode` first (`smart` by
+///   default: an LLM guardian that can approve what this agent's policy
+///   refuses), then to an `approval.request` frame on the stream, and waits
+///   `timeout` for an answer. `execute_code` still resolves from
+///   `unattended_mode` there.
+///
+/// So all four keys are pinned, to one policy per agent:
+///
+/// - A Developer Agent gets `mode: off` and `approve`: the sandbox is the
+///   point, the container is its boundary, and the harness runs code all
+///   day. Flagged commands run without a prompt on every path; Hermes'
+///   hardline floor and an authored `approvals.deny` list still hold. So do
+///   the gates Hermes never lets anything auto-approve (a write to a
+///   project's AGENTS.md / CLAUDE.md / SOUL.md, an untrusted MCP server's
+///   write tool, a saved card fill): they still ask, and Talaria's door
+///   answers `deny`, as it does for every request.
+/// - Every other agent gets `mode: manual` and `deny`. No guardian, so no
+///   model ever approves a command. A streamed turn's request reaches
+///   Talaria's door, which answers `deny` and records it; an unattended path
+///   refuses at once. With the closed toolset default such an agent has no
+///   shell to begin with, and the manager who opens `terminal` for it gets
+///   ordinary commands and a refused dangerous one. The one thing `deny`
+///   closes that an operator might want is `execute_code` on a non-Developer
+///   agent. That is the Developer switch's job, and the toolset editor says
+///   so.
 fn fleet_approvals(routed: &mut Map<String, Value>, developer: bool) {
     let mut cfg = routed
         .get("approvals")
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let mode = if developer { "approve" } else { "deny" };
-    cfg.insert("unattended_mode".into(), json!(mode));
-    cfg.insert("cron_mode".into(), json!(mode));
+    let (mode, unattended) = if developer {
+        ("off", "approve")
+    } else {
+        ("manual", "deny")
+    };
+    cfg.insert("mode".into(), json!(mode));
+    cfg.insert("timeout".into(), json!(APPROVAL_TIMEOUT_SECS));
+    cfg.insert("unattended_mode".into(), json!(unattended));
+    cfg.insert("cron_mode".into(), json!(unattended));
     routed.insert("approvals".into(), Value::Object(cfg));
+}
+
+/// Nous-hosted connectors and the Nous free-tier identity, off on every agent.
+/// Hermes ships both on: `tools.connectors.enabled` puts `manage_connections`
+/// (part of the api-server toolset) in front of the model, and `nous.guest`
+/// lets the container mint an anonymous Nous account on the first connector
+/// action. Both are routes around Talaria. A connector reaches a third-party
+/// account outside the MCP gateway's allowlist, credential custody and audit,
+/// and a guest identity is an account at a provider nobody here chose.
+/// Operators reach SaaS through the MCP registry and models through /models,
+/// so both keys are pinned off; the rest of each block stays the def's.
+fn fleet_nous_off(routed: &mut Map<String, Value>) {
+    let mut tools = routed
+        .get("tools")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut connectors = tools
+        .get("connectors")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    connectors.insert("enabled".into(), json!(false));
+    tools.insert("connectors".into(), Value::Object(connectors));
+    routed.insert("tools".into(), Value::Object(tools));
+
+    let mut nous = routed
+        .get("nous")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    nous.insert("guest".into(), json!(false));
+    routed.insert("nous".into(), Value::Object(nous));
 }
 
 /// How many subagents this agent may run at once — the def's `max_children`,
@@ -2029,9 +2476,8 @@ fn fleet_delegation(routed: &mut Map<String, Value>, max_children: i32) {
 ///
 /// `floor` is what Talaria suppresses on every agent — the mandatory pair
 /// plus the org's own floor (`talaria_agent_defs::mandatory_disabled`);
-/// `def_disabled` is the operator's own list (agent_defs.disabled_toolsets) —
-/// `browser` above all, because a browsing agent costs a Chromium install on
-/// every roll. THE ORDER IS THE MERGE'S MEANING: the floor Talaria always
+/// `def_disabled` is the operator's own list (agent_defs.disabled_toolsets).
+/// THE ORDER IS THE MERGE'S MEANING: the floor Talaria always
 /// suppresses, then what the operator closed, then whatever the authored
 /// config already carried. A reader of the rendered config.yaml can tell the
 /// three apart by where they sit, and a re-render of the same three lists
@@ -2064,6 +2510,47 @@ fn fleet_disabled_toolsets(
     }
     agent.insert("disabled_toolsets".into(), json!(disabled));
     routed.insert("agent".into(), Value::Object(agent));
+}
+
+/// Hermes's progressive tool disclosure, pinned on. Every agent carries the
+/// `talaria` MCP server, and Hermes always treats an MCP tool as deferrable,
+/// so with the bridge on the toolkit's schemas stay out of the model-facing
+/// tool array: a turn carries `tool_search` / `tool_describe` / `tool_call`
+/// and a short name-and-description listing, and the agent pulls a schema
+/// when it needs one — which is what the talaria-toolkit skill teaches.
+/// Hermes's own default is `auto`, an alias of `on` today that its config
+/// documents as reserved for a future budget-gated mode, so the render says
+/// `on` rather than lean on a default whose meaning is announced to change.
+/// A def that authored its own `enabled` keeps it — an operator's explicit
+/// call — and every other key in the block (`defer`, `threshold_pct`, …) is
+/// left alone the same way. So does a def that wrote the block in a shape
+/// other than a map: Hermes reads the legacy `tool_search: false` as off
+/// (`ToolSearchConfig.from_raw`), and rewriting it to a map would flip that
+/// explicit off to on. A null at either level is nothing authored.
+fn fleet_tool_search(routed: &mut Map<String, Value>) {
+    let tools = routed
+        .entry("tools")
+        .and_modify(|v| {
+            if v.is_null() {
+                *v = json!({});
+            }
+        })
+        .or_insert_with(|| json!({}));
+    let Some(tools) = tools.as_object_mut() else {
+        return;
+    };
+    let search = tools
+        .entry("tool_search")
+        .and_modify(|v| {
+            if v.is_null() {
+                *v = json!({});
+            }
+        })
+        .or_insert_with(|| json!({}));
+    let Some(search) = search.as_object_mut() else {
+        return;
+    };
+    search.entry("enabled").or_insert_with(|| json!("on"));
 }
 
 /// Hermes' own tool-loop guard, ARMED. Hermes counts identical calls (tool,
@@ -2415,14 +2902,6 @@ fn fleet_reasoning(routed: &mut Map<String, Value>, targets: &[TargetEffort]) {
     }
 }
 
-/// Whether this agent still holds Hermes' browser toolset — the switch behind
-/// the browser setup the post-health sites run (talaria-fleet-docker's
-/// `install_browser`). Absence from the disabled list is the "yes": every
-/// built-in toolset is on until something names it.
-pub fn browser_enabled(def: &RenderDef) -> bool {
-    !def.disabled_toolsets.iter().any(|name| name == "browser")
-}
-
 /// s6 cont-init path. Lexicographic: after Hermes's `02-reconcile-profiles`,
 /// before user services start.
 const HARNESS_OWN_HOOK: &str = "/etc/cont-init.d/03-talaria-workbench-own";
@@ -2700,6 +3179,7 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn a_new_agent_port_continues_past_the_highest_and_never_starts_below_the_base() {
@@ -2714,32 +3194,6 @@ mod tests {
         // worktree) does not pull the next agent down onto main's ports.
         assert_eq!(next_gateway_port(Some(8771), 20300), 20300);
     }
-
-    #[test]
-    fn an_operators_search_url_reaches_an_agent_only_where_it_can() {
-        // Nothing configured: nothing rendered — Hermes resolves its own floor.
-        assert_eq!(agent_search_url("", false), None);
-        assert_eq!(agent_search_url("   ", true), None);
-        // A real host passes through untouched, container or not.
-        assert_eq!(
-            agent_search_url("https://search.corp.example/", true).as_deref(),
-            Some("https://search.corp.example/")
-        );
-        // Loopback on a host-run app is the laptop, which an agent spells
-        // host.docker.internal; the port and any path survive.
-        assert_eq!(
-            agent_search_url("http://127.0.0.1:8888", false).as_deref(),
-            Some("http://host.docker.internal:8888")
-        );
-        assert_eq!(
-            agent_search_url("http://localhost:8080/searx", false).as_deref(),
-            Some("http://host.docker.internal:8080/searx")
-        );
-        // Loopback in a containerized stack is the app container itself —
-        // withheld, never rendered wrong.
-        assert_eq!(agent_search_url("http://127.0.0.1:8888", true), None);
-    }
-    use serde_json::json;
 
     const CHASSIS: &str = "\
 service:
@@ -3039,41 +3493,134 @@ service:
 
     #[test]
     fn fleet_approvals_follows_the_developer_switch_and_preserves_the_rest() {
-        // No authored approvals block, an ordinary agent: both modes land as
-        // deny — nobody is present to approve, so the answer is a refusal,
-        // not a stalled prompt — and nothing else appears.
+        // No authored approvals block, an ordinary agent: no guardian
+        // (`manual`), and both unattended modes deny, so a flagged command is
+        // refused on every path; the streamed path's request waits a minute
+        // at most for Talaria's answer.
         let mut routed = Map::new();
         routed.insert("model".into(), json!("x"));
         fleet_approvals(&mut routed, false);
         assert_eq!(
             routed.get("approvals"),
-            Some(&json!({ "unattended_mode": "deny", "cron_mode": "deny" }))
+            Some(&json!({
+                "mode": "manual", "timeout": 60,
+                "unattended_mode": "deny", "cron_mode": "deny"
+            }))
         );
 
-        // A Developer Agent gets approve: the sandbox runs code all day.
+        // A Developer Agent gets approvals off and approve: the sandbox runs
+        // code all day, streamed turn or not.
         let mut dev = Map::new();
         dev.insert("model".into(), json!("x"));
         fleet_approvals(&mut dev, true);
         assert_eq!(
             dev.get("approvals"),
-            Some(&json!({ "unattended_mode": "approve", "cron_mode": "approve" }))
+            Some(&json!({
+                "mode": "off", "timeout": 60,
+                "unattended_mode": "approve", "cron_mode": "approve"
+            }))
         );
 
-        // An authored block keeps its other keys; the two modes are
-        // overridden wherever a def tried to set them itself — a def cannot
-        // author its own way to approve.
+        // An authored block keeps its other keys; the four policy keys are
+        // overridden wherever a def tried to set them itself. A def cannot
+        // author its own way to approve, and in particular cannot bring back
+        // the `smart` guardian that approves what `deny` refuses.
         let mut authored = Map::new();
         authored.insert(
             "approvals".into(),
-            json!({ "mode": "smart", "timeout": 300, "unattended_mode": "approve" }),
+            json!({
+                "mode": "smart", "timeout": 300, "unattended_mode": "approve",
+                "deny": ["git push --force*"]
+            }),
         );
         fleet_approvals(&mut authored, false);
         assert_eq!(
             authored.get("approvals"),
             Some(&json!({
-                "mode": "smart", "timeout": 300,
-                "unattended_mode": "deny", "cron_mode": "deny"
+                "mode": "manual", "timeout": 60,
+                "unattended_mode": "deny", "cron_mode": "deny",
+                "deny": ["git push --force*"]
             }))
+        );
+    }
+
+    #[test]
+    fn the_gateway_provider_joins_an_authored_providers_block() {
+        let entry = json!({
+            "api": "${LLM_BASE_URL}",
+            "key_env": "LLM_API_KEY",
+            "session_affinity_header": "x-talaria-session",
+            "discover_models": false,
+        });
+        let mut bare = Map::new();
+        fleet_gateway_provider(&mut bare);
+        assert_eq!(bare.get("providers"), Some(&json!({ "talaria": entry })));
+
+        // A def's own entries stand; a `talaria` it authored is replaced —
+        // the gateway entry and its session header are Talaria's.
+        let mut authored = Map::new();
+        authored.insert(
+            "providers".into(),
+            json!({
+                "lab": { "api": "http://lab:4000/v1" },
+                "talaria": { "api": "http://elsewhere/v1" },
+            }),
+        );
+        fleet_gateway_provider(&mut authored);
+        assert_eq!(
+            authored.get("providers"),
+            Some(&json!({ "lab": { "api": "http://lab:4000/v1" }, "talaria": entry }))
+        );
+    }
+
+    #[test]
+    fn approvals_off_is_quoted_so_a_yaml_one_point_one_reader_keeps_the_string() {
+        // A bare `off` is a boolean in YAML 1.1. Hermes happens to read a
+        // false `mode` as "off" too, but the rendered file should say what it
+        // means rather than lean on that.
+        let mut dev = Map::new();
+        fleet_approvals(&mut dev, true);
+        let text = yaml11_emit(&Value::Object(dev));
+        assert!(text.contains("mode: 'off'"), "{text}");
+        assert!(text.contains("unattended_mode: approve"), "{text}");
+    }
+
+    #[test]
+    fn nous_connectors_and_guest_identity_are_pinned_off_and_nothing_else_moves() {
+        // Nothing authored: both blocks appear with the one key each.
+        let mut bare = Map::new();
+        fleet_nous_off(&mut bare);
+        assert_eq!(
+            bare.get("tools"),
+            Some(&json!({ "connectors": { "enabled": false } }))
+        );
+        assert_eq!(bare.get("nous"), Some(&json!({ "guest": false })));
+
+        // A def that turned them on is overridden; its other keys in both
+        // blocks, and a sibling block under `tools`, survive.
+        let mut authored = Map::new();
+        authored.insert(
+            "tools".into(),
+            json!({
+                "connectors": { "enabled": true, "extra": 1 },
+                "tool_search": { "enabled": true }
+            }),
+        );
+        authored.insert(
+            "nous".into(),
+            json!({ "guest": true, "anthropic_wire": "chat" }),
+        );
+        fleet_nous_off(&mut authored);
+        assert_eq!(
+            authored.get("tools"),
+            Some(&json!({
+                "connectors": { "enabled": false, "extra": 1 },
+                "tool_search": { "enabled": true }
+            }))
+        );
+        assert_eq!(
+            authored.get("nous"),
+            Some(&json!({ "guest": false, "anthropic_wire": "chat" }))
         );
     }
 
@@ -3110,6 +3657,76 @@ service:
         );
         // Idempotent.
         assert_eq!(strip_stale_agent_lines(&out, &live), out);
+    }
+
+    #[test]
+    fn fleet_tool_search_pins_the_bridge_on_and_keeps_what_a_def_authored() {
+        // Nothing authored: the bridge is pinned on, and the value is the
+        // STRING the YAML 1.1 emitter quotes — a bare `on` would reach
+        // PyYAML as a boolean.
+        let mut routed = Map::new();
+        fleet_tool_search(&mut routed);
+        assert_eq!(
+            routed.get("tools"),
+            Some(&json!({ "tool_search": { "enabled": "on" } }))
+        );
+        assert!(yaml11_emit(&Value::Object(routed)).contains("enabled: 'on'"));
+
+        // A def's own block: its `enabled` stands, its other keys stay, and
+        // a sibling under `tools` (another track's switch) is untouched.
+        let mut authored = Map::new();
+        authored.insert(
+            "tools".into(),
+            json!({
+                "tool_search": { "enabled": "off", "threshold_pct": 8 },
+                "connectors": { "enabled": false }
+            }),
+        );
+        fleet_tool_search(&mut authored);
+        assert_eq!(
+            authored.get("tools"),
+            Some(&json!({
+                "tool_search": { "enabled": "off", "threshold_pct": 8 },
+                "connectors": { "enabled": false }
+            }))
+        );
+
+        // A block with other keys but no `enabled` gets the pin beside them.
+        let mut partial = Map::new();
+        partial.insert("tools".into(), json!({ "tool_search": { "defer": [] } }));
+        fleet_tool_search(&mut partial);
+        assert_eq!(
+            partial.get("tools"),
+            Some(&json!({ "tool_search": { "defer": [], "enabled": "on" } }))
+        );
+
+        // The legacy bool form is a def's explicit call too: Hermes reads
+        // `tool_search: false` as off, so the render must not rewrite it
+        // into a map that says on. Same for a `tools` that is not a map.
+        for authored in [
+            json!({ "tool_search": false, "connectors": { "enabled": false } }),
+            json!({ "tool_search": true }),
+        ] {
+            let mut legacy = Map::new();
+            legacy.insert("tools".into(), authored.clone());
+            fleet_tool_search(&mut legacy);
+            assert_eq!(legacy.get("tools"), Some(&authored));
+        }
+        let mut odd = Map::new();
+        odd.insert("tools".into(), json!(["not", "a", "map"]));
+        fleet_tool_search(&mut odd);
+        assert_eq!(odd.get("tools"), Some(&json!(["not", "a", "map"])));
+
+        // A null at either level is nothing authored, and gets the pin.
+        for authored in [json!(null), json!({ "tool_search": null })] {
+            let mut empty = Map::new();
+            empty.insert("tools".into(), authored);
+            fleet_tool_search(&mut empty);
+            assert_eq!(
+                empty.get("tools"),
+                Some(&json!({ "tool_search": { "enabled": "on" } }))
+            );
+        }
     }
 
     #[test]
@@ -3428,8 +4045,7 @@ service:
         );
 
         // The operator's list sits between the two: after the floor, before
-        // the authored names, deduped against both. `browser` here is the
-        // switch that also skips the Chromium install.
+        // the authored names, deduped against both.
         let mut closed = Map::new();
         closed.insert(
             "agent".into(),
@@ -3477,25 +4093,6 @@ service:
             org.get("agent"),
             Some(&json!({ "disabled_toolsets": ["todo", "clarify", "terminal", "web"] }))
         );
-
-        // The switch reads the def's list, not the rendered merge: `browser`
-        // closed is the one answer the install site acts on.
-        let def = |disabled: &[&str]| RenderDef {
-            id: "d1".into(),
-            slug: "analyst".into(),
-            department: "research".into(),
-            model: "analyst-research".into(),
-            display_name: "Analyst".into(),
-            role: None,
-            source: "created".into(),
-            active_slot: None,
-            developer: false,
-            max_children: 3,
-            disabled_toolsets: disabled.iter().map(|s| s.to_string()).collect(),
-        };
-        assert!(browser_enabled(&def(&[])), "every toolset is on by default");
-        assert!(browser_enabled(&def(&["memory", "web"])));
-        assert!(!browser_enabled(&def(&["browser"])));
     }
 
     /// The two-name floor a fresh install has — what the renderer passes when
@@ -3774,6 +4371,282 @@ empty_list: []
         });
         assert_eq!(plan.next, current);
         assert!(plan.minted.is_empty() && plan.unkeyed.is_empty() && plan.warnings.is_empty());
+    }
+
+    // ── how an agent reads an image ─────────────────────────────────────────
+
+    fn sight(model: &str, main: bool, sees: Option<bool>) -> ModelSight {
+        ModelSight {
+            provider: "custom".into(),
+            model: model.into(),
+            main,
+            sees,
+        }
+    }
+
+    fn authored_with_main() -> Map<String, Value> {
+        json!({ "model": { "provider": "custom", "model": "text-only" } })
+            .as_object()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn runnable_specs_are_main_tiers_and_fallbacks_each_once() {
+        let routed = json!({
+            "model": { "model": "main-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+            "model_aliases": {
+                "deep": { "model": "deep-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+                "same": { "model": "main-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+                // Never routed: no base URL, so not a model the key may ask for.
+                "loose": { "model": "loose-m" },
+            },
+            "fallback_providers": [
+                { "model": "fb-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+            ],
+            // A describer or a compression model is not one the loop answers on.
+            "auxiliary": { "compression": { "model": "aux-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" } },
+        });
+        assert_eq!(
+            runnable_specs(&routed),
+            vec![
+                ("custom".to_string(), "main-m".to_string(), true),
+                ("custom".to_string(), "deep-m".to_string(), false),
+                ("custom".to_string(), "fb-m".to_string(), false),
+            ]
+        );
+        assert!(runnable_specs(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn a_pool_sees_only_when_every_member_does_and_one_blind_member_blinds_it() {
+        assert_eq!(pool_sees(&[Some(true), Some(true)]), Some(true));
+        assert_eq!(pool_sees(&[Some(true), None]), None);
+        assert_eq!(pool_sees(&[Some(true), Some(false)]), Some(false));
+        assert_eq!(pool_sees(&[None, Some(false)]), Some(false));
+        assert_eq!(pool_sees(&[None]), None);
+        // Nothing serves it: nobody knows anything, which is not a no.
+        assert_eq!(pool_sees(&[]), None);
+    }
+
+    #[test]
+    fn a_blind_agent_gets_the_vision_role_as_its_describer() {
+        let mut authored = authored_with_main();
+        let blind = fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            Some("seer"),
+        );
+        assert!(!blind, "a reader was rendered — nothing to warn about");
+        assert_eq!(
+            authored["model_overrides"],
+            json!({ "custom": { "text-only": { "supports_vision": false } } })
+        );
+        assert_eq!(
+            authored["auxiliary"],
+            json!({ "vision": { "provider": "custom", "model": "seer" } })
+        );
+        assert_eq!(authored["agent"], json!({ "image_input_mode": "text" }));
+    }
+
+    #[test]
+    fn a_seeing_agent_keeps_native_pixels_and_gets_no_describer() {
+        let mut authored = authored_with_main();
+        fleet_vision(
+            &mut authored,
+            &[
+                sight("text-only", true, Some(true)),
+                sight("tier-m", false, Some(true)),
+            ],
+            Some("seer"),
+        );
+        assert_eq!(
+            authored["model_overrides"],
+            json!({ "custom": {
+                "text-only": { "supports_vision": true },
+                "tier-m": { "supports_vision": true },
+            } })
+        );
+        assert!(authored.get("auxiliary").is_none(), "{authored:?}");
+        assert_eq!(authored["agent"], json!({ "image_input_mode": "native" }));
+    }
+
+    #[test]
+    fn a_seeing_main_with_a_blind_tier_gets_the_describer_and_stays_native() {
+        let mut authored = authored_with_main();
+        fleet_vision(
+            &mut authored,
+            &[
+                sight("text-only", true, Some(true)),
+                sight("tier-m", false, Some(false)),
+            ],
+            Some("seer"),
+        );
+        assert_eq!(
+            authored["model_overrides"]["custom"]["tier-m"],
+            json!({ "supports_vision": false })
+        );
+        // The describer is there for the tier's `vision_analyze`.
+        assert_eq!(authored["auxiliary"]["vision"]["model"], json!("seer"));
+        // An explicit describer would turn Hermes' `auto` into "describe
+        // everything" — the seeing main model is pinned to pixels. The mode
+        // is per agent, so a turn on the blind tier gets pixels too and does
+        // not read an attached image (see `fleet_vision`).
+        assert_eq!(authored["agent"]["image_input_mode"], json!("native"));
+    }
+
+    #[test]
+    fn an_unmeasured_main_model_gets_the_describer_and_no_claim_about_its_sight() {
+        let mut authored = authored_with_main();
+        let blind = fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, None)],
+            Some("seer"),
+        );
+        assert!(!blind);
+        // Unknown is not false: no supports_vision either way.
+        assert!(authored.get("model_overrides").is_none(), "{authored:?}");
+        assert_eq!(authored["auxiliary"]["vision"]["model"], json!("seer"));
+        assert_eq!(authored["agent"]["image_input_mode"], json!("text"));
+
+        // And with no vision role, nothing at all is rendered.
+        let mut authored = authored_with_main();
+        let before = authored.clone();
+        assert!(!fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, None)],
+            None
+        ));
+        assert_eq!(authored, before);
+    }
+
+    #[test]
+    fn a_known_blind_model_without_a_reader_is_declared_and_warned_about() {
+        let mut authored = authored_with_main();
+        let blind = fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            None,
+        );
+        assert!(blind);
+        assert_eq!(
+            authored["model_overrides"]["custom"]["text-only"],
+            json!({ "supports_vision": false })
+        );
+        assert!(authored.get("auxiliary").is_none(), "{authored:?}");
+        assert!(authored.get("agent").is_none(), "{authored:?}");
+    }
+
+    #[test]
+    fn what_a_def_authored_about_vision_stands() {
+        let mut authored = json!({
+            "model": { "provider": "custom", "model": "text-only" },
+            "model_overrides": { "custom": { "text-only": { "supports_vision": true, "context_window": 64000 } } },
+            "auxiliary": { "vision": { "provider": "openrouter", "model": "their-seer" }, "compression": { "timeout": 9 } },
+            "agent": { "image_input_mode": "auto", "max_turns": 40 },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let blind = fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            Some("seer"),
+        );
+        assert!(!blind, "the def brought its own describer");
+        assert_eq!(
+            authored["model_overrides"]["custom"]["text-only"],
+            json!({ "supports_vision": true, "context_window": 64000 })
+        );
+        assert_eq!(
+            authored["auxiliary"],
+            json!({ "vision": { "provider": "openrouter", "model": "their-seer" }, "compression": { "timeout": 9 } })
+        );
+        assert_eq!(
+            authored["agent"],
+            json!({ "image_input_mode": "auto", "max_turns": 40 })
+        );
+
+        // A vision block that names no backend is tuning, not a backend: the
+        // reader goes in beside its keys.
+        let mut authored = authored_with_main();
+        authored.insert(
+            "auxiliary".into(),
+            json!({ "vision": { "provider": "auto", "timeout": 200 } }),
+        );
+        fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            Some("seer"),
+        );
+        assert_eq!(
+            authored["auxiliary"]["vision"],
+            json!({ "provider": "custom", "timeout": 200, "model": "seer" })
+        );
+    }
+
+    #[test]
+    fn no_main_model_spec_means_nothing_is_rendered() {
+        let mut authored = json!({ "agent": { "max_turns": 40 } })
+            .as_object()
+            .unwrap()
+            .clone();
+        let before = authored.clone();
+        assert!(!fleet_vision(
+            &mut authored,
+            &[sight("tier-m", false, Some(false))],
+            Some("seer")
+        ));
+        assert_eq!(authored, before);
+    }
+
+    #[test]
+    fn the_describer_is_routed_scoped_and_emitted_like_every_other_spec() {
+        let models = talaria_fleet_brain::GatewayModels {
+            served: ["text-only", "seer"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            fallback: Some("text-only".into()),
+        };
+        let mut authored = authored_with_main();
+        fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            Some("seer"),
+        );
+        let routed = talaria_fleet_brain::route_config_through_gateway(
+            &Value::Object(authored),
+            &models,
+            |w| panic!("nothing should remap: {w}"),
+        );
+        assert_eq!(
+            routed["auxiliary"]["vision"],
+            json!({
+                "provider": "custom",
+                "model": "seer",
+                "base_url": "${LLM_BASE_URL}",
+                "api_key": "${LLM_API_KEY}",
+            })
+        );
+        // The agent's key is scoped to the describer too.
+        assert_eq!(
+            talaria_fleet_brain::routed_models(&routed),
+            vec!["text-only".to_string(), "seer".to_string()]
+        );
+        // The overrides are not a model spec, so the transform leaves them be.
+        assert_eq!(
+            routed["model_overrides"],
+            json!({ "custom": { "text-only": { "supports_vision": false } } })
+        );
+        let text = yaml11_emit(&routed);
+        let back: Value = serde_yaml_ng::from_str(&text).unwrap();
+        assert_eq!(back["auxiliary"]["vision"]["model"], json!("seer"));
+        assert_eq!(
+            back["model_overrides"]["custom"]["text-only"]["supports_vision"],
+            json!(false)
+        );
+        assert_eq!(back["agent"]["image_input_mode"], json!("text"));
     }
 
     #[test]

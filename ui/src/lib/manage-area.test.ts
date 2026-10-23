@@ -52,6 +52,14 @@ describe('manageArea', () => {
     expect(manageArea(CORE, [crm], admin, '/manage').items.at(-1)).toMatchObject({ to: '/x/crm/manage' })
   })
 
+  it("holds the routes an app adds below each surface to that surface's side", () => {
+    expect(manageArea(CORE, [crm], admin, '/x/crm/manage/fields/7')).toMatchObject({
+      inside: true,
+      activePath: '/x/crm/manage',
+    })
+    expect(manageArea(CORE, [crm], admin, '/x/crm/items/42')).toMatchObject({ inside: false, activePath: null })
+  })
+
   it("follows the viewer's grants: a denied view is neither listed nor inside", () => {
     const member = { isAdmin: false, denied: ['/models', '/observability'], appGrants: [] }
     const a = manageArea(CORE, [], member, '/models')

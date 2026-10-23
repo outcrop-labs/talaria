@@ -109,11 +109,13 @@ const API_ENV_VARS = [
   'TALARIA_API_BIND',
   'TALARIA_GATEWAY_SELF_URL',
   'PORT',
+  'TALARIA_APP_HOST_URL',
   'TALARIA_FLEET_PROJECT',
   'TALARIA_WORKTREE',
   'TALARIA_MCP_PORT',
   'TALARIA_OMP_AUTH_PORT',
   'TALARIA_GATEWAY_PORT_BASE',
+  'TALARIA_APPS_LOCAL_SOURCES',
 ] as const
 
 /** The connection facts the Rust api reads, lifted out of ui/.env with the
@@ -142,7 +144,10 @@ const API_ENV_VARS = [
  *  writes into every agent is built from the APP port, and the compose
  *  project it addresses is what keeps a worktree's agents apart from the
  *  main fleet — without the lift a worktree's agents would dial :5273 and
- *  its containers would land in the shared `talaria-fleet` project.
+ *  its containers would land in the shared `talaria-fleet` project. PORT is
+ *  also how the api reaches this app host for app harnesses (fitness reads
+ *  them from /api/app-host/harnesses on loopback); TALARIA_APP_HOST_URL
+ *  overrides that address outright.
  *
  *  TALARIA_MCP_PORT, TALARIA_OMP_AUTH_PORT and TALARIA_GATEWAY_PORT_BASE are
  *  a worktree's own ports for what the api spawns and renders: the toolkit
@@ -156,7 +161,12 @@ const API_ENV_VARS = [
  *  (`talaria-mcp-<instance>-<name>`). The app side reads it from ui/.env, so
  *  without the lift the api named the main instance's container — uninstall
  *  stopped a container that was not this worktree's and left its own
- *  running. */
+ *  running.
+ *
+ *  TALARIA_APPS_LOCAL_SOURCES=1 lets the api install and update apps from a
+ *  repository on this machine (file://, or http:// to loopback) — a dev
+ *  stack's way to exercise the git install and update path without a
+ *  remote. The api is the one that reads it, so ui/.env has to reach it. */
 export function apiEnv(shell: Record<string, string | undefined>, uiEnv: string): Record<string, string> {
   const env: Record<string, string> = {}
   for (const varName of API_ENV_VARS) {

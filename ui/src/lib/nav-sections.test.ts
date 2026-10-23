@@ -179,6 +179,14 @@ describe('navActiveItem', () => {
     expect(sections.flatMap((s) => s.items).filter((i) => i.to === '/x/crm/manage')).toHaveLength(1)
   })
 
+  it("keeps an app's item lit on every route the app adds below it", () => {
+    const crm = app('crm', { work: 'CRM', manage: 'CRM Admin' })
+    const sections = navSections(CORE, [appWorkItem(crm)!], [appManageItem(crm)!], holder)
+    expect(navActiveItem('/x/crm/items/42', sections)).toMatchObject({ to: '/x/crm' })
+    expect(navActiveItem('/x/crm/managers', sections)).toMatchObject({ to: '/x/crm' })
+    expect(navActiveItem('/x/crm/manage/fields/7', sections)).toMatchObject({ to: '/x/crm/manage' })
+  })
+
   it('returns null when nothing contains the route', () => {
     const sections = navSections(CORE, [], [], member)
     expect(navActiveItem('/nowhere', sections)).toBeNull()

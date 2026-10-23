@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CliError } from '../../ui'
 import { fakeCtx } from '../../testing'
-import { displayName, skeletonFiles } from './skeleton'
+import { RESERVED_APP_SLUGS, displayName, skeletonFiles } from './skeleton'
 import { runAppNew } from './new'
 
 const attempt = (fn: () => unknown): string => {
@@ -32,7 +32,7 @@ describe('displayName', () => {
 describe('skeletonFiles', () => {
   test('embeds no slug anywhere: the installing instance decides it', () => {
     const files = skeletonFiles({ name: 'My App', icon: '◈' })
-    expect(Object.keys(files).sort()).toEqual(['Work.svelte', 'app.ts', 'mcp.ts', 'server.ts', 'talaria.json'])
+    expect(Object.keys(files).sort()).toEqual(['Item.svelte', 'Work.svelte', 'app.ts', 'mcp.ts', 'server.ts', 'talaria.json'])
     expect(JSON.parse(files['talaria.json']!)).toEqual({
       name: 'My App',
       icon: '◈',
@@ -63,6 +63,19 @@ describe('skeletonFiles', () => {
     expect(work).not.toContain('query.isLoading')
   })
 
+  test('an item has an address of its own below the surface', () => {
+    const files = skeletonFiles({ name: 'My App', icon: '◈' })
+    const work = files['Work.svelte']!
+    // /x/<slug>/items/<id>: the list links each item there, and the surface
+    // routes off the address — never off component state a reload would lose.
+    expect(work).toContain("route.match('items/:id')")
+    expect(work).toContain('href={appHref(`items/${item.id}`)}')
+    expect(work).toContain('<ItemPage id={open.id} />')
+    expect(files['Item.svelte']).toContain('href={appHref()}')
+    expect(files['server.ts']).toContain("method === 'GET'")
+    expect(files['server.ts']).toContain("store.get('items', id)")
+  })
+
   test('every write catches and says what failed', () => {
     const work = skeletonFiles({ name: 'My App', icon: '◈' })['Work.svelte']!
     expect(work.match(/catch \(e\) \{\n\s+await alert\(\{ title: 'Could not [a-z ]+', message: errorMessage\(e\) \}\)/g)?.length).toBe(2)
@@ -74,6 +87,20 @@ describe('runAppNew', () => {
     const ctx = ctxAt()
     expect(attempt(() => runAppNew(ctx, 'MyApp'))).toContain('not a usable app slug')
     expect(existsSync(join(ctx.root, 'apps'))).toBe(false)
+  })
+
+  test('refuses a slug the router reserves, as install does', () => {
+    // The same list Rust's install refuses: the shared fixture's.
+    const fixture = JSON.parse(
+      readFileSync(join(import.meta.dir, '..', '..', '..', '..', 'api', 'tests', 'it', 'fixtures', 'app-grants.json'), 'utf8'),
+    ) as { routes: { reservedSlugs: string[] } }
+    expect([...RESERVED_APP_SLUGS]).toEqual(fixture.routes.reservedSlugs)
+    for (const slug of RESERVED_APP_SLUGS) {
+      const ctx = ctxAt()
+      expect(attempt(() => runAppNew(ctx, slug))).toContain('is reserved')
+      expect(existsSync(join(ctx.root, 'apps'))).toBe(false)
+    }
+    expect(runAppNew(ctxAt(), 'hooks-board')).toBe(0)
   })
 
   test('refuses an existing destination', () => {

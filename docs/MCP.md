@@ -14,7 +14,20 @@ access rules. Four kinds of rows:
   research, media). Every agent carries it; you govern per-agent/per-person tool subsets, but its
   identity and lifecycle are the platform's.
 - **App-published servers** (badged **app**) — a [Talaria app](./APPS.md)'s `mcp.ts` tools. Same
-  governance; lifecycle follows the app; calls dispatch in-process.
+  governance; lifecycle follows the app; calls dispatch in-process. The catalog comes from the
+  app's build: its load probe checks each tool and leaves out (and names, on the server's card)
+  any that fails, so the row carries its tools the moment the app is enabled and **Discover
+  tools** answers that catalog. An app that is turned off — by an admin, or by a build that broke
+  — keeps its row and every agent, team and person granted it, but the row is marked **app off**
+  with the reason, no agent carries it (the agents that did roll), and the gateway refuses its
+  tools. When the app is enabled and passes its load probe again, the same row serves the same
+  grants and those agents roll back. Only uninstalling the app deletes the row. An admin's own
+  **Disable server** is never undone by the app's lifecycle. When an update or a rebuild changes
+  the catalog — a tool added, renamed or removed, a description or a schema edited — the agents
+  granted the server roll so they list the new tools; a catalog that did not change rolls nobody.
+  A tool runs under the server's **timeout** (120 s by default) and is answered as cut off when it
+  passes. App tools are never picked as an org supplier (web search and the like): the platform's
+  own caller cannot reach them.
 - **Per-user servers** — servers where each person connects their own account (below).
 
 ## Enforcement: the gateway
@@ -232,4 +245,4 @@ gets, with the same auditability as everything else (every registry mutation is 
 
 ## The workbench surface
 
-`workbench` is a Talaria-owned server in this same registry, in-process like app surfaces, **not** all-agents: access is each agent's **Developer Agent** switch, and nothing else (assignment and team rows are refused for it). Its tools are the governed execution lifecycle (`doctor`, `list_repos`, `start_job`, `job_status`, `merge_to_testing`, `finish_job`, `prepare_env`) (see [`WORKBENCH.md`](./WORKBENCH.md)). The coding harness (Oh My Pi) authenticates through Talaria's gateway; the agent's grants from THIS registry are rendered into its MCP config at render time (the pass-through), so a sandboxed harness sees exactly the same governed tool world the agent does, with zero in-sandbox reconnection.
+`workbench` is a Talaria-owned server in this same registry, in-process like app surfaces, **not** all-agents: access is each agent's **Developer Agent** switch, and nothing else (assignment and team rows are refused for it). Its tools are the governed execution lifecycle (`doctor`, `list_repos`, `start_job`, `job_status`, `request_repo`, `finish_job`, `prepare_env`, `pr_status`) (see [`WORKBENCH.md`](./WORKBENCH.md)). The coding harness (Oh My Pi) authenticates through Talaria's gateway; the agent's grants from THIS registry are rendered into its MCP config at render time (the pass-through), so a sandboxed harness sees exactly the same governed tool world the agent does, with zero in-sandbox reconnection.

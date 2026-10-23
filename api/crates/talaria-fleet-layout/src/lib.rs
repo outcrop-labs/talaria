@@ -78,6 +78,53 @@ pub fn agent_host() -> String {
     std::env::var("TALARIA_AGENT_HOST").unwrap_or_else(|_| "127.0.0.1".into())
 }
 
+/// TALARIA_AGENT_DIAL=container (docker/compose.yml deployments): the app runs
+/// ON the fleet network and dials compose service names, so loopback port
+/// publishing is skipped entirely — every install sharing one docker host
+/// allocates identical ports from the same seed data and would collide.
+pub fn dial_is_container() -> bool {
+    matches!(std::env::var("TALARIA_AGENT_DIAL"), Ok(v) if v == "container")
+}
+
+/// The operator's search endpoint AS AN AGENT CONTAINER CAN REACH IT, or None.
+/// The app's spelling is the app's view: on a host-run dev app a loopback
+/// address means the laptop, which an agent reaches as host.docker.internal
+/// (the chassis declares it); in a containerized stack a loopback address is
+/// the app container itself and reaches nothing from an agent, so it is
+/// withheld rather than rendered wrong. Any other host passes through as-is.
+///
+/// One rule for two readers: the fleet render hands the result to every agent
+/// as SEARXNG_URL, and Admin → Search reads it back so the panel says what the
+/// render does. It rewrites; it never probes — a URL it passes may still be
+/// one the agents cannot connect to.
+pub fn agent_search_url(app_url: &str, container_dial: bool) -> Option<String> {
+    let url = app_url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return Some(url.to_string());
+    };
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h, Some(p)),
+        _ => (authority, None),
+    };
+    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "0.0.0.0") {
+        return Some(url.to_string());
+    }
+    if container_dial {
+        return None;
+    }
+    let port = port.map(|p| format!(":{p}")).unwrap_or_default();
+    let path = if path.is_empty() {
+        String::new()
+    } else {
+        format!("/{path}")
+    };
+    Some(format!("{scheme}://host.docker.internal{port}{path}"))
+}
+
 /// Docker-level names inherited from the pre-Talaria stack: imported agents'
 /// state volumes (ai_hermes-<dept>) and the shared infra network (ai_default).
 /// These are volume/network NAMES, not a code dependency on that repo.
@@ -144,6 +191,31 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_operators_search_url_reaches_an_agent_only_where_it_can() {
+        // Nothing configured: nothing rendered — Hermes resolves its own floor.
+        assert_eq!(agent_search_url("", false), None);
+        assert_eq!(agent_search_url("   ", true), None);
+        // A real host passes through untouched, container or not.
+        assert_eq!(
+            agent_search_url("https://search.corp.example/", true).as_deref(),
+            Some("https://search.corp.example/")
+        );
+        // Loopback on a host-run app is the laptop, which an agent spells
+        // host.docker.internal; the port and any path survive.
+        assert_eq!(
+            agent_search_url("http://127.0.0.1:8888", false).as_deref(),
+            Some("http://host.docker.internal:8888")
+        );
+        assert_eq!(
+            agent_search_url("http://localhost:8080/searx", false).as_deref(),
+            Some("http://host.docker.internal:8080/searx")
+        );
+        // Loopback in a containerized stack is the app container itself —
+        // withheld, never rendered wrong.
+        assert_eq!(agent_search_url("http://127.0.0.1:8888", true), None);
     }
 
     #[test]

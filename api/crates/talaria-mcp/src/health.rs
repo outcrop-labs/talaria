@@ -927,6 +927,7 @@ mod tests {
             package: None,
             env_enc: None,
             last_probe: None,
+            app_off: None,
         };
         over(&mut s);
         s

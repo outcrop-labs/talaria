@@ -13,25 +13,67 @@ and the community. Core ships with none enabled.
 
 ```
 apps/<slug>/
-  talaria.json   manifest — name, icon, version, description, surfaces
-  app.ts         UI surfaces (Svelte 5) — default-exports defineApp({...})
+  talaria.json   manifest — name, icon, version, description, surfaces (+ slug, sdk)
+  app.ts         UI surfaces (Svelte 5) — default-exports defineApp({...});
+                 required only when talaria.json declares a surface
   *.svelte       one component per surface (plus whatever else you need)
   server.ts      optional API — defineAppServer(...) → /api/apps/<slug>/*
   mcp.ts         optional agent tools — defineAppMcp(...) → governed MCP server
-  harnesses/     optional activity harnesses — one defineHarness per file
+  harnesses/     optional activity harnesses — one defineHarness per file, scored in Models → Fitness
 ```
 
 The programming model — `defineApp`, the app server, the document store, MCP tools, harnesses —
-is the [SDK docset](./sdk/README.md). Scaffold with `bun talaria app new <slug>`.
+is the [SDK docset](./sdk/README.md). Scaffold with `bun talaria app new <slug>`. An app with no
+UI (a server or agent tools only) declares no surfaces and ships no `app.ts`.
 
+The manifest's rules — required `name`, the `surfaces` shape, an optional `slug` and an optional
+`sdk` version range — are published as [`sdk/talaria.schema.json`](./sdk/talaria.schema.json).
+Install and update refuse a manifest that breaks them, with the reason; an installed app whose
+manifest breaks them is listed in Manage → Apps as **broken manifest**, never enabled, and can
+still be uninstalled.
 
+Every path under `/api/apps/<slug>/` is the app's own. The host's routes about an app live under
+`/api/app-host/<slug>/`: `POST …/rebuild`, which Manage → Apps calls to compile and probe an app
+before enabling it, and `POST …/lifecycle`, which only the api calls during an update; plus the two
+loopback-only routes the api's fitness plane reads app harnesses through (below).
+
+## Surfaces
+
+An app declares any combination of three surfaces in `talaria.json`:
+
+| surface | where it appears | who reaches it |
+| :--- | :--- | :--- |
+| `work` | a tile in the top dock's Apps group → `/x/<slug>`, and every route below it | admins, and members granted the work view |
+| `manage` | the manage area behind the dock's gear → `/x/<slug>/manage`, and every route below it | admins, and members granted the manage view |
+| `settings` | a Settings tab; one page, no routes below it | follows the manage grant |
+
+The app owns the routes below its surfaces: `/x/<slug>/items/42` mounts the work surface with
+`items/42` below it, and `/x/<slug>/manage/fields` the manage surface
+([client.md](./sdk/client.md#routes-inside-your-app)). A surface never hard-codes its slug: the
+slug is whatever this instance installed the app as, and the SDK's hooks bind to it
+(`useApp()`).
 
 ## Lifecycle
 
 1. **Install** — the app's codebase lands in `apps/`:
-   - from the **marketplace** (Manage → Apps → Discover): one click shallow-clones the repo;
-   - from **any https git URL** with a `talaria.json` at its root;
+   - from the **marketplace** (Manage → Apps → Discover): one click fetches the repo;
+   - from **any https git URL** with a `talaria.json` at its root, at its default branch or a
+     ref you name (a branch, tag or commit);
    - or by hand: drop/clone a directory into `apps/`.
+
+   An install from git fetches the one commit into a staging directory, checks `talaria.json`,
+   and only then moves it into `apps/<slug>`. The slug is the one the manifest declares, else
+   the repository's name without a `talaria-app-` prefix (or an override you give); a slug that
+   is taken or reserved is refused. The repository, the ref and the commit are recorded
+   (`app_sources`), and the install asks the host to build the app and answers with the outcome.
+
+   **Private repositories.** A github.com repository the GitHub connection
+   ([WORKBENCH.md](./WORKBENCH.md)) can see is fetched with a token scoped to that one
+   repository and to reading its contents — including the private repos `request_repo` creates.
+   Another host's private repository needs a **workspace secret** holding an https token whose
+   *Spendable at* list names that host; name it in the install (`secret`). The token reaches git
+   through `GIT_ASKPASS` for that host only — never in the URL, a command line or `.git/config`
+   — and a missing credential is an error, never a prompt.
 2. **Build** — this instance compiles the app against the host runtime (`/runtime/rt-*.js`)
    and starts a dedicated Postgres container for its data. Dev loads sources through Vite
    (HMR); production serves the compiled chunk. A failed build stays on that app.
@@ -39,14 +81,33 @@ is the [SDK docset](./sdk/README.md). Scaffold with `bun talaria app new <slug>`
    (UI surfaces, `server.ts` `fetch`, `mcp.ts` `tools`); a broken build is refused
    with that error. An already-enabled app that later fails is turned off by the
    boot reconciler — opening the Apps page is a read.
-
-
-
-4. **Grant** — apps are **explicit-grant**: enabling one gives members nothing. Admins allow each
-   app view per person in Admin → People — the same checklist as core Manage views, enforced
-   server-side at the app API gateway.
-5. **Uninstall** — removes the codebase, stops its database container, and (optionally) wipes
-   stored data. Audited, like enable/disable/install.
+4. **Grant** — apps are **explicit-grant**: enabling one gives members nothing. Admins grant each
+   app view per person in Admin → People, or per team in Manage → Teams — the same checklist as
+   core Manage views. Each surface is its own grant: the work view (`/x/<slug>`) covers the work
+   surface and the routes below it, the manage view (`/x/<slug>/manage`) the manage surface, its
+   routes and the settings tab. An app that ships settings without a manage surface is still
+   granted through `/x/<slug>/manage`. The app API gateway admits a caller who holds **any** of
+   the app's views and passes the app `ctx.access { admin, work, manage, settings }`, so an app
+   route behind the manage surface checks `ctx.access.manage` itself
+   ([server.md](./sdk/server.md#grants)). The compiled client is served under the same rule.
+5. **Update** — Manage → Apps shows where each app installed from git came from (repository,
+   ref, commit), checks whether the ref now points at a newer commit (`git ls-remote`), and
+   offers **Update** (`PUT /api/admin/apps {app, update: true, ref?}`, admin, audited). An
+   update fetches the new commit into `apps/.<slug>.next`, builds and load-probes it there while
+   the live app keeps serving, then swaps the two directories in one step (`renameat2`
+   `RENAME_EXCHANGE`: `apps/<slug>` is never missing, so the host never mistakes the app for
+   uninstalled). The previous version stays as `apps/.<slug>.prev`. A version that fails to
+   build or load — before the swap or after it — is rolled back automatically: the app keeps
+   running the previous commit and stays enabled, and the answer says why. An update never
+   touches the app's data. Atomic swap needs Linux; elsewhere update refuses.
+6. **Uninstall** — disables the app, deletes its MCP server row and every grant on it, stops and
+   removes its database container, and deletes the codebase, any update staging directories,
+   its build output, its compose file and its source record. Its **data is kept** — the
+   Postgres files, `db.env` and the sealed password — so reinstalling the same slug reattaches
+   it (the install says so). With `wipeData: true` the app's store is emptied while its database
+   still runs, the database is stopped, and the whole data directory is deleted (through a
+   throwaway container when its files belong to the database container's user), along with the
+   password. Manage → Apps asks which. Audited, like enable/disable/install/update.
 
 
 ## The marketplace
@@ -68,14 +129,28 @@ The runtime safety boundary is the user session — see the
 2. Anyone can now install it from its git URL.
 3. To appear in the marketplace, submit it to the catalog index (`outcrop-labs/talaria-apps`).
 
-Version bumps ship as git commits; an instance updates by re-pulling the app directory and
-rebuilding (managed update flows are on the roadmap).
+Version bumps ship as git commits; an instance shows **update available** when the installed
+ref moves, and an admin updates it in one click (Lifecycle → Update above). Declare `sdk` (for
+example `"^1.0"`) so a host whose SDK is outside that range refuses the app with a clear reason
+rather than failing to build it.
 
 ## Operational notes
 
 - `TALARIA_APPS_DIR` overrides where app codebases live (default: `apps/` beside `ui/`).
 - `TALARIA_APP_BUILDS_DIR` holds compiled chunks; `TALARIA_APP_DATA_DIR` holds each app's
-  Postgres volume, compose file, and `db.env`. Both default beside the apps dir. Uninstall deletes them.
+  Postgres volume, compose file, `db.env` and the MCP tool catalog its load probe wrote. Both
+  default beside the apps dir. Uninstall deletes an app's build output and keeps its data
+  directory unless asked to wipe it (see Uninstall above).
+- `TALARIA_APPS_LOCAL_SOURCES=1` lets install and update read a repository on this machine
+  (`file:///…`, or `http://` to loopback). Off by default and not for production: it exists so a
+  development stack can exercise the git install and update path without a remote. `talaria dev`
+  passes it from `ui/.env` to the api.
+- The api calls the host back to build an installed app and to stage and switch an update, at
+  `TALARIA_APP_HOST_URL` (default: loopback on the host's `PORT`; `server-entry.ts` sets it for
+  the api it spawns), with the same root-derived service credential `/api/internal/*` takes.
+- `/app-builds/<slug>/…` serves only `app.js`, `app.css` and `assets/**` of the app's current
+  build, and only to a session holding one of the app's views. The compiled `server.js` and
+  `mcp.js` never leave the host.
 - Each app gets its own Postgres (a compose project, image digest-pinned when the
   local image has one). The password is sealed in `app_settings` and written to a
   0600 `db.env` — never on `docker run -e` and never derived from `TALARIA_SECRET_KEY`.
@@ -98,18 +173,49 @@ rebuilding (managed update flows are on the roadmap).
 - A tool argument may arrive carrying a resolved credential (an agent's `«secret:…»` handle is
   resolved on its way into `mcp.ts`), and the app must not persist it — not in `ctx.store`, not
   in a log, not in a thrown message. The call record Talaria keeps never stores arguments either
-  ([mcp.md](./sdk/mcp.md)).
-- App MCP servers appear in Manage → MCP badged **app**; their tool catalogs come from the module
-  (no probe), and they cannot be deleted or re-pointed there — lifecycle belongs to Manage → Apps.
-- Everything an app's users do runs under their own session: platform permissions, resource ACLs,
-  and the audit log apply exactly as in core surfaces.
+  ([mcp.md](./sdk/mcp.md)). A secret whose **Spendable at** list (Admin → Secrets) is not empty
+  resolves for an app's tools only if that list names `talaria-app://<slug>`; otherwise the
+  handler receives the handle text itself.
+- The app's server reads a workspace secret with `ctx.secret(name)` only when the secret's list
+  names `talaria-app://<slug>` exactly; a secret with an empty list is not readable by app code.
+  Every read counts against the secret's use limit and writes a `secrets.spend` audit row with
+  actor `app:<slug>` ([server.md](./sdk/server.md#secrets)).
+- App MCP servers appear in Manage → MCP badged **app**. Their tool catalogs come from the app's
+  load probe, which checks each tool in `mcp.ts` and names any it leaves out on the server's card
+  ([mcp.md](./sdk/mcp.md)). They cannot be deleted or re-pointed there; lifecycle belongs to
+  Manage → Apps. An app that is turned off or fails its build keeps its server row and every
+  grant on it, marked **app off**, until it serves again; only uninstalling it removes the row.
+- Everything an app's users do runs under their own session, the app server's `ctx.api` calls
+  included: platform permissions, resource ACLs, and the audit log apply exactly as in core
+  surfaces.
 
 
 ## Shipping a harness
 
-An app ships an **activity harness** (`apps/<slug>/harnesses/*.ts`): a model call Talaria runs
-on your app's behalf, with evals that earn a column in the org's model-fitness matrix:
-[harnesses.md](./sdk/harnesses.md), deep contract in [HARNESSES.md](./HARNESSES.md).
+An app ships an **activity harness** — a model call Talaria runs on your app's behalf through the
+one runner: [harnesses.md](./sdk/harnesses.md), deep contract in [HARNESSES.md](./HARNESSES.md).
+
+**Each file in `harnesses/` registers on its own.** One `defineHarness` default export per
+`harnesses/*.ts`. The build compiles them into `harnesses.js`, one chunk per file, and the load
+probe checks each one against the rules the platform holds its own harnesses to. A harness that
+passes gets a column in **Models → Fitness**, labelled with the app's name, and the eval sweep
+replays its `evals` against every candidate model. Your `server.ts` still runs it in production
+with `runHarness`.
+
+- **It must:** name only guard rules that exist; keep its floor inside `requires` and empty
+  unless it refuses; for a JSON harness, list `json` in `requires`, because the floor is derived
+  from it; keep fixture names distinct; give a widening a reason; keep a temperature between 0
+  and 1. Its id must not be a builtin harness's id or one that another enabled app registers;
+  when two apps claim one id, the app whose slug sorts first keeps it.
+- **A harness that fails a check** is skipped. The app keeps running. The reason shows on the
+  app's row in Manage → Apps as "N harnesses skipped", with one line per file.
+- **Only enabled apps count.** Disabling an app removes its columns.
+- **How the sweep reaches it.** The api never loads app code. It reads the list from the app host
+  (`GET /api/app-host/harnesses`) and replays each fixture there
+  (`POST /api/app-host/<slug>/harnesses/<id>/cases/<name>`). Both routes answer only a loopback
+  caller that presents the internal service credential. The replay pins the candidate model and
+  writes no `harness_runs` or guard-findings rows. Token spend still reaches the usage ledger,
+  as every sweep case does.
 
 The coding harness agents drive in their sandbox is not an extension point: the workbench runs
 Oh My Pi, and only Oh My Pi ([WORKBENCH.md](./WORKBENCH.md)).

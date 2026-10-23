@@ -264,9 +264,8 @@ pub async fn patch(
     //
     // A toolset change rolls in the same stroke. Hermes itself reads
     // `agent.disabled_toolsets` per request from the config.yaml the render
-    // just rewrote in place, so the roll is not what closes a toolset — but
-    // opening `browser` has to pay for the setup the post-health step runs
-    // on a fresh container. Both switches in one PATCH are still ONE roll.
+    // just rewrote in place, so the roll is not what closes a toolset. Both
+    // switches in one PATCH are still ONE roll.
     //
     // THE ROLL NEVER FAILS THE PATCH. The switch is already stored by the
     // time the roll is queued, and a box the api cannot open is the roll's

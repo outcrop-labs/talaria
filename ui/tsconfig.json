@@ -18,7 +18,9 @@
     "paths": {
       "@/*": ["./src/*"],
       "@talaria/sdk": ["./src/sdk/index.ts"],
-      "@talaria/sdk/server": ["./src/sdk/server.ts"]
+      "@talaria/sdk/server": ["./src/sdk/server.ts"],
+      "@talaria/sdk/testing": ["./src/sdk/testing.ts"],
+      "vitest": ["./node_modules/vitest"]
     }
   },
   "include": ["src", "server-entry.ts", "vite.config.ts", "vite.server.config.ts", "../apps"],

@@ -889,7 +889,7 @@
             </Prop>
           </PropGroup>
 
-          <!-- Agent-reported token spend (MCP log_usage) — priced like the ledger. -->
+          <!-- Token spend metered against this ticket — priced like the ledger. -->
           {#if data!.usage.promptTokens + data!.usage.completionTokens > 0}
             <PropGroup label="Spend">
               <Prop label="Tokens">

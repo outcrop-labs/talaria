@@ -92,9 +92,9 @@ for (const file of files) {
 
 
 // ── Tripwire 2: SDK export coverage ─────────────────────────────────────────
-// docs/sdk/reference.md claims to list EVERY export from both SDK entry points.
+// docs/sdk/reference.md claims to list EVERY export from every SDK entry point.
 // This doc once listed exports that didn't exist (KeyHint) and missed ones that
-// did (runHarness) for months. So the exports are parsed from the two source
+// did (runHarness) for months. So the exports are parsed from the entry points' source
 // files and diffed both directions against the reference's rows — per entry
 // point and per kind, because a row is a claim about where a symbol is
 // imported from and what it is, not only that the name exists somewhere. The
@@ -103,6 +103,7 @@ for (const file of files) {
 const SDK_ENTRIES = {
   '@talaria/sdk': 'ui/src/sdk/index.ts',
   '@talaria/sdk/server': 'ui/src/sdk/server.ts',
+  '@talaria/sdk/testing': 'ui/src/sdk/testing.ts',
 }
 const SDK_REFERENCE = join(ROOT, 'docs/sdk/reference.md')
 

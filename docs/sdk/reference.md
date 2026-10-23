@@ -1,8 +1,8 @@
 # SDK reference
 
-Every export from both entry points, one row each. **This file is enforced**:
-`bun run check` parses the exports out of `ui/src/sdk/index.ts` and
-`ui/src/sdk/server.ts`, entry point by entry point, and fails if a row names a
+Every export from every entry point, one row each. **This file is enforced**:
+`bun run check` parses the exports out of `ui/src/sdk/index.ts`,
+`ui/src/sdk/server.ts` and `ui/src/sdk/testing.ts`, entry point by entry point, and fails if a row names a
 symbol its entry point doesn't export, if an export has no row under its own
 entry point's headings, or if a row's kind (fn, const, class, comp, type) is
 not what the source declares. Guides live beside this file; the row is the
@@ -13,6 +13,7 @@ Import them as:
 ```ts
 import { Button, useAppQuery } from '@talaria/sdk'          // client
 import { defineAppServer, z } from '@talaria/sdk/server'    // server
+import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp.ts
 ```
 
 ## `@talaria/sdk` — app definition
@@ -21,10 +22,19 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | :--- | :--- | :--- |
 | `defineApp` | fn | Declare the app's surfaces; default-export from app.ts |
 | `AppSurfaces` | type | The surfaces map (work / manage / settings), all optional |
-| `useApp` | fn | The app a surface belongs to: `{ slug, surface, manifest }`, as installed |
+| `useApp` | fn | The app a surface belongs to: `{ slug, surface, manifest, rest, query }`, as installed |
 | `AppContext` | type | What `useApp` returns |
 | `AppSurfaceName` | type | Which surface is rendering: work, manage or settings |
 | `AppManifest` | type | The manifest as the host serves it: slug, name, icon, version, surfaces |
+
+## `@talaria/sdk` — routes inside the app
+
+| symbol | kind | what it is |
+| :--- | :--- | :--- |
+| `useAppRoute` / `AppRoute` | fn / type | Where the surface is, live: the path below it (rest), its segments, the query, and `match(pattern)` for a route's params |
+| `RouteParams` | type | The params a pattern captures, by name: `RouteParams<'items/:id'>` is `{ id: string }` |
+| `appHref` / `AppHrefOptions` | fn / type | The href for a route of this app, relative to the surface; `{ surface }` links into the other one |
+| `appNavigate` / `AppNavigateOptions` | fn / type | Go to a route of this app, relative to the surface; `{ replace }` skips the history entry |
 
 ## `@talaria/sdk` — UI kit: actions
 
@@ -150,7 +160,9 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | :--- | :--- | :--- |
 | `defineAppServer` | fn | Declare the fetch handler; default-export from server.ts |
 | `AppServer` | type | What `defineAppServer` takes |
-| `AppRequestContext` | type | ctx: user, app, path, url, store |
+| `AppRequestContext` | type | ctx: user, access, perms, can, app, path, segments, url, origin, store, api, secret, signal |
+| `HttpError` | class | What ctx.api throws on a non-2xx answer: status + the server's sentence |
+| `PlatformApiInit` | type | ctx.api's options: method, body, headers, signal, timeoutMs |
 | `SessionUser` | type | The authenticated user the handler runs as |
 | `json` | fn | JSON response helper (`json(body, { status })`) |
 | `parseBody` | fn | Zod-validate a request body; returns data or the standard 400 |
@@ -164,14 +176,26 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | :--- | :--- | :--- |
 | `defineAppMcp` | fn | Declare agent-callable tools; default-export from mcp.ts |
 | `AppMcp` | type | The tools map `defineAppMcp` takes |
-| `AppMcpTool` | type | One tool: name, description, inputSchema, handler |
-| `AppMcpContext` | type | Tool handler ctx: app, agent, store |
+| `AppMcpTool` | type | One tool: name, description, inputSchema, outputSchema, handler |
+| `AppMcpContext` | type | Tool handler ctx: app, agent, caller, actingUserId, store, signal |
+| `AppMcpCaller` | type | Who calls: the agent's name and id, and whether that is proven (its own key, not the org-wide one) |
+| `toolResult` | fn | A whole MCP result for a handler to return: content blocks, structuredContent, isError |
+| `AppToolResult` / `AppToolContent` | types | What `toolResult` makes, and one content block (text, image, audio, resource_link, resource) |
+| `isUnresolvedHandle` | fn | Whether a value still carries a `«secret:…»` handle the gateway could not resolve |
+
+## `@talaria/sdk/testing` — unit tests of MCP tools
+
+| symbol | kind | what it is |
+| :--- | :--- | :--- |
+| `callAppTool` | fn | Call one tool of an mcp.ts as the gateway would, with no host; answers what the agent receives |
+| `AppToolCallOptions` / `AppToolCallResult` | types | `callAppTool`'s context (caller, actingUserId, store, timeoutSecs, signal, tools) and its answer |
+| `memoryStore` | fn | An in-memory document store with the installed store's interface and answers |
 
 ## `@talaria/sdk/server` — activity harnesses
 
 | symbol | kind | what it is |
 | :--- | :--- | :--- |
-| `defineHarness` | fn | Declare a model call Talaria runs; default-export from harnesses/*.ts |
+| `defineHarness` | fn | Declare a model call Talaria runs; default-export one per `harnesses/*.ts` to register it for fitness, run it from server.ts with `runHarness` |
 | `HarnessDefinition` | type | The full activity contract (render, output, model, evals…) |
 | `RenderContext` | type | What the render step receives |
 | `Message` | type | One chat message |

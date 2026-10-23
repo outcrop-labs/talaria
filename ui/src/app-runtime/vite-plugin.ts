@@ -58,9 +58,23 @@ export function appRuntimeDev(): Plugin {
     },
 
     configureServer(server: ViteDevServer) {
-      void server.ssrLoadModule('/src/server/app-load.ts').then((mod: { setSsrLoader?: (fn: (abs: string) => Promise<unknown>) => void }) => {
-        mod.setSsrLoader?.((abs) => server.ssrLoadModule(`/@fs${abs}`))
-      })
+      void server
+        .ssrLoadModule('/src/server/app-load.ts')
+        .then((mod: { setSsrLoader?: (fn: (abs: string) => Promise<unknown>) => void; setSsrInvalidator?: (fn: (dir: string) => void) => void }) => {
+          mod.setSsrLoader?.((abs) => server.ssrLoadModule(`/@fs${abs}`))
+          // An app update swaps apps/<slug> in one rename: drop every module
+          // either graph holds from under the old tree, so the next load (and
+          // the next page load of /@app/<slug>/…) reads the new code.
+          mod.setSsrInvalidator?.((dir) => {
+            const prefix = dir.endsWith('/') ? dir : `${dir}/`
+            for (const env of Object.values(server.environments)) {
+              const graph = env.moduleGraph
+              for (const m of graph.idToModuleMap.values()) {
+                if (m.file?.startsWith(prefix)) graph.invalidateModule(m)
+              }
+            }
+          })
+        })
       // /app-builds/ in dev answers through the same door as production
       // (server/app-builds-door.ts): app.js, app.css and assets/** only, to a
       // session granted the app. Surfaces load from /@app/ source in dev, so

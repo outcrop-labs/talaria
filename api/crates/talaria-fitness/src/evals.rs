@@ -44,6 +44,14 @@
 // real spend and still reaches `usage_events` through the transports, which is
 // why the sweep's caller names itself.
 //
+// AN APP HARNESS'S FIXTURES ARE REPLAYED BY THE APP HOST. Its `render` and its
+// fixtures' `check` are the app's own code, which the api never loads
+// (talaria-app-harnesses), so `run_app_case` asks the host to run the case
+// through its runner with the candidate pinned and the run ledger off, and
+// scores the reply with the same arithmetic: the contract from the run the
+// host captured, the task from the fixture's own verdict, a floor refusal as
+// a skip. The clocks, the retries and the resume ledger are the same ones.
+//
 // THE CLOCK RACES BY DROPPING, not by aborting. The runner has no signal
 // slot, so the case's future is raced against the clock with `tokio::select!`
 // and the loser is DROPPED — which releases the socket just as surely, and
@@ -60,6 +68,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use talaria_agent_auth::now_ms;
+use talaria_app_harnesses::{AppCaseReply, AppCaseRequest};
 use talaria_capability_reach::{self, DbReach, ReachDeps, Supplier};
 use talaria_fitness_toolbox::credential_tools::CredentialSandbox;
 use talaria_fitness_toolbox::dry_run::{
@@ -81,7 +90,7 @@ use talaria_harness::transport::{
     ToolPolicy, TransportRequest, offers_tool_definitions, runs_own_tool_loop,
 };
 use talaria_harness_defs::defs::research::{SearchSink, ToolSearchDeps, tool_search_transport};
-use talaria_harness_defs::registry::{RegisteredHarness, builtin_activity_harnesses};
+use talaria_harness_defs::registry::RegisteredHarness;
 use talaria_state::AppState;
 
 // ── The scoring surface ──────────────────────────────────────────────────────
@@ -493,6 +502,10 @@ pub type NowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
 /// an external stop.
 pub type StopPred = Arc<dyn Fn() -> bool + Send + Sync>;
 pub type OnCaseFn = Arc<dyn Fn(EvalCaseScore) -> BoxFut<()> + Send + Sync>;
+/// Replay one app harness fixture through the app host, bounded by the given
+/// deadline. See `run_app_case`.
+pub type AppCaseFn =
+    Arc<dyn Fn(AppCaseRequest, Duration) -> BoxFut<Result<AppCaseReply, String>> + Send + Sync>;
 
 /// The sweep's world. `harness_deps` replaces the runner's dep set WHOLESALE
 /// (see `RunContext.deps`), and the sweep layers its own transport, `record_run`
@@ -523,6 +536,9 @@ pub struct EvalDeps {
     pub serves_own_tools: OwnToolsFn,
     pub accepts_tool_definitions: ToolDefsFn,
     pub now: NowFn,
+    /// HOW AN APP HARNESS'S FIXTURE IS ASKED — through the app host that holds
+    /// its code. None records every app case as skipped, with the reason.
+    pub app_case: Option<AppCaseFn>,
 }
 
 /// THE CHECKPOINT — ONE ROW PER CANDIDATE, and the row is the reason a wide
@@ -576,8 +592,24 @@ async fn read_run(pg: &sqlx::PgPool, model: &str) -> EvalSweepStatus {
 pub fn real_deps(state: &AppState) -> EvalDeps {
     let pg = state.pg.clone();
     let read_pg = state.pg.clone();
+    // The app host's service credential, derived from the root both
+    // processes hold (talaria-config `SecretRoot::internal_token`).
+    let token = state.cfg.secret_root.internal_token();
+    let list_token = token.clone();
     EvalDeps {
-        harnesses: Arc::new(|| Box::pin(async { builtin_activity_harnesses().to_vec() })),
+        // The builtins and every enabled app's harnesses — the same registry
+        // the matrix reads (surface.rs), so a run's own list and the page's
+        // columns cannot disagree.
+        harnesses: Arc::new(move || {
+            let token = list_token.clone();
+            Box::pin(async move { talaria_app_harnesses::registry_with_apps(&token).await })
+        }),
+        app_case: Some(Arc::new(move |req, deadline| {
+            let token = token.clone();
+            Box::pin(
+                async move { talaria_app_harnesses::replay_case(&token, &req, deadline).await },
+            )
+        })),
         supplier: Some(Arc::new(move |capability| {
             let pg = pg.clone();
             Box::pin(async move {
@@ -1311,11 +1343,7 @@ pub fn meta_of(h: &RegisteredHarness) -> HarnessMeta {
     HarnessMeta {
         id: h.def.id.to_string(),
         label: h.def.label.to_string(),
-        source: match h.source {
-            talaria_harness_defs::registry::HarnessSource::Builtin => "builtin".to_string(),
-            talaria_harness_defs::registry::HarnessSource::App(slug) => format!("app:{slug}"),
-            talaria_harness_defs::registry::HarnessSource::Custom => "custom".to_string(),
-        },
+        source: h.source.wire(),
         output_kind: if h.def.output.is_json() {
             "json"
         } else {
@@ -2409,6 +2437,255 @@ async fn run_one_case(
     Some(score)
 }
 
+/// One fixture, by whichever road its harness takes: the runner here for a
+/// builtin, the app host for an app's.
+#[allow(clippy::too_many_arguments)]
+async fn run_case(
+    state: &AppState,
+    def: &'static HarnessDefinition,
+    app: Option<&'static str>,
+    fixture: &'static EvalCase,
+    model: &str,
+    deps: &Arc<EvalDeps>,
+    base_harness_deps: &Arc<HarnessDeps>,
+    timeout_ms: u64,
+    dry_run: bool,
+    stopped: &StopPred,
+) -> Option<EvalCaseScore> {
+    match app {
+        Some(slug) => run_app_case(slug, def, fixture, model, deps, timeout_ms, stopped).await,
+        None => {
+            run_one_case(
+                state,
+                def,
+                fixture,
+                model,
+                deps,
+                base_harness_deps,
+                timeout_ms,
+                dry_run,
+                stopped,
+            )
+            .await
+        }
+    }
+}
+
+/// How the sweep finished waiting on the app host. The reply is boxed: it is
+/// the one large variant, and it is moved once.
+enum AppCaseOutcome {
+    Done(Box<Result<AppCaseReply, String>>),
+    Stopped,
+    TimedOut,
+}
+
+/// ONE APP HARNESS FIXTURE, replayed by the app host with the candidate
+/// pinned. None means the case was cancelled mid-flight, exactly as for a
+/// builtin's.
+///
+/// THE SAME SCORE, FROM THE HOST'S RUN. The host runs the case through its
+/// own runner — the one the app's harness runs on in production — with
+/// `harness_runs` and findings filing off, and hands back what that run
+/// recorded: the contract, the repairs, the latency and the findings off the
+/// row it captured, the fixture's own verdict, the prompt and the tokens. The
+/// partition is the one `run_one_case` draws: a floor refusal is a skip, a gap
+/// is unscored, the drill-down is kept only for a case that failed something.
+///
+/// THE HOST NOT ANSWERING IS NOT THE MODEL FAILING. A host that is down or
+/// refuses the replay leaves the case skipped with its sentence, measured
+/// nothing about the candidate, and `retry_failed` re-asks it.
+async fn run_app_case(
+    slug: &'static str,
+    def: &'static HarnessDefinition,
+    fixture: &'static EvalCase,
+    model: &str,
+    deps: &Arc<EvalDeps>,
+    timeout_ms: u64,
+    stopped: &StopPred,
+) -> Option<EvalCaseScore> {
+    let Some(app_case) = deps.app_case.clone() else {
+        return Some(skipped_case(
+            def.id,
+            fixture.name,
+            fixture.band,
+            "this sweep has no road to the app host that holds this harness's code, so its \
+             fixtures were not asked",
+        ));
+    };
+    let started_at = (deps.now)();
+    let turns = turns_per_case(def, false, false);
+    let live = Arc::new(Mutex::new(InFlightCase {
+        harness: def.id.to_string(),
+        case: fixture.name.to_string(),
+        band: fixture.band,
+        started_at,
+        turn: 1,
+        max_turns: turns as i64,
+        calls: 1,
+        open: 1,
+        turns: Vec::new(),
+    }));
+    let key = case_key(def.id, fixture.name);
+    in_flight()
+        .lock()
+        .expect("the in-flight map is not contended")
+        .entry(model.to_string())
+        .or_default()
+        .insert(key.clone(), live);
+
+    // ONE CLOCK, the total backstop: the host runs the turns, so the sweep
+    // cannot see them settle and re-arm an idle clock. It is the budget the
+    // same turns get here — the idle allowance per turn, repair included.
+    let total_ms = timeout_ms * 2 * turns as u64;
+    let request = AppCaseRequest {
+        app: slug.to_string(),
+        harness: def.id.to_string(),
+        case: fixture.name.to_string(),
+        model: model.to_string(),
+    };
+    let work = app_case(request, Duration::from_millis(total_ms + 5_000));
+    let watch = {
+        let stopped = stopped.clone();
+        async move {
+            loop {
+                if stopped() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(STOP_POLL_MS)).await;
+            }
+        }
+    };
+    let outcome = tokio::select! {
+        reply = work => AppCaseOutcome::Done(Box::new(reply)),
+        _ = watch => AppCaseOutcome::Stopped,
+        _ = tokio::time::sleep(Duration::from_millis(total_ms)) => AppCaseOutcome::TimedOut,
+    };
+    if let Some(slots) = in_flight()
+        .lock()
+        .expect("the in-flight map is not contended")
+        .get_mut(model)
+    {
+        slots.remove(&key);
+    }
+
+    let now = (deps.now)();
+    let reply = match outcome {
+        AppCaseOutcome::Stopped => return None,
+        AppCaseOutcome::TimedOut => {
+            let mut score = skipped_case(def.id, fixture.name, fixture.band, "");
+            score.skipped = None;
+            score.timed_out = true;
+            score.started_at = iso(started_at);
+            score.wall_ms = now - started_at;
+            score.error = Some(format!(
+                "the app host did not finish replaying this case inside {total_ms}ms"
+            ));
+            // A request that went out and never came back — the shape the
+            // sweep re-asks once before it calls the case unmeasured
+            // (`lost_request`), exactly as for a builtin's hung call.
+            score.upstream = Some(vec![UpstreamAttempt {
+                ms: now - started_at,
+                settled: false,
+                error: None,
+            }]);
+            return Some(score);
+        }
+        AppCaseOutcome::Done(done) => match *done {
+            Err(why) => {
+                return Some(skipped_case(
+                    def.id,
+                    fixture.name,
+                    fixture.band,
+                    &format!(
+                        "the app host could not replay this fixture ({why}). Nothing here was \
+                         measured about the model."
+                    ),
+                ));
+            }
+            Ok(reply) => reply,
+        },
+    };
+
+    // THE FLOOR DECLINED TO ASK: a skip, never a failure — see `run_one_case`.
+    if reply.refused {
+        let reason = reply.error.clone().unwrap_or_else(|| {
+            "the capability floor refused this model, so the fixture was never asked".into()
+        });
+        return Some(skipped_case(def.id, fixture.name, fixture.band, &reason));
+    }
+    let contract_held = reply.schema_valid;
+    let repairs = reply.repairs;
+    let (task, task_error, gap) = if !contract_held {
+        (TaskVerdict::Unscored, None, None)
+    } else {
+        match reply.verdict.as_deref() {
+            Some("pass") => (TaskVerdict::Pass, None, None),
+            Some("fail") => (
+                TaskVerdict::Fail,
+                Some(
+                    reply
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| "the fixture rejected the value".into()),
+                ),
+                None,
+            ),
+            Some("gap") => (
+                TaskVerdict::Unscored,
+                None,
+                Some(
+                    reply
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| "the fixture could not fairly ask".into()),
+                ),
+            ),
+            _ => (TaskVerdict::Unscored, None, None),
+        }
+    };
+    let clean = contract_held && task != TaskVerdict::Fail && gap.is_none();
+    let tokens = reply.prompt_tokens + reply.completion_tokens;
+    let cost_usd = if tokens > 0 {
+        (deps.price)(
+            model.to_string(),
+            reply.prompt_tokens,
+            reply.completion_tokens,
+        )
+        .await
+    } else {
+        None
+    };
+    Some(EvalCaseScore {
+        harness: def.id.to_string(),
+        case: fixture.name.to_string(),
+        band: fixture.band,
+        skipped: None,
+        contract_held,
+        first_pass: contract_held && repairs == 0,
+        repairs,
+        answered: reply.answered,
+        task,
+        task_error,
+        gap,
+        findings: reply.findings,
+        latency_ms: reply.latency_ms,
+        started_at: iso(started_at),
+        wall_ms: (deps.now)() - started_at,
+        prompt_tokens: reply.prompt_tokens,
+        completion_tokens: reply.completion_tokens,
+        cost_usd,
+        estimated: reply.estimated,
+        timed_out: false,
+        optimistic: contract_held && task == TaskVerdict::Fail,
+        error: reply.error.clone(),
+        prompt: (!clean).then(|| cap(Some(&reply.prompt))).flatten(),
+        raw: (!clean).then(|| cap(reply.raw.as_deref())).flatten(),
+        turns: None,
+        calls: None,
+        upstream: None,
+    })
+}
+
 // A findings recorder that files nothing — see the file header for why the
 // sweep must not move the number it is compared against.
 fn noop_record_findings() -> RecordFindingsFn {
@@ -2728,7 +3005,12 @@ async fn sweep_inner(
         // progress denominator, and a sweep that merely `continue`d would
         // restart into the same skip and show a progress bar that never
         // reaches its total.
-        let skip = harness_skip_reason(h.def.label, h.def.tools, model, own_tools, tool_defs);
+        // An app harness cannot be dry-run: the sandbox is the api's and its
+        // code is the app host's. So only a candidate that runs its own loop
+        // can be tested on an app harness that wants one.
+        let app = h.app_slug();
+        let dry_runnable = tool_defs && app.is_none();
+        let skip = harness_skip_reason(h.def.label, h.def.tools, model, own_tools, dry_runnable);
         if let Some(reason) = skip {
             for fixture in &pending {
                 cases
@@ -2755,7 +3037,7 @@ async fn sweep_inner(
         // definitions, so the sweep supplies the loop and an isolated Talaria
         // to run it against. A fleet persona runs its own loop and needs none
         // of this.
-        let dry_run = matches!(h.def.tools, Some(ToolPolicy::Own)) && !own_tools && tool_defs;
+        let dry_run = matches!(h.def.tools, Some(ToolPolicy::Own)) && !own_tools && dry_runnable;
 
         let on_case: OnCaseFn = {
             let deps = deps.clone();
@@ -2827,6 +3109,7 @@ async fn sweep_inner(
         run_harness_cases(
             state,
             h.def,
+            app,
             pending,
             model,
             deps,
@@ -2903,6 +3186,7 @@ async fn sweep_inner(
 async fn run_harness_cases(
     state: &AppState,
     def: &'static HarnessDefinition,
+    app: Option<&'static str>,
     pending: Vec<&'static EvalCase>,
     model: &str,
     deps: &Arc<EvalDeps>,
@@ -2950,8 +3234,8 @@ async fn run_harness_cases(
                 // what the case cost the sweep, so it is measured across every
                 // attempt and the backoff between them.
                 let opened_at = (deps.now)();
-                let mut score = run_one_case(
-                    &state, def, fixture, &model, &deps, &base, timeout_ms, dry_run, &stopped,
+                let mut score = run_case(
+                    &state, def, app, fixture, &model, &deps, &base, timeout_ms, dry_run, &stopped,
                 )
                 .await;
                 for attempt in 0..PRESSURE_RETRIES {
@@ -2985,8 +3269,9 @@ async fn run_harness_cases(
                     if stopped() {
                         return;
                     }
-                    score = run_one_case(
-                        &state, def, fixture, &model, &deps, &base, timeout_ms, dry_run, &stopped,
+                    score = run_case(
+                        &state, def, app, fixture, &model, &deps, &base, timeout_ms, dry_run,
+                        &stopped,
                     )
                     .await;
                 }
@@ -3177,7 +3462,7 @@ mod tests {
     };
     use talaria_harness::transport::{TokenPair, ToolCall, TransportKind, TransportReply};
     use talaria_harness_defs::defs::research::{CallToolFn, ToolOutput};
-    use talaria_harness_defs::registry::HarnessSource;
+    use talaria_harness_defs::registry::{HarnessSource, builtin_activity_harnesses};
     use talaria_harness_model::ModelSpec;
     use talaria_harness_schema::{Field, Schema};
 
@@ -3599,6 +3884,7 @@ mod tests {
         supplier: Option<Supplier>,
         search_tool: Option<CallToolFn>,
         reach: HashMap<String, Reach>,
+        app_case: Option<AppCaseFn>,
     }
 
     /// The status row, keyed the way the settings row is: ONE PER CANDIDATE.
@@ -3647,6 +3933,7 @@ mod tests {
                 supplier: r.supplier.clone(),
                 search_tool: r.search_tool.clone(),
                 reach: r.reach.clone(),
+                app_case: self.deps.app_case.clone(),
             };
             bench_from(
                 r.harnesses,
@@ -3887,6 +4174,7 @@ mod tests {
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0)
             }),
+            app_case: extra.app_case.clone(),
         });
         Bench {
             status,
@@ -4143,6 +4431,221 @@ mod tests {
     }
 
     // ── The sweep ───────────────────────────────────────────────────────────
+
+    // ── App harnesses: replayed by the app host ─────────────────────────────
+
+    /// An app harness the way the app layer registers one, with four fixtures
+    /// the scripted host below answers differently.
+    fn app_harness(tools: &str) -> RegisteredHarness {
+        talaria_app_harnesses::register(
+            &serde_json::from_value(json!({
+                "id": format!("support:triage-{tools}"),
+                "label": "Support triage",
+                "job": "Grades an inbound support message.",
+                "source": "app:support",
+                "app": "support",
+                "appName": "Support",
+                "file": "triage.ts",
+                "requires": ["json"],
+                "floor": { "capabilities": ["json"], "refuseBelow": true, "note": "Needs JSON." },
+                "outputKind": "json",
+                "repair": 1,
+                "verifies": false,
+                "tools": tools,
+                "guard": { "rules": ["secret_leak"], "redact": false },
+                "evals": [
+                    { "name": "passes", "band": "easy" },
+                    { "name": "fails", "band": "standard" },
+                    { "name": "gaps", "band": "standard" },
+                    { "name": "refused", "band": "hard" }
+                ]
+            }))
+            .expect("the wire parses"),
+        )
+        .expect("registers")
+    }
+
+    /// The app host, scripted: one reply per fixture name, and every request
+    /// it was asked, for the asserts.
+    fn scripted_host(asked: Arc<Mutex<Vec<AppCaseRequest>>>) -> AppCaseFn {
+        Arc::new(move |req: AppCaseRequest, _deadline| {
+            asked.lock().expect("asked").push(req.clone());
+            let base = json!({
+                "harness": req.harness,
+                "case": req.case,
+                "band": "standard",
+                "model": req.model,
+                "schemaValid": true,
+                "repairs": 0,
+                "answered": true,
+                "refused": false,
+                "latencyMs": 40,
+                "findings": 0,
+                "prompt": "user: grade this",
+                "promptTokens": 30,
+                "completionTokens": 8,
+                "estimated": false
+            });
+            let mut reply: AppCaseReply = serde_json::from_value(base).expect("reply");
+            match req.case.as_str() {
+                "passes" => reply.verdict = Some("pass".into()),
+                "fails" => {
+                    reply.verdict = Some("fail".into());
+                    reply.reason = Some("graded low — an outage is high".into());
+                    reply.raw = Some("{\"severity\":\"low\"}".into());
+                }
+                "gaps" => {
+                    reply.verdict = Some("gap".into());
+                    reply.reason = Some("the fixture's check threw: boom".into());
+                }
+                _ => {
+                    reply.schema_valid = false;
+                    reply.answered = false;
+                    reply.refused = true;
+                    reply.error = Some("the model is measured unable to produce JSON".into());
+                }
+            }
+            Box::pin(async move { Ok(reply) })
+        })
+    }
+
+    #[tokio::test]
+    async fn replays_an_app_harness_through_the_app_host() {
+        let _sole = sole();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let app = app_harness("none");
+        let b = bench_ex(
+            vec![reg(&PICK_A1), app],
+            World::replies(vec![obj("a")]),
+            &Extra {
+                app_case: Some(scripted_host(asked.clone())),
+                ..Default::default()
+            },
+        );
+
+        let sweep = sweep_with(&b, "candidate", |o| o.concurrency = Some(1)).await;
+
+        // The builtin ran here, through the runner, and only the builtin did:
+        // the app's fixtures never touched the api's transport.
+        assert_eq!(b.n_calls(), 1);
+        let asked = asked.lock().expect("asked").clone();
+        assert_eq!(asked.len(), 4);
+        assert!(asked.iter().all(|r| r.app == "support"
+            && r.harness == "support:triage-none"
+            && r.model == "candidate"));
+
+        let case = |name: &str| {
+            sweep
+                .cases
+                .iter()
+                .find(|c| c.harness == "support:triage-none" && c.case == name)
+                .cloned()
+                .expect("the case was recorded")
+        };
+        let pass = case("passes");
+        assert_eq!(pass.task, TaskVerdict::Pass);
+        assert!(pass.contract_held && pass.first_pass && pass.answered);
+        assert_eq!((pass.prompt_tokens, pass.completion_tokens), (30, 8));
+        assert_eq!(pass.band, EvalBand::Easy);
+        // A clean case keeps no drill-down.
+        assert!(pass.prompt.is_none() && pass.raw.is_none());
+
+        let fail = case("fails");
+        assert_eq!(fail.task, TaskVerdict::Fail);
+        assert_eq!(
+            fail.task_error.as_deref(),
+            Some("graded low — an outage is high")
+        );
+        assert!(fail.optimistic);
+        assert_eq!(fail.raw.as_deref(), Some("{\"severity\":\"low\"}"));
+        assert_eq!(fail.prompt.as_deref(), Some("user: grade this"));
+
+        let gap = case("gaps");
+        assert_eq!(gap.task, TaskVerdict::Unscored);
+        assert_eq!(gap.gap.as_deref(), Some("the fixture's check threw: boom"));
+
+        // The floor declining to ask is a skip, never a failure.
+        let refused = case("refused");
+        assert_eq!(
+            refused.skipped.as_deref(),
+            Some("the model is measured unable to produce JSON")
+        );
+
+        let score = sweep
+            .harnesses
+            .iter()
+            .find(|h| h.meta.id == "support:triage-none")
+            .expect("the app harness has a column");
+        assert_eq!(score.meta.source, "app:support");
+        assert_eq!(score.cases, 3);
+        assert_eq!(score.skipped, 1);
+        assert_eq!(score.gaps, 1);
+        assert_eq!(score.task_score, Some(0.5));
+        assert_eq!(score.contract_rate, 1.0);
+        assert_eq!(sweep.state, EvalSweepState::Done);
+    }
+
+    #[tokio::test]
+    async fn skips_an_app_harness_when_no_road_reaches_its_host() {
+        let _sole = sole();
+        let b = bench(vec![app_harness("none")], World::default());
+        let sweep = sweep(&b, "candidate").await;
+        assert_eq!(sweep.cases.len(), 4);
+        assert!(sweep.cases.iter().all(|c| {
+            c.skipped
+                .as_deref()
+                .is_some_and(|r| r.contains("no road to the app host"))
+        }));
+        assert_eq!(b.n_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn records_a_host_that_cannot_replay_as_unmeasured() {
+        let _sole = sole();
+        let refusing: AppCaseFn = Arc::new(|_req, _deadline| {
+            Box::pin(async { Err("the app host answered 404 Not Found: no harness".to_string()) })
+        });
+        let b = bench_ex(
+            vec![app_harness("none")],
+            World::default(),
+            &Extra {
+                app_case: Some(refusing),
+                ..Default::default()
+            },
+        );
+        let sweep = sweep(&b, "candidate").await;
+        assert!(
+            sweep.cases.iter().all(|c| c
+                .skipped
+                .as_deref()
+                .is_some_and(|r| r.contains("the app host could not replay this fixture")
+                    && r.contains("404")))
+        );
+        assert!(worth_retrying(&sweep.cases[0]));
+    }
+
+    #[tokio::test]
+    async fn never_dry_runs_an_app_harness_that_wants_its_own_tool_loop() {
+        let _sole = sole();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        // A gateway model that can be handed definitions: a builtin tool-loop
+        // harness would be dry-run against the sandbox here, but the sandbox
+        // is the api's and the app's code is not, so the app's is skipped.
+        let b = bench_ex(
+            vec![app_harness("own")],
+            World {
+                tool_defs: true,
+                ..Default::default()
+            },
+            &Extra {
+                app_case: Some(scripted_host(asked.clone())),
+                ..Default::default()
+            },
+        );
+        let sweep = sweep(&b, "candidate").await;
+        assert!(asked.lock().expect("asked").is_empty());
+        assert!(sweep.cases.iter().all(|c| c.skipped.is_some()));
+    }
 
     #[tokio::test]
     async fn scores_the_contract_from_the_row_the_runner_writes() {
@@ -5648,6 +6151,7 @@ mod tests {
                         detail: "a registered web-search server".into(),
                     },
                 )]),
+                app_case: None,
             },
         );
 
@@ -5746,6 +6250,7 @@ mod tests {
                         detail: "a registered web-search server".into(),
                     },
                 )]),
+                app_case: None,
             },
         );
 
@@ -5797,6 +6302,7 @@ mod tests {
                 supplier: None,
                 search_tool: None,
                 reach: HashMap::new(),
+                app_case: None,
             },
         );
 

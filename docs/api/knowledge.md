@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-21 routes.
+20 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -43,7 +43,6 @@
 | [`/api/rag/collections/{id}`](#apiragcollectionsid) | PUT | `admin` |
 | [`/api/rag/collections/{id}`](#apiragcollectionsid) | DELETE | `admin` |
 | [`/api/rag/search`](#apiragsearch) | POST | `dual` |
-| [`/api/search`](#apisearch) | POST | `dual` |
 | [`/api/templates`](#apitemplates) | GET | `session` |
 | [`/api/templates`](#apitemplates) | POST | `session` + `perm:templates.manage` |
 | [`/api/templates/{id}`](#apitemplatesid) | PUT | `session` + `perm:templates.manage` |
@@ -419,26 +418,6 @@ Source: [`api/crates/talaria-routes-knowledge/src/knowledge/rag_search.rs`](../.
 | `query` | `string(1, 2000)` |  |
 | `limit` | `number?(1, 20)` |  |
 | `collectionIds` | `uuid[]?(20)` |  |
-
-## `/api/search`
-
-Source: [`api/crates/talaria-routes-knowledge/src/knowledge/search.rs`](../../api/crates/talaria-routes-knowledge/src/knowledge/search.rs)
-
-> /api/search.
->
-> LIVE WEB SEARCH — the endpoint behind the `web_search` MCP tool, and the one
-> place an agent or a signed-in user reaches this deployment's search.
-> …
-
-| Method | Auth | Body | Returns | Status | Flags |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `dual` | [body](#post-apisearch-body) | `{query, results, via}` | 200, 400, 503 | — |
-
-### POST `/api/search` body
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `query` | `string(2, 400)` |  |
 
 ## `/api/templates`
 

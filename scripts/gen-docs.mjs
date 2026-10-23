@@ -55,6 +55,10 @@ const ROUTES_DIR = join(ROOT, 'api/crates/talaria-api-routes/src/routes')
 const TS_RESIDENT_FILES = [
   'ui/src/routes/api/healthz.ts',
   'ui/src/routes/api/apps.$app.$.ts',
+  'ui/src/routes/api/app-host.$app.rebuild.ts',
+  'ui/src/routes/api/app-host.harnesses.ts',
+  'ui/src/routes/api/app-host.$app.harnesses.$id.cases.$name.ts',
+  'ui/src/routes/api/app-host.$app.lifecycle.ts',
 ]
 const CHECK = process.argv.includes('--check')
 
@@ -68,8 +72,8 @@ const GROUPS = {
   account: { segs: ['auth', 'me', 'join', 'users'], blurb: 'Sign-in, session, profile, members.' },
   activity: { segs: ['activity', 'history', 'notifications', 'unreads', 'push', 'alerts', 'home', 'cost', 'host'], blurb: 'What happened, what it cost, what the machine is doing, what needs you.' },
   admin: { segs: ['admin'], blurb: 'Instance administration (admin session required).' },
-  agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'vision', 'runs'], blurb: 'Agent CRUD, skills, runs.' },
-  apps: { segs: ['apps'], blurb: 'The app platform surface and the app-server gateway.' },
+  agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'runs'], blurb: 'Agent CRUD, skills, runs.' },
+  apps: { segs: ['apps', 'app-host'], blurb: 'The app platform surface, the app-server gateway, and the host\'s own app routes.' },
   boards: { segs: ['boards', 'workchains'], blurb: 'Kanban boards, members, statuses, labels, views, workchains.' },
   brief: { segs: ['brief'], blurb: 'The personal brief: items, replies, delegation.' },
   comms: { segs: ['channels', 'chat', 'conversations', 'dms'], blurb: 'Channels, DMs, threads, chat streaming.' },
@@ -77,6 +81,7 @@ const GROUPS = {
   fleet: { segs: ['fleet'], blurb: 'The agent fleet: defs, containers, crons, federation.' },
   inbox: { segs: ['inbox'], blurb: 'The focus inbox and its command surface.' },
   integrations: { segs: ['integrations'], blurb: 'Connected accounts — Google Workspace and the rest.' },
+  internal: { segs: ['internal'], blurb: "Service-to-service calls from the app host — never a user's or an agent's." },
   knowledge: { segs: ['kb', 'rag', 'memory', 'search', 'templates', 'blueprints'], blurb: 'Knowledge base, RAG collections, org templates, blueprints, search.' },
   llm: { segs: ['llm'], blurb: 'The OpenAI-compatible wire (llm.v1.*).' },
   mcp: { segs: ['mcp'], blurb: 'MCP servers, governance, gateway, OAuth.' },
@@ -300,7 +305,7 @@ function handlerWithHelpers(stripped, span, locals, depth = 2, seen = new Set(),
 const KNOWN_HEADER_TAKERS = new Set([
   'require_user', 'require_admin', 'require_perm', 'require_view',
   'require_agent_manager', 'require_agent_manager_by_model', 'require_agent_reader',
-  'agent_caller', 'require_agent',
+  'agent_caller', 'require_agent', 'require_internal',
   // Coding accounts' three gates, each a thin wrapper classified below:
   // the broker's per-agent scope, the feature toggle, and "may edit this
   // agent" (agents.manage OR the agent's owner).
@@ -331,6 +336,8 @@ function authClassRust(combined, locals, fileRaw) {
   // for the same admin-or-owner shape.
   // `broker_caller` is the same gate answering the caller's model as well
   // (the snapshot route audits who read a credential).
+  // The app host's root-derived service credential — no session or key reaches it.
+  if (has('require_internal(')) return { auth: 'internal' }
   if (has('broker_agent(') || has('broker_caller(')) return { auth: 'agent' }
   if (has('require_agent_editor(') || has('require_feature(') || has('require_share_rights(')) return { auth: 'session' }
   if (has('authenticate_key(')) return { auth: 'bearer-key' }
@@ -518,6 +525,42 @@ function bodySchemaRust(combined, sigText, fileRaw) {
     fields.push({ name: key, expr, note, offset: m.index })
     callRe.lastIndex = parenIdx
   }
+  // A REQUIRED KEY THE HANDLER READS BY HAND. `match obj.get("installUrl") {
+  // None => return …400 }` next to member calls for the other keys rendered
+  // only the other keys, so POST /api/admin/apps documented a body without
+  // the one field it cannot run without. Only that form is read: a `None` arm
+  // that returns an error is the handler saying the key must be there. The
+  // type comes from the first accessor in the match block; anything else
+  // renders as `value`.
+  if (fields.length) {
+    const getRe = new RegExp(`\\bmatch\\s+${objVar}\\.get\\(\\s*"((?:[^"\\\\]|\\\\.)*)"\\s*\\)\\s*\\{`, 'g')
+    while ((m = getRe.exec(text))) {
+      const key = m[1]
+      if (fields.some((f) => f.name === key)) continue
+      const open = m.index + m[0].length - 1
+      const close = matchDelimRust(text, open)
+      if (close === -1) continue
+      const block = text.slice(open + 1, close)
+      if (!/^\s*None\s*=>\s*\{?\s*return\s+(?:Ok\(\s*house_error\(|Err\()/.test(block)) continue
+      // The FIRST accessor is the field's own shape — a later `.as_str()` is
+      // usually an element of the array or a member of the record.
+      const first = /\.as_(array|object|str|bool|i64|u64|f64)\(\)|Value::(Array|Object|String|Bool|Number)\(/.exec(block)
+      const kind = first ? (first[1] ?? first[2]).toLowerCase() : null
+      let expr =
+        kind === 'array' ? 'array'
+        : kind === 'object' ? 'record'
+        : kind === 'str' || kind === 'string' ? (/\burl_ok\(/.test(block) ? 'url' : 'string')
+        : kind === 'bool' ? 'bool'
+        : kind ? 'number'
+        : 'value'
+      if (/Value::Null\b/.test(block)) expr += '? nullable'
+      const callLine = combined.lineOf(m.index)
+      const run = commentRunAbove(fileRaw.split('\n'), callLine, 2)
+      const note = run.text.length && !run.trimmed ? run.text.join(' ') : ''
+      fields.push({ name: key, expr, note, offset: m.index })
+    }
+    fields.sort((a, b) => a.offset - b.offset)
+  }
   if (!fields.length) {
     // The handler READS a body but validates it imperatively (`obj.get("k")`
     // dispatch, element-wise array walks) instead of through the member
@@ -537,6 +580,7 @@ function bodySchemaRust(combined, sigText, fileRaw) {
     const ifOpen = text.indexOf('{', parenClose)
     const ifClose = matchDelimRust(text, ifOpen)
     const elseMatch = /\belse\s*\{/.exec(text.slice(ifClose))
+    const strip = ({ name, expr, note }) => ({ name, expr, note })
     if (ifClose !== -1 && elseMatch) {
       const elseOpen = ifClose + elseMatch.index + elseMatch[0].length - 1
       const elseClose = matchDelimRust(text, elseOpen)
@@ -544,8 +588,33 @@ function bodySchemaRust(combined, sigText, fileRaw) {
       const inElse = fields.filter((f) => f.offset > elseOpen && f.offset < elseClose)
       const outside = fields.filter((f) => !inIf.includes(f) && !inElse.includes(f))
       if ((inIf.length || inElse.length) && !outside.length) {
-        const strip = ({ name, expr, note }) => ({ name, expr, note })
         return { kind: 'union', branches: [inIf.map(strip), inElse.map(strip)].filter((b) => b.length).map((b) => ({ kind: 'fields', fields: b })) }
+      }
+    }
+    // THE EARLY-RETURN SPELLING of the same union: `if obj.contains_key("app")
+    // { …; return …; }` with no `else`, the other body read by the rest of the
+    // handler. Each such arm ends in a return, so a CHAIN of them (`update`,
+    // then `app`, then the rest — PUT /api/admin/apps) is one variant per arm,
+    // and everything after the last arm is the final variant; helpers
+    // appended past the handler's own text are not part of it.
+    const handlerEnd = combined.parts[0].text.length
+    const arms = []
+    const armRe = new RegExp(`if\\s+${objVar}\\.contains_key\\(`, 'g')
+    for (let a; (a = armRe.exec(text)); ) {
+      if (arms.length && a.index < arms[arms.length - 1][1]) continue // nested in the previous arm
+      const pOpen = text.indexOf('(', a.index)
+      const open = text.indexOf('{', matchDelimRust(text, pOpen))
+      const close = matchDelimRust(text, open)
+      if (close === -1 || !/\breturn\b[^;]*;\s*$/.test(text.slice(open + 1, close))) break
+      if (/^\s*else\b/.test(text.slice(close + 1))) break
+      arms.push([open, close])
+    }
+    if (arms.length) {
+      const branches = arms.map(([open, close]) => fields.filter((f) => f.offset > open && f.offset < close))
+      const after = fields.filter((f) => f.offset > arms[arms.length - 1][1] && f.offset < handlerEnd)
+      const covered = new Set([...branches.flat(), ...after])
+      if (branches.every((b) => b.length) && after.length && fields.every((f) => covered.has(f))) {
+        return { kind: 'union', branches: [...branches, after].map((b) => ({ kind: 'fields', fields: b.map(strip) })) }
       }
     }
   }
@@ -789,7 +858,7 @@ function extractRoute(file) {
 }
 
 const KNOWN_REQUEST_TAKERS = new Set([
-  'requireUser', 'requireAdmin', 'requirePerm', 'requireView', 'requireAgent',
+  'requireUser', 'requireAdmin', 'requireInternal', 'requirePerm', 'requireView', 'requireAgent',
   'agentCaller', 'authenticateKey',
   'actingUser', 'getSessionUser', 'updateSessionUser', 'taskActor',
   'parseBody', 'destroySession',
@@ -799,6 +868,8 @@ function authClassTS(clean, methodRaw) {
   const has = (s) => clean.includes(s)
   const perms = [...clean.matchAll(/(?:requirePerm\(request,\s*|hasPerm\(\s*[\w.]+,\s*)'([\w.-]+)'/g)].map((m) => m[1])
   const view = clean.match(/requireView\(\s*request,\s*'([^']+)'/)
+  // The api on this machine, with the root-derived service credential.
+  if (has('requireInternal(')) return { auth: 'internal' }
   if (has('authenticateKey(')) return { auth: 'bearer-key' }
   if (has('requireAgent(')) return { auth: 'agent' }
   const session = has('requireUser(') || has('requireAdmin(') || has('requirePerm(') || has('requireView(')
@@ -953,6 +1024,7 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 | \`admin\` | an admin session (\`require_admin\`) |
 | \`agent\` | an agent credential (\`tak_\` key, \`require_agent\`/\`agent_caller\`) |
 | \`dual\` | session path and agent path both reach the handler |
+| \`internal\` | the root-derived service credential (\`x-talaria-internal\`) between the app host and the api — \`require_internal\` on the api's routes, \`requireInternal\` (loopback only) on the host's — never a user or agent |
 | \`bearer-key\` | a personal LLM-gateway API key (\`authenticate_key\`) |`
 
 const GENERATED_BANNER = (extra = '') =>
@@ -1203,7 +1275,7 @@ for (const r of routes) {
 if (routes.some((r) => r.path === APPS_DISPATCH)) {
   const r = routes.find((x) => x.path === APPS_DISPATCH)
   r.methods = [{ method: 'ANY', auth: 'session', body: null, returns: 'app-defined', statuses: null, sse: false, audit: false, note: [] }]
-  r.note = { text: ['The app-server gateway: `/api/apps/<slug>/*` dispatches into the app\'s own `server.ts`.', 'The host authenticates, checks the app is enabled and the user may reach it, then hands over a context (user, sub-path, namespaced store). The contract: the SDK doc.'], trimmed: false, source: 'doc' }
+  r.note = { text: ['The app-server gateway: `/api/apps/<slug>/*` dispatches into the app\'s own `server.ts`. Every path under it is the app\'s; the host\'s own app routes are under `/api/app-host/`.', 'The host authenticates, checks the app is enabled and the user may reach it, then hands over a context (user, grants, sub-path and segments, store, the platform API as the caller, the app\'s secrets, the abort signal). The contract: the SDK doc.'], trimmed: false, source: 'doc' }
 }
 
 // `$param` renders as `{param}`; trailing `$` as `*` — but sort by raw path.

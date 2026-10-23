@@ -160,6 +160,7 @@ Source: [`api/crates/talaria-routes-comms/src/activity/push.rs`](../../api/crate
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `endpoint` | `string(1)` |  |
+| `keys` | `record` | keys: a record — with zod's own received-name per shape, so an array in the slot says "array", an absent one says "undefined". |
 
 ## `/api/push/unsubscribe`
 

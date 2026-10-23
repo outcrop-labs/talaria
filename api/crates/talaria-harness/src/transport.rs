@@ -143,22 +143,21 @@ pub struct ToolCall {
 
 /// Where this turn's spend lands in `usage_events`.
 ///
-/// The runner used to meter every persona turn as a plain chat turn belonging
-/// to nothing, because no other harness had anything to attribute to. Three
-/// call sites did, and each lost something real:
+/// The gateway relay books every call a persona makes; this is the flow
+/// those calls belong to, recorded by the fleet transport against the
+/// turn's conversation key (`turn_attribution`). The runner used to meter
+/// every persona turn as a plain chat turn belonging to nothing, and three
+/// call sites each lost something real:
 ///
 ///   task_id    a work-session turn's spend lands in the ledger but never in
 ///              the TICKET'S cost, which is the number a ticket owner reads.
 ///   ref_id +   research's persona stages metered with no run id, so a run's
 ///   source     cost stopped being answerable at all.
-///   tier       the ledger prices a row by looking up the agent's base def
-///              and then the alias named by `tier`. Hand it the ROUTED id
-///              with a null tier and both lookups miss: the row is attributed
-///              to an agent that does not exist, with no endpoint class,
-///              which means no price. A tier draft becomes free.
 ///
-/// Hence `agent_model` is the BASE persona id and `tier` is the alias NAME,
-/// never the routed id — `TransportRequest.model` is the id actually called.
+/// Hence `agent_model` is the BASE persona id — the name the relay books an
+/// agent's key under — never the routed id `TransportRequest.model` calls.
+/// `tier` is the alias NAME the turn was routed to; the relay prices the
+/// model each call actually ran on, so the ledger no longer reads it.
 #[derive(Debug, Clone)]
 pub struct LedgerAttribution {
     /// The agent as the ledger names it: the base persona id, never a tier id.
@@ -168,7 +167,7 @@ pub struct LedgerAttribution {
     pub ref_id: Option<String>,
     /// The ticket this spend belongs to, so it reaches the ticket's cost.
     pub task_id: Option<String>,
-    /// The alias NAME (`opus`), as the ledger's classifier wants it.
+    /// The alias NAME (`opus`) the turn was routed to.
     pub tier: Option<String>,
 }
 
@@ -407,10 +406,10 @@ pub struct PersonaSession {
     /// `POST /api/sessions`, created on first use and resumed after.
     pub id: String,
     /// A turn has gone through this session before, so it MUST still be in
-    /// the container: a fresh create then means the state volume was lost
-    /// (a re-hire on the same slug, a swapped volume, a host restore), and
-    /// the turn takes the completions arm rather than answering from an
-    /// empty room — `proxy_session_turn`'s `history_expected`.
+    /// the container: one that is not there means the state volume was lost
+    /// (a re-hire on the same slug, a swapped volume, a host restore) —
+    /// `proxy_session_turn`'s `history_expected`. The step then starts the
+    /// session again (`open_persona_turn`).
     pub resumed: bool,
 }
 
@@ -1187,7 +1186,7 @@ use talaria_fleet_agents::list_agents;
 use talaria_gateway::fleet_chat::{
     AgentStreamEvent, AgentStreamParser, ByteStream, ChatStream, proxy_chat, proxy_session_turn,
 };
-use talaria_gateway::usage::{UsageInput, record_usage};
+use talaria_gateway::usage::TurnAttribution;
 use talaria_me::gateway_models;
 
 /// A persona turn's assembled result. The parser reports reasoning text too;
@@ -1343,49 +1342,38 @@ fn clamp_label(label: &str) -> String {
     talaria_body::truncate_utf16(label, 2_000).to_string()
 }
 
-async fn meter_persona_turn(pg: &sqlx::PgPool, req: &TransportRequest, turn: &PersonaTurn) {
+/// The flow a persona turn's spend belongs to, for the transport to record:
+/// every call the agent makes for the turn is then metered at the relay
+/// under this source, conversation or run, and ticket. The relay prices the
+/// model that actually served each call, so the ledger's `tier` is not
+/// needed here.
+fn turn_attribution(pg: &sqlx::PgPool, req: &TransportRequest) -> TurnAttribution {
     let led = ledger_of(req);
-    let counts = match turn.usage {
-        Some(u) => TokenCounts {
-            prompt_tokens: u.prompt_tokens,
-            completion_tokens: u.completion_tokens,
-            ..TokenCounts::default()
-        },
-        None => TokenCounts {
-            prompt_tokens: estimate_tokens(req.prompt_chars()),
-            completion_tokens: estimate_tokens(talaria_body::utf16_len(&turn.text)),
-            ..TokenCounts::default()
-        },
-    };
-    let _ = record_usage(
-        pg,
-        &UsageInput {
-            agent_model: &led.agent_model,
-            source: led.source.as_str(),
-            ref_id: led.ref_id.as_deref(),
-            task_id: led.task_id.as_deref(),
-            tier: led.tier.as_deref(),
-            counts,
-            estimated: turn.usage.is_none(),
-        },
-    )
-    .await;
+    TurnAttribution {
+        pg: pg.clone(),
+        agent_model: led.agent_model,
+        source: led.source.as_str().to_string(),
+        ref_id: led.ref_id,
+        task_id: led.task_id,
+    }
 }
 
 /// Open the persona's stream through the door the caller chose: the
 /// completions arm when no session is keyed, the Hermes session arm when one
-/// is — created on first use, resumed after. Two ways back onto the
-/// completions arm from the session one, both logged, neither an error: a
-/// request carrying history a session cannot hold (`session_turn_parts`),
-/// and a RESUMED session the container no longer has (`proxy_session_turn`
-/// answers `None` — the state volume was lost, and the chat path takes the
-/// same way out). The turn still happens; only its continuity does not.
+/// is — created on first use, resumed after. A request carrying history a
+/// session cannot hold (`session_turn_parts`) goes the completions way,
+/// logged, not an error. A RESUMED session the container no longer has
+/// (`proxy_session_turn` answers `None` — the state volume was lost) starts
+/// again, empty, and only a session Hermes will not recreate falls back to a
+/// completion. The turn still happens; only the continuity before it is
+/// lost.
 async fn open_persona_turn(
     req: &TransportRequest,
     session: Option<&PersonaSession>,
+    attribution: TurnAttribution,
 ) -> Result<ChatStream, String> {
     let Some(session) = session else {
-        return Ok(proxy_chat(&persona_payload(req), req.hold_ms).await);
+        return Ok(proxy_chat(&persona_payload(req), req.hold_ms, Some(attribution)).await);
     };
     if let Some(refusal) = session_turn_refusal(req) {
         return Err(refusal);
@@ -1398,29 +1386,52 @@ async fn open_persona_turn(
             req.caller,
             session.id
         );
-        return Ok(proxy_chat(&persona_payload(req), req.hold_ms).await);
+        return Ok(proxy_chat(&persona_payload(req), req.hold_ms, Some(attribution)).await);
     };
     match proxy_session_turn(
         &req.model,
         &session.id,
         system_message.as_deref(),
-        &Value::String(message),
+        &Value::String(message.clone()),
         req.effort.as_deref(),
         req.hold_ms,
         session.resumed,
+        Some(attribution.clone()),
     )
     .await
     {
         Some(stream) => Ok(stream),
+        // The room is gone. A session turn's request carries no history of
+        // its own, so a completion would answer from exactly what a fresh
+        // session would — and only the session keeps this step for the next
+        // one. So the session starts again here, empty, and the run's later
+        // steps continue in it. (The transport never makes that empty room
+        // itself: the chat path, which does hold a transcript, must not find
+        // one on its next turn.) An id Hermes refuses to recreate — a deleted
+        // session — leaves the completion.
         None => {
             tracing::warn!(
                 "[transport] {} ({}): session {} was expected to exist and did not — this turn \
-                 is sent as a completion with its full prompt instead",
+                 starts it again, without the earlier transcript",
                 req.model,
                 req.caller,
                 session.id
             );
-            Ok(proxy_chat(&persona_payload(req), req.hold_ms).await)
+            match proxy_session_turn(
+                &req.model,
+                &session.id,
+                system_message.as_deref(),
+                &Value::String(message),
+                req.effort.as_deref(),
+                req.hold_ms,
+                false,
+                Some(attribution.clone()),
+            )
+            .await
+            {
+                Some(stream) => Ok(stream),
+                None => Ok(proxy_chat(&persona_payload(req), req.hold_ms, Some(attribution)).await),
+            }
         }
     }
 }
@@ -1439,7 +1450,7 @@ async fn persona_turn(
     if !tool_defs_of(req).is_empty() {
         return Err(fleet_tool_defs_refusal(&req.model));
     }
-    let upstream = open_persona_turn(req, session).await?;
+    let upstream = open_persona_turn(req, session, turn_attribution(&state.pg, req)).await?;
     if !upstream.ok() {
         return Err(format!("persona gateway {}", upstream.status));
     }
@@ -1498,7 +1509,6 @@ async fn persona_turn(
     if let Some(message) = &turn.error {
         return Err(format!("persona \"{}\" errored: {message}", req.model));
     }
-    meter_persona_turn(&state.pg, req, &turn).await;
     Ok(TransportReply {
         kind: TransportKind::Fleet,
         text: turn.text,
@@ -1809,7 +1819,9 @@ pub async fn persona_probe_turn(
         }
     }
     let payload = serde_json::json!({ "model": model, "messages": wire });
-    let upstream = proxy_chat(&payload, timeout_ms).await;
+    // No flow to name: a probe's calls are metered at the relay under the
+    // agent, `unattended`.
+    let upstream = proxy_chat(&payload, timeout_ms, None).await;
     if !upstream.ok() {
         return Err(format!("persona gateway {}", upstream.status));
     }

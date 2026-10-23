@@ -34,3 +34,4 @@ If the ask arrives in a chat thread instead of a ticket, the move is routing, no
 
 9. finish_job only when the branch holds work you have personally verified. Your summary should say what changed, how you verified it, and anything the reviewer should look at hardest.
 10. If you could not do the work properly — missing tools, access, or org process you'd be guessing at — report_gap once and block with the reason. Never improvise a process to look busy.
+11. After the PR opens, `pr_status` with the jobId says whether CI passed and what reviewers decided. It only reads; a person merges, never you. When checks fail or a reviewer asks for changes, `start_job` on the same ticket again: it resumes the same job, branch, workdir and PR (`git -C <workdir> pull` if the checkout is still there). Push the fix, then `finish_job` — the PR is kept, never duplicated, and your summary is posted on it.

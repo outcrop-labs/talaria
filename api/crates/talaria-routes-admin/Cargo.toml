@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 talaria-agent-auth = { workspace = true }
 talaria-agent-defs = { workspace = true }
+talaria-agent-web-search = { workspace = true }
 talaria-apps = { workspace = true }
 talaria-audit = { workspace = true }
 talaria-auth-config = { workspace = true }

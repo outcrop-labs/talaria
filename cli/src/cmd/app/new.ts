@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
-import { APP_SLUG_RE, displayName, skeletonFiles } from './skeleton'
+import { APP_SLUG_RE, RESERVED_APP_SLUGS, displayName, skeletonFiles } from './skeleton'
 
 export function appsDir(ctx: Ctx): string {
   return ctx.env.TALARIA_APPS_DIR || join(ctx.root, 'apps')
@@ -16,6 +16,9 @@ export function runAppNew(
 ): number {
   if (!APP_SLUG_RE.test(slug)) {
     ctx.log.die(`"${slug}" is not a usable app slug (lowercase letters, digits, dashes; ≤64 chars)`)
+  }
+  if (RESERVED_APP_SLUGS.includes(slug)) {
+    ctx.log.die(`"${slug}" is reserved: the client router uses that word in its route table — pick another slug`)
   }
   const name = (opts.name ?? displayName(slug)).trim()
   if (!name) ctx.log.die('--name cannot be empty')

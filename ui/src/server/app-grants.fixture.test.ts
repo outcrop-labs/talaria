@@ -30,6 +30,10 @@ interface Fixture {
     denied?: string[]
     access: Record<string, AppAccess>
   }>
+  routes: {
+    viewers: Record<string, { denied: string[]; appGrants: string[] }>
+    paths: Array<{ path: string; view: string | null; open: string[] }>
+  }
   enabledSetting: Array<{ about: string; absent?: boolean; stored?: unknown; slugs?: string[]; error?: boolean }>
   manifests: Array<{ about: string; dir: string; bytesBase64: string; listed: boolean }>
 }
@@ -73,6 +77,26 @@ describe('the shared app-grants fixture', () => {
       // The core views still answer off the denials Rust resolved.
       for (const d of viewer.denied ?? []) if (appViewFor(d) === null) expect(isViewDenied(d, grants), d).toBe(true)
       expect(isViewDenied('/inbox', grants)).toBe(false)
+    }
+  })
+
+  it('gives every route below an app surface to that surface\'s view, as Rust app_view_for does', () => {
+    expect(f.routes.paths.length).toBeGreaterThan(0)
+    for (const c of f.routes.paths) expect(appViewFor(c.path), c.path).toBe(c.view)
+  })
+
+  it('opens each route to exactly the viewers the fixture names, as Rust ViewGrants::denies does', () => {
+    const names = Object.keys(f.routes.viewers)
+    expect(names.length).toBeGreaterThan(0)
+    for (const c of f.routes.paths) {
+      for (const name of names) {
+        const v = f.routes.viewers[name]!
+        const denied = isViewDenied(c.path, { isAdmin: false, denied: v.denied, appGrants: v.appGrants })
+        expect(denied, `${c.path} for the ${name} viewer`).toBe(!c.open.includes(name))
+      }
+      // An admin holds every app view by role; a core denial still binds them.
+      const adminDenied = isViewDenied(c.path, { isAdmin: true, denied: ['/teams'], appGrants: [] })
+      expect(adminDenied, `${c.path} for an admin`).toBe(c.view === null && !c.open.length)
     }
   })
 

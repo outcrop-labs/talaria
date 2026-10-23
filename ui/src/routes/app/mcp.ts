@@ -100,6 +100,10 @@ export interface McpServerRow {
   authMode: 'org' | 'per-user'
   builtin: boolean
   appSlug: string | null
+  /** App servers: why the app is not serving — turned off, failed its build,
+   *  lost its mcp.ts. No agent carries the server meanwhile; its grants are
+   *  kept. Null = serving. */
+  appOff?: string | null
   oauthEnabled: boolean
   /** Header declarations captured at install (drive the credential forms). */
   requiredHeaders: HeaderDecl[]

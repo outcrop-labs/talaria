@@ -5,7 +5,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from 'vite'
 import viteTsConfigPaths from 'vite-tsconfig-paths'
-import { writeHeadHeaders } from './src/server/http'
+import { stampPeer, writeHeadHeaders } from './src/server/http'
 import { appRuntimeDev, appRuntimeHost } from './src/app-runtime/vite-plugin'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
@@ -85,6 +85,14 @@ function apiDev(): Plugin {
         const pathname = (req.url ?? '/').split('?')[0]!
         if (!pathname.startsWith('/api/') && !pathname.startsWith('/.well-known/')) return next()
         void (async () => {
+          // The caller hanging up aborts the request's signal — read off the
+          // RESPONSE closing unfinished, the rule server-entry.ts follows
+          // (clientGone): an app's server sees it as ctx.signal. Armed before
+          // the body is read, so a client that leaves mid-upload is seen.
+          const gone = new AbortController()
+          res.once('close', () => {
+            if (!res.writableFinished) gone.abort(new DOMException('the client disconnected', 'AbortError'))
+          })
           const mod = (await server.ssrLoadModule('/src/server/app.ts')) as {
             default: { fetch: (request: Request) => Promise<Response> }
           }
@@ -94,6 +102,9 @@ function apiDev(): Plugin {
           for (const [k, v] of Object.entries(req.headers)) {
             if (v) headers.set(k, Array.isArray(v) ? v.join(', ') : v)
           }
+          // Who is on the socket, stated by the host and never the client
+          // (http.ts PEER_HEADER) — the same stamp server-entry.ts writes.
+          stampPeer(headers, req.socket.remoteAddress)
           let body: Uint8Array<ArrayBuffer> | null = null
           if (req.method !== 'GET' && req.method !== 'HEAD') {
             body = await new Promise<Uint8Array<ArrayBuffer>>((resolveBody) => {
@@ -106,7 +117,7 @@ function apiDev(): Plugin {
           }
 
           const response = await mod.default.fetch(
-            new Request(url.toString(), { method: req.method, headers, body }),
+            new Request(url.toString(), { method: req.method, headers, body, signal: gone.signal }),
           )
           // writeHeadHeaders (not the Object.fromEntries one-liner) so dev
           // matches server-entry.ts on multi-cookie responses — Set-Cookie is
@@ -130,6 +141,8 @@ function apiDev(): Plugin {
           }
           res.end()
         })().catch((err) => {
+          // The client left mid-answer: routine, not a server error.
+          if (res.destroyed && !res.writableFinished) return
           console.error(`[api-dev] ${req.method} ${req.url}`, err)
           if (!res.headersSent) {
             res.writeHead(500, { 'content-type': 'text/plain' })
@@ -210,10 +223,11 @@ export default defineConfig({
   resolve: {
     dedupe: ['svelte', '@tanstack/svelte-query', 'sv-router', '@lucide/svelte'],
     // The SDK ids must resolve for app files OUTSIDE the Vite root, where the
-    // tsconfig-paths plugin doesn't reach ('/server' entry listed first — the
-    // bare id would otherwise prefix-match it).
+    // tsconfig-paths plugin doesn't reach (the '/server' and '/testing'
+    // entries listed first — the bare id would otherwise prefix-match them).
     alias: {
       '@talaria/sdk/server': resolve(here, 'src/sdk/server.ts'),
+      '@talaria/sdk/testing': resolve(here, 'src/sdk/testing.ts'),
       '@talaria/sdk': resolve(here, 'src/sdk/index.ts'),
     },
   },

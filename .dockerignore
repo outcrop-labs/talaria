@@ -1,7 +1,8 @@
 # Root build context — keep the image a build of the SOURCE, not the machine.
-# Deliberately NOT ignored: apps/ (apps compile into the bundle at build time,
-# including gitignored local apps that are part of local builds by design) and
-# scripts/ (fleet skills + chassis template ship into the runtime image).
+# Deliberately NOT ignored: scripts/ (fleet skills + chassis template ship into
+# the runtime image). apps/ is not ignored either, though no build step reads it
+# any more: an instance compiles its installed apps at runtime, from
+# TALARIA_APPS_DIR (see the Dockerfile's note on the build stage's COPY).
 
 .git
 .git/**
@@ -10,9 +11,9 @@
 
 node_modules
 **/node_modules
-# …except an app's own: apps are self-contained codebases and compile into the
-# bundle as-is (apps/README.md) — their node_modules are source, not something
-# this image rebuilds (ui/ and mcp/ get fresh installs; apps/ don't).
+# …except an app's own: apps are self-contained codebases (apps/README.md) —
+# their node_modules are source, not something this image rebuilds (ui/ and
+# mcp/ get fresh installs; apps/ don't).
 !apps/*/node_modules
 **/dist
 **/coverage

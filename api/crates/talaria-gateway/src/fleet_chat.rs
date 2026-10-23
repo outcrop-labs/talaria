@@ -22,13 +22,23 @@
 // (routes/llm_chat.rs) serves workspace API keys against provider endpoints;
 // this path serves TALKING TO THE AGENTS THEMSELVES, and only the comms/chat
 // planes do it.
+//
+// WHERE A TURN'S SPEND LANDS: not here. The relay books every call the agent
+// makes on its own gateway key; what this door adds is WHOSE turn those calls
+// belong to. Each caller hands over its `TurnAttribution` (the flow's source,
+// conversation or run, ticket), and the turn's conversation id — the session
+// id we created, or the id Hermes answers in `X-Hermes-Session-Id` on the
+// completions arm — is recorded under it. The agent's talaria-events plugin
+// ties the affinity key Hermes stamps on the turn's calls to that same id, so
+// the relay can stamp the flow on every row it books (usage.rs, "Attribution").
 
 use axum::body::Bytes;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 
+use crate::fleet_lost_turns::{LostTurnRetry, heal_lost_turn};
 use crate::provider::http;
-use crate::usage::{TurnRegistration, register_turn};
+use crate::usage::{TurnAttribution, affinity_key, backfill_attribution, record_attribution};
 use crate::vault::{SecretVault, seal_content};
 use talaria_fleet_layout::{ManifestEntry, describe_agent, read_manifest};
 
@@ -54,7 +64,7 @@ const HEADERS_WINDOW: Duration = Duration::from_secs(300);
 /// reading, and a route answers a person who just pressed the button.
 /// Neither can wait the turn's five minutes on a container that accepted
 /// TCP and went quiet.
-const CONTROL_WINDOW: Duration = Duration::from_secs(10);
+pub(crate) const CONTROL_WINDOW: Duration = Duration::from_secs(10);
 
 /// One OpenAI-style streamed reply, or a canned one. `status` is the upstream
 /// (or canned = 200) status; the body is raw SSE bytes the caller parses with
@@ -71,6 +81,11 @@ pub struct ChatStream {
     /// `ok()`. The persona transport reads this and fails the call so the
     /// sentence can never be persisted as an agent's work.
     pub canned: Option<&'static str>,
+    /// The conversation id Hermes answered in `X-Hermes-Session-Id` — on the
+    /// completions arm, Hermes' own id for the conversation (`api-<digest>`
+    /// of its opening), which is the key every call of the turn is metered
+    /// under. None on a canned or synthesized reply.
+    pub hermes_session: Option<String>,
 }
 
 impl ChatStream {
@@ -119,7 +134,16 @@ pub fn persona_model_options(effort: Option<&str>) -> Option<Value> {
 /// `chat_payload`). `messages` is the OpenAI history (system + turns, content
 /// string or parts). `wait_ms` is the hold window; None is the two-minute
 /// default.
-pub async fn proxy_chat(payload: &Value, wait_ms: Option<u64>) -> ChatStream {
+///
+/// `attribution` is the flow this turn belongs to: the conversation key
+/// Hermes answers is recorded under it, so every call the agent makes for
+/// the turn is metered as that flow's. None leaves the turn's calls
+/// `unattended` at the relay — still booked, under the agent.
+pub async fn proxy_chat(
+    payload: &Value,
+    wait_ms: Option<u64>,
+    attribution: Option<TurnAttribution>,
+) -> ChatStream {
     let model = payload
         .get("model")
         .and_then(Value::as_str)
@@ -139,7 +163,14 @@ pub async fn proxy_chat(payload: &Value, wait_ms: Option<u64>) -> ChatStream {
     }
     report_sealed(&vault, &model);
 
-    match hold_for_agent(&model, AgentRequest::ChatCompletions { payload }, wait_ms).await {
+    match hold_for_agent(
+        &model,
+        AgentRequest::ChatCompletions { payload },
+        wait_ms,
+        attribution,
+    )
+    .await
+    {
         Ok(stream) => stream,
         // The completions arm names no session, so it has none to lose; the
         // canned sentence is the honest answer if the type ever says
@@ -172,12 +203,24 @@ pub async fn proxy_chat(payload: &Value, wait_ms: Option<u64>) -> ChatStream {
 /// ([`persona_model_options`]).
 ///
 /// `history_expected` says the conversation has been driven through this
-/// session before, so the session MUST already exist in the container: a
-/// create that answers 201 then means the state volume was lost (a re-hire
-/// on the same slug, a swapped volume, a host restore) and Hermes would
-/// answer from an empty room while the transcript on screen says otherwise.
-/// That turn is `None` — the caller sends the full history instead — rather
-/// than a stream from a session that knows nothing.
+/// session before, so the session MUST already exist in the container. Such a
+/// session is LOOKED UP, never created: one that is not there means the state
+/// volume was lost (a re-hire on the same slug, a swapped volume, a host
+/// restore) or the session was deleted, and Hermes would answer from an empty
+/// room while the transcript on screen says otherwise. That turn is `None` —
+/// the caller sends the full history instead — rather than a stream from a
+/// session that knows nothing. Nothing is created on the way out either: an
+/// empty room made here would be found by the NEXT turn, which would then send
+/// only its new message into it. A create Hermes refuses as `session_deleted`
+/// is `None` the same way, since v0.22 never lets a deleted id be reused.
+///
+/// A turn Hermes refuses because the session LOST an earlier turn in a
+/// non-graceful restart is repaired here, once, before the caller sees it
+/// (`heal_lost_turn`).
+///
+/// `attribution` is `proxy_chat`'s: here the key is `conversation_id`
+/// itself, recorded before the first attempt so the agent's first call
+/// already finds it.
 #[allow(clippy::too_many_arguments)] // one turn's facts, each named at the call site
 pub async fn proxy_session_turn(
     agent_model: &str,
@@ -187,6 +230,7 @@ pub async fn proxy_session_turn(
     effort: Option<&str>,
     wait_ms: Option<u64>,
     history_expected: bool,
+    attribution: Option<TurnAttribution>,
 ) -> Option<ChatStream> {
     let mut vault = SecretVault::default();
     let body = session_turn_body(message, system_message, effort, &mut vault);
@@ -200,6 +244,7 @@ pub async fn proxy_session_turn(
             history_expected,
         },
         wait_ms,
+        attribution,
     )
     .await
     .ok()
@@ -248,16 +293,18 @@ enum AgentRequest {
         conversation_id: String,
         body: Value,
         /// The conversation was driven through this session before, so the
-        /// session must already be there: a fresh create is a lost volume,
-        /// not a first turn.
+        /// session must already be there: it is looked up, never created,
+        /// and a lookup that finds nothing is a lost session, not a first
+        /// turn.
         history_expected: bool,
     },
 }
 
-/// The pinned session this turn expected to find is gone: the container
-/// answered the create with a fresh session where a transcript should have
-/// been. Not a hold and not a canned reply — the caller has the full history
-/// in hand and sends it the other way.
+/// The pinned session this turn expected to find is gone: the lookup of a
+/// session that carried turns answered `session_not_found` (a lost state
+/// volume), or a create was refused as `session_deleted`. Not a hold and not a
+/// canned reply — the caller has the full history in hand and sends it the
+/// other way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionLost;
 
@@ -292,39 +339,33 @@ impl AgentRequest {
                 history_expected,
             } => {
                 // The session must exist before a turn can land on it, and the
-                // create is the only place we can learn that it doesn't. A
-                // refusal here is treated exactly like a gateway that isn't
-                // serving yet — on a container that is still booting that is
-                // precisely what it is.
-                match ensure_session(entry, conversation_id).await {
+                // look-up (or the create) is the only place we can learn that
+                // it doesn't. A refusal here is treated exactly like a gateway
+                // that isn't serving yet — on a container that is still
+                // booting that is precisely what it is.
+                match ensure_session(entry, conversation_id, *history_expected).await {
                     SessionCreate::NotReady => return Opened::NotYet,
-                    SessionCreate::Existing => {}
-                    // A fresh session where a transcript was expected is the
-                    // state-volume loss M5 names; said once per conversation,
-                    // because the caller will come back this way every turn
-                    // until the history is rebuilt.
-                    SessionCreate::Fresh if *history_expected => {
+                    SessionCreate::Existing | SessionCreate::Fresh => {}
+                    // The room is gone: the state-volume loss M5 names, or a
+                    // deleted session. Said once per conversation, because the
+                    // caller comes back this way every turn from now on.
+                    SessionCreate::Lost(why) => {
                         if lost_sessions_first_sight(conversation_id) {
                             tracing::warn!(
-                                "[fleet] {}: session {conversation_id} was created fresh where a \
-                                 transcript was expected — the Hermes state volume was lost; this \
+                                "[fleet] {}: session {conversation_id} is gone — {why}; this \
                                  conversation is sent with its full history instead",
                                 entry.url
                             );
                         }
                         return Opened::Lost;
                     }
-                    SessionCreate::Fresh => {}
                 }
-                match open_stream(
-                    agent_post(
-                        entry,
-                        &format!("/api/sessions/{conversation_id}/chat/stream"),
-                    ),
-                    body,
-                )
-                .await
-                {
+                let path = format!("/api/sessions/{conversation_id}/chat/stream");
+                match open_stream(agent_post(entry, &path), body).await {
+                    Some(stream) if stream.ok() => Opened::Stream(heal_lost_turn(
+                        stream,
+                        LostTurnRetry::over_http(entry, conversation_id, path, body.clone()),
+                    )),
                     Some(stream) => Opened::Stream(stream),
                     None => Opened::NotYet,
                 }
@@ -352,25 +393,31 @@ fn lost_sessions_first_sight(conversation_id: &str) -> bool {
 /// `Err(SessionLost)` is the session arm's one way out that is not a stream:
 /// the room it expected is gone, and the caller decides what to send instead.
 ///
-/// THE TURN IS REGISTERED HERE — once, before the first attempt reaches the
-/// container, and for as long as the stream it opens is being read. This is
-/// the one door every Talaria-driven persona turn goes through (both arms,
-/// every caller: chat, channel, harness), and the register is what lets the
-/// gateway relay tell these turns — whose spend the driving flow ledgers —
-/// from a turn Hermes started by itself (a cron), whose spend it must meter
-/// (usage.rs, "The in-flight turn register"). It is counted before the
-/// request goes out because the agent's tool loop, the calls being judged,
-/// runs during the headers wait; it rides the stream so the consumer's end
-/// — clean, hung up, errored — is the turn's end; and a hold that gives up
-/// with a canned reply drops it on the way out.
+/// THE TURN'S KEY IS RECORDED HERE — the one door every Talaria-driven
+/// persona turn goes through (both arms, every caller: chat, channel,
+/// harness). The session arm knows its key before it sends anything, so it
+/// is recorded before the first attempt; the completions arm learns it from
+/// the response headers, and records it then, with a backfill for the calls
+/// that finished first. Either way the stream carries a second backfill to
+/// its end — clean, hung up, errored — for a call that raced the record.
 async fn hold_for_agent(
     model: &str,
     request: AgentRequest,
     wait_ms: Option<u64>,
+    attribution: Option<TurnAttribution>,
 ) -> Result<ChatStream, SessionLost> {
+    if let (
+        Some(a),
+        AgentRequest::SessionTurn {
+            conversation_id, ..
+        },
+    ) = (&attribution, &request)
+        && let Some(key) = affinity_key(Some(conversation_id))
+    {
+        record(a, &key).await;
+    }
     let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms.unwrap_or(120_000));
     let mut attempt: u32 = 0;
-    let mut turn: Option<TurnRegistration> = None;
     loop {
         let manifest = read_manifest().await;
         let entry = manifest.iter().find(|m| m.model == model);
@@ -381,11 +428,14 @@ async fn hold_for_agent(
         }
 
         if let Some(entry) = entry {
-            if turn.is_none() {
-                turn = register_turn(&turn_subject(&manifest, entry)).await;
-            }
             match request.open(entry).await {
-                Opened::Stream(stream) => return Ok(bind_turn(stream, turn)),
+                Opened::Stream(stream) => {
+                    // Hermes' approval requests on this turn are refused
+                    // here, and recorded (fleet_approvals.rs).
+                    let subject = turn_subject(&manifest, entry);
+                    let stream = crate::fleet_approvals::refuse_approvals(stream, entry, &subject);
+                    return Ok(attribute_stream(stream, &request, attribution).await);
+                }
                 Opened::Lost => return Err(SessionLost),
                 Opened::NotYet => {}
             }
@@ -402,13 +452,26 @@ async fn hold_for_agent(
     }
 }
 
+/// The key a turn's calls reach the relay under: the session id we created,
+/// or on the completions arm the id Hermes answered for the conversation.
+/// None when the completions arm answered no usable id (a Hermes without the
+/// header, a synthesized error) — the turn's calls then stay `unattended`.
+fn turn_key(request: &AgentRequest, stream: &ChatStream) -> Option<String> {
+    match request {
+        AgentRequest::SessionTurn {
+            conversation_id, ..
+        } => affinity_key(Some(conversation_id)),
+        AgentRequest::ChatCompletions { .. } => affinity_key(stream.hermes_session.as_deref()),
+    }
+}
+
 /// The name a turn is registered under: the agent's model id — the relay's
 /// subject for that agent's key, and the ledger namespace its rows land in.
 /// A tier is dialed as its own manifest row, `<agent model>-<tier>`, pointing
 /// at the same container as the agent's row; the agent's row is the shortest
 /// model sharing the container's url, so a tiered turn registers under the
 /// agent and not under a name the relay never sees.
-fn turn_subject(manifest: &[ManifestEntry], entry: &ManifestEntry) -> String {
+pub(crate) fn turn_subject(manifest: &[ManifestEntry], entry: &ManifestEntry) -> String {
     manifest
         .iter()
         .filter(|m| m.url == entry.url)
@@ -418,15 +481,71 @@ fn turn_subject(manifest: &[ManifestEntry], entry: &ManifestEntry) -> String {
         .to_string()
 }
 
-/// The stream with its registration riding along: the turn stays counted
-/// until the consumer lets go of the body — the end of a drain, a hang-up, an
-/// error — and no later.
-struct TurnBound {
-    inner: ByteStream,
-    _turn: TurnRegistration,
+/// Record a turn's key, saying so when it cannot: the turn goes on, and its
+/// calls are still booked — under the agent, `unattended`.
+async fn record(a: &TurnAttribution, key: &str) {
+    if let Err(e) = record_attribution(a, key).await {
+        tracing::warn!(
+            "[fleet] {}: could not record turn {key} as {} spend: {e}",
+            a.agent_model,
+            a.source
+        );
+    }
 }
 
-impl futures_util::Stream for TurnBound {
+/// Claim the rows already booked under `key`, detached. `try_current`: a
+/// stream dropped outside the runtime at shutdown loses its backfill, which
+/// leaves those rows `unattended` — still counted, never panicking.
+fn spawn_backfill(pg: &sqlx::PgPool, agent_model: &str, key: &str) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let (pg, agent_model, key) = (pg.clone(), agent_model.to_string(), key.to_string());
+    handle.spawn(async move {
+        if let Err(e) = backfill_attribution(&pg, &agent_model, &key).await {
+            tracing::warn!("[fleet] {agent_model}: backfilling turn {key} failed: {e}");
+        }
+    });
+}
+
+/// Tie a turn's attribution to the stream it covers: the completions arm's
+/// key is recorded now that the headers named it, and either arm's stream
+/// backfills once more when the consumer lets go of it.
+async fn attribute_stream(
+    mut stream: ChatStream,
+    request: &AgentRequest,
+    attribution: Option<TurnAttribution>,
+) -> ChatStream {
+    let Some(a) = attribution else {
+        return stream;
+    };
+    let Some(key) = turn_key(request, &stream) else {
+        return stream;
+    };
+    if matches!(request, AgentRequest::ChatCompletions { .. }) {
+        record(&a, &key).await;
+        spawn_backfill(&a.pg, &a.agent_model, &key);
+    }
+    let inner = std::mem::replace(&mut stream.body, Box::pin(futures_util::stream::empty()));
+    stream.body = Box::pin(Attributed {
+        inner,
+        pg: a.pg,
+        agent_model: a.agent_model,
+        key,
+    });
+    stream
+}
+
+/// The stream with its turn's key riding along, so the end of the read —
+/// however it ends — claims any row that raced the record.
+struct Attributed {
+    inner: ByteStream,
+    pg: sqlx::PgPool,
+    agent_model: String,
+    key: String,
+}
+
+impl futures_util::Stream for Attributed {
     type Item = reqwest::Result<Bytes>;
 
     fn poll_next(
@@ -437,21 +556,17 @@ impl futures_util::Stream for TurnBound {
     }
 }
 
-/// Tie a registration to the stream it covers. No registration (the register
-/// was unreachable) leaves the stream as it was.
-fn bind_turn(mut stream: ChatStream, turn: Option<TurnRegistration>) -> ChatStream {
-    if let Some(turn) = turn {
-        let inner = std::mem::replace(&mut stream.body, Box::pin(futures_util::stream::empty()));
-        stream.body = Box::pin(TurnBound { inner, _turn: turn });
+impl Drop for Attributed {
+    fn drop(&mut self) {
+        spawn_backfill(&self.pg, &self.agent_model, &self.key);
     }
-    stream
 }
 
 /// An authenticated POST to one agent's own gateway. The session arm and the
 /// chat arm go through the SAME door with the SAME bearer — the manifest row's
 /// key, which the renderer put in the container as its API_SERVER_KEY — so the
 /// key handling can only be got right or wrong once.
-fn agent_post(entry: &ManifestEntry, path: &str) -> reqwest::RequestBuilder {
+pub(crate) fn agent_post(entry: &ManifestEntry, path: &str) -> reqwest::RequestBuilder {
     let req = http()
         .post(format!("{}{path}", entry.url))
         .header("content-type", "application/json");
@@ -461,7 +576,7 @@ fn agent_post(entry: &ManifestEntry, path: &str) -> reqwest::RequestBuilder {
 /// The same door, read-only — the session reads (`/api/sessions/{id}` and its
 /// messages) ask Hermes about a transcript it is already holding. Same bearer
 /// as the POST side for the same reason: one place to get the key right.
-fn agent_get(entry: &ManifestEntry, path: &str) -> reqwest::RequestBuilder {
+pub(crate) fn agent_get(entry: &ManifestEntry, path: &str) -> reqwest::RequestBuilder {
     with_bearer(entry, http().get(format!("{}{path}", entry.url)))
 }
 
@@ -496,7 +611,7 @@ fn with_bearer(entry: &ManifestEntry, req: reqwest::RequestBuilder) -> reqwest::
 /// copy of it into the session, invisibly to the step's checkpoint. Those
 /// come back as the error they are (the upstream status as-is, or a
 /// synthesized 504 for the silent one) and the caller fails the turn.
-async fn open_stream(req: reqwest::RequestBuilder, body: &Value) -> Option<ChatStream> {
+pub(crate) async fn open_stream(req: reqwest::RequestBuilder, body: &Value) -> Option<ChatStream> {
     let upstream = match tokio::time::timeout(HEADERS_WINDOW, req.json(body).send()).await {
         Ok(Ok(upstream)) => upstream,
         Ok(Err(e)) if failed_before_any_byte(&e) => return None,
@@ -524,22 +639,33 @@ async fn open_stream(req: reqwest::RequestBuilder, body: &Value) -> Option<ChatS
         .and_then(|v| v.to_str().ok())
         .unwrap_or("text/event-stream")
         .to_string();
+    let hermes_session = upstream
+        .headers()
+        .get("x-hermes-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     Some(ChatStream {
         status,
         content_type,
         body: Box::pin(upstream.bytes_stream()),
         canned: None,
+        hermes_session,
     })
 }
 
-/// What the session create answered — the two successes are kept apart
-/// because they mean different things to a turn that expected a transcript.
+/// What the session look-up or create answered — the two successes are kept
+/// apart because they mean different things to a turn that expected a
+/// transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionCreate {
-    /// 2xx: the container made the session just now.
+    /// 2xx on a create: the container made the session just now.
     Fresh,
-    /// 409 `session_exists`: an earlier turn made it — the steady state.
+    /// The session is there: a look-up found it, or a create answered 409
+    /// `session_exists` because an earlier turn made it — the steady state.
     Existing,
+    /// The room is gone for good — the reason is for the log line. The caller
+    /// sends the full history the other way, every turn from here on.
+    Lost(&'static str),
     /// Anything else: not serving yet, or a container refusing the room.
     NotReady,
 }
@@ -580,58 +706,102 @@ fn error_stream(status: u16, text: String) -> ChatStream {
         )
         .boxed(),
         canned: None,
+        hermes_session: None,
     }
 }
 
-/// Create the Hermes session this turn lands on, idempotently: a success is a
-/// fresh session, and 409 `session_exists` is the one an earlier turn made —
-/// the normal answer for every turn but the first. Anything else (including a
+/// Make sure the Hermes session this turn lands on is there.
+///
+/// A session that has carried turns before (`history_expected`) is LOOKED UP
+/// (`GET /api/sessions/{id}`), never created: Hermes answering
+/// `session_not_found` means the room is gone, and creating an empty one here
+/// would be found by the next turn, which would then send only its new message
+/// into a session that knows nothing. Every other session is CREATED,
+/// idempotently: a success is a fresh session, and 409 `session_exists` is the
+/// one an earlier turn made. A 409 `session_deleted` is a room that is gone for
+/// good — v0.22 fences a deleted id so it is never reused — and treating it as
+/// "not ready" held every turn for two minutes and then answered with the
+/// "restarting" sentence while the agent was up. Anything else (including a
 /// transport error) reads as "this container is not ready", which is the same
-/// answer the stream itself gives while a container boots. Fresh and existing
-/// are reported apart: the caller knows whether a transcript should have
-/// been there, and a fresh room where one was expected is not a success.
+/// answer the stream itself gives while a container boots.
 ///
 /// The session carries no `system_prompt` of its own on purpose: every turn
 /// sends its own ephemeral one, so there is no stored prompt here to go stale
 /// against the workspace it was rendered from. The headers window is the same
-/// one the stream uses — a create that answers at all answers in milliseconds,
+/// one the stream uses — a call that answers at all answers in milliseconds,
 /// and the bound exists for the container that accepts TCP and then says
 /// nothing.
-async fn ensure_session(entry: &ManifestEntry, conversation_id: &str) -> SessionCreate {
-    let body = json!({ "id": conversation_id });
-    let sent = tokio::time::timeout(
-        HEADERS_WINDOW,
-        agent_post(entry, "/api/sessions").json(&body).send(),
-    )
-    .await;
-    let Ok(Ok(res)) = sent else {
+async fn ensure_session(
+    entry: &ManifestEntry,
+    conversation_id: &str,
+    history_expected: bool,
+) -> SessionCreate {
+    let (verb, request) = if history_expected {
+        (
+            "GET /api/sessions/{id}",
+            agent_get(entry, &format!("/api/sessions/{conversation_id}")),
+        )
+    } else {
+        (
+            "POST /api/sessions",
+            agent_post(entry, "/api/sessions").json(&json!({ "id": conversation_id })),
+        )
+    };
+    let Ok(Ok(res)) = tokio::time::timeout(HEADERS_WINDOW, request.send()).await else {
         return SessionCreate::NotReady;
     };
-    let status = res.status();
-    if status.is_success() {
-        return SessionCreate::Fresh;
-    }
-    // A 409 is "exists" only when it says so: any other conflict is a
-    // container refusing the session, and the stream POST would then be
-    // talking to a room that was never made.
-    if status == reqwest::StatusCode::CONFLICT {
+    let status = res.status().as_u16();
+    let code = if (200..300).contains(&status) {
+        None
+    } else {
         let body: Value = res.json().await.unwrap_or(Value::Null);
-        return if body["error"]["code"] == "session_exists" {
-            SessionCreate::Existing
-        } else {
-            SessionCreate::NotReady
-        };
-    }
-    // A Hermes without the session API at all. The hold below treats it as
-    // a container still booting, which is the one thing it is not — so the
-    // log names it, because nothing else in a two-minute hold will.
-    if status == reqwest::StatusCode::NOT_FOUND {
+        body["error"]["code"].as_str().map(str::to_string)
+    };
+    let answer = if history_expected {
+        session_lookup_answer(status, code.as_deref())
+    } else {
+        session_create_answer(status, code.as_deref())
+    };
+    // A Hermes without the session API at all: its 404 carries no session
+    // code. The hold treats it as a container still booting, which is the one
+    // thing it is not — so the log names it, because nothing else in a
+    // two-minute hold will.
+    if answer == SessionCreate::NotReady && status == 404 {
         eprintln!(
-            "[fleet] {}: POST /api/sessions answered 404 — this Hermes has no session API; the agent cannot be pinned",
+            "[fleet] {}: {verb} answered 404 — this Hermes has no session API; the agent cannot be pinned",
             entry.url
         );
     }
-    SessionCreate::NotReady
+    answer
+}
+
+/// What a session LOOK-UP answered, as the turn reads it. Only a 2xx is the
+/// room, and only Hermes' own `session_not_found` says it is gone — a bare 404
+/// is a Hermes with no session API, which is "not ready" like everything else.
+fn session_lookup_answer(status: u16, code: Option<&str>) -> SessionCreate {
+    match (status, code) {
+        (200..=299, _) => SessionCreate::Existing,
+        (404, Some("session_not_found")) => SessionCreate::Lost(
+            "a transcript was expected and the session is not in the container (its state volume \
+             was lost, or the session was deleted)",
+        ),
+        _ => SessionCreate::NotReady,
+    }
+}
+
+/// What a session CREATE answered. A 409 is "exists" only when it says so,
+/// and "deleted" only when it says that: any other conflict is a container
+/// refusing the session, and the stream POST would then be talking to a room
+/// that was never made.
+fn session_create_answer(status: u16, code: Option<&str>) -> SessionCreate {
+    match (status, code) {
+        (200..=299, _) => SessionCreate::Fresh,
+        (409, Some("session_exists")) => SessionCreate::Existing,
+        (409, Some("session_deleted")) => {
+            SessionCreate::Lost("the session was deleted, and Hermes never reuses a deleted id")
+        }
+        _ => SessionCreate::NotReady,
+    }
 }
 
 /// The agent stayed down past the hold window: say so honestly, streamed as a
@@ -672,6 +842,7 @@ fn canned_chat_stream(text: &str, canned: &'static str) -> ChatStream {
         content_type: "text/event-stream".into(),
         body,
         canned: Some(canned),
+        hermes_session: None,
     }
 }
 
@@ -949,7 +1120,7 @@ fn parse_message_count(body: &Value) -> Option<i64> {
 /// error code when the body names one (`run_not_found`, `invalid_steer_input`
 /// — a closed vocabulary Hermes owns). THE BODY'S PROSE NEVER TRAVELS: an
 /// agent's own words can be in there, and this string goes back into a chat.
-async fn control_failure(res: reqwest::Response) -> String {
+pub(crate) async fn control_failure(res: reqwest::Response) -> String {
     let status = res.status().as_u16();
     match res
         .json::<Value>()
@@ -1412,6 +1583,10 @@ fn parse_session_frame(
         // acknowledgement is nothing to land.
         "run.steered" => Some(Vec::new()),
         "run.queued" => Some(Vec::new()),
+        // Hermes asking whoever reads the stream to approve a flagged call.
+        // The door answered it as the bytes went past (fleet_approvals.rs);
+        // the consumer has nothing to land.
+        "approval.request" => Some(Vec::new()),
         "error" => Some(vec![AgentStreamEvent::Error {
             message: session_error_message(json),
         }]),
@@ -1515,35 +1690,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_turn_registers_under_the_agent_whatever_tier_it_dials() {
-        let row = |model: &str, url: &str| ManifestEntry {
-            model: model.into(),
-            url: url.into(),
-            key: None,
+    fn a_turn_is_metered_under_the_session_we_made_or_the_id_hermes_answered() {
+        let stream = |hermes_session: Option<&str>| ChatStream {
+            status: 200,
+            content_type: "text/event-stream".into(),
+            body: Box::pin(futures_util::stream::empty()),
+            canned: None,
+            hermes_session: hermes_session.map(str::to_string),
         };
-        let manifest = vec![
-            row("x-eng", "http://agent-eng:8642"),
-            row("x-eng-fast", "http://agent-eng:8642"),
-            row("x-eng-deep", "http://agent-eng:8642"),
-            row("y-ops", "http://agent-ops:8642"),
-        ];
-        assert_eq!(turn_subject(&manifest, &manifest[0]), "x-eng");
+        let session = AgentRequest::SessionTurn {
+            conversation_id: "4f7c2a1e-9d3b-4c8a-b1f2-0e6d5a4c3b2a".into(),
+            body: json!({}),
+            history_expected: false,
+        };
+        // The session arm's key is ours, whatever the container answered.
         assert_eq!(
-            turn_subject(&manifest, &manifest[2]),
-            "x-eng",
-            "a tier row registers under the agent sharing its container"
+            turn_key(&session, &stream(Some("api-0123456789abcdef"))).as_deref(),
+            Some("4f7c2a1e-9d3b-4c8a-b1f2-0e6d5a4c3b2a")
         );
         assert_eq!(
-            turn_subject(&manifest, &manifest[3]),
-            "y-ops",
-            "another container is another agent"
+            turn_key(&session, &stream(None)).as_deref(),
+            Some("4f7c2a1e-9d3b-4c8a-b1f2-0e6d5a4c3b2a")
         );
-        let alone = vec![row("x-eng-fast", "http://agent-eng:8642")];
+        // The completions arm's key is the one Hermes named for it.
+        let completions = AgentRequest::ChatCompletions { payload: json!({}) };
         assert_eq!(
-            turn_subject(&alone, &alone[0]),
-            "x-eng-fast",
-            "a row with no sibling is its own subject"
+            turn_key(&completions, &stream(Some("api-0123456789abcdef"))).as_deref(),
+            Some("api-0123456789abcdef")
         );
+        // No header (an older Hermes, a synthesized error): no key, and the
+        // turn's calls stay unattended rather than claiming someone else's.
+        assert_eq!(turn_key(&completions, &stream(None)), None);
+        assert_eq!(turn_key(&completions, &stream(Some("bad key"))), None);
     }
 
     #[test]
@@ -2130,6 +2308,27 @@ mod tests {
         assert_eq!(events, vec![AgentStreamEvent::Stopped]);
     }
 
+    /// An approval request is the door's to answer (fleet_approvals.rs), on
+    /// either stream: the consumer lands nothing for it, not a tool row and
+    /// not an error, and the frames around it read as they always did.
+    #[test]
+    fn an_approval_request_lands_nothing_on_either_stream() {
+        for run in ["run_1", "chatcmpl-1"] {
+            let mut p = AgentStreamParser::new();
+            let events = p.feed(
+                format!(
+                    "event: approval.request\ndata: {{\"execution_generation\": 1, \"command\": \"rm -rf /tmp/x\", \"description\": \"delete in root path\", \"request_id\": \"q1\", \"event\": \"approval.request\", \"run_id\": \"{run}\", \"choices\": [\"once\", \"deny\"]}}\n\nevent: assistant.delta\ndata: {{\"message_id\": \"m1\", \"delta\": \"ok\", \"run_id\": \"{run}\"}}\n\n"
+                )
+                .as_bytes(),
+            );
+            assert_eq!(
+                events,
+                vec![AgentStreamEvent::Content { text: "ok".into() }],
+                "{run}"
+            );
+        }
+    }
+
     /// Three runs of one tool inside one reply are three calls — three ids,
     /// three rows — and each call's completion folds into ITS row.
     #[test]
@@ -2471,5 +2670,42 @@ mod tests {
         assert_eq!(collected.len(), 3); // one two [DONE]
         assert!(collected[0].starts_with(b"data: {"));
         assert_eq!(&*collected[2], b"data: [DONE]\n\n");
+    }
+
+    /// A session that carried turns before is looked up, and only Hermes' own
+    /// `session_not_found` says the room is gone. A bare 404 is a Hermes with
+    /// no session API, which waits like a container still booting.
+    #[test]
+    fn a_session_look_up_reads_gone_only_when_hermes_says_so() {
+        assert_eq!(session_lookup_answer(200, None), SessionCreate::Existing);
+        assert!(matches!(
+            session_lookup_answer(404, Some("session_not_found")),
+            SessionCreate::Lost(_)
+        ));
+        assert_eq!(session_lookup_answer(404, None), SessionCreate::NotReady);
+        assert_eq!(session_lookup_answer(503, None), SessionCreate::NotReady);
+        assert_eq!(
+            session_lookup_answer(401, Some("invalid_api_key")),
+            SessionCreate::NotReady
+        );
+    }
+
+    /// A create that Hermes refuses as `session_deleted` is a room gone for
+    /// good, not a container still coming up: the id is fenced and never
+    /// reused, so holding the turn for two minutes and answering "restarting"
+    /// was wrong every time.
+    #[test]
+    fn a_deleted_session_is_lost_not_a_container_booting() {
+        assert_eq!(session_create_answer(201, None), SessionCreate::Fresh);
+        assert_eq!(
+            session_create_answer(409, Some("session_exists")),
+            SessionCreate::Existing
+        );
+        assert!(matches!(
+            session_create_answer(409, Some("session_deleted")),
+            SessionCreate::Lost(_)
+        ));
+        assert_eq!(session_create_answer(409, None), SessionCreate::NotReady);
+        assert_eq!(session_create_answer(404, None), SessionCreate::NotReady);
     }
 }

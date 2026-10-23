@@ -1,6 +1,6 @@
 // One app = one standalone Vite build. Client chunk + CSS + optional
-// server/mcp chunks, every shared specifier external and rewritten to the
-// host's /runtime/rt-*.js entries. A bundled svelte is a build error
+// server/mcp/harnesses chunks, every shared specifier external and rewritten
+// to the host's /runtime/rt-*.js entries. A bundled svelte is a build error
 // (`effect_orphan` at runtime), not a surprise later.
 //
 // Changing what this file emits, or how the host reads it? Bump BUILD_RECIPE
@@ -21,7 +21,7 @@ import {
   shimFileName,
 } from '@/app-runtime/specifiers'
 import { sourceKey } from './key'
-import { appBuildKeyDir, appSrc, uiRoot } from './paths'
+import { appBuildKeyDir, appDir, clientlessError, declaredSurfacesAt, harnessSourceFiles, manifestError, uiRoot } from './paths'
 import { pruneSupersededBuilds, readCurrent, writeCurrent, type AppBuildCurrent } from './status'
 
 function externalsGuard(): Plugin {
@@ -105,9 +105,10 @@ async function buildClient(appDir: string, outDir: string): Promise<void> {
   if (existsSync(leftover)) rmSync(leftover)
 }
 
-/** Where an SSR build (server.ts, mcp.ts) writes into the shared build-key
- *  directory. Its entry is server.js or mcp.js; every chunk and asset it
- *  splits off goes under `_server/` or `_mcp/`. Vite's defaults would put
+/** Where an SSR build (server.ts, mcp.ts, harnesses/) writes into the shared
+ *  build-key directory. Its entry is server.js, mcp.js or harnesses.js; every
+ *  chunk and asset it splits off goes under `_server/`, `_mcp/` or
+ *  `_harnesses/`. Vite's defaults would put
  *  them in `assets/`, beside the client's files, and the /app-builds/ door
  *  serves `assets/**` to anyone holding a grant on the app — so a dynamic
  *  import() in server.ts would ship that piece of the server to the browser.
@@ -115,13 +116,23 @@ async function buildClient(appDir: string, outDir: string): Promise<void> {
  *  writes, and the door serves no top-level directory but `assets/`
  *  (app-builds-door.ts). */
 export function serverishFileNames(outFile: string): { entryFileNames: string; chunkFileNames: string; assetFileNames: string } {
-  const mcp = outFile.endsWith('mcp.js')
-  const dir = mcp ? '_mcp' : '_server'
+  const entry = outFile.endsWith('mcp.js') ? 'mcp.js' : outFile.endsWith('harnesses.js') ? 'harnesses.js' : 'server.js'
+  const dir = `_${entry.slice(0, -'.js'.length)}`
   return {
-    entryFileNames: mcp ? 'mcp.js' : 'server.js',
+    entryFileNames: entry,
     chunkFileNames: `${dir}/[name]-[hash].js`,
     assetFileNames: `${dir}/[name]-[hash][extname]`,
   }
+}
+
+/** The entry `harnesses.js` is built from: one LAZY import per file under
+ *  `harnesses/`, keyed by file name. Lazy, so each file is its own chunk and
+ *  the host imports them one at a time — a module that throws at import costs
+ *  its own harness, never the app's others (app-harnesses.ts). The host reads
+ *  `harnesses` off the built entry (app-load.ts `loadAppHarnesses`). */
+export function harnessesEntrySource(dir: string, files: readonly string[]): string {
+  const rows = files.map((f) => `  ${JSON.stringify(f)}: () => import(${JSON.stringify(join(dir, f))}),`)
+  return `export const harnesses = {\n${rows.join('\n')}\n}\n`
 }
 
 async function buildServerish(entry: string, outFile: string): Promise<void> {
@@ -164,27 +175,77 @@ function dirBytes(dir: string): number {
 }
 
 function listFiles(dir: string): string[] {
-  const names = ['app.js', 'app.css', 'server.js', 'mcp.js']
+  const names = ['app.js', 'app.css', 'server.js', 'mcp.js', 'harnesses.js']
   return names.filter((n) => existsSync(join(dir, n)))
+}
+
+/** An app without app.ts builds only when its manifest declares no surface
+ *  and it ships something else to run (`clientlessError`, the rule the load
+ *  probe holds an existing build to as well); otherwise the build fails,
+ *  saying which. */
+function clientlessOk(dir: string, hasServerSide: boolean): void {
+  const error = clientlessError(declaredSurfacesAt(dir), hasServerSide)
+  if (error) throw new Error(error)
 }
 
 /** Compile one app into `<builds>/<slug>/<key>/`. Idempotent when the key matches. */
 export async function buildApp(slug: string): Promise<AppBuildCurrent> {
-  const src = appSrc(slug, 'talaria.json')
+  return buildAppAt(slug, appDir(slug), { pointer: true })
+}
+
+/** Compile the tree at `dir` as app `slug`, into `<builds>/<slug>/<key>/`.
+ *
+ *  `pointer: true` is the app's own build: current.json follows it
+ *  (building, then ready or failed) and superseded builds are pruned.
+ *  `pointer: false` is an update's staged tree (`apps/.<slug>.next`): the
+ *  build lands under its key beside the live one and current.json is not
+ *  touched, so the live app keeps serving while the new version is checked.
+ *  The key hashes the tree's files by their path inside it, so the staged
+ *  build's key is the one the tree has once it is swapped into apps/<slug>.
+ *
+ *  A manifest the rules refuse fails the build with the reason; a tree with
+ *  no talaria.json throws, as an app that is not there. */
+export async function buildAppAt(slug: string, dir: string, opts: { pointer: boolean }): Promise<AppBuildCurrent> {
+  const src = join(dir, 'talaria.json')
   if (!existsSync(src)) throw new Error(`no app "${slug}"`)
   const hostBuild = hostId()
-  const key = sourceKey(join(src, '..'), hostBuild)
+  const key = sourceKey(dir, hostBuild)
+  const failed = (error: string): AppBuildCurrent => ({ key, status: 'failed', hostBuild, builtAt: Date.now(), bytes: 0, files: [], error })
+  const refused = manifestError(dir, slug)
+  if (refused) {
+    const cur = failed(refused)
+    if (opts.pointer) writeCurrent(slug, cur)
+    return cur
+  }
   const existing = readCurrent(slug)
   if (existing?.status === 'ready' && existing.key === key) return existing
-  writeCurrent(slug, { key, status: 'building', hostBuild, builtAt: Date.now(), bytes: 0, files: [] })
+  if (opts.pointer) writeCurrent(slug, { key, status: 'building', hostBuild, builtAt: Date.now(), bytes: 0, files: [] })
   const outDir = appBuildKeyDir(slug, key)
   mkdirSync(outDir, { recursive: true })
   try {
-    await buildClient(join(src, '..'), outDir)
-    const serverTs = appSrc(slug, 'server.ts')
+    const serverTs = join(dir, 'server.ts')
+    const mcpTs = join(dir, 'mcp.ts')
+    // The client is built only when there is one. An app whose talaria.json
+    // declares no surfaces — a server- or MCP-only plugin — needs no app.ts
+    // and gets no app.js; one that declares a surface must ship app.ts.
+    if (existsSync(join(dir, 'app.ts'))) await buildClient(dir, outDir)
+    else clientlessOk(dir, existsSync(serverTs) || existsSync(mcpTs))
     if (existsSync(serverTs)) await buildServerish(serverTs, join(outDir, 'server.js'))
-    const mcpTs = appSrc(slug, 'mcp.ts')
     if (existsSync(mcpTs)) await buildServerish(mcpTs, join(outDir, 'mcp.js'))
+    // harnesses/*.ts → harnesses.js: the activity harnesses the app ships,
+    // which the host registers for fitness (app-harnesses.ts). Built from a
+    // generated entry that is removed once the build has read it.
+    const harnessDir = join(dir, 'harnesses')
+    const harnessFiles = harnessSourceFiles(harnessDir)
+    if (harnessFiles.length > 0) {
+      const entry = join(outDir, '.harnesses-entry.js')
+      writeFileSync(entry, harnessesEntrySource(harnessDir, harnessFiles))
+      try {
+        await buildServerish(entry, join(outDir, 'harnesses.js'))
+      } finally {
+        rmSync(entry, { force: true })
+      }
+    }
     const files = listFiles(outDir)
     const cur: AppBuildCurrent = {
       key,
@@ -194,22 +255,16 @@ export async function buildApp(slug: string): Promise<AppBuildCurrent> {
       bytes: dirBytes(outDir),
       files,
     }
-    writeCurrent(slug, cur)
-    // The pointer now names this build, so every older key is superseded:
-    // the door would not serve them, and nothing loads them.
-    pruneSupersededBuilds(slug)
+    if (opts.pointer) {
+      writeCurrent(slug, cur)
+      // The pointer now names this build, so every older key is superseded:
+      // the door would not serve them, and nothing loads them.
+      pruneSupersededBuilds(slug)
+    }
     return cur
   } catch (e) {
-    const cur: AppBuildCurrent = {
-      key,
-      status: 'failed',
-      hostBuild,
-      builtAt: Date.now(),
-      bytes: 0,
-      files: [],
-      error: e instanceof Error ? e.message : String(e),
-    }
-    writeCurrent(slug, cur)
+    const cur = failed(e instanceof Error ? e.message : String(e))
+    if (opts.pointer) writeCurrent(slug, cur)
     return cur
   }
 }

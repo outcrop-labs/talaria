@@ -1636,17 +1636,7 @@ pub async fn credential_for_host(
 
     let entries = cipher_entries(pg, &cell_str(doc, "id")).await?;
 
-    // TWO SHAPES, because credentials arrive in two shapes. A doc carrying
-    // `username` and `password` is a login; anything else is a token, and git
-    // takes a token as the PASSWORD with a throwaway username — the convention
-    // GitHub, GitLab and every registry already expect.
-    let named = |k: &str| entries.iter().find(|e| e.key == k);
-    let user_entry = named("username").or_else(|| named("user"));
-    let pass_entry = named("password").or_else(|| named("token")).or_else(|| {
-        entries
-            .iter()
-            .find(|e| user_entry.is_none_or(|u| u.key != e.key))
-    });
+    let (user_entry, pass_entry) = login_entries(&entries);
     let Some(pass_entry) = pass_entry else {
         return Ok(None);
     };
@@ -1710,6 +1700,134 @@ pub async fn credential_for_host(
         password,
         name: doc_name,
     }))
+}
+
+/// TWO SHAPES, because credentials arrive in two shapes. A doc carrying
+/// `username` and `password` is a login; anything else is a token, and git
+/// takes a token as the PASSWORD with a throwaway username — the convention
+/// GitHub, GitLab and every registry already expect. `(username, password)`
+/// entries; either may be missing.
+fn login_entries(entries: &[CipherEntry]) -> (Option<&CipherEntry>, Option<&CipherEntry>) {
+    let named = |k: &str| entries.iter().find(|e| e.key == k);
+    let user_entry = named("username").or_else(|| named("user"));
+    let pass_entry = named("password").or_else(|| named("token")).or_else(|| {
+        entries
+            .iter()
+            .find(|e| user_entry.is_none_or(|u| u.key != e.key))
+    });
+    (user_entry, pass_entry)
+}
+
+/// A git login an ADMIN named for one https host: the workspace secret
+/// `name`, spent at `host` on behalf of `actor` (app install and update from
+/// a git host other than the GitHub connection — talaria-apps). The rules are
+/// `credential_for_host`'s, minus the agent grant (an admin is acting, and an
+/// admin may name any workspace secret): the secret's Spendable-at list must
+/// name the host — an empty list is not eligible, so a secret can never be
+/// pointed at a host nobody approved for it — it must not have expired, a
+/// use is spent, and the spend is audited with the actor. Each error is the
+/// sentence the admin reads; none carries a value.
+pub async fn credential_from_secret(
+    pg: &PgPool,
+    sb: &SecretBox,
+    name: &str,
+    host: &str,
+    actor: &str,
+) -> Result<HostCredential, String> {
+    let host = host.trim().to_lowercase();
+    let wanted = name.trim().to_lowercase();
+    let row = sqlx::query(
+        "select s.id::text, s.name, s.kind, \
+            (trunc(extract(epoch from s.expires_at) * 1000))::bigint as expires_ms, \
+            s.uses_remaining::int8 as uses_remaining, \
+            coalesce(s.allowed_hosts, '{}') as allowed_hosts \
+           from workspace_secrets s where lower(s.name) = $1",
+    )
+    .bind(&wanted)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| format!("credential read: {e}"))?;
+    let Some(doc) = row else {
+        return Err(format!("there is no workspace secret named \"{wanted}\""));
+    };
+    let doc_id = cell_str(&doc, "id");
+    let doc_name = cell_str(&doc, "name");
+    if cell_opt_i64(&doc, "expires_ms").is_some_and(|t| t <= now_ms()) {
+        return Err(format!("the workspace secret \"{doc_name}\" has expired"));
+    }
+    let allowed = cell_hosts(&doc, "allowed_hosts");
+    if !host_allowed(&host, &allowed) {
+        return Err(format!(
+            "the workspace secret \"{doc_name}\" may not be spent at {host}: add {host} to its Spendable at list (Admin → Secrets)"
+        ));
+    }
+    let entries = cipher_entries(pg, &doc_id).await?;
+    let (user_entry, pass_entry) = login_entries(&entries);
+    let Some(pass_entry) = pass_entry.filter(|e| !e.cipher.is_empty()) else {
+        return Err(format!(
+            "the workspace secret \"{doc_name}\" holds no token or password"
+        ));
+    };
+    let unreadable = || format!("the workspace secret \"{doc_name}\" could not be opened");
+    let password = sb.open(&pass_entry.cipher).map_err(|_| unreadable())?;
+    let username = match user_entry.filter(|u| !u.cipher.is_empty()) {
+        Some(u) => sb.open(&u.cipher).map_err(|_| unreadable())?,
+        None => "x-access-token".to_string(),
+    };
+    // Spent in the statement that checks it, as at every other boundary.
+    let uses_remaining = cell_opt_i64(&doc, "uses_remaining");
+    let exhausted = if uses_remaining.is_some() {
+        let spent = sqlx::query(
+            "update workspace_secrets set uses_remaining = uses_remaining - 1, last_used_at = now() \
+              where id = $1::uuid and uses_remaining > 0 returning id::text",
+        )
+        .bind(&doc_id)
+        .fetch_all(pg)
+        .await
+        .map_err(|e| format!("secrets spend: {e}"))?;
+        if spent.is_empty() {
+            return Err(format!(
+                "the workspace secret \"{doc_name}\" has no uses left"
+            ));
+        }
+        uses_remaining.unwrap_or(0) - 1 <= 0
+    } else {
+        sqlx::query("update workspace_secrets set last_used_at = now() where id = $1::uuid")
+            .bind(&doc_id)
+            .execute(pg)
+            .await
+            .map_err(|e| format!("secrets touch: {e}"))?;
+        false
+    };
+    if exhausted {
+        sqlx::query(
+            "update workspace_secret_entries set value_cipher = '' where secret_id = $1::uuid",
+        )
+        .bind(&doc_id)
+        .execute(pg)
+        .await
+        .map_err(|e| format!("secrets destroy: {e}"))?;
+    }
+    audit_spend(
+        pg,
+        actor,
+        &doc_name,
+        &pass_entry.label,
+        serde_json::json!({
+            "key": pass_entry.key,
+            "destination": host,
+            "hosts": [host],
+            "kind": cell_str(&doc, "kind"),
+            "via": "app-source",
+            "exhausted": exhausted,
+            "restricted": true,
+        }),
+    );
+    Ok(HostCredential {
+        username,
+        password,
+        name: doc_name,
+    })
 }
 
 #[cfg(test)]

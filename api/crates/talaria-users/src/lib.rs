@@ -545,19 +545,9 @@ pub const MANAGE_VIEW_ROUTES: [&str; 8] = [
     "/apps",
 ];
 
-/// Apps' slug rule: lowercase letters, digits, dashes; a letter-or-digit
-/// head; ≤64 chars total.
-pub fn slug_ok(s: &str) -> bool {
-    let b = s.as_bytes();
-    if b.is_empty() || b.len() > 64 {
-        return false;
-    }
-    let head = b[0].is_ascii_lowercase() || b[0].is_ascii_digit();
-    let rest = b[1..]
-        .iter()
-        .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-');
-    head && rest
-}
+// The slug rules live with the manifest validator (talaria-app-manifest), the
+// one place both install and discovery read them.
+pub use talaria_app_manifest::{RESERVED_APP_SLUGS, slug_installable, slug_ok};
 
 /// Where app codebases live: TALARIA_APPS_DIR, else <cwd>/../apps — the
 /// repo's apps/ dir when the process runs from api/.
@@ -680,12 +670,61 @@ pub fn discovered_apps() -> Vec<DiscoveredApp> {
     })
 }
 
+/// What one directory under apps/ holds, as discovery reads it.
+enum AppDir {
+    /// Not an app at all: no talaria.json, or not a slug-named directory.
+    NotAnApp,
+    /// talaria.json is there and fails the manifest rules: listed as broken.
+    Broken {
+        slug: String,
+        reason: String,
+    },
+    App(DiscoveredApp),
+}
+
+fn read_app_dir(e: &std::fs::DirEntry) -> AppDir {
+    if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        return AppDir::NotAnApp;
+    }
+    let slug = e.file_name().to_string_lossy().into_owned();
+    // A dot-named directory never passes: the update and install staging
+    // trees (`.<slug>.next`, `.<slug>.prev`, `.install-…`) live there.
+    if !slug_ok(&slug) {
+        return AppDir::NotAnApp;
+    }
+    let Ok(bytes) = std::fs::read(e.path().join("talaria.json")) else {
+        return AppDir::NotAnApp;
+    };
+    match talaria_app_manifest::parse_manifest(&bytes, talaria_app_manifest::SDK_VERSION) {
+        Err(reason) => AppDir::Broken { slug, reason },
+        Ok(m) if m.slug.as_deref().is_some_and(|declared| declared != slug) => AppDir::Broken {
+            reason: format!(
+                "talaria.json declares the slug \"{}\", but the app is installed as \"{slug}\"",
+                m.slug.unwrap_or_default()
+            ),
+            slug,
+        },
+        Ok(m) => AppDir::App(DiscoveredApp {
+            mcp: e.path().join("mcp.ts").exists(),
+            slug,
+            name: m.name,
+            icon: m.icon,
+            description: m.description,
+            version: m.version,
+            work: m.work,
+            manage: m.manage,
+            settings: m.settings,
+        }),
+    }
+}
+
 /// The manifests under `dir`, sorted by app name. A missing directory is no
 /// apps installed; a directory that exists and cannot be listed is an error.
-/// One app whose manifest is missing, not UTF-8, not JSON or without a name
-/// is skipped — not an app — exactly as the TS host's `listInstalledApps`
-/// skips it (ui/src/server/app-build/paths.ts). A missing scalar field
-/// yields its default; a non-string value is treated as missing.
+/// An app is a slug-named directory whose talaria.json passes the manifest
+/// rules (talaria-app-manifest — the rules the TS host's `listInstalledApps`
+/// holds manifests to, pinned by api/tests/it/fixtures/app-manifest.json).
+/// One that fails is not listed here — no grant, no nav, no MCP row — but
+/// `broken_apps_in` names it, so Manage → Apps can show why and remove it.
 pub fn discovered_apps_in(dir: &std::path::Path) -> std::io::Result<Vec<DiscoveredApp>> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -694,60 +733,48 @@ pub fn discovered_apps_in(dir: &std::path::Path) -> std::io::Result<Vec<Discover
     };
     let mut out = Vec::new();
     for e in entries {
-        let e = e?;
-        if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
+        if let AppDir::App(app) = read_app_dir(&e?) {
+            out.push(app);
         }
-        let slug = e.file_name().to_string_lossy().into_owned();
-        if !slug_ok(&slug) {
-            continue;
-        }
-        // `read_to_string` refuses a manifest that is not UTF-8; the TS host
-        // decodes with a fatal decoder so it skips the same app.
-        let Ok(raw) = std::fs::read_to_string(e.path().join("talaria.json")) else {
-            continue;
-        };
-        let Ok(j) = serde_json::from_str::<serde_json::Value>(&raw) else {
-            continue;
-        };
-        // A truthy name is what admits an app at all; surface keys count only
-        // when they hold non-empty strings.
-        let Some(name) = j
-            .get("name")
-            .and_then(|v| v.as_str())
-            .filter(|n| !n.is_empty())
-        else {
-            continue;
-        };
-        let str_field = |key: &str, default: &str| {
-            j.get(key)
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| default.to_string())
-        };
-        // Surface keys are OMITTED unless they hold a non-empty string —
-        // the key is absent, not null.
-        let surface = |key: &str| {
-            j.get("surfaces")
-                .and_then(|s| s.get(key))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-        };
-        out.push(DiscoveredApp {
-            mcp: e.path().join("mcp.ts").exists(),
-            slug,
-            name: name.to_string(),
-            icon: str_field("icon", "⬡"),
-            description: str_field("description", ""),
-            version: str_field("version", "0.0.0"),
-            work: surface("work"),
-            manage: surface("manage"),
-            settings: surface("settings"),
-        });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
+}
+
+/// An installed app whose manifest fails the rules: its slug, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokenApp {
+    pub slug: String,
+    pub reason: String,
+}
+
+/// The directories under `dir` that carry a talaria.json the manifest rules
+/// refuse, sorted by slug. A directory with no talaria.json is not an app
+/// and is not listed.
+pub fn broken_apps_in(dir: &std::path::Path) -> std::io::Result<Vec<BrokenApp>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut out = Vec::new();
+    for e in entries {
+        if let AppDir::Broken { slug, reason } = read_app_dir(&e?) {
+            out.push(BrokenApp { slug, reason });
+        }
+    }
+    out.sort_by(|a, b| a.slug.cmp(&b.slug));
+    Ok(out)
+}
+
+/// `broken_apps_in` over the apps directory; a listing failure is logged and
+/// reads as none, like `discovered_apps`.
+pub fn broken_apps() -> Vec<BrokenApp> {
+    let dir = apps_dir();
+    broken_apps_in(&dir).unwrap_or_else(|e| {
+        tracing::warn!("[apps] could not list {}: {e}", dir.display());
+        Vec::new()
+    })
 }
 
 /// One enabled app as /api/apps serves it — wire order; absent surface keys
@@ -922,9 +949,14 @@ pub struct ViewGrants {
 
 /// The app view that governs `path` — `/x/<slug>/manage` for the manage
 /// surface and anything under it, `/x/<slug>` for every other path under
-/// the app — or `None` when `path` is not an app route. The TS twin is
-/// `appViewFor` in ui/src/lib/app-grants.ts.
+/// the app — or `None` when `path` is not an app route. An app owns every
+/// route below its surfaces, so `/x/crm/deals/7` is the work view's and
+/// `/x/crm/manage/fields/7` the manage view's. Paths compare ASCII-case-
+/// insensitively, as the client router matches a static segment (it mounts
+/// the manage surface at `/x/crm/MANAGE`). The TS twin is `appViewFor` in
+/// ui/src/lib/app-grants.ts; both read the fixture's `routes` cases.
 pub fn app_view_for(path: &str) -> Option<String> {
+    let path = path.to_ascii_lowercase();
     let rest = path.strip_prefix("/x/")?;
     let mut parts = rest.split('/');
     let slug = parts.next().filter(|s| !s.is_empty())?;
@@ -939,16 +971,21 @@ impl ViewGrants {
     /// `isViewDenied` holds in ui/src/lib/app-grants.ts. A core view is
     /// closed when it, or a view above it, is denied ('x' denies
     /// 'x/anything'). An app route opens only on the exact view that governs
-    /// it, held by grant. `None` when `view` is an app route and the enabled
-    /// apps could not be read: nobody may read that as open.
+    /// it (`app_view_for`), held by grant. Paths compare ASCII-case-
+    /// insensitively, as the client router matches them. `None` when `view`
+    /// is an app route and the enabled apps could not be read: nobody may
+    /// read that as open.
     pub fn denies(&self, view: &str) -> Option<bool> {
         match app_view_for(view) {
             Some(app) => self.app_grants.as_ref().map(|held| !held.contains(&app)),
-            None => Some(
-                self.denied
-                    .iter()
-                    .any(|v| v == view || view.starts_with(&format!("{v}/"))),
-            ),
+            None => {
+                let view = view.to_ascii_lowercase();
+                Some(
+                    self.denied
+                        .iter()
+                        .any(|v| *v == view || view.starts_with(&format!("{v}/"))),
+                )
+            }
         }
     }
 }
@@ -1529,6 +1566,38 @@ mod tests {
     }
 
     #[test]
+    fn every_route_below_an_app_surface_answers_to_that_surface() {
+        // The fixture's `routes` cases, which the TS route gate and nav read
+        // too (ui/src/server/app-grants.fixture.test.ts): a work-only member
+        // reaches /x/crm/a/b and never /x/crm/manage/a, a manage-only member
+        // the reverse.
+        let f = fixture();
+        let viewers = f["routes"]["viewers"].as_object().expect("routes.viewers");
+        let paths = f["routes"]["paths"].as_array().expect("routes.paths");
+        assert!(!viewers.is_empty() && !paths.is_empty());
+        for c in paths {
+            let path = c["path"].as_str().expect("path");
+            assert_eq!(
+                app_view_for(path),
+                c["view"].as_str().map(String::from),
+                "the view governing {path}"
+            );
+            let open = strings(&c["open"]);
+            for (name, v) in viewers {
+                let g = ViewGrants {
+                    denied: strings(&v["denied"]),
+                    app_grants: Some(strings(&v["appGrants"])),
+                };
+                assert_eq!(
+                    g.denies(path),
+                    Some(!open.contains(name)),
+                    "{path} for the {name} viewer"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn an_app_route_answers_to_the_view_that_governs_it() {
         let s = |x: &str| Some(x.to_string());
         assert_eq!(app_view_for("/x/crm"), s("/x/crm"));
@@ -1619,6 +1688,50 @@ mod tests {
                 "{}",
                 case["about"].as_str().unwrap()
             );
+        }
+    }
+
+    /// Every directory with a talaria.json is either an app or broken, never
+    /// silently neither: a manifest the rules refuse is listed with the
+    /// reason, so Manage → Apps can show it and uninstall it.
+    #[test]
+    fn a_refused_manifest_is_listed_as_broken_with_its_reason() {
+        use base64::Engine as _;
+        let dir = scratch_dir("broken");
+        let cases = fixture()["manifests"].as_array().unwrap().clone();
+        for case in &cases {
+            let app = dir.join(case["dir"].as_str().unwrap());
+            std::fs::create_dir_all(&app).unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(case["bytesBase64"].as_str().unwrap())
+                .unwrap();
+            std::fs::write(app.join("talaria.json"), bytes).unwrap();
+        }
+        // Not an app at all: no manifest, or a staging tree.
+        std::fs::create_dir_all(dir.join("no-manifest")).unwrap();
+        std::fs::create_dir_all(dir.join(".crm.next")).unwrap();
+        std::fs::write(dir.join(".crm.next/talaria.json"), b"{}").unwrap();
+        // A declared slug the directory does not match.
+        std::fs::create_dir_all(dir.join("crm2")).unwrap();
+        std::fs::write(
+            dir.join("crm2/talaria.json"),
+            br#"{"name":"CRM","slug":"crm"}"#,
+        )
+        .unwrap();
+        let broken = broken_apps_in(&dir).unwrap();
+        let listed = discovered_apps_in(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let slugs: Vec<&str> = broken.iter().map(|b| b.slug.as_str()).collect();
+        assert_eq!(slugs, ["bom", "broken", "crm2", "latin1", "noname"]);
+        let reason = |s: &str| broken.iter().find(|b| b.slug == s).unwrap().reason.clone();
+        assert_eq!(reason("latin1"), "talaria.json is not UTF-8");
+        assert!(reason("noname").contains("needs a \"name\""));
+        assert!(reason("crm2").contains("declares the slug \"crm\""));
+        assert!(listed.iter().all(|a| a.slug != "crm2"));
+        for case in &cases {
+            let slug = case["dir"].as_str().unwrap();
+            let is_app = listed.iter().any(|a| a.slug == slug);
+            assert_ne!(is_app, slugs.contains(&slug), "{slug} is one or the other");
         }
     }
 
@@ -1879,6 +1992,27 @@ mod tests {
         assert!(!slug_ok("Upper"));
         assert!(!slug_ok("under_score"));
         assert!(!slug_ok("sp ace"));
+    }
+
+    #[test]
+    fn a_new_app_cannot_take_a_router_config_key_as_its_slug() {
+        // The shared fixture's list, which the TS route-table test checks
+        // against the route table's own config keys.
+        let f = fixture();
+        let reserved: Vec<String> = RESERVED_APP_SLUGS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(reserved, strings(&f["routes"]["reservedSlugs"]));
+        for s in RESERVED_APP_SLUGS {
+            // Slug-shaped, so an app already installed under one is still
+            // discovered, enabled and uninstalled; only a new install refuses.
+            assert!(slug_ok(s), "{s}");
+            let err = slug_installable(s).expect_err(s);
+            assert!(err.contains("is reserved"), "{err}");
+        }
+        assert_eq!(slug_installable("crm"), Ok(()));
+        assert_eq!(slug_installable("hooks-app"), Ok(()));
+        assert_eq!(slug_installable("my-layout"), Ok(()));
+        let err = slug_installable("Hooks").expect_err("upper case");
+        assert!(err.contains("not a usable app slug"), "{err}");
     }
 
     #[test]

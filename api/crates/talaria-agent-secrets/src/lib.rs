@@ -259,10 +259,19 @@ pub async fn passthrough_names(pg: &PgPool, agent_id: &str) -> Result<Vec<String
     .fetch_all(pg)
     .await
     .map_err(|e| format!("agent secrets read failed: {e}"))?;
-    Ok(names
-        .into_iter()
-        .filter(|n| reserved(n).is_none())
-        .collect())
+    Ok(names.into_iter().filter(|n| passes_through(n)).collect())
+}
+
+/// Whether a stored secret's name belongs in `terminal.env_passthrough`.
+///
+/// A `CONFIG_*` secret is a credential sealed out of the agent's own
+/// config.yaml (a platform token, a dashboard password, an Authorization
+/// header): the config names it as `${CONFIG_…}` and Hermes reads it for
+/// itself. It is not a key for the agent's tools, so it is never listed.
+/// execute_code admits a credential-looking name only by passthrough, so
+/// leaving these out keeps them out of the agent's scripts.
+fn passes_through(name: &str) -> bool {
+    reserved(name).is_none() && !name.starts_with(CONFIG_SECRET_PREFIX)
 }
 
 /// Write (or remove) the agent's secrets env file for the renderer. Returns
@@ -351,6 +360,39 @@ mod tests {
         assert!(reserved("API_SERVER_KEY").is_some());
         assert!(reserved("API_SERVER_MODEL_NAME").is_some());
         assert!(reserved("FIGMA_TOKEN").is_none());
+    }
+
+    #[test]
+    fn sealed_config_credentials_never_pass_through_to_the_agents_scripts() {
+        // A tool key the manager gave the agent passes through.
+        assert!(passes_through("FIGMA_TOKEN"));
+        assert!(passes_through("STRIPE_API_KEY"));
+        // A credential sealed out of the agent's own config is Hermes's,
+        // read through `${CONFIG_…}`; listing it would hand it to execute_code.
+        for name in [
+            "CONFIG_PLATFORMS_TELEGRAM_TOKEN",
+            "CONFIG_PROVIDERS_ACME_API_KEY",
+            "CONFIG_DASHBOARD_PASSWORD",
+            "CONFIG_MCP_SERVERS_LINEAR_HEADERS_AUTHORIZATION",
+        ] {
+            assert!(
+                !passes_through(name),
+                "{name} must stay out of env_passthrough"
+            );
+        }
+        // The names config_seal mints all carry the prefix this checks.
+        let seal = plan_config_seal(&serde_json::json!({
+            "raw": { "platforms": { "telegram": { "enabled": true, "token": "123:abc" } } }
+        }))
+        .expect("plan");
+        assert!(!seal.sealed.is_empty(), "the telegram token is sealed");
+        for lit in &seal.sealed {
+            assert!(!passes_through(&lit.name), "{} must stay out", lit.name);
+        }
+        let handles = config_secret_handles(&seal.config);
+        assert!(handles.iter().all(|n| !passes_through(n)), "{handles:?}");
+        // Reserved names stay out too, as before.
+        assert!(!passes_through("OPENAI_API_KEY"));
     }
 
     #[test]

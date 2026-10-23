@@ -432,6 +432,30 @@ pub async fn secretbox_or_500(
     }
 }
 
+/// The app host, or the 403. `/api/internal/*` is service-to-service: the
+/// caller presents the root-derived credential
+/// (`SecretRoot::internal_token`) in `x-talaria-internal`, which only a
+/// process holding the root can compute. No session, agent key or app
+/// identity is ever enough, and the host's proxy never forwards the prefix
+/// from outside (ui/src/server/rust-proxy.ts).
+// The Err IS the response to send, as for every guard here — clippy's size
+// heuristic only fires because this one is not async (`object_or_400` too).
+#[allow(clippy::result_large_err)]
+pub fn require_internal(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
+    let presented = headers
+        .get(talaria_config::INTERNAL_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .unwrap_or("");
+    if state.cfg.secret_root.admits_internal(presented) {
+        return Ok(());
+    }
+    Err(talaria_error::house_error(
+        StatusCode::FORBIDDEN,
+        "internal route: only the app host may call it",
+    ))
+}
+
 /// Signed-in user or the 401 Response — return the gate when it is a
 /// Response.
 pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<SessionUser, Response> {
@@ -594,6 +618,59 @@ pub fn json_with_cookies(body: impl IntoResponse, cookies: &[String]) -> Respons
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state with a test root and a pool that never connects: the guard
+    /// answers from the header alone, before any query.
+    fn internal_state() -> AppState {
+        let cfg = talaria_config::Config::from_parts(
+            "postgres://t:t@127.0.0.1:1/unused".into(),
+            "redis://127.0.0.1:1".into(),
+            "test-root".into(),
+            String::new(),
+            String::new(),
+            String::new(),
+        )
+        .expect("test config assembles");
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy(&cfg.database_url)
+            .expect("a lazy pool needs no database");
+        AppState::new(pg, std::sync::Arc::new(cfg))
+    }
+
+    fn with(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                axum::http::HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        h
+    }
+
+    /// `/api/internal/*` admits the root-derived credential and nothing else:
+    /// no header, a person's session cookie, an agent's bearer key, a wrong or
+    /// truncated token, or the token under another header name.
+    #[tokio::test]
+    async fn require_internal_admits_only_the_root_derived_token() {
+        let state = internal_state();
+        let token = state.cfg.secret_root.internal_token();
+        let header = talaria_config::INTERNAL_HEADER;
+        let refused = |h: HeaderMap| {
+            let r = require_internal(&state, &h).expect_err("refused");
+            assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        };
+        refused(HeaderMap::new());
+        refused(with(&[("cookie", "talaria_session=an-admins-session")]));
+        refused(with(&[("authorization", "Bearer tak_an-agents-key")]));
+        refused(with(&[(header, "")]));
+        refused(with(&[(header, "not-the-token")]));
+        refused(with(&[(header, &token[..63])]));
+        refused(with(&[("x-talaria-internal-token", &token)]));
+        assert!(require_internal(&state, &with(&[(header, &token)])).is_ok());
+        // The host may pad it; the guard trims, as it reads every header.
+        assert!(require_internal(&state, &with(&[(header, &format!(" {token} "))])).is_ok());
+    }
 
     #[test]
     fn uri_component_round_trips_the_js_way() {

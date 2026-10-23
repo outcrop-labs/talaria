@@ -465,4 +465,9 @@ describe('talaria dev — the env the rust api gets', () => {
   test('the main checkout (no worktree name anywhere) passes none', () => {
     expect('TALARIA_WORKTREE' in apiEnv({}, 'DATABASE_URL=x\n')).toBe(false)
   })
+
+  test("ui/.env's opt-in to local app sources reaches the api, which is what reads it", () => {
+    expect(apiEnv({}, `${uiEnv}\nTALARIA_APPS_LOCAL_SOURCES=1`).TALARIA_APPS_LOCAL_SOURCES).toBe('1')
+    expect('TALARIA_APPS_LOCAL_SOURCES' in apiEnv({}, uiEnv)).toBe(false)
+  })
 })

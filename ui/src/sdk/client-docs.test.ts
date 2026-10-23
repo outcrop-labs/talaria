@@ -16,8 +16,9 @@ import { skeletonFiles } from '../../../cli/src/cmd/app/skeleton'
 // rendered "No items yet" over a failed read. A document is not a build
 // target, so each of those shipped and stayed.
 //
-// So every `svelte` fence in client.md, ui-kit.md and getting-started.md,
-// every `ts` fence there that imports @talaria/sdk, and every file
+// So every `svelte` fence in client.md, ui-kit.md, getting-started.md, mcp.md
+// and the quick guide in apps/README.md, every `ts` fence there that imports
+// @talaria/sdk, @talaria/sdk/server or @talaria/sdk/testing, and every file
 // `talaria app new` writes are copied out VERBATIM and run through two passes:
 // the Svelte compiler (syntax, runes), then svelte-check against the real SDK
 // under the ui's own tsconfig (types, props, unused imports). A rename in the
@@ -29,8 +30,10 @@ import { skeletonFiles } from '../../../cli/src/cmd/app/skeleton'
 // fence provides gets a one-line stub.
 
 const UI = fileURLToPath(new URL('../../', import.meta.url))
-const DOCS = join(UI, '../docs/sdk')
-const DOC_FILES = ['client.md', 'ui-kit.md', 'getting-started.md']
+const REPO = join(UI, '..')
+// Repo-relative. apps/README.md is the guide an author meets first, beside
+// their own app, so its examples are held to the same bar.
+const DOC_FILES = ['docs/sdk/client.md', 'docs/sdk/ui-kit.md', 'docs/sdk/getting-started.md', 'docs/sdk/mcp.md', 'apps/README.md']
 
 interface Example {
   /** Where it came from, for the failure message. */
@@ -41,7 +44,7 @@ interface Example {
 }
 
 function fences(doc: string): Example[] {
-  const lines = readFileSync(join(DOCS, doc), 'utf8').split('\n')
+  const lines = readFileSync(join(REPO, doc), 'utf8').split('\n')
   const out: Example[] = []
   const base = doc.replace(/\.md$/, '')
   for (let i = 0; i < lines.length; i++) {
@@ -53,10 +56,10 @@ function fences(doc: string): Example[] {
     const code = lines.slice(start, end).join('\n') + '\n'
     i = end
     const lang = open[1]
-    if (lang === 'ts' && !/from '@talaria\/sdk'/.test(code)) continue
+    if (lang === 'ts' && !/from '@talaria\/sdk(?:\/server|\/testing)?'/.test(code)) continue
     const named = /^(?:<!--|\/\/)\s*apps\/<slug>\/([\w.-]+\.(?:svelte|ts))/.exec(code)?.[1]
     const file = named ?? `example-${start}.${lang === 'svelte' ? 'svelte' : 'ts'}`
-    out.push({ origin: `docs/sdk/${doc}:${start}`, path: `${base}/${file}`, code })
+    out.push({ origin: `${doc}:${start}`, path: `${base}/${file}`, code })
   }
   return out
 }
@@ -79,8 +82,10 @@ afterAll(() => {
 describe('the client docs and the scaffold', () => {
   it('has the examples it claims to check', () => {
     // A doc reshuffle that silently drops every fence would otherwise pass.
-    for (const doc of DOC_FILES) expect(all.some((e) => e.origin.startsWith(`docs/sdk/${doc}`)), doc).toBe(true)
-    expect(all.map((e) => e.path)).toEqual(expect.arrayContaining(['skeleton/Work.svelte', 'skeleton/app.ts', 'getting-started/Work.svelte']))
+    for (const doc of DOC_FILES) expect(all.some((e) => e.origin.startsWith(`${doc}:`)), doc).toBe(true)
+    expect(all.map((e) => e.path)).toEqual(
+      expect.arrayContaining(['skeleton/Work.svelte', 'skeleton/app.ts', 'docs/sdk/getting-started/Work.svelte', 'apps/README/Work.svelte']),
+    )
   })
 
   it('every Svelte example compiles', () => {

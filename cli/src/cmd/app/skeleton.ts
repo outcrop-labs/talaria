@@ -1,11 +1,19 @@
-// The starter `talaria app new` writes. One work surface, a document-store
-// API, and one MCP tool — enough to enable and extend. It is the pattern
-// authors and agents copy, so it follows the host's rules: a failed read
-// renders as a failure (QueryState), a failed write says so (catch → alert),
-// and the client never spells the app's slug. ui/src/sdk/client-docs.test.ts
-// compiles this output against the SDK.
+// The starter `talaria app new` writes. One work surface with a list and a
+// record page below it (/x/<slug>/items/<id>), a document-store API, and one
+// MCP tool — enough to enable and extend. It is the pattern authors and
+// agents copy, so it follows the host's rules: a failed read renders as a
+// failure (QueryState), a failed write says so (catch → alert), a record has
+// an address of its own (useAppRoute, appHref), and the client never spells
+// the app's slug. ui/src/sdk/client-docs.test.ts compiles this output against
+// the SDK.
 
 export const APP_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
+
+/** Slugs install refuses: the client router's config keys, which it would
+ *  read as path segments under /x/<slug>. Rust's RESERVED_APP_SLUGS
+ *  (talaria-users) is the install-side list; both match the shared fixture's
+ *  `routes.reservedSlugs` (api/tests/it/fixtures/app-grants.json). */
+export const RESERVED_APP_SLUGS: readonly string[] = ['layout', 'hooks', 'meta']
 
 export function displayName(slug: string): string {
   return slug
@@ -47,12 +55,15 @@ export default defineApp({ work: Work })
     QueryState,
     SkeletonRows,
     alert,
+    appHref,
     errorMessage,
     useApp,
     useAppApi,
     useAppInvalidate,
     useAppQuery,
+    useAppRoute,
   } from '@talaria/sdk'
+  import ItemPage from './Item.svelte'
 
   // No slug anywhere: the host tells the surface which app it is, under
   // whatever slug this instance installed it as.
@@ -62,6 +73,12 @@ export default defineApp({ work: Work })
   const api = useAppApi()
   const invalidate = useAppInvalidate()
   const query = useAppQuery<{ items: Item[] }>('items')
+
+  // The surface owns every route below it: /x/<slug> is the list, and
+  // /x/<slug>/items/<id> one item — an address you can link, bookmark and
+  // reach with Back.
+  const route = useAppRoute()
+  const open = $derived(route.match('items/:id'))
 
   let title = $state('')
   let saving = $state(false)
@@ -91,34 +108,65 @@ export default defineApp({ work: Work })
   }
 </script>
 
+{#if open}
+  <ItemPage id={open.id} />
+{:else}
+  <div class="h-full overflow-y-auto p-8">
+    <div class="mx-auto w-full max-w-3xl">
+      <div class="mb-6 flex items-center gap-3">
+        <h1 class="flex-1 font-sans text-lg font-semibold text-fg">{app.manifest.name}</h1>
+        <Input bind:value={title} placeholder="New item" size="sm" class="w-56" onkeydown={(e) => e.key === 'Enter' && void add()} />
+        <Button size="sm" disabled={saving || !title.trim()} onclick={() => void add()}>Add</Button>
+      </div>
+
+      <!-- Loading, broken, or resolved: a failed read says so, with a Retry,
+           and is never shown as "No items yet". -->
+      <QueryState {query} isEmpty={(d) => d.items.length === 0} errorTitle="Could not load the items" errorVariant="compact">
+        {#snippet skeleton()}
+          <SkeletonRows rows={5} />
+        {/snippet}
+        {#snippet empty()}
+          <EmptyState icon={app.manifest.icon} title="No items yet" hint="Add one to see the store and the API working" />
+        {/snippet}
+        {#snippet children(data)}
+          <ul class="divide-y divide-line overflow-hidden rounded-lg border border-line bg-panel">
+            {#each data.items as item (item.id)}
+              <li class="flex items-center gap-3 px-4 py-3">
+                <a href={appHref(\`items/\${item.id}\`)} class="min-w-0 flex-1 truncate font-sans text-sm text-fg hover:underline">{item.data.title}</a>
+                <button type="button" class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted hover:text-danger" onclick={() => void remove(item.id)}>
+                  Remove
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/snippet}
+      </QueryState>
+    </div>
+  </div>
+{/if}
+`,
+
+    'Item.svelte': `<script lang="ts">
+  import { QueryState, SkeletonRows, appHref, useAppQuery } from '@talaria/sdk'
+
+  // One item, at /x/<slug>/items/<id>. Work.svelte routes here off the
+  // address; a new id re-keys the read (the path is a getter).
+  type Item = { id: string; data: { title: string }; createdAt: string; updatedAt: string }
+
+  let { id }: { id: string } = $props()
+  const query = useAppQuery<{ item: Item }>(() => \`items/\${encodeURIComponent(id)}\`)
+</script>
+
 <div class="h-full overflow-y-auto p-8">
   <div class="mx-auto w-full max-w-3xl">
-    <div class="mb-6 flex items-center gap-3">
-      <h1 class="flex-1 font-sans text-lg font-semibold text-fg">{app.manifest.name}</h1>
-      <Input bind:value={title} placeholder="New item" size="sm" class="w-56" onkeydown={(e) => e.key === 'Enter' && void add()} />
-      <Button size="sm" disabled={saving || !title.trim()} onclick={() => void add()}>Add</Button>
-    </div>
-
-    <!-- Loading, broken, or resolved: a failed read says so, with a Retry,
-         and is never shown as "No items yet". -->
-    <QueryState {query} isEmpty={(d) => d.items.length === 0} errorTitle="Could not load the items" errorVariant="compact">
+    <a href={appHref()} class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted hover:text-fg">← All items</a>
+    <QueryState {query} errorTitle="Could not load the item" errorVariant="compact">
       {#snippet skeleton()}
-        <SkeletonRows rows={5} />
-      {/snippet}
-      {#snippet empty()}
-        <EmptyState icon={app.manifest.icon} title="No items yet" hint="Add one to see the store and the API working" />
+        <SkeletonRows rows={2} />
       {/snippet}
       {#snippet children(data)}
-        <ul class="divide-y divide-line overflow-hidden rounded-lg border border-line bg-panel">
-          {#each data.items as item (item.id)}
-            <li class="flex items-center gap-3 px-4 py-3">
-              <div class="min-w-0 flex-1 truncate font-sans text-sm text-fg">{item.data.title}</div>
-              <button type="button" class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted hover:text-danger" onclick={() => void remove(item.id)}>
-                Remove
-              </button>
-            </li>
-          {/each}
-        </ul>
+        <h1 class="mt-4 font-sans text-lg font-semibold text-fg">{data.item.data.title}</h1>
+        <p class="mt-1 font-mono text-[11px] text-muted">Added {new Date(data.item.createdAt).toLocaleString()}</p>
       {/snippet}
     </QueryState>
   </div>
@@ -147,6 +195,10 @@ export default defineAppServer({
       return json({ item: await store.insert('items', body) })
     }
     const id = /^items\\/([0-9a-f-]{36})$/.exec(path)?.[1]
+    if (id && method === 'GET') {
+      const item = await store.get('items', id)
+      return item ? json({ item }) : json({ error: 'not found' }, { status: 404 })
+    }
     if (id && method === 'DELETE') {
       return (await store.remove('items', id)) ? json({ ok: true }) : json({ error: 'not found' }, { status: 404 })
     }

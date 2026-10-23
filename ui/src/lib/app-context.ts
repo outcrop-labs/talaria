@@ -21,6 +21,13 @@ export interface AppContext {
   readonly surface: AppSurfaceName
   /** The app's manifest as the host serves it (name, icon, version, surfaces). */
   readonly manifest: AppManifest
+  /** The path below the surface: '' at its own address, `items/42` on
+   *  `/x/<slug>/items/42` — as the URL spells it, no leading slash. Always ''
+   *  on a settings tab, which has no routes below it. `useAppRoute()` reads
+   *  it with the helpers that go with it. */
+  readonly rest: string
+  /** The address's query, parsed; a fresh copy on each read. */
+  readonly query: URLSearchParams
 }
 
 // A string, not a Symbol: an app chunk built apart from the host still reaches

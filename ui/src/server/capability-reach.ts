@@ -170,13 +170,20 @@ const nameMatches = (toolName: string, names: readonly string[]): boolean => {
 /** The registered, ENABLED tool that supplies this capability, or null.
  *
  *  Pure over the server list so the whole rule can be tested without a database
- *  and without an MCP server anywhere near it. */
+ *  and without an MCP server anywhere near it.
+ *
+ *  AN APP'S TOOLS NEVER SUPPLY ONE — the api's rule too (talaria-capability-reach
+ *  `supplier_candidates`). The platform calls a supplier itself, and the api's
+ *  platform caller cannot reach app tools, so an app's `crm_web_search` that won
+ *  the pick failed every agent search. App rows are dropped before matching or
+ *  pinning sees them; a pin to one falls through like a pin to a removed server. */
 export function supplierFor(
   capability: Capability,
-  servers: readonly McpServer[],
+  allServers: readonly McpServer[],
   providers: CapabilityProviders = {},
   platform: readonly PlatformSupply[] = [],
 ): { server: string; tool: string } | null {
+  const servers = allServers.filter((s) => !s.appSlug)
   const pinned = providers[capability]
   // An explicit `null` is an admin saying "nothing supplies this here" — a
   // deliberate answer, and not the same as having said nothing. It silences the

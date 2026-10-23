@@ -37,7 +37,6 @@ guardrail prose rules below are checked against.
 | `comment` | Comment on a ticket — lands in the ticket's **discussion thread** (the room where the agent and the board's humans talk); the one write that survives **sign-off** (a closed ticket still takes comments). Not a way around archival |
 | `report_outcome` | Record outcome/resolution and hand the ticket to **quality review**. The agent's last status move on that ticket |
 | `add_time` | Add seconds to the auto-accumulated time-spent. Live tickets only |
-| `log_usage` | Report LLM tokens burned on a ticket (prompt/completion, optional model tier) — feeds the ticket's cost rollup and the fleet ledger. Live tickets only |
 | `add_dependency` | Mark a ticket blocked by another on the same board. Both ends must be live |
 | `report_gap` | Report a capability gap. `taskId` is optional and gated: it binds the report to the people who can see that board, and a refusal is a reason to fix the scope, never to widen the audience |
 | `report_problem` | Something on the agent's side is broken: alerts the admins and files a Helpdesk ticket. `taskId` gated the same way |
@@ -46,7 +45,6 @@ guardrail prose rules below are checked against.
 
 | Tool | What it does |
 | --- | --- |
-| `describe_image` | Read an image the model cannot see, through the workspace's vision model; the answer is attributed, not the caller's own observation |
 | `search_knowledge` | RAG over the knowledge base, collections and past chats/channels/plans/research |
 
 ### Documents (artifacts)
@@ -279,7 +277,7 @@ itself:
 | Door | Reaches the predicate via |
 | --- | --- |
 | the ticket patch (`triage_ticket`, `report_outcome`, `add_time`) | `agent_safe_patch` inside `updateTask` |
-| `log_usage`, `add_dependency` (both ends), `report_gap`'s `taskId` | their own routes — they never reach `updateTask` |
+| `add_dependency` (both ends), `report_gap`'s `taskId` | their own routes — they never reach `updateTask` |
 | `comment` | its route, with intent `comment` — see below |
 | the workbench MCP's ticket audit lines, **including `finish_job --abandon`** | `logTicket` → `authorizeTicket` (`api/crates/talaria-workbench-mcp/src/lib.rs`) |
 | the ticket a workbench verb names in its arguments | `ticketArg` → `authorizeTicket` — parse and gate are one call, so a verb cannot hold an ungated `taskId` |

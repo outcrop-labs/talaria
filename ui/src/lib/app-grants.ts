@@ -5,10 +5,11 @@
 // plain data out — so the node-env tests pin it and the server can import it.
 //
 // THE RULE. Each app surface is its own grant:
-//   work      → /x/<slug>
-//   manage    → /x/<slug>/manage
+//   work      → /x/<slug>, and every route an app adds below it (/x/<slug>/a/b)
+//   manage    → /x/<slug>/manage, and every route below it (/x/<slug>/manage/a)
 //   settings  → follows the manage grant (/x/<slug>/manage), so an app that
-//               ships settings but no manage surface still has a view to grant
+//               ships settings but no manage surface still has a view to grant;
+//               a settings tab has no routes below it
 // Core views deny by prefix ('/boards' denies '/boards/x'). App views do NOT:
 // a denied /x/<slug> used to deny /x/<slug>/manage under it, so a grant for
 // only an app's Manage surface wrote, audited, and did nothing.
@@ -92,11 +93,21 @@ export function appGrantViewsOf(apps: readonly AppGrantSubject[]): AppGrantView[
 
 const APP_PATH = /^\/x\/([^/]+)(\/manage)?(?:\/|$)/
 
+/** ASCII-only lowercasing: what the client router does to a static segment
+ *  before it compares it (sv-router matches `/x/crm/MANAGE` to the
+ *  `/manage` route), and what Rust's `to_ascii_lowercase` does. It keeps
+ *  the length, so an offset found in the folded path holds in the original. */
+export const asciiLower = (s: string): string => s.replace(/[A-Z]+/g, (m) => m.toLowerCase())
+
 /** The app view that governs `path`, or null when `path` is not an app route.
- *  `/x/crm/manage` and anything under it is the manage view's; every other
- *  path under `/x/crm` is the work view's. */
+ *  An app owns every route below its surfaces: `/x/crm/manage` and anything
+ *  under it (`/x/crm/manage/fields/7`) is the manage view's; every other path
+ *  under `/x/crm` (`/x/crm/deals/7`, `/x/crm/managers`) is the work view's.
+ *  Paths compare ASCII-case-insensitively, as the router matches them: the
+ *  router mounts the manage surface at `/x/crm/MANAGE`, so the gate must call
+ *  that the manage view too, and `/X/crm` must not pass as a core view. */
 export function appViewFor(path: string): string | null {
-  const m = APP_PATH.exec(path)
+  const m = APP_PATH.exec(asciiLower(path))
   if (!m?.[1]) return null
   return m[2] ? appManageView(m[1]) : appWorkView(m[1])
 }
@@ -119,13 +130,16 @@ const holds = (viewer: Pick<ViewerGrants, 'appGrants'>, view: string): boolean =
 
 /** Whether `path` is denied. A core view is denied by itself or by any denied
  *  view above it — for an admin too, whose list is empty. An app route opens
- *  only on the exact view that governs it, held by grant or by an admin's
- *  role, so a work grant never opens the manage view and a view missing from
- *  both lists stays shut. */
+ *  only on the exact view that governs it (appViewFor), held by grant or by
+ *  an admin's role, so a work grant never opens the manage view or anything
+ *  below it, and a view missing from both lists stays shut. Paths compare
+ *  ASCII-case-insensitively, as the router matches them. Rust's twin is
+ *  `ViewGrants::denies`; both read the `routes` cases of the shared fixture. */
 export function isViewDenied(path: string, viewer: ViewerGrants): boolean {
   const app = appViewFor(path)
   if (app !== null) return !viewer.isAdmin && !holds(viewer, app)
-  return viewer.denied.some((d) => path === d || path.startsWith(d + '/'))
+  const p = asciiLower(path)
+  return viewer.denied.some((d) => p === d || p.startsWith(d + '/'))
 }
 
 /** A viewer's access to one app, from the app views Rust lists as theirs. A

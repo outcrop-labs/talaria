@@ -1,3 +1,5 @@
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import viteTsConfigPaths from 'vite-tsconfig-paths'
@@ -11,7 +13,30 @@ import viteTsConfigPaths from 'vite-tsconfig-paths'
 // Its runtime pieces (HMR, dev websocket) are inert here — no dev server, no
 // browser — so the plugin is transform-only in practice. The tsconfig path
 // mapping is reused so `@/…` resolves in tests exactly as it does in the app.
+// AN APP'S OWN TESTS run on their own, never as part of this suite (apps/ is
+// not this repo's code, and an installed app's test must not fail the
+// platform's gate): `TALARIA_APP_TESTS=<slug> bunx vitest run` from ui/ runs
+// `apps/<slug>/**/*.test.ts` and nothing else, with `@talaria/sdk/testing`
+// resolved like every SDK entry (the aliases below), and `vitest` itself
+// typed for an app file through ui/tsconfig.json's paths — apps install
+// nothing, and ui/tsconfig.json includes ../apps. docs/sdk/mcp.md, "Testing
+// your tools".
+const appTests = process.env.TALARIA_APP_TESTS?.trim()
+if (appTests && !/^[a-z0-9][a-z0-9-]{0,63}$/.test(appTests)) throw new Error(`TALARIA_APP_TESTS="${appTests}" is not an app slug`)
+
+const here = fileURLToPath(new URL('.', import.meta.url))
+
 export default defineConfig({
+  // The SDK ids, for app files OUTSIDE the root, where the tsconfig-paths
+  // plugin does not reach — vite.config.ts's aliases, same order (each subpath
+  // before the bare id it would otherwise prefix-match).
+  resolve: {
+    alias: {
+      '@talaria/sdk/server': resolve(here, 'src/sdk/server.ts'),
+      '@talaria/sdk/testing': resolve(here, 'src/sdk/testing.ts'),
+      '@talaria/sdk': resolve(here, 'src/sdk/index.ts'),
+    },
+  },
   plugins: [
     viteTsConfigPaths({ projects: ['./tsconfig.json'] }),
     svelte({
@@ -26,7 +51,7 @@ export default defineConfig({
   test: {
     // Modules under test are server-side, pure, or runes stores — no DOM.
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: appTests ? [`../apps/${appTests}/**/*.test.ts`] : ['src/**/*.test.ts'],
     // `src/routes/**` is FILE-BASED ROUTING, where a dot is a path separator:
     // `src/routes/api/mcp.test.ts` is the handler for POST /api/mcp/test, NOT a
     // test file. Nothing under routes/ is a test, and this exclusion is what

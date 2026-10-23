@@ -1158,13 +1158,17 @@ pub fn real_deps(state: &talaria_state::AppState) -> SurfaceDeps {
                 })
             }
         }),
-        // The builtin registry is what the sweep itself binds and runs, so the
-        // matrix counts and a run's own registry cannot disagree. App- and
-        // workbench-authored harnesses cross with their plane, not here.
-        harnesses: Arc::new(|| {
-            Box::pin(async move {
-                Ok(talaria_harness_defs::registry::builtin_activity_harnesses().to_vec())
-            })
+        // The builtins and every enabled app's harnesses — the registry the
+        // sweep itself binds and runs (evals.rs `real_deps`), so the matrix
+        // counts and a run's own registry cannot disagree. The app layer comes
+        // from the app host, which holds the code (talaria-app-harnesses); a
+        // host that cannot be reached leaves the builtins.
+        harnesses: Arc::new({
+            let token = state.cfg.secret_root.internal_token();
+            move || {
+                let token = token.clone();
+                Box::pin(async move { Ok(talaria_app_harnesses::registry_with_apps(&token).await) })
+            }
         }),
         bind_slots: Arc::new(|harnesses| {
             Box::pin(async move { Ok(crate::score::bind_slots(&harnesses).await) })
@@ -2071,7 +2075,7 @@ pub fn thresholds() -> Thresholds {
 /// NOTHING STOPS BEING MEASURED. `fitness_slots()` is unchanged, so
 /// `score_fitness` still produces a verdict for all of them and the archive
 /// still stores them; `role_assignment_issues` still warns an admin who
-/// assigns a blind model to the reserved vision role, which is the surface
+/// assigns a blind model to the vision role, which is the surface
 /// where that warning belongs. This decides what gets a column, and nothing
 /// else.
 #[derive(Debug, Clone, Serialize)]
@@ -2084,10 +2088,16 @@ pub struct SlotView {
     pub task_floor: f64,
 }
 
-pub fn slot_views() -> Vec<SlotView> {
+/// The static slots that are live, then one column per app harness in the
+/// registry (`app_slots`) — the app columns exist exactly while their app is
+/// enabled, because the registry lists an app's harnesses only then.
+pub fn slot_views(
+    harnesses: &[talaria_harness_defs::registry::RegisteredHarness],
+) -> Vec<SlotView> {
     crate::score::fitness_slots()
         .into_iter()
         .filter(|s| s.live)
+        .chain(crate::score::app_slots(harnesses))
         .map(|s| SlotView {
             key: crate::score::slot_key(s.kind, &s.id),
             task_floor: crate::score::task_floor_for(&s, None),
@@ -3371,7 +3381,7 @@ async fn matrix_view(deps: &SurfaceDeps) -> Result<MatrixView, String> {
     let shape = shape?;
     let runs_view = runs_view?;
     Ok(MatrixView {
-        slots: slot_views(),
+        slots: slot_views(&shape.harnesses),
         models: models?,
         index: index?,
         // The runs the page draws, plus the cap it disables Start at. Several
