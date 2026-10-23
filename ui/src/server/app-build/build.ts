@@ -21,7 +21,7 @@ import {
   shimFileName,
 } from '@/app-runtime/specifiers'
 import { sourceKey } from './key'
-import { appBuildKeyDir, appSrc, uiRoot } from './paths'
+import { appBuildKeyDir, appSrc, clientlessError, declaredSurfaces, uiRoot } from './paths'
 import { pruneSupersededBuilds, readCurrent, writeCurrent, type AppBuildCurrent } from './status'
 
 function externalsGuard(): Plugin {
@@ -168,6 +168,15 @@ function listFiles(dir: string): string[] {
   return names.filter((n) => existsSync(join(dir, n)))
 }
 
+/** An app without app.ts builds only when its manifest declares no surface
+ *  and it ships something else to run (`clientlessError`, the rule the load
+ *  probe holds an existing build to as well); otherwise the build fails,
+ *  saying which. */
+function clientlessOk(slug: string, hasServerSide: boolean): void {
+  const error = clientlessError(declaredSurfaces(slug), hasServerSide)
+  if (error) throw new Error(error)
+}
+
 /** Compile one app into `<builds>/<slug>/<key>/`. Idempotent when the key matches. */
 export async function buildApp(slug: string): Promise<AppBuildCurrent> {
   const src = appSrc(slug, 'talaria.json')
@@ -180,10 +189,14 @@ export async function buildApp(slug: string): Promise<AppBuildCurrent> {
   const outDir = appBuildKeyDir(slug, key)
   mkdirSync(outDir, { recursive: true })
   try {
-    await buildClient(join(src, '..'), outDir)
     const serverTs = appSrc(slug, 'server.ts')
-    if (existsSync(serverTs)) await buildServerish(serverTs, join(outDir, 'server.js'))
     const mcpTs = appSrc(slug, 'mcp.ts')
+    // The client is built only when there is one. An app whose talaria.json
+    // declares no surfaces — a server- or MCP-only plugin — needs no app.ts
+    // and gets no app.js; one that declares a surface must ship app.ts.
+    if (existsSync(appSrc(slug, 'app.ts'))) await buildClient(join(src, '..'), outDir)
+    else clientlessOk(slug, existsSync(serverTs) || existsSync(mcpTs))
+    if (existsSync(serverTs)) await buildServerish(serverTs, join(outDir, 'server.js'))
     if (existsSync(mcpTs)) await buildServerish(mcpTs, join(outDir, 'mcp.js'))
     const files = listFiles(outDir)
     const cur: AppBuildCurrent = {

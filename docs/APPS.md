@@ -14,7 +14,8 @@ and the community. Core ships with none enabled.
 ```
 apps/<slug>/
   talaria.json   manifest — name, icon, version, description, surfaces
-  app.ts         UI surfaces (Svelte 5) — default-exports defineApp({...})
+  app.ts         UI surfaces (Svelte 5) — default-exports defineApp({...});
+                 required only when talaria.json declares a surface
   *.svelte       one component per surface (plus whatever else you need)
   server.ts      optional API — defineAppServer(...) → /api/apps/<slug>/*
   mcp.ts         optional agent tools — defineAppMcp(...) → governed MCP server
@@ -22,7 +23,12 @@ apps/<slug>/
 ```
 
 The programming model — `defineApp`, the app server, the document store, MCP tools, harnesses —
-is the [SDK docset](./sdk/README.md). Scaffold with `bun talaria app new <slug>`.
+is the [SDK docset](./sdk/README.md). Scaffold with `bun talaria app new <slug>`. An app with no
+UI (a server or agent tools only) declares no surfaces and ships no `app.ts`.
+
+Every path under `/api/apps/<slug>/` is the app's own. The host's routes about an app live under
+`/api/app-host/<slug>/` (today `POST …/rebuild`, which Manage → Apps calls to compile and probe
+an app before enabling it).
 
 
 

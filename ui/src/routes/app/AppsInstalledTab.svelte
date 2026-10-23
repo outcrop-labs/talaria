@@ -27,7 +27,7 @@
     busy = a.slug
     try {
       if (!a.enabled) {
-        const health = await postJson<{ ok: boolean; error?: string }>(`/api/apps/${a.slug}/rebuild`, {})
+        const health = await postJson<{ ok: boolean; error?: string }>(`/api/app-host/${a.slug}/rebuild`, {})
         if (!health.ok) {
           void alert({ title: `${a.name} cannot be enabled`, message: health.error ?? 'app failed to compile or load' })
           await refresh()
@@ -47,7 +47,7 @@
   const rebuild = async (a: InstalledApp) => {
     busy = a.slug
     try {
-      const health = await postJson<{ ok: boolean; error?: string }>(`/api/apps/${a.slug}/rebuild`, {})
+      const health = await postJson<{ ok: boolean; error?: string }>(`/api/app-host/${a.slug}/rebuild`, {})
       if (!health.ok) void alert({ title: `${a.name} is still broken`, message: health.error ?? 'app failed to compile or load' })
       await refresh()
     } catch (e) {

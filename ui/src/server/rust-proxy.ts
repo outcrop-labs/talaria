@@ -36,6 +36,10 @@ const PREFIXES = ['/api/'] as const
 //   point agents straight at :5274), but the proxy never routes an app
 //   server's traffic anywhere else. Bare /api/apps is NOT a resident — it is
 //   the discovery listing, and it serves from Rust like everything else.
+//   The app host's own routes about an app (/api/app-host/{slug}/…, today
+//   rebuild: compile and probe the app's modules) — same reason: the
+//   builder and the probe load app code. They sit under their own prefix so
+//   they never take a path from the app's namespace above.
 //   healthz — the app process's own liveness answer; the Rust api carries
 //   its own at the same path for whoever asks it there.
 // The one-time resident admin.update (the git-checkout updater that rebuilt
@@ -45,6 +49,7 @@ const PREFIXES = ['/api/'] as const
 const STAY_TS = [
   /^\/api\/mcp\/gw\/app-/,
   /^\/api\/apps\//,
+  /^\/api\/app-host\//,
   /^\/api\/healthz$/,
 ] as const
 
@@ -123,17 +128,21 @@ export async function maybeProxy(request: Request, pathname: string): Promise<Re
   if (!headers.has('x-forwarded-host')) headers.set('x-forwarded-host', incoming.host)
 
   // The body is buffered BEFORE the timer starts, so a long upload spends its
-  // minutes in the buffer (guarded by the caller's own disconnect signal),
-  // not against the read deadline — writes are exempt regardless, but a
-  // future reader of this ordering should not have to rediscover it.
+  // minutes in the buffer, not against the read deadline — writes are exempt
+  // regardless, but a future reader of this ordering should not have to
+  // rediscover it.
   const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.arrayBuffer()
 
-  // Composed by hand rather than one AbortSignal.any so the deadline half can
-  // be armed for reads only: `request.signal` stays live for the whole body
-  // (the caller's disconnect still cuts an SSE relay), while `timer` guards
-  // only the wait for the response itself, and only on reads.
+  // READS ONLY, both halves. `request.signal` aborts when the caller hangs
+  // up (server-entry.ts and the vite middleware wire it to the socket), and
+  // on a read that is the right answer: nobody is waiting, so the wait for a
+  // response — or an SSE relay's body — is cut. A WRITE keeps running after
+  // its caller leaves, as it always has: a fleet verb or an install half done
+  // because a tab closed is worse than one finished for nobody. `timer`
+  // guards only the wait for the response itself; composed by hand so it can
+  // be cleared the moment the response lands.
   let timer: ReturnType<typeof setTimeout> | undefined
-  let signal: AbortSignal | undefined = request.signal ?? undefined
+  let signal: AbortSignal | undefined
   if (READ_METHODS.has(request.method)) {
     const deadline = new AbortController()
     timer = setTimeout(() => deadline.abort(new Error('upstream did not answer in time')), READ_DEADLINE_MS)

@@ -147,6 +147,44 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(5)
   })
 
+  it('keeps the host\'s own app routes (/api/app-host/) on TS — they build and probe app code', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    const rebuild = '/api/app-host/contacts/rebuild'
+    expect(await maybeProxy(req(rebuild, { method: 'POST' }), rebuild)).toBeNull()
+    // Anchored on the whole segment.
+    expect(await maybeProxy(req('/api/app-hosted'), '/api/app-hosted')).not.toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('a caller who hangs up cuts a READ; a WRITE runs on for nobody, as it always has', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const seen: Array<AbortSignal | null | undefined> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_target: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            seen.push(init.signal)
+            init.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true })
+          }),
+      ) as unknown as typeof globalThis.fetch,
+    )
+    const readGone = new AbortController()
+    const read = maybeProxy(req('/api/boards', { signal: readGone.signal }), '/api/boards')
+    const writeGone = new AbortController()
+    const write = maybeProxy(req('/api/fleet/reconcile', { method: 'POST', signal: writeGone.signal }), '/api/fleet/reconcile').then(() => 'settled')
+    await vi.waitFor(() => expect(seen).toHaveLength(2))
+    readGone.abort(new DOMException('the client disconnected', 'AbortError'))
+    writeGone.abort(new DOMException('the client disconnected', 'AbortError'))
+    expect((await read)!.status).toBe(502)
+    // The write's upstream fetch carries no signal of the caller's.
+    expect(seen[1]).toBeUndefined()
+    const race = await Promise.race([write, new Promise((r) => setTimeout(() => r('still-pending'), 50))])
+    expect(race).toBe('still-pending')
+  })
+
   it('answers 502 with the fixed sentence when the Rust api is down — no fallback', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     vi.stubGlobal(
@@ -280,7 +318,8 @@ describe('maybeProxy', () => {
       const pending = maybeProxy(req('/api/fleet/reconcile', { method: 'POST' }), '/api/fleet/reconcile')
       const race = await Promise.race([pending.then(() => 'settled'), vi.advanceTimersByTimeAsync(600_000).then(() => 'still-pending')])
       expect(race).toBe('still-pending')
-      expect(sawSignal?.aborted).toBe(false)
+      // No signal at all: no timer of ours, and not the caller's either.
+      expect(sawSignal).toBeUndefined()
     } finally {
       vi.useRealTimers()
     }

@@ -93,3 +93,21 @@ export function listInstalledApps(): InstalledApp[] {
   }
   return out.sort((a, b) => a.name.localeCompare(b.name))
 }
+
+/** The surfaces an app's talaria.json declares (work, manage, settings) —
+ *  empty for a server- or MCP-only app, or one whose manifest is not an app.
+ *  An app that declares none ships no client, and app.ts is optional. */
+export function declaredSurfaces(slug: string): Array<'work' | 'manage' | 'settings'> {
+  const app = listInstalledApps().find((a) => a.slug === slug)
+  if (!app) return []
+  return (['work', 'manage', 'settings'] as const).filter((k) => app.surfaces[k] !== undefined)
+}
+
+/** Why an app with no app.ts cannot be built or enabled, or null when it
+ *  can: it declares no surface, and it has a server.ts or an mcp.ts to run.
+ *  One rule for the build (build.ts) and the load probe (app-health.ts). */
+export function clientlessError(declared: readonly string[], hasServerSide: boolean): string | null {
+  if (declared.length > 0) return `talaria.json declares surfaces (${declared.join(', ')}), so app.ts is required`
+  if (!hasServerSide) return 'an app needs at least one of app.ts, server.ts or mcp.ts'
+  return null
+}
