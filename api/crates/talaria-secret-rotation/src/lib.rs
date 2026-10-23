@@ -139,6 +139,38 @@ pub async fn rotate_secrets(
         }
     }
 
+    // agent_web_search keeps its vendor keys as a JSON map of vendor →
+    // ciphertext under `keys` (talaria-agent-web-search). Same in-place move.
+    let stored: Option<(Value,)> =
+        sqlx::query_as("select value from app_settings where key = 'agent_web_search' for update")
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(|e| e.to_string())?;
+    if let Some((mut value,)) = stored {
+        let mut changed = false;
+        if let Some(keys) = value.get_mut("keys").and_then(Value::as_object_mut) {
+            for (_vendor, v) in keys.iter_mut() {
+                let Some(cipher) = v.as_str().filter(|s| !s.is_empty()) else {
+                    continue;
+                };
+                let plain = sb.open(cipher).map_err(|e| e.to_string())?;
+                let resealed = sb
+                    .seal_with(&fresh, next_version, &plain)
+                    .map_err(|e| e.to_string())?;
+                *v = Value::String(resealed);
+                reencrypted += 1;
+                changed = true;
+            }
+        }
+        if changed {
+            sqlx::query("update app_settings set value = $1, updated_at = now() where key = 'agent_web_search'")
+                .bind(&value)
+                .execute(tx.as_mut())
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
     // If the root secret is changing, re-wrap every RETAINED key version under
     // the new KEK so old versions stay unwrappable (old ciphertext keeps working).
     if let Some(material) = new_root_material {

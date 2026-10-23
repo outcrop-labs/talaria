@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/outcrop-labs/talaria/rc/docs/sdk/talaria.schema.json",
+  "title": "talaria.json — a Talaria app's manifest",
+  "description": "The manifest at the root of every app. Install and update refuse a manifest that fails these rules, with the reason; an installed app whose manifest fails is listed in Manage → Apps as broken and can still be uninstalled. The rules run in the host (talaria-app-manifest in Rust, ui/src/server/app-build/manifest.ts in TS), pinned to one shared fixture; this schema is their published shape. Keys not listed here are ignored.",
+  "x-talaria-sdk-version": "1.0.0",
+  "type": "object",
+  "required": ["name"],
+  "additionalProperties": true,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "This schema's URL, for editors. Ignored by the host."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "pattern": "\\S",
+      "description": "The app's display name. Required, and not only whitespace."
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "not": { "enum": ["layout", "hooks", "meta"] },
+      "description": "The slug the app installs as: its path segment under /x and /api/apps. Install uses it instead of deriving one from the repository's name, refuses an admin's different slug, and refuses one already taken. Lowercase letters, digits and dashes; not a word the client router reserves. An installed app whose directory differs from its declared slug is listed as broken."
+    },
+    "icon": {
+      "type": "string",
+      "maxLength": 16,
+      "description": "A glyph or emoji for the dock tile. Default ⬡."
+    },
+    "version": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "The app's own version, shown in Manage → Apps. Default 0.0.0. Updates follow git commits, not this field."
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "surfaces": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The UI surfaces the app declares, each with its title. Declaring any requires app.ts; an app with none is server- or MCP-only.",
+      "properties": {
+        "work": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "\\S" },
+        "manage": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "\\S" },
+        "settings": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "\\S" }
+      }
+    },
+    "sdk": {
+      "type": "string",
+      "description": "The @talaria/sdk range the app was written against, in npm's range grammar without pre-release tags or hyphen ranges (\"^1.0\", \">=1.2 <2\", \"1.x\", \"^1 || ^2\"). A host whose SDK version (x-talaria-sdk-version above, for this revision) is outside the range refuses to install the app and lists an installed one as broken."
+    },
+    "harnesses": {
+      "type": ["array", "object"],
+      "description": "Reserved for the app harness registry. Its shape is checked; nothing reads it yet."
+    },
+    "triggers": {
+      "type": "array",
+      "description": "Reserved for scheduled and event triggers. Each names an id and exactly one of cron or event; nothing runs them yet.",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+          "cron": { "type": "string", "minLength": 1 },
+          "event": { "type": "string", "minLength": 1 }
+        },
+        "oneOf": [{ "required": ["cron"] }, { "required": ["event"] }]
+      }
+    }
+  }
+}

@@ -1,5 +1,6 @@
 // Per-app Postgres: one compose project per installed app, spawned on
-// first use / install and destroyed on uninstall. App data never shares
+// first use / install and stopped on uninstall (its data is deleted only
+// when the admin asks — talaria-apps `uninstall_app`). App data never shares
 // Talaria's database — a runaway query, a filled disk, or a DROP TABLE in
 // an app cannot touch the platform catalog. The store API is unchanged;
 // only the process behind it is.
@@ -140,14 +141,6 @@ async function loadOrCreatePassword(slug: string): Promise<string> {
   return pass
 }
 
-async function forgetPassword(slug: string): Promise<void> {
-  const stored = await getSetting<Record<string, string>>(PASSWORDS_KEY, {})
-  if (!(slug in stored)) return
-  const next = { ...stored }
-  delete next[slug]
-  await setSetting(PASSWORDS_KEY, next)
-}
-
 async function docker(
   args: string[],
   timeoutMs = 60_000,
@@ -217,10 +210,16 @@ async function containerState(name: string): Promise<'running' | 'exited' | 'mis
   return r.stdout === 'true' ? 'running' : 'exited'
 }
 
+/** Ready over TCP, not the unix socket. A fresh cluster's entrypoint runs
+ *  initdb under a temporary server that listens on the socket only, then
+ *  restarts it: a socket check passed during that window, and the host's
+ *  first TCP connection (the published port, or the container name) was
+ *  reset — a fresh install's first build failed "database did not start:
+ *  read ECONNRESET". The temporary server takes no TCP, so this waits it out. */
 async function waitHealthy(name: string, timeoutMs = 60_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const r = await docker(['exec', name, 'pg_isready', '-U', 'talaria', '-d', 'talaria'], 8_000)
+    const r = await docker(['exec', name, 'pg_isready', '-h', '127.0.0.1', '-U', 'talaria', '-d', 'talaria'], 8_000)
     if (r.ok) return true
     await new Promise<void>((resolve) => setTimeout(resolve, 400))
   }
@@ -315,7 +314,13 @@ export async function appSql(slug: string): Promise<Sql> {
   return sql
 }
 
-export async function dropAppDatabase(slug: string): Promise<void> {
+/** Stop an app's database and close this process's pool for it. The data
+ *  directory, db.env and the sealed password all stay: an app whose code left
+ *  apps/ (uninstalled, or moved by hand) keeps its data until an admin asks
+ *  for it to be wiped, which the api's uninstall does (talaria-apps
+ *  `uninstall_app` with wipeData) — never this process. A reinstall reattaches
+ *  the same cluster with the same password. */
+export async function stopAppDatabase(slug: string): Promise<void> {
   if (!slugOk(slug)) return
   const sql = pools.get(slug)
   if (sql) {
@@ -330,7 +335,4 @@ export async function dropAppDatabase(slug: string): Promise<void> {
     await compose(slug, ['down', '--remove-orphans'], 60_000)
   }
   await docker(['rm', '-f', appDbContainer(slug)], 30_000)
-  const dir = appDataDir(slug)
-  if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
-  await forgetPassword(slug).catch(() => {})
 }

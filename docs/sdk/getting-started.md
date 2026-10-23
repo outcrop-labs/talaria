@@ -30,9 +30,23 @@ A harness runs only when your `server.ts` imports it and calls `runHarness`; not
   "icon": "☏",
   "version": "0.1.0",
   "description": "Lightweight CRM — people, companies, stages, notes.",
-  "surfaces": { "work": "Contacts", "manage": "Contacts data", "settings": "Contacts" }
+  "surfaces": { "work": "Contacts", "manage": "Contacts data", "settings": "Contacts" },
+  "sdk": "^1.0"
 }
 ```
+
+`name` is the one required key. The full shape, with every rule the host enforces, is
+[`talaria.schema.json`](./talaria.schema.json); a manifest that breaks a rule is refused at
+install with the reason, and an installed one is listed as broken. Two keys matter for an app
+that is installed and updated from git:
+
+- `slug` — the slug the app installs as, when it must not depend on the repository's name
+  (its own code or docs name `/x/<slug>`). Install uses it and refuses a taken or reserved one.
+  Leave it out and the host derives the slug from the repository; surfaces never hard-code it
+  either way ([client.md](./client.md)).
+- `sdk` — the `@talaria/sdk` range the app was written against (npm range syntax: `^1.0`,
+  `>=1.2 <2`). A host outside the range refuses to install the app, and lists an installed one
+  as broken after a host upgrade, instead of failing in a build.
 
 Surfaces are opt-in; ship any combination:
 

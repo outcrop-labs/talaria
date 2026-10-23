@@ -455,6 +455,7 @@ pub async fn secret_health(
         "github_config".to_string(),
         "rag_rerank_config".to_string(),
         "app_db_passwords".to_string(),
+        "agent_web_search".to_string(),
     ])
     .fetch_all(pg)
     .await;
@@ -625,6 +626,40 @@ pub async fn secret_health(
         f.insert("setAt".into(), opt_iso(rerank.and_then(|(_, at)| *at)));
         f.insert("clearable".into(), true.into());
         rows.push(row(f));
+    }
+
+    // One row per vendor key the agent web-search setting holds — the
+    // setting keeps a key only for a vendor that is picked.
+    let web = settings.get("agent_web_search");
+    if let Some((val, at)) = web
+        && let Some(keys) = val.get("keys").and_then(|k| k.as_object())
+    {
+        for (vendor, cipher) in keys {
+            let Some(c) = cipher.as_str().filter(|s| !s.is_empty()) else {
+                continue;
+            };
+            let mut f = serde_json::Map::new();
+            f.insert(
+                "id".into(),
+                format!("setting:agent_web_search:keys.{vendor}").into(),
+            );
+            f.insert("group".into(), "platform".into());
+            f.insert(
+                "label".into(),
+                format!("Agent web search key ({vendor})").into(),
+            );
+            f.insert(
+                "unlocks".into(),
+                "Agents' web search through Hermes, on the provider picked for them".into(),
+            );
+            f.insert("surface".into(), "Admin → Search".into());
+            f.insert("href".into(), "/admin/search".into());
+            f.insert("state".into(), state_of(sb, Some(c), None).into());
+            f.insert("scope".into(), "instance".into());
+            f.insert("setAt".into(), opt_iso(*at));
+            f.insert("clearable".into(), true.into());
+            rows.push(row(f));
+        }
     }
 
     let app_dbs = settings.get("app_db_passwords");

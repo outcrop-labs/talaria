@@ -487,6 +487,26 @@ async fn rename_agent_slug(
             "update usage_events set agent_model = $1 where agent_model = $2",
             vec![new_model.as_str(), def.model.as_str()],
         ),
+        // The relay's attribution records are keyed by the agent too: left
+        // behind, the agent's next calls in a conversation it already
+        // reported would book `unattended`. A stale row under the new name
+        // (a deleted agent's) goes first, so the move cannot collide.
+        (
+            "delete from usage_attributions where agent_model = $1",
+            vec![new_model.as_str()],
+        ),
+        (
+            "update usage_attributions set agent_model = $1 where agent_model = $2",
+            vec![new_model.as_str(), def.model.as_str()],
+        ),
+        (
+            "delete from usage_affinity_keys where agent_model = $1",
+            vec![new_model.as_str()],
+        ),
+        (
+            "update usage_affinity_keys set agent_model = $1 where agent_model = $2",
+            vec![new_model.as_str(), def.model.as_str()],
+        ),
         // The threads listening to this agent's cron jobs are keyed by its
         // model too; left behind, every scheduled run would post into
         // nothing after a rename.

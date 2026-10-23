@@ -21,7 +21,7 @@ import {
   shimFileName,
 } from '@/app-runtime/specifiers'
 import { sourceKey } from './key'
-import { appBuildKeyDir, appSrc, clientlessError, declaredSurfaces, uiRoot } from './paths'
+import { appBuildKeyDir, appDir, clientlessError, declaredSurfacesAt, manifestError, uiRoot } from './paths'
 import { pruneSupersededBuilds, readCurrent, writeCurrent, type AppBuildCurrent } from './status'
 
 function externalsGuard(): Plugin {
@@ -172,30 +172,53 @@ function listFiles(dir: string): string[] {
  *  and it ships something else to run (`clientlessError`, the rule the load
  *  probe holds an existing build to as well); otherwise the build fails,
  *  saying which. */
-function clientlessOk(slug: string, hasServerSide: boolean): void {
-  const error = clientlessError(declaredSurfaces(slug), hasServerSide)
+function clientlessOk(dir: string, hasServerSide: boolean): void {
+  const error = clientlessError(declaredSurfacesAt(dir), hasServerSide)
   if (error) throw new Error(error)
 }
 
 /** Compile one app into `<builds>/<slug>/<key>/`. Idempotent when the key matches. */
 export async function buildApp(slug: string): Promise<AppBuildCurrent> {
-  const src = appSrc(slug, 'talaria.json')
+  return buildAppAt(slug, appDir(slug), { pointer: true })
+}
+
+/** Compile the tree at `dir` as app `slug`, into `<builds>/<slug>/<key>/`.
+ *
+ *  `pointer: true` is the app's own build: current.json follows it
+ *  (building, then ready or failed) and superseded builds are pruned.
+ *  `pointer: false` is an update's staged tree (`apps/.<slug>.next`): the
+ *  build lands under its key beside the live one and current.json is not
+ *  touched, so the live app keeps serving while the new version is checked.
+ *  The key hashes the tree's files by their path inside it, so the staged
+ *  build's key is the one the tree has once it is swapped into apps/<slug>.
+ *
+ *  A manifest the rules refuse fails the build with the reason; a tree with
+ *  no talaria.json throws, as an app that is not there. */
+export async function buildAppAt(slug: string, dir: string, opts: { pointer: boolean }): Promise<AppBuildCurrent> {
+  const src = join(dir, 'talaria.json')
   if (!existsSync(src)) throw new Error(`no app "${slug}"`)
   const hostBuild = hostId()
-  const key = sourceKey(join(src, '..'), hostBuild)
+  const key = sourceKey(dir, hostBuild)
+  const failed = (error: string): AppBuildCurrent => ({ key, status: 'failed', hostBuild, builtAt: Date.now(), bytes: 0, files: [], error })
+  const refused = manifestError(dir, slug)
+  if (refused) {
+    const cur = failed(refused)
+    if (opts.pointer) writeCurrent(slug, cur)
+    return cur
+  }
   const existing = readCurrent(slug)
   if (existing?.status === 'ready' && existing.key === key) return existing
-  writeCurrent(slug, { key, status: 'building', hostBuild, builtAt: Date.now(), bytes: 0, files: [] })
+  if (opts.pointer) writeCurrent(slug, { key, status: 'building', hostBuild, builtAt: Date.now(), bytes: 0, files: [] })
   const outDir = appBuildKeyDir(slug, key)
   mkdirSync(outDir, { recursive: true })
   try {
-    const serverTs = appSrc(slug, 'server.ts')
-    const mcpTs = appSrc(slug, 'mcp.ts')
+    const serverTs = join(dir, 'server.ts')
+    const mcpTs = join(dir, 'mcp.ts')
     // The client is built only when there is one. An app whose talaria.json
     // declares no surfaces — a server- or MCP-only plugin — needs no app.ts
     // and gets no app.js; one that declares a surface must ship app.ts.
-    if (existsSync(appSrc(slug, 'app.ts'))) await buildClient(join(src, '..'), outDir)
-    else clientlessOk(slug, existsSync(serverTs) || existsSync(mcpTs))
+    if (existsSync(join(dir, 'app.ts'))) await buildClient(dir, outDir)
+    else clientlessOk(dir, existsSync(serverTs) || existsSync(mcpTs))
     if (existsSync(serverTs)) await buildServerish(serverTs, join(outDir, 'server.js'))
     if (existsSync(mcpTs)) await buildServerish(mcpTs, join(outDir, 'mcp.js'))
     const files = listFiles(outDir)
@@ -207,22 +230,16 @@ export async function buildApp(slug: string): Promise<AppBuildCurrent> {
       bytes: dirBytes(outDir),
       files,
     }
-    writeCurrent(slug, cur)
-    // The pointer now names this build, so every older key is superseded:
-    // the door would not serve them, and nothing loads them.
-    pruneSupersededBuilds(slug)
+    if (opts.pointer) {
+      writeCurrent(slug, cur)
+      // The pointer now names this build, so every older key is superseded:
+      // the door would not serve them, and nothing loads them.
+      pruneSupersededBuilds(slug)
+    }
     return cur
   } catch (e) {
-    const cur: AppBuildCurrent = {
-      key,
-      status: 'failed',
-      hostBuild,
-      builtAt: Date.now(),
-      bytes: 0,
-      files: [],
-      error: e instanceof Error ? e.message : String(e),
-    }
-    writeCurrent(slug, cur)
+    const cur = failed(e instanceof Error ? e.message : String(e))
+    if (opts.pointer) writeCurrent(slug, cur)
     return cur
   }
 }

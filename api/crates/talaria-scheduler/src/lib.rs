@@ -112,6 +112,7 @@ pub enum JobName {
     AgentResourceSample,
     WorkbenchJobSweep,
     WorkbenchQueueSweep,
+    SkillsIndexRefresh,
 }
 
 impl JobName {
@@ -137,6 +138,7 @@ impl JobName {
             JobName::AgentResourceSample => "agent-resource-sample",
             JobName::WorkbenchJobSweep => "workbench-job-sweep",
             JobName::WorkbenchQueueSweep => "workbench-queue-sweep",
+            JobName::SkillsIndexRefresh => "skills-index-refresh",
         }
     }
 }

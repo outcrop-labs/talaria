@@ -579,8 +579,17 @@ async function ensureRustApi() {
     )
     return
   }
+  // TALARIA_APP_HOST_URL: where the api calls this process back — an app
+  // install's build, an update's stage and switch (talaria-apps `AppHost`).
+  // Loopback when this process listens on every address; the address it
+  // listens on otherwise.
+  const selfHost = host === '0.0.0.0' || host === '::' || host === '' ? '127.0.0.1' : host.includes(':') ? `[${host}]` : host
   apiChild = spawn(bin, [], {
-    env: { ...process.env, TALARIA_API_PORT: String(API_PORT) },
+    env: {
+      ...process.env,
+      TALARIA_API_PORT: String(API_PORT),
+      TALARIA_APP_HOST_URL: process.env.TALARIA_APP_HOST_URL || `http://${selfHost}:${port}`,
+    },
     stdio: 'inherit',
   })
   process.env.TALARIA_RUST_API_URL = API_URL

@@ -17,7 +17,6 @@ talaria-agent-mcp = { workspace = true }
 talaria-agent-role-templates = { workspace = true }
 talaria-agent-secrets = { workspace = true }
 talaria-agent-skills = { workspace = true }
-talaria-agents-registry = { workspace = true }
 talaria-approvals = { workspace = true }
 talaria-artifacts = { workspace = true }
 talaria-audit = { workspace = true }
@@ -58,7 +57,6 @@ talaria-teams = { workspace = true }
 talaria-templates = { workspace = true }
 talaria-uploads = { workspace = true }
 talaria-users = { workspace = true }
-talaria-vision = { workspace = true }
 talaria-work-dispatch = { workspace = true }
 talaria-workspace-secrets = { workspace = true }
 axum = { workspace = true }

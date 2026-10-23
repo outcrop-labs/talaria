@@ -388,10 +388,13 @@ pub async fn put(
         }
     }
     spawn_render(&state.pg, &sb);
-    // Live cutover for the agents this change touches: a running Hermes
-    // only wires MCP servers at start, so carriers roll blue/green. Rolls
-    // are fire-and-forget — never awaited, never the caller's problem. The
-    // timeout rides config.yaml (`timeout`), so it rolls like access does.
+    // Live cutover for the agents this change touches. The render above
+    // rewrites their config.yaml in place and a running Hermes reconciles
+    // `mcp_servers` by name about once a minute, which covers a grant or a
+    // revoke; a changed timeout (or URL, or header) under an unchanged name
+    // is not picked up that way, so carriers also roll — in place
+    // (talaria-mcp-apply). Rolls are fire-and-forget — never awaited, never
+    // the caller's problem.
     let touched_access = patch.enabled.is_some()
         || patch.all_agents.is_some()
         || patch.auth_mode.is_some()
@@ -486,7 +489,7 @@ fn spawn_render(pg: &sqlx::PgPool, sb: &talaria_secretbox::SecretBox) {
     let pg = pg.clone();
     let sb = sb.clone();
     tokio::spawn(async move {
-        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb, None).await;
+        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb).await;
     });
 }
 

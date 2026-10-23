@@ -372,9 +372,10 @@ describe('offering tool definitions', () => {
 // metadata vouches for levels, and the routes validate the pick against the
 // same metadata. What THESE assertions hold is the second half of the
 // contract: once a pick is legitimately in a `TransportRequest`, every
-// transport that can honor it sends it as `reasoning_effort` — and the one
-// turn that cannot (a tool-offering gateway round) keeps the `'none'` the
-// provider demands rather than the pick.
+// transport that can honor it sends it — as `reasoning_effort` to a gateway
+// model, as `model_options.reasoning_effort` to a persona (the only spelling
+// Hermes reads) — and the one turn that cannot (a tool-offering gateway round)
+// keeps the `'none'` the provider demands rather than the pick.
 
 describe('the reasoning-effort pick', () => {
   /** A persona reply stream, as `pumpPersonaStream` reads it (no canned header). */
@@ -386,9 +387,9 @@ describe('the reasoning-effort pick', () => {
       },
     })
 
-  it('travels to a persona gateway as reasoning_effort, beside temperature', async () => {
+  it('travels to a persona gateway in model_options, and temperature does not travel at all', async () => {
     proxyChat.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: fleetBody() })
-    await fleetTransport({
+    const reply = await fleetTransport({
       model: 'engineer-engineering',
       messages: [{ role: 'user', content: 'hi' }],
       jsonMode: false,
@@ -397,8 +398,11 @@ describe('the reasoning-effort pick', () => {
       effort: 'high',
     })
     const sent = proxyChat.mock.calls.at(-1)![0] as Record<string, unknown>
-    expect(sent.reasoning_effort).toBe('high')
-    expect(sent.temperature).toBe(0.4)
+    expect(sent.model_options).toEqual({ reasoning_effort: 'high' })
+    expect('reasoning_effort' in sent).toBe(false)
+    // Hermes takes no per-request temperature: it is decided, not sent.
+    expect('temperature' in sent).toBe(false)
+    expect(reply.contractDropped).toBe(false)
   })
 
   it('is absent on a persona turn that never picked one', async () => {
@@ -406,6 +410,24 @@ describe('the reasoning-effort pick', () => {
     await fleetTransport({ model: 'engineer-engineering', messages: [], jsonMode: false, caller: 't' })
     const sent = proxyChat.mock.calls.at(-1)![0] as Record<string, unknown>
     expect('reasoning_effort' in sent).toBe(false)
+    expect('model_options' in sent).toBe(false)
+  })
+
+  it('reports a persona JSON request as a dropped contract, never sending response_format', async () => {
+    proxyChat.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: fleetBody() })
+    const reply = await fleetTransport({ model: 'engineer-engineering', messages: [], jsonMode: true, caller: 't' })
+    const sent = proxyChat.mock.calls.at(-1)![0] as Record<string, unknown>
+    expect('response_format' in sent).toBe(false)
+    expect(reply.contractDropped).toBe(true)
+    // A schema alone is a JSON contract too — the Rust twin's rule.
+    const schemaOnly = await fleetTransport({
+      model: 'engineer-engineering',
+      messages: [],
+      jsonMode: false,
+      jsonSchema: { name: 'x', schema: { type: 'object' }, strict: false },
+      caller: 't',
+    })
+    expect(schemaOnly.contractDropped).toBe(true)
   })
 
   it('rides a streamed gateway turn', async () => {
