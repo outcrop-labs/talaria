@@ -2,6 +2,10 @@
 // server/mcp chunks, every shared specifier external and rewritten to the
 // host's /runtime/rt-*.js entries. A bundled svelte is a build error
 // (`effect_orphan` at runtime), not a surprise later.
+//
+// Changing what this file emits, or how the host reads it? Bump BUILD_RECIPE
+// in ./key.ts in the same change, so builds made by the old recipe are
+// rebuilt instead of reused.
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -10,7 +14,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 import {
   bundledShared,
-  clientSpecifiers,
+  clientRuntimePath,
   hostBuildStamp,
   isClientSpecifier,
   isServerSpecifier,
@@ -18,7 +22,7 @@ import {
 } from '@/app-runtime/specifiers'
 import { sourceKey } from './key'
 import { appBuildKeyDir, appSrc, uiRoot } from './paths'
-import { readCurrent, writeCurrent, type AppBuildCurrent } from './status'
+import { pruneSupersededBuilds, readCurrent, writeCurrent, type AppBuildCurrent } from './status'
 
 function externalsGuard(): Plugin {
   return {
@@ -82,18 +86,42 @@ async function buildClient(appDir: string, outDir: string): Promise<void> {
       cssCodeSplit: true,
       rollupOptions: {
         input: { app: join(appDir, 'app.ts'), style: cssEntry },
+        // The host imports app.js and reads its default export (defineApp).
+        // Vite's app-build default (false) lets Rollup drop an entry's
+        // exports, which left app.js with none: the probe refused it and the
+        // host had no surfaces to mount.
+        preserveEntrySignatures: 'strict',
         external: (id) => isClientSpecifier(id),
         output: {
           format: 'es',
           entryFileNames: (c) => (c.name === 'app' ? 'app.js' : '_style.js'),
           assetFileNames: (a) => (typeof a.name === 'string' && a.name.endsWith('.css') ? 'app.css' : 'assets/[name][extname]'),
-          paths: (id) => (isClientSpecifier(id) ? `/runtime/${shimFileName(clientSpecifiers().find((s) => id === s || id.startsWith(`${s}/`)) ?? id)}.js` : id),
+          paths: (id) => (isClientSpecifier(id) ? clientRuntimePath(id) : id),
         },
       },
     },
   })
   const leftover = join(outDir, '_style.js')
   if (existsSync(leftover)) rmSync(leftover)
+}
+
+/** Where an SSR build (server.ts, mcp.ts) writes into the shared build-key
+ *  directory. Its entry is server.js or mcp.js; every chunk and asset it
+ *  splits off goes under `_server/` or `_mcp/`. Vite's defaults would put
+ *  them in `assets/`, beside the client's files, and the /app-builds/ door
+ *  serves `assets/**` to anyone holding a grant on the app — so a dynamic
+ *  import() in server.ts would ship that piece of the server to the browser.
+ *  A leading underscore keeps the names apart from anything the client build
+ *  writes, and the door serves no top-level directory but `assets/`
+ *  (app-builds-door.ts). */
+export function serverishFileNames(outFile: string): { entryFileNames: string; chunkFileNames: string; assetFileNames: string } {
+  const mcp = outFile.endsWith('mcp.js')
+  const dir = mcp ? '_mcp' : '_server'
+  return {
+    entryFileNames: mcp ? 'mcp.js' : 'server.js',
+    chunkFileNames: `${dir}/[name]-[hash].js`,
+    assetFileNames: `${dir}/[name]-[hash][extname]`,
+  }
 }
 
 async function buildServerish(entry: string, outFile: string): Promise<void> {
@@ -116,7 +144,7 @@ async function buildServerish(entry: string, outFile: string): Promise<void> {
         external: (id) => isServerSpecifier(id) || id.startsWith('node:'),
         output: {
           format: 'es',
-          entryFileNames: outFile.endsWith('mcp.js') ? 'mcp.js' : 'server.js',
+          ...serverishFileNames(outFile),
           paths: (id) => (isServerSpecifier(id) ? pathToFileURL(shim).href : id),
         },
       },
@@ -167,6 +195,9 @@ export async function buildApp(slug: string): Promise<AppBuildCurrent> {
       files,
     }
     writeCurrent(slug, cur)
+    // The pointer now names this build, so every older key is superseded:
+    // the door would not serve them, and nothing loads them.
+    pruneSupersededBuilds(slug)
     return cur
   } catch (e) {
     const cur: AppBuildCurrent = {

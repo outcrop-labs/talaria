@@ -538,16 +538,6 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             Ok(json!({ "ok": true }))
         }
 
-        "log_usage" => {
-            live_index(w, &a["taskId"])?;
-            if a["promptTokens"].as_f64().is_none() || a["completionTokens"].as_f64().is_none() {
-                return Err(refuse(
-                    "\"promptTokens\" and \"completionTokens\" are required token counts",
-                ));
-            }
-            Ok(json!({ "ok": true }))
-        }
-
         // ── Knowledge ────────────────────────────────────────────────────────
         "search_knowledge" => {
             let query = req_str(&a["query"], "query")?;
@@ -1944,7 +1934,6 @@ pub const BACKED_TOOLS: &[&str] = &[
     "report_gap",
     "add_time",
     "add_dependency",
-    "log_usage",
     // ── Knowledge ────────────────────────────────────────────────────────
     "search_knowledge",
     "web_search",

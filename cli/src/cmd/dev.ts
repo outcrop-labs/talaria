@@ -97,6 +97,65 @@ export async function ompAuthBridge(ctx: Ctx, opts: { quietWhenFresh?: boolean }
   }
 }
 
+const API_ENV_VARS = [
+  'DATABASE_URL',
+  'REDIS_URL',
+  'TALARIA_SECRET_KEY',
+  'TALARIA_SECRET_KEY_FILE',
+  'AUTH_SECRET',
+  'TALARIA_SCHEDULER',
+  'SEARXNG_URL',
+  'TALARIA_API_PORT',
+  'TALARIA_API_BIND',
+  'TALARIA_GATEWAY_SELF_URL',
+  'PORT',
+  'TALARIA_FLEET_PROJECT',
+  'TALARIA_WORKTREE',
+] as const
+
+/** The connection facts the Rust api reads, lifted out of ui/.env with the
+ *  SHELL always winning — the same override point `talaria dev` gives every
+ *  other lifted var.
+ *
+ *  The api's config.rs resolves the secret root in this order; lift all
+ *  three candidates so ui/.env's arrangement works whichever one it uses.
+ *  TALARIA_SCHEDULER rides along for one reason now: `off` is the kill
+ *  switch, and it has to reach the api process to mean anything. (During
+ *  the port the same variable declared which RUNTIME armed the schedule;
+ *  the cutover deleted the TS scheduler, so the api arms unless this says
+ *  `off`.) SEARXNG_URL — an operator's own search endpoint, nothing is
+ *  bundled — rides so the cargo child sees the same value the vite process
+ *  does (vite loads ui/.env itself) — the Rust read of it decides whether
+ *  search is env-pinned, and the two views must agree.
+ *  TALARIA_API_BIND and TALARIA_GATEWAY_SELF_URL are the container/devbox
+ *  dial: without the lift, ui/.env's 0.0.0.0 bind and :5274 gateway never
+ *  reach the renderer, and agents keep queueing on the UI hop.
+ *
+ *  TALARIA_API_PORT is in this list because the api BINDS it (talaria-config
+ *  reads it, defaulting to 5274). Without the lift, a worktree's api would
+ *  dutifully bind the shared port while the proxy dialed the worktree's own —
+ *  the two halves of the same setting have to agree. PORT and
+ *  TALARIA_FLEET_PROJECT are the fleet renderer's: the MCP gateway URL it
+ *  writes into every agent is built from the APP port, and the compose
+ *  project it addresses is what keeps a worktree's agents apart from the
+ *  main fleet — without the lift a worktree's agents would dial :5273 and
+ *  its containers would land in the shared `talaria-fleet` project.
+ *
+ *  TALARIA_WORKTREE names the instance in every container the api owns: an
+ *  app's database (`talaria-appdb-<instance>-<slug>`) and an MCP package's
+ *  (`talaria-mcp-<instance>-<name>`). The app side reads it from ui/.env, so
+ *  without the lift the api named the main instance's container — uninstall
+ *  stopped a container that was not this worktree's and left its own
+ *  running. */
+export function apiEnv(shell: Record<string, string | undefined>, uiEnv: string): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const varName of API_ENV_VARS) {
+    const val = shell[varName] ?? envValue(uiEnv, varName)
+    if (val) env[varName] = val
+  }
+  return env
+}
+
 /** The Rust api sidecar — the app's api since the cutover: every /api/*
  *  request the dev UI serves is proxied to it, so `talaria dev` brings it up
  *  by default. Opt OUT with TALARIA_API=off (a box that runs its own instance
@@ -143,33 +202,7 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
     return
   }
 
-  // The api's config.rs resolves the secret root in this order; lift all
-  // three candidates so ui/.env's arrangement works whichever one it uses.
-  // TALARIA_SCHEDULER rides along for one reason now: `off` is the kill
-  // switch, and it has to reach the api process to mean anything. (During
-  // the port the same variable declared which RUNTIME armed the schedule;
-  // the cutover deleted the TS scheduler, so the api arms unless this says
-  // `off`.) SEARXNG_URL — an operator's own search endpoint, nothing is
-  // bundled — rides so the cargo child sees the same value the vite process
-  // does (vite loads ui/.env itself) — the Rust read of it decides whether
-  // search is env-pinned, and the two views must agree.
-  // TALARIA_API_BIND and TALARIA_GATEWAY_SELF_URL are the container/devbox
-  // dial: without the lift, ui/.env's 0.0.0.0 bind and :5274 gateway never
-  // reach the renderer, and agents keep queueing on the UI hop.
-  const env: Record<string, string> = {}
-  // TALARIA_API_PORT is in this list because the api BINDS it (talaria-config
-  // reads it, defaulting to 5274). Without the lift, a worktree's api would
-  // dutifully bind the shared port while the proxy dialed the worktree's own —
-  // the two halves of the same setting have to agree. PORT and
-  // TALARIA_FLEET_PROJECT are the fleet renderer's: the MCP gateway URL it
-  // writes into every agent is built from the APP port, and the compose
-  // project it addresses is what keeps a worktree's agents apart from the
-  // main fleet — without the lift a worktree's agents would dial :5273 and
-  // its containers would land in the shared `talaria-fleet` project.
-  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL', 'TALARIA_API_PORT', 'TALARIA_API_BIND', 'TALARIA_GATEWAY_SELF_URL', 'PORT', 'TALARIA_FLEET_PROJECT']) {
-    const val = ctx.env[varName] ?? envValue(uiEnv, varName)
-    if (val) env[varName] = val
-  }
+  const env = apiEnv(ctx.env, uiEnv)
   const child = spawn('cargo', ['run', '--quiet'], {
     cwd: join(ctx.root, 'api'),
     env: { ...process.env, ...env },

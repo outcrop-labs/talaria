@@ -70,7 +70,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs`]
 > POST /api/fleet/agents/{id}/control. Lifecycle control for one agent —
 > this agent's managers, and admins (docs/PERMISSIONS.md, "Agent managers").
 >   up | stop | restart   the managed service (renders first on `up`)
->   roll                  zero-downtime replacement — detached
+>   roll                  recreate the container in place — detached
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -88,7 +88,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs`]
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons.rs)
 
 > /api/fleet/agents/{id}/crons. One agent's native Hermes cron jobs. GET →
-> jobs (read from the container's jobs.json). POST → create. Admin, or the
+> jobs (read from the agent's own `/api/jobs`). POST → create. Admin, or the
 > owner of a personal assistant.
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -102,7 +102,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons.rs`](.
 | :--- | :--- | :--- |
 | `name` | `string trimmed(1, 80)` |  |
 | `schedule` | `string trimmed(1, 120)` |  |
-| `prompt` | `string trimmed(1, 20000)` |  |
+| `prompt` | `string trimmed(1, 5000)` | The agent's own cap: Hermes's /api/jobs refuses a longer prompt (talaria_agent_crons::MAX_PROMPT_CHARS). |
 
 ## `/api/fleet/agents/{id}/crons/{jobId}`
 
@@ -110,8 +110,9 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons_jobid.
 
 > /api/fleet/agents/{id}/crons/{jobId}. One cron job: DELETE → remove. POST
 > { action } → pause | resume | run ("run" queues it for the next scheduler
-> tick, ≤60s). PUT { name? schedule? prompt? } → edit in place. Admin or
-> owner.
+> tick, ≤60s; a paused job is refused, because Hermes's run would resume it
+> for good). PUT { name? schedule? prompt? } → edit in place. Admin or
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -131,7 +132,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons_jobid.
 | :--- | :--- | :--- |
 | `name` | `string?(80)` |  |
 | `schedule` | `string?(120)` |  |
-| `prompt` | `string?(20000)` |  |
+| `prompt` | `string?(5000)` | The agent's own cap: Hermes's /api/jobs refuses a longer prompt (talaria_agent_crons::MAX_PROMPT_CHARS). |
 
 ## `/api/fleet/agents/{id}/secrets`
 
@@ -223,7 +224,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_crons.rs`](../../api/c
 | `agentIds` | `uuid[](64)` | agentIds: min(1).max(64) — the helper carries the max; the min (a fleet cron with no agents is nothing) is checked here. |
 | `name` | `string trimmed(1, 80)` |  |
 | `schedule` | `string trimmed(1, 120)` |  |
-| `prompt` | `string trimmed(1, 20000)` |  |
+| `prompt` | `string trimmed(1, 5000)` | The agent's own cap: Hermes's /api/jobs refuses a longer prompt (talaria_agent_crons::MAX_PROMPT_CHARS). |
 
 ## `/api/fleet/defs`
 
@@ -239,7 +240,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs`](../../api/cr
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{defs, endpoints, brains, canHire, toolsets}` | 200 | — |
 
-**GET** — The roster also carries `toolsets`, the agent editor's vocabulary: `governed`, every Hermes toolset an operator may disable on an agent (28 names, alphabetical); `mandatoryDisabled`, the whole floor the renderer closes on every agent whatever its def says — `todo` and `clarify`, because Talaria's own MCP versions are the ones a person sees, plus the org-wide floor an admin sets on `PUT /api/admin/settings` (`mandatoryDisabledToolsets`) or pins with `TALARIA_MANDATORY_DISABLED_TOOLSETS`; and `orgDisabled`, that org part alone, so the editor can say an admin closed a row rather than Talaria. `governed` is the constant the `PATCH /api/fleet/defs/{id}` validator reads, so the picker cannot offer a name the write door would refuse.
+**GET** — The roster also carries `toolsets`, the agent editor's vocabulary: `governed`, every Hermes toolset an operator may disable on an agent (22 names, alphabetical); `mandatoryDisabled`, the whole floor the renderer closes on every agent whatever its def says — `todo` and `clarify`, because Talaria's own MCP versions are the ones a person sees, plus the org-wide floor an admin sets on `PUT /api/admin/settings` (`mandatoryDisabledToolsets`) or pins with `TALARIA_MANDATORY_DISABLED_TOOLSETS`; and `orgDisabled`, that org part alone, so the editor can say an admin closed a row rather than Talaria. `governed` is the constant the `PATCH /api/fleet/defs/{id}` validator reads, so the picker cannot offer a name the write door would refuse.
 
 ## `/api/fleet/defs/{id}`
 
@@ -546,7 +547,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_resources.rs`](../../a
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_roll.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_roll.rs)
 
 > /api/fleet/roll — roll every agent container at once, in-platform. Admin.
->   POST  queue a blue/green roll of every managed, enabled agent that is
+>   POST  queue an in-place roll of every managed, enabled agent that is
 >         running (`{"all": true}`: every managed enabled agent). Answers at
 >         once; the rolls run detached, TALARIA_FLEET_ROLL_CONCURRENCY
 > …

@@ -56,7 +56,7 @@ pub(crate) fn render_and_roll(state: &AppState, rolls: Rolls) {
                 return;
             }
         };
-        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb, None).await;
+        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb).await;
         match rolls {
             Rolls::Models(models) => {
                 for model in &models {

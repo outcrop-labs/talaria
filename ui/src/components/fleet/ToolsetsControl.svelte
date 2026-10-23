@@ -87,7 +87,7 @@
       {/if}
     </div>
     <div class="mt-1 font-sans text-xs text-muted">
-      Off takes effect on the next roll; browser off also skips the browser setup.
+      Off takes effect on the next roll.
       {#if orgClosed.length}
         Closed org-wide by an admin, for every agent: {orgClosed.join(', ')}.
       {/if}

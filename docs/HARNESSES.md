@@ -79,7 +79,13 @@ let result = run_harness(
 4. **Render**, with one `RenderContext` (`{ widened, model }`) that `verify` later sees too.
 5. **Call**, through the transport `pickTransport` chose — gateway or fleet persona. Structured runs
    carry the JSON anchor in the prompt *and* `response_format` where the model is not known to refuse
-   it; the two are belt and braces, not alternatives.
+   it; the two are belt and braces, not alternatives. A **fleet persona** takes neither
+   `response_format` nor `temperature`: Hermes' API server reads `model`, `messages`, `stream` and
+   `model_options` off a turn and nothing else, so `persona_payload` sends neither, a JSON request
+   comes back `contract_dropped` (the prompt anchor carries it, as on a gateway that strips the
+   parameter), and the persona samples at its own settings. A harness that needs a pinned temperature
+   belongs on a gateway model. The effort pick rides as `model_options.reasoning_effort` on both of
+   the persona's arms.
 6. **Parse, then repair.** One extractor, one schema check, one `verify`, then one re-ask with the
    parser's own sentence.
 7. **Guard**, with an honest `Available` for the transport that actually ran, then redact the value

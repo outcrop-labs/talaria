@@ -537,9 +537,9 @@ pub struct TaskUsagePerModel {
     pub cost: Option<serde_json::Number>,
 }
 
-/// Token spend reported against one ticket. Agents
-/// self-report it via MCP log_usage for work done outside Talaria's request
-/// path — by design it adds to the same totals.
+/// Token spend attributed to one ticket: the metered rows that carry its id.
+/// Rows agents once self-reported through the retired MCP `log_usage` tool
+/// (`source = 'ticket'`) still count here.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskUsage {
@@ -906,11 +906,10 @@ async fn classify_model(
     }))
 }
 
-/// One agent-reported spend row. 'chat'/'channel' rows
-/// are gateway-metered by Talaria; 'ticket' rows are agent-SELF-REPORTED (MCP
-/// log_usage) for work done outside Talaria's request path — by design they
-/// add to the same totals (that spend is just as real), guarded by the agent
-/// key + board policy rather than metering.
+/// One spend row. 'chat'/'channel' rows are gateway-metered by Talaria.
+/// 'ticket' rows were agent-SELF-REPORTED through the retired MCP `log_usage`
+/// tool; nothing writes them any more, because that spend was already metered
+/// at the gateway and the report counted it twice.
 pub struct UsageInput<'a> {
     pub agent_model: &'a str,
     pub source: &'a str,

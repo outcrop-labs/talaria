@@ -198,9 +198,9 @@ talaria-agent-secrets = { path = "crates/talaria-agent-secrets" }
 
 talaria-agent-skills = { path = "crates/talaria-agent-skills" }
 
-talaria-agent-writes = { path = "crates/talaria-agent-writes" }
+talaria-agent-web-search = { path = "crates/talaria-agent-web-search" }
 
-talaria-agents-registry = { path = "crates/talaria-agents-registry" }
+talaria-agent-writes = { path = "crates/talaria-agent-writes" }
 
 talaria-alerts = { path = "crates/talaria-alerts" }
 
@@ -674,7 +674,6 @@ talaria-agent-role-templates = { workspace = true }
 talaria-agent-secrets = { workspace = true }
 talaria-agent-skills = { workspace = true }
 talaria-agent-writes = { workspace = true }
-talaria-agents-registry = { workspace = true }
 talaria-alerts = { workspace = true }
 talaria-api-facades = { workspace = true }
 talaria-api-routes = { workspace = true }

@@ -46,6 +46,24 @@ export function shimFileName(specifier: string): string {
   return `rt-${specifier.replace(/^@/, '').replace(/[/.]/g, '-')}`
 }
 
+/** The host runtime file an app client chunk imports for `id`. Every shared
+ *  specifier has its own `runtime/rt-*.js` entry (vite-plugin.ts), so the
+ *  match is exact: `svelte/internal/client`, which every compiled component
+ *  imports, is its own shim. A first-prefix match sent it to `svelte`'s
+ *  rt-svelte.js, which has no `from_html`, and the app failed in the browser.
+ *  A subpath of a shared package that is not itself shared has no shim, so
+ *  this throws and the build fails naming the import. */
+export function clientRuntimePath(id: string): string {
+  const shared = clientSpecifiers()
+  if (shared.includes(id)) return `/runtime/${shimFileName(id)}.js`
+  const pkg = shared.filter((s) => id.startsWith(`${s}/`)).sort((a, b) => b.length - a.length)[0]
+  throw new Error(
+    pkg
+      ? `"${id}" is not shared with apps; the host shares "${pkg}" and its listed subpaths only`
+      : `"${id}" is not shared with apps`,
+  )
+}
+
 export function isClientSpecifier(id: string): boolean {
   return clientSpecifiers().some((s) => id === s || id.startsWith(`${s}/`))
 }

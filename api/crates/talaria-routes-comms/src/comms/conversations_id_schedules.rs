@@ -1,7 +1,7 @@
 // /api/conversations/{id}/schedules.
 // GET → what this thread has put its agent on a timer for. Two halves: the
 // rows Talaria wrote when the schedule was created (name, schedule, when,
-// which job), and the live state only the agent's own jobs.json knows — is it
+// which job), and the live state only the agent's own scheduler knows — is it
 // still ticking, when does it run next, how did the last run end.
 //
 // A CONTAINER THAT CANNOT BE READ IS NOT A FAILED LIST. The rows are still
@@ -52,9 +52,9 @@ pub async fn get(
         Ok(rows) => rows,
         Err(e) => return Ok(internal("[conversations] schedule read failed", e)),
     };
-    // Most threads have scheduled nothing, and asking a container for its
-    // jobs.json is a docker exec — so the live half is only fetched when
-    // there is a row to merge it onto.
+    // Most threads have scheduled nothing, and asking an agent for its jobs
+    // is a round-trip to its container — so the live half is only fetched
+    // when there is a row to merge it onto.
     let live = if rows.is_empty() {
         Vec::new()
     } else {

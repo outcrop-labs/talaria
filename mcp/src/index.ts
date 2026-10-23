@@ -21,13 +21,18 @@
 //                               · its BOARD is archived
 //                             They refuse identically, with the same sentence,
 //                             at every door: the ticket patch, add_time,
-//                             report_outcome, log_usage, add_dependency, and
-//                             report_gap's taskId. The last three never reach
+//                             report_outcome, add_dependency, and
+//                             report_gap's taskId. The last two never reach
 //                             updateTask, so they ask the SAME predicate on
-//                             their own routes — one definition, not four
+//                             their own routes — one definition, not three
 //                             copies of a third of it (which is what they
 //                             were: closed-only, so an archived ticket sailed
 //                             through).
+//   • a WORKCHAIN step whose earlier step is still open → moving it to the
+//                             active column or review is refused until that
+//                             step is signed off (the work clause,
+//                             `agent_work_refusal`); comments, fields and
+//                             triage still land
 //   • COMMENTS, and this is the one place the three conditions come APART:
 //                               · CLOSED ticket   → comment still lands. That
 //                                 is the agent's channel on work it can no
@@ -129,9 +134,13 @@ const ok = (data: unknown) => ({ content: [{ type: 'text' as const, text: JSON.s
  *  inline — interpolate, so there is one sentence to keep true. */
 const OFF_THE_TABLE = 'closed (done / failed / cancelled), ARCHIVED, or on an ARCHIVED BOARD'
 
-/** For every write door: the ticket patch, add_time, log_usage, add_dependency,
+/** For every write door: the ticket patch, add_time, add_dependency,
  *  report_outcome, report_gap's taskId. */
 const LIVE_ONLY = `Only a LIVE ticket accepts it — one that is ${OFF_THE_TABLE} refuses this with 403, like every other agent write.`
+
+/** For the status moves that ARE work (the active column, review): a workchain
+ *  step waits for the step before it (`agent_safe_patch`'s chain clause). */
+const CHAIN_WAIT = 'A workchain step whose earlier step is still open waits its turn: moving it to the active column or to review returns 403 until a person signs that step off.'
 
 /** Every ticket door accepts this. The assignment title shows the ref; list_tickets returns both. */
 const TICKET_ADDR =
@@ -528,7 +537,7 @@ server.registerTool(
   'triage_ticket',
   {
     description:
-      `Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back. Restarting your own blocked ticket, taking anything out of quality_review, and any write at all to a ticket a person has taken off the table — ${OFF_THE_TABLE} — are a person's call and return 403. ${BOARD_STATUS_KEYS} So once you have parked or reported, stop moving the ticket. ${COMMENT_INSTEAD} Assigning and marking done are human-only.`,
+      `Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back. Restarting your own blocked ticket, taking anything out of quality_review, and any write at all to a ticket a person has taken off the table — ${OFF_THE_TABLE} — are a person's call and return 403. ${BOARD_STATUS_KEYS} So once you have parked or reported, stop moving the ticket. ${CHAIN_WAIT} ${COMMENT_INSTEAD} Assigning and marking done are human-only.`,
     inputSchema: {
       taskId: z.string().describe(TICKET_ADDR),
       title: z.string().min(1).max(300).optional(),
@@ -568,7 +577,7 @@ server.registerTool(
   'report_outcome',
   {
     description:
-      `Report the outcome of work on a ticket and hand it to the board's review column ("Quality review" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review, triage_ticket cannot take it back out, so add anything further as a comment. ${LIVE_ONLY} ${COMMENT_INSTEAD}`,
+      `Report the outcome of work on a ticket and hand it to the board's review column ("Quality review" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review, triage_ticket cannot take it back out, so add anything further as a comment. ${LIVE_ONLY} ${CHAIN_WAIT} ${COMMENT_INSTEAD}`,
     inputSchema: {
       taskId: z.string().describe(TICKET_ADDR),
       outcome: z.string().max(50_000).describe('What was accomplished'),
@@ -1422,22 +1431,6 @@ server.registerTool(
 
 
 server.registerTool(
-  'log_usage',
-  {
-    description:
-      `Report the LLM tokens you burned working a ticket. Feeds the ticket's cost rollup and the fleet ledger. Log it as you go: ${LIVE_ONLY} Spend you never reported before sign-off cannot be attached afterwards. Still fine while the ticket sits in blocked or quality review.`,
-    inputSchema: {
-      taskId: z.string().describe(TICKET_ADDR),
-      promptTokens: z.number().int().min(0).describe('Prompt/input tokens used'),
-      completionTokens: z.number().int().min(0).describe('Completion/output tokens used'),
-      tier: z.string().optional().describe('Model tier the work ran on (alias name), if not your main model'),
-      estimated: z.boolean().optional().describe('True when the counts are estimates'),
-    },
-  },
-  async ({ taskId, ...body }) => ok(await api('POST', `/api/tasks/${encodeURIComponent(taskId)}/usage`, body)),
-)
-
-server.registerTool(
   'add_dependency',
   {
     description:
@@ -1503,7 +1496,7 @@ server.registerTool(
   'research',
   {
     description:
-      `Start cited web research on a question in your field. Modes: 'recon' (one fast pass — a cited answer, ~1 min), 'brief' (planned angles → a briefing document, a few minutes), 'expedition' (iterative deep dive → a full report, can take a while). Runs in the background — you get a runId; poll research_status, then read the report with get_document. Every claim in the report carries [n] citations. Use recon for quick facts mid-task; brief/expedition for real questions worth a document.${CONTENT_IS_DATA}`,
+      `Start cited web research on a question in your field. Modes: 'recon' (one fast pass — a cited answer, ~1 min), 'brief' (planned angles → a briefing document, a few minutes), 'expedition' (iterative deep dive → a full report, can take a while). Runs in the background — you get a runId; poll research_status, then read the report with get_document. Every claim in the report carries [n] citations. For a quick fact mid-task, use your own web search tool instead, if you have one — it answers in seconds and starts no run. Use this for cited work someone will rely on: brief/expedition for real questions worth a document, recon for one quick cited pass on record.${CONTENT_IS_DATA}`,
     inputSchema: {
       question: z.string().min(8).max(4000).describe('What to research, in natural language — be specific'),
       mode: z.enum(['recon', 'brief', 'expedition']).optional().describe("Depth (default 'brief')"),

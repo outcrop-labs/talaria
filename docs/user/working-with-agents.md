@@ -96,6 +96,6 @@ explanation. Two more sections fill in over time: **asked for help with** (work 
 and couldn't do — **Build it** turns the gap into a skill) and **Work routed to**
 (workflows that ride along when matching tickets dispatch).
 
-A term you'll meet around agents: a **roll** is a zero-downtime replacement — a fresh
-container comes up beside the old one and takes over only once healthy, so the old one
-finishes the replies it's holding.
+A term you'll meet around agents: a **roll** replaces the agent's container in place — it
+stops, finishing what it can, and a fresh one starts on the agent's current settings. The
+agent is offline for the minute or so that takes; a chat sent meanwhile waits for it.

@@ -161,20 +161,6 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         reads: FLOOR_CERTAINTY,
         floor_why: "The most forgiving site on the list, and the floor is low to match: a wrong order on a page a person reads top to bottom costs a few seconds of scanning, and every row is still there. A bucket where any item scores below this keeps its whole deterministic order rather than being half-judged.",
     },
-    // Measured only, and the measurement has its own consent switch because
-    // it costs a question per offered tool on every turn.
-    SiteDef {
-        id: "tool-prune",
-        label: "Tool-offer pruning",
-        primitive: "noul",
-        acts: "Nothing yet. Judges the tools each agent turn was offered against the ones it called, so the ledger can answer whether pruning would have broken the turn. No request has ever been pruned.",
-        default_on: false,
-        switch_lives_at: Some("the \"Measure tool-offer pruning\" switch above"),
-        measured_at: None,
-        default_floor: 0.15,
-        reads: FLOOR_LEAN,
-        floor_why: "A keep floor, not an act floor, and deliberately low: dropping a tool the turn needed breaks it, while keeping one it did not costs a few tokens of prompt. Read the ledger before trusting any number here.",
-    },
     // THE HIGHEST-RISK SITE ON THE PORT, and the only one that makes Talaria
     // do something it could not do before rather than doing an existing thing
     // better. Its floor is the highest for that reason.
@@ -313,8 +299,8 @@ fn gate_from(stored: &Value, def: &SiteDef) -> SiteGate {
 }
 
 async fn stored(pg: &PgPool) -> Value {
-    // Hot-read: the ticket gate reads this per message and the tool pass per
-    // turn. Legal under that window's law — this key is written ONLY by
+    // Hot-read: the ticket gate reads this per message. Legal under that
+    // window's law — this key is written ONLY by
     // `set_site` below, through `set_setting`, which drops the cached key.
     get_setting_hot(pg, KEY, json!({})).await
 }
@@ -725,7 +711,6 @@ mod tests {
             ("workflow-match", FLOOR_LEAN, 0.75),
             ("gap-align", FLOOR_CERTAINTY, 0.85),
             ("ticket-dupe", FLOOR_CERTAINTY, 0.85),
-            ("tool-prune", FLOOR_LEAN, 0.15),
             ("guard-semantic", FLOOR_LEAN, 0.50),
             ("focus-rank", FLOOR_CERTAINTY, 0.60),
             ("channel-speech", FLOOR_LEAN, 0.90),
@@ -746,7 +731,7 @@ mod tests {
         // And the census covers every site the ledger can group by.
         assert_eq!(
             DECIDE_SITES.len(),
-            12,
+            11,
             "a site was added without a census entry"
         );
     }
