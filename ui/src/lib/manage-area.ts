@@ -7,6 +7,7 @@
 import type { NavItem, NavSection } from '@/lib/nav'
 import { appManageItem, navActiveItem, navSections, type AppManifestLike } from '@/lib/nav-sections'
 import { isUnder } from '@/lib/route-tabs'
+import type { ViewerGrants } from '@/lib/app-grants'
 
 /** The overview's address. Not a grantable view: it is the manage area's
  *  front door, open to whoever has at least one manage view behind it. */
@@ -29,7 +30,7 @@ export interface ManageArea {
 export function manageArea(
   core: NavSection[],
   apps: readonly AppManifestLike[],
-  opts: { isAdmin: boolean; denied: readonly string[] },
+  opts: ViewerGrants,
   pathname: string,
 ): ManageArea {
   const appManage = apps.flatMap((a) => {

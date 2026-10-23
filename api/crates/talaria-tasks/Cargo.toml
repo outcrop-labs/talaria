@@ -30,7 +30,6 @@ talaria-statuses = { workspace = true }
 talaria-tasks-types = { workspace = true }
 talaria-ticket-chat = { workspace = true }
 talaria-workchains = { workspace = true }
-talaria-workflows = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 

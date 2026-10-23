@@ -93,10 +93,16 @@
       ids: ['agent:judge'],
     },
     {
+      id: 'eyes',
+      label: 'Agents’ eyes',
+      blurb: 'The model every agent reads images through when its own model is not known to see, set in each agent’s Hermes config.',
+      ids: ['role:vision'],
+    },
+    {
       id: 'reserved',
       label: 'Reserved',
       blurb: 'Slots for surfaces that haven’t landed yet. Assign now; the pick takes effect the day the surface does.',
-      ids: ['role:vision', 'role:image-generation', 'role:embedding', 'role:reranker'],
+      ids: ['role:image-generation', 'role:embedding', 'role:reranker'],
     },
   ]
   const categories = $derived.by(() => {

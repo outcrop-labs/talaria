@@ -1435,8 +1435,9 @@ pub async fn mark_message_resumed(pg: &PgPool, message_id: &str) -> Result<(), s
     Ok(())
 }
 
-/// Stamp a turn as STOPPED — a person pressed stop, or the doom-loop guard
-/// pulled the plug on an agent calling the same thing over and over. The row
+/// Stamp a turn as STOPPED — a person pressed stop. (An agent stuck calling
+/// the same thing over and over is halted inside Hermes by its own loop
+/// guard, which ends the turn with a reply rather than a stop.) The row
 /// itself lands COMPLETE, not errored: whatever the agent managed to say is
 /// what the person chose to keep, and an error status would put a retry
 /// affordance on a turn nobody wants retried. This stamp is what tells the
@@ -1483,43 +1484,6 @@ pub async fn set_message_guard(
         .bind(serde_json::to_value(findings).unwrap_or(Value::Null))
         .execute(pg)
         .await?;
-    Ok(())
-}
-
-/// Land chips on ONE named message row, merging by chip id.
-///
-/// `talaria_chips::surface_tool_chips` is the usual writer, and it cannot serve
-/// here: it resolves which row to write by asking where the agent is currently
-/// speaking, while a caller inside the persist already holds the row's id and
-/// must not land its chip on whatever row that lookup happens to pick. The
-/// merge is the same one that writer uses — a chip whose id is already on the
-/// row is left alone, so a guard that fires again inside one turn does not
-/// stack duplicates.
-pub async fn merge_message_chips(
-    pg: &PgPool,
-    message_id: &str,
-    chips: &[Value],
-) -> Result<(), sqlx::Error> {
-    if chips.is_empty() {
-        return Ok(());
-    }
-    sqlx::query(
-        "update messages set chips = ( \
-           select coalesce(jsonb_agg(c), '[]'::jsonb) from ( \
-             select c from jsonb_array_elements(chips) c \
-             union all \
-             select c from jsonb_array_elements($2::jsonb) c \
-             where not exists ( \
-               select 1 from jsonb_array_elements(chips) e \
-               where e->>'id' = c->>'id' \
-             ) \
-           ) s \
-         ) where id = $1::uuid",
-    )
-    .bind(message_id)
-    .bind(Value::Array(chips.to_vec()))
-    .execute(pg)
-    .await?;
     Ok(())
 }
 

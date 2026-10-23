@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-29 routes.
+26 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -24,9 +24,7 @@
 | [`/api/agent/whoami`](#apiagentwhoami) | GET | `agent` |
 | [`/api/agents`](#apiagents) | GET | `session` |
 | [`/api/agents/{id}/conversations`](#apiagentsidconversations) | GET | `session` |
-| [`/api/agents/{id}/heartbeat`](#apiagentsidheartbeat) | GET | `fleet` |
 | [`/api/agents/cron-output`](#apiagentscron-output) | POST | `agent` |
-| [`/api/agents/register`](#apiagentsregister) | POST | `fleet` |
 | [`/api/agents/subagent-events`](#apiagentssubagent-events) | POST | `agent` |
 | [`/api/agents/tool-events`](#apiagentstool-events) | POST | `agent` |
 | [`/api/agents/uploads`](#apiagentsuploads) | POST | `agent` |
@@ -44,7 +42,6 @@
 | [`/api/skills/marketplace`](#apiskillsmarketplace) | GET | `session` |
 | [`/api/skills/marketplace/detail`](#apiskillsmarketplacedetail) | GET | `session` |
 | [`/api/skills/marketplace/install`](#apiskillsmarketplaceinstall) | POST | `session` |
-| [`/api/vision/describe`](#apivisiondescribe) | POST | `dual` |
 
 ## `/api/agent-role-templates`
 
@@ -262,17 +259,6 @@ Source: [`api/crates/talaria-routes-comms/src/comms/agents_id_conversations.rs`]
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{conversations}` | 200, 404 | — |
 
-## `/api/agents/{id}/heartbeat`
-
-Source: [`api/crates/talaria-routes-fleet/src/agents/agents_id_heartbeat.rs`](../../api/crates/talaria-routes-fleet/src/agents/agents_id_heartbeat.rs)
-
-> GET /api/agents/{id}/heartbeat. Refresh last_seen and return the agent's
-> assigned work (tasks assigned to it, across boards). MC-compatible.
-
-| Method | Auth | Body | Returns | Status | Flags |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `fleet` | — | `{work_items}` | 200, 401, 403, 404 | — |
-
 ## `/api/agents/cron-output`
 
 Source: [`api/crates/talaria-routes-fleet/src/agents/cron_output.rs`](../../api/crates/talaria-routes-fleet/src/agents/cron_output.rs)
@@ -286,28 +272,6 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/cron_output.rs`](../../api/
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `agent` | — | `{ok, messageId}` | 200, 400, 404 | — |
-
-## `/api/agents/register`
-
-Source: [`api/crates/talaria-routes-fleet/src/agents/agents_register.rs`](../../api/crates/talaria-routes-fleet/src/agents/agents_register.rs)
-
-> POST /api/agents/register. An agent registers with Talaria (MC-compatible
-> contract, so the existing plugin works repointed). Agent-key auth: the
-> registry row is bound to the caller's PROVEN identity — a `tak_` caller
-> registers only its own model, a legacy caller only the name it asserted
-> …
-
-| Method | Auth | Body | Returns | Status | Flags |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `fleet` | [body](#post-apiagentsregister-body) | `{agent, registered}` | 200, 400, 401, 403 | — |
-
-### POST `/api/agents/register` body
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `name` | `string(1, 200)` |  |
-| `role` | `string?(80)` |  |
-| `framework` | `string?(80)` |  |
 
 ## `/api/agents/subagent-events`
 
@@ -499,10 +463,10 @@ source.
 
 Source: [`api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs`](../../api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs)
 
-> /api/skills/marketplace — the Hermes Atlas skill catalog for the Studio's
-> picker: GET ?q= (the ranked list, filtered), GET detail?repo= (one GitHub
-> repo's discovered skills), POST install (write them into an owner's skill
-> root). Reads are any member's (the Studio is a member surface, like the
+> /api/skills/marketplace — Hermes' official skills index for the Studio's
+> picker: GET ?q= (the mirrored catalog, searched), GET detail?id=&owner=
+> (one skill's files and its Skills Guard verdict — the preview), POST
+> install (scan, then write it into an owner's skill root). The list reads
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -513,55 +477,34 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs`](../
 
 Source: [`api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs`](../../api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs)
 
-> /api/skills/marketplace — the Hermes Atlas skill catalog for the Studio's
-> picker: GET ?q= (the ranked list, filtered), GET detail?repo= (one GitHub
-> repo's discovered skills), POST install (write them into an owner's skill
-> root). Reads are any member's (the Studio is a member surface, like the
+> /api/skills/marketplace — Hermes' official skills index for the Studio's
+> picker: GET ?q= (the mirrored catalog, searched), GET detail?id=&owner=
+> (one skill's files and its Skills Guard verdict — the preview), POST
+> install (scan, then write it into an owner's skill root). The list reads
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{repo, skills}` | 200, 400, 502 | — |
+| GET | `session` | — | `{id, name, repo, commit, dir, upstream, summary, fileCount, files, scan}` | 200, 400, 403, 404, 502 | — |
 
 ## `/api/skills/marketplace/install`
 
 Source: [`api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs`](../../api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs)
 
-> /api/skills/marketplace — the Hermes Atlas skill catalog for the Studio's
-> picker: GET ?q= (the ranked list, filtered), GET detail?repo= (one GitHub
-> repo's discovered skills), POST install (write them into an owner's skill
-> root). Reads are any member's (the Studio is a member surface, like the
+> /api/skills/marketplace — Hermes' official skills index for the Studio's
+> picker: GET ?q= (the mirrored catalog, searched), GET detail?id=&owner=
+> (one skill's files and its Skills Guard verdict — the preview), POST
+> install (scan, then write it into an owner's skill root). The list reads
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apiskillsmarketplaceinstall-body) | `{ok, owner, repo, results}` | 200, 400, 403, 502 | — |
+| POST | `session` | [body](#post-apiskillsmarketplaceinstall-body) | `{ok, owner, id, name, status, scan}` | 200, 400, 403, 404, 422, 502 | — |
 
 ### POST `/api/skills/marketplace/install` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `owner` | `string(1, 80)` |  |
-| `repo` | `string(1, 200)` |  |
-
-## `/api/vision/describe`
-
-Source: [`api/crates/talaria-routes-fleet/src/agents/vision_describe.rs`](../../api/crates/talaria-routes-fleet/src/agents/vision_describe.rs)
-
-> /api/vision/describe.
->
-> READ AN IMAGE ON BEHALF OF A MODEL THAT CANNOT — the endpoint behind the
-> `describe_image` tool.
-> …
-
-| Method | Auth | Body | Returns | Status | Flags |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `dual` | [body](#post-apivisiondescribe-body) | `{description, model}` | 200, 400, 404, 503 | — |
-
-### POST `/api/vision/describe` body
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `uploadId` | `string(1, 200)` |  |
-| `question` | `string(3, 500)` |  |
+| `id` | `string(1, 400)` |  |
 

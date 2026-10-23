@@ -100,7 +100,6 @@ export function seedFleetPlane(ctx: Ctx, templateRoot: string, dir: string): voi
 # provisioned here by the first render.
 LLM_BASE_URL=
 LLM_API_KEY=
-LLM_MODEL=
 `,
       { mode: 0o600 },
     )
