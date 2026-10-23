@@ -21,8 +21,9 @@ pub mod source;
 
 pub use host::AppHost;
 pub use lifecycle::{
-    DataLeft, InstallRequest, Installed, PlatformCredentials, SourceRecord, UpdateCheck, Updated,
-    install_app, source_records, uninstall_app, update_app, update_checks,
+    DataLeft, InstallError, InstallRequest, Installed, KeptDataChoice, KeptDataConflict,
+    PlatformCredentials, SourceRecord, UpdateCheck, Updated, install_app, source_records,
+    uninstall_app, update_app, update_checks,
 };
 
 use std::collections::{BTreeMap, BTreeSet};

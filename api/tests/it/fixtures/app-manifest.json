@@ -73,7 +73,13 @@
     { "about": "triggers that are not a list", "manifest": { "name": "X", "triggers": {} }, "error": "\"triggers\" must be an array" },
     { "about": "a trigger without an id", "manifest": { "name": "X", "triggers": [{ "cron": "* * * * *" }] }, "error": "\"triggers[0].id\"" },
     { "about": "a trigger with both cron and event", "manifest": { "name": "X", "triggers": [{ "id": "a", "cron": "* * * * *", "event": "x" }] }, "error": "exactly one of \"cron\" or \"event\"" },
-    { "about": "a trigger with neither", "manifest": { "name": "X", "triggers": [{ "id": "a" }] }, "error": "exactly one of \"cron\" or \"event\"" }
+    { "about": "a trigger with neither", "manifest": { "name": "X", "triggers": [{ "id": "a" }] }, "error": "exactly one of \"cron\" or \"event\"" },
+    { "about": "a trigger whose cron is only whitespace", "manifest": { "name": "X", "triggers": [{ "id": "a", "cron": " " }] }, "error": "\"triggers[0].cron\" must be a string that is not only whitespace" },
+    { "about": "a trigger whose event is not a string", "manifest": { "name": "X", "triggers": [{ "id": "a", "event": 7 }] }, "error": "\"triggers[0].event\" must be a string that is not only whitespace" },
+    { "about": "a trigger whose cron is null", "manifest": { "name": "X", "triggers": [{ "id": "a", "cron": null }] }, "error": "\"triggers[0].cron\" must be a string" },
+    { "about": "a trigger with an event and a cron that is not a string", "manifest": { "name": "X", "triggers": [{ "id": "a", "event": "x", "cron": 5 }] }, "error": "exactly one of \"cron\" or \"event\"" },
+    { "about": "a trigger with an event and a null cron", "manifest": { "name": "X", "triggers": [{ "id": "a", "event": "x", "cron": null }] }, "error": "exactly one of \"cron\" or \"event\"" },
+    { "about": "the second trigger is the one refused", "manifest": { "name": "X", "triggers": [{ "id": "a", "event": "x" }, { "id": "b", "event": "\t" }] }, "error": "\"triggers[1].event\"" }
   ],
   "ranges": [
     { "range": "*", "version": "1.0.0", "satisfied": true },

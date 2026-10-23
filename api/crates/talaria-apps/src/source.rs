@@ -15,7 +15,11 @@ pub enum Scheme {
 /// A parsed install source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitSource {
-    /// The URL git reads, as given (trimmed, no trailing slash).
+    /// The URL git reads: the URL parser's serialization of what was given
+    /// (trimmed, no trailing slash), so its host is lowercased exactly as
+    /// `host` is. Git builds its askpass prompt from this URL, and askpass
+    /// answers only for `host`: a host typed with capitals and fetched as
+    /// typed got no credential.
     pub url: String,
     pub scheme: Scheme,
     /// The host a credential is spent at, lowercased, without the port.
@@ -110,7 +114,7 @@ pub fn parse_source(raw: &str, local_ok: bool) -> Result<GitSource, String> {
         return Err("install URL must name a repository".into());
     }
     Ok(GitSource {
-        url: u.to_string(),
+        url: parsed.as_str().trim_end_matches('/').to_string(),
         scheme,
         host,
         repo,
@@ -160,6 +164,11 @@ mod tests {
         let gl = parse_source("https://GitLab.example.com:8443/group/sub/app", false).unwrap();
         assert_eq!(gl.host, "gitlab.example.com");
         assert_eq!(gl.repo, "group/sub/app");
+        // What git fetches names the host the credential is minted for.
+        assert_eq!(gl.url, "https://gitlab.example.com:8443/group/sub/app");
+        let mixed = parse_source("https://GitHub.com/Acme/CRM.git/", false).unwrap();
+        assert_eq!(mixed.url, "https://github.com/Acme/CRM.git");
+        assert_eq!(mixed.github_repo(), Some("Acme/CRM"));
         assert_eq!(gl.github_repo(), None);
         // Deeper than owner/name is not a GitHub repository URL.
         let deep = parse_source("https://github.com/acme/crm/tree/main", false).unwrap();

@@ -9,7 +9,8 @@
 //             point the app at the staged build and probe it live; on
 //             failure the previous pointer is restored before answering, so
 //             the api's swap back finds its build where it left it
-//   release   let go of the app without switching (the api gave up)
+//   release   let go of the app without switching (the api gave up), and
+//             discard the build stage made: it will never be live
 //
 // Between stage and activate the app is HELD: the boot sweep, the directory
 // watcher and Rebuild leave it alone, so nothing builds or fails the tree
@@ -48,8 +49,14 @@ export function isHeld(slug: string): boolean {
   return false
 }
 
+/** Let go of the app without switching: the api gave up after stage (the
+ *  swap failed, or its call never got an answer). The hold ends, and the
+ *  build stage made is removed — it will never be live, and nothing else
+ *  would ever remove it. */
 export function release(slug: string): void {
+  const hold = holds.get(slug)
   holds.delete(slug)
+  if (hold?.staged) discardStaged(slug, hold.staged)
 }
 
 type Step = { ok: true; build: AppBuildCurrent } | { ok: false; error: string; build?: AppBuildCurrent }
@@ -95,7 +102,9 @@ export async function stageUpdate(slug: string): Promise<Step> {
 export async function activateUpdate(slug: string): Promise<Step> {
   if (!slugOk(slug)) return { ok: false, error: 'bad slug' }
   const hold = holds.get(slug)
-  release(slug)
+  // The hold ends here, but the staged build is the one being switched to:
+  // not `release`, which would discard it.
+  holds.delete(slug)
   const staged = hold?.staged
   if (!staged) return { ok: false, error: 'no staged build to activate (it was released or expired)' }
   const live = appDir(slug)
