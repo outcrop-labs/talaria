@@ -559,6 +559,35 @@ pub fn slug_ok(s: &str) -> bool {
     head && rest
 }
 
+/// Slugs no NEW app may take: the client router's config keys. An app's
+/// slug is a path segment under /x, and sv-router reads a `layout`, `hooks`
+/// or `meta` key in its route table as a path segment too — one beside the
+/// slug segment outranked '/:app', so /x/hooks matched the key, found no
+/// route, and rendered a blank page. The route table keeps those keys above
+/// /x (ui/src/route-table.ts), which is what lets an app that already has
+/// one of these slugs open; install refuses them so no new app leans on it.
+/// Discovery, enablement and uninstall still take them (`slug_ok`), so an
+/// app installed before the refusal stays manageable. The list is the shared
+/// fixture's `routes.reservedSlugs`, which the TS route-table test and the
+/// CLI's `talaria app new` read too.
+pub const RESERVED_APP_SLUGS: &[&str] = &["layout", "hooks", "meta"];
+
+/// Whether a new app may be installed under `s`: the slug rule, and not one
+/// of `RESERVED_APP_SLUGS`. The error is the sentence the admin reads.
+pub fn slug_installable(s: &str) -> Result<(), String> {
+    if !slug_ok(s) {
+        return Err(format!(
+            "\"{s}\" is not a usable app slug (lowercase letters, digits, dashes)"
+        ));
+    }
+    if RESERVED_APP_SLUGS.contains(&s) {
+        return Err(format!(
+            "\"{s}\" is reserved: the client router uses that word in its route table — install the app under another slug"
+        ));
+    }
+    Ok(())
+}
+
 /// Where app codebases live: TALARIA_APPS_DIR, else <cwd>/../apps — the
 /// repo's apps/ dir when the process runs from api/.
 pub fn apps_dir() -> PathBuf {
@@ -922,9 +951,14 @@ pub struct ViewGrants {
 
 /// The app view that governs `path` — `/x/<slug>/manage` for the manage
 /// surface and anything under it, `/x/<slug>` for every other path under
-/// the app — or `None` when `path` is not an app route. The TS twin is
-/// `appViewFor` in ui/src/lib/app-grants.ts.
+/// the app — or `None` when `path` is not an app route. An app owns every
+/// route below its surfaces, so `/x/crm/deals/7` is the work view's and
+/// `/x/crm/manage/fields/7` the manage view's. Paths compare ASCII-case-
+/// insensitively, as the client router matches a static segment (it mounts
+/// the manage surface at `/x/crm/MANAGE`). The TS twin is `appViewFor` in
+/// ui/src/lib/app-grants.ts; both read the fixture's `routes` cases.
 pub fn app_view_for(path: &str) -> Option<String> {
+    let path = path.to_ascii_lowercase();
     let rest = path.strip_prefix("/x/")?;
     let mut parts = rest.split('/');
     let slug = parts.next().filter(|s| !s.is_empty())?;
@@ -939,16 +973,21 @@ impl ViewGrants {
     /// `isViewDenied` holds in ui/src/lib/app-grants.ts. A core view is
     /// closed when it, or a view above it, is denied ('x' denies
     /// 'x/anything'). An app route opens only on the exact view that governs
-    /// it, held by grant. `None` when `view` is an app route and the enabled
-    /// apps could not be read: nobody may read that as open.
+    /// it (`app_view_for`), held by grant. Paths compare ASCII-case-
+    /// insensitively, as the client router matches them. `None` when `view`
+    /// is an app route and the enabled apps could not be read: nobody may
+    /// read that as open.
     pub fn denies(&self, view: &str) -> Option<bool> {
         match app_view_for(view) {
             Some(app) => self.app_grants.as_ref().map(|held| !held.contains(&app)),
-            None => Some(
-                self.denied
-                    .iter()
-                    .any(|v| v == view || view.starts_with(&format!("{v}/"))),
-            ),
+            None => {
+                let view = view.to_ascii_lowercase();
+                Some(
+                    self.denied
+                        .iter()
+                        .any(|v| *v == view || view.starts_with(&format!("{v}/"))),
+                )
+            }
         }
     }
 }
@@ -1529,6 +1568,38 @@ mod tests {
     }
 
     #[test]
+    fn every_route_below_an_app_surface_answers_to_that_surface() {
+        // The fixture's `routes` cases, which the TS route gate and nav read
+        // too (ui/src/server/app-grants.fixture.test.ts): a work-only member
+        // reaches /x/crm/a/b and never /x/crm/manage/a, a manage-only member
+        // the reverse.
+        let f = fixture();
+        let viewers = f["routes"]["viewers"].as_object().expect("routes.viewers");
+        let paths = f["routes"]["paths"].as_array().expect("routes.paths");
+        assert!(!viewers.is_empty() && !paths.is_empty());
+        for c in paths {
+            let path = c["path"].as_str().expect("path");
+            assert_eq!(
+                app_view_for(path),
+                c["view"].as_str().map(String::from),
+                "the view governing {path}"
+            );
+            let open = strings(&c["open"]);
+            for (name, v) in viewers {
+                let g = ViewGrants {
+                    denied: strings(&v["denied"]),
+                    app_grants: Some(strings(&v["appGrants"])),
+                };
+                assert_eq!(
+                    g.denies(path),
+                    Some(!open.contains(name)),
+                    "{path} for the {name} viewer"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn an_app_route_answers_to_the_view_that_governs_it() {
         let s = |x: &str| Some(x.to_string());
         assert_eq!(app_view_for("/x/crm"), s("/x/crm"));
@@ -1879,6 +1950,27 @@ mod tests {
         assert!(!slug_ok("Upper"));
         assert!(!slug_ok("under_score"));
         assert!(!slug_ok("sp ace"));
+    }
+
+    #[test]
+    fn a_new_app_cannot_take_a_router_config_key_as_its_slug() {
+        // The shared fixture's list, which the TS route-table test checks
+        // against the route table's own config keys.
+        let f = fixture();
+        let reserved: Vec<String> = RESERVED_APP_SLUGS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(reserved, strings(&f["routes"]["reservedSlugs"]));
+        for s in RESERVED_APP_SLUGS {
+            // Slug-shaped, so an app already installed under one is still
+            // discovered, enabled and uninstalled; only a new install refuses.
+            assert!(slug_ok(s), "{s}");
+            let err = slug_installable(s).expect_err(s);
+            assert!(err.contains("is reserved"), "{err}");
+        }
+        assert_eq!(slug_installable("crm"), Ok(()));
+        assert_eq!(slug_installable("hooks-app"), Ok(()));
+        assert_eq!(slug_installable("my-layout"), Ok(()));
+        let err = slug_installable("Hooks").expect_err("upper case");
+        assert!(err.contains("not a usable app slug"), "{err}");
     }
 
     #[test]

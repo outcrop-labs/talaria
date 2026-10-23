@@ -178,6 +178,22 @@ async fn forget_app_db_password(pg: &PgPool, slug: &str) {
     }
 }
 
+/// The slug an install from `url` takes: the override when given, else the
+/// repo's name, lowercased, without `.git` or a `talaria-app-` prefix. It
+/// must pass `slug_installable` — the slug rule, and none of the words the
+/// client router reserves (`RESERVED_APP_SLUGS`), so a repo named `hooks`
+/// installs only under an override.
+pub fn install_slug(url: &str, slug_override: Option<&str>) -> Result<String, String> {
+    let base = url.rsplit('/').next().unwrap_or("");
+    let derived = slug_override
+        .unwrap_or(base)
+        .trim_end_matches(".git")
+        .to_lowercase();
+    let derived = derived.strip_prefix("talaria-app-").unwrap_or(&derived);
+    talaria_users::slug_installable(derived)?;
+    Ok(derived.to_string())
+}
+
 /// Install an app by shallow-cloning its git repo into apps/<slug>.
 /// This instance compiles it and spawns its Postgres — no host rebuild.
 pub async fn install_app_from_git(
@@ -192,17 +208,8 @@ pub async fn install_app_from_git(
     if !https_ok {
         return Err("install URL must be https://".into());
     }
-    let base = u.rsplit('/').next().unwrap_or("");
-    let derived = slug_override
-        .unwrap_or(base)
-        .trim_end_matches(".git")
-        .to_lowercase();
-    let derived = derived.strip_prefix("talaria-app-").unwrap_or(&derived);
-    if !slug_ok(derived) {
-        return Err(format!(
-            "\"{derived}\" is not a usable app slug (lowercase letters, digits, dashes)"
-        ));
-    }
+    let derived = install_slug(u, slug_override)?;
+    let derived = derived.as_str();
     let target = apps_dir().join(derived);
     if !target.starts_with(apps_dir()) {
         return Err("bad target path".into());

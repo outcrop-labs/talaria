@@ -80,6 +80,32 @@ describe('isViewDenied', () => {
     expect(isViewDenied('/x/crm', v)).toBe(false)
   })
 
+  it('holds every route an app adds below a surface to that surface\'s grant', () => {
+    // A work-only member reaches /x/crm/a/b and never /x/crm/manage/a; a
+    // manage-only member the reverse. (The fixture's `routes` cases hold the
+    // same split against Rust.)
+    const work = member(['/x/crm'])
+    const manage = member(['/x/crm/manage'])
+    for (const p of ['/x/crm/a', '/x/crm/a/b', '/x/crm/items/42/notes', '/x/crm/a/manage']) {
+      expect(isViewDenied(p, work), p).toBe(false)
+      expect(isViewDenied(p, manage), p).toBe(true)
+    }
+    for (const p of ['/x/crm/manage/a', '/x/crm/manage/a/b']) {
+      expect(isViewDenied(p, work), p).toBe(true)
+      expect(isViewDenied(p, manage), p).toBe(false)
+    }
+  })
+
+  it('matches as the router does, case-insensitively', () => {
+    // The router mounts the manage surface at /x/crm/MANAGE: a case-sensitive
+    // gate called that the work view and let a work grant through to it, and
+    // let /X/crm pass as a core view nobody denies.
+    expect(isViewDenied('/x/crm/MANAGE/fields', member(['/x/crm']))).toBe(true)
+    expect(isViewDenied('/x/crm/Manage', member(['/x/crm/manage']))).toBe(false)
+    expect(isViewDenied('/X/crm', member([]))).toBe(true)
+    expect(isViewDenied('/BOARDS/b1', member([], ['/boards']))).toBe(true)
+  })
+
   it('never opens an app view a list left out — absence from the denials is not a grant', () => {
     // The fail-open: Rust could not read the enabled apps, left their views
     // out of deniedViews, and every member got every app. Nothing listed,

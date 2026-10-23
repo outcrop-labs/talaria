@@ -2,7 +2,7 @@
 // hand-rolled versions would give six answers to "what does /models/nonsense
 // do". These pin the one answer — the home tab, always something real.
 import { describe, expect, it } from 'vitest'
-import { activeAmong, pathId, tabFromPath, isUnder } from './route-tabs'
+import { activeAmong, pathId, resolveHref, tabFromPath, isUnder } from './route-tabs'
 
 const TABS = ['models', 'pricing', 'fitness'] as const
 
@@ -162,5 +162,58 @@ describe('activeAmong', () => {
     const forwards = ['/x/notes', '/x/notes/manage']
     expect(activeAmong('/x/notes/manage', forwards)).toBe('/x/notes/manage')
     expect(activeAmong('/x/notes/manage', [...forwards].reverse())).toBe('/x/notes/manage')
+  })
+})
+
+describe('resolveHref', () => {
+  const here = 'https://talaria.test/x/crm/items/42?tab=notes'
+  const parts = (href: string) => resolveHref(href, here)
+
+  it('hands the router a path, with the query and hash beside it', () => {
+    // navigate('/artifacts?a=1') used to match `artifacts?a=1` as the last
+    // segment: Not Found, and `%3F` in the address.
+    expect(parts('/artifacts?a=1')).toEqual({ pathname: '/artifacts', search: '?a=1', hash: '' })
+    expect(parts('/x/crm/items/42?tab=notes#n3')).toEqual({ pathname: '/x/crm/items/42', search: '?tab=notes', hash: '#n3' })
+    expect(parts('/knowledge#top')).toEqual({ pathname: '/knowledge', search: '', hash: '#top' })
+    expect(parts('/inbox')).toEqual({ pathname: '/inbox', search: '', hash: '' })
+    // A `?` after the hash belongs to the hash.
+    expect(parts('/a#b?c')).toEqual({ pathname: '/a', search: '', hash: '#b?c' })
+  })
+
+  it('resolves the path as the browser will write it to the address', () => {
+    // The router matched these raw and the address showed them resolved, so
+    // the manage surface mounted at an address the gate calls the work view.
+    const path = (href: string) => parts(href).pathname
+    expect(path('/x/crm/manage/../items')).toBe('/x/crm/items')
+    expect(path('/x/crm/manage/%2e%2e/items')).toBe('/x/crm/items')
+    expect(path('/x/crm/manage/%2E./items')).toBe('/x/crm/items')
+    expect(path('/x/crm/items/../manage/fields')).toBe('/x/crm/manage/fields')
+    expect(path('/x/crm/./manage/./a')).toBe('/x/crm/manage/a')
+    expect(path('/x/crm/manage/%2e')).toBe('/x/crm/manage/')
+    expect(path('/x/../../boards')).toBe('/boards')
+    // A backslash is a slash in an http(s) URL.
+    expect(path('/x/crm\\manage\\a')).toBe('/x/crm/manage/a')
+    expect(path('\\x\\crm')).toBe('/x/crm')
+    // Tabs and newlines vanish; other controls and spaces are encoded.
+    expect(path('/x/crm/man\tage/a')).toBe('/x/crm/manage/a')
+    expect(path('/x/crm/man\nage')).toBe('/x/crm/manage')
+    expect(path('/x/crm/a\u0000b c')).toBe('/x/crm/a%00b%20c')
+    expect(path('  /x/crm/manage\u0001')).toBe('/x/crm/manage')
+    // An escape that is not a dot stays as spelled; the router decodes it.
+    expect(path('/x/crm/m%61nage/%2Fa')).toBe('/x/crm/m%61nage/%2Fa')
+  })
+
+  it('resolves a relative href against the current address, as a link would', () => {
+    expect(parts('7')).toEqual({ pathname: '/x/crm/items/7', search: '', hash: '' })
+    expect(parts('../manage')).toEqual({ pathname: '/x/crm/manage', search: '', hash: '' })
+    expect(parts('?tab=log')).toEqual({ pathname: '/x/crm/items/42', search: '?tab=log', hash: '' })
+  })
+
+  it('takes a same-origin URL by its path, and refuses another origin', () => {
+    expect(parts('https://talaria.test/boards/b1?t=2')).toEqual({ pathname: '/boards/b1', search: '?t=2', hash: '' })
+    expect(() => parts('https://evil.test/x/crm')).toThrow(/not a route of this app/)
+    expect(() => parts('//evil.test/x/crm')).toThrow(/not a route of this app/)
+    expect(() => parts('/\\evil.test/x')).toThrow(/not a route of this app/)
+    expect(() => parts('javascript:alert(1)')).toThrow(/not a route of this app/)
   })
 })

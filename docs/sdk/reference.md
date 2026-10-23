@@ -21,10 +21,19 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | :--- | :--- | :--- |
 | `defineApp` | fn | Declare the app's surfaces; default-export from app.ts |
 | `AppSurfaces` | type | The surfaces map (work / manage / settings), all optional |
-| `useApp` | fn | The app a surface belongs to: `{ slug, surface, manifest }`, as installed |
+| `useApp` | fn | The app a surface belongs to: `{ slug, surface, manifest, rest, query }`, as installed |
 | `AppContext` | type | What `useApp` returns |
 | `AppSurfaceName` | type | Which surface is rendering: work, manage or settings |
 | `AppManifest` | type | The manifest as the host serves it: slug, name, icon, version, surfaces |
+
+## `@talaria/sdk` — routes inside the app
+
+| symbol | kind | what it is |
+| :--- | :--- | :--- |
+| `useAppRoute` / `AppRoute` | fn / type | Where the surface is, live: the path below it (rest), its segments, the query, and `match(pattern)` for a route's params |
+| `RouteParams` | type | The params a pattern captures, by name: `RouteParams<'items/:id'>` is `{ id: string }` |
+| `appHref` / `AppHrefOptions` | fn / type | The href for a route of this app, relative to the surface; `{ surface }` links into the other one |
+| `appNavigate` / `AppNavigateOptions` | fn / type | Go to a route of this app, relative to the surface; `{ replace }` skips the history entry |
 
 ## `@talaria/sdk` — UI kit: actions
 
