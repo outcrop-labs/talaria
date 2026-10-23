@@ -1,18 +1,24 @@
 {
-  "comment": "Hermes bundled skills we have classified. catalog is a snapshot of the image's /opt/data/skills tree. A pack that appears in catalog (or in a live image) and is neither replaced nor under a keepPrefix / keepExact is unclassified. keepPrefixes is apple/ only \u2014 macOS-only, inert in these containers. Every other family is keepExact so a new creative/ or web/ pack cannot sneak in.",
+  "comment": "Hermes bundled skills we have classified. catalog is a snapshot of the image's /opt/data/skills tree. A pack that appears in catalog (or in a live image) and is neither replaced nor under a keepPrefix / keepExact is unclassified. keepPrefixes is apple/ only \u2014 macOS-only, inert in these containers. Every other family is keepExact so a new creative/ or web/ pack cannot sneak in. A replaced path names one skill directory, never a category: a category prefix would classify next week's sibling pack as replaced while no signpost holds its name, so Hermes would sync it onto every agent. The chassis smoke also checks the live image: every skill under a replaced path must carry a name that entry lists and a signpost declares.",
   "replaced": [
     {
-      "path": "email",
+      "path": "email/himalaya",
       "names": [
-        "email",
-        "email-inbox-triage",
         "himalaya"
       ],
-      "signpost": "email",
-      "why": "Mail is Talaria's confirm-send path (read_recent_email / draft_email). Himalaya and inbox-triage mint standing IMAP credentials."
+      "signpost": "himalaya",
+      "why": "Mail is Talaria's confirm-send path (read_recent_email / draft_email). The Himalaya CLI mints a standing IMAP/SMTP credential. The `email` skill is the playbook both mail signposts point at."
     },
     {
-      "path": "note-taking",
+      "path": "email/email-inbox-triage",
+      "names": [
+        "email-inbox-triage"
+      ],
+      "signpost": "email-inbox-triage",
+      "why": "Hermes's triage drives its himalaya and google-workspace connector skills, each a standing mailbox credential in the container. Talaria triages through read_recent_email / organize_emails and drafts a person approves."
+    },
+    {
+      "path": "note-taking/obsidian",
       "names": [
         "obsidian"
       ],

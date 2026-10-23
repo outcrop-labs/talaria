@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use talaria_capability::{CapabilityFact, capability_key, get_capabilities};
 use talaria_gateway::registry::routing_for;
 use talaria_gateway::settings::get_setting;
-use talaria_model_roles::{RoleAssignmentIssue, assignment_note, resolve_role_model};
+use talaria_model_roles::{RoleAssignmentIssue, assignment_note};
 
 /// How a capability is satisfied for one run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,8 +67,10 @@ pub struct Reach {
 /// where a tool genuinely does the job, not by being conceivable. `search`
 /// qualifies completely (a web-search tool returns the same passages-with-URLs
 /// a sonar model returns, and the synthesis stage cannot tell which produced
-/// them). `vision` qualifies through `describe_image`, which reads the image
-/// with the model the org assigned to the vision role.
+/// them). `vision` qualifies through a registered image reader — an OCR or
+/// describe server an org installed. Talaria serves no image tool of its own:
+/// a fleet agent whose model cannot see reads images through Hermes' own
+/// `vision_analyze`, on the vision role's model (talaria-fleet-render).
 ///
 /// DELIBERATELY ABSENT, so the next author does not have to relitigate:
 /// `code` (the workbench RUNS code; the capability is about WRITING it),
@@ -151,8 +153,8 @@ pub struct ReachTool {
 /// RESORT, NOT A DEFAULT — the registry is consulted first, because an org
 /// that installed Exa or Tavily chose it and an admin pin beats both — AND
 /// CHECKED, NOT ASSUMED: every entry is produced by a caller that has
-/// confirmed the thing actually works here (SearXNG answering the canary, a
-/// model assigned to the vision role). Claiming reach through a tool that
+/// confirmed the thing actually works here (SearXNG answering the canary).
+/// Claiming reach through a tool that
 /// 503s would convert a red cell an admin can act on into a green one they
 /// cannot.
 #[derive(Clone)]
@@ -295,7 +297,7 @@ pub async fn reach_for<D: ReachDeps + Sync>(
         // works for every model, so it is the default; an org that would
         // rather spend a sonar model's own index pins
         // `capability_providers.search` to null, and native is all that is
-        // left. `vision`'s tool stand-in is genuinely lossier than a model
+        // left. A `vision` tool stand-in is genuinely lossier than a model
         // that reads the image itself, so it is NOT demoted the same way.
         let tool_first = *cap == "search" && supplier.is_some() && !native_no("tools");
         if native_yes(cap) && !tool_first {
@@ -431,9 +433,9 @@ pub fn forget_platform_supply() {
 }
 
 /// Everything this deployment can stand in for, CHECKED. Empty is a perfectly
-/// ordinary answer — an install with no search backend and no vision role
-/// supplies nothing, and should say so rather than pretend. Never fails: a
-/// probe that cannot answer is a probe that answered no.
+/// ordinary answer — an install with no search backend supplies nothing, and
+/// should say so rather than pretend. Never fails: a probe that cannot answer
+/// is a probe that answered no.
 pub async fn platform_supply(pg: &PgPool) -> Vec<PlatformSupply> {
     if let Ok(cell) = supply_cache().lock()
         && let Some((at, value)) = cell.as_ref()
@@ -444,27 +446,12 @@ pub async fn platform_supply(pg: &PgPool) -> Vec<PlatformSupply> {
     // `web_search` is the one tool on Talaria's native surface, and
     // `research-search` is the harness that offers it.
     let search_ok = search_canary_ok(pg).await;
-    // `describe_image` reads an image with the ROLE model, so the role being
-    // filled is exactly the condition — the vision floor refuses rather than
-    // degrades when it is not.
-    let vision = resolve_role_model(pg, "vision")
-        .await
-        .ok()
-        .flatten()
-        .is_some();
     let mut out = Vec::new();
     if search_ok {
         out.push(PlatformSupply {
             capability: "search",
             server: PLATFORM_SERVER,
             tool: "web_search",
-        });
-    }
-    if vision {
-        out.push(PlatformSupply {
-            capability: "vision",
-            server: PLATFORM_SERVER,
-            tool: "describe_image",
         });
     }
     if let Ok(mut cell) = supply_cache().lock() {
@@ -862,8 +849,8 @@ mod tests {
     #[test]
     fn no_tool_stands_in_for_code_long_context_or_json() {
         // A sandbox is not a programmer, and a tool cannot widen a context
-        // window. VISION IS NO LONGER ON THIS LIST — `describe_image` reads
-        // an image with the model the org assigned to the vision role.
+        // window. (`vision` is not on this list: a registered image reader
+        // does stand in for it.)
         let srv = search_server(true);
         for cap in ["code", "long-context", "json"] {
             assert_eq!(
@@ -874,20 +861,18 @@ mod tests {
     }
 
     #[test]
-    fn the_image_reader_supplies_vision() {
-        let talaria = server(
-            "talaria",
+    fn a_registered_image_reader_supplies_vision() {
+        let reader = server(
+            "house",
             true,
             &[(
                 "describe_image",
-                Some(
-                    "Read an image you cannot see: attaches it to this workspace's vision model and returns a description in text.",
-                ),
+                Some("Read an image and return a description of it in text."),
             )],
         );
         assert_eq!(
-            supplier_for("vision", &[talaria], &Providers::new(), &[]),
-            Some(sup("talaria", "describe_image"))
+            supplier_for("vision", &[reader], &Providers::new(), &[]),
+            Some(sup("house", "describe_image"))
         );
     }
 
@@ -975,7 +960,7 @@ mod tests {
         // reading the image itself, so vision must not be demoted.
         let mut d = Fake::new();
         d.servers = vec![server(
-            "talaria",
+            "house",
             true,
             &[("describe_image", Some("Describe an image."))],
         )];

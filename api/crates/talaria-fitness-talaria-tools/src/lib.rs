@@ -234,7 +234,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "fetch_attachment",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Read an attached file by upload id (from a ticket or chat attachments array; ref-type entries are knowledge docs/artifacts — use read_kb_doc/get_document for those). Text files come back as text, images as an image you can see; other binary formats report metadata only.",
+            description: "Read an attached file by upload id (from a ticket or chat attachments array; ref-type entries are knowledge docs/artifacts — use read_kb_doc/get_document for those). Text files come back as text, images as a MEDIA: file path — the picture is attached too when your model can see, and otherwise you read that path with vision_analyze; other binary formats report metadata only.",
             parameters: json!({ "type": "object", "properties": { "uploadId": str_schema("Attachment upload id") }, "required": ["uploadId"] }),
             assistant_only: false,
             needs_google: false,
@@ -432,25 +432,6 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             assistant_only: false,
             needs_google: false,
         },
-        SandboxTool {
-            name: "log_usage",
-            caller: ToolCaller::Hermes,
-            group: ToolGroup::Ledger,
-            description: "Report the LLM tokens you burned working a ticket. Feeds the ticket's cost rollup and the fleet ledger. Log it as you go: only ever on a live ticket.",
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "taskId": str_schema("Ticket id"),
-                    "promptTokens": num_schema("Prompt/input tokens used"),
-                    "completionTokens": num_schema("Completion/output tokens used"),
-                    "tier": str_schema("Model tier the work ran on (alias name), if not your main model"),
-                    "estimated": bool_schema("True when the counts are estimates"),
-                },
-                "required": ["taskId", "promptTokens", "completionTokens"],
-            }),
-            assistant_only: false,
-            needs_google: false,
-        },
         // ── Knowledge ──────────────────────────────────────────────────────────
         SandboxTool {
             name: "web_search",
@@ -464,22 +445,6 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                     "limit": num_schema("How many results to return (default 10)"),
                 },
                 "required": ["query"],
-            }),
-            assistant_only: false,
-            needs_google: false,
-        },
-        SandboxTool {
-            name: "describe_image",
-            caller: ToolCaller::Hermes,
-            group: ToolGroup::Knowledge,
-            description: "Read an image you cannot see: attaches it to this workspace's vision model and returns a description in text. Use it for a screenshot, a photo, a chart or a scanned document — ask a specific question rather than \"what is this\", because the answer is written against your question. The reply is another model's reading of the image, not yours: quote it as a description, and if it says something is not visible, do not fill the gap yourself.",
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "uploadId": str_schema("Attachment upload id (from a ticket or chat attachments array)"),
-                    "question": str_schema("What you need to know from the image"),
-                },
-                "required": ["uploadId", "question"],
             }),
             assistant_only: false,
             needs_google: false,
@@ -1151,7 +1116,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "research",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Research,
-            description: "Start cited web research on a question in your field. Modes: 'recon' (one fast pass — a cited answer, ~1 min), 'brief' (planned angles → a briefing document, a few minutes), 'expedition' (iterative deep dive → a full report, can take a while). Runs in the background — you get a runId; poll research_status, then read the report with get_document. Every claim in the report carries [n] citations. Use recon for quick facts mid-task; brief/expedition for real questions worth a document.",
+            description: "Start cited web research on a question in your field. Modes: 'recon' (one fast pass — a cited answer, ~1 min), 'brief' (planned angles → a briefing document, a few minutes), 'expedition' (iterative deep dive → a full report, can take a while). Runs in the background — you get a runId; poll research_status, then read the report with get_document. Every claim in the report carries [n] citations. For a quick fact mid-task, use your own web search tool instead, if you have one — it answers in seconds and starts no run. Use this for cited work someone will rely on: brief/expedition for real questions worth a document, recon for one quick cited pass on record.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -1841,9 +1806,9 @@ mod tests {
         // updates — and this crate's tests were never run, so nothing made
         // anyone notice. The assertion is the contract; the name says what it
         // is for.
-        assert_eq!(TALARIA_TOOLS.len(), 85);
+        assert_eq!(TALARIA_TOOLS.len(), 83);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 85);
+        assert_eq!(names.len(), 83);
     }
 
     #[test]

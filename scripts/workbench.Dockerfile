@@ -1,14 +1,18 @@
-# The WORKBENCH image: the Hermes chassis with Oh My Pi and Playwright
-# pre-baked, so first runs are instant instead of paying npx
+# The WORKBENCH image: the Hermes chassis with Oh My Pi and the dev-env
+# baseline pre-baked, so first runs are instant instead of paying npx
 # downloads. Purely an optimization: the stock image works via npx @latest;
-# this one just makes it warm from second zero. Versions are unpinned so a
-# rebuild picks up upstream; invoke templates also use @latest so a running
-# container auto-updates on the next job without a rebuild.
+# this one just makes it warm from second zero. The harness versions are
+# unpinned so a rebuild picks up upstream; invoke templates also use @latest
+# so a running container auto-updates on the next job without a rebuild.
+#
+# The BASE is not unpinned: it is the same Hermes pin the chassis renders
+# (scripts/chassis.template.yml), so a Developer Agent runs the Hermes every
+# other agent runs. Bump the two together (docs/ARCHITECTURE.md, "The fleet").
 #
 # Build:  scripts/build-workbench-image.sh   (tags talaria-workbench:latest)
 # Use:    set TALARIA_WORKBENCH_IMAGE=talaria-workbench:latest in the app's
 #         env; Developer Agents render on it, then render + roll.
-ARG HERMES_IMAGE=nousresearch/hermes-agent:latest
+ARG HERMES_IMAGE=nousresearch/hermes-agent:v0.22.4@sha256:7a69201726bc64db2072a1371557137c23312d29705cda2b8ea2a0214a50a4cf
 FROM ${HERMES_IMAGE}
 
 # Oh My Pi, the workbench's coding harness, globally installed. Do not pin:
@@ -29,9 +33,12 @@ RUN apt-get update \
 COPY workbench-harness-update.sh /usr/local/bin/talaria-harness-update
 RUN chmod +x /usr/local/bin/talaria-harness-update
 
-# Playwright + chromium with system deps — UI verification is first-class
-# dev work. Browsers land in the image; PLAYWRIGHT_BROWSERS_PATH (set by the
-# renderer to the persistent volume) still wins at runtime for updates.
-RUN npm install -g playwright \
-    && npx playwright install --with-deps chromium \
-    && rm -rf /var/lib/apt/lists/*
+# No Playwright layer. UI checks go through the agent's own browser tools:
+# Hermes ships a pinned Chromium at /opt/hermes/tools and finds it through
+# AGENT_BROWSER_EXECUTABLE_PATH, in this same container. A baked Playwright
+# browser was never seen anyway: this image inherits
+# PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/tools, so it installed there, and the
+# render points PLAYWRIGHT_BROWSERS_PATH at the department volume
+# (/opt/data/workbench/harness/playwright) at runtime. That volume path is
+# where a repo's own e2e suite installs the browser revision ITS Playwright
+# pins, on first run, shared by the department.

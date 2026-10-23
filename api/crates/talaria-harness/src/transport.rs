@@ -27,9 +27,23 @@
 // So the mapping from a request onto a persona payload lives in ONE function
 // here, and a transport that genuinely CANNOT honor a field says so by
 // failing the call rather than by ignoring it.
+//
+// THE PERSONA'S COMPLETIONS ARM IS THE NAMED EXCEPTION, and it is named here
+// rather than discovered. Hermes' API server reads `model`, `messages`,
+// `stream` and `model_options` off a chat-completions body and nothing else
+// (Hermes v0.22, `gateway/platforms/api_server_openai_routes.py`): no
+// per-request `temperature`, no `response_format`. The persona samples at its
+// own settings. `persona_payload` therefore sends neither, and says what
+// that costs: a JSON request comes back `contract_dropped`, so the runner
+// stops asking for protocol-level JSON and leans on the prompt anchor every
+// structured request already carries — the deliberate fallback a gateway
+// that strips `response_format` gets. Temperature has no equivalent to fall
+// back to; a harness that needs a pinned temperature belongs on a gateway
+// model, not a persona.
 
 use super::define::{Message, Role};
 use serde_json::{Map, Value};
+use talaria_gateway::fleet_chat::persona_model_options;
 use talaria_harness_json_schema::WireSchema;
 
 /// Which side of the house a turn ran on. The runner records it; the guard
@@ -226,11 +240,12 @@ pub struct TransportRequest {
     /// `ledger_of`, never by hand.
     pub ledger: Option<LedgerAttribution>,
     /// THE REASONING EFFORT THIS TURN RUNS AT — a human's pick from the
-    /// levels the model's metadata vouches for. Sent as `reasoning_effort`
-    /// wherever the turn can honor it, and dropped without a murmur where it
-    /// cannot: a TOOL-OFFERING gateway turn must keep its `'none'` (the
-    /// provider rejects the combination), and a field the request cannot
-    /// honor is not a reason to fail a chat.
+    /// levels the model's metadata vouches for. Sent as `reasoning_effort` to
+    /// a gateway model and as `model_options.reasoning_effort` to a persona
+    /// (on both of its arms — the only spelling Hermes reads), and dropped
+    /// without a murmur where it cannot be honored: a TOOL-OFFERING gateway
+    /// turn must keep its `'none'` (the provider rejects the combination),
+    /// and a field the request cannot honor is not a reason to fail a chat.
     ///
     /// Unlike `temperature` there is no "silently dropped" hazard to defend
     /// against: effort is a dial, not a contract — a turn that runs at the
@@ -329,10 +344,15 @@ pub fn ledger_of(req: &TransportRequest) -> LedgerAttribution {
 
 /// `proxy_chat`'s payload shape — structural, one flat record the persona
 /// gateway reads. THE ONE MAPPING from a `TransportRequest` onto it: every
-/// field of the request is spent here, because a hand-copied mapping drops
-/// exactly the fields its author did not care about. A harness that declares
-/// `temperature: 0` and runs at the provider's 0.7 is a harness whose
-/// declaration is decorative.
+/// field of the request is decided here, because a hand-copied mapping drops
+/// exactly the fields its author did not care about.
+///
+/// DECIDED, NOT ALL SENT. `temperature` and `json_mode`/`json_schema` are
+/// read here and deliberately left off the body: Hermes' API server has no
+/// per-request equivalent for either (see the module header), so sending
+/// them only made a harness's declaration look honored. The JSON half is
+/// reported back as `contract_dropped` by the persona transport, so the
+/// runner knows the protocol constraint did not hold.
 pub fn persona_payload(req: &TransportRequest) -> Value {
     let mut payload = Map::new();
     payload.insert("model".into(), Value::String(req.model.clone()));
@@ -345,38 +365,31 @@ pub fn persona_payload(req: &TransportRequest) -> Value {
                 .collect(),
         ),
     );
-    // Suppressing the tools WE offer cannot reach the persona's own internal
-    // loop — which is exactly why the guard pass still runs `zero_tool_claim`
-    // over the tool names the stream reported — but it is real, and it
-    // belongs here rather than in one caller.
+    // `tools: []` / `tool_choice: none` do NOT reach the persona: Hermes' API
+    // server reads neither off the body (see the module header), and its own
+    // loop keeps its own tools. The real enforcement is the guard pass, which
+    // runs `zero_tool_claim` over the tool names the stream reported.
+    // Removing these two fields is a follow-up.
     if tool_policy_of(req) == ToolPolicy::None {
         payload.insert("tools".into(), Value::Array(Vec::new()));
         payload.insert("tool_choice".into(), Value::String("none".into()));
     }
-    if let Some(t) = req.temperature {
-        payload.insert(
-            "temperature".into(),
-            serde_json::Number::from_f64(t)
-                .map(Value::Number)
-                .unwrap_or(Value::Null),
-        );
-    }
-    if req.json_mode {
-        payload.insert(
-            "response_format".into(),
-            serde_json::json!({"type": "json_object"}),
-        );
-    }
-    // The effort pick travels like temperature: one request field, forwarded
-    // to the persona's own gateway, which hands it to the provider it fronts.
-    // The agent container owns the model, so honoring the level is its call —
-    // Talaria already refused it on the way IN (the routes validate against
-    // the model's declared levels), which is the only side of the contract
-    // Talaria can see.
-    if let Some(e) = &req.effort {
-        payload.insert("reasoning_effort".into(), Value::String(e.clone()));
+    // The effort pick rides in `model_options`, the one place Hermes reads a
+    // per-request effort from; the container hands it to the provider it
+    // fronts. Talaria already refused an unvouched level on the way IN (the
+    // routes validate against the model's declared levels), which is the
+    // only side of the contract Talaria can see.
+    if let Some(options) = persona_model_options(req.effort.as_deref()) {
+        payload.insert("model_options".into(), options);
     }
     Value::Object(payload)
+}
+
+/// What a persona turn reports about the JSON contract it was asked for:
+/// dropped, always, when one was asked — `persona_payload` cannot put
+/// `response_format` anywhere Hermes reads it.
+pub fn persona_contract_dropped(req: &TransportRequest) -> bool {
+    req.json_mode || req.json_schema.is_some()
 }
 
 /// A Hermes SESSION the persona turn lands on, instead of the stateless
@@ -393,10 +406,10 @@ pub struct PersonaSession {
     /// `POST /api/sessions`, created on first use and resumed after.
     pub id: String,
     /// A turn has gone through this session before, so it MUST still be in
-    /// the container: a fresh create then means the state volume was lost
-    /// (a re-hire on the same slug, a swapped volume, a host restore), and
-    /// the turn takes the completions arm rather than answering from an
-    /// empty room — `proxy_session_turn`'s `history_expected`.
+    /// the container: one that is not there means the state volume was lost
+    /// (a re-hire on the same slug, a swapped volume, a host restore) —
+    /// `proxy_session_turn`'s `history_expected`. The step then starts the
+    /// session again (`open_persona_turn`).
     pub resumed: bool,
 }
 
@@ -445,9 +458,10 @@ pub fn session_turn_parts(messages: &[Message]) -> Option<(Option<String>, Strin
 /// and runs its own loop — so a request that declared `temperature`, asked
 /// for structured output, or asked the tools suppressed fails the call, by
 /// the rule at the top of this file: a field that cannot be honored is an
-/// error, never a quiet drop. `effort` is the documented exception (a dial,
-/// not a contract) and travels nowhere on this arm. `None` means the request
-/// fits the door.
+/// error, never a quiet drop. `effort` is not a contract and refuses
+/// nothing; it rides in the session body's `model_options`, the same
+/// spelling the completions arm sends. `None` means the request fits the
+/// door.
 pub fn session_turn_refusal(req: &TransportRequest) -> Option<String> {
     let field = if req.temperature.is_some() {
         "temperature"
@@ -1346,12 +1360,13 @@ fn turn_attribution(pg: &sqlx::PgPool, req: &TransportRequest) -> TurnAttributio
 
 /// Open the persona's stream through the door the caller chose: the
 /// completions arm when no session is keyed, the Hermes session arm when one
-/// is — created on first use, resumed after. Two ways back onto the
-/// completions arm from the session one, both logged, neither an error: a
-/// request carrying history a session cannot hold (`session_turn_parts`),
-/// and a RESUMED session the container no longer has (`proxy_session_turn`
-/// answers `None` — the state volume was lost, and the chat path takes the
-/// same way out). The turn still happens; only its continuity does not.
+/// is — created on first use, resumed after. A request carrying history a
+/// session cannot hold (`session_turn_parts`) goes the completions way,
+/// logged, not an error. A RESUMED session the container no longer has
+/// (`proxy_session_turn` answers `None` — the state volume was lost) starts
+/// again, empty, and only a session Hermes will not recreate falls back to a
+/// completion. The turn still happens; only the continuity before it is
+/// lost.
 async fn open_persona_turn(
     req: &TransportRequest,
     session: Option<&PersonaSession>,
@@ -1377,7 +1392,8 @@ async fn open_persona_turn(
         &req.model,
         &session.id,
         system_message.as_deref(),
-        &Value::String(message),
+        &Value::String(message.clone()),
+        req.effort.as_deref(),
         req.hold_ms,
         session.resumed,
         Some(attribution.clone()),
@@ -1385,15 +1401,37 @@ async fn open_persona_turn(
     .await
     {
         Some(stream) => Ok(stream),
+        // The room is gone. A session turn's request carries no history of
+        // its own, so a completion would answer from exactly what a fresh
+        // session would — and only the session keeps this step for the next
+        // one. So the session starts again here, empty, and the run's later
+        // steps continue in it. (The transport never makes that empty room
+        // itself: the chat path, which does hold a transcript, must not find
+        // one on its next turn.) An id Hermes refuses to recreate — a deleted
+        // session — leaves the completion.
         None => {
             tracing::warn!(
                 "[transport] {} ({}): session {} was expected to exist and did not — this turn \
-                 is sent as a completion with its full prompt instead",
+                 starts it again, without the earlier transcript",
                 req.model,
                 req.caller,
                 session.id
             );
-            Ok(proxy_chat(&persona_payload(req), req.hold_ms, Some(attribution)).await)
+            match proxy_session_turn(
+                &req.model,
+                &session.id,
+                system_message.as_deref(),
+                &Value::String(message),
+                req.effort.as_deref(),
+                req.hold_ms,
+                false,
+                Some(attribution.clone()),
+            )
+            .await
+            {
+                Some(stream) => Ok(stream),
+                None => Ok(proxy_chat(&persona_payload(req), req.hold_ms, Some(attribution)).await),
+            }
         }
     }
 }
@@ -1477,7 +1515,7 @@ async fn persona_turn(
         tool_names: turn.tool_names,
         tool_calls: None,
         usage: turn.usage,
-        contract_dropped: false,
+        contract_dropped: persona_contract_dropped(req),
     })
 }
 
@@ -1892,8 +1930,8 @@ mod tests {
         let mut n = r.clone();
         n.tools = None;
         assert!(session_turn_refusal(&n).unwrap().contains("tools: none"));
-        // Effort is the documented dial: it travels nowhere on this arm and
-        // refuses nothing.
+        // Effort is a dial, not a contract: it rides the session body's
+        // `model_options` and refuses nothing.
         let mut e = r.clone();
         e.effort = Some("high".into());
         assert_eq!(session_turn_refusal(&e), None);
@@ -1937,12 +1975,19 @@ mod tests {
         let p = persona_payload(&r);
         assert_eq!(p["model"], "pl-main");
         assert_eq!(p["messages"][0]["role"], "user");
-        assert_eq!(p["temperature"], 0.0);
-        assert_eq!(p["response_format"]["type"], "json_object");
-        // 'none' is enforced at the protocol level, not left to the prompt.
+        // Hermes reads neither off a chat-completions body: they are decided
+        // here and left off, and the JSON half is reported as dropped.
+        assert!(p.get("temperature").is_none());
+        assert!(p.get("response_format").is_none());
+        assert!(persona_contract_dropped(&r));
+        assert!(!persona_contract_dropped(&req(false)));
+        // Still sent, though Hermes ignores both: the guard pass's
+        // `zero_tool_claim` is what enforces 'none' on a persona.
         assert_eq!(p["tools"], serde_json::json!([]));
         assert_eq!(p["tool_choice"], "none");
-        assert_eq!(p["reasoning_effort"], "low");
+        // The effort rides where Hermes reads it, never top-level.
+        assert_eq!(p["model_options"]["reasoning_effort"], "low");
+        assert!(p.get("reasoning_effort").is_none());
         // An own-tools turn does not get the suppression — the persona's own
         // loop is the point of the turn.
         let mut own = req(false);

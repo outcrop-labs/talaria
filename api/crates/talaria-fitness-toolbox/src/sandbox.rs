@@ -538,16 +538,6 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             Ok(json!({ "ok": true }))
         }
 
-        "log_usage" => {
-            live_index(w, &a["taskId"])?;
-            if a["promptTokens"].as_f64().is_none() || a["completionTokens"].as_f64().is_none() {
-                return Err(refuse(
-                    "\"promptTokens\" and \"completionTokens\" are required token counts",
-                ));
-            }
-            Ok(json!({ "ok": true }))
-        }
-
         // ── Knowledge ────────────────────────────────────────────────────────
         "search_knowledge" => {
             let query = req_str(&a["query"], "query")?;
@@ -570,34 +560,6 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                 .collect();
             hits.extend(docs);
             Ok(json!({ "hits": hits }))
-        }
-
-        "describe_image" => {
-            let id = req_str(&a["uploadId"], "uploadId")?;
-            req_str(&a["question"], "question")?;
-            let file = w
-                .attachments
-                .iter()
-                .find(|x| x.upload_id == id)
-                .ok_or_else(|| {
-                    refuse(format!(
-                        "no attachment \"{id}\" — upload ids come from a ticket's attachments array"
-                    ))
-                })?;
-            if !file.mime.starts_with("image/") {
-                return Err(refuse(format!(
-                    "\"{}\" is {}, not an image — use fetch_attachment for that one",
-                    file.filename, file.mime
-                )));
-            }
-            // THE DESCRIPTION IS ATTRIBUTED, exactly as production attributes
-            // it. A fixture can then measure the thing worth measuring: does the
-            // model quote it as somebody else's reading, or absorb it as its
-            // own observation?
-            let description = file.content.clone().unwrap_or_else(|| {
-                "a screenshot of a terminal; the last line reads \"2 failing, 14 passed\".".into()
-            });
-            Ok(json!({ "model": "vision-model", "description": description }))
         }
 
         "web_search" => {
@@ -1972,10 +1934,8 @@ pub const BACKED_TOOLS: &[&str] = &[
     "report_gap",
     "add_time",
     "add_dependency",
-    "log_usage",
     // ── Knowledge ────────────────────────────────────────────────────────
     "search_knowledge",
-    "describe_image",
     "web_search",
     "list_kb_spaces",
     "list_kb_docs",
@@ -2504,23 +2464,7 @@ mod tests {
         assert!((s.world.tickets[0].minutes_logged - 1.5).abs() < 1e-9);
     }
 
-    // ── image understanding and the fixed web ────────────────────────────────
-
-    #[test]
-    fn reads_an_image_and_attributes_the_reading_to_another_model() {
-        let mut s = sb();
-        let r = s.dispatch(
-            "describe_image",
-            r#"{"uploadId":"up-failing-tests","question":"what failed?"}"#,
-        );
-        assert!(r.text.contains("\"model\":\"vision-model\""));
-        assert!(r.text.contains("2 failing, 14 passed"));
-        let not_image = s.dispatch(
-            "describe_image",
-            r#"{"uploadId":"up-arch-pdf","question":"?"}"#,
-        );
-        assert!(not_image.text.contains("not an image"));
-    }
+    // ── the fixed web ────────────────────────────────────────────────────────
 
     #[test]
     fn returns_a_fixed_tiny_web_and_nothing_for_a_query_it_has_no_page_for() {
@@ -3557,7 +3501,7 @@ mod tests {
         }
         assert_eq!(
             catalog.len(),
-            85,
+            83,
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
     }

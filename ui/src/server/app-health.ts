@@ -38,10 +38,11 @@ export function moduleHasSurfaces(mod: unknown): boolean {
   return ['work', 'manage', 'settings'].some((k) => surfaces[k] != null)
 }
 
-/** Built app.js is ESM. Node cannot import it (it wants /runtime/rt-*.js);
- *  presence of an export is the compile contract we can check here. */
+/** Built app.js is ESM. Node cannot import it (it wants /runtime/rt-*.js),
+ *  so the contract checked here is the one the host relies on: a default
+ *  export, the defineApp surfaces it mounts. */
 export function clientArtifactOk(source: string): boolean {
-  return source.length > 32 && /\bexport\b/.test(source)
+  return source.length > 32 && /\bexport\s*(?:default\b|\{[^}]*\bas\s+default\b)/.test(source)
 }
 
 
@@ -86,7 +87,7 @@ export async function probeLoad(slug: string): Promise<{ ok: true } | { ok: fals
     const artifact = appClientArtifact(slug)
     if (!artifact) return { ok: false, error: 'app.js is missing from the current build' }
     if (!clientArtifactOk(readFileSync(artifact, 'utf8'))) {
-      return { ok: false, error: 'app.js is not an ESM client bundle' }
+      return { ok: false, error: 'app.js has no default export (defineApp)' }
     }
   }
   if (appHasServer(slug) || existsSync(appSrc(slug, 'server.ts'))) {

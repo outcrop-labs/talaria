@@ -8,7 +8,7 @@
   import { manageArea } from '@/lib/manage-area'
   import { listQuery } from '@/components/ui/query-state'
   import { useEnabledApps } from '@/lib/apps'
-  import { useDeniedViews, type SessionUser } from '@/lib/session'
+  import { useAppGrants, useDeniedViews, type SessionUser } from '@/lib/session'
   import { NAV, type NavItem } from '@/lib/nav'
   import { cn } from '@/lib/cn'
   import { route } from '@/router'
@@ -31,6 +31,7 @@
   let { user }: { user: SessionUser } = $props()
 
   const denied = useDeniedViews()
+  const appGrants = useAppGrants()
   const badges = useNavBadges(() => route.pathname)
 
   // The apps read, same doctrine as the rail: keep the query, default off it,
@@ -39,7 +40,7 @@
   const appsList = listQuery(appsQuery, { title: 'App links unavailable', variant: 'inline' })
 
   const area = $derived(
-    manageArea(NAV, appsList.rows, { isAdmin: user.role === 'admin', denied: denied.current }, route.pathname),
+    manageArea(NAV, appsList.rows, { isAdmin: user.role === 'admin', denied: denied.current, appGrants: appGrants.current }, route.pathname),
   )
 
   const OVERVIEW: NavItem = { to: '/manage', label: 'Overview', icon: LayoutDashboard }

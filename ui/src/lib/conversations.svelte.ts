@@ -72,11 +72,11 @@ export interface StoredMessage {
   guard?: Array<{ check: string; severity: 'low' | 'medium' | 'high'; confidence: number; message: string; snippet: string }> | null
   /** Row-level stamps, the whole `metadata` bag as the row carries it:
    *  `resumed` marks a turn the server auto-resumed after its stream died
-   *  mid-flight, `stopped` a turn somebody ended (the stop route, or the
-   *  doom-loop guard), `steer` a user row said INTO a reply that was already
-   *  streaming. All three are written the same way — a merge into the row's
-   *  jsonb — and travel the same way, so they are declared together here
-   *  rather than widened at the one surface that reads them.
+   *  mid-flight, `stopped` a turn somebody ended (the stop route), `steer` a
+   *  user row said INTO a reply that was already streaming. All three are
+   *  written the same way — a merge into the row's jsonb — and travel the
+   *  same way, so they are declared together here rather than widened at
+   *  the one surface that reads them.
    *
    *  `marker` is the fourth and the only one carrying a VALUE rather than a
    *  flag: a named place in the transcript ("before the refactor") a person

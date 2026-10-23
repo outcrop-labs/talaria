@@ -88,13 +88,13 @@ export function normalizeUsage(u: RawUsage | null | undefined): TokenCounts | nu
 
 export interface UsageInput extends Partial<TokenCounts> {
   agentModel: string
-  /** 'chat'/'channel' rows are gateway-metered by Talaria; 'ticket' rows are
-   *  agent-SELF-REPORTED (MCP log_usage) for work done outside Talaria's
-   *  request path — by design they add to the same totals (that spend is just
-   *  as real), guarded by the agent key + board policy rather than metering. */
+  /** 'chat'/'channel' rows are gateway-metered by Talaria; 'ticket' rows were
+   *  agent-SELF-REPORTED through the retired MCP log_usage tool. None are
+   *  written any more — that spend was already metered at the gateway, so the
+   *  report counted it twice — but old rows still add to the same totals. */
   source: 'chat' | 'channel' | 'ticket' | 'research'
   refId?: string | null
-  /** Ticket this spend belongs to (agent-reported via MCP log_usage). */
+  /** Ticket this spend belongs to (the work-session flow's metered rows). */
   taskId?: string | null
   /** Alias tier the request was routed to (null = the agent's main model). */
   tier?: string | null
@@ -282,7 +282,7 @@ export interface TaskUsage {
   perModel: Array<{ llmModel: string | null; tokens: number; cost: number | null }>
 }
 
-/** Token spend reported against one ticket (agents via MCP log_usage). */
+/** Token spend attributed to one ticket (the work-session flow's metered rows). */
 export async function taskUsage(taskId: string): Promise<TaskUsage> {
   const sql = await db()
   const [totals] = await sql.unsafe(

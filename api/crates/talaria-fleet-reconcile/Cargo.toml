@@ -12,7 +12,6 @@ workspace = true
 futures-util = { workspace = true }
 sqlx = { workspace = true }
 talaria-fleet-docker = { workspace = true }
-talaria-update-layout = { workspace = true }
 talaria-secretbox = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

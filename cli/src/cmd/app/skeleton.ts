@@ -1,6 +1,9 @@
 // The starter `talaria app new` writes. One work surface, a document-store
-// API, and one MCP tool — enough to enable and extend.
-
+// API, and one MCP tool — enough to enable and extend. It is the pattern
+// authors and agents copy, so it follows the host's rules: a failed read
+// renders as a failure (QueryState), a failed write says so (catch → alert),
+// and the client never spells the app's slug. ui/src/sdk/client-docs.test.ts
+// compiles this output against the SDK.
 
 export const APP_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
 
@@ -12,10 +15,10 @@ export function displayName(slug: string): string {
     .join(' ')
 }
 
-export function skeletonFiles(opts: { slug: string; name: string; icon: string }): Record<string, string> {
-  const slugLit = JSON.stringify(opts.slug)
-  const nameLit = JSON.stringify(opts.name)
-  const iconLit = JSON.stringify(opts.icon)
+/** The files, by path under apps/<slug>/. The slug names the directory and
+ *  nothing else: no file embeds it, because the instance that installs the
+ *  app decides it (install derives it from the repo name). */
+export function skeletonFiles(opts: { name: string; icon: string }): Record<string, string> {
   return {
     'talaria.json': `${JSON.stringify(
       {
@@ -37,12 +40,28 @@ export default defineApp({ work: Work })
 `,
 
     'Work.svelte': `<script lang="ts">
-  import { Button, EmptyState, Input, SkeletonRows, useAppInvalidate, useAppQuery, appApi } from '@talaria/sdk'
+  import {
+    Button,
+    EmptyState,
+    Input,
+    QueryState,
+    SkeletonRows,
+    alert,
+    errorMessage,
+    useApp,
+    useAppApi,
+    useAppInvalidate,
+    useAppQuery,
+  } from '@talaria/sdk'
 
-  const slug = ${slugLit}
-  const api = appApi(slug)
-  const invalidate = useAppInvalidate(slug)
-  const query = useAppQuery<{ items: Array<{ id: string; data: { title: string } }> }>(slug, 'items')
+  // No slug anywhere: the host tells the surface which app it is, under
+  // whatever slug this instance installed it as.
+  type Item = { id: string; data: { title: string } }
+
+  const app = useApp()
+  const api = useAppApi()
+  const invalidate = useAppInvalidate()
+  const query = useAppQuery<{ items: Item[] }>('items')
 
   let title = $state('')
   let saving = $state(false)
@@ -54,42 +73,54 @@ export default defineApp({ work: Work })
     try {
       await api.post('items', { title: t })
       title = ''
-      await invalidate()
+      await invalidate('items')
+    } catch (e) {
+      await alert({ title: 'Could not add the item', message: errorMessage(e) })
     } finally {
       saving = false
     }
   }
 
   const remove = async (id: string) => {
-    await api.del(\`items/\${id}\`)
-    await invalidate()
+    try {
+      await api.del(\`items/\${id}\`)
+      await invalidate('items')
+    } catch (e) {
+      await alert({ title: 'Could not remove the item', message: errorMessage(e) })
+    }
   }
 </script>
 
 <div class="h-full overflow-y-auto p-8">
   <div class="mx-auto w-full max-w-3xl">
     <div class="mb-6 flex items-center gap-3">
-      <h1 class="flex-1 font-sans text-lg font-semibold text-fg">{${nameLit}}</h1>
+      <h1 class="flex-1 font-sans text-lg font-semibold text-fg">{app.manifest.name}</h1>
       <Input bind:value={title} placeholder="New item" size="sm" class="w-56" onkeydown={(e) => e.key === 'Enter' && void add()} />
       <Button size="sm" disabled={saving || !title.trim()} onclick={() => void add()}>Add</Button>
     </div>
 
-    {#if query.isLoading}
-      <SkeletonRows rows={5} />
-    {:else if !(query.data?.items.length)}
-      <EmptyState icon={${iconLit}} title="No items yet" hint="Add one to see the store and the API working" />
-    {:else}
-      <ul class="divide-y divide-line overflow-hidden rounded-lg border border-line bg-panel">
-        {#each query.data.items as item (item.id)}
-          <li class="flex items-center gap-3 px-4 py-3">
-            <div class="min-w-0 flex-1 truncate font-sans text-sm text-fg">{item.data.title}</div>
-            <button type="button" class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted hover:text-danger" onclick={() => void remove(item.id)}>
-              Remove
-            </button>
-          </li>
-        {/each}
-      </ul>
-    {/if}
+    <!-- Loading, broken, or resolved: a failed read says so, with a Retry,
+         and is never shown as "No items yet". -->
+    <QueryState {query} isEmpty={(d) => d.items.length === 0} errorTitle="Could not load the items" errorVariant="compact">
+      {#snippet skeleton()}
+        <SkeletonRows rows={5} />
+      {/snippet}
+      {#snippet empty()}
+        <EmptyState icon={app.manifest.icon} title="No items yet" hint="Add one to see the store and the API working" />
+      {/snippet}
+      {#snippet children(data)}
+        <ul class="divide-y divide-line overflow-hidden rounded-lg border border-line bg-panel">
+          {#each data.items as item (item.id)}
+            <li class="flex items-center gap-3 px-4 py-3">
+              <div class="min-w-0 flex-1 truncate font-sans text-sm text-fg">{item.data.title}</div>
+              <button type="button" class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted hover:text-danger" onclick={() => void remove(item.id)}>
+                Remove
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/snippet}
+    </QueryState>
   </div>
 </div>
 `,

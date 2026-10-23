@@ -1,8 +1,18 @@
 // Native Hermes crons, managed by Talaria. Every agent's gateway runs Hermes'
-// own scheduler (ticks /opt/data/cron/jobs.json every 60s), so jobs live and
-// fire INSIDE the agent — Talaria is just the control surface: it reads
-// jobs.json for truth and drives the `hermes cron` CLI for mutations through
-// the running container (docker exec). Requires the container to be up.
+// own scheduler (a 60s tick over the agent's cron/jobs.json), so jobs live and
+// fire INSIDE the agent — Talaria is just the control surface. It reads and
+// changes them through Hermes's cron REST on the agent's own API server
+// (`/api/jobs`: list, create, update, delete, pause, resume, run), through the
+// same door and with the same bearer a chat turn uses — the manifest row's
+// key, which the container holds as its API_SERVER_KEY. The container has to
+// be up.
+//
+// NOT `docker exec hermes cron`, which this used to drive. Since v0.22 the
+// CLI's `run` executes the whole turn on the caller's thread, so a run-now
+// longer than the exec's 30s bound reported a failure while the run carried
+// on; REST `run` only marks the job due for the next tick. A mutation is a
+// json body now rather than an argv to guard against option injection, and
+// the list no longer depends on the on-disk jobs.json format.
 //
 // METERING: a cron fires the agent's own loop on the agent's own config,
 // i.e. the agent's own gateway key — the same key a chat turn uses (`hermes
@@ -14,34 +24,141 @@
 // `unattended`, per job — reaching the ledger and the agent's budget whether
 // or not a chat turn is open at the same moment.
 
+use std::time::Duration;
+
+use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use talaria_agent_auth::epoch_ms_to_iso;
-use talaria_fleet_docker::{docker_exec, managed_container};
+use talaria_gateway::fleet_chat::{Method, agent_request};
 use talaria_gateway::settings::get_setting;
 
-const JOBS_PATH: &str = "/opt/data/cron/jobs.json";
+/// The bound on one `/api/jobs` call. Hermes answers these in milliseconds,
+/// but a write can wait up to 30s on the jobs-file lock while another process
+/// in the container holds it (`cron/jobs.py` `_JOBS_LOCK_TIMEOUT_SECONDS`) and
+/// still apply afterwards — so the window sits past that wait, and a write
+/// Hermes went on to make is never reported as failed.
+const JOBS_WINDOW: Duration = Duration::from_secs(40);
 
-async fn agent_for(pg: &PgPool, def_id: &str) -> Result<(String, String), String> {
-    let row: Option<(String, String)> = sqlx::query_as(
-        "select department, slug from agent_defs where id = $1::uuid and managed and enabled",
+/// Hermes's cap on a cron prompt over REST (`api_server.py`
+/// `_MAX_PROMPT_LENGTH`), counted the way Python counts a str: code points.
+/// The routes bound their prompt members by it too, so a long prompt is
+/// refused before it reaches the agent rather than by it.
+pub const MAX_PROMPT_CHARS: usize = 5_000;
+
+/// The managed, enabled def's model — the key its manifest row (the door and
+/// the bearer) is found by.
+async fn agent_for(pg: &PgPool, def_id: &str) -> Result<String, String> {
+    let model: Option<String> = sqlx::query_scalar(
+        "select model from agent_defs where id = $1::uuid and managed and enabled",
     )
     .bind(def_id)
     .fetch_optional(pg)
     .await
     .map_err(|e| e.to_string())?;
-    row.ok_or_else(|| "not a running managed agent".to_string())
+    model.ok_or_else(|| "not a running managed agent".to_string())
 }
 
-/// The job as Talaria shows it — every field defaulted from the raw
-/// jobs.json entry.
+/// One `/api/jobs` call on the agent's own API server. `Ok` is the 2xx body.
+/// `Err` is a sentence a person can act on: Hermes's own refusal verbatim
+/// (its schedule parser, its prompt cap and scan, "Job not found"), which is
+/// the one worth reading, as the CLI's stderr was; or why the agent never
+/// answered.
+async fn jobs_call(
+    model: &str,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    let answer = agent_request(model, method, path, body.as_ref(), JOBS_WINDOW)
+        .await
+        .map_err(|e| format!("cannot reach {model}'s scheduler: {e}"))?;
+    if (200..300).contains(&answer.status) {
+        return Ok(answer.body);
+    }
+    Err(refusal_of(answer.status, &answer.body))
+}
+
+/// Hermes's refusal as a sentence. `/api/jobs` answers `{"error": "…"}`; the
+/// auth wall in front of it answers `{"error": {"message": …}}`.
+fn refusal_of(status: u16, body: &Value) -> String {
+    let error = body.get("error");
+    let said = error
+        .and_then(Value::as_str)
+        .or_else(|| error.and_then(|e| e.get("message")).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match said {
+        Some(s) => s.chars().take(500).collect(),
+        None => format!("the agent's scheduler answered {status}"),
+    }
+}
+
+/// The job record a single-job call answers with (`{"job": {…}}`).
+fn job_in(body: Value) -> Result<Value, String> {
+    match body {
+        Value::Object(mut obj) => obj
+            .remove("job")
+            .filter(Value::is_object)
+            .ok_or_else(|| "the agent's scheduler answered without a job".to_string()),
+        _ => Err("the agent's scheduler answered without a job".to_string()),
+    }
+}
+
+/// A job id the way Hermes's REST addresses one (`api_server.py` `_JOB_ID_RE`
+/// is `[a-f0-9]{12}`, and `create_job` mints `uuid4().hex[:12]`). Checked
+/// here, so a malformed id is refused before the round-trip — and never
+/// reaches a URL path.
+fn hermes_job_id(job_id: &str) -> bool {
+    job_id.len() == 12
+        && job_id
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn jobs_path(job_id: &str) -> Result<String, String> {
+    if !hermes_job_id(job_id) {
+        return Err("bad job id".to_string());
+    }
+    Ok(format!("/api/jobs/{job_id}"))
+}
+
+/// Hermes's own pause signal: `enabled` false, or the paused state.
+fn is_paused(job: &Value) -> bool {
+    job.get("enabled").and_then(Value::as_bool) == Some(false)
+        || job.get("state").and_then(Value::as_str) == Some("paused")
+}
+
+/// A job the scheduler fires by itself: not paused, and still scheduled —
+/// not a finished one-shot (`completed`) or a schedule that broke (`error`).
+fn is_armed(job: &Value) -> bool {
+    !is_paused(job)
+        && job
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("scheduled")
+            == "scheduled"
+}
+
+fn prompt_fits(prompt: &str) -> Result<(), String> {
+    let n = prompt.chars().count();
+    if n > MAX_PROMPT_CHARS {
+        return Err(format!(
+            "a scheduled prompt can be at most {MAX_PROMPT_CHARS} characters (the agent's own limit); this one is {n}"
+        ));
+    }
+    Ok(())
+}
+
+/// The job as Talaria shows it — every field defaulted from the record
+/// Hermes answered with.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CronJob {
     pub id: String,
     pub name: String,
     pub prompt: String,
-    /// Human schedule as Hermes displays it (cron expr or "every 2h").
+    /// Human schedule as Hermes displays it (cron expr or "every 120m").
     pub schedule: String,
     pub enabled: bool,
     pub state: String,
@@ -51,75 +168,50 @@ pub struct CronJob {
     pub last_error: Option<String>,
 }
 
-pub async fn list_cron_jobs(pg: &PgPool, def_id: &str) -> Result<Vec<CronJob>, String> {
-    let (department, _) = agent_for(pg, def_id).await?;
-    let name = managed_container(pg, &department).await;
-    let (stdout, _) = match docker_exec(&name, &["cat", JOBS_PATH], 30_000).await {
-        Ok(ok) => ok,
-        Err(e) => {
-            if e.to_lowercase().contains("no such file") {
-                (r#"{"jobs":[]}"#.to_string(), String::new())
-            } else {
-                return Err(format!("cannot read crons from {name}: {e}"));
-            }
-        }
-    };
-    let raw = serde_json::from_str::<serde_json::Value>(&stdout).map_err(|e| e.to_string())?;
-    let jobs = raw
-        .get("jobs")
-        .and_then(|j| j.as_array())
-        .cloned()
-        .unwrap_or_default();
-    Ok(jobs
-        .iter()
-        .map(|j| {
-            let str_field = |key: &str| -> Option<String> {
-                j.get(key).and_then(|v| v.as_str()).map(String::from)
-            };
-            CronJob {
-                id: str_field("id").unwrap_or_default(),
-                // j.name ?? j.id — ONLY a missing/null name falls to the id;
-                // an empty string is a present value and stays.
-                name: match j.get("name") {
-                    Some(serde_json::Value::String(n)) => n.clone(),
-                    _ => str_field("id").unwrap_or_default(),
-                },
-                prompt: str_field("prompt").unwrap_or_default(),
-                schedule: j
-                    .get("schedule_display")
-                    .and_then(|s| s.as_str())
-                    .map(String::from)
-                    .or_else(|| {
-                        j.get("schedule").and_then(|s| {
-                            s.get("display").and_then(|d| d.as_str()).map(String::from)
-                        })
-                    })
-                    .or_else(|| {
-                        j.get("schedule")
-                            .and_then(|s| s.get("expr").and_then(|e| e.as_str()).map(String::from))
-                    })
-                    .unwrap_or_default(),
-                enabled: j.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true),
-                state: str_field("state").unwrap_or_else(|| "scheduled".into()),
-                next_run_at: str_field("next_run_at"),
-                last_run_at: str_field("last_run_at"),
-                last_status: str_field("last_status"),
-                last_error: str_field("last_error"),
-            }
-        })
-        .collect())
+fn job_from(j: &Value) -> CronJob {
+    let str_field =
+        |key: &str| -> Option<String> { j.get(key).and_then(|v| v.as_str()).map(String::from) };
+    CronJob {
+        id: str_field("id").unwrap_or_default(),
+        // j.name ?? j.id — ONLY a missing/null name falls to the id;
+        // an empty string is a present value and stays.
+        name: match j.get("name") {
+            Some(Value::String(n)) => n.clone(),
+            _ => str_field("id").unwrap_or_default(),
+        },
+        prompt: str_field("prompt").unwrap_or_default(),
+        schedule: j
+            .get("schedule_display")
+            .and_then(|s| s.as_str())
+            .map(String::from)
+            .or_else(|| {
+                j.get("schedule")
+                    .and_then(|s| s.get("display").and_then(|d| d.as_str()).map(String::from))
+            })
+            .or_else(|| {
+                j.get("schedule")
+                    .and_then(|s| s.get("expr").and_then(|e| e.as_str()).map(String::from))
+            })
+            .unwrap_or_default(),
+        enabled: j.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true),
+        state: str_field("state").unwrap_or_else(|| "scheduled".into()),
+        next_run_at: str_field("next_run_at"),
+        last_run_at: str_field("last_run_at"),
+        last_status: str_field("last_status"),
+        last_error: str_field("last_error"),
+    }
 }
 
-// Hermes is the schedule validator ('30m', 'every 2h', or a 5-field cron) and
-// its error comes back verbatim; we only block flag injection and newlines.
-fn assert_safe(value: &str, what: &str) -> Result<(), String> {
-    if value.starts_with('-') {
-        return Err(format!("{what} cannot start with \"-\""));
-    }
-    if value.contains('\n') || value.contains('\r') {
-        return Err(format!("{what} cannot contain newlines"));
-    }
-    Ok(())
+pub async fn list_cron_jobs(pg: &PgPool, def_id: &str) -> Result<Vec<CronJob>, String> {
+    let model = agent_for(pg, def_id).await?;
+    // include_disabled: a paused job is `enabled: false`, and Hermes's
+    // default list leaves those out.
+    let body = jobs_call(&model, Method::GET, "/api/jobs?include_disabled=true", None).await?;
+    Ok(body
+        .get("jobs")
+        .and_then(Value::as_array)
+        .map(|jobs| jobs.iter().map(job_from).collect())
+        .unwrap_or_default())
 }
 
 // ── Frequency floor ─────────────────────────────────────────────────────────
@@ -128,6 +220,14 @@ fn assert_safe(value: &str, what: &str) -> Result<(), String> {
 // cheapest way in the product to run up an unbounded bill, and the schedule a
 // well-meaning "check this often" request lands on. The floor is the coarse
 // guard; the gateway budget is the fine one.
+//
+// THE FLOOR JUDGES WHAT HERMES PARSED, AND FAILS CLOSED. It used to read the
+// schedule string with a grammar of its own and wave through anything that
+// grammar could not read — and Hermes accepts more than it did: a bare unit
+// (`every minute` is a one-minute interval), croniter's `0/1` (every minute
+// from :00), a 6-field cron whose last field is seconds. Now a job is written
+// paused, the floor reads the schedule Hermes stored, and only then does the
+// job start; a shape the floor cannot judge is refused, not trusted.
 const DEFAULT_MIN_INTERVAL_MINUTES: f64 = 5.0;
 
 pub async fn cron_floor_minutes(pg: &PgPool) -> f64 {
@@ -141,188 +241,204 @@ pub async fn cron_floor_minutes(pg: &PgPool) -> f64 {
     .unwrap_or(DEFAULT_MIN_INTERVAL_MINUTES)
 }
 
-fn unit_minutes(unit: char) -> Option<f64> {
-    match unit {
-        's' => Some(1.0 / 60.0),
-        'm' => Some(1.0),
-        'h' => Some(60.0),
-        'd' => Some(1440.0),
-        _ => None,
-    }
-}
-
-/// Expand one comma-separated cron field into the values it fires on
-/// (cronFieldValues). An unparseable field expands to NOTHING — the caller
-/// reads that as "can't tell" and stays permissive. Values stay f64 because
-/// the expansion accumulates floats (`v += step` with a fractional
-/// step lands on 1.5, 4.5, …) and the gap arithmetic runs on them.
-fn cron_field_values(field: &str, max: i64) -> Vec<f64> {
-    // A set, as a sorted vec: f64 isn't Ord, so the dedup is by equality
-    // over sorted neighbors (values are finite and ≥ 0 here).
-    let mut out: Vec<f64> = Vec::new();
+/// Expand one cron field into the values it fires on, in croniter's grammar
+/// (croniter is what Hermes validates an expression with): a comma list of
+/// `*`, `N` and `A-B`, each optionally `/STEP` — where `N/STEP` reads as
+/// `N-max/STEP`, so `0/1` is every value. None for anything else, and the
+/// caller refuses what it cannot read.
+fn cron_field_values(field: &str, max: u32) -> Option<Vec<u32>> {
+    let mut out: Vec<u32> = Vec::new();
     for part in field.split(',') {
-        let (spec, step_raw) = match part.split_once('/') {
-            Some((s, r)) => (s, r),
-            None => (part, ""),
+        let (spec, step) = match part.split_once('/') {
+            Some((spec, step)) => (spec, Some(step.parse::<u32>().ok().filter(|s| *s >= 1)?)),
+            None => (part, None),
         };
-        // stepRaw ? Number(stepRaw) : 1 — unparseable/absent means no `1`
-        // bailout: '' reads falsy, and NaN fails isFinite below.
-        let step: f64 = if step_raw.is_empty() {
-            1.0
+        let (lo, hi) = if spec == "*" {
+            (0, max)
+        } else if let Some((a, b)) = spec.split_once('-') {
+            (a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)
         } else {
-            step_raw.parse::<f64>().unwrap_or(f64::NAN)
+            let n = spec.parse::<u32>().ok()?;
+            (n, if step.is_some() { max } else { n })
         };
-        if !step.is_finite() || step < 1.0 {
-            return Vec::new();
+        if lo > hi || hi > max {
+            return None;
         }
-        let (lo, hi) = if spec.is_empty() || spec == "*" {
-            (0.0, max as f64)
-        } else {
-            let (a, b) = match spec.split_once('-') {
-                Some((a, b)) => (a, Some(b)),
-                None => (spec, None),
-            };
-            let parse = |s: &str| -> Result<f64, ()> {
-                // An empty spec never reaches here except as lo of "‑5",
-                // which parses; NaN fails below.
-                s.parse::<f64>().map_err(|_| ()).or(Ok(f64::NAN))
-            };
-            let lo = match parse(a) {
-                Ok(v) if v.is_finite() => v,
-                _ => return Vec::new(),
-            };
-            let hi = match b.map(parse) {
-                Some(Ok(v)) if v.is_finite() => v,
-                Some(_) => return Vec::new(),
-                None => lo,
-            };
-            (lo, hi)
-        };
-        if lo < 0.0 || hi > max as f64 || lo > hi {
-            return Vec::new();
-        }
-        let mut v = lo;
-        while v <= hi {
-            out.push(v);
-            v += step;
-        }
+        out.extend((lo..=hi).step_by(step.unwrap_or(1) as usize));
     }
-    out.sort_by(f64::total_cmp);
+    out.sort_unstable();
     out.dedup();
-    out
+    (!out.is_empty()).then_some(out)
 }
 
-/// The SHORTEST gap between two firings of a schedule, in minutes — the
-/// number a floor has to be compared against. None when we can't tell
-/// (Hermes stays the validator for anything exotic; we only refuse what we
-/// can prove is too fast).
-pub fn min_interval_minutes(schedule: &str) -> Option<f64> {
-    let s = schedule.trim().to_lowercase();
-
-    // Interval form: "30m", "every 2h", "90s".
-    let iv = regex::Regex::new(
-        r"^(?:every\s+)?(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$",
-    )
-    .unwrap();
-    if let Some(caps) = iv.captures(&s) {
-        let n: f64 = caps[1].parse().ok()?;
-        let unit = caps[2].chars().next()?;
-        return unit_minutes(unit).map(|u| n * u);
-    }
-
-    // 5-field cron: minute hour dom mon dow.
-    let fields: Vec<&str> = s.split_whitespace().collect();
+/// The shortest gap, in minutes, between two fires of a 5-field cron
+/// expression, read off its minute and hour fields. Exact over a day when the
+/// other three fields are `*`; with any of them set it is a LOWER BOUND on
+/// the real gap — a day-of-month, month or weekday field only takes fires
+/// away, and removing fires never shortens the gap between the ones left.
+/// That is the safe direction for a floor.
+fn cron_gap_minutes(expr: &str) -> Result<u32, String> {
+    let fields: Vec<&str> = expr.split_whitespace().collect();
     if fields.len() != 5 {
-        return None;
+        return Err(format!("a {}-field cron expression", fields.len()));
     }
-    let minutes = cron_field_values(fields[0], 59);
-    if minutes.is_empty() {
-        return None;
+    let (Some(minutes), Some(hours)) = (
+        cron_field_values(fields[0], 59),
+        cron_field_values(fields[1], 23),
+    ) else {
+        return Err(format!(
+            "a cron expression whose minute or hour field cannot be read (\"{expr}\")"
+        ));
+    };
+    // Minutes of the day it fires on, ascending: hours and minutes both are.
+    let fires: Vec<u32> = hours
+        .iter()
+        .flat_map(|h| minutes.iter().map(move |m| h * 60 + m))
+        .collect();
+    // Past midnight, into the next day's first fire. One fire a day is 1440.
+    let mut gap = 1440 - fires[fires.len() - 1] + fires[0];
+    for pair in fires.windows(2) {
+        gap = gap.min(pair[1] - pair[0]);
     }
-    // One minute value an hour → at most hourly, whatever the other fields say.
-    if minutes.len() == 1 {
-        return Some(60.0);
-    }
-    // wrap past the hour
-    let mut gap = 60.0 - minutes[minutes.len() - 1] + minutes[0];
-    for i in 1..minutes.len() {
-        gap = gap.min(minutes[i] - minutes[i - 1]);
-    }
-    Some(gap)
+    Ok(gap)
 }
 
-async fn assert_schedule_allowed(pg: &PgPool, schedule: &str) -> Result<(), String> {
-    let Some(gap) = min_interval_minutes(schedule) else {
-        return Ok(());
-    };
-    let floor = cron_floor_minutes(pg).await;
-    if floor > 0.0 && gap < floor {
+/// The shortest gap, in minutes, between two fires of a schedule as Hermes
+/// stored it (`cron/jobs.py` `parse_schedule`: `{kind: interval, minutes}`,
+/// `{kind: cron, expr}` or `{kind: once, run_at}`). `Ok(None)` is a one-shot,
+/// which no floor applies to; `Err` names a shape the floor cannot judge.
+pub fn parsed_gap_minutes(schedule: &Value) -> Result<Option<u32>, String> {
+    match schedule.get("kind").and_then(Value::as_str) {
+        Some("once") => Ok(None),
+        Some("interval") => match schedule.get("minutes").and_then(Value::as_u64) {
+            Some(m) if m > 0 => Ok(Some(u32::try_from(m).unwrap_or(u32::MAX))),
+            _ => Err("an interval with no length".to_string()),
+        },
+        Some("cron") => cron_gap_minutes(
+            schedule
+                .get("expr")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
+        .map(Some),
+        Some(kind) => Err(format!("a '{kind}' schedule")),
+        None => Err("a schedule with no kind".to_string()),
+    }
+}
+
+/// The floor's verdict on a schedule Hermes parsed. Only asked when a floor is
+/// set (`floor > 0`).
+fn floor_verdict(schedule: Option<&Value>, floor: f64) -> Result<(), String> {
+    match parsed_gap_minutes(schedule.unwrap_or(&Value::Null)) {
+        Ok(None) => Ok(()),
+        Ok(Some(gap)) if f64::from(gap) >= floor => Ok(()),
         // Numbers print whole here: 5 stays "5", 5.5 "5.5" — f64 Display
         // does the same for this range.
-        let every = if gap < 1.0 {
-            format!("{}s", (gap * 60.0).round())
-        } else {
-            format!("{gap}m")
-        };
-        return Err(format!(
-            "schedule fires every {every}, faster than the {floor}m minimum an admin set — ask them to lower the floor or pick a slower schedule"
-        ));
+        Ok(Some(gap)) => Err(format!(
+            "schedule fires every {gap}m, faster than the {floor}m minimum an admin set — ask them to lower the floor or pick a slower schedule"
+        )),
+        Err(shape) => Err(format!(
+            "schedule is {shape}, which the {floor}m minimum an admin set cannot be checked against — use an interval like 'every 30m' or a 5-field cron expression"
+        )),
     }
-    Ok(())
 }
 
+/// Run a change that takes several calls on the agent to its end, whatever
+/// happens to the request that asked for it. A guarded create (write paused →
+/// judge → start) and a schedule edit (pause → patch → judge → resume, or put
+/// back) leave the job paused between their calls, and a request future
+/// dropped there — the client hung up — would strand it paused: failing
+/// closed, but with nobody told. A spawned task is not dropped with the
+/// request, so the sequence finishes. Only the process itself exiting can
+/// still cut one short, and that leaves a paused job: no spend, and shown as
+/// paused on its list.
+async fn detached<T: Send + 'static>(
+    work: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+) -> Result<T, String> {
+    tokio::spawn(work)
+        .await
+        .map_err(|e| format!("the change on the agent did not finish: {e}"))?
+}
+
+/// Create a job on the agent and return the id Hermes assigned.
+///
+/// With a floor set, the job is written PAUSED: the floor reads the schedule
+/// Hermes parsed, and a job must not tick even once on a schedule the floor
+/// then refuses. It starts (`resume`) only once the floor passes it; a
+/// refusal, or a start Hermes refuses, takes the paused job back out.
 pub async fn create_cron_job(
     pg: &PgPool,
     def_id: &str,
     name: &str,
     schedule: &str,
     prompt: &str,
-) -> Result<Option<String>, String> {
-    let (department, _) = agent_for(pg, def_id).await?;
+) -> Result<String, String> {
+    let model = agent_for(pg, def_id).await?;
     let name = name.trim();
     let schedule = schedule.trim();
     let prompt = prompt.trim();
     if name.is_empty() || schedule.is_empty() || prompt.is_empty() {
         return Err("name, schedule, and prompt are required".to_string());
     }
-    assert_safe(name, "name")?;
-    assert_safe(schedule, "schedule")?;
-    assert_schedule_allowed(pg, schedule).await?;
-    if prompt.starts_with('-') {
-        return Err("prompt cannot start with \"-\"".to_string());
-    }
-    let container = managed_container(pg, &department).await;
-    let (stdout, _) = docker_exec(
-        &container,
-        &[
-            "hermes",
-            "cron",
-            "create",
-            "--name",
-            name,
-            "--deliver",
-            "local",
-            schedule,
-            prompt,
-        ],
-        30_000,
-    )
-    .await?;
-    let re = regex::Regex::new(r"Created job:\s*([a-f0-9]+)").unwrap();
-    Ok(re
-        .captures(&stdout)
-        .map(|c| c[1].to_string())
-        .filter(|id| !id.is_empty()))
+    prompt_fits(prompt)?;
+    let floor = cron_floor_minutes(pg).await;
+    let body = json!({
+        "name": name,
+        "schedule": schedule,
+        "prompt": prompt,
+        "deliver": "local",
+        "paused": floor > 0.0,
+    });
+    detached(create_and_start(model, body, floor)).await
 }
 
-fn job_id_ok(job_id: &str) -> bool {
-    let Ok(re) = regex::Regex::new("^[a-f0-9]{6,32}$") else {
-        unreachable!()
+/// A create's calls on the agent: the write (paused when a floor is set), the
+/// floor's verdict on what Hermes parsed, then the start — or the paused job
+/// taken back out.
+async fn create_and_start(model: String, body: Value, floor: f64) -> Result<String, String> {
+    let guarded = floor > 0.0;
+    let created = job_in(jobs_call(&model, Method::POST, "/api/jobs", Some(body)).await?)?;
+    let Some(id) = created
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| hermes_job_id(id))
+        .map(str::to_string)
+    else {
+        return Err("the agent did not report a job id".to_string());
     };
-    re.is_match(job_id)
+    if !guarded {
+        return Ok(id);
+    }
+    let started = match floor_verdict(created.get("schedule"), floor) {
+        Ok(()) => jobs_call(
+            &model,
+            Method::POST,
+            &format!("/api/jobs/{id}/resume"),
+            None,
+        )
+        .await
+        .map(|_| ()),
+        Err(refusal) => Err(refusal),
+    };
+    if let Err(why) = started {
+        if let Err(e) = jobs_call(&model, Method::DELETE, &format!("/api/jobs/{id}"), None).await {
+            tracing::error!("[crons] refused job {id} on {model} could not be removed: {e}");
+        }
+        return Err(why);
+    }
+    Ok(id)
 }
 
-/// In-place edit via `hermes cron edit` — name/schedule/prompt, any subset.
+/// Edit in place — name, schedule, prompt, any subset.
+///
+/// A SCHEDULE CHANGE IS JUDGED ON WHAT HERMES PARSED, as a create is, and the
+/// job must not tick on a schedule the floor then refuses: an armed job is
+/// paused first, patched, judged and resumed. A refusal — the floor's, or
+/// Hermes's own at the resume — puts back the fields the edit changed and
+/// leaves the job armed as it was. A schedule sent back exactly as Hermes
+/// displays it is no change, and is dropped from the patch: a client that
+/// sends every field must not re-parse, re-time or re-judge a schedule nobody
+/// touched (the app's own edit form sends only the fields that changed).
 pub async fn edit_cron_job(
     pg: &PgPool,
     def_id: &str,
@@ -331,67 +447,166 @@ pub async fn edit_cron_job(
     schedule: Option<&str>,
     prompt: Option<&str>,
 ) -> Result<(), String> {
-    if !job_id_ok(job_id) {
-        return Err("bad job id".to_string());
-    }
-    let (department, _) = agent_for(pg, def_id).await?;
-    let mut args: Vec<String> = vec!["hermes".into(), "cron".into(), "edit".into(), job_id.into()];
-    // TRIM, THEN GUARD — the same order as `create_cron_job`. The value that
-    // reaches argv is the trimmed one, so the guard has to look at it: a
-    // prompt of " --schedule=* * * * *" passed the leading-dash check on
-    // its untrimmed self and reached Hermes as an option.
-    if let Some(name) = name {
-        let name = name.trim();
-        assert_safe(name, "name")?;
-        args.push("--name".into());
-        args.push(name.to_string());
-    }
-    if let Some(schedule) = schedule {
-        let schedule = schedule.trim();
-        assert_safe(schedule, "schedule")?;
-        assert_schedule_allowed(pg, schedule).await?;
-        args.push("--schedule".into());
-        args.push(schedule.to_string());
+    let path = jobs_path(job_id)?;
+    let model = agent_for(pg, def_id).await?;
+    let mut patch = serde_json::Map::new();
+    for (key, value) in [("name", name), ("prompt", prompt)] {
+        if let Some(value) = value.map(str::trim) {
+            if value.is_empty() {
+                return Err(format!("{key} cannot be blank"));
+            }
+            patch.insert(key.into(), json!(value));
+        }
     }
     if let Some(prompt) = prompt {
-        let prompt = prompt.trim();
-        if prompt.starts_with('-') {
-            return Err("prompt cannot start with \"-\"".to_string());
+        prompt_fits(prompt.trim())?;
+    }
+    let schedule = schedule.map(str::trim);
+    if schedule == Some("") {
+        return Err("schedule cannot be blank".to_string());
+    }
+    let Some(schedule) = schedule else {
+        if patch.is_empty() {
+            return Err("nothing to edit".to_string());
         }
-        args.push("--prompt".into());
-        args.push(prompt.to_string());
-    }
-    if args.len() == 4 {
-        return Err("nothing to edit".to_string());
-    }
-    let container = managed_container(pg, &department).await;
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    docker_exec(&container, &refs, 30_000).await.map(|_| ())
+        return jobs_call(&model, Method::PATCH, &path, Some(Value::Object(patch)))
+            .await
+            .map(|_| ());
+    };
+    let floor = cron_floor_minutes(pg).await;
+    detached(edit_with_schedule(
+        model,
+        path,
+        patch,
+        schedule.to_string(),
+        floor,
+    ))
+    .await
 }
 
-async fn job_action(pg: &PgPool, def_id: &str, job_id: &str, action: &str) -> Result<(), String> {
-    if !job_id_ok(job_id) {
-        return Err("bad job id".to_string());
+/// An edit's calls on the agent once it names a schedule: read the job, drop
+/// the schedule if it is Hermes's own display string, then either one PATCH
+/// or — with a floor set and the schedule changing — pause, patch, judge, and
+/// resume or put back.
+async fn edit_with_schedule(
+    model: String,
+    path: String,
+    mut patch: serde_json::Map<String, Value>,
+    schedule: String,
+    floor: f64,
+) -> Result<(), String> {
+    let before = job_in(jobs_call(&model, Method::GET, &path, None).await?)?;
+    if before.get("schedule_display").and_then(Value::as_str) != Some(schedule.as_str()) {
+        patch.insert("schedule".into(), json!(schedule));
     }
-    let (department, _) = agent_for(pg, def_id).await?;
-    let container = managed_container(pg, &department).await;
-    docker_exec(&container, &["hermes", "cron", action, job_id], 30_000)
+    if patch.is_empty() {
+        return Ok(());
+    }
+    if !patch.contains_key("schedule") || floor <= 0.0 {
+        return jobs_call(&model, Method::PATCH, &path, Some(Value::Object(patch)))
+            .await
+            .map(|_| ());
+    }
+
+    let armed = is_armed(&before);
+    if armed {
+        jobs_call(&model, Method::POST, &format!("{path}/pause"), None).await?;
+    }
+    let patched = jobs_call(
+        &model,
+        Method::PATCH,
+        &path,
+        Some(Value::Object(patch.clone())),
+    )
+    .await
+    .and_then(job_in);
+    let patched = match patched {
+        Ok(job) => job,
+        Err(why) => {
+            // Nothing changed but the pause.
+            if armed && let Err(e) = resume(&model, &path).await {
+                return Err(format!("{why} (and the job could not be resumed: {e})"));
+            }
+            return Err(why);
+        }
+    };
+    let verdict = match floor_verdict(patched.get("schedule"), floor) {
+        Ok(()) if armed => resume(&model, &path).await,
+        other => other,
+    };
+    let Err(why) = verdict else {
+        return Ok(());
+    };
+    // The edit cannot stand: the fields it changed go back to what they were
+    // (the schedule as Hermes's own parsed record, which it takes as-is).
+    let restore: serde_json::Map<String, Value> = patch
+        .keys()
+        .filter_map(|k| before.get(k).map(|v| (k.clone(), v.clone())))
+        .collect();
+    if let Err(e) = jobs_call(&model, Method::PATCH, &path, Some(Value::Object(restore))).await {
+        tracing::error!("[crons] {path} on {model}: refused edit could not be undone: {e}");
+        return Err(format!(
+            "{why} (and the job's previous settings could not be put back: {e})"
+        ));
+    }
+    if armed && let Err(e) = resume(&model, &path).await {
+        return Err(format!("{why} (and the job could not be resumed: {e})"));
+    }
+    Err(why)
+}
+
+async fn resume(model: &str, path: &str) -> Result<(), String> {
+    jobs_call(model, Method::POST, &format!("{path}/resume"), None)
+        .await
+        .map(|_| ())
+}
+
+async fn job_action(
+    pg: &PgPool,
+    def_id: &str,
+    job_id: &str,
+    method: Method,
+    action: &str,
+) -> Result<(), String> {
+    let path = jobs_path(job_id)?;
+    let model = agent_for(pg, def_id).await?;
+    jobs_call(&model, method, &format!("{path}{action}"), None)
         .await
         .map(|_| ())
 }
 
 pub async fn remove_cron_job(pg: &PgPool, def_id: &str, job_id: &str) -> Result<(), String> {
-    job_action(pg, def_id, job_id, "remove").await
+    job_action(pg, def_id, job_id, Method::DELETE, "").await
 }
 pub async fn pause_cron_job(pg: &PgPool, def_id: &str, job_id: &str) -> Result<(), String> {
-    job_action(pg, def_id, job_id, "pause").await
+    job_action(pg, def_id, job_id, Method::POST, "/pause").await
 }
 pub async fn resume_cron_job(pg: &PgPool, def_id: &str, job_id: &str) -> Result<(), String> {
-    job_action(pg, def_id, job_id, "resume").await
+    job_action(pg, def_id, job_id, Method::POST, "/resume").await
 }
-/// Queue the job for the next scheduler tick (≤60s).
+
+/// Queue the job for the scheduler's next tick (≤60s): REST `run` marks it
+/// due now and returns — the turn runs on the tick, never inside this call.
+///
+/// A PAUSED JOB IS REFUSED. Hermes's `run` (`trigger_job`) un-pauses the job
+/// as it queues it — `enabled: true`, `state: scheduled` — and nothing pauses
+/// it again, so one "run now" would resume a paused job for good (a thread's
+/// archive pauses its schedules precisely so they stop spending). Pausing it
+/// again after the trigger is no answer: the fire happens on a later tick,
+/// and a pause before that tick cancels it. Resume first, then run.
 pub async fn run_cron_job(pg: &PgPool, def_id: &str, job_id: &str) -> Result<(), String> {
-    job_action(pg, def_id, job_id, "run").await
+    let path = jobs_path(job_id)?;
+    let model = agent_for(pg, def_id).await?;
+    let job = job_in(jobs_call(&model, Method::GET, &path, None).await?)?;
+    if is_paused(&job) {
+        return Err(
+            "this job is paused — resume it first; running a paused job would resume it for good"
+                .to_string(),
+        );
+    }
+    jobs_call(&model, Method::POST, &format!("{path}/run"), None)
+        .await
+        .map(|_| ())
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -516,7 +731,7 @@ pub struct ScheduleRow {
 }
 
 /// The managed, enabled def that answers for a model. A conversation names its
-/// agent by model and every `hermes cron` call needs the def id, so this is
+/// agent by model and every job call needs the def id, so this is
 /// the one translation both doors of the thread-schedule feature go through.
 async fn managed_def_for_model(pg: &PgPool, model: &str) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar(
@@ -553,12 +768,10 @@ pub async fn schedule_from_conversation(
     else {
         return Err("this conversation's agent is not a running managed agent".to_string());
     };
-    // Every refusal the fleet door answers with — the flag/newline guards, the
-    // frequency floor, Hermes' own schedule parser — this door answers with
-    // too, verbatim, because it is the same call.
-    let Some(job) = create_cron_job(pg, &def_id, name, schedule, prompt).await? else {
-        return Err("the agent did not report a job id".to_string());
-    };
+    // Every refusal the fleet door answers with — the prompt cap, the
+    // frequency floor, Hermes' own schedule parser and prompt scan — this door
+    // answers with too, verbatim, because it is the same call.
+    let job = create_cron_job(pg, &def_id, name, schedule, prompt).await?;
     // The trimmed text, so the row and jobs.json agree about what was asked
     // for: create_cron_job trims before handing it to Hermes.
     let written = sqlx::query(
@@ -811,8 +1024,8 @@ pub async fn schedules_for_conversation(
         .collect())
 }
 
-/// One model's live jobs, as the container reports them — the half of a
-/// thread's schedule list that only jobs.json knows (still ticking? when did
+/// One model's live jobs, as the agent's scheduler reports them — the half of
+/// a thread's schedule list only the agent knows (still ticking? when did
 /// it last run?). Keyed by model, because that is how a conversation names its
 /// agent; a down container is an Err the caller may degrade past.
 pub async fn live_jobs_for_model(pg: &PgPool, agent_model: &str) -> Result<Vec<CronJob>, String> {
@@ -823,6 +1036,16 @@ pub async fn live_jobs_for_model(pg: &PgPool, agent_model: &str) -> Result<Vec<C
         return Err("this conversation's agent is not a running managed agent".to_string());
     };
     list_cron_jobs(pg, &def_id).await
+}
+
+/// The job grammar of a cron turn's task id: lowercase hex, 6 to 32 long.
+/// Looser than `hermes_job_id` on purpose — this reads ids back out of turns
+/// already running, and refusing one here only drops a turn into the void.
+fn job_id_ok(job_id: &str) -> bool {
+    (6..=32).contains(&job_id.len())
+        && job_id
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// The task id a cron turn carries, split back into the job and the execution
@@ -853,45 +1076,167 @@ pub fn job_id_of_task(task_id: &str) -> Option<(String, String)> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn interval_forms() {
-        assert_eq!(min_interval_minutes("30m"), Some(30.0));
-        assert_eq!(min_interval_minutes("every 2h"), Some(120.0));
-        assert_eq!(min_interval_minutes("90s"), Some(1.5));
-        assert_eq!(min_interval_minutes("every  2h "), Some(120.0));
-        assert_eq!(min_interval_minutes("bogus"), None);
-        // 4 fields is not a cron we can judge.
-        assert_eq!(min_interval_minutes("* * * *"), None);
+    fn cron(expr: &str) -> Value {
+        json!({ "kind": "cron", "expr": expr, "display": expr })
     }
 
     #[test]
-    fn cron_minute_gaps() {
-        // One minute value an hour → hourly at most.
-        assert_eq!(min_interval_minutes("5 * * * *"), Some(60.0));
-        // Every five minutes.
-        assert_eq!(min_interval_minutes("*/5 * * * *"), Some(5.0));
+    fn an_interval_is_judged_on_the_minutes_hermes_parsed() {
+        // `every minute` is what Hermes stores for a bare unit: an interval
+        // of one minute. The old string grammar needed a digit and let it by.
+        let every_minute = json!({ "kind": "interval", "minutes": 1, "display": "every 1m" });
+        assert_eq!(parsed_gap_minutes(&every_minute), Ok(Some(1)));
+        assert_eq!(
+            parsed_gap_minutes(&json!({ "kind": "interval", "minutes": 120 })),
+            Ok(Some(120))
+        );
+        // `every 0m` parses in Hermes — and would fire on every tick.
+        assert!(parsed_gap_minutes(&json!({ "kind": "interval", "minutes": 0 })).is_err());
+        assert!(parsed_gap_minutes(&json!({ "kind": "interval" })).is_err());
+        // A one-shot fires once: no floor applies.
+        assert_eq!(
+            parsed_gap_minutes(&json!({ "kind": "once", "run_at": "2026-10-23T09:00:00+00:00" })),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn a_cron_gap_reads_the_minute_and_hour_fields() {
+        let gap = |expr: &str| parsed_gap_minutes(&cron(expr));
+        assert_eq!(gap("* * * * *"), Ok(Some(1)));
+        assert_eq!(gap("*/5 * * * *"), Ok(Some(5)));
+        // One minute value an hour → hourly.
+        assert_eq!(gap("5 * * * *"), Ok(Some(60)));
         // Wrap past the hour: 58 and 0 are two minutes apart.
-        assert_eq!(min_interval_minutes("0,58 * * * *"), Some(2.0));
+        assert_eq!(gap("0,58 * * * *"), Ok(Some(2)));
         // Lists and ranges: 0,15,30,45 → 15.
-        assert_eq!(min_interval_minutes("0-45/15 * * * *"), Some(15.0));
-        // Unparseable minute field → can't tell.
-        assert_eq!(min_interval_minutes("a * * * *"), None);
-        assert_eq!(min_interval_minutes("5-2 * * * *"), None);
-        // Every minute — the schedule the floor exists to refuse.
-        assert_eq!(min_interval_minutes("* * * * *"), Some(1.0));
+        assert_eq!(gap("0-45/15 * * * *"), Ok(Some(15)));
+        // croniter reads `N/STEP` as `N-max/STEP`: `0/1` is every minute.
+        // The old parser read it as just minute 0 — hourly — and let it by.
+        assert_eq!(gap("0/1 * * * *"), Ok(Some(1)));
+        assert_eq!(gap("10/20 * * * *"), Ok(Some(20)));
+        // Every minute of one hour, every day.
+        assert_eq!(gap("* 9 * * *"), Ok(Some(1)));
+        // The hour field counts: daily is a day, twice daily is the shorter
+        // of its two gaps, and the wrap runs past midnight.
+        assert_eq!(gap("0 9 * * *"), Ok(Some(1440)));
+        assert_eq!(gap("0 9,17 * * *"), Ok(Some(480)));
+        assert_eq!(gap("0 0,23 * * *"), Ok(Some(60)));
+        // A weekday field only removes fires: the day's gap is a floor on it.
+        assert_eq!(gap("0 9 * * 1"), Ok(Some(1440)));
+        assert_eq!(gap("0 9 * * MON-FRI"), Ok(Some(1440)));
     }
 
     #[test]
-    fn flag_and_newline_refusals() {
+    fn a_cron_the_floor_cannot_read_is_refused() {
+        let gap = |expr: &str| parsed_gap_minutes(&cron(expr));
+        // 6 fields: croniter's sixth is seconds. Hermes accepts it.
+        assert!(gap("* * * * * *").is_err());
+        assert!(gap("* * * * * */10").is_err());
+        assert!(gap("* * * *").is_err());
+        assert!(gap("a * * * *").is_err());
+        assert!(gap("5-2 * * * *").is_err());
+        assert!(gap("*/0 * * * *").is_err());
+        assert!(gap("60 * * * *").is_err());
+        assert!(gap("0 24 * * *").is_err());
+        assert!(gap("1,,2 * * * *").is_err());
+        assert!(parsed_gap_minutes(&json!({ "kind": "weird" })).is_err());
+        assert!(parsed_gap_minutes(&Value::Null).is_err());
+    }
+
+    #[test]
+    fn the_floor_refuses_too_fast_and_unreadable_and_passes_the_rest() {
+        let every_minute = json!({ "kind": "interval", "minutes": 1 });
+        let refused = floor_verdict(Some(&every_minute), 5.0).unwrap_err();
+        assert!(refused.contains("every 1m"), "{refused}");
+        assert!(refused.contains("5m minimum"), "{refused}");
+        assert!(floor_verdict(Some(&json!({ "kind": "interval", "minutes": 5 })), 5.0).is_ok());
+        assert!(floor_verdict(Some(&json!({ "kind": "once" })), 5.0).is_ok());
+        let unreadable = floor_verdict(Some(&cron("* * * * * *")), 5.0).unwrap_err();
+        assert!(unreadable.contains("6-field"), "{unreadable}");
+        assert!(unreadable.contains("cannot be checked"), "{unreadable}");
+        // No schedule in the answer at all is unreadable, not a pass.
+        assert!(floor_verdict(None, 5.0).is_err());
+        // A floor above an hour no longer refuses a daily cron.
+        assert!(floor_verdict(Some(&cron("0 9 * * *")), 120.0).is_ok());
+        assert!(floor_verdict(Some(&cron("0 * * * *")), 120.0).is_err());
+    }
+
+    #[test]
+    fn job_ids_are_addressed_in_hermes_grammar() {
+        assert!(hermes_job_id("0123456789ab"));
+        assert!(!hermes_job_id("0123456789a")); // 11
+        assert!(!hermes_job_id("0123456789abc")); // 13
+        assert!(!hermes_job_id("0123456789AB")); // uppercase
+        assert!(!hermes_job_id("../../jobs.x"));
+        assert_eq!(jobs_path("0123456789ab").unwrap(), "/api/jobs/0123456789ab");
+        assert_eq!(jobs_path("abc/../x").unwrap_err(), "bad job id");
+    }
+
+    #[test]
+    fn a_refusal_reads_as_hermes_said_it() {
         assert_eq!(
-            assert_safe("--flag", "name").unwrap_err(),
-            "name cannot start with \"-\""
+            refusal_of(400, &json!({ "error": "Invalid schedule 'x'." })),
+            "Invalid schedule 'x'."
+        );
+        // The auth wall's shape.
+        assert_eq!(
+            refusal_of(
+                401,
+                &json!({ "error": { "message": "Invalid gateway API key (API_SERVER_KEY)" } })
+            ),
+            "Invalid gateway API key (API_SERVER_KEY)"
         );
         assert_eq!(
-            assert_safe("two\nlines", "prompt").unwrap_err(),
-            "prompt cannot contain newlines"
+            refusal_of(502, &Value::Null),
+            "the agent's scheduler answered 502"
         );
-        assert!(assert_safe("plain text", "name").is_ok());
+        assert_eq!(
+            refusal_of(500, &json!({ "error": "  " })),
+            "the agent's scheduler answered 500"
+        );
+    }
+
+    #[test]
+    fn paused_and_armed_read_hermes_own_signals() {
+        let job = |enabled: bool, state: &str| json!({ "enabled": enabled, "state": state });
+        assert!(is_paused(&job(false, "paused")));
+        assert!(is_paused(&job(false, "scheduled")));
+        assert!(!is_paused(&job(true, "scheduled")));
+        assert!(is_armed(&job(true, "scheduled")));
+        assert!(!is_armed(&job(false, "paused")));
+        assert!(!is_armed(&job(true, "completed")));
+        assert!(!is_armed(&job(true, "error")));
+    }
+
+    #[test]
+    fn a_prompt_past_the_agents_cap_is_refused_here() {
+        assert!(prompt_fits(&"x".repeat(MAX_PROMPT_CHARS)).is_ok());
+        let refused = prompt_fits(&"x".repeat(MAX_PROMPT_CHARS + 1)).unwrap_err();
+        assert!(refused.contains("5000"), "{refused}");
+        // Counted as Python counts a str: one code point each.
+        assert!(prompt_fits(&"é".repeat(MAX_PROMPT_CHARS)).is_ok());
+    }
+
+    #[test]
+    fn a_job_record_maps_onto_the_row_talaria_shows() {
+        let j = job_from(&json!({
+            "id": "0123456789ab",
+            "name": "recap",
+            "prompt": "write it",
+            "schedule": { "kind": "interval", "minutes": 120, "display": "every 120m" },
+            "schedule_display": "every 120m",
+            "enabled": false,
+            "state": "paused",
+            "next_run_at": null,
+            "last_status": "ok",
+        }));
+        assert_eq!(j.id, "0123456789ab");
+        assert_eq!(j.schedule, "every 120m");
+        assert!(!j.enabled);
+        assert_eq!(j.state, "paused");
+        assert_eq!(j.next_run_at, None);
+        assert_eq!(j.last_status.as_deref(), Some("ok"));
     }
 
     #[test]
@@ -912,7 +1257,7 @@ mod tests {
         // A persona turn's task id names no job.
         assert_eq!(job_id_of_task("task:abc123:f00d"), None);
         assert_eq!(job_id_of_task("abc123"), None);
-        // Too short to be a job id — the same grammar `hermes cron` prints.
+        // Too short to be a job id.
         assert_eq!(job_id_of_task("cron:abc12:f00d"), None);
         // Trailing garbage: a fourth segment, a non-hex execution, nothing.
         assert_eq!(job_id_of_task("cron:abc123:f00d:extra"), None);
