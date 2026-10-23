@@ -77,7 +77,7 @@
           onclick={() => void controls.act('restart', 'restarting', RESTART_CONFIRM)}
         ><RotateCw size={14} /></IconButton>
         <IconButton
-          title={rolling ? 'Rolling now' : 'Roll (zero-downtime replacement: fresh container, old one finishes its replies)'}
+          title={rolling ? 'Rolling now' : 'Roll (recreate in place: the container stops, a fresh one starts on the current render)'}
           disabled={rolling}
           onclick={() => void controls.act('roll', 'rolling')}
         ><Repeat size={14} /></IconButton>

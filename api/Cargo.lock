@@ -4924,7 +4924,6 @@ dependencies = [
  "sqlx",
  "talaria-fleet-docker",
  "talaria-secretbox",
- "talaria-update-layout",
  "tokio",
  "tracing",
 ]

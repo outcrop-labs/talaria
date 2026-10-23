@@ -3,16 +3,20 @@
 // .env, so per-agent keys/secrets stay in one Talaria-owned, gitignored
 // place).
 //
-// Covers slot naming, active-slot resolution, the external network guarantee,
-// the lifecycle verbs (up, stop, restart, remove), the healthcheck wait,
-// bundled-skill pruning, the 5s-cached `docker ps` status the roster and Home
-// poll, and the shared `docker exec` wrapper the cron and memory surfaces use
-// to reach an agent's own filesystem.
+// Covers service naming, the external network guarantee, the lifecycle verbs
+// (up, recreate, stop, restart, remove), the image pull, the healthcheck
+// wait, bundled-skill pruning, the 5s-cached `docker ps` status the roster
+// and Home poll, and the shared `docker exec` wrapper the cron and memory
+// surfaces use to reach an agent's own filesystem.
 //
-// Rolling slots: each agent runs as `agent-<dept>` (slot a) or
-// `agent-<dept>-b` (slot b). Callers pass a department as always — the
-// active slot resolves here — and only the roll orchestration addresses a
-// slot explicitly.
+// ONE CONTAINER PER AGENT. Each agent runs as `agent-<dept>`, and a roll
+// recreates that container in place (`fleet_recreate`). There is no second
+// slot to roll into: every Hermes since v2026.4.30 takes an `flock` on
+// `/opt/data/gateway.lock` in the agent's state volume, so a second container
+// on the same volume exits at start and never serves. Before 2026-10-22 a
+// blue/green roll could leave an agent in `agent-<dept>-b` (`active_slot =
+// 'b'`); callers still pass a department and the service resolves here, so
+// such an agent keeps working until its next roll moves it back.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -23,6 +27,25 @@ pub static PREFLIGHT: std::sync::OnceLock<fn(sqlx::PgPool)> = std::sync::OnceLoc
 
 use sqlx::PgPool;
 
+/// How long a stop may drain before docker SIGKILLs the agent — the
+/// `stop_grace_period` the render gives every service, the timeout this
+/// crate's own stops pass, and the bound on `drain_gateway`'s wait. On
+/// SIGTERM Hermes keeps cron and `/v1` runs open for up to
+/// `agent.cron_drain_timeout` (30s) plus a 10s cleanup reserve; docker's
+/// default 10s would cut them off mid-write.
+pub const AGENT_STOP_GRACE_SECS: u64 = 45;
+
+/// The agent gateway's s6 service in the Hermes image (`hermes gateway run`
+/// registers it as `gateway-<profile>` under the dynamic scandir), and where
+/// the image keeps the s6 tools — not on `docker exec`'s PATH.
+const GATEWAY_SERVICE_DIR: &str = "/run/service/gateway-default";
+const S6_BIN: &str = "/command";
+
+/// Which compose service an agent lives in. `A` is `agent-<dept>`, the only
+/// one anything creates now. `B` (`agent-<dept>-b`) is where a blue/green
+/// roll from before 2026-10-22 could leave an agent; its next roll moves it
+/// back. The app updater's own slot pair reuses this enum
+/// (talaria-update-layout).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slot {
     A,
@@ -48,8 +71,9 @@ pub fn slot_container(department: &str, slot: Slot) -> String {
     )
 }
 
-/// Which slot a department's managed agent currently runs in, from the def
-/// row the roll orchestration updates. Missing row / null reads as 'a'.
+/// Which service a department's managed agent currently runs in, from the
+/// def row. Missing row / null reads as 'a'; only an agent a pre-2026-10-22
+/// blue/green roll left behind reads 'b', until its next roll.
 pub async fn active_slot(pg: &PgPool, department: &str) -> Slot {
     let row: Option<(Option<String>,)> = sqlx::query_as(
         "select active_slot from agent_defs where department = $1 and managed limit 1",
@@ -148,18 +172,106 @@ async fn ensure_fleet_network() -> Result<(), String> {
 /// (trimmed), which on success carries its progress/warnings — the run logs
 /// nothing of it.
 pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
-    let slot = active_slot(pg, department).await;
-    fleet_up_slot(pg, department, slot).await
+    compose_up(pg, department, &["up", "-d"], Duration::from_secs(120)).await
 }
 
-/// The roll's spelling: address a SPECIFIC slot (the incoming one), not the
-/// active one.
-pub async fn fleet_up_slot(pg: &PgPool, department: &str, slot: Slot) -> Result<String, String> {
+/// Recreate a department's managed agent IN PLACE — the roll. Compose stops
+/// the running container (SIGTERM, then `stop_grace_period` before a KILL),
+/// then creates and starts a fresh one from the current render on the same
+/// state volume. `--no-deps`: an agent has none, and a roll must never touch
+/// another service. The image is pulled first when the host lacks it, so a
+/// pull that fails leaves the running container exactly as it was.
+pub async fn fleet_recreate(pg: &PgPool, department: &str) -> Result<String, String> {
+    compose_up(
+        pg,
+        department,
+        &["up", "-d", "--force-recreate", "--no-deps"],
+        Duration::from_secs(AGENT_STOP_GRACE_SECS + 120),
+    )
+    .await
+}
+
+/// Stop the agent's gateway THROUGH ITS OWN SUPERVISOR, and wait for it to
+/// finish, before anything stops its container. A plain `docker stop` cannot
+/// drain a Hermes agent, whatever `stop_grace_period` says: the gateway is a
+/// dynamic s6 service, so it gets its SIGTERM only in s6-overlay's final
+/// shutdown phase, exits 1 ("so the service manager can revive" it), is
+/// revived, and everything is SIGKILLed `S6_KILL_GRACETIME` (3s) later.
+/// Measured on v0.22.4: `docker stop -t 45` returned in ~4s and cut an
+/// in-flight `/v1/chat/completions` off. `s6-svc -d` marks the service down
+/// first — s6 sends the SIGTERM and will not revive it — so Hermes runs its
+/// own drain (cron and `/v1` runs held up to 30s, plus its cleanup reserve)
+/// and exits; `s6-svwait -D` returns when it has. The same measurement with
+/// this first: the turn finished (200, the whole reply) and the container
+/// then stopped cleanly. Hermes reads a SIGTERM it did not plan as
+/// "unexpected" and records the gateway as running, so the next container
+/// on this volume starts it as usual. Best effort: a container that is not
+/// running, or an image laid out differently, falls through to the plain
+/// stop it would have had anyway.
+async fn drain_gateway(container: &str) {
+    let script = format!(
+        "{S6_BIN}/s6-svc -d {GATEWAY_SERVICE_DIR} && \
+         {S6_BIN}/s6-svwait -D -t {} {GATEWAY_SERVICE_DIR}",
+        (AGENT_STOP_GRACE_SECS - 5) * 1000
+    );
+    if let Err(e) = docker_exec(
+        container,
+        &["sh", "-c", &script],
+        AGENT_STOP_GRACE_SECS * 1000,
+    )
+    .await
+    {
+        tracing::debug!("[fleet] gateway drain in {container} skipped: {e}");
+    }
+}
+
+/// Undo [`drain_gateway`] when the stop it cleared the way for did not
+/// happen — a compose or `docker stop` that failed (or timed out) before it
+/// reached the container. s6 will not revive a service marked down, so
+/// without this the container keeps running with no gateway until someone
+/// restarts it. `s6-svc -u` brings it back up. Best effort, and harmless
+/// where there is nothing to undo: a container that did stop answers the
+/// exec with an error, and a gateway that is already up stays up.
+async fn undrain_gateway(container: &str) {
+    let script = format!("{S6_BIN}/s6-svc -u {GATEWAY_SERVICE_DIR}");
+    if let Err(e) = docker_exec(container, &["sh", "-c", &script], 15_000).await {
+        tracing::debug!("[fleet] gateway undrain in {container} skipped: {e}");
+    }
+}
+
+/// `compose up` for a department's service, with the network ensured and the
+/// image pulled first. The up's own timeout covers the stop and the create;
+/// the pull has its own, much longer one — a new Hermes pin is gigabytes.
+async fn compose_up(
+    pg: &PgPool,
+    department: &str,
+    verb: &[&str],
+    timeout: Duration,
+) -> Result<String, String> {
     ensure_fleet_network().await?;
+    let slot = active_slot(pg, department).await;
     let svc = slot_service(department, slot);
-    let args: Vec<String> = compose_args(&["up", "-d", &svc]);
+    pull_missing(&svc).await?;
+    // A recreate stops the running container: drain it first. A plain `up`
+    // starts one and leaves a running one alone, so it has nothing to drain.
+    let drained = verb
+        .contains(&"--force-recreate")
+        .then(|| slot_container(department, slot));
+    if let Some(container) = &drained {
+        drain_gateway(container).await;
+    }
+    let mut args: Vec<String> = compose_args(verb);
+    args.push(svc);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let (_, stderr) = docker(&refs, Duration::from_secs(120)).await?;
+    let (_, stderr) = match docker(&refs, timeout).await {
+        Ok(out) => out,
+        Err(e) => {
+            if let Some(container) = &drained {
+                undrain_gateway(container).await;
+            }
+            return Err(e);
+        }
+    };
     // Bringing an agent up is the moment to ask whether it can reach us — from
     // the fleet network, not from here. Detached: a preflight must never be
     // able to fail a start, and its whole value is that it writes a verdict
@@ -171,18 +283,50 @@ pub async fn fleet_up_slot(pg: &PgPool, department: &str, slot: Slot) -> Result<
     Ok(stderr.trim().to_string())
 }
 
+/// Pull the service's image if — and only if — the host does not have it.
+/// The chassis pins Hermes by digest, so this is what moves a host onto a
+/// new pin the first time an agent starts or rolls after the bump, and a
+/// no-op every time after. A tag an operator set instead (`HERMES_IMAGE`)
+/// is pulled once and then kept as cached: re-pull it yourself, or pin a
+/// digest. Done as its own step, ahead of `up`, so a registry problem fails
+/// here — with the running container untouched — and not halfway through a
+/// recreate.
+async fn pull_missing(svc: &str) -> Result<(), String> {
+    let args = compose_args(&["pull", "--policy", "missing", "--quiet", svc]);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    match docker(&refs, Duration::from_secs(1_200)).await {
+        Ok(_) => Ok(()),
+        // A compose too old for `--policy` (before v2.22): `up` still pulls a
+        // missing image itself, just without the early, clean failure.
+        Err(e) if e.contains("unknown flag") => Ok(()),
+        Err(e) => Err(format!("could not pull the image for {svc}: {e}")),
+    }
+}
+
+/// [`pull_missing`] for a department's current service, on its own — for a
+/// caller that must have the image on the host BEFORE it stops anything
+/// compose does not stop for it: the roll that moves a legacy `-b` agent
+/// home retires `-b` itself, so it pulls first, while `-b` still serves.
+pub async fn pull_agent_image(pg: &PgPool, department: &str) -> Result<(), String> {
+    pull_missing(&slot_service(department, active_slot(pg, department).await)).await
+}
+
+/// Whether the named container exists and is running.
+pub async fn container_running(name: &str) -> bool {
+    docker(
+        &["inspect", "-f", "{{.State.Running}}", name],
+        Duration::from_secs(10),
+    )
+    .await
+    .is_ok_and(|(out, _)| out.trim() == "true")
+}
+
 /// Wait for the managed container to report healthy (or give up). `unhealthy`
 /// is an answer, not an error — the run files it as a warning and the roster
 /// knows how to show it. A docker error mid-wait means the container is not
 /// created YET; the deadline, not the error, ends the wait.
 pub async fn wait_healthy(pg: &PgPool, department: &str, timeout_ms: u64) -> bool {
-    let slot = active_slot(pg, department).await;
-    wait_healthy_slot(department, slot, timeout_ms).await
-}
-
-/// The roll's spelling: wait on a SPECIFIC slot.
-pub async fn wait_healthy_slot(department: &str, slot: Slot, timeout_ms: u64) -> bool {
-    let name = slot_container(department, slot);
+    let name = managed_container(pg, department).await;
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     while tokio::time::Instant::now() < deadline {
         if let Ok((stdout, _)) = docker(
@@ -202,9 +346,11 @@ pub async fn wait_healthy_slot(department: &str, slot: Slot, timeout_ms: u64) ->
     false
 }
 
-/// Which departments have a RUNNING slot container right now — the
-/// running-state half of container_status's projection. One `docker ps`
-/// sweep, never cached: the roll loop wants this fresh.
+/// Which departments have a RUNNING agent container right now — the
+/// running-state half of container_status's projection (either service
+/// name counts, so an agent still in a legacy `-b` container is rolled
+/// home rather than skipped). One `docker ps` sweep, never cached: the
+/// roll loop wants this fresh.
 pub async fn running_departments(departments: &[String]) -> Result<Vec<String>, String> {
     let (out, _) = docker(
         &["ps", "-a", "--format", "{{.Names}}\t{{.State}}"],
@@ -225,11 +371,34 @@ pub async fn running_departments(departments: &[String]) -> Result<Vec<String>, 
         .collect())
 }
 
-/// Remove a container by exact name — used to retire the old slot after a
-/// roll: it's no longer in the compose file by then, so compose can't address
-/// it.
-pub async fn remove_container_by_name(name: &str) -> Result<(), String> {
-    docker(&["rm", "-f", name], Duration::from_secs(60))
+/// Retire a container compose no longer addresses (a legacy `-b` slot a
+/// roll is moving home, or a deleted agent's leftover): stop it the graceful
+/// way — the gateway drained through s6, then SIGTERM and
+/// `AGENT_STOP_GRACE_SECS` before docker's KILL — and
+/// remove it. Never `rm -f`, which is a SIGKILL that cuts off whatever the
+/// agent had in flight. A container that does not exist is already retired.
+/// A stop that fails brings the drained gateway back up, so the container
+/// is left serving, not running without a gateway; a remove that fails
+/// leaves it stopped.
+pub async fn retire_container(name: &str) -> Result<(), String> {
+    if docker(&["inspect", "-f", "{{.Id}}", name], Duration::from_secs(10))
+        .await
+        .is_err()
+    {
+        return Ok(());
+    }
+    drain_gateway(name).await;
+    let grace = AGENT_STOP_GRACE_SECS.to_string();
+    if let Err(e) = docker(
+        &["stop", "-t", &grace, name],
+        Duration::from_secs(AGENT_STOP_GRACE_SECS + 30),
+    )
+    .await
+    {
+        undrain_gateway(name).await;
+        return Err(e);
+    }
+    docker(&["rm", name], Duration::from_secs(60))
         .await
         .map(|_| ())
 }
@@ -315,9 +484,10 @@ pub async fn docker_exec_as(
 }
 
 /// The managed container's CURRENT name — anything that docker-execs into an
-/// agent must resolve through this, never hardcode the slot-a name (a rolled
-/// agent lives in "-b-1" until its next roll). Slot-aware per call, never
-/// cached: the roll can happen between any two commands.
+/// agent must resolve through this, never hardcode the `-1` name (an agent
+/// an old blue/green roll left behind lives in "-b-1" until its next roll).
+/// Resolved per call, never cached: the roll can happen between any two
+/// commands.
 pub async fn managed_container(pg: &PgPool, department: &str) -> String {
     let slot = active_slot(pg, department).await;
     slot_container(department, slot)
@@ -357,12 +527,22 @@ async fn compose_verb(
     timeout: Duration,
 ) -> Result<String, String> {
     let slot = active_slot(pg, department).await;
+    // Every verb through here stops the container (stop, restart, rm -s):
+    // let the gateway drain first — and bring it back if the verb failed
+    // before it got that far.
+    let container = slot_container(department, slot);
+    drain_gateway(&container).await;
     let svc = slot_service(department, slot);
     let mut full: Vec<String> = compose_args(verb_args);
     full.push(svc);
     let refs: Vec<&str> = full.iter().map(String::as_str).collect();
-    let (_, stderr) = docker(&refs, timeout).await?;
-    Ok(stderr.trim().to_string())
+    match docker(&refs, timeout).await {
+        Ok((_, stderr)) => Ok(stderr.trim().to_string()),
+        Err(e) => {
+            undrain_gateway(&container).await;
+            Err(e)
+        }
+    }
 }
 
 /// `docker volume rm` — plain success/failure: a missing volume fails, and
@@ -373,19 +553,41 @@ pub async fn remove_volume(name: &str) -> bool {
         .is_ok()
 }
 
+/// Stop a managed agent. The CLI timeout outlasts the service's
+/// `stop_grace_period`, or a draining agent would read as a failed stop.
 pub async fn fleet_stop(pg: &PgPool, department: &str) -> Result<String, String> {
-    compose_verb(pg, department, &["stop"], Duration::from_secs(60)).await
+    compose_verb(
+        pg,
+        department,
+        &["stop"],
+        Duration::from_secs(AGENT_STOP_GRACE_SECS + 30),
+    )
+    .await
 }
 
-/// Restart a managed agent so a re-rendered config.yaml takes effect. Prefer
-/// roll_agent (fleet_reconcile) for user-facing changes — a restart has a
-/// downtime window; a roll doesn't.
+/// Restart a managed agent's process in its EXISTING container — the same
+/// image, env and mounts. A config.yaml change needs neither this nor a roll
+/// (the render rewrites it in place and Hermes reloads it); an env, image or
+/// limit change needs a roll (`roll_agent`, fleet_reconcile), which
+/// recreates the container.
 pub async fn fleet_restart(pg: &PgPool, department: &str) -> Result<String, String> {
-    compose_verb(pg, department, &["restart"], Duration::from_secs(120)).await
+    compose_verb(
+        pg,
+        department,
+        &["restart"],
+        Duration::from_secs(AGENT_STOP_GRACE_SECS + 90),
+    )
+    .await
 }
 
 pub async fn fleet_remove(pg: &PgPool, department: &str) -> Result<String, String> {
-    compose_verb(pg, department, &["rm", "-sf"], Duration::from_secs(60)).await
+    compose_verb(
+        pg,
+        department,
+        &["rm", "-sf"],
+        Duration::from_secs(AGENT_STOP_GRACE_SECS + 30),
+    )
+    .await
 }
 
 /// The parsed healthcheck phase — 'starting' is the warm-up window
@@ -433,8 +635,9 @@ fn parse_health(status: &str) -> Option<Health> {
 }
 
 /// Container reality per department: the talaria-managed service, by name —
-/// either slot counts, preferring the one that's running (mid-roll both
-/// exist). Docker CLI costs ~0.5s per shell-out and Home + alerts + the
+/// either service name counts, preferring the one that's running (an agent
+/// an old blue/green roll left in `-b` has that one; a roll moving it home
+/// briefly has both). Docker CLI costs ~0.5s per shell-out and Home + alerts + the
 /// roster all ask within the same breath — a 5s cache dedupes them without
 /// going stale for the 10s roster poll (container_status).
 pub async fn container_status(departments: &[String]) -> Result<Vec<AgentContainers>, String> {
@@ -669,6 +872,24 @@ mod tests {
             slot_container("research", Slot::B),
             format!("{project}-agent-research-b-1")
         );
+    }
+
+    #[test]
+    fn the_gateway_drain_downs_the_s6_service_and_waits_inside_the_grace() {
+        // The drain is `s6-svc -d` (down, never revived) then `s6-svwait -D`
+        // (until it has exited), by absolute path — the image keeps s6's
+        // tools off docker exec's PATH — bounded inside the stop grace.
+        assert_eq!(GATEWAY_SERVICE_DIR, "/run/service/gateway-default");
+        assert_eq!(S6_BIN, "/command");
+        const { assert!((AGENT_STOP_GRACE_SECS - 5) * 1000 >= 40_000) };
+    }
+
+    #[test]
+    fn the_stop_grace_outlasts_hermes_drain_floor() {
+        // Hermes drains cron and /v1 runs for agent.cron_drain_timeout (30s
+        // by default) plus a 10s cleanup reserve; a shorter grace SIGKILLs
+        // the agent mid-drain on every roll.
+        const { assert!(AGENT_STOP_GRACE_SECS >= 30 + 10) };
     }
 
     #[test]

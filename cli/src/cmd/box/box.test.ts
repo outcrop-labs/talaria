@@ -193,7 +193,9 @@ OTHER=no
 `
     const out = seedFleetEnv(primary)
     const keys = out.split('\n').filter((l) => /^[A-Z]/.test(l)).map((l) => l.split('=')[0])
-    expect(keys.sort()).toEqual(['HERMES_IMAGE', 'LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL'])
+    // LLM_MODEL is not carried: Hermes never reads it (it chooses its model
+    // from the rendered config.yaml), so a seeded box has no use for it.
+    expect(keys.sort()).toEqual(['HERMES_IMAGE', 'LLM_API_KEY', 'LLM_BASE_URL'])
   })
 })
 

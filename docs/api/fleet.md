@@ -70,7 +70,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs`]
 > POST /api/fleet/agents/{id}/control. Lifecycle control for one agent —
 > this agent's managers, and admins (docs/PERMISSIONS.md, "Agent managers").
 >   up | stop | restart   the managed service (renders first on `up`)
->   roll                  zero-downtime replacement — detached
+>   roll                  recreate the container in place — detached
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -547,7 +547,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_resources.rs`](../../a
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_roll.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_roll.rs)
 
 > /api/fleet/roll — roll every agent container at once, in-platform. Admin.
->   POST  queue a blue/green roll of every managed, enabled agent that is
+>   POST  queue an in-place roll of every managed, enabled agent that is
 >         running (`{"all": true}`: every managed enabled agent). Answers at
 >         once; the rolls run detached, TALARIA_FLEET_ROLL_CONCURRENCY
 > …

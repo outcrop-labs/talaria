@@ -186,14 +186,66 @@ multiplexer.
   model at its first turn), so such a turn carries no tier effort and is booked as the main model.
 - Each agent presents its own `tak_` key; the renderer rewrites `fleet/.env` from the DB
   every render (0600 in a 0700 dir).
-- **Blue/green rolls** (api/src/fleet/reconcile.rs): the incoming slot comes up on a fresh port,
-  must pass `docker inspect` health within 120s (a sick newcomer is discarded; the old
-  container never stopped serving), then cutover is one `UPDATE agent_defs` + re-render —
-  traffic shifts on the next manifest read — a drain window (default 45s), then the old slot
-  is removed. `proxyChat` re-reads the manifest per attempt and holds a turn up to two
-  minutes across a restart.
+- **Rolls recreate in place** (`talaria-fleet-reconcile`): re-render, pull the agent's image
+  if the host lacks it (`compose pull --policy missing`; a failed pull leaves the running
+  container alone), then `compose up -d --force-recreate --no-deps agent-<dept>` and wait up
+  to 180s for `docker inspect` health. The old container's gateway is drained first, through
+  its own supervisor (`s6-svc -d` then `s6-svwait -D` inside the container): a plain `docker
+  stop` never drains Hermes, because s6-overlay revives the SIGTERMed gateway and KILLs
+  everything 3s later. Down through s6, it holds cron and `/v1` runs up to its 30s drain floor
+  and exits; every stop, restart and remove Talaria does goes the same way. The render also
+  gives every service `stop_grace_period: 45s` (the chassis may override it) as the outer
+  bound. There is no second container: every Hermes since
+  v2026.4.30 holds an `flock` on `/opt/data/gateway.lock` in the state volume, so a second
+  container on the same volume exits on start and never serves — which is why the blue/green
+  roll this replaced never completed for a running agent. The agent is offline for the
+  restart; `proxyChat` re-reads the manifest per attempt and holds a turn up to two minutes
+  across it. An agent an old blue/green roll left in the `agent-<dept>-b` service
+  (`agent_defs.active_slot = 'b'`) moves back to `agent-<dept>` on its next roll: the render
+  names the home service, its image is pulled while `-b` still serves (a failed pull puts the
+  agent back on `-b`), and only then is `-b` drained and removed. A stop, restart or recreate
+  that fails before it reaches the container brings the drained gateway back up
+  (`s6-svc -u`), so a failed step never leaves an agent running without one.
+- **Config edits reach running agents without a roll.** A render rewrites each agent's
+  `config.yaml` *in place* (same inode, under an `flock`, unchanged bytes skipped), because
+  the container sees it through a single-file `:ro` bind that pins whichever inode existed
+  at container start — a temp-file rename never reaches it. Hermes re-reads the file when its
+  `(mtime, size, inode, ctime)` signature changes, and the writer bumps the mtime last so the
+  final signature is always new. A reader that races the write sees either a parse error
+  (Hermes keeps serving its last good config; the rendered file ends in the YAML `...`
+  document-end marker so a stale tail after a shrink cannot parse) or a mix of two renders
+  for one load. SOUL.md goes through the same writer. Because a written config is live at
+  once, the render widens each agent's gateway scope to its old models plus its new ones
+  before it writes any `config.yaml`, and narrows it to the new set after the last one, so a
+  model change never meets a relay that refuses the id Hermes just switched to. Environment,
+  image, limits and plugin changes still need a roll: rotate-key, the Developer switch and
+  MCP timeout or URL edits roll as before. Agents created before in-place writes still hold
+  the inode of an orphaned `config.yaml` and need one roll: image installs get it from the
+  post-deploy fleet roll; checkout and dev installs never roll the fleet on upgrade, so run
+  **Roll all** (`POST /api/fleet/roll`) once.
+- **The Hermes image is pinned** to a tag and digest (`scripts/chassis.template.yml`, and the
+  last entry of `HERMES_IMAGE_DEFAULTS` in `talaria-fleet-render`, which is
+  `HERMES_IMAGE_PIN`). A host's `fleet/chassis.yml` is copied from the template once and never
+  rewritten, so it keeps the default it was seeded with. The render therefore reads a chassis
+  image of `${HERMES_IMAGE:-<x>}`, where `<x>` is any default a stock template ever shipped (the
+  pre-pin `:latest` or any past pin), as never chosen, and renders the current pin. Any other
+  image an operator wrote stays theirs, and `HERMES_IMAGE` in `fleet/.env` overrides both (set
+  it to hold agents on an older stock pin). A host pulls a pin it does not have on the next
+  roll or start. On an image install the post-deploy fleet roll moves running agents onto it;
+  on a checkout or dev install, run **Roll all** after upgrading. To bump the pin:
+  1. **Append** the new `nousresearch/hermes-agent:<tag>@sha256:<digest>` to
+     `HERMES_IMAGE_DEFAULTS`. Never edit or drop an entry, or hosts seeded with it stay on it.
+  2. Set the same string as the template default and as the `FROM` default in
+     `scripts/workbench.Dockerfile` and `scripts/build-workbench-image.sh`. Tests fail if they
+     disagree.
+  3. Check the new version's config keys against the render.
+  4. Check what the drain relies on in the new image: the gateway's s6 service is still
+     `/run/service/gateway-default`, `s6-svc` and `s6-svwait` are still under `/command`, and a
+     container drained with `s6-svc -d` and then recreated starts its gateway on its own (Hermes
+     still records the gateway as running). If Hermes ever records that stop as deliberate,
+     every roll and restart yields a container whose gateway never starts.
 - **Rolling the whole fleet** (`POST /api/fleet/roll`, admin): every running managed agent
-  is queued through the same blue/green roll, `TALARIA_FLEET_ROLL_CONCURRENCY` (default 2)
+  is queued through the same in-place roll, `TALARIA_FLEET_ROLL_CONCURRENCY` (default 2)
   departments at a time so twenty agents never double the host's load at once; departments
   already mid-roll are skipped and named. The request answers at once; the live picture
   (`GET /api/fleet/roll`: rolling / idle / failed / done per agent, with each failure's

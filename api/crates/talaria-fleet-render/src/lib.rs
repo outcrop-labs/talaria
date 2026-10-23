@@ -1,9 +1,16 @@
 // render_fleet — regenerate everything the managed fleet runs on from the
 // database: each managed agent's config.yaml + SOUL.md + git credential helper
 // + gitconfig + secrets.env, the shared skills root, and the one compose file
-// + manifest that describe the whole fleet. Idempotent, re-run on any change;
-// Hermes re-reads config on mtime, so a render lands in running agents without
-// a restart.
+// + manifest that describe the whole fleet. Idempotent, re-run on any change.
+//
+// A render reaches a RUNNING agent's config.yaml and SOUL.md without a roll:
+// both are bind-mounted into the container as single files, which pins the
+// inode that existed when the container was created, so they are rewritten
+// IN PLACE (`talaria_fleet_brain::write_in_place` — same inode, flock'd,
+// unchanged bytes skipped, mtime bumped last). Hermes re-reads config.yaml
+// whenever its stat signature changes. A rename-over-the-target write would
+// land on the host and never reach the container. Env, image and limit
+// changes are the container's own and need a roll (fleet-reconcile).
 //
 // THIS MODULE carries the whole render: the DATA PLANE (the managed-agent
 // roster, the stable loopback port assignment, the chassis parse), the KEY
@@ -178,16 +185,6 @@ pub async fn ensure_gateway_ports(
         map.insert(slug.clone(), port);
     }
     Ok(map)
-}
-
-/// The next unclaimed loopback port for an incoming slot.
-pub async fn next_free_port(pg: &PgPool) -> Result<i64, sqlx::Error> {
-    let row: (i64,) =
-        sqlx::query_as("select coalesce(max(gateway_port), $1)::int8 as m from agent_defs")
-            .bind((GATEWAY_PORT_BASE - 1) as i32)
-            .fetch_one(pg)
-            .await?;
-    Ok(row.0.max(GATEWAY_PORT_BASE - 1) + 1)
 }
 
 /// Per-agent additions beyond the uniform chassis, keyed by slug.
@@ -1009,22 +1006,71 @@ pub struct RenderResult {
     pub warnings: Vec<String>,
 }
 
-/// During a roll: additionally render this agent's INCOMING slot alongside its
-/// active one, on the given port. The manifest keeps pointing at the active
-/// port — cutover is a DB update + a plain re-render after health.
-pub struct RollOverlay<'a> {
-    pub slug: &'a str,
-    pub slot: talaria_fleet_docker::Slot,
-    pub port: i64,
+/// Every image a stock chassis has ever defaulted to, oldest first; the LAST
+/// is the current pin. A chassis is the operator's file — seeded from the
+/// template once and never rewritten — so a host keeps whichever default it
+/// was seeded with: the floating `:latest` from before the pin, or the pin
+/// of the day it was installed. The render reads a chassis whose image is
+/// `${HERMES_IMAGE:-<any of these>}` as "never chosen" and renders the
+/// current pin, which is how a bump reaches every host and not only fresh
+/// installs. Any other image an operator wrote stays theirs.
+///
+/// Bumping: APPEND the new pin — never edit or drop an entry, or the hosts
+/// seeded with it stay on it for good. The rest of the procedure is in
+/// docs/ARCHITECTURE.md, "The fleet".
+const HERMES_IMAGE_DEFAULTS: &[&str] = &[
+    // Before 2026-10-22: floating, and never pulled once cached.
+    "nousresearch/hermes-agent:latest",
+    "nousresearch/hermes-agent:v0.22.4@sha256:7a69201726bc64db2072a1371557137c23312d29705cda2b8ea2a0214a50a4cf",
+];
+
+/// The Hermes image every agent runs unless `HERMES_IMAGE` says otherwise —
+/// tag AND digest, so a host can never quietly run a different build than
+/// the one this render was checked against. The chassis template carries
+/// the same string as its `${HERMES_IMAGE:-…}` default (a test holds the two
+/// together).
+pub const HERMES_IMAGE_PIN: &str = HERMES_IMAGE_DEFAULTS[HERMES_IMAGE_DEFAULTS.len() - 1];
+
+/// What every agent's service gets whatever chassis it was seeded from:
+/// the current pin in place of any stock default a past template shipped,
+/// and a stop grace long enough for Hermes to drain
+/// (`AGENT_STOP_GRACE_SECS`) unless the chassis sets its own.
+fn apply_service_defaults(svc: &mut Map<String, Value>) {
+    let stock = svc
+        .get("image")
+        .and_then(Value::as_str)
+        .and_then(|i| i.strip_prefix("${HERMES_IMAGE:-"))
+        .and_then(|i| i.strip_suffix('}'))
+        .is_some_and(|default| HERMES_IMAGE_DEFAULTS.contains(&default));
+    if stock {
+        svc.insert(
+            "image".into(),
+            json!(format!("${{HERMES_IMAGE:-{HERMES_IMAGE_PIN}}}")),
+        );
+    }
+    svc.entry("stop_grace_period")
+        .or_insert_with(|| json!(format!("{}s", talaria_fleet_docker::AGENT_STOP_GRACE_SECS)));
+}
+
+/// The config.yaml a render writes: the provenance line, the YAML 1.1 body,
+/// and an explicit `...` document end. The end marker is what makes an
+/// in-place rewrite safe to race: while a shorter render is being written
+/// over a longer one, the file briefly holds the new document followed by
+/// the old one's tail, and the marker turns that tail into a second
+/// document — which Hermes's single-document loader refuses, so it keeps
+/// serving its last good config instead of a spliced one.
+fn config_yaml_text(model: &str, version: i32, routed: &Map<String, Value>) -> String {
+    let body = yaml11_emit(&Value::Object(routed.clone()));
+    format!(
+        "# Rendered by Talaria — {model} v{version}. Do not hand-edit; edit in Talaria.\n{}{}...\n",
+        body,
+        if body.ends_with('\n') { "" } else { "\n" }
+    )
 }
 
 /// render_fleet — regenerate everything the managed fleet runs on. See the
 /// module header.
-pub async fn render_fleet(
-    pg: &PgPool,
-    sb: &SecretBox,
-    roll: Option<RollOverlay<'_>>,
-) -> Result<RenderResult, String> {
+pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, String> {
     let targets = managed_agents(pg).await.map_err(|e| e.to_string())?;
     let agent_search_url =
         agent_search_url(&talaria_search::search_url(pg).await, dial_is_container());
@@ -1045,11 +1091,8 @@ pub async fn render_fleet(
     };
     // Read before the move below: whether the brain is MANAGED decides
     // whether each agent gets its own gateway key (an operator's raw
-    // upstream override keeps the operator's LLM_API_KEY in every service),
-    // and the fleet default model is what an agent with no model spec of its
-    // own runs on — so it is what such an agent's key is scoped to.
+    // upstream override keeps the operator's LLM_API_KEY in every service).
     let brain_managed = brain.as_ref().is_some_and(|b| b.managed);
-    let brain_model = brain.as_ref().and_then(|b| b.model.clone());
     if brain.is_some_and(|b| b.managed && b.model.is_none()) {
         result.warnings.push(
             "gateway brain: no model configured yet — add an LLM endpoint on /models to give agents a brain"
@@ -1120,6 +1163,7 @@ pub async fn render_fleet(
             }
         };
     let mut agent_scopes: Vec<talaria_fleet_brain::AgentGatewayScope> = Vec::new();
+    let mut staged_configs: Vec<(PathBuf, String)> = Vec::new();
     seed_shared_skills().await?;
     seed_events_plugin().await?;
 
@@ -1218,14 +1262,11 @@ pub async fn render_fleet(
             }
         });
         // What this agent may ask the gateway for, on its own key: the ids
-        // its specs route to — or, with no spec at all, the fleet default
-        // Hermes falls back to (LLM_MODEL). The relay refuses the rest.
-        let mut agent_models = talaria_fleet_brain::routed_models(&routed);
-        if agent_models.is_empty()
-            && let Some(m) = &brain_model
-        {
-            agent_models.push(m.clone());
-        }
+        // its specs route to, and nothing else — the relay refuses the rest.
+        // A config with no spec gets an empty scope: Hermes picks its model
+        // from config.yaml alone (it deliberately ignores an `LLM_MODEL` env
+        // var), so there is no fleet default it could be falling back to.
+        let agent_models = talaria_fleet_brain::routed_models(&routed);
         agent_scopes.push(talaria_fleet_brain::AgentGatewayScope {
             slug: def.slug.clone(),
             model: def.model.clone(),
@@ -1365,17 +1406,10 @@ pub async fn render_fleet(
         }
 
         let cfg_path = agent_dir.join("config.yaml");
-        let cfg_text = format!(
-            "# Rendered by Talaria — {} v{}. Do not hand-edit; edit in Talaria.\n{}",
-            def.model,
-            version.version,
-            yaml11_emit(&Value::Object(routed))
-        );
-        // Atomic: the file is bind-mounted into a running container, and a
-        // roll's `docker compose up` may read it mid-render.
-        talaria_fleet_brain::write_atomic(&cfg_path, cfg_text.as_bytes(), 0o644)
-            .await
-            .map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+        let cfg_text = config_yaml_text(&def.model, version.version, &routed);
+        // Written after the loop, once the relay's scope already allows
+        // what it routes to (the scope write, below).
+        staged_configs.push((cfg_path.clone(), cfg_text));
 
         // The rendered soul: standing headers + coaching + handles + soul.
         let coaching = if coach_on {
@@ -1388,7 +1422,9 @@ pub async fn render_fleet(
             .unwrap_or_default();
         let soul_path = agent_dir.join("SOUL.md");
         let soul_text = soul_md(&soul_header, &coaching, &secret_handles, &version.soul);
-        tokio::fs::write(&soul_path, soul_text)
+        // Same single-file bind as config.yaml, so the same in-place writer —
+        // which also skips a soul whose bytes did not change.
+        talaria_fleet_brain::write_in_place(&soul_path, soul_text.as_bytes(), 0o644)
             .await
             .map_err(|e| format!("{}: {e}", soul_path.display()))?;
         result.files.push(cfg_path.display().to_string());
@@ -1426,7 +1462,9 @@ pub async fn render_fleet(
         result.files.push(helper_path.display().to_string());
         result.files.push(gitconfig_path.display().to_string());
 
-        // The service name carries the active slot ('a' = bare, 'b' = "-b").
+        // The service name carries the slot: 'a' = bare, the only one a roll
+        // creates; 'b' = "-b", only for an agent a pre-2026-10-22 blue/green
+        // roll left there, until its next roll moves it home.
         let slot_b = def.active_slot.as_deref() == Some("b");
         let service_name = format!("agent-{}{}", def.department, if slot_b { "-b" } else { "" });
         let imported = def.source == "imported";
@@ -1441,6 +1479,7 @@ pub async fn render_fleet(
             obj.remove("build");
             obj.remove("depends_on");
             obj.remove("profiles");
+            apply_service_defaults(obj);
             if !dial_is_container() {
                 let port = ports.get(&def.slug).copied().unwrap_or(0);
                 obj.insert("ports".into(), json!([format!("127.0.0.1:{port}:8642")]));
@@ -1838,31 +1877,6 @@ pub async fn render_fleet(
                 .insert("secrets".into(), Value::Array(kept));
         }
         services.insert(service_name.clone(), svc);
-
-        // Mid-roll: the INCOMING slot renders alongside, identical except for
-        // its fresh published port.
-        if let Some(r) = &roll
-            && r.slug == def.slug
-        {
-            let mut incoming = services.get(&service_name).cloned().unwrap_or(Value::Null);
-            if !dial_is_container()
-                && let Value::Object(o) = &mut incoming
-            {
-                o.insert(
-                    "ports".into(),
-                    json!([format!("127.0.0.1:{}:8642", r.port)]),
-                );
-            }
-            let incoming_name = format!(
-                "agent-{}{}",
-                def.department,
-                match r.slot {
-                    talaria_fleet_docker::Slot::B => "-b",
-                    talaria_fleet_docker::Slot::A => "",
-                }
-            );
-            services.insert(incoming_name, incoming);
-        }
         result.agents.push(def.model.clone());
     }
 
@@ -1872,14 +1886,40 @@ pub async fn render_fleet(
         ));
     }
 
-    // The relay's view of every agent key: subject and model set, one row,
-    // written after the loop so it is the whole roster at once.
+    // The relay's view of every agent key — subject and model set, one row —
+    // and the config.yaml files it must agree with. A config.yaml goes live
+    // in a RUNNING agent the moment it is written (the module header), and
+    // the relay allows an agent key exactly the ids its scope lists, so the
+    // order matters: WIDEN the row to the old scope plus the new one, write
+    // every config, then NARROW it to the new scope alone. A Hermes that
+    // reloads mid-render asks for an id from the old config or the new one,
+    // and both are allowed throughout; the other orders refuse its turns for
+    // the gap. (Another api instance reads the row through its 15s hot
+    // window and can lag that long.) A config that fails to write leaves the
+    // widened row in place — both scopes were sanctioned — until the next
+    // render.
+    let scope_warning = |e: String| {
+        format!(
+            "gateway: agent model scopes not written ({e}) — the relay judges agent keys by the last row it has"
+        )
+    };
+    if agent_gateway_keys
+        && let Err(e) = talaria_fleet_brain::widen_agent_gateway_models(pg, &agent_scopes).await
+    {
+        result.warnings.push(scope_warning(e));
+    }
+    for (cfg_path, cfg_text) in &staged_configs {
+        // IN PLACE, never renamed over: the running container sees this file
+        // through a single-file bind that pins its inode (the module header),
+        // and Hermes reloads it from there on the next request.
+        talaria_fleet_brain::write_in_place(cfg_path, cfg_text.as_bytes(), 0o644)
+            .await
+            .map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+    }
     if agent_gateway_keys
         && let Err(e) = talaria_fleet_brain::set_agent_gateway_models(pg, &agent_scopes).await
     {
-        result.warnings.push(format!(
-            "gateway: agent model scopes not written ({e}) — the relay judges agent keys by the last row it has"
-        ));
+        result.warnings.push(scope_warning(e));
     }
 
     let mut compose: Map<String, Value> = Map::new();
@@ -3444,6 +3484,94 @@ service:
             .iter()
             .map(|s| s.to_string())
             .collect()
+    }
+
+    #[test]
+    fn the_chassis_template_default_is_the_pin_the_render_upgrades_to() {
+        // One pin, two homes: the template a fresh install is seeded from,
+        // and the constant an old chassis is upgraded to. They must agree.
+        let template = include_str!("../../../../scripts/chassis.template.yml");
+        let line = format!("  image: ${{HERMES_IMAGE:-{HERMES_IMAGE_PIN}}}\n");
+        assert!(
+            template.contains(&line),
+            "scripts/chassis.template.yml must default its image to HERMES_IMAGE_PIN ({HERMES_IMAGE_PIN})"
+        );
+        assert!(
+            HERMES_IMAGE_PIN.contains(":v") && HERMES_IMAGE_PIN.contains("@sha256:"),
+            "the pin is a tag and a digest: {HERMES_IMAGE_PIN}"
+        );
+    }
+
+    #[test]
+    fn an_old_chassis_renders_the_pin_and_a_stop_grace_and_an_operators_image_stays() {
+        let pinned = json!(format!("${{HERMES_IMAGE:-{HERMES_IMAGE_PIN}}}"));
+        // Every stock default ever shipped — the floating `:latest` and each
+        // past pin — renders the CURRENT pin: a host seeded on any of them
+        // follows a bump.
+        for shipped in HERMES_IMAGE_DEFAULTS {
+            let mut seeded = Map::new();
+            seeded.insert(
+                "image".into(),
+                json!(format!("${{HERMES_IMAGE:-{shipped}}}")),
+            );
+            apply_service_defaults(&mut seeded);
+            assert_eq!(seeded.get("image"), Some(&pinned), "seeded with {shipped}");
+            assert_eq!(seeded.get("stop_grace_period"), Some(&json!("45s")));
+        }
+        assert_eq!(
+            HERMES_IMAGE_DEFAULTS[0], "nousresearch/hermes-agent:latest",
+            "the pre-pin floating default stays first: chassis files from before the pin still carry it"
+        );
+        let unique: std::collections::HashSet<&&str> = HERMES_IMAGE_DEFAULTS.iter().collect();
+        assert_eq!(
+            unique.len(),
+            HERMES_IMAGE_DEFAULTS.len(),
+            "a pin listed twice"
+        );
+
+        // An image the operator wrote is theirs — a registry of their own,
+        // a bare tag, or a Hermes version no stock template ever shipped.
+        for mine in [
+            "registry.example/hermes:mine",
+            "nousresearch/hermes-agent:v0.21.0",
+            "${HERMES_IMAGE:-nousresearch/hermes-agent:v0.21.0}",
+            "${HERMES_IMAGE:-registry.example/hermes:mine}",
+        ] {
+            let mut chosen = Map::new();
+            chosen.insert("image".into(), json!(mine));
+            chosen.insert("stop_grace_period".into(), json!("90s"));
+            apply_service_defaults(&mut chosen);
+            assert_eq!(
+                chosen.get("image"),
+                Some(&json!(mine)),
+                "{mine} is the operator's"
+            );
+            assert_eq!(chosen.get("stop_grace_period"), Some(&json!("90s")));
+        }
+    }
+
+    #[test]
+    fn the_rendered_config_ends_its_document_so_a_stale_tail_cannot_parse() {
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!({ "default": "m" }));
+        routed.insert(
+            "agent".into(),
+            json!({ "disabled_toolsets": ["todo", "clarify"] }),
+        );
+        let text = config_yaml_text("x-eng", 3, &routed);
+        assert!(
+            text.starts_with("# Rendered by Talaria — x-eng v3."),
+            "{text}"
+        );
+        assert!(text.ends_with("\n...\n"), "{text}");
+        // The whole file is one document and parses back to what was routed.
+        let back: Value = serde_yaml_ng::from_str(&text).expect("parses");
+        assert_eq!(back, Value::Object(routed.clone()));
+        // A shorter render written over a longer one leaves the old tail
+        // behind for an instant; past the end marker it is a second
+        // document, which a single-document loader refuses.
+        let spliced = format!("{text}  - stale\nplugins:\n  enabled: []\n");
+        assert!(serde_yaml_ng::from_str::<Value>(&spliced).is_err());
     }
 
     #[test]
