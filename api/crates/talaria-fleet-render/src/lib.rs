@@ -1311,6 +1311,9 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             Value::Object(m) => m,
             _ => Map::new(),
         };
+        if brain_managed {
+            fleet_gateway_provider(&mut routed);
+        }
 
         // The rendered MCP block is BUILT, never merged: the toolkit plus
         // what the registry grants this agent, every one a gateway URL. An
@@ -2005,6 +2008,26 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
 
     write_fleet_manifest(pg, &mut result).await?;
     Ok(result)
+}
+
+/// The gateway as the agent's `providers.talaria` entry (fleet-brain's
+/// `gateway_provider_entry`), so Hermes stamps every call it makes to the
+/// gateway with the conversation it belongs to and the relay can meter each
+/// one as that flow's. Merged into an authored `providers:` block — the
+/// def's own entries stand; only this key is Talaria's. Rendered only while
+/// the brain is managed: an operator's raw upstream did not ask for a
+/// session header, and Hermes would send it there.
+fn fleet_gateway_provider(routed: &mut Map<String, Value>) {
+    let mut providers = routed
+        .get("providers")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    providers.insert(
+        talaria_fleet_brain::GATEWAY_PROVIDER.into(),
+        talaria_fleet_brain::gateway_provider_entry(),
+    );
+    routed.insert("providers".into(), Value::Object(providers));
 }
 
 /// The agent's raw config, as authored (version.config.raw ?? {}).
@@ -3498,6 +3521,35 @@ service:
                 "unattended_mode": "deny", "cron_mode": "deny",
                 "deny": ["git push --force*"]
             }))
+        );
+    }
+
+    #[test]
+    fn the_gateway_provider_joins_an_authored_providers_block() {
+        let entry = json!({
+            "api": "${LLM_BASE_URL}",
+            "key_env": "LLM_API_KEY",
+            "session_affinity_header": "x-talaria-session",
+            "discover_models": false,
+        });
+        let mut bare = Map::new();
+        fleet_gateway_provider(&mut bare);
+        assert_eq!(bare.get("providers"), Some(&json!({ "talaria": entry })));
+
+        // A def's own entries stand; a `talaria` it authored is replaced —
+        // the gateway entry and its session header are Talaria's.
+        let mut authored = Map::new();
+        authored.insert(
+            "providers".into(),
+            json!({
+                "lab": { "api": "http://lab:4000/v1" },
+                "talaria": { "api": "http://elsewhere/v1" },
+            }),
+        );
+        fleet_gateway_provider(&mut authored);
+        assert_eq!(
+            authored.get("providers"),
+            Some(&json!({ "lab": { "api": "http://lab:4000/v1" }, "talaria": entry }))
         );
     }
 

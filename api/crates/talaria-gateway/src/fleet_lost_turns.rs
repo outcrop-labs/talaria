@@ -39,10 +39,9 @@ use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 
 use crate::fleet_chat::{
-    ByteStream, CONTROL_WINDOW, ChatStream, agent_get, agent_post, bind_turn, control_failure,
-    open_stream, turn_subject,
+    ByteStream, CONTROL_WINDOW, ChatStream, agent_get, agent_post, control_failure, open_stream,
+    turn_subject,
 };
-use crate::usage::register_turn;
 use talaria_fleet_layout::{ManifestEntry, read_manifest};
 
 /// Acknowledge the turns one Hermes session lost across a non-graceful
@@ -429,7 +428,9 @@ pub async fn reattach_session_run(agent_model: &str, run_id: &str) -> Option<Cha
     if run_state(&first) == RunState::Lost {
         return None;
     }
-    let turn = register_turn(&turn_subject(&manifest, entry)).await;
+    // No registration: the relay books this run's remaining calls itself,
+    // under the session's own key, which the turn's first attempt already
+    // attributed to this conversation (fleet_chat's `hold_for_agent`).
     let state = Reattached {
         entry: ManifestEntry {
             model: entry.model.clone(),
@@ -448,8 +449,9 @@ pub async fn reattach_session_run(agent_model: &str, run_id: &str) -> Option<Cha
         content_type: "text/event-stream".into(),
         body: Box::pin(futures_util::stream::unfold(state, Reattached::next)),
         canned: None,
+        hermes_session: None,
     };
-    Some(bind_turn(stream, turn))
+    Some(stream)
 }
 
 enum RunRead {
@@ -610,6 +612,7 @@ mod tests {
             content_type: "text/event-stream".into(),
             body,
             canned: None,
+            hermes_session: None,
         }
     }
 

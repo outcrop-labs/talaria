@@ -1641,6 +1641,10 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::agents::cron_output::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/agents/affinity",
+            post(talaria_routes_fleet::agents::affinity::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/agents/uploads",
             // A screenshot rides as base64 in the body, so this route owns its
             // own cap: the extractor's hidden 2 MB default would refuse every

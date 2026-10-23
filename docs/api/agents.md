@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-26 routes.
+27 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -24,6 +24,7 @@
 | [`/api/agent/whoami`](#apiagentwhoami) | GET | `agent` |
 | [`/api/agents`](#apiagents) | GET | `session` |
 | [`/api/agents/{id}/conversations`](#apiagentsidconversations) | GET | `session` |
+| [`/api/agents/affinity`](#apiagentsaffinity) | POST | `agent` |
 | [`/api/agents/cron-output`](#apiagentscron-output) | POST | `agent` |
 | [`/api/agents/subagent-events`](#apiagentssubagent-events) | POST | `agent` |
 | [`/api/agents/tool-events`](#apiagentstool-events) | POST | `agent` |
@@ -258,6 +259,20 @@ Source: [`api/crates/talaria-routes-comms/src/comms/agents_id_conversations.rs`]
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{conversations}` | 200, 404 | — |
+
+## `/api/agents/affinity`
+
+Source: [`api/crates/talaria-routes-fleet/src/agents/affinity.rs`](../../api/crates/talaria-routes-fleet/src/agents/affinity.rs)
+
+> POST /api/agents/affinity. The metering half of the talaria-events Hermes
+> plugin: which conversation the affinity key Hermes stamps on this agent's
+> LLM calls belongs to.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | — | `{ok, claimed}` | 200, 400 | — |
 
 ## `/api/agents/cron-output`
 

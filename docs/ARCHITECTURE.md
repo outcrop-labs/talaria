@@ -286,11 +286,27 @@ multiplexer.
   would resume for good. The admin frequency floor judges the schedule Hermes parsed — a job
   is written paused, checked, then started — and refuses any shape it cannot read (a 6-field
   cron, an unreadable field).
-  Their spend is metered at the relay: a turn Talaria drives is
-  ledgered once by the flow that drove it, so the chat transport counts each such turn in
-  Redis (`talaria:turn:v1:<agent model>`) while it is open, and a call on an agent's key with
-  no turn counted — a cron — is booked by the relay under the agent as `unattended`, into the
-  same window its budget is judged on.
+  Their spend is metered at the relay like every agent call — see **Agent spend** below; a
+  fire's calls carry `cron_<job id>` and land as `unattended`, per job.
+- **Agent spend is metered at the relay, one row per upstream call.** Every agent's
+  config.yaml carries a `providers.talaria` entry on the same gateway URL its model specs use,
+  with `session_affinity_header: x-talaria-session`; Hermes matches it by base URL and stamps
+  the conversation's affinity key on every call it makes to the gateway — the main loop,
+  compression, titles, vision, a delegated subagent (its parent's key) and a cron
+  (`cron_<job id>`). On a turn Talaria drives, Hermes v0.22's key is its own digest of the
+  session's route (`gwk_…`), so two records meet in the middle: the chat transport
+  (`talaria-gateway` `fleet_chat.rs`) records the conversation it drove in
+  `usage_attributions` with the flow's source, conversation or run, and ticket — a pinned
+  session's id is the one Talaria created, the completions arm's is the one Hermes answers in
+  `X-Hermes-Session-Id` — and the agent's talaria-events plugin reports, from inside the turn,
+  which conversation its key names (`POST /api/agents/affinity` → `usage_affinity_keys`). The
+  relay copies the flow onto every row it books for that conversation; anything unclaimed stays
+  `unattended` under the agent. Budgets read the same rows, so a long turn counts while it runs.
+  No flow writes an agent's spend itself any more
+  ([`usage.rs`](../api/crates/talaria-gateway/src/usage.rs), "Attribution"). So a fleet an
+  operator pointed at a raw upstream (a non-gateway `LLM_BASE_URL` in the fleet `.env`, which
+  skips the gateway brain) has no agent spend in the ledger at all: its calls never reach the
+  relay, and nothing else books them.
 - **Hermes sessions** (api/crates/talaria-gateway/src/fleet_chat.rs, fleet_lost_turns.rs) carry
   every work session (keyed by run id) and the conversations of an agent with **pinned
   sessions** on (keyed by conversation id). Hermes holds the transcript, and Talaria sends one
@@ -315,11 +331,9 @@ multiplexer.
     text: no tool calls or reasoning, `MEDIA:` tags unresolved, and no `approval.request`
     frames, so a run parked on an approval waits out the agent's approval timeout.
 
-  Pinned sessions stay a per-agent switch, off by default. Two things block making them the
-  default. On a session, a per-message tier is not honoured: the session runs its main model.
-  And session turns are ledgered as character estimates until `session_usage` reads the
-  session stream's `input_tokens`/`output_tokens` usage frame. Conversations from before the
-  switch stay on replay. The first turn after a crash can wait up to five minutes before it runs: the
+  Pinned sessions stay a per-agent switch, off by default. One thing blocks making them the
+  default: on a session, a per-message tier is not honoured, and the session runs its main
+  model (the relay books what ran). Conversations from before the switch stay on replay. The first turn after a crash can wait up to five minutes before it runs: the
   restarted container's gateway gets the same pid and pid-namespace id as the dead one, so
   Hermes treats the dead turn's transcript lease as live until it expires.
 

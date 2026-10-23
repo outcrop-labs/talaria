@@ -443,6 +443,7 @@ mod tests {
             content_type: "text/event-stream".into(),
             body,
             canned: None,
+            hermes_session: None,
         };
         let entry = ManifestEntry {
             model: "nobody".into(),

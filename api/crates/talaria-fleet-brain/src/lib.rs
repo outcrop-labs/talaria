@@ -23,11 +23,40 @@ use talaria_llm_keys::mint_key;
 // What a rendered agent config points its model specs at: the gateway, on
 // `${LLM_API_KEY}` — which Hermes resolves from the CONTAINER's environment,
 // where fleet-render sets it to that agent's own key
-// (`${LLM_API_KEY_<SLUG>}`, see [`agent_llm_key_var`]). The relay leaves an
-// agent key unmetered because the flow that drove the turn writes the row.
-// Sandbox harnesses get the workbench key instead (workbench-harnesses).
+// (`${LLM_API_KEY_<SLUG>}`, see [`agent_llm_key_var`]). The relay meters
+// every call on an agent key, under the agent (gateway usage.rs,
+// "Attribution"). Sandbox harnesses get the workbench key instead
+// (workbench-harnesses).
 const GATEWAY_BASE_URL: &str = "${LLM_BASE_URL}";
 pub const GATEWAY_API_KEY: &str = "${LLM_API_KEY}";
+
+/// The `providers:` key the gateway is rendered under in an agent's config.
+pub const GATEWAY_PROVIDER: &str = "talaria";
+
+/// The gateway as a Hermes provider entry — `providers.talaria` in every
+/// agent's config.yaml, rendered only while the fleet's brain is the gateway.
+///
+/// IT EXISTS FOR ONE KEY: `session_affinity_header`. Hermes matches a
+/// provider entry to a call by its normalised base URL (both the legacy
+/// `custom_providers` list and the `providers:` dict count), so this entry on
+/// the same `${LLM_BASE_URL}` every routed spec already uses applies to all
+/// of them — main, fallback, tiers, auxiliary — while the specs keep
+/// `provider: custom`, so nothing keyed by the runtime provider id (Hermes'
+/// `model_overrides.custom.*`, its `custom` reasoning profile) moves. Hermes
+/// then stamps `x-talaria-session: <conversation key>` on every request to
+/// the gateway, which is how the relay knows whose turn each call is.
+///
+/// `key_env` names the same agent key the specs carry inline, so the entry
+/// never borrows another credential; `discover_models: false` keeps Hermes
+/// from listing the gateway's `/models` for pickers nobody opens here.
+pub fn gateway_provider_entry() -> Value {
+    json!({
+        "api": GATEWAY_BASE_URL,
+        "key_env": "LLM_API_KEY",
+        "session_affinity_header": talaria_gateway::usage::SESSION_HEADER,
+        "discover_models": false,
+    })
+}
 
 // Imported agents carry legacy litellm-router model names. Map them to the real
 // provider model ids Talaria's gateway serves. As agents are redesigned they use
@@ -310,37 +339,20 @@ pub async fn ensure_gateway_brain(pg: &PgPool) -> Result<GatewayBrain, String> {
         .await
         .unwrap_or_default();
 
-    // Two settings, two different questions — one list answering both is what
-    // corrupted the ledger, so keep them apart:
+    // gateway_agent_loop_keys — keys whose replies must never be rewritten
+    // with a guard caveat, because the caller is an agent's own tool loop and
+    // a caveat would contaminate its context. BOTH fleet-wide gateway keys
+    // qualify (findings still record either way); an agent's own key is
+    // recognised by prefix at the relay and needs no entry.
     //
-    //   gateway_unmetered_keys — keys the gateway must NOT write a usage row
-    //     for, because their spend already reaches the ledger from another
-    //     writer. ONLY the personas' key qualifies: a chat/channel/ticket turn
-    //     writes one row from the persona gateway's reported usage for the
-    //     whole turn, so metering the inner-loop calls behind it would count
-    //     every turn twice. `workbench-gateway` is deliberately NOT here —
-    //     nothing else records a harness run, so the gateway is where that
-    //     spend lands.
-    //
-    //   gateway_agent_loop_keys — keys whose replies must never be rewritten
-    //     with a guard caveat, because the caller is an agent's own tool loop
-    //     and a caveat would contaminate its context. BOTH gateway keys
-    //     qualify (findings still record either way).
+    // (`gateway_unmetered_keys` is no longer kept here. It held the personas'
+    // key so the relay would skip calls a chat flow ledgered as one row; no
+    // flow writes an agent's spend any more — the relay books every call —
+    // so nothing belongs on it by default. An operator's own entries stand.)
     //
     // A stored setting that isn't a string array fails the whole brain step —
     // the render carries on without it, rather than silently overwriting a
     // corrupt value.
-    let unmetered: Vec<String> = serde_json::from_value(
-        get_setting(pg, "gateway_unmetered_keys", json!([GATEWAY_KEY_NAME])).await,
-    )
-    .map_err(|e| format!("gateway_unmetered_keys is unreadable: {e}"))?;
-    if !unmetered.iter().any(|k| k == GATEWAY_KEY_NAME) {
-        let mut next = unmetered;
-        next.push(GATEWAY_KEY_NAME.into());
-        set_setting(pg, "gateway_unmetered_keys", &json!(next))
-            .await
-            .map_err(|e| format!("gateway_unmetered_keys write failed: {e}"))?;
-    }
     let loop_keys: Vec<String> = serde_json::from_value(
         get_setting(
             pg,
@@ -432,8 +444,8 @@ pub async fn ensure_gateway_brain(pg: &PgPool) -> Result<GatewayBrain, String> {
 // fleet .env as LLM_API_KEY_<SLUG> and interpolated by fleet-render into that
 // agent's service as its LLM_API_KEY. The relay (llm_chat.rs) reads the key
 // name back as the agent: its budget subject is the agent's model id, its
-// model set is what the render scoped it to (gateway_agent_models), and its
-// spend stays unmetered at the relay because the chat flow ledgers the turn.
+// model set is what the render scoped it to (gateway_agent_models), and
+// every call on it is metered there, under the agent.
 //
 // Lifecycle mirrors fleet-render's TALARIA_AGENT_KEY_<SLUG>: the DB is the
 // truth and the line is rewritten every render (a line the file lost comes
@@ -945,6 +957,33 @@ mod tests {
             json!("http://x/talaria")
         );
         assert!(warned.is_empty(), "served models do not warn");
+    }
+
+    #[test]
+    fn the_provider_entry_sits_on_the_url_every_routed_spec_uses() {
+        let routed = route_config_through_gateway(
+            &json!({"model": {"model": "m", "provider": "ollama"}}),
+            &models(&["m"], None),
+            |_| {},
+        );
+        let entry = gateway_provider_entry();
+        // Hermes attaches an entry's session header to a call by base URL,
+        // so the entry and the specs must name the same one — and the specs
+        // keep `provider: custom`, which is what Hermes' runtime provider id
+        // (and anything keyed by it) stays.
+        assert_eq!(entry["api"], routed["model"]["base_url"]);
+        assert_eq!(routed["model"]["provider"], json!("custom"));
+        assert_eq!(entry["session_affinity_header"], json!("x-talaria-session"));
+        assert_eq!(
+            entry["key_env"],
+            json!("LLM_API_KEY"),
+            "the agent's own key — the one the specs read as ${{LLM_API_KEY}}"
+        );
+        assert_eq!(entry["discover_models"], json!(false));
+        assert!(
+            !is_model_spec(&entry),
+            "the entry is not a model spec the router would rewrite"
+        );
     }
 
     #[test]

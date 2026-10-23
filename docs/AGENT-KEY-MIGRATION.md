@@ -15,8 +15,9 @@ still minted into the file but reaches no container. Same lifecycle as `TALARIA_
 rewritten from the DB every render, kept for a retired agent, stripped (and the key revoked) for a
 slug that no longer exists in `agent_defs`. A rotation is reported as a render warning — roll the
 container to pick the new key up. The relay reads the key name as the agent: budgets it under the
-agent's model id, refuses any model outside its rendered set (`gateway_agent_models`), and leaves
-its spend unmetered there because the chat flow ledgers the turn.
+agent's model id, refuses any model outside its rendered set (`gateway_agent_models`), and meters
+every call on it there — one row per upstream call, attributed to the conversation Hermes stamps on
+it (`x-talaria-session`; see ARCHITECTURE.md, "Agent spend").
 
 ## What a legacy caller is, and is not
 
