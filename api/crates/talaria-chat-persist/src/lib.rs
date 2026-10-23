@@ -19,10 +19,9 @@ use talaria_agent_auth::now_ms;
 use talaria_agent_defs::pinned_sessions_for_model;
 use talaria_conversations::{
     active_streaming_assistant, insert_streaming_assistant, last_user_message_effort,
-    mark_message_resumed, mark_message_stopped, message_run_id, message_still_errored,
-    next_seq, pinned_history_fits, prior_messages, resurrect_streaming_assistant,
-    set_message_guard, set_message_run_id, touch_conversation, unanswered_user_after,
-    update_assistant,
+    mark_message_resumed, mark_message_stopped, message_run_id, message_still_errored, next_seq,
+    pinned_history_fits, prior_messages, resurrect_streaming_assistant, set_message_guard,
+    set_message_run_id, touch_conversation, unanswered_user_after, update_assistant,
 };
 use talaria_fleet_agents::routed_model_for;
 use talaria_fleet_layout::describe_agent;
