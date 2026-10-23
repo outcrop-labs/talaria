@@ -1,5 +1,5 @@
 // Shared types + API calls for the Apps page (Apps.svelte + its tabs).
-import { errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
+import { errorMessage, getJson, postJson, postJsonOr, putJson } from '@/lib/fetch-json'
 import type { AppBuildInfo } from '@/lib/apps'
 
 /** Where an app installed from git came from, and the commit it runs. */
@@ -36,10 +36,14 @@ export interface AppUpdateCheck {
   latest: string | null
   available: boolean
   pinned: boolean
+  /** The source was not asked: it is read with a workspace secret, and a
+   *  check would spend a use of it. Update fetches with it. */
+  notChecked?: string
   error?: string
   checkedAt: string
 }
-/** PUT { app, update: true } — `rolledBack`: the app still runs `from`. */
+/** PUT { app, update: true } — on failure, `rolledBack` true: the app still
+ *  runs `from`; false: the swap back failed and apps/<slug> holds `to`. */
 export interface AppUpdateResult {
   ok: boolean
   slug: string
@@ -74,6 +78,36 @@ export const fetchAppUpdates = async (): Promise<Record<string, AppUpdateCheck>>
   (await getJson<AdminApps>('/api/admin/apps?updates=1')).updates ?? {}
 
 export const shortSha = (sha: string | null | undefined): string => (sha ? sha.slice(0, 7) : '—')
+
+/** Data an earlier install kept under the slug, from another repository (or
+ *  an unrecorded one): the install answers 409 until it is told to adopt or
+ *  wipe it. */
+export interface KeptDataConflict {
+  slug: string
+  keptFrom: string | null
+  installing: string
+}
+export interface InstallAnswer {
+  error?: string
+  /** On the 409: the kept data and the repository being installed. */
+  conflict?: KeptDataConflict
+  slug?: string
+  keptData?: boolean
+  sha?: string
+  wipedData?: boolean
+  build?: { ok: boolean; error?: string } | null
+  buildError?: string
+}
+
+/** POST an install. A 409 is an answer: kept data the request must decide
+ *  about (`conflict` names the two repositories). */
+export const installApp = async (body: Record<string, unknown>): Promise<InstallAnswer> => {
+  try {
+    return await postJsonOr<InstallAnswer>('/api/admin/apps', body, [409])
+  } catch (e) {
+    return { error: errorMessage(e) }
+  }
+}
 
 export const post = async (body: Record<string, unknown>): Promise<{ error?: string; slug?: string }> => {
   const send = 'installUrl' in body ? postJson : putJson

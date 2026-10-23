@@ -146,6 +146,23 @@ describe('an app update, the host’s half', () => {
     if (!act.ok && act.build) expect(existsSync(appBuildKeyDir('notes', act.build.key))).toBe(false)
   }, 120_000)
 
+  it('discards the staged build when the api releases the app instead of activating it', async () => {
+    const live = readCurrent('notes')!
+    write(appNextDir('notes'), { 'talaria.json': MANIFEST, 'server.ts': server('v5') })
+    const staged = await stageUpdate('notes')
+    expect(staged).toMatchObject({ ok: true })
+    if (!staged.ok) return
+    expect(existsSync(appBuildKeyDir('notes', staged.build.key))).toBe(true)
+    // The api gave up (the swap failed, or its call never got an answer).
+    release('notes')
+    expect(isHeld('notes')).toBe(false)
+    expect(existsSync(appBuildKeyDir('notes', staged.build.key))).toBe(false)
+    // The live app and its build are untouched.
+    expect(readCurrent('notes')).toEqual(live)
+    expect(existsSync(appBuildKeyDir('notes', live.key))).toBe(true)
+    expect(await served('notes')).toBe('v1')
+  }, 120_000)
+
   it('refuses to activate what was not staged', async () => {
     expect(await activateUpdate('notes')).toMatchObject({ ok: false })
     expect(await stageUpdate('notes')).toMatchObject({ ok: false, error: expect.stringContaining('no staged version') })

@@ -91,7 +91,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/cr
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `view:/apps` | — | `{apps, catalog, catalogUrl, updates}` | 200, 403 | — |
-| POST | `admin` | [body](#post-apiadminapps-body) | `{slug, sha, keptData, build, buildError}` | 200, 400 | audit |
+| POST | `admin` | [body](#post-apiadminapps-body) | `{slug, sha, keptData, wipedData, build, buildError}` | 200, 400, 409 | audit |
 | PUT | `admin` | [body](#put-apiadminapps-body) | `{ok, catalogUrl}` | 200, 400 | audit |
 | DELETE | `admin` | [body](#delete-apiadminapps-body) | `{ok, data}` | 200, 400 | audit |
 
@@ -103,6 +103,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/cr
 | `slug` | `string?(64)` |  |
 | `ref` | `string?(200)` | ref: a branch, tag or commit to install (default: the default branch). |
 | `secret` | `string?(200)` | secret: a workspace secret holding an https token for a host other than the GitHub connection's (its Spendable at list must name the host). |
+| `keptData` | `enum(adopt|wipe)?` | keptData: data an earlier install of the slug kept — "adopt" gives it to this app, "wipe" deletes it first (default: adopt only its own). |
 
 ### PUT `/api/admin/apps` body — variant 1
 

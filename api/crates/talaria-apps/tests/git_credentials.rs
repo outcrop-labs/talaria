@@ -20,6 +20,10 @@ use talaria_apps::source::parse_source;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+#[path = "support/git.rs"]
+mod support_git;
+use support_git::git;
+
 const TOKEN: &str = "tok-0123456789abcdef";
 
 fn scratch(tag: &str) -> PathBuf {
@@ -29,21 +33,6 @@ fn scratch(tag: &str) -> PathBuf {
     ));
     std::fs::create_dir_all(&d).unwrap();
     d
-}
-
-fn git(dir: &Path, args: &[&str]) -> String {
-    let out = std::process::Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("git runs");
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 /// A bare repository `<root>/crm.git` holding one app commit; its sha.
@@ -375,6 +364,37 @@ async fn askpass_answers_only_for_the_host_the_fetch_was_pointed_at() {
             .iter()
             .all(|l| !l.contains(TOKEN)),
         "the token reached a host it was not for"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A host typed with capitals: the credential is minted for the lowercased
+/// host, and git must be pointed at that same host, or askpass (which matches
+/// the host exactly) never answers and the fetch dies on a disabled prompt.
+#[tokio::test]
+async fn a_mixed_case_host_still_gets_its_credential() {
+    let root = scratch("case");
+    let sha = bare_repo(&root);
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let port = serve(root.clone(), seen.clone()).await;
+    let src = parse_source(&format!("http://LocalHost:{port}/crm.git"), true).unwrap();
+    assert_eq!(src.host, "localhost");
+    let creds = mock(TOKEN);
+    let (auth, _) = auth_for(&creds, &src, Some("deploy")).await.unwrap();
+    let got = fetch_into(&root.join("fetched"), &src, None, &auth)
+        .await
+        .expect("the credential reached git for a mixed-case host");
+    assert_eq!(got, sha);
+    assert_eq!(
+        remote_head(&src, None, &auth).await.unwrap().as_deref(),
+        Some(sha.as_str())
+    );
+    assert!(
+        seen.lock()
+            .unwrap()
+            .logins
+            .iter()
+            .any(|l| l == &format!("x-access-token:{TOKEN}"))
     );
     let _ = std::fs::remove_dir_all(&root);
 }

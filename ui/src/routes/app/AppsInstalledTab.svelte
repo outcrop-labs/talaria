@@ -16,7 +16,8 @@
   const qc = useQueryClient()
   const query = createQuery(() => ({ queryKey: ['admin-apps'], queryFn: () => fetchAdminApps(false) }))
   // Whether each app's source has a newer commit: `git ls-remote` against its
-  // recorded ref, admin only (a check spends the app's read credential).
+  // recorded ref, admin only (a check mints the app's GitHub read token; a
+  // source read with a workspace secret is not checked, `notChecked`).
   const updates = createQuery(() => ({
     queryKey: ['admin-apps-updates'],
     queryFn: fetchAppUpdates,
@@ -43,7 +44,9 @@
         ? { ok: true, text: `Already up to date (${shortSha(r.to)})` }
         : r.ok
           ? { ok: true, text: `Updated ${shortSha(r.from)} → ${shortSha(r.to)}` }
-          : { ok: false, text: `Update to ${shortSha(r.to)} failed and was rolled back; still running ${shortSha(r.from)}: ${r.error ?? 'unknown error'}` }
+          : r.rolledBack
+            ? { ok: false, text: `Update to ${shortSha(r.to)} failed and was rolled back; still running ${shortSha(r.from)}: ${r.error ?? 'unknown error'}` }
+            : { ok: false, text: `Update to ${shortSha(r.to)} failed and could not be rolled back: apps/${a.slug} now holds ${shortSha(r.to)}, which did not load: ${r.error ?? 'unknown error'}` }
       await refresh()
     } catch (e) {
       results[a.slug] = { ok: false, text: `Could not update: ${errorMessage(e)}` }
@@ -176,6 +179,8 @@
               <span class="shrink-0" title={a.git.sha ?? 'installed before commits were recorded'}>{shortSha(a.git.sha)}</span>
               {#if check?.available}
                 <span class="shrink-0"><Chip tone="accent" title={`The source now points at ${shortSha(check.latest)}`}>update available</Chip></span>
+              {:else if check?.notChecked}
+                <span class="shrink-0" title={check.notChecked}>update not checked</span>
               {:else if check?.error}
                 <span class="truncate text-danger" title={check.error}>update check failed</span>
               {/if}
