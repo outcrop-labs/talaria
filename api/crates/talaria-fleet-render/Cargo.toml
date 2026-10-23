@@ -16,6 +16,7 @@ sqlx = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-agent-defs = { workspace = true }
 talaria-agent-secrets = { workspace = true }
+talaria-capability = { workspace = true }
 talaria-agent-web-search = { workspace = true }
 talaria-coding-accounts = { workspace = true }
 talaria-fleet-docker = { workspace = true }
@@ -38,4 +39,6 @@ sha2 = { workspace = true }
 serde_yaml_ng = { workspace = true }
 talaria-fleet-brain = { workspace = true }
 talaria-fleet-budget = { workspace = true }
+talaria-gateway = { workspace = true }
+talaria-model-roles = { workspace = true }
 talaria-yaml11 = { workspace = true }

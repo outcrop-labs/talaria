@@ -1185,6 +1185,24 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     }
 
     let gw_models = talaria_fleet_brain::gateway_model_set(pg).await;
+    // One capability read per gateway model id per render, however many
+    // agents run on it.
+    let mut sight_of: HashMap<String, Option<bool>> = HashMap::new();
+    // The org's image reader, for the agents whose own model cannot see (see
+    // `image_reader`). A role that cannot be rendered is said so, never
+    // rendered as something else.
+    let vision_reader = match talaria_model_roles::resolve_role_model(pg, "vision").await {
+        Ok(Some(role)) => match image_reader(pg, &role, &gw_models, &mut sight_of).await {
+            Ok(m) => Some(m),
+            Err(why) => {
+                result.warnings.push(format!(
+                    "vision role: {why} — agents whose model cannot see get no image reader"
+                ));
+                None
+            }
+        },
+        _ => None,
+    };
     let mut remapped: Vec<String> = Vec::new();
     let ports = ensure_gateway_ports(
         pg,
@@ -1260,7 +1278,19 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         }
 
         // Un-interweave: all model tiers point at Talaria's gateway.
-        let raw = def_raw_config(&version.config);
+        let mut raw = def_raw_config(&version.config);
+        // How this agent reads an image, from what Talaria knows its models
+        // can see — written into the authored config BEFORE the transform,
+        // so an image-reader spec is routed and key-scoped like every other.
+        if let Value::Object(authored) = &mut raw {
+            let sights = agent_sights(pg, authored, &gw_models, &mut sight_of).await;
+            if fleet_vision(authored, &sights, vision_reader.as_deref()) {
+                result.warnings.push(format!(
+                    "{}: its model cannot read images and there is no image reader to give it (the vision role is unset, or could not be rendered) — an image sent to it goes unread",
+                    def.model
+                ));
+            }
+        }
         let routed = talaria_fleet_brain::route_config_through_gateway(&raw, &gw_models, |m| {
             if !remapped.contains(&m) {
                 remapped.push(m);
@@ -1983,6 +2013,307 @@ fn def_raw_config(config: &Value) -> Value {
         .get("raw")
         .cloned()
         .unwrap_or_else(|| Value::Object(Map::new()))
+}
+
+// ── How an agent reads an image ──────────────────────────────────────────────
+
+/// One model an agent's own loop can answer on — its main model, a tier
+/// (`model_aliases`, which a `<persona>-<tier>` turn runs) or a fallback — as
+/// the gateway transform routes it: the Hermes provider id its spec runs
+/// under, the gateway model id, and whether Talaria knows it can read an
+/// image. `None` is "nobody has measured it", which is not a no.
+#[derive(Debug, Clone, PartialEq)]
+struct ModelSight {
+    provider: String,
+    model: String,
+    main: bool,
+    sees: Option<bool>,
+}
+
+/// The ROUTED specs an agent's loop can run on, main first, each once. Only
+/// a spec the gateway transform stamped a base URL on counts — that is the
+/// mark of a model the agent's key may ask for. The provider is read off the
+/// spec (the transform stamps `custom` today) because, for `custom`, it is
+/// the section Hermes' capability lookup reads `model_overrides` under. A
+/// NAMED provider is canonicalised to `custom` at runtime, and its own name
+/// reaches only `providers.<name>.models.<id>` — so whoever names the
+/// provider must re-check which key Hermes reads, not assume this one.
+fn runnable_specs(routed: &Value) -> Vec<(String, String, bool)> {
+    fn spec(s: &Value) -> Option<(String, String)> {
+        let model = s
+            .get("base_url")
+            .and(s.get("model"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|m| !m.is_empty())?;
+        let provider = s
+            .get("provider")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .unwrap_or("custom");
+        Some((provider.to_string(), model.to_string()))
+    }
+    let main = routed.get("model").into_iter().map(|s| (s, true));
+    let tiers = routed
+        .get("model_aliases")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|a| a.values())
+        .map(|s| (s, false));
+    let fallbacks = routed
+        .get("fallback_providers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|s| (s, false));
+    let mut out: Vec<(String, String, bool)> = Vec::new();
+    for (s, is_main) in main.chain(tiers).chain(fallbacks) {
+        if let Some((provider, model)) = spec(s)
+            && !out.iter().any(|(p, m, _)| *p == provider && *m == model)
+        {
+            out.push((provider, model, is_main));
+        }
+    }
+    out
+}
+
+/// One gateway model id's sight, over every endpoint that may serve it: a
+/// bare id can land on any member of its pool, and which one is not known
+/// until the call. So it SEES only when every member is known to, and it is
+/// BLIND as soon as one member is known not to — pixels sent to a pool with
+/// a blind member reach that member on some turns, while a description reads
+/// the same on all of them. Anything else, an empty pool included, is
+/// unknown.
+fn pool_sees(facts: &[Option<bool>]) -> Option<bool> {
+    if facts.contains(&Some(false)) {
+        return Some(false);
+    }
+    (!facts.is_empty() && facts.iter().all(|f| *f == Some(true))).then_some(true)
+}
+
+/// Talaria's own `vision` facts for a gateway model id — probe, declared,
+/// catalog or learned, whichever stands (`talaria_capability`) — per endpoint
+/// of the id's routing pool, folded by [`pool_sees`]. A failed read is
+/// unknown, never blind.
+async fn model_sees(pg: &PgPool, model: &str) -> Option<bool> {
+    let routing = talaria_gateway::registry::routing_for(pg, model)
+        .await
+        .ok()?;
+    let mut facts = Vec::with_capacity(routing.endpoints.len());
+    for ep in &routing.endpoints {
+        let key = talaria_capability::capability_key(&ep.name, &routing.upstream_model);
+        let known = talaria_capability::get_capabilities(pg, &key).await;
+        facts.push(known.get("vision").map(|f| f.value));
+    }
+    pool_sees(&facts)
+}
+
+/// [`model_sees`], read once per gateway model id per render however many
+/// agents (and the image reader) ask about it.
+async fn cached_sight(
+    pg: &PgPool,
+    model: &str,
+    seen: &mut HashMap<String, Option<bool>>,
+) -> Option<bool> {
+    if let Some(known) = seen.get(model) {
+        return *known;
+    }
+    let known = model_sees(pg, model).await;
+    seen.insert(model.to_string(), known);
+    known
+}
+
+/// THE ID A RENDERED IMAGE READER ASKS THE GATEWAY FOR, from the `vision`
+/// role. A rendered spec reaches the gateway by a bare model id — that is
+/// what the gateway transform keeps (any id it does not serve is swapped for
+/// the fleet fallback, quite possibly a blind model) and what the agent's key
+/// is scoped to. The role, though, is usually assigned endpoint-qualified
+/// (`<endpoint>/<model>`, the Models page's own spelling whenever one
+/// endpoint serves the model). So a qualified role renders as its bare model
+/// when the bare id cannot land anywhere the admin did not mean: no other
+/// endpoint serves it, or every endpoint that does is known to read images.
+/// A role assigned by its bare id is the admin's own pick of the pool, and
+/// stands unless one of its endpoints is known NOT to read images — the same
+/// hazard [`pool_sees`] calls blind. Anything else is refused with the
+/// reason, never rendered as a guess.
+async fn image_reader(
+    pg: &PgPool,
+    role: &str,
+    models: &talaria_fleet_brain::GatewayModels,
+    seen: &mut HashMap<String, Option<bool>>,
+) -> Result<String, String> {
+    if models.served.contains(role) {
+        return match cached_sight(pg, role, seen).await {
+            Some(false) => Err(format!(
+                "\"{role}\" is served by an endpoint known not to read images"
+            )),
+            _ => Ok(role.to_string()),
+        };
+    }
+    let pinned = talaria_gateway::registry::routing_for(pg, role)
+        .await
+        .map_err(|e| format!("\"{role}\" could not be routed ({e})"))?;
+    let bare = pinned.upstream_model;
+    if pinned.endpoints.len() != 1 || bare == role || !models.served.contains(&bare) {
+        return Err(format!("\"{role}\" is not served by the gateway"));
+    }
+    let pool = talaria_gateway::registry::routing_for(pg, &bare)
+        .await
+        .map(|r| r.endpoints.len())
+        .unwrap_or(0);
+    let sees = cached_sight(pg, &bare, seen).await;
+    if pool == 1 || sees == Some(true) {
+        Ok(bare)
+    } else {
+        Err(format!(
+            "\"{role}\" pins one endpoint, but agents reach a model by its bare id and \"{bare}\" is also served by endpoints not known to read images"
+        ))
+    }
+}
+
+/// Every model the authored config will run on once routed, with its sight.
+/// The routing here is a dry run of the transform the render makes next (no
+/// warnings: the real pass names its own remaps), so a model the gateway does
+/// not serve is judged as the fallback it will actually run as.
+async fn agent_sights(
+    pg: &PgPool,
+    authored: &Map<String, Value>,
+    models: &talaria_fleet_brain::GatewayModels,
+    seen: &mut HashMap<String, Option<bool>>,
+) -> Vec<ModelSight> {
+    let routed = talaria_fleet_brain::route_config_through_gateway(
+        &Value::Object(authored.clone()),
+        models,
+        |_| {},
+    );
+    let mut out = Vec::new();
+    for (provider, model, main) in runnable_specs(&routed) {
+        let sees = cached_sight(pg, &model, seen).await;
+        out.push(ModelSight {
+            provider,
+            model,
+            main,
+            sees,
+        });
+    }
+    out
+}
+
+/// A block of the authored config as an owned map, empty when absent.
+fn block_of(v: Option<&Value>) -> Map<String, Value> {
+    v.and_then(Value::as_object).cloned().unwrap_or_default()
+}
+
+/// Hermes' own test for an EXPLICIT `auxiliary.vision` backend
+/// (`agent/image_routing.py`'s `_explicit_aux_vision_override`): a provider
+/// other than `auto`, a model, or a base URL.
+fn explicit_vision_backend(vision: &Map<String, Value>) -> bool {
+    let text = |k: &str| {
+        vision
+            .get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string()
+    };
+    !matches!(text("provider").to_lowercase().as_str(), "" | "auto")
+        || !text("model").is_empty()
+        || !text("base_url").is_empty()
+}
+
+/// HOW AN AGENT READS AN IMAGE, from Talaria's own capability facts. Every
+/// fleet agent runs `provider: custom` with a gateway model id, which Hermes'
+/// catalog (models.dev) has never heard of — so on its own Hermes treats
+/// every agent model as of unknown sight, describes each attached image with
+/// the agent's own model, and has no describer at all once it learns that
+/// model is blind (its auxiliary auto chain tries OpenRouter, Nous and
+/// DeepInfra next, and no Talaria container carries a key for any of them).
+/// Three renders, in Hermes' own keys:
+///
+/// - `model_overrides.<provider>.<model>.supports_vision` for each model the
+///   loop runs on whose sight Talaria knows. Per model rather than one
+///   `model.supports_vision`, which Hermes applies to every model the agent
+///   runs (a tier or a fallback that sees differently included). It is the
+///   answer Hermes' capability lookup gives, which its `auto` image mode
+///   decides by. Unknown renders nothing.
+/// - `auxiliary.vision` — the describer — set to the org's `vision` role
+///   model, when one is served and some model of this agent is not known to
+///   see. Written as a bare `{provider, model}` spec: the gateway transform
+///   that runs next fills the gateway URL and key, and scopes the agent's
+///   key to the model. Hermes calls it to describe a chat image in `text`
+///   mode, and for `vision_analyze`, which is how a blind agent reads an
+///   image a tool handed it as a file path.
+/// - `agent.image_input_mode`: `native` when the main model is known to see
+///   (an explicit describer would otherwise force every image through it —
+///   Hermes' `auto` treats one as the user's chosen image route), `text`
+///   when the describer was rendered for a main model that is not.
+///
+/// HERMES HAS ONE IMAGE MODE PER AGENT, not one per model: a configured mode
+/// is returned before any per-model lookup (`decide_image_input_mode`). So
+/// under a seeing main model, a turn on a tier or a fallback that cannot see
+/// is sent the attached image as pixels too — Hermes strips them after a
+/// rejection it recognises, or the call fails, and either way that turn does
+/// not read the image. The describer rendered for that model still serves
+/// its `vision_analyze`. The other choice, `text` whenever any model of the
+/// agent is not known to see, would put every image the seeing main model
+/// gets through a describer to cover an operator's own tier or fallback pick.
+///
+/// A def that authored any of these keeps its own: its `supports_vision` for
+/// a model, an explicit vision backend of its own, an `image_input_mode`.
+/// An agent with no main model spec is left alone — there is no model to
+/// judge. Returns whether the main model is known to be blind with no reader
+/// to give it, which the render warns about.
+fn fleet_vision(
+    authored: &mut Map<String, Value>,
+    sights: &[ModelSight],
+    reader: Option<&str>,
+) -> bool {
+    let Some(main) = sights.iter().find(|s| s.main) else {
+        return false;
+    };
+
+    if sights.iter().any(|s| s.sees.is_some()) {
+        let mut overrides = block_of(authored.get("model_overrides"));
+        for s in sights {
+            let Some(sees) = s.sees else { continue };
+            let mut section = block_of(overrides.get(&s.provider));
+            let mut entry = block_of(section.get(&s.model));
+            entry
+                .entry("supports_vision")
+                .or_insert_with(|| json!(sees));
+            section.insert(s.model.clone(), Value::Object(entry));
+            overrides.insert(s.provider.clone(), Value::Object(section));
+        }
+        authored.insert("model_overrides".into(), Value::Object(overrides));
+    }
+
+    let mut aux = block_of(authored.get("auxiliary"));
+    let mut vision = block_of(aux.get("vision"));
+    let own_backend = explicit_vision_backend(&vision);
+    let needs_reader = sights.iter().any(|s| s.sees != Some(true));
+    let reader = reader.filter(|_| needs_reader && !own_backend);
+    if let Some(model) = reader {
+        vision.insert("provider".into(), json!("custom"));
+        vision.insert("model".into(), json!(model));
+        aux.insert("vision".into(), Value::Object(vision));
+        authored.insert("auxiliary".into(), Value::Object(aux));
+    }
+
+    let mode = match main.sees {
+        Some(true) => Some("native"),
+        _ if reader.is_some() => Some("text"),
+        _ => None,
+    };
+    let mut agent = block_of(authored.get("agent"));
+    if let Some(mode) = mode
+        && !agent.contains_key("image_input_mode")
+    {
+        agent.insert("image_input_mode".into(), json!(mode));
+        authored.insert("agent".into(), Value::Object(agent));
+    }
+
+    main.sees == Some(false) && reader.is_none() && !own_backend
 }
 
 /// How long Hermes holds a flagged call open waiting for an answer. Talaria
@@ -3968,6 +4299,282 @@ empty_list: []
         });
         assert_eq!(plan.next, current);
         assert!(plan.minted.is_empty() && plan.unkeyed.is_empty() && plan.warnings.is_empty());
+    }
+
+    // ── how an agent reads an image ─────────────────────────────────────────
+
+    fn sight(model: &str, main: bool, sees: Option<bool>) -> ModelSight {
+        ModelSight {
+            provider: "custom".into(),
+            model: model.into(),
+            main,
+            sees,
+        }
+    }
+
+    fn authored_with_main() -> Map<String, Value> {
+        json!({ "model": { "provider": "custom", "model": "text-only" } })
+            .as_object()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn runnable_specs_are_main_tiers_and_fallbacks_each_once() {
+        let routed = json!({
+            "model": { "model": "main-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+            "model_aliases": {
+                "deep": { "model": "deep-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+                "same": { "model": "main-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+                // Never routed: no base URL, so not a model the key may ask for.
+                "loose": { "model": "loose-m" },
+            },
+            "fallback_providers": [
+                { "model": "fb-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+            ],
+            // A describer or a compression model is not one the loop answers on.
+            "auxiliary": { "compression": { "model": "aux-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" } },
+        });
+        assert_eq!(
+            runnable_specs(&routed),
+            vec![
+                ("custom".to_string(), "main-m".to_string(), true),
+                ("custom".to_string(), "deep-m".to_string(), false),
+                ("custom".to_string(), "fb-m".to_string(), false),
+            ]
+        );
+        assert!(runnable_specs(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn a_pool_sees_only_when_every_member_does_and_one_blind_member_blinds_it() {
+        assert_eq!(pool_sees(&[Some(true), Some(true)]), Some(true));
+        assert_eq!(pool_sees(&[Some(true), None]), None);
+        assert_eq!(pool_sees(&[Some(true), Some(false)]), Some(false));
+        assert_eq!(pool_sees(&[None, Some(false)]), Some(false));
+        assert_eq!(pool_sees(&[None]), None);
+        // Nothing serves it: nobody knows anything, which is not a no.
+        assert_eq!(pool_sees(&[]), None);
+    }
+
+    #[test]
+    fn a_blind_agent_gets_the_vision_role_as_its_describer() {
+        let mut authored = authored_with_main();
+        let blind = fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            Some("seer"),
+        );
+        assert!(!blind, "a reader was rendered — nothing to warn about");
+        assert_eq!(
+            authored["model_overrides"],
+            json!({ "custom": { "text-only": { "supports_vision": false } } })
+        );
+        assert_eq!(
+            authored["auxiliary"],
+            json!({ "vision": { "provider": "custom", "model": "seer" } })
+        );
+        assert_eq!(authored["agent"], json!({ "image_input_mode": "text" }));
+    }
+
+    #[test]
+    fn a_seeing_agent_keeps_native_pixels_and_gets_no_describer() {
+        let mut authored = authored_with_main();
+        fleet_vision(
+            &mut authored,
+            &[
+                sight("text-only", true, Some(true)),
+                sight("tier-m", false, Some(true)),
+            ],
+            Some("seer"),
+        );
+        assert_eq!(
+            authored["model_overrides"],
+            json!({ "custom": {
+                "text-only": { "supports_vision": true },
+                "tier-m": { "supports_vision": true },
+            } })
+        );
+        assert!(authored.get("auxiliary").is_none(), "{authored:?}");
+        assert_eq!(authored["agent"], json!({ "image_input_mode": "native" }));
+    }
+
+    #[test]
+    fn a_seeing_main_with_a_blind_tier_gets_the_describer_and_stays_native() {
+        let mut authored = authored_with_main();
+        fleet_vision(
+            &mut authored,
+            &[
+                sight("text-only", true, Some(true)),
+                sight("tier-m", false, Some(false)),
+            ],
+            Some("seer"),
+        );
+        assert_eq!(
+            authored["model_overrides"]["custom"]["tier-m"],
+            json!({ "supports_vision": false })
+        );
+        // The describer is there for the tier's `vision_analyze`.
+        assert_eq!(authored["auxiliary"]["vision"]["model"], json!("seer"));
+        // An explicit describer would turn Hermes' `auto` into "describe
+        // everything" — the seeing main model is pinned to pixels. The mode
+        // is per agent, so a turn on the blind tier gets pixels too and does
+        // not read an attached image (see `fleet_vision`).
+        assert_eq!(authored["agent"]["image_input_mode"], json!("native"));
+    }
+
+    #[test]
+    fn an_unmeasured_main_model_gets_the_describer_and_no_claim_about_its_sight() {
+        let mut authored = authored_with_main();
+        let blind = fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, None)],
+            Some("seer"),
+        );
+        assert!(!blind);
+        // Unknown is not false: no supports_vision either way.
+        assert!(authored.get("model_overrides").is_none(), "{authored:?}");
+        assert_eq!(authored["auxiliary"]["vision"]["model"], json!("seer"));
+        assert_eq!(authored["agent"]["image_input_mode"], json!("text"));
+
+        // And with no vision role, nothing at all is rendered.
+        let mut authored = authored_with_main();
+        let before = authored.clone();
+        assert!(!fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, None)],
+            None
+        ));
+        assert_eq!(authored, before);
+    }
+
+    #[test]
+    fn a_known_blind_model_without_a_reader_is_declared_and_warned_about() {
+        let mut authored = authored_with_main();
+        let blind = fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            None,
+        );
+        assert!(blind);
+        assert_eq!(
+            authored["model_overrides"]["custom"]["text-only"],
+            json!({ "supports_vision": false })
+        );
+        assert!(authored.get("auxiliary").is_none(), "{authored:?}");
+        assert!(authored.get("agent").is_none(), "{authored:?}");
+    }
+
+    #[test]
+    fn what_a_def_authored_about_vision_stands() {
+        let mut authored = json!({
+            "model": { "provider": "custom", "model": "text-only" },
+            "model_overrides": { "custom": { "text-only": { "supports_vision": true, "context_window": 64000 } } },
+            "auxiliary": { "vision": { "provider": "openrouter", "model": "their-seer" }, "compression": { "timeout": 9 } },
+            "agent": { "image_input_mode": "auto", "max_turns": 40 },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let blind = fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            Some("seer"),
+        );
+        assert!(!blind, "the def brought its own describer");
+        assert_eq!(
+            authored["model_overrides"]["custom"]["text-only"],
+            json!({ "supports_vision": true, "context_window": 64000 })
+        );
+        assert_eq!(
+            authored["auxiliary"],
+            json!({ "vision": { "provider": "openrouter", "model": "their-seer" }, "compression": { "timeout": 9 } })
+        );
+        assert_eq!(
+            authored["agent"],
+            json!({ "image_input_mode": "auto", "max_turns": 40 })
+        );
+
+        // A vision block that names no backend is tuning, not a backend: the
+        // reader goes in beside its keys.
+        let mut authored = authored_with_main();
+        authored.insert(
+            "auxiliary".into(),
+            json!({ "vision": { "provider": "auto", "timeout": 200 } }),
+        );
+        fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            Some("seer"),
+        );
+        assert_eq!(
+            authored["auxiliary"]["vision"],
+            json!({ "provider": "custom", "timeout": 200, "model": "seer" })
+        );
+    }
+
+    #[test]
+    fn no_main_model_spec_means_nothing_is_rendered() {
+        let mut authored = json!({ "agent": { "max_turns": 40 } })
+            .as_object()
+            .unwrap()
+            .clone();
+        let before = authored.clone();
+        assert!(!fleet_vision(
+            &mut authored,
+            &[sight("tier-m", false, Some(false))],
+            Some("seer")
+        ));
+        assert_eq!(authored, before);
+    }
+
+    #[test]
+    fn the_describer_is_routed_scoped_and_emitted_like_every_other_spec() {
+        let models = talaria_fleet_brain::GatewayModels {
+            served: ["text-only", "seer"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            fallback: Some("text-only".into()),
+        };
+        let mut authored = authored_with_main();
+        fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            Some("seer"),
+        );
+        let routed = talaria_fleet_brain::route_config_through_gateway(
+            &Value::Object(authored),
+            &models,
+            |w| panic!("nothing should remap: {w}"),
+        );
+        assert_eq!(
+            routed["auxiliary"]["vision"],
+            json!({
+                "provider": "custom",
+                "model": "seer",
+                "base_url": "${LLM_BASE_URL}",
+                "api_key": "${LLM_API_KEY}",
+            })
+        );
+        // The agent's key is scoped to the describer too.
+        assert_eq!(
+            talaria_fleet_brain::routed_models(&routed),
+            vec!["text-only".to_string(), "seer".to_string()]
+        );
+        // The overrides are not a model spec, so the transform leaves them be.
+        assert_eq!(
+            routed["model_overrides"],
+            json!({ "custom": { "text-only": { "supports_vision": false } } })
+        );
+        let text = yaml11_emit(&routed);
+        let back: Value = serde_yaml_ng::from_str(&text).unwrap();
+        assert_eq!(back["auxiliary"]["vision"]["model"], json!("seer"));
+        assert_eq!(
+            back["model_overrides"]["custom"]["text-only"]["supports_vision"],
+            json!(false)
+        );
+        assert_eq!(back["agent"]["image_input_mode"], json!("text"));
     }
 
     #[test]

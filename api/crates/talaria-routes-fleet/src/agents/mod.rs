@@ -18,4 +18,3 @@ pub mod skills_owner_name;
 pub mod subagent_events;
 pub mod tool_events;
 pub mod uploads;
-pub mod vision_describe;

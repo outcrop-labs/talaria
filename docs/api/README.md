@@ -6,14 +6,14 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-333 routes across 23 groups.
+332 routes across 23 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
 | [`account`](./account.md) | Sign-in, session, profile, members. | 18 |
 | [`activity`](./activity.md) | What happened, what it cost, what the machine is doing, what needs you. | 11 |
 | [`admin`](./admin.md) | Instance administration (admin session required). | 27 |
-| [`agents`](./agents.md) | Agent CRUD, skills, runs. | 27 |
+| [`agents`](./agents.md) | Agent CRUD, skills, runs. | 26 |
 | [`apps`](./apps.md) | The app platform surface and the app-server gateway. | 2 |
 | [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views, workchains. | 19 |
 | [`brief`](./brief.md) | The personal brief: items, replies, delegation. | 5 |

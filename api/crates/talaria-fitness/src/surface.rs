@@ -2071,7 +2071,7 @@ pub fn thresholds() -> Thresholds {
 /// NOTHING STOPS BEING MEASURED. `fitness_slots()` is unchanged, so
 /// `score_fitness` still produces a verdict for all of them and the archive
 /// still stores them; `role_assignment_issues` still warns an admin who
-/// assigns a blind model to the reserved vision role, which is the surface
+/// assigns a blind model to the vision role, which is the surface
 /// where that warning belongs. This decides what gets a column, and nothing
 /// else.
 #[derive(Debug, Clone, Serialize)]

@@ -234,7 +234,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "fetch_attachment",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Read an attached file by upload id (from a ticket or chat attachments array; ref-type entries are knowledge docs/artifacts — use read_kb_doc/get_document for those). Text files come back as text, images as an image you can see; other binary formats report metadata only.",
+            description: "Read an attached file by upload id (from a ticket or chat attachments array; ref-type entries are knowledge docs/artifacts — use read_kb_doc/get_document for those). Text files come back as text, images as a MEDIA: file path — the picture is attached too when your model can see, and otherwise you read that path with vision_analyze; other binary formats report metadata only.",
             parameters: json!({ "type": "object", "properties": { "uploadId": str_schema("Attachment upload id") }, "required": ["uploadId"] }),
             assistant_only: false,
             needs_google: false,
@@ -445,22 +445,6 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                     "limit": num_schema("How many results to return (default 10)"),
                 },
                 "required": ["query"],
-            }),
-            assistant_only: false,
-            needs_google: false,
-        },
-        SandboxTool {
-            name: "describe_image",
-            caller: ToolCaller::Hermes,
-            group: ToolGroup::Knowledge,
-            description: "Read an image you cannot see: attaches it to this workspace's vision model and returns a description in text. Use it for a screenshot, a photo, a chart or a scanned document — ask a specific question rather than \"what is this\", because the answer is written against your question. The reply is another model's reading of the image, not yours: quote it as a description, and if it says something is not visible, do not fill the gap yourself.",
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "uploadId": str_schema("Attachment upload id (from a ticket or chat attachments array)"),
-                    "question": str_schema("What you need to know from the image"),
-                },
-                "required": ["uploadId", "question"],
             }),
             assistant_only: false,
             needs_google: false,
@@ -1822,9 +1806,9 @@ mod tests {
         // updates — and this crate's tests were never run, so nothing made
         // anyone notice. The assertion is the contract; the name says what it
         // is for.
-        assert_eq!(TALARIA_TOOLS.len(), 84);
+        assert_eq!(TALARIA_TOOLS.len(), 83);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 84);
+        assert_eq!(names.len(), 83);
     }
 
     #[test]

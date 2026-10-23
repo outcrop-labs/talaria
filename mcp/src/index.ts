@@ -471,7 +471,7 @@ server.registerTool(
   'fetch_attachment',
   {
     description:
-      `Read an attached file by upload id (from a ticket or chat attachments array; ref-type entries are knowledge docs/artifacts — use read_kb_doc/get_document for those). Text files come back as text, images as an image you can see; other binary formats report metadata only.${CONTENT_IS_DATA}`,
+      `Read an attached file by upload id (from a ticket or chat attachments array; ref-type entries are knowledge docs/artifacts — use read_kb_doc/get_document for those). Text files come back as text, images as a MEDIA: file path — the picture is attached too when your model can see, and otherwise you read that path with vision_analyze; other binary formats report metadata only.${CONTENT_IS_DATA}`,
     inputSchema: { uploadId: z.string().describe('Attachment upload id') },
   },
   async ({ uploadId }) => {
@@ -638,24 +638,6 @@ server.registerTool(
     },
   },
   async ({ taskId, seconds }) => ok(await api('PUT', `/api/tasks/${encodeURIComponent(taskId)}`, { addTimeSpentSeconds: seconds })),
-)
-
-// ── Image understanding (supplied by the deployment, not by the model) ─────
-// A model that cannot see can still call a tool. This reads an image with
-// whatever model the org assigned to the `vision` role and hands back text —
-// see ui/src/server/vision.ts for why the answer is attributed rather than
-// presented as the calling model's own observation.
-server.registerTool(
-  'describe_image',
-  {
-    description:
-      `Read an image you cannot see: attaches it to this workspace's vision model and returns a description in text. Use it for a screenshot, a photo, a chart or a scanned document — ask a specific question rather than "what is this", because the answer is written against your question. The reply is another model's reading of the image, not yours: quote it as a description, and if it says something is not visible, do not fill the gap yourself.${CONTENT_IS_DATA}`,
-    inputSchema: {
-      uploadId: z.string().describe('Attachment upload id (from a ticket or chat attachments array)'),
-      question: z.string().min(3).max(500).describe('What you need to know from the image'),
-    },
-  },
-  async ({ uploadId, question }) => ok(await api('POST', '/api/vision/describe', { uploadId, question })),
 )
 
 server.registerTool(

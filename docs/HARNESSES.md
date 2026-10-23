@@ -735,14 +735,17 @@ resolution chain over instrumented dependencies and records which roles it asked
 copying the step order into a file where it would become an eighth spelling of the same policy.
 
 A verdict is produced for **every slot**; the matrix draws a **column only for the ones a harness can
-reach**. The five it drops are `unbound` for every model forever, and they were dead for
-two different reasons that the one "reserved" chip flattened: four are reserved *roles* whose surfaces
-do not exist yet (vision, image-generation, embedding, reranker), and the fifth is the **briefer**,
+reach**. The five it drops are `unbound` for every model forever, and they are dead for
+three different reasons that the one "reserved" chip used to flatten: three are reserved *roles* whose
+surfaces do not exist yet (image-generation, embedding, reranker); **vision** is wired but reached by no
+harness — its model is rendered into each fleet agent whose own models are not known to see, as that
+agent's Hermes image reader (`auxiliary.vision`, behind Hermes' `vision_analyze`), so it is exercised
+inside Hermes rather than by a Talaria harness, and `fitness_slots` keeps it inert by name; and the fifth is the **briefer**,
 which is not reserved at all — it ships, it writes the daily brief every morning and follows it all
 day, and its model is fixed by design because a brief reads one person's own views and answers in
 their own assistant's voice. Its harnesses take their model from the subject of the call, so they are
 scored under the report's `unbound` bucket and shown there in the model's report. Scoring is unchanged
-and the role-assignment checks still warn an admin who points a blind model at the reserved vision role.
+and the role-assignment checks still warn an admin who points a blind model at the vision role.
 
 `ready` / `workable` / `unfit`, plus `untested` (nothing measured this) and `unbound` (no harness
 reaches this slot — which must read as "no evidence", never as an empty green cell). `unfit` always

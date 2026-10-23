@@ -417,7 +417,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_model_roles.rs`](../..
 > /api/admin/model-roles. Model Roles — which model handles each activity
 > class. GET → the catalog of roles + current assignments + assignable
 > models + fitness issues. PUT { role, model|null } → assign (null = back
-> to auto). Admins only.
+> to auto); a `vision` assignment also re-renders the fleet. Admins only.
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

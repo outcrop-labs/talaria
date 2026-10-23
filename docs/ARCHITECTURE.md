@@ -192,6 +192,21 @@ multiplexer.
   as `model_options.reasoning_effort`, the one spelling Hermes' API server reads. A pinned
   session runs the agent's main model whatever tier a message picks (Hermes fixes a session's
   model at its first turn), so such a turn carries no tier effort and is booked as the main model.
+- **How an agent reads an image** comes from Talaria's own capability facts (a fitness run's
+  vision probe, the provider catalog, or a declaration), rendered in Hermes' keys
+  (`fleet_vision` in talaria-fleet-render): each model the agent runs on whose sight Talaria
+  knows gets `model_overrides.custom.<id>.supports_vision`. The describer is the org's
+  `vision` role model, rendered as `auxiliary.vision` — routed and key-scoped like any other
+  spec — whenever one of the agent's models is not known to see; assigning the role
+  re-renders the fleet, and a new fact reaches agents at the next render. Hermes keeps one
+  image mode per agent, and the render picks it from the main model: `native` (pixels) for a
+  main model known to see, `text` (the describer first) for one that is not. A blind agent
+  reads a chat image through the describer automatically, and a tool's image
+  (`fetch_attachment` hands one back as a `MEDIA:` path) with Hermes' `vision_analyze`.
+  Under a seeing main model, a turn on a tier or fallback that cannot see is sent pixels
+  too and does not read an attached image; that model still has `vision_analyze`. Talaria
+  serves fleet agents no image tool of its own (the Apps SDK keeps its in-process
+  describer).
 - Each agent presents its own `tak_` key; the renderer rewrites `fleet/.env` from the DB
   every render (0600 in a 0700 dir).
 - **Rolls recreate in place** (`talaria-fleet-reconcile`): re-render, pull the agent's image

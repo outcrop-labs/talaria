@@ -3988,7 +3988,6 @@ dependencies = [
  "talaria-update-state",
  "talaria-uploads",
  "talaria-users",
- "talaria-vision",
  "talaria-web-search",
  "talaria-work-dispatch",
  "talaria-work-wait",
@@ -4957,16 +4956,19 @@ dependencies = [
  "talaria-agent-defs",
  "talaria-agent-secrets",
  "talaria-agent-web-search",
+ "talaria-capability",
  "talaria-coding-accounts",
  "talaria-fleet-brain",
  "talaria-fleet-budget",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
+ "talaria-gateway",
  "talaria-github",
  "talaria-guard-coaching",
  "talaria-mcp",
  "talaria-mcp-service",
  "talaria-model-efforts",
+ "talaria-model-roles",
  "talaria-org",
  "talaria-persona",
  "talaria-search",
@@ -6777,7 +6779,6 @@ dependencies = [
  "talaria-templates",
  "talaria-uploads",
  "talaria-users",
- "talaria-vision",
  "talaria-work-dispatch",
  "talaria-workspace-secrets",
  "tokio",
@@ -7635,18 +7636,6 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
-]
-
-[[package]]
-name = "talaria-vision"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "talaria-harness",
- "talaria-harness-model",
- "talaria-state",
- "tokio",
 ]
 
 [[package]]
