@@ -56,8 +56,8 @@ pub mod devenv;
 pub mod teardown;
 
 use talaria_workbench_harnesses::{
-    MCP_CONFIG_FILE, OMP, SANDBOX_SHAPE, SANDBOX_SHAPE_FILE, fill_cmd_arg, model_arg, omp_roles,
-    role_env_prefix,
+    MCP_CONFIG_FILE, OMP, SANDBOX_SHAPE, SANDBOX_SHAPE_FILE, fill_cmd, fill_cmd_arg, model_arg,
+    omp_roles, role_env_prefix,
 };
 use teardown::{Teardown, spawn_teardown};
 
@@ -563,6 +563,10 @@ async fn call_tool(
 
     match name {
         "doctor" => {
+            // One clock for the whole answer: Hermes's MCP client gives up on
+            // a call at 300 s, and an answer that arrives after that is a
+            // timeout to the agent, not a diagnosis.
+            let started = std::time::Instant::now();
             let gh_status = github_status(pg, &deps.sb).await;
             let repos = gh::granted_repos(pg, &agent.id).await;
             let mut checks: Vec<String> = Vec::new();
@@ -585,14 +589,64 @@ async fn call_tool(
             if let Err(why) = &runtime {
                 checks.push(format!("harness runtime: bun NOT AVAILABLE — {why}"));
             }
+            let roles = match omp_roles(pg).await {
+                Ok(r) => r,
+                Err(e) => return thrown(e),
+            };
+            // Which plan the agent's jobs run on decides whether the gateway
+            // login is the one to check: a job on a coding subscription never
+            // calls the gateway, so its health says nothing about that job.
+            let plan = talaria_coding_accounts::resolve(pg, &agent.id, None)
+                .await
+                .unwrap_or(None);
             let probe = harness_probe(pg, &agent.department).await;
+            // A harness that STARTS is not one that can work: `--version`
+            // calls no model. omp answered it while every model call it made
+            // from the agent's terminal was refused — the key rode a name
+            // Hermes strips, under a `$`-prefixed reference omp never
+            // resolved. So once it starts, make it reach the gateway: the one
+            // check that says the harness can actually do a job.
+            let auth = match (&probe, roles.default.as_deref(), &plan) {
+                (Err(_), ..) => AuthCheck::NotRun,
+                (Ok(_), _, Some(p)) if !p.is_gateway() => AuthCheck::Skipped(format!(
+                    "its gateway login was not checked: your jobs run on the {} subscription, not the gateway",
+                    p.provider
+                )),
+                (Ok(_), None, _) => AuthCheck::Skipped(
+                    "its gateway login was not checked, because no Workbench model role resolves to a gateway model"
+                        .into(),
+                ),
+                (Ok(_), Some(model), _) => match auth_probe_budget(started.elapsed()) {
+                    Some(budget) => AuthCheck::Ran(
+                        harness_auth_probe(pg, &agent.department, model, budget).await,
+                    ),
+                    None => AuthCheck::Skipped(format!(
+                        "its gateway login was not checked: the steps before it used doctor's time ({} s of the {} s an MCP call gets) — run doctor again, it is quicker once warm",
+                        started.elapsed().as_secs(),
+                        DOCTOR_BUDGET_MS / 1000
+                    )),
+                },
+            };
             let writable = harness_writable(pg, &agent.department).await;
-            checks.push(match &probe {
-                Ok(version) => format!(
-                    "harness: {} ({}) runs — {version}, auth through the Talaria gateway, no key needed on your side",
+            checks.push(match (&probe, &auth) {
+                (Ok(version), AuthCheck::Ran(Ok(_))) => format!(
+                    "harness: {} ({}) runs — {version} — and reached the Talaria gateway (one model call as `{}`), no key needed on your side",
+                    OMP.label,
+                    OMP.slug,
+                    roles.default.as_deref().unwrap_or_default()
+                ),
+                (Ok(version), AuthCheck::Ran(Err(why))) => format!(
+                    "harness: {} ({}) starts — {version} — but CANNOT REACH THE TALARIA GATEWAY: {why}. Roll the agent if the sandbox check says STALE; otherwise report_problem. Do not hand-code the ticket instead.",
                     OMP.label, OMP.slug
                 ),
-                Err(why) => format!(
+                (Ok(version), AuthCheck::Skipped(why)) => {
+                    format!("harness: {} ({}) runs — {version}; {why}", OMP.label, OMP.slug)
+                }
+                (Ok(version), AuthCheck::NotRun) => format!(
+                    "harness: {} ({}) runs — {version}",
+                    OMP.label, OMP.slug
+                ),
+                (Err(why), _) => format!(
                     "harness: {} ({}) DOES NOT RUN — {why}. Report this with report_problem; do not hand-code the ticket instead.",
                     OMP.label, OMP.slug
                 ),
@@ -620,19 +674,13 @@ async fn call_tool(
             } else {
                 format!("repos: {}", repos.join(", "))
             });
-            let models = match omp_roles(pg).await {
-                Ok(r) => r.wire(),
-                Err(e) => return thrown(e),
-            };
+            let models = roles.wire();
             // A coding account changes which models a job actually runs on, so
             // the self-diagnosis has to say so — otherwise `models` above
             // reads as the whole truth and an agent debugging a model it never
             // asked for has nothing to look at.
             checks.push(
-                match talaria_coding_accounts::resolve(pg, &agent.id, None)
-                    .await
-                    .unwrap_or(None)
-                {
+                match &plan {
                     Some(plan) if plan.is_gateway() => {
                         "coding account: none in use — your harness runs on the org's Talaria gateway"
                             .to_string()
@@ -660,10 +708,17 @@ async fn call_tool(
                 // The probe already ran, above. Telling the agent to run it
                 // itself is how its failure stayed invisible.
                 "probeResult": match &probe { Ok(v) => json!({ "ok": true, "version": v }), Err(e) => json!({ "ok": false, "error": e }) },
+                "authResult": match &auth {
+                    AuthCheck::Ran(Ok(reply)) => json!({ "ok": true, "model": roles.default, "reply": reply }),
+                    AuthCheck::Ran(Err(e)) => json!({ "ok": false, "model": roles.default, "error": e }),
+                    AuthCheck::Skipped(why) => json!({ "ok": null, "skipped": why }),
+                    AuthCheck::NotRun => Value::Null,
+                },
                 "runtime": match &runtime { Ok(v) => json!({ "ok": true, "bun": v }), Err(e) => json!({ "ok": false, "error": e }) },
-                "next": match &probe {
-                    Ok(_) => "start_job with the ticket, then clone into the workdir and call prepare_env.".to_string(),
-                    Err(e) => format!("The harness cannot start in this sandbox ({e}). report_problem — do NOT hand-code the ticket."),
+                "next": match (&probe, &auth) {
+                    (Err(e), _) => format!("The harness cannot start in this sandbox ({e}). report_problem — do NOT hand-code the ticket."),
+                    (Ok(_), AuthCheck::Ran(Err(e))) => format!("The harness starts but cannot reach the gateway ({e}). Roll the agent if the sandbox is STALE, else report_problem — do NOT hand-code the ticket."),
+                    _ => "start_job with the ticket, then clone into the workdir and call prepare_env.".to_string(),
                 },
             }))
         }
@@ -1538,16 +1593,44 @@ async fn call_tool(
     }
 }
 
-/// `String(args.x ?? '')` — anything non-string reads as the empty string.
+/// The argv that runs `script` in the shell the AGENT'S TERMINAL gives it.
+///
+/// Hermes's `terminal` tool (the local backend) runs each command from a
+/// snapshot of a LOGIN shell, with `HOME` at `$HERMES_HOME/home`
+/// (`terminal.home_mode: auto` in a container) — so Debian's /etc/profile has
+/// reset a non-root PATH to `/usr/local/bin:/usr/bin:/bin`, and the
+/// container's own PATH (with `/opt/data/.local/bin`) is gone. A probe in a
+/// plain `sh -c` kept that PATH and passed where the agent's command failed.
+/// `extra` lands in `$@` (the script's own `$0` is `bash`).
+fn agent_terminal_argv<'a>(script: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    let mut argv = vec![
+        "runuser",
+        "-u",
+        HARNESS_USER,
+        "--",
+        "env",
+        AGENT_TERMINAL_HOME_ENV,
+        "bash",
+        "-lc",
+        script,
+        "bash",
+    ];
+    argv.extend_from_slice(extra);
+    argv
+}
+
+/// `HOME` as Hermes sets it for its terminal's commands in a container.
+const AGENT_TERMINAL_HOME_ENV: &str = "HOME=/opt/data/home";
+
 /// Run the harness probe in the agent's own sandbox and say what happened.
 ///
-/// As the AGENT USER in a NON-LOGIN shell. That is the stricter of the two
-/// environments the agent's terminal runs in (Hermes runs `bash -c` unless it
-/// is configured for a login shell), and the one that used to fail while a
-/// login-shell probe passed: the profile block prepare_env writes is what put
-/// mise's shims on a login shell's PATH, and a plain shell never read it. The
-/// harness runtime now lives in a directory the container's own PATH carries
-/// (`ensure_harness_runtime`), so a probe that passes here passes everywhere.
+/// As the AGENT USER, in the shell its terminal gives a command
+/// ([`agent_terminal_argv`]): the stricter environment, and the one that
+/// used to fail while a probe in a plain shell passed — first because mise's
+/// shims reached only a profile Hermes's terminal never reads, then because
+/// bun sat in a directory its login shell drops from PATH. The boot hook links
+/// bun into /usr/local/bin for exactly that, so a probe that passes here
+/// passes for the agent.
 ///
 /// Ok(version) is the harness's own version line. Err is the reason it could
 /// not run, which is the whole point of the check.
@@ -1556,7 +1639,7 @@ async fn harness_probe(pg: &PgPool, department: &str) -> Result<String, String> 
     let script = format!("{} 2>&1", OMP.probe);
     let out = docker_exec(
         &container,
-        &["runuser", "-u", HARNESS_USER, "--", "sh", "-c", &script],
+        &agent_terminal_argv(&script, &[]),
         PROBE_TIMEOUT_MS,
     )
     .await;
@@ -1581,6 +1664,121 @@ async fn harness_probe(pg: &PgPool, department: &str) -> Result<String, String> 
         .unwrap_or("no output");
     Err(format!("`{}` said: {why}", OMP.probe))
 }
+
+/// One model call through omp to the gateway, from the shell the AGENT gets.
+///
+/// `docker exec` sees the container's whole env; the agent's terminal does
+/// not — Hermes strips its own provider and platform names from every command
+/// it runs. A probe that kept them would pass where the agent fails, which is
+/// how a harness with no key read as healthy. So, in the agent's terminal
+/// shell ([`agent_terminal_argv`]), every name Hermes strips
+/// (talaria-agent-secrets' snapshot of the pinned image) is unset first, and
+/// what is left is what omp has when the agent starts it.
+///
+/// Ok is the model's reply; Err is omp's own last word on why not.
+async fn harness_auth_probe(
+    pg: &PgPool,
+    department: &str,
+    model: &str,
+    timeout_ms: u64,
+) -> Result<String, String> {
+    let container = managed_container(pg, department).await;
+    let line = fill_cmd(OMP.auth_probe, Some(model), "");
+    // The stripped names arrive as positional args, never inside the script.
+    let script = format!(
+        "for n do unset \"$n\" 2>/dev/null || true; done\n\
+         out=$({line} 2>&1 </dev/null); rc=$?\n\
+         printf '%s\\n{AUTH_EXIT_MARK}%s\\n' \"$out\" \"$rc\""
+    );
+    let stripped: Vec<&str> = talaria_agent_secrets::hermes_stripped_names().collect();
+    let argv = agent_terminal_argv(&script, &stripped);
+    let (stdout, stderr) = docker_exec(&container, &argv, timeout_ms)
+        .await
+        .map_err(|e| format!("the model call could not be run in the sandbox: {e}"))?;
+    auth_probe_verdict(&format!("{stdout}\n{stderr}"))
+}
+
+/// What the auth probe's output says. omp exits non-zero when the call
+/// fails; either way the line that matters is its LAST one that is not noise
+/// (npm's notices, omp's own `Working...` and its MCP warnings come first).
+fn auth_probe_verdict(text: &str) -> Result<String, String> {
+    let (body, rc) = match text.rfind(AUTH_EXIT_MARK) {
+        Some(at) => (
+            &text[..at],
+            text[at + AUTH_EXIT_MARK.len()..]
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim(),
+        ),
+        None => (text, ""),
+    };
+    let last = body
+        .lines()
+        .map(str::trim)
+        .rfind(|l| {
+            !l.is_empty()
+                && !l.starts_with("npm notice")
+                && !l.starts_with("npm warn")
+                && !l.starts_with("Warning: MCP server")
+                && *l != "Working..."
+        })
+        .unwrap_or("");
+    if rc == "0" {
+        if last.is_empty() {
+            return Err("omp exited cleanly but the model returned nothing".into());
+        }
+        return Ok(truncate_utf16(last, 120).to_string());
+    }
+    Err(format!(
+        "omp exited {}: {}",
+        if rc.is_empty() {
+            "without a status"
+        } else {
+            rc
+        },
+        truncate_utf16(if last.is_empty() { "no output" } else { last }, 300)
+    ))
+}
+
+const AUTH_EXIT_MARK: &str = "__talaria_omp_exit=";
+
+/// What doctor found out about the harness's gateway login.
+enum AuthCheck {
+    /// The model call ran: the reply, or omp's reason it got none.
+    Ran(Result<String, String>),
+    /// Deliberately not run, and why — the answer says so.
+    Skipped(String),
+    /// Not run because the harness does not start; that check speaks.
+    NotRun,
+}
+
+/// How long the auth probe may take, given how long doctor has already
+/// spent — or `None` when what is left is too little for a model call to be
+/// worth starting.
+///
+/// Hermes's MCP client gives up on a call at 300 s (`_DEFAULT_TOOL_TIMEOUT`,
+/// and the workbench server sets no `timeout_secs`), and provisioning the
+/// runtime and the cold `npx` of the version probe can take most of that on a
+/// fresh sandbox. A probe that ran past it would turn the whole answer into a
+/// timeout; skipping it says what was not checked and lets the rest arrive.
+fn auth_probe_budget(spent: std::time::Duration) -> Option<u64> {
+    let spent = u64::try_from(spent.as_millis()).unwrap_or(u64::MAX);
+    let left = DOCTOR_BUDGET_MS.saturating_sub(spent);
+    (left >= AUTH_PROBE_MIN_MS).then(|| left.min(AUTH_PROBE_TIMEOUT_MS))
+}
+
+/// doctor's whole answer, inside Hermes's 300 s MCP call timeout with room
+/// for the quick checks that follow the probe.
+const DOCTOR_BUDGET_MS: u64 = 270_000;
+
+/// Less than this left and a model call is not started: npx's warm start
+/// plus one short reply needs about this much.
+const AUTH_PROBE_MIN_MS: u64 = 30_000;
+
+/// A cold `npx` already ran in the version probe; this is one short reply
+/// from whatever model the org's code-standard role names, small or slow.
+const AUTH_PROBE_TIMEOUT_MS: u64 = 3 * 60_000;
 
 /// Can the agent actually WRITE where its harness keeps state?
 ///
@@ -2169,6 +2367,58 @@ async fn log_wtool_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_auth_probe_verdict_reads_omps_exit_and_last_word() {
+        // A reply and a clean exit: the gateway took the key. The shape omp
+        // 18.12 prints, captured from a v0.22.4 sandbox: npm's notices, an
+        // MCP warning, its progress line, then the reply.
+        assert_eq!(
+            auth_probe_verdict(
+                "npm notice run npx\nnpm notice run 'omp' -p\nWarning: MCP server \"talaria\" failed to connect: HTTP 401\nWorking...\nOK\n__talaria_omp_exit=0\n"
+            ),
+            Ok("OK".to_string())
+        );
+        // A refusal, as captured: the reason is omp's last line.
+        let err = auth_probe_verdict(
+            "npm notice run npx\nWorking...\n401 invalid API key\n__talaria_omp_exit=1\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("exited 1"), "{err}");
+        assert!(err.contains("401 invalid API key"), "{err}");
+        // A harness that cannot even start says why.
+        let err =
+            auth_probe_verdict("env: 'bun': No such file or directory\n__talaria_omp_exit=127\n")
+                .unwrap_err();
+        assert!(err.contains("exited 127") && err.contains("bun"), "{err}");
+        // A clean exit with nothing said is not a pass.
+        assert!(auth_probe_verdict("\n__talaria_omp_exit=0\n").is_err());
+        // No marker at all (the shell itself died): a failure, with what it said.
+        let err = auth_probe_verdict("sh: 1: runuser: not found").unwrap_err();
+        assert!(err.contains("without a status"), "{err}");
+    }
+
+    #[test]
+    fn the_auth_probe_gets_only_the_time_doctor_has_left() {
+        use std::time::Duration;
+        // A warm sandbox: the full probe timeout fits.
+        assert_eq!(
+            auth_probe_budget(Duration::from_secs(5)),
+            Some(AUTH_PROBE_TIMEOUT_MS)
+        );
+        // A cold one that spent 200 s provisioning and probing: what is left.
+        assert_eq!(auth_probe_budget(Duration::from_secs(200)), Some(70_000));
+        // Too little left for a model call: not started, said so instead.
+        assert_eq!(auth_probe_budget(Duration::from_secs(250)), None);
+        assert_eq!(auth_probe_budget(Duration::from_secs(900)), None);
+        // Whatever it is given, the whole answer stays inside Hermes's 300 s.
+        for spent in [0u64, 60, 120, 239, 240] {
+            if let Some(b) = auth_probe_budget(Duration::from_secs(spent)) {
+                assert!(spent * 1000 + b <= DOCTOR_BUDGET_MS, "{spent}s + {b}ms");
+            }
+        }
+        const { assert!(DOCTOR_BUDGET_MS < 300_000) };
+    }
 
     #[test]
     fn slugify_folds_runs_and_caps_at_forty() {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the workbench image (Hermes chassis + preinstalled harnesses +
-# Playwright/chromium). Optional: pass a Hermes base image override.
+# Build the workbench image (Hermes chassis + preinstalled harness + the
+# dev-env baseline). Optional: pass a Hermes base image override.
 #   scripts/build-workbench-image.sh [hermes-base-image]
 set -euo pipefail
 cd "$(dirname "$0")/.."

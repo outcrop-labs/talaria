@@ -96,10 +96,13 @@ service:
     # pointed off the gateway) leaves this fallback in force. API_SERVER_KEY —
     # this agent's own Hermes API bearer, the one Talaria dials it with.
     # TALARIA_AGENT_KEY — this agent's own `tak_` credential, by design. A
-    # Developer Agent ALSO gets LLM_WORKBENCH_API_KEY as OPENAI_API_KEY (the
-    # sandbox harnesses' key — workbench-harnesses) and, with a coding account,
-    # OMP_AUTH_BROKER_TOKEN (= its own agent key). No other service carries the
-    # workbench key. The closed toolset default (no terminal, file, code
+    # Developer Agent ALSO gets LLM_WORKBENCH_API_KEY as
+    # TALARIA_WORKBENCH_API_KEY (the sandbox harness's key — workbench-harnesses;
+    # not OPENAI_API_KEY, which Hermes strips from every command the agent
+    # runs) and, with a coding account, OMP_AUTH_BROKER_TOKEN (= its own agent
+    # key). No other service carries the workbench key. Of these, Hermes
+    # strips only API_SERVER_KEY from the agent's terminal; the rest reach it.
+    # The closed toolset default (no terminal, file, code
     # execution or self-scheduling on a new agent — talaria-agent-defs
     # DEFAULT_DISABLED_FOR_NEW) is what keeps this environment out of a
     # prompt-injected `env | curl`; an agent whose manager opens a shell is an

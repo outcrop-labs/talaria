@@ -37,7 +37,9 @@ use std::path::{Path, PathBuf};
 use talaria_agent_auth::ensure_agent_api_key;
 use talaria_fleet_layout::GATEWAY_PORT_BASE;
 use talaria_secretbox::SecretBox;
-use talaria_workbench_harnesses::{MCP_CONFIG_FILE, PI_CODING_AGENT_DIR};
+use talaria_workbench_harnesses::{
+    MCP_CONFIG_FILE, MODELS_CONFIG_FILE, PI_CODING_AGENT_DIR, WORKBENCH_KEY_ENV,
+};
 
 /// The def columns the render loop reads — the agent_defs row for
 /// MANAGED+ENABLED agents (the current version rides alongside in
@@ -1337,6 +1339,9 @@ pub async fn render_fleet(
         }
         plugins.insert("enabled".into(), json!(enabled));
         routed.insert("plugins".into(), Value::Object(plugins));
+        // The agent's own secrets, by name, so execute_code gets them too.
+        let secret_names = talaria_agent_secrets::passthrough_names(pg, &def.id).await?;
+        fleet_env_passthrough(&mut routed, &secret_names);
 
         fleet_approvals(&mut routed, def.developer);
         fleet_delegation(&mut routed, def.max_children);
@@ -1645,18 +1650,28 @@ pub async fn render_fleet(
             .await
             .map_err(|e| format!("{}: {e}", mcp_path.display()))?;
 
-            // Gateway models.json for Oh My Pi: a `talaria` provider pointed
+            // Gateway models.yml for Oh My Pi: a `talaria` provider pointed
             // at the same OpenAI-compatible gateway the personas use, listing
-            // every model omp's roles name. `$OPENAI_API_KEY` interpolates
-            // from the container env at request time (omp_env set OPENAI_*).
+            // every model omp's roles name. Its `apiKey` names the env var
+            // omp reads the workbench key from at request time (omp_env sets
+            // it). YAML, because omp reads a models.json only until it has
+            // made a models.yml from it (MODELS_CONFIG_FILE).
             let llm_base = format!("{}/api/llm/v1", gateway_origin());
             let models_body = talaria_provider_models_json(&llm_base, &omp_roles.model_ids());
             tokio::fs::write(
-                wb_dir.join("models.json"),
-                serde_json::to_string_pretty(&models_body).unwrap_or_default(),
+                wb_dir.join(MODELS_CONFIG_FILE),
+                format!(
+                    "# Rendered by Talaria — Oh My Pi's gateway provider. Do not hand-edit.\n{}",
+                    yaml11_emit(&models_body)
+                ),
             )
             .await
             .map_err(|e| e.to_string())?;
+            // A models.json an older render wrote here STAYS. Nothing reads
+            // it, but a container created before this render still binds it,
+            // and most renders recreate no container: delete the bind source
+            // and that agent's next restart (a daemon restart, a reboot, its
+            // own crash) fails on a missing mount until someone rolls it.
             // The token that says which render built this sandbox. doctor
             // compares it with the one this build expects, so a container
             // that was never rolled stops being invisible.
@@ -2367,7 +2382,7 @@ const HARNESS_OWN_HOOK: &str = "/etc/cont-init.d/03-talaria-workbench-own";
 
 /// Heal Docker's root-owned bind-mount parents so the hermes runtime can
 /// write harness config. Directories only — never `-R`. The policy files
-/// mounted inside (models.json, settings.json, mcp.json, skills) are
+/// mounted inside (models.yml, settings.json, mcp.json, skills) are
 /// read-only host files; a recursive chown fails on them or steals host
 /// ownership of the skills tree. `0775` is the shared-group mode: owner
 /// hermes can write, and so can the hermes group. Other users cannot, and
@@ -2430,6 +2445,15 @@ if [ -x "$mise" ]; then
     runuser -u hermes -- ln -sfn "$real" /opt/data/.local/bin/bun || true
   fi
 fi
+
+# And where the AGENT'S TERMINAL looks. Hermes runs every terminal command
+# from a login-shell snapshot, and Debian's /etc/profile resets a non-root
+# PATH to /usr/local/bin:/usr/bin:/bin — /opt/data/.local/bin is not on it,
+# so omp started from the agent's own terminal died with `env: 'bun': No such
+# file or directory` while a `docker exec` probe found bun. /usr/local/bin is
+# the container layer, so this runs on every boot; the link is dangling until
+# the workbench provisions bun, and resolves from then on.
+ln -sfn /opt/data/.local/bin/bun /usr/local/bin/bun 2>/dev/null || true
 "#;
 
 // The bun the coding harness runs on — one pin, shared with the workbench's
@@ -2443,13 +2467,46 @@ fn harness_own_script() -> String {
         .replace("__XDG__", HARNESS_XDG_DATA_HOME)
 }
 
+/// List the agent's per-agent secret names in `terminal.env_passthrough`.
+///
+/// The secrets ride the container env (env_file). Hermes's terminal passes a
+/// name it does not own through as is, but execute_code starts from an EMPTY
+/// env and admits only safe names and the ones this list declares — so a
+/// vendor key a manager set for the agent reached its shell and never its
+/// scripts. The values stay where they are; this is names only. A def's own
+/// list is kept and ours is added. Nothing to add and nothing authored
+/// renders no block at all, so an agent without secrets is byte-identical.
+fn fleet_env_passthrough(routed: &mut Map<String, Value>, secret_names: &[String]) {
+    let mut terminal = routed
+        .get("terminal")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut list: Vec<Value> = terminal
+        .get("env_passthrough")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if secret_names.is_empty() && list.is_empty() {
+        return;
+    }
+    for name in secret_names {
+        let v = json!(name);
+        if !list.contains(&v) {
+            list.push(v);
+        }
+    }
+    terminal.insert("env_passthrough".into(), json!(list));
+    routed.insert("terminal".into(), Value::Object(terminal));
+}
+
 /// Policy files Oh My Pi reads inside [`PI_CODING_AGENT_DIR`].
 fn pi_config_mounts(wb_dir: &Path, fleet_skills: &Path) -> Vec<String> {
     let dir = PI_CODING_AGENT_DIR;
     vec![
         format!(
-            "{}:{dir}/models.json:ro",
-            wb_dir.join("models.json").display()
+            "{}:{dir}/{MODELS_CONFIG_FILE}:ro",
+            wb_dir.join(MODELS_CONFIG_FILE).display()
         ),
         format!(
             "{}:{dir}/settings.json:ro",
@@ -2474,8 +2531,9 @@ fn claude_mcp_config(names: &[String], model: &str, gw_base: &str) -> Value {
     })
 }
 
-/// Oh My Pi's `models.json`: a single `talaria` provider against the org
-/// gateway. `apiKey` interpolates `$OPENAI_API_KEY` at request time.
+/// Oh My Pi's model catalog: a single `talaria` provider against the org
+/// gateway. `apiKey` is the NAME of the env var holding the workbench key,
+/// which omp looks up at request time ([`WORKBENCH_KEY_ENV`]).
 fn talaria_provider_models_json(base_url: &str, model_ids: &[String]) -> Value {
     let models: Vec<Value> = if model_ids.is_empty() {
         vec![json!({ "id": "default" })]
@@ -2487,7 +2545,7 @@ fn talaria_provider_models_json(base_url: &str, model_ids: &[String]) -> Value {
             "talaria": {
                 "baseUrl": base_url,
                 "api": "openai-completions",
-                "apiKey": "$OPENAI_API_KEY",
+                "apiKey": WORKBENCH_KEY_ENV,
                 "compat": {
                     "supportsDeveloperRole": false,
                     "supportsReasoningEffort": false
@@ -3403,6 +3461,37 @@ service:
     }
 
     #[test]
+    fn fleet_env_passthrough_lists_secret_names_and_keeps_the_defs_own() {
+        // No secrets, nothing authored: no block, so the config is unchanged.
+        let mut bare = Map::new();
+        bare.insert("model".into(), json!("x"));
+        fleet_env_passthrough(&mut bare, &[]);
+        assert!(!bare.contains_key("terminal"), "{bare:?}");
+
+        // A def's own terminal block and list survive; ours is appended once.
+        let mut routed: Map<String, Value> = serde_json::from_value(json!({
+            "terminal": { "timeout": 300, "env_passthrough": ["MY_TOOL_HOME", "FIGMA_TOKEN"] }
+        }))
+        .unwrap();
+        fleet_env_passthrough(
+            &mut routed,
+            &["FIGMA_TOKEN".to_string(), "STRIPE_API_KEY".to_string()],
+        );
+        assert_eq!(
+            routed["terminal"],
+            json!({ "timeout": 300, "env_passthrough": ["MY_TOOL_HOME", "FIGMA_TOKEN", "STRIPE_API_KEY"] })
+        );
+        // And it is the block Hermes reads, losslessly.
+        let yaml = yaml11_emit(&Value::Object(routed.clone()));
+        assert!(
+            yaml.contains("terminal:\n  timeout: 300\n  env_passthrough:\n    - MY_TOOL_HOME\n"),
+            "{yaml}"
+        );
+        let back: Value = serde_yaml_ng::from_str(&yaml).expect("emitted yaml parses");
+        assert_eq!(back, Value::Object(routed));
+    }
+
+    #[test]
     fn talaria_provider_models_json_points_at_the_gateway() {
         let v = talaria_provider_models_json("http://gw/api/llm/v1", &["qwen3:14b".into()]);
         assert_eq!(
@@ -3411,8 +3500,8 @@ service:
         );
         assert_eq!(
             v["providers"]["talaria"]["apiKey"],
-            json!("$OPENAI_API_KEY"),
-            "Pi interpolates $ENV at request time — the key must not be baked"
+            json!("TALARIA_WORKBENCH_API_KEY"),
+            "omp reads the key from the env var this names — never baked, never a `$` literal"
         );
         assert_eq!(
             v["providers"]["talaria"]["api"],
@@ -3428,6 +3517,11 @@ service:
             json!("default"),
             "an empty catalog still loads the provider so --model can be passed"
         );
+        // It ships as YAML (omp's models.yml), and must read back unchanged —
+        // a model id like `qwen3:14b` included.
+        let yaml = yaml11_emit(&v);
+        let back: Value = serde_yaml_ng::from_str(&yaml).expect("models.yml parses");
+        assert_eq!(back, v, "models.yml round-trips:\n{yaml}");
     }
 
     #[test]
@@ -3920,6 +4014,10 @@ empty_list: []
         // non-login `bash -c` finds it too.
         assert!(filled.contains(&format!("XDG_DATA_HOME={HARNESS_XDG_DATA_HOME}")));
         assert!(filled.contains("ln -sfn \"$real\" /opt/data/.local/bin/bun"));
+        // And onto the PATH the agent's terminal has once /etc/profile reset
+        // it (Hermes snapshots a login shell), unconditionally — the link
+        // resolves once the workbench provisions bun.
+        assert!(filled.contains("ln -sfn /opt/data/.local/bin/bun /usr/local/bin/bun"));
         assert!(filled.contains(&format!("bun@{HARNESS_BUN}")));
         // Globally, because a shim with no version is the whole bug: a Rust
         // job pins rust and mold, and omp is a bun program wherever it runs.
@@ -3936,7 +4034,7 @@ empty_list: []
             Path::new("/fleet/eng/workbench"),
             Path::new("/fleet/skills"),
         );
-        for file in ["models.json", "settings.json", "mcp.json", "skills"] {
+        for file in ["models.yml", "settings.json", "mcp.json", "skills"] {
             assert!(
                 mounts
                     .iter()
