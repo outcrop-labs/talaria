@@ -1,19 +1,22 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import Select from '@/components/ui/Select.svelte'
   import { errorMessage, getList, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
 
   /** Agent repo creation: which orgs allow it, and the pending request queue
    *  (agents propose, THIS is where humans ratify — approval creates the repo
-   *  and grants it to the requester). */
+   *  at the visibility chosen here and grants it to the requester; a rejection
+   *  posts its reason on the requesting ticket). */
   let {
     status,
     save,
   }: {
-    status: { repoCreationOrgs?: string[] }
+    status: { mode?: 'app' | 'pat' | null; repoCreationOrgs?: string[] }
     save: (body: unknown) => Promise<void>
   } = $props()
 
@@ -21,12 +24,15 @@
   const cfgOrgs = $derived(status.repoCreationOrgs ?? [])
   // svelte-ignore state_referenced_locally -- reason: seed-once form draft; the parent gates this section on the loaded status
   let orgs = $state((status.repoCreationOrgs ?? []).join(', '))
+  type Visibility = 'private' | 'public'
   interface RepoReq {
     id: string
     agentModel: string
     org: string
     name: string
     why: string
+    visibility?: Visibility
+    appSlug?: string | null
     createdAt: string
   }
   // This is the humans-ratify queue. An empty render means "nothing waiting on
@@ -39,11 +45,24 @@
   }))
   const requests = $derived(requestsQuery.data ?? [])
   const requestsFailed = $derived(requestsQuery.isError && requestsQuery.data === undefined)
+  // The approver's visibility per request; absent = what the agent asked for.
+  let chosen = $state<Record<string, Visibility>>({})
+  const visibilityOf = (r: RepoReq): Visibility => chosen[r.id] ?? r.visibility ?? 'private'
+  let rejecting = $state<string | null>(null)
+  let rejectNote = $state('')
   let decideError = $state<string | null>(null)
-  const decide = async (id: string, action: 'approve' | 'reject') => {
+  const decide = async (r: RepoReq, action: 'approve' | 'reject') => {
     decideError = null
     try {
-      await putJson<{ ok: true }>('/api/workbench/repo-requests', { id, action })
+      const body =
+        action === 'approve'
+          ? { id: r.id, action, visibility: visibilityOf(r) }
+          : { id: r.id, action, ...(rejectNote.trim() ? { note: rejectNote.trim() } : {}) }
+      await putJson<{ ok: true }>('/api/workbench/repo-requests', body)
+      if (action === 'reject') {
+        rejecting = null
+        rejectNote = ''
+      }
     } catch (e) {
       decideError = errorMessage(e)
     }
@@ -68,8 +87,13 @@
       placeholder="approved orgs, comma-separated (empty = off)"
       class="max-w-md"
     />
-    <span class="text-xs text-muted">needs the App's org Administration permission to create</span>
+    <span class="text-xs text-muted">needs the App installed on each org, with the org Administration permission</span>
   </div>
+  {#if status.mode !== 'app'}
+    <div class="text-xs text-warning" data-testid="repo-creation-mode">
+      Repo creation needs the GitHub App connection. While GitHub is connected with an access token, agents' requests are refused.
+    </div>
+  {/if}
   {#if requestsFailed}
     <QueryError
       variant="inline"
@@ -79,13 +103,45 @@
     />
   {/if}
   {#each requests as r (r.id)}
-    <div class="flex items-center gap-2 rounded-md border border-warning/30 px-3 py-2 text-sm">
-      <span class="min-w-0 flex-1 truncate">
-        <span class="font-mono text-[13px] text-fg">{r.org}/{r.name}</span>
-        <span class="text-muted"> · {r.agentModel}: {r.why}</span>
-      </span>
-      <Button size="sm" onclick={() => void decide(r.id, 'approve')}>Create + grant</Button>
-      <Button size="sm" variant="ghost" onclick={() => void decide(r.id, 'reject')}>Reject</Button>
+    <div class="space-y-2 rounded-md border border-warning/30 px-3 py-2 text-sm" data-testid="repo-request">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="w-full min-w-0 truncate sm:w-auto sm:flex-1">
+          <span class="font-mono text-[13px] text-fg">{r.org}/{r.name}</span>
+          <span class="text-muted"> · {r.agentModel}: {r.why}</span>
+        </span>
+        {#if r.appSlug}<Chip title="the Talaria app this repo will hold">app {r.appSlug}</Chip>{/if}
+        <Select
+          size="sm"
+          aria-label="Visibility"
+          value={visibilityOf(r)}
+          onchange={(e) => (chosen[r.id] = e.currentTarget.value as Visibility)}
+          class="w-28"
+        >
+          <option value="private">private</option>
+          <option value="public">public</option>
+        </Select>
+        <Button size="sm" onclick={() => void decide(r, 'approve')}>Create + grant</Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onclick={() => {
+            rejecting = rejecting === r.id ? null : r.id
+            rejectNote = ''
+          }}>Reject</Button
+        >
+      </div>
+      {#if rejecting === r.id}
+        <div transition:slide={{ duration: 150 }} class="flex items-center gap-2">
+          <Input
+            size="sm"
+            bind:value={rejectNote}
+            maxlength={500}
+            placeholder="Why not? Posted on the requesting ticket (optional)"
+            class="min-w-0 flex-1"
+          />
+          <Button size="sm" variant="ghost" onclick={() => void decide(r, 'reject')}>Reject request</Button>
+        </div>
+      {/if}
     </div>
   {/each}
   {#if decideError}<div transition:slide={{ duration: 150 }} class="text-xs text-danger">{decideError}</div>{/if}

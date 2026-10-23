@@ -4140,6 +4140,24 @@ alter table tasks drop column if exists conversation_id`,
    where key = 'gateway_unmetered_keys'
      and jsonb_typeof(value) = 'array'
      and value @> '["fleet-gateway"]'::jsonb`,
+  // ── The workbench's PR and repo-request fixes (2026-10-22) ──────────────
+  // THE PR A JOB OPENED, BY NUMBER. finish_job returned prNumber and kept
+  // only the URL, so pr_status and a revise round (which reuses the open PR
+  // instead of asking GitHub for a second one) had to parse it back out.
+  // Null on older rows; readers fall back to the URL.
+  `alter table workbench_jobs add column if not exists pr_number bigint`,
+  // WHAT A REPO REQUEST ASKS FOR, AND WHO IT IS FOR. `visibility` is what
+  // the approval creates (private unless the agent or the approver says
+  // public); `app_slug` names the Talaria app the repo will hold, when it
+  // will; `responsible_user_id` is the human the agent answered to when it
+  // asked (the attribution ladder), so a repo minted for an agent has a
+  // person behind it; `decision_note` is the approver's reason, which a
+  // rejection also posts on the requesting ticket and list_repos reports.
+  `alter table workbench_repo_requests add column if not exists visibility text not null default 'private'`,
+  `alter table workbench_repo_requests add column if not exists app_slug text`,
+  `alter table workbench_repo_requests
+     add column if not exists responsible_user_id uuid references users(id) on delete set null`,
+  `alter table workbench_repo_requests add column if not exists decision_note text`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

@@ -1434,7 +1434,8 @@ CREATE TABLE public.workbench_jobs (
     merged_testing_at timestamp with time zone,
     workspace_cleared_at timestamp with time zone,
     queued_at timestamp with time zone,
-    queued_reason text
+    queued_reason text,
+    pr_number bigint
 );
 CREATE TABLE public.workbench_profiles (
     slug text NOT NULL,
@@ -1468,7 +1469,11 @@ CREATE TABLE public.workbench_repo_requests (
     status text DEFAULT 'pending'::text NOT NULL,
     decided_by text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    visibility text DEFAULT 'private'::text NOT NULL,
+    app_slug text,
+    responsible_user_id uuid,
+    decision_note text
 );
 CREATE TABLE public.workbench_repos (
     agent_id uuid NOT NULL,
@@ -2281,6 +2286,8 @@ ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_repo_requests
     ADD CONSTRAINT workbench_repo_requests_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.workbench_repo_requests
+    ADD CONSTRAINT workbench_repo_requests_responsible_user_id_fkey FOREIGN KEY (responsible_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_repo_requests
     ADD CONSTRAINT workbench_repo_requests_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_repos
