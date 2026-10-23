@@ -169,14 +169,20 @@ if [ -n "$missing" ]; then
 fi
 "#;
 
+/// `HOME` as Hermes sets it for the commands its terminal runs in a container
+/// (`$HERMES_HOME/home`, its `TERMINAL_HOME_MODE=auto` in a container). It is
+/// not the agent user's passwd home (`/opt/data`), which is the gateway's own.
+pub const AGENT_TERMINAL_HOME: &str = "/opt/data/home";
+
 /// User half, as the checkout's owner: the mise binary, the shims line in
 /// the shell profiles, the generated config kept out of git, every tool the
 /// repo's mise configs name, sccache wired into the repo's env when asked,
 /// and what resolved. $1 = home, $2 = repo root, $3 = "1" when a
-/// mise.local.toml was written, $4 = the sccache dir ("" = no sccache).
+/// mise.local.toml was written, $4 = the sccache dir ("" = no sccache),
+/// $5 = the agent terminal's HOME ([`AGENT_TERMINAL_HOME`]).
 const USER_SH: &str = r#"
 set -e
-home="$1"; root="$2"; wrote="$3"; sccache_dir="$4"
+home="$1"; root="$2"; wrote="$3"; sccache_dir="$4"; term_home="$5"
 export HOME="$home" MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/opt/data/workbench/jobs
 bin="$home/.local/bin"
 export PATH="$bin:$PATH"
@@ -185,22 +191,40 @@ if ! command -v mise >/dev/null 2>&1; then
   curl -fsSL https://mise.run | MISE_INSTALL_PATH="$bin/mise" sh >/dev/null
   command -v mise >/dev/null 2>&1 || { echo "could not download mise (https://mise.run)" >&2; exit 1; }
 fi
+# Where this install keeps its tools and its global config, resolved NOW, as
+# mise resolves them for this user: MISE_DATA_DIR, else XDG_DATA_HOME/mise
+# (the render sets XDG_DATA_HOME on workbenches), else ~/.local/share/mise.
+# The block below carries them as absolute paths because the shell that reads
+# it may have another HOME: Hermes runs the agent's terminal commands with
+# HOME=$term_home, where a ~-relative path names an empty directory and a
+# global pin (bun, below) is not found.
+data="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$home/.local/share}/mise}"
+global="${MISE_GLOBAL_CONFIG_FILE:-${MISE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$home/.config}/mise}/config.toml}"
+case "$data$global" in *"'"*) echo "mise paths with a quote in them: $data $global" >&2; exit 1 ;; esac
 # Rewritten on every call (old block out, current block in), so a fix to the
 # block reaches containers that already have an older one. Written back in
-# place (not replaced) so the file keeps its mode.
-for rc in "$home/.profile" "$home/.bashrc"; do
+# place (not replaced) so the file keeps its mode. Both homes get it: the
+# passwd home's profile is what Hermes's terminal sources when it snapshots a
+# new session, and the terminal home's is what `. ~/.profile` reads from a
+# shell the agent opened before this call (and what a login shell there reads).
+rcs="$home/.profile $home/.bashrc"
+if [ -n "$term_home" ] && [ "$term_home" != "$home" ] && mkdir -p "$term_home" 2>/dev/null; then
+  rcs="$rcs $term_home/.profile $term_home/.bashrc"
+fi
+for rc in $rcs; do
   touch "$rc"
   tmp=$(mktemp)
   awk '/^# >>> talaria workbench: mise >>>$/{skip=1} !skip{print} /^# <<< talaria workbench: mise <<<$/{skip=0}' "$rc" > "$tmp"
-  cat >> "$tmp" <<'EOF'
+  cat >> "$tmp" <<EOF
 # >>> talaria workbench: mise >>>
 export MISE_YES=1
 export MISE_TRUSTED_CONFIG_PATHS=/opt/data/workbench/jobs
-# mise's own lookup: MISE_DATA_DIR, else XDG_DATA_HOME/mise (the render sets
-# XDG_DATA_HOME on workbenches), else ~/.local/share/mise. Always to the
-# FRONT, even if already present: a stock .profile puts ~/.local/bin ahead
-# after .bashrc ran, and a hand-installed tool there must not shadow the pin.
-export PATH="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/shims:$PATH"
+export MISE_DATA_DIR='$data'
+export MISE_GLOBAL_CONFIG_FILE='$global'
+# Always to the FRONT, even if already present: a stock .profile puts
+# ~/.local/bin ahead after .bashrc ran, and a hand-installed tool there must
+# not shadow the pin.
+export PATH="\$MISE_DATA_DIR/shims:\$PATH"
 # <<< talaria workbench: mise <<<
 EOF
   cat "$tmp" > "$rc"
@@ -956,6 +980,7 @@ pub async fn prepare_env(pg: &PgPool, department: &str, workdir: &str) -> Result
             &scan.root,
             if wrote { "1" } else { "0" },
             if plan.sccache { SCCACHE_DIR } else { "" },
+            AGENT_TERMINAL_HOME,
         ],
         USER_TIMEOUT_MS,
     )
@@ -980,7 +1005,7 @@ pub async fn prepare_env(pg: &PgPool, department: &str, workdir: &str) -> Result
         "rejected": plan.rejected,
         "skipped": scan.skipped,
         "resolved": resolved,
-        "usage": "Toolchains resolve through mise shims by directory in every NEW login shell (bash -l). In a shell opened before this call, run `. ~/.profile` first, or prefix a command with `mise exec --`. Do not install toolchains yourself: add them to the repo's mise.toml or .talaria/workbench.toml and call prepare_env again.",
+        "usage": "Toolchains resolve through mise shims by directory, so run them from inside the repo (cd into it first; outside it a shim answers \"No version is set\"). A terminal session started after this call has them on PATH; in one opened before it, run `. ~/.profile` first, or prefix a command with `mise exec --`. Do not install toolchains yourself: add them to the repo's mise.toml or .talaria/workbench.toml and call prepare_env again.",
     }))
 }
 
@@ -1271,6 +1296,118 @@ mod tests {
             String::from_utf8_lossy(&out.stdout).into_owned(),
             out.status.success(),
         )
+    }
+
+    /// Runs USER_SH as prepare_env does, with a stub `mise` already in the
+    /// passwd home's bin (so nothing downloads) and a pinned env.
+    #[cfg(unix)]
+    fn run_user_sh(
+        home: &std::path::Path,
+        term: &str,
+        root: &std::path::Path,
+        xdg: &std::path::Path,
+    ) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let mise = bin.join("mise");
+        std::fs::write(&mise, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&mise, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(USER_SH)
+            .arg("sh")
+            .args([
+                home.to_str().unwrap(),
+                root.to_str().unwrap(),
+                "0",
+                "",
+                term,
+            ])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("XDG_DATA_HOME", xdg)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_mise_block_reaches_the_agent_terminals_home_with_absolute_paths() {
+        // Hermes runs the agent's terminal with HOME at $HERMES_HOME/home, not
+        // the passwd home prepare_env runs as. A block written only there, or
+        // one that finds mise through $HOME, left a shell the agent opened
+        // before prepare_env with no toolchain after `. ~/.profile`.
+        let scratch = Scratch::new("miseblock");
+        let (home, term, root, xdg) = (
+            scratch.0.join("home"),
+            scratch.0.join("term"),
+            scratch.0.join("repo"),
+            scratch.0.join("xdg"),
+        );
+        std::fs::create_dir_all(&root).unwrap();
+        // Twice: the block is rewritten in place, never appended again.
+        for _ in 0..2 {
+            assert!(run_user_sh(&home, term.to_str().unwrap(), &root, &xdg));
+        }
+        let data = format!("export MISE_DATA_DIR='{}/mise'", xdg.display());
+        let global = format!(
+            "export MISE_GLOBAL_CONFIG_FILE='{}/.config/mise/config.toml'",
+            home.display()
+        );
+        for rc in [
+            home.join(".profile"),
+            home.join(".bashrc"),
+            term.join(".profile"),
+            term.join(".bashrc"),
+        ] {
+            let body = std::fs::read_to_string(&rc).unwrap();
+            assert_eq!(
+                body.matches("# >>> talaria workbench: mise >>>").count(),
+                1,
+                "{}",
+                rc.display()
+            );
+            assert!(body.contains(&data), "{}: {body}", rc.display());
+            assert!(body.contains(&global), "{}: {body}", rc.display());
+            assert!(!body.contains("$HOME"), "{}: {body}", rc.display());
+        }
+        // What the agent's own shell gets from `. ~/.profile`: the shims first.
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(". \"$HOME/.profile\"; printf '%s' \"$PATH\"")
+            .env_clear()
+            .env("HOME", &term)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        let path = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            path.starts_with(&format!("{}/mise/shims:", xdg.display())),
+            "{path}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_mise_block_is_written_once_when_both_homes_are_the_same() {
+        let scratch = Scratch::new("miseblock-same");
+        let (home, root, xdg) = (
+            scratch.0.join("home"),
+            scratch.0.join("repo"),
+            scratch.0.join("xdg"),
+        );
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(run_user_sh(&home, home.to_str().unwrap(), &root, &xdg));
+        assert!(run_user_sh(&home, "", &root, &xdg));
+        let body = std::fs::read_to_string(home.join(".profile")).unwrap();
+        assert_eq!(
+            body.matches("# >>> talaria workbench: mise >>>").count(),
+            1,
+            "{body}"
+        );
     }
 
     #[cfg(unix)]
