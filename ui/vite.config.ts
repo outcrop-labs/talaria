@@ -176,7 +176,17 @@ export default defineConfig({
   // Dev server reachable over the LAN/Tailscale. allowedHosts only affects the
   // dev server (not prod builds); `true` lets IPs and hostnames through.
   // fs.allow ..: app sources live in ../apps and load through /@app/ in dev.
-  server: { host: true, allowedHosts: true, fs: { allow: ['..'] } },
+  // watch.ignored: src/sdk/client-docs.test.ts typechecks the SDK docs in a
+  // scratch `.sdk-doc-examples-*` dir under ui/ with its own tsconfig.json. A
+  // watched tsconfig change clears Vite's cache, which drops the app runtime's
+  // SSR loader, so every app server answered "this app has no server" until a
+  // restart whenever the ui tests ran beside `talaria dev`.
+  server: {
+    host: true,
+    allowedHosts: true,
+    fs: { allow: ['..'] },
+    watch: { ignored: ['**/.sdk-doc-examples-*/**'] },
+  },
   build: {
     outDir: 'dist/client',
     rollupOptions: {
