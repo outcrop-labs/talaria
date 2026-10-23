@@ -2148,7 +2148,8 @@ mod tests {
     #[test]
     fn a_read_token_asks_for_contents_read_and_nothing_that_writes() {
         use super::{RepoAccess, access_tokens_body_for};
-        let body = access_tokens_body_for("acme/talaria-app-crm", Some(RepoAccess::Read.permissions()));
+        let body =
+            access_tokens_body_for("acme/talaria-app-crm", Some(RepoAccess::Read.permissions()));
         assert_eq!(
             body,
             r#"{"repositories":["talaria-app-crm"],"permissions":{"contents":"read","metadata":"read"}}"#
