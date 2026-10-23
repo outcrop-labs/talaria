@@ -134,6 +134,26 @@ pub const LEGACY_DOCKER_PROJECT: &str = "ai";
 /// upward from here, persisted on the def row).
 pub const GATEWAY_PORT_BASE: i64 = 8770;
 
+/// The base THIS process allocates gateway ports from:
+/// `TALARIA_GATEWAY_PORT_BASE` when it names a usable port, else
+/// [`GATEWAY_PORT_BASE`]. Every stack keeps its ports in its own database, so
+/// two stacks on one docker host both start at the same base, and the second
+/// one's first agent cannot publish the port the first one's holds ("port is
+/// already allocated"). `talaria worktree` writes a per-stack base for exactly
+/// that.
+pub fn gateway_port_base() -> i64 {
+    parse_gateway_port_base(std::env::var("TALARIA_GATEWAY_PORT_BASE").ok().as_deref())
+}
+
+/// The pure half of [`gateway_port_base`]: an unset, unparseable or
+/// unusable value falls back to the default rather than failing a render.
+/// Usable leaves room above for a stack's agents (100) below 65535.
+pub fn parse_gateway_port_base(raw: Option<&str>) -> i64 {
+    raw.and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|p| (1024..=65_435).contains(p))
+        .unwrap_or(GATEWAY_PORT_BASE)
+}
+
 /// The EXTERNAL docker network the whole fleet joins (compose never creates
 /// external networks — the docker module ensures it exists before any `up`).
 /// The name lives in the chassis; 'talaria' is the fresh-install default.
@@ -158,6 +178,20 @@ pub async fn fleet_network_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_gateway_port_base_is_the_env_when_usable_and_the_default_otherwise() {
+        assert_eq!(parse_gateway_port_base(None), GATEWAY_PORT_BASE);
+        assert_eq!(parse_gateway_port_base(Some("20300")), 20300);
+        assert_eq!(parse_gateway_port_base(Some(" 20300\n")), 20300);
+        for bad in ["", "abc", "80", "0", "-1", "65500", "99999"] {
+            assert_eq!(
+                parse_gateway_port_base(Some(bad)),
+                GATEWAY_PORT_BASE,
+                "{bad:?}"
+            );
+        }
+    }
 
     #[test]
     fn an_operators_search_url_reaches_an_agent_only_where_it_can() {

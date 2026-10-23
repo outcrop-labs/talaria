@@ -6,7 +6,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { WORKTREE_ENV_KEYS, runWorktree, seedFleetPlane, setupDiffers, stripOwnKeys, worktreeSlot } from './worktree'
+import { CLEAR_SEEDED_GATEWAY_PORTS, WORKTREE_ENV_KEYS, runWorktree, seedFleetPlane, setupDiffers, slotPorts, stripOwnKeys, worktreeSlot } from './worktree'
 import { fakeCtx, type FakeCtx } from '../testing'
 import { CliError } from '../ui'
 
@@ -20,20 +20,48 @@ const attempt = async (fn: () => Promise<unknown>): Promise<string> => {
 }
 
 describe('worktreeSlot', () => {
-  test('first slot with all four ports free', async () => {
+  test('first slot with every port free', async () => {
     const slot = await worktreeSlot(async () => false)
-    expect(slot).toEqual({ app: 5301, api: 5401, pg: 5601, redis: 6501 })
+    expect(slot).toEqual({
+      app: 5301,
+      api: 5401,
+      pg: 5601,
+      redis: 6501,
+      mcp: 5701,
+      ompAuth: 5801,
+      gatewayBase: 20100,
+    })
   })
 
-  test('skips slots where any one of the four is taken', async () => {
+  test('skips slots where any one of the ports is taken', async () => {
     const taken = (p: number): Promise<boolean> =>
-      Promise.resolve(p === 5301 || p === 5402 || p === 5603 || p === 6504)
-    // slot 1: app taken; slot 2: api taken; slot 3: pg taken; slot 4: redis
-    // taken → slot 5. The api port is in this list because it used not to be:
-    // every worktree shared :5274, and `talaria dev` adopts an api already
-    // there, so the second stack proxied to the first stack's database.
+      Promise.resolve(
+        [5301, 5402, 5603, 6504, 5705, 5806, 20700].includes(p),
+      )
+    // slots 1-4: app, api, pg, redis taken; 5: toolkit; 6: omp auth;
+    // 7: the gateway range's first port → slot 8. The api port is in this
+    // list because it used not to be: every worktree shared :5274, and
+    // `talaria dev` adopts an api already there, so the second stack proxied
+    // to the first stack's database. The toolkit, omp-auth and gateway ports
+    // are here for the same reason, one hop further out (see worktreeSlot).
     const slot = await worktreeSlot(taken)
-    expect(slot).toEqual({ app: 5305, api: 5405, pg: 5605, redis: 6505 })
+    expect(slot).toEqual(slotPorts(8))
+  })
+
+  test("a slot's ranges never overlap another slot's, or main's fixed ports", () => {
+    const main = [5273, 5274, 5276, 5280, 5544, 8770]
+    const seen = new Set<number>()
+    for (let c = 1; c <= 89; c++) {
+      const s = slotPorts(c)
+      const gateway = Array.from({ length: 100 }, (_, i) => s.gatewayBase + i)
+      for (const port of [s.app, s.api, s.pg, s.redis, s.mcp, s.ompAuth, ...gateway]) {
+        expect(main).not.toContain(port)
+        expect(seen.has(port)).toBe(false)
+        seen.add(port)
+      }
+    }
+    // main's agents allocate upward from 8770; the worktree ranges start far above.
+    expect(Math.min(...[...seen].filter((p) => p >= 8770))).toBeGreaterThan(8770 + 1000)
   })
 
   test('null when the range is exhausted', async () => {
@@ -156,6 +184,22 @@ describe('runWorktree — happy path', () => {
     // files their containers under the shared `talaria-fleet`.
     expect(lines).toContain(`TALARIA_GATEWAY_SELF_URL=http://host.docker.internal:${port}/api/llm/v1`)
     expect(lines).toContain('TALARIA_FLEET_PROJECT=talaria-wt-demo-fleet')
+    // ...and the api's loopback children and the agents' gateway ports move
+    // with the slot: on the shared :5280 the second stack's agents were served
+    // by the first stack's toolkit (401), and every stack's first agent asked
+    // for :8770.
+    const slotNo = port - 5300
+    expect(lines).toContain(`TALARIA_MCP_PORT=${5700 + slotNo}`)
+    expect(lines).toContain(`TALARIA_OMP_AUTH_PORT=${5800 + slotNo}`)
+    expect(lines).toContain(`TALARIA_GATEWAY_PORT_BASE=${20000 + slotNo * 100}`)
+    // ...and the gateway ports the seed copied from main are cleared in THIS
+    // stack's database, after the restore, so its first render assigns its own.
+    const restore = ctx.calls.findIndex((c) => c.args.includes('-i') && c.args.includes('talaria-pg-demo'))
+    const clear = ctx.calls.findIndex(
+      (c) => c.args.includes('talaria-pg-demo') && c.args.includes(CLEAR_SEEDED_GATEWAY_PORTS),
+    )
+    expect(clear).toBeGreaterThan(restore)
+    expect(ctx.calls.some((c) => c.args.includes(CLEAR_SEEDED_GATEWAY_PORTS) && c.args.includes('talaria-postgres-dev'))).toBe(false)
     // ...and the fleet plane exists for the renderer to write into — a hire
     // against a missing fleet/.env fails rather than inventing one.
     expect(existsSync(join(wt, 'fleet/agents'))).toBe(true)

@@ -18,6 +18,15 @@ import { NAME_RE, portTaken } from '../paths'
  *  (53xx/54xx/56xx/65xx) all free, so any number of worktrees run at once
  *  without colliding. Injectable probe for tests.
  *
+ *  The slot also owns the api's two loopback children — the toolkit MCP
+ *  (57xx) and the omp auth bridge (58xx) — and a hundred agent gateway ports
+ *  from 20000 + c·100. Each of those was one fixed number for every stack
+ *  (:5280, :5276, and 8770 upward from an empty database), and each one
+ *  collided the moment two stacks ran agents: the second api ADOPTED the
+ *  first stack's toolkit (which refused its agents' keys, 401), and the
+ *  second stack's first agent could not publish :8770. The gateway range is
+ *  probed at its first port only: the range is this slot's by construction.
+ *
  *  THE API PORT IS IN HERE FOR A REASON. It was not, and the Rust api stayed on
  *  the fixed :5274 for every stack — while `talaria dev` ADOPTS an api already
  *  listening there rather than double-binding. So the second worktree to start
@@ -25,18 +34,41 @@ import { NAME_RE, portTaken } from '../paths'
  *  pointed at the first worktree's database. Two app servers, one database, by
  *  default — the exact thing docs/WORKTREES.md and AGENTS.md forbid, and
  *  invisible, because the app answered normally with someone else's data. */
+export type WorktreeSlot = {
+  app: number
+  api: number
+  pg: number
+  redis: number
+  mcp: number
+  ompAuth: number
+  gatewayBase: number
+}
+
+export function slotPorts(c: number): WorktreeSlot {
+  return {
+    app: 5300 + c,
+    api: 5400 + c,
+    pg: 5600 + c,
+    redis: 6500 + c,
+    mcp: 5700 + c,
+    ompAuth: 5800 + c,
+    gatewayBase: 20000 + c * 100,
+  }
+}
+
 export async function worktreeSlot(
   taken: (port: number) => Promise<boolean> = (p) => portTaken(p),
-): Promise<{ app: number; api: number; pg: number; redis: number } | null> {
+): Promise<WorktreeSlot | null> {
   for (let c = 1; c <= 89; c++) {
-    if (
-      !(await taken(5300 + c)) &&
-      !(await taken(5400 + c)) &&
-      !(await taken(5600 + c)) &&
-      !(await taken(6500 + c))
-    ) {
-      return { app: 5300 + c, api: 5400 + c, pg: 5600 + c, redis: 6500 + c }
+    const slot = slotPorts(c)
+    let free = true
+    for (const port of Object.values(slot)) {
+      if (await taken(port)) {
+        free = false
+        break
+      }
     }
+    if (free) return slot
   }
   return null
 }
@@ -60,6 +92,9 @@ export const WORKTREE_ENV_KEYS = [
   'TALARIA_RUST_API_URL',
   'TALARIA_GATEWAY_SELF_URL',
   'TALARIA_FLEET_PROJECT',
+  'TALARIA_MCP_PORT',
+  'TALARIA_OMP_AUTH_PORT',
+  'TALARIA_GATEWAY_PORT_BASE',
 ] as const
 
 /** Main's ui/.env with every line this stack rewrites removed. */
@@ -119,6 +154,11 @@ export function setupDiffers(running: string, wt: string): boolean {
   if (!existsSync(own) || !existsSync(running)) return false
   return readFileSync(own, 'utf8') !== readFileSync(running, 'utf8')
 }
+
+/** Clears the gateway ports a seed copied from main (see the seed step). */
+export const CLEAR_SEEDED_GATEWAY_PORTS =
+  "do $$ begin if to_regclass('public.agent_defs') is not null then " +
+  'update agent_defs set gateway_port = null where gateway_port is not null; end if; end $$;'
 
 export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promise<number> {
   const root = ctx.root
@@ -226,6 +266,19 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
     ctx.log.die(`seed dump/restore failed: ${e instanceof Error ? e.message : String(e)}`)
   }
   ctx.log.ok('seeded (a point-in-time copy of main)')
+  // The copied agent rows carry MAIN's gateway ports. This stack renders its
+  // own fleet from its own base (TALARIA_GATEWAY_PORT_BASE below), so a copied
+  // port would publish onto one of main's live agents. Clear them: the first
+  // render here assigns this stack's. Guarded so a main database that has no
+  // agent_defs yet seeds cleanly.
+  try {
+    await ctx.exec('docker', ['exec', pgc, 'psql', '-U', 'talaria', '-d', 'talaria', '-qc', CLEAR_SEEDED_GATEWAY_PORTS])
+  } catch (e) {
+    ctx.log.warn(
+      `could not clear the seeded gateway ports (${e instanceof Error ? e.message : String(e)}) — ` +
+        "a copied agent may claim one of main's ports when this stack renders it",
+    )
+  }
 
   ctx.log.say('Worktree ui/.env (own DB, shared encryption root)')
   // Copy main's env, then repoint state + app port. TALARIA_SECRET_KEY is KEPT
@@ -270,6 +323,16 @@ TALARIA_RUST_API_URL=http://127.0.0.1:${slot.api}
 # lifts both into the api (the renderer reads them; nothing else does).
 TALARIA_GATEWAY_SELF_URL=http://host.docker.internal:${slot.app}/api/llm/v1
 TALARIA_FLEET_PROJECT=${project}-fleet
+# The api's loopback children, on this stack's own ports. Both probe their port
+# first and ADOPT whatever answers there, so on the shared :5280 a second
+# stack's agents had their tool calls served by the first stack's toolkit,
+# which refused their keys (401); the omp auth bridge on :5276 the same way.
+TALARIA_MCP_PORT=${slot.mcp}
+TALARIA_OMP_AUTH_PORT=${slot.ompAuth}
+# Where this stack's agents' loopback gateway ports start. Every stack keeps
+# its ports in its own database, so each one's first agent asked for :8770 and
+# the second stack's \`up\` failed with "port is already allocated".
+TALARIA_GATEWAY_PORT_BASE=${slot.gatewayBase}
 `,
   )
   ctx.log.ok('ui/.env written')
@@ -297,6 +360,7 @@ Worktree "${name}" ready — fully isolated from main.
 
   Run it:   cd ${wt} && bun talaria dev
   App:      http://localhost:${slot.app}   (api :${slot.api} · Postgres :${slot.pg} · Redis :${slot.redis})
+  Agents:   gateway ports from :${slot.gatewayBase} · toolkit :${slot.mcp} · omp auth :${slot.ompAuth}
 
   Tear down when done:
     docker compose -p ${project} down -v
