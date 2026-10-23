@@ -405,7 +405,7 @@ pub fn app_layer_of(listing: &AppHarnessListing) -> AppLayer {
 pub fn merged_registry(layer: &AppLayer) -> Vec<RegisteredHarness> {
     let (merged, refused) = merge_app_layer(builtin_activity_harnesses(), &layer.harnesses);
     for r in refused {
-        tracing::warn!("[app-harnesses] {r}");
+        warn_once(r);
     }
     merged
 }
@@ -469,6 +469,81 @@ static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 /// imported, so this is generous.
 const LIST_DEADLINE: Duration = Duration::from_secs(10);
 
+/// A field's text from a listing entry that did not decode, for naming it.
+fn text_of<'a>(entry: &'a Value, key: &str) -> Option<&'a str> {
+    entry.get(key).and_then(Value::as_str)
+}
+
+/// THE LISTING, DECODED ONE ENTRY AT A TIME. A single entry this api cannot
+/// read — a `repair` that is not a u32, a field of the wrong type — costs
+/// that harness, reported as a problem on its app, and never the listing:
+/// decoding the whole body as one `AppHarnessListing` failed on one bad entry
+/// and left every app with no harnesses in the fitness plane. Only a body
+/// that is not an object, or whose lists are not lists, is refused whole.
+pub fn listing_of(body: &Value) -> Result<AppHarnessListing, String> {
+    let Some(obj) = body.as_object() else {
+        return Err("the app host's harness listing is not an object".into());
+    };
+    let list = |key: &str| -> Result<&[Value], String> {
+        match obj.get(key) {
+            None | Some(Value::Null) => Ok(&[]),
+            Some(Value::Array(items)) => Ok(items.as_slice()),
+            Some(_) => Err(format!(
+                "the app host's harness listing has a \"{key}\" that is not a list"
+            )),
+        }
+    };
+    let mut listing = AppHarnessListing::default();
+    for entry in list("problems")? {
+        match serde_json::from_value::<WireProblem>(entry.clone()) {
+            Ok(p) => listing.problems.push(p),
+            Err(e) => warn_once(format!("a skipped-harness entry did not parse: {e}")),
+        }
+    }
+    for entry in list("harnesses")? {
+        match serde_json::from_value::<AppHarnessWire>(entry.clone()) {
+            Ok(w) => listing.harnesses.push(w),
+            Err(e) => {
+                let app = text_of(entry, "app").unwrap_or("?").to_string();
+                let file = text_of(entry, "file").unwrap_or("?").to_string();
+                let id = text_of(entry, "id").map(str::to_string);
+                let reason = format!("the api could not read its listing entry: {e}");
+                warn_once(format!(
+                    "app \"{app}\": harnesses/{file} skipped — {reason}"
+                ));
+                listing.problems.push(WireProblem {
+                    app,
+                    file,
+                    id,
+                    reason,
+                });
+            }
+        }
+    }
+    Ok(listing)
+}
+
+/// Every warning this crate has logged, so one bad entry the api re-reads
+/// every `LAYER_TTL` while the fitness matrix polls is logged once per
+/// process, not every three seconds. Bounded: past `WARNED_CAP` distinct
+/// sentences the set starts over rather than growing.
+static WARNED_ONCE: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+const WARNED_CAP: usize = 1000;
+
+fn warn_once(message: String) {
+    let mut seen = WARNED_ONCE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if seen.contains(&message) {
+        return;
+    }
+    if seen.len() >= WARNED_CAP {
+        seen.clear();
+    }
+    tracing::warn!("[app-harnesses] {message}");
+    seen.insert(message);
+}
+
 /// Ask the app host what the enabled apps ship.
 pub async fn fetch_listing(token: &str) -> Result<AppHarnessListing, String> {
     let res = CLIENT
@@ -486,9 +561,40 @@ pub async fn fetch_listing(token: &str) -> Result<AppHarnessListing, String> {
             body.chars().take(300).collect::<String>()
         ));
     }
-    res.json::<AppHarnessListing>()
+    let body = res
+        .json::<Value>()
         .await
-        .map_err(|e| format!("the app host's harness listing did not parse: {e}"))
+        .map_err(|e| format!("the app host's harness listing did not parse: {e}"))?;
+    listing_of(&body)
+}
+
+/// THE ENABLED SET CHANGED: ask the app host to rewrite every enabled app's
+/// harness report (`POST /api/app-host/harnesses`, the "N harnesses" and
+/// "N skipped" lines in Manage → Apps). An app switched on that sorts first
+/// takes a contested id from the app that held it, and one switched off
+/// hands it back; a report written only by each app's own load probe kept
+/// saying what was true then. The layer this process cached goes too, so
+/// the fitness plane reads the new set on its next ask.
+pub async fn refresh_app_reports(token: &str) -> Result<(), String> {
+    *CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    let res = CLIENT
+        .post(format!("{}/api/app-host/harnesses", app_host_url()))
+        .header(talaria_config::INTERNAL_HEADER, token)
+        .timeout(LIST_DEADLINE)
+        .send()
+        .await
+        .map_err(|e| format!("the app host did not answer ({}): {e}", app_host_url()))?;
+    let status = res.status();
+    if !status.is_success() {
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!(
+            "the app host answered {status}: {}",
+            body.chars().take(300).collect::<String>()
+        ));
+    }
+    Ok(())
 }
 
 /// Replay one fixture through the app host, bounded by `deadline`.
@@ -744,6 +850,70 @@ mod tests {
         assert_eq!(
             (last.def.id, last.app_slug()),
             ("alpha:sort", Some("alpha"))
+        );
+    }
+
+    #[test]
+    fn one_entry_the_api_cannot_read_costs_that_harness_not_the_listing() {
+        let good = serde_json::to_value(wire("alpha", "alpha:sort")).expect("wire");
+        let mut overflow = serde_json::to_value(wire("beta", "beta:big")).expect("wire");
+        overflow["repair"] = serde_json::json!(5_000_000_000_u64);
+        overflow["file"] = serde_json::json!("big.ts");
+        // What `Math.floor(NaN)` and `Infinity` serialise to.
+        let mut nan = serde_json::to_value(wire("beta", "beta:nan")).expect("wire");
+        nan["repair"] = Value::Null;
+        nan["file"] = serde_json::json!("nan.ts");
+        let mut no_floor = serde_json::to_value(wire("gamma", "gamma:x")).expect("wire");
+        no_floor.as_object_mut().expect("object").remove("floor");
+        let body = serde_json::json!({
+            "harnesses": [overflow, good, nan, no_floor, 42],
+            "problems": [
+                { "app": "beta", "file": "broken.ts", "id": null, "reason": "it failed to compile" },
+                { "not": "a problem" }
+            ]
+        });
+        let listing = listing_of(&body).expect("the listing decodes");
+        assert_eq!(
+            listing
+                .harnesses
+                .iter()
+                .map(|w| w.id.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha:sort"]
+        );
+        let named = listing
+            .problems
+            .iter()
+            .map(|p| (p.app.as_str(), p.file.as_str(), p.id.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            named,
+            [
+                ("beta", "broken.ts", None),
+                ("beta", "big.ts", Some("beta:big")),
+                ("beta", "nan.ts", Some("beta:nan")),
+                ("gamma", "triage.ts", Some("gamma:x")),
+                ("?", "?", None),
+            ]
+        );
+        assert!(
+            listing.problems[1]
+                .reason
+                .starts_with("the api could not read its listing entry")
+        );
+        // The good harness still registers beside the builtins.
+        let merged = merged_registry(&app_layer_of(&listing));
+        assert!(merged.iter().any(|h| h.def.id == "alpha:sort"));
+        assert_eq!(merged.len(), builtin_activity_harnesses().len() + 1);
+    }
+
+    #[test]
+    fn refuses_only_a_listing_that_is_not_one() {
+        assert!(listing_of(&serde_json::json!([])).is_err());
+        assert!(listing_of(&serde_json::json!({ "harnesses": {} })).is_err());
+        assert_eq!(
+            listing_of(&serde_json::json!({})).expect("empty"),
+            AppHarnessListing::default()
         );
     }
 

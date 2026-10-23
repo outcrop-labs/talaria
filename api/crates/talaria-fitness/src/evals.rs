@@ -1141,6 +1141,7 @@ pub fn harness_skip_reason(
     model: &str,
     own_tool_loop: bool,
     tool_definitions: bool,
+    app: Option<&str>,
 ) -> Option<String> {
     if tools != Some(ToolPolicy::Own) {
         return None;
@@ -1151,7 +1152,22 @@ pub fn harness_skip_reason(
     // sandbox, which measures the thing that actually matters: not "can it
     // emit a tool call" but "given these tools and this situation, what did
     // it do". Only a model that can do neither is untestable here.
-    if own_tool_loop || tool_definitions {
+    if own_tool_loop {
+        return None;
+    }
+    // AN APP HARNESS IS NEVER DRY-RUN, whatever the model accepts: the
+    // sandbox is the api's and the harness's code is the app host's. Saying
+    // the model "can neither run its own nor be handed tool definitions"
+    // would blame a model that may accept definitions perfectly well.
+    if let Some(app) = app {
+        return Some(format!(
+            "{label} runs a tool loop, and \"{model}\" cannot run its own. The sweep dry-runs a \
+             tool loop only for a builtin harness: this one is app \"{app}\"'s, its code runs in \
+             the app host, and the api's sandbox cannot drive it (yet). The sweep did not call \
+             the model: nothing here is a measurement of it."
+        ));
+    }
+    if tool_definitions {
         return None;
     }
     Some(format!(
@@ -3007,10 +3023,11 @@ async fn sweep_inner(
         // reaches its total.
         // An app harness cannot be dry-run: the sandbox is the api's and its
         // code is the app host's. So only a candidate that runs its own loop
-        // can be tested on an app harness that wants one.
+        // can be tested on an app harness that wants one, and the skip says
+        // that rather than blaming the model (harness_skip_reason).
         let app = h.app_slug();
         let dry_runnable = tool_defs && app.is_none();
-        let skip = harness_skip_reason(h.def.label, h.def.tools, model, own_tools, dry_runnable);
+        let skip = harness_skip_reason(h.def.label, h.def.tools, model, own_tools, tool_defs, app);
         if let Some(reason) = skip {
             for fixture in &pending {
                 cases
@@ -4644,7 +4661,19 @@ mod tests {
         );
         let sweep = sweep(&b, "candidate").await;
         assert!(asked.lock().expect("asked").is_empty());
-        assert!(sweep.cases.iter().all(|c| c.skipped.is_some()));
+        // The reason is the app's harness, not the model: this candidate
+        // accepts tool definitions, so "can neither … nor be handed tool
+        // definitions" would be false.
+        assert!(!sweep.cases.is_empty());
+        for c in &sweep.cases {
+            let reason = c.skipped.as_deref().expect("every fixture is skipped");
+            assert!(reason.contains("cannot run its own"), "{reason}");
+            assert!(
+                reason.contains("the api's sandbox cannot drive it"),
+                "{reason}"
+            );
+            assert!(!reason.contains("be handed tool"), "{reason}");
+        }
     }
 
     #[tokio::test]
@@ -6636,15 +6665,50 @@ mod tests {
 
     #[test]
     fn skip_reason_names_what_the_candidate_cannot_do() {
-        let reason = harness_skip_reason("Picker", Some(ToolPolicy::Own), "gw/model", false, false)
-            .expect("nothing can drive the loop");
+        let reason = harness_skip_reason(
+            "Picker",
+            Some(ToolPolicy::Own),
+            "gw/model",
+            false,
+            false,
+            None,
+        )
+        .expect("nothing can drive the loop");
         assert!(reason.contains("neither run its own nor be handed tool definitions"));
         assert!(reason.contains("nothing here is a measurement of it"));
         // A model that can be handed definitions is dry-run instead, and one
         // that runs its own loop is not asked this at all.
-        assert!(harness_skip_reason("Picker", Some(ToolPolicy::Own), "m", false, true).is_none());
-        assert!(harness_skip_reason("Picker", Some(ToolPolicy::Own), "m", true, false).is_none());
-        assert!(harness_skip_reason("Picker", None, "m", false, false).is_none());
+        assert!(
+            harness_skip_reason("Picker", Some(ToolPolicy::Own), "m", false, true, None).is_none()
+        );
+        assert!(
+            harness_skip_reason("Picker", Some(ToolPolicy::Own), "m", true, false, None).is_none()
+        );
+        assert!(harness_skip_reason("Picker", None, "m", false, false, None).is_none());
+        // An app's tool-loop harness is never dry-run, so a model that accepts
+        // definitions is still skipped — for the harness's reason, not its own.
+        let app = harness_skip_reason(
+            "Picker",
+            Some(ToolPolicy::Own),
+            "m",
+            false,
+            true,
+            Some("crm"),
+        )
+        .expect("an app harness cannot be dry-run");
+        assert!(app.contains("app \"crm\""));
+        assert!(!app.contains("be handed tool definitions"));
+        assert!(
+            harness_skip_reason(
+                "Picker",
+                Some(ToolPolicy::Own),
+                "m",
+                true,
+                true,
+                Some("crm")
+            )
+            .is_none()
+        );
     }
 
     #[test]

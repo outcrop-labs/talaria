@@ -6604,6 +6604,7 @@ dependencies = [
  "talaria-agent-defs",
  "talaria-agent-web-search",
  "talaria-api-facades",
+ "talaria-app-harnesses",
  "talaria-apps",
  "talaria-audit",
  "talaria-auth-config",

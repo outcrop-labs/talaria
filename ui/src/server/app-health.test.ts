@@ -190,4 +190,49 @@ describe('probeLoad — the harnesses an app ships', () => {
     // The app is not turned off for it.
     expect(readCurrent('helpdesk')?.status).toBe('ready')
   })
+
+  // THE REPORT FOLLOWS THE ENABLED SET. Each app's own probe wrote a report
+  // true of the set it saw, so an app enabled later that sorts first took a
+  // contested id while the app that held it still read "1 harness".
+  it('rewrites the report of the app that loses an id to one enabled later, and gives the id back when that one is switched off', async () => {
+    const { mkdirSync, writeFileSync } = await import('node:fs')
+    process.env.TALARIA_APPS_DIR = join(appsDir, 'apps')
+    process.env.TALARIA_APP_DATA_DIR = join(appsDir, 'app-data')
+    const { writeCurrent } = await import('./app-build/status')
+    for (const slug of ['alpha', 'zeta']) {
+      const dir = join(appsDir, 'apps', slug)
+      mkdirSync(join(dir, 'harnesses'), { recursive: true })
+      writeFileSync(join(dir, 'talaria.json'), JSON.stringify({ name: slug, version: '0.1.0' }))
+      writeFileSync(join(dir, 'server.ts'), 'export default { fetch: async () => new Response("ok") }\n')
+      writeFileSync(join(dir, 'harnesses', 'triage.ts'), harness('shared:triage'))
+      writeCurrent(slug, { key: 'k1', status: 'ready', hostBuild: 'h', builtAt: 1, bytes: 1, files: [] })
+    }
+    const { setSsrLoader } = await import('./app-load')
+    const { probeLoad } = await import('./app-health')
+    const { refreshAppHarnessReports } = await import('./app-harnesses')
+    setSsrLoader((abs) => import(/* @vite-ignore */ abs))
+    try {
+      st.settings.set('apps_enabled', ['zeta'])
+      expect(await probeLoad('zeta')).toEqual({ ok: true })
+      expect(readCurrent('zeta')?.harnesses).toEqual({ registered: ['shared:triage'], problems: [] })
+      // Manage → Apps rebuilds alpha before enabling it: its report reads as
+      // if it were on, and zeta's is untouched — alpha is not on yet.
+      expect(await probeLoad('alpha')).toEqual({ ok: true })
+      expect(readCurrent('alpha')?.harnesses).toEqual({ registered: ['shared:triage'], problems: [] })
+      expect(readCurrent('zeta')?.harnesses).toEqual({ registered: ['shared:triage'], problems: [] })
+      // The api enables alpha and asks for the reports (POST /api/app-host/harnesses).
+      st.settings.set('apps_enabled', ['alpha', 'zeta'])
+      await refreshAppHarnessReports()
+      expect(readCurrent('zeta')?.harnesses).toEqual({
+        registered: [],
+        problems: ['harnesses/triage.ts: app "alpha" already registers "shared:triage"'],
+      })
+      // alpha fails and is switched off: zeta holds the id again.
+      await failHealth('alpha', 'database did not start')
+      expect(st.settings.get('apps_enabled')).toEqual(['zeta'])
+      expect(readCurrent('zeta')?.harnesses).toEqual({ registered: ['shared:triage'], problems: [] })
+    } finally {
+      setSsrLoader(null)
+    }
+  })
 })

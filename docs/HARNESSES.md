@@ -545,8 +545,9 @@ like this:
   `POST /api/app-host/<slug>/harnesses/<id>/cases/<name>` runs the case on the host's runner. The
   candidate is pinned and the `harness_runs` and findings filing is off. The sweep scores the
   returned contract, repairs and fixture verdict with the same arithmetic as a builtin case.
-- **What a skip costs.** A harness that fails a check is skipped and named on the app's row in
-  Manage → Apps. The app keeps running.
+- **What a skip costs.** A harness file that does not compile, or fails a check, is skipped and
+  named on the app's row in Manage → Apps. The app keeps running. The api decodes the listing one
+  entry at a time, so an entry it cannot read costs that harness, never the other apps'.
 - **Its runs count.** The rows its `server.ts` runs write to `harness_runs` count in the value
   view's workload while the app is enabled.
 

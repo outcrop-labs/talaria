@@ -15,6 +15,7 @@
 | [`/api/app-host/{app}/lifecycle`](#apiapp-hostapplifecycle) | POST | `internal` |
 | [`/api/app-host/{app}/rebuild`](#apiapp-hostapprebuild) | POST | `admin` |
 | [`/api/app-host/harnesses`](#apiapp-hostharnesses) | GET | `internal` |
+| [`/api/app-host/harnesses`](#apiapp-hostharnesses) | POST | `internal` |
 | [`/api/apps`](#apiapps) | GET | `session` |
 | [`/api/apps/{app}/*`](#apiappsapp) | ANY | `session` |
 
@@ -73,12 +74,17 @@ Source: [`ui/src/routes/api/app-host.harnesses.ts`](../../ui/src/routes/api/app-
 > and the source `app:<slug>`. Never code: the api registers them beside
 > its builtins for the model-fitness matrix and replays their fixtures
 > through `POST /api/app-host/<slug>/harnesses/<id>/cases/<name>`.
-> `problems` names every harness file that was skipped and why. Loopback
-> only, with the internal credential: the api is the one caller.
+> `problems` names every harness file that was skipped and why.
+> POST rewrites every enabled app's harness report (the "N harnesses"
+> and "N skipped" lines in Manage → Apps) from one listing: the api
+> calls it after an app is enabled, disabled or uninstalled, since which
+> app holds a contested id moves with the enabled set. Loopback only,
+> with the internal credential: the api is the one caller.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `internal` | — | `{harnesses, problems}` | 200, 503 | — |
+| POST | `internal` | — | `{ok, apps}` | 200, 503 | — |
 
 ## `/api/apps`
 

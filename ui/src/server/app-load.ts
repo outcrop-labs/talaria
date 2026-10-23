@@ -88,12 +88,17 @@ export interface AppHarnessFile {
   /** The file name under `harnesses/`, e.g. `triage.ts`. */
   file: string
   load: () => Promise<unknown>
+  /** Set when the app build could not compile this file and left it out of
+   *  `harnesses.js` (build.ts): the compiler's sentence. `load` rejects with it. */
+  compileError?: string
 }
 
 /** The harness files under `apps/<slug>/harnesses/`, sorted. Dev: each source
  *  file through the Vite SSR graph. Prod: the build's `harnesses.js`, whose
  *  `harnesses` export maps each file name to a lazy import of its own chunk
- *  (build.ts). Empty when the app ships none, or its build is not ready. */
+ *  and whose `skipped` export names each file the build could not compile,
+ *  with the error (build.ts). Empty when the app ships none, or its build is
+ *  not ready. */
 export async function loadAppHarnesses(slug: string, tree: AppTree = liveTree(slug)): Promise<AppHarnessFile[]> {
   if (!slugOk(slug)) return []
   const dir = join(tree.dir, 'harnesses')
@@ -103,13 +108,22 @@ export async function loadAppHarnesses(slug: string, tree: AppTree = liveTree(sl
   }
   const built = builtFile(tree, 'harnesses.js')
   if (!built) return []
-  const mod = (await importFile(built)) as { harnesses?: unknown } | null
+  const mod = (await importFile(built)) as { harnesses?: unknown; skipped?: unknown } | null
   const table = mod?.harnesses
-  if (!table || typeof table !== 'object') return []
-  return Object.entries(table as Record<string, unknown>)
-    .filter((entry): entry is [string, () => Promise<unknown>] => HARNESS_FILE.test(entry[0]) && typeof entry[1] === 'function')
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([file, load]) => ({ file, load }))
+  const skipped = mod?.skipped
+  const out: AppHarnessFile[] = []
+  if (table && typeof table === 'object') {
+    for (const [file, load] of Object.entries(table as Record<string, unknown>)) {
+      if (HARNESS_FILE.test(file) && typeof load === 'function') out.push({ file, load: load as () => Promise<unknown> })
+    }
+  }
+  if (skipped && typeof skipped === 'object') {
+    for (const [file, error] of Object.entries(skipped as Record<string, unknown>)) {
+      if (!HARNESS_FILE.test(file) || typeof error !== 'string' || out.some((f) => f.file === file)) continue
+      out.push({ file, compileError: error, load: () => Promise.reject(new Error(error)) })
+    }
+  }
+  return out.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
 }
 
 export function appHasHarnesses(slug: string, tree: AppTree = liveTree(slug)): boolean {
