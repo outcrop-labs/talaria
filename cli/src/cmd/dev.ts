@@ -109,6 +109,7 @@ const API_ENV_VARS = [
   'TALARIA_API_BIND',
   'TALARIA_GATEWAY_SELF_URL',
   'PORT',
+  'TALARIA_APP_HOST_URL',
   'TALARIA_FLEET_PROJECT',
   'TALARIA_WORKTREE',
 ] as const
@@ -139,7 +140,10 @@ const API_ENV_VARS = [
  *  writes into every agent is built from the APP port, and the compose
  *  project it addresses is what keeps a worktree's agents apart from the
  *  main fleet — without the lift a worktree's agents would dial :5273 and
- *  its containers would land in the shared `talaria-fleet` project.
+ *  its containers would land in the shared `talaria-fleet` project. PORT is
+ *  also how the api reaches this app host for app harnesses (fitness reads
+ *  them from /api/app-host/harnesses on loopback); TALARIA_APP_HOST_URL
+ *  overrides that address outright.
  *
  *  TALARIA_WORKTREE names the instance in every container the api owns: an
  *  app's database (`talaria-appdb-<instance>-<slug>`) and an MCP package's

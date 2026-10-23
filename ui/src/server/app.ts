@@ -109,6 +109,6 @@ async function handle(request: Request): Promise<Response> {
 // with the code it serves so the dev middleware (vite.config.ts) and the prod
 // wrapper can never drift apart on Set-Cookie, the one header that repeats.
 export { migrate } from './db/pg'
-export { writeHeadHeaders } from './http'
+export { stampPeer, writeHeadHeaders } from './http'
 export { startAppBuilds } from './app-build/reconcile'
 export default { fetch: handle }

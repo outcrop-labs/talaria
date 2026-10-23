@@ -182,7 +182,7 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 
 | symbol | kind | what it is |
 | :--- | :--- | :--- |
-| `defineHarness` | fn | Declare a model call Talaria runs; server.ts runs it with `runHarness` (nothing loads harnesses/*.ts) |
+| `defineHarness` | fn | Declare a model call Talaria runs; default-export one per `harnesses/*.ts` to register it for fitness, run it from server.ts with `runHarness` |
 | `HarnessDefinition` | type | The full activity contract (render, output, model, evals…) |
 | `RenderContext` | type | What the render step receives |
 | `Message` | type | One chat message |

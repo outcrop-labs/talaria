@@ -127,3 +127,67 @@ describe('failHealth', () => {
     expect(st.resyncs).toEqual(['crm: turned off'])
   })
 })
+
+// THE PROBE CHECKS THE HARNESSES TOO, and never fails on one: a harness that
+// breaks a platform rule is skipped and named on the build status, where
+// Manage → Apps shows it, while the app itself passes and can be enabled.
+describe('probeLoad — the harnesses an app ships', () => {
+  const appsDir = mkdtempSync(join(tmpdir(), 'app-health-harness-'))
+  const prevApps = process.env.TALARIA_APPS_DIR
+  const prevData = process.env.TALARIA_APP_DATA_DIR
+  afterAll(() => {
+    if (prevApps === undefined) delete process.env.TALARIA_APPS_DIR
+    else process.env.TALARIA_APPS_DIR = prevApps
+    if (prevData === undefined) delete process.env.TALARIA_APP_DATA_DIR
+    else process.env.TALARIA_APP_DATA_DIR = prevData
+    rmSync(appsDir, { recursive: true, force: true })
+  })
+
+  const harness = (id: string, extra = '') => `export default {
+  id: ${JSON.stringify(id)},
+  label: 'Help desk triage',
+  job: 'Sorts a request.',
+  requires: [],
+  floor: { capabilities: [], refuseBelow: false, note: 'Runs on anything.' },
+  model: {},
+  render: (input) => [{ role: 'user', content: String(input) }],
+  output: { kind: 'text' },
+  onFailure: 'null',
+  evals: [{ name: 'one', input: 'x', check: () => null }],
+  ${extra}
+}
+`
+
+  it('records the registered ids and the skipped files, and passes', async () => {
+    const { mkdirSync, writeFileSync } = await import('node:fs')
+    process.env.TALARIA_APPS_DIR = join(appsDir, 'apps')
+    process.env.TALARIA_APP_DATA_DIR = join(appsDir, 'app-data')
+    const dir = join(appsDir, 'apps', 'helpdesk')
+    mkdirSync(join(dir, 'harnesses'), { recursive: true })
+    writeFileSync(join(dir, 'talaria.json'), JSON.stringify({ name: 'Help desk', version: '0.1.0' }))
+    writeFileSync(join(dir, 'server.ts'), 'export default { fetch: async () => new Response("ok") }\n')
+    writeFileSync(join(dir, 'harnesses', 'triage.ts'), harness('helpdesk:triage'))
+    writeFileSync(join(dir, 'harnesses', 'broken.ts'), harness('helpdesk:broken', "guard: { rules: ['not_a_rule'] },"))
+    writeFileSync(join(dir, 'harnesses', 'titler.ts'), harness('titler'))
+    const { writeCurrent } = await import('./app-build/status')
+    writeCurrent('helpdesk', { key: 'k1', status: 'ready', hostBuild: 'h', builtAt: 1, bytes: 1, files: [] })
+    st.settings.set('apps_enabled', [])
+    const { setSsrLoader } = await import('./app-load')
+    const { probeLoad } = await import('./app-health')
+    setSsrLoader((abs) => import(/* @vite-ignore */ abs))
+    try {
+      expect(await probeLoad('helpdesk')).toEqual({ ok: true })
+    } finally {
+      setSsrLoader(null)
+    }
+    expect(readCurrent('helpdesk')?.harnesses).toEqual({
+      registered: ['helpdesk:triage'],
+      problems: [
+        'harnesses/broken.ts: guard rule "not_a_rule" does not exist',
+        'harnesses/titler.ts: "titler" is a builtin harness\'s id, and an app cannot replace one',
+      ],
+    })
+    // The app is not turned off for it.
+    expect(readCurrent('helpdesk')?.status).toBe('ready')
+  })
+})

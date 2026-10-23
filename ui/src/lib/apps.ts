@@ -10,6 +10,9 @@ export interface AppBuildInfo {
   status: 'ready' | 'building' | 'failed' | 'none'
   key?: string
   error?: string
+  /** What the load probe made of the app's `harnesses/*.ts`: the ids it
+   *  registered for model fitness, and one sentence per file it skipped. */
+  harnesses?: { registered: string[]; problems: string[] }
 }
 
 export interface AppManifest {

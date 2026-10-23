@@ -13,14 +13,15 @@ apps/<slug>/
   *.svelte       one component per surface (plus whatever else you need)
   server.ts      optional API — default-exports defineAppServer({...}) → /api/apps/<slug>/*
   mcp.ts         optional agent tools — default-exports defineAppMcp({...})
-  harnesses/     optional activity harnesses — one defineHarness per file, run from server.ts
+  harnesses/     optional activity harnesses — one defineHarness per file, scored in Models → Fitness
 ```
 
 Scaffold one with `bun talaria app new <slug>`, or drop a directory under `apps/` (or install
 from **Manage → Apps**). Enable it in **Manage → Apps**. An app with no UI (a server or agent
 tools only) declares no surfaces and ships no `app.ts` ([server.md](./server.md#an-app-with-no-ui)).
-A harness runs only when your `server.ts` imports it and calls `runHarness`; nothing loads
-`harnesses/` on its own ([harnesses.md](./harnesses.md)).
+Each file in `harnesses/` registers while the app is enabled: it gets a column in Models → Fitness,
+scored on its own `evals`, and your `server.ts` runs it with `runHarness`
+([harnesses.md](./harnesses.md)).
 
 ## The manifest
 

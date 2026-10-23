@@ -4,13 +4,12 @@ A harness is a **declared** model call: a prompt, an output contract, a model ch
 failure policy. You declare one with `defineHarness(...)` and run it through the one runner,
 `runHarness` — you never touch a transport, a key, or a retry.
 
-> **Today an app harness runs only from your own `server.ts`.** Nothing compiles, loads,
-> registers or scores `apps/<slug>/harnesses/*.ts`: the host's app-harness registry was
-> removed in d79b7290 and has not been restored. A harness runs only when `server.ts` imports
-> it and calls `runHarness` — [the bridge pattern](#the-bridge-pattern--running-one-from-your-server)
-> below. It has no row in Admin and no column in the model-fitness matrix, and its `evals` run
-> only where you replay them yourself. One harness per file under `harnesses/` is still a
-> good layout; a file there that `server.ts` does not import is dead code.
+> **Put one harness in each file under `harnesses/`.** Default-export it from
+> `apps/<slug>/harnesses/<name>.ts`. While the app is enabled, the harness is checked and
+> registered, gets a column in **Admin → Models → Fitness**, and the fitness sweep scores
+> candidate models on its `evals` ([Registration](#registration--a-column-in-the-fitness-matrix)).
+> In production your `server.ts` still runs it:
+> [the bridge pattern](#the-bridge-pattern--running-one-from-your-server) below.
 
 ```ts
 import { defineHarness, z } from '@talaria/sdk/server'
@@ -58,7 +57,7 @@ the contract breaks the typecheck of the documentation itself.
 | field | what it declares |
 | :--- | :--- |
 | `id` / `label` / `job` | Identity; `id` is the `harness` column of the `harness_runs` row each run writes |
-| `requires` | Capabilities the job leans on — never blocks; the fitness suite scores platform harnesses against it |
+| `requires` | Capabilities the job leans on — never blocks; the fitness suite scores against it |
 | `floor` | `{ capabilities, refuseBelow, note }` — refuse weak models, or run anyway? A JSON harness gets a derived floor (below) |
 | `model` | A `ModelSpec`: `pin` and/or `role` and a `chain` — never a model id |
 | `render` | Input → `Message[]`. **The only thing you write by hand** |
@@ -67,7 +66,7 @@ the contract breaks the typecheck of the documentation itself.
 | `widen?` | Capability-gated prompt widening; `render`'s `ctx.widened` says which branch |
 | `guard?` | `{ rules?, redact? }` — which guardrail rules apply |
 | `tools?` | A `ToolPolicy` if the model may use its own tools this turn |
-| `evals?` | Fixtures. The fitness suite replays platform harnesses' fixtures; nothing replays an app's today |
+| `evals?` | Fixtures. The fitness suite replays them against each candidate model ([below](#evals)) |
 
 `RenderContext` also carries `model` (name the model in small-model prompts) — it is not an
 invitation to branch on model ids; that is what capabilities are for.
@@ -89,9 +88,18 @@ Each `EvalCase` is `{ name, input, check, band? }`. `check(value, ctx)` returns 
 (pass), a string (fail the **model**), or `{ gap }` (fail the **fixture**). Bands are
 `'easy' | 'standard' | 'hard'`: easy is the floor for usable-at-all, standard is the job.
 
-Nothing on the instance replays an app's fixtures today. Run them yourself: `runHarness` with
-a scripted `deps.transport` and no-op recorders, then the fixture's `check` on the value —
-`ui/src/sdk/server.test.ts` does exactly that with the example above.
+The fitness sweep replays every fixture of a registered harness against each candidate model.
+The api asks the app host to run the case: the real runner, the candidate pinned, no
+`harness_runs` row written. Then it scores the reply the way it scores a platform harness:
+
+- **Contract.** Did the contract hold, on the first try or after the repair turn?
+- **Task.** What did your `check` say? A `check` that throws counts as a gap in the fixture, not
+  a failure of the model.
+- **Floor.** A floor that refuses the candidate counts as a skip.
+
+To run fixtures before you ship, use `runHarness` with a scripted `deps.transport` and no-op
+recorders, then call the fixture's `check` on the value. `ui/src/sdk/server.test.ts` does exactly
+that with the example above.
 
 Two exports exist for the trap every text fixture walks into:
 
@@ -113,9 +121,33 @@ Two exports exist for the trap every text fixture walks into:
 `dryRun.world`, `dryRun.workspace`, `dryRun.credentials`) are declared on the definition —
 see the deep contract in [HARNESSES.md](../HARNESSES.md).
 
+## Registration — a column in the fitness matrix
+
+Files under `harnesses/` register while the app is enabled.
+
+- **Build.** The app build compiles them into `harnesses.js`, one chunk per file.
+- **Load probe.** On every build and every enable, the probe loads each file and checks its
+  default export against the rules the platform holds its own harnesses to:
+  - The guard rules it names exist.
+  - The floor is a subset of `requires`, and is empty unless it refuses. For a JSON harness that
+    means listing `json` in `requires`, because the derived floor refuses on it.
+  - Capability names are real.
+  - Fixture names are distinct.
+  - A widening has a reason.
+  - A temperature is between 0 and 1.
+  - The id is not a builtin harness's id, nor one another enabled app registers. Between two
+    apps, the slug that sorts first keeps it.
+- **A file that fails a check, or throws on import,** is skipped and logged. The app stays
+  enabled, and its row in **Manage → Apps** says "N harnesses skipped" with the reason for each
+  file.
+- **Each harness that passes** gets a column in the fitness matrix, labelled
+  `<App name> · <label>`. That column scores this harness alone: it never joins a role, a
+  platform agent or a fleet column, whatever its `model` spec names. Your app picks its model.
+  The column lives only while the app is enabled.
+
 ## The bridge pattern — running one from your server
 
-This is how an app harness runs today: your `server.ts` imports it and invokes it directly —
+This is how an app harness runs in production: your `server.ts` imports it and invokes it directly —
 run the harness when a model chain is routable, fall back to your own deterministic answer
 when it isn't, and journal which one answered. `@/server/harness/run` does not resolve from
 app code **by design** — the SDK is the only road in:

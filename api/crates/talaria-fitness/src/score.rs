@@ -116,12 +116,20 @@ pub enum FitnessBand {
 ///
 /// That is the largest single consumer of models in the product, and the page
 /// an admin uses to choose one said nothing about it.
+///
+/// 'app' is the fourth, and the only kind that is not a fixed list: one column
+/// per harness an enabled app ships (`apps/<slug>/harnesses/*.ts`), keyed
+/// `app:<slug>/<harness id>` and bound to that harness alone (`app_slots`).
+/// An app harness never binds into a role, agent or fleet column — its model
+/// is its app's to pick, and a third-party fixture must not move the verdict
+/// on a slot the platform's own features run on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SlotKind {
     Role,
     Agent,
     Fleet,
+    App,
 }
 
 impl SlotKind {
@@ -130,6 +138,7 @@ impl SlotKind {
             SlotKind::Role => "role",
             SlotKind::Agent => "agent",
             SlotKind::Fleet => "fleet",
+            SlotKind::App => "app",
         }
     }
 }
@@ -280,6 +289,29 @@ pub fn fitness_slots() -> Vec<FitnessSlot> {
         live: true,
     }));
     out
+}
+
+/// THE APP COLUMNS: one slot per harness an enabled app ships, in registry
+/// order (apps by slug, files by name). Labelled with the app's display name
+/// when the app host gave one, so two apps' "Triage" columns read apart.
+pub fn app_slots(harnesses: &[RegisteredHarness]) -> Vec<FitnessSlot> {
+    harnesses
+        .iter()
+        .filter_map(|h| {
+            let slug = h.app_slug()?;
+            let app = talaria_app_harnesses::app_display_name(slug).unwrap_or_else(|| slug.into());
+            Some(FitnessSlot {
+                kind: SlotKind::App,
+                id: format!("{slug}/{}", h.def.id),
+                label: format!("{app} · {}", h.def.label),
+                hint: format!("Shipped by the {app} app: {}", h.def.job),
+                requires: h.def.requires.iter().map(|c| c.to_string()).collect(),
+                // Always live: an app harness is listed only while its app is
+                // enabled, and it runs whenever the app calls it.
+                live: true,
+            })
+        })
+        .collect()
 }
 
 // ── Binding ──────────────────────────────────────────────────────────────────
@@ -454,6 +486,10 @@ pub async fn bind_slots(harnesses: &[RegisteredHarness]) -> Vec<SlotBinding> {
     };
 
     for harness in harnesses {
+        // An app harness binds its own column only (`app_slots` below).
+        if harness.app_slug().is_some() {
+            continue;
+        }
         for role in roles_reaching(&harness.def.model).await {
             add(
                 slot_key(SlotKind::Role, &role),
@@ -499,7 +535,7 @@ pub async fn bind_slots(harnesses: &[RegisteredHarness]) -> Vec<SlotBinding> {
         }
     }
 
-    fitness_slots()
+    let mut out: Vec<SlotBinding> = fitness_slots()
         .into_iter()
         .map(|slot| {
             let key = key_of(&slot);
@@ -518,7 +554,24 @@ pub async fn bind_slots(harnesses: &[RegisteredHarness]) -> Vec<SlotBinding> {
                 .unwrap_or_default();
             SlotBinding { slot, harnesses }
         })
-        .collect()
+        .collect();
+    // An app harness's column holds that harness and nothing else — declared
+    // by the app layer, never derived from a spec (see `SlotKind::App`).
+    out.extend(app_slots(harnesses).into_iter().map(|slot| {
+        let id = slot
+            .id
+            .split_once('/')
+            .map(|(_, id)| id.to_string())
+            .unwrap_or_default();
+        SlotBinding {
+            slot,
+            harnesses: vec![BoundHarness {
+                id,
+                via: BindingVia::Declared,
+            }],
+        }
+    }));
+    out
 }
 
 /// The declared edges, for the test that locks them against the registry.
@@ -1892,6 +1945,76 @@ mod tests {
     }
 
     // ── bind_slots ───────────────────────────────────────────────────────────
+
+    /// An app harness the app layer registered: the same shape, the app source.
+    fn app_harness(slug: &'static str, id: &'static str) -> RegisteredHarness {
+        RegisteredHarness {
+            source: HarnessSource::App(slug),
+            ..harness_over(id, &["json"], 2)
+        }
+    }
+
+    #[tokio::test]
+    async fn gives_each_app_harness_a_column_of_its_own_and_no_other() {
+        let mut all = builtin_activity_harnesses().to_vec();
+        all.push(app_harness("support", "support:triage"));
+        let bindings = bind_slots(&all).await;
+        // Every static slot is still there, then the app's one.
+        assert_eq!(bindings.len(), fitness_slots().len() + 1);
+        let app = find(&bindings, "app:support/support:triage");
+        assert_eq!(app.slot.kind, SlotKind::App);
+        assert!(app.slot.live);
+        assert_eq!(app.slot.requires, ["json"]);
+        assert!(app.slot.hint.contains("support"), "{}", app.slot.hint);
+        assert_eq!(
+            app.harnesses,
+            [BoundHarness {
+                id: "support:triage".into(),
+                via: BindingVia::Declared,
+            }]
+        );
+        // ...and in no platform column, so its fixtures move no platform slot.
+        for b in &bindings {
+            if b.slot.kind == SlotKind::App {
+                continue;
+            }
+            assert!(
+                !harness_ids(b).contains(&"support:triage"),
+                "{} carries the app harness",
+                key_of(&b.slot)
+            );
+        }
+        // The builtins bind exactly as they do without the app.
+        let without = bind_slots(builtin_activity_harnesses()).await;
+        for b in &without {
+            assert_eq!(
+                harness_ids(find(&bindings, &key_of(&b.slot))),
+                harness_ids(b)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn scores_an_app_column_from_its_harness_alone() {
+        let app = app_harness("support", "support:triage");
+        let harnesses = vec![app];
+        let bindings = bind_slots(&harnesses).await;
+        let mut s = sweep();
+        s.harnesses = vec![score_of("support:triage")];
+        s.cases = vec![kase("support:triage")];
+        // A measured json, so nothing caps the column below what the case
+        // earned.
+        let caps = HashMap::from([("json".to_string(), fact(true))]);
+        let report = run(&s, &harnesses, caps, bindings);
+        let col = report
+            .slots
+            .iter()
+            .find(|v| v.slot.kind == SlotKind::App)
+            .expect("the app column is scored");
+        assert_eq!(col.harnesses.len(), 1);
+        assert_eq!(col.harnesses[0].harness, "support:triage");
+        assert_eq!(col.band, FitnessBand::Ready);
+    }
 
     #[tokio::test]
     async fn binds_the_pinned_utility_harnesses_to_role_utility_and_their_agent_slot() {

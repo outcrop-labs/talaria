@@ -635,10 +635,9 @@ export interface HarnessDefinition<I, O> {
    *  spinner, asks for thirty seconds. Meaningless on the gateway path. */
   holdMs?: number
 
-  /** Fixtures the model-fitness suite replays — for the platform's harnesses.
-   *  Nothing replays an app-shipped harness's fixtures today (the app-harness
-   *  registry went with d79b7290); an app runs its own, see
-   *  docs/sdk/harnesses.md. */
+  /** Fixtures the model-fitness suite replays against each candidate model —
+   *  a platform harness's in the api, an enabled app's through the app host
+   *  (server/app-harnesses.ts `replayAppCase`). */
   evals?: EvalCase<I, O>[]
 }
 

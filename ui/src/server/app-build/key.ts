@@ -15,8 +15,10 @@ import { clientSpecifiers, serverSpecifiers } from '@/app-runtime/specifiers'
  *  'ready' would keep its key and be reused as is. History:
  *  1. the first recipe (no recipe in the key);
  *  2. app.js keeps its default export (preserveEntrySignatures 'strict') and
- *     each shared import maps to its own runtime file (clientRuntimePath). */
-export const BUILD_RECIPE = 2
+ *     each shared import maps to its own runtime file (clientRuntimePath);
+ *  3. harnesses/*.ts compile into harnesses.js, one lazy chunk per file
+ *     under _harnesses/, which the host registers for fitness. */
+export const BUILD_RECIPE = 3
 
 const SKIP: Record<string, true> = { node_modules: true, '.git': true, dist: true }
 

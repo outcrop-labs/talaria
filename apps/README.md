@@ -26,7 +26,7 @@ apps/<slug>/
   *.svelte       one component per surface (plus whatever else you need)
   server.ts      optional API — default-exports defineAppServer({...}) → /api/apps/<slug>/*
   mcp.ts         optional MCP tools for AGENTS — default-exports defineAppMcp({...})
-  harnesses/     optional activity harnesses — one defineHarness per file, run from server.ts
+  harnesses/     optional activity harnesses — one defineHarness per file, scored in Models → Fitness
   ...            anything else your app needs (components, lib, assets)
 ```
 

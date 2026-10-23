@@ -17,7 +17,26 @@ use talaria_body::parse;
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_admin, require_view, secretbox_or_500};
 use talaria_state::AppState;
-use talaria_users::{app_build_status, discovered_apps};
+use talaria_users::{WireBuild, app_build_status, app_builds_dir, discovered_apps};
+
+/// The build status, plus what the app host's load probe made of the app's
+/// `harnesses/*.ts` (`harnesses: { registered, problems }` on current.json,
+/// ui/src/server/app-harnesses.ts). A harness the host skipped never disables
+/// the app, so this row is where an admin learns it is missing from the
+/// fitness matrix and why. Absent when the app ships none or the pointer
+/// cannot be read.
+fn with_harness_report(slug: &str, build: WireBuild) -> Value {
+    let mut out = serde_json::to_value(build).unwrap_or(Value::Null);
+    let report = std::fs::read_to_string(app_builds_dir().join(slug).join("current.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|v| v.get("harnesses").cloned())
+        .filter(Value::is_object);
+    if let (Some(obj), Some(report)) = (out.as_object_mut(), report) {
+        obj.insert("harnesses".into(), report);
+    }
+    out
+}
 
 pub async fn get(
     State(state): State<AppState>,
@@ -47,7 +66,7 @@ pub async fn get(
                 .and_then(|s| s.get("source"))
                 .cloned()
                 .unwrap_or(Value::Null);
-            let build = app_build_status(&a.slug);
+            let build = with_harness_report(&a.slug, app_build_status(&a.slug));
             serde_json::json!({
                 "slug": a.slug,
                 "name": a.name,

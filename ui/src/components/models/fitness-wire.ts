@@ -38,8 +38,12 @@ export type HarnessSource = 'builtin' | `app:${string}` | 'custom'
  *  measured, scored and archived into a report with nowhere to appear.
  *
  *  That is the largest single consumer of models in the product, and the page an
- *  admin uses to choose one said nothing about it. */
-export type SlotKind = 'role' | 'agent' | 'fleet'
+ *  admin uses to choose one said nothing about it.
+ *
+ *  'app' is one column per activity harness an enabled app ships
+ *  (`apps/<slug>/harnesses/*.ts`), id `<slug>/<harness id>`, bound to that
+ *  harness alone — see `SlotKind::App` in the Rust fitness scorer. */
+export type SlotKind = 'role' | 'agent' | 'fleet' | 'app'
 
 /** The fleet slots. TWO, NOT ONE, because they are genuinely different jobs and
  *  an org routinely runs different models behind them: a personal assistant
@@ -55,7 +59,8 @@ export type FleetSlotId = 'assistant' | 'agent'
  *  file reads them there. */
 export interface FitnessSlot {
   kind: SlotKind
-  id: ModelRole | PlatformAgentId | FleetSlotId
+  /** An app slot's id is `<slug>/<harness id>`. */
+  id: ModelRole | PlatformAgentId | FleetSlotId | `${string}/${string}`
   label: string
   hint: string
   requires: Capability[]

@@ -40,10 +40,10 @@ failure behavior — it *declares* them, and `run_harness` honors the declaratio
 
 The TS twin of the layer (`ui/src/server/harness/`) is the **app-author plane**: `ui/src/sdk/server.ts`
 re-exports it as `@talaria/sdk`'s server contract — `defineHarness`, `runHarness` and the types — and
-app-shipped harnesses are TS by the api's rule 10 — customer code, never port surface (the fitness
-consequence is a recorded divergence in [`RUST-MIGRATION.md`](./RUST-MIGRATION.md)). Today an app
-harness runs only from its own app's `server.ts`; see [Shipping one from an app](#how-to-add-a-harness)
-below. A platform harness is written in Rust.
+app-shipped harnesses are TS by the api's rule 10 — customer code, never port surface. The app host
+loads and checks them, and the api registers them as data and replays their fixtures through the
+host; see [Shipping one from an app](#how-to-add-a-harness) below. A platform harness is written in
+Rust.
 
 **One chokepoint, and the architecture holds it.** The hand-written-harness census this file used
 to cite left with the port — the last entry it carried (`channel-replies`, a live persona
@@ -517,16 +517,36 @@ the guard block off, declares a floor it never enforces, refuses on a capability
 require, spells the Utility fallback as its own `role`, widens without a note, or ships no eval
 fixtures.
 
-**Shipping one from an app** is the same contract in a different home, and today it has one road:
-the app's own `server.ts` imports the harness and calls `runHarness` (the bridge in
-[`docs/sdk/harnesses.md`](./sdk/harnesses.md)). Nothing compiles, loads, registers or scores
-`apps/<slug>/harnesses/*.ts`: the TS app-harness registry went with d79b7290 and has not been
-restored, and the api's own registry cannot see app code (rule 10). So an app harness has no row in
-Admin, no column in the fitness matrix, and fixtures nothing replays; its `harness_runs` rows are
-dropped from the value view's workload (the recorded divergence in
-[`RUST-MIGRATION.md`](./RUST-MIGRATION.md)). The third layer, admin-custom, is deliberately empty:
-an activity harness carries code (`render`, `verify`, `check`), and Talaria does not run code out of
-a database row. What an admin *can* customize is the model each platform harness runs on.
+**Shipping one from an app** is the same contract in a different home: one `defineHarness`
+default export per `apps/<slug>/harnesses/*.ts`
+([`docs/sdk/harnesses.md`](./sdk/harnesses.md)). It is the registry's second layer, and it works
+like this:
+
+- **The app host loads it.** The api never does: app code is not port surface (rule 10 in
+  [`RUST-MIGRATION.md`](./RUST-MIGRATION.md)). The host's layer is
+  `ui/src/server/app-harnesses.ts`. At load time it holds each definition to the same rules this
+  file's step 5 states for a builtin, applied as checks rather than tests: guard rule ids exist,
+  the floor is a subset of `requires` and is empty unless it refuses, the JSON floor is derived as
+  `define_harness` derives it, fixture names are distinct, a widening has a note, a temperature is
+  in range. The id must not be a builtin's, nor another enabled app's.
+- **The api registers what passes.** `api/crates/talaria-app-harnesses` fetches the list over
+  loopback with the internal credential (`GET /api/app-host/harnesses`). It interns each entry as
+  metadata, and `merge_app_layer` appends the entries after the builtins. Append only: an app can
+  add a harness, never replace a builtin.
+- **Each harness gets its own column.** The fitness matrix shows each one as an `app` slot. It is
+  bound to that harness alone and never to a role or platform-agent column.
+- **The sweep replays its fixtures through the host.**
+  `POST /api/app-host/<slug>/harnesses/<id>/cases/<name>` runs the case on the host's runner. The
+  candidate is pinned and the `harness_runs` and findings filing is off. The sweep scores the
+  returned contract, repairs and fixture verdict with the same arithmetic as a builtin case.
+- **What a skip costs.** A harness that fails a check is skipped and named on the app's row in
+  Manage → Apps. The app keeps running.
+- **Its runs count.** The rows its `server.ts` runs write to `harness_runs` count in the value
+  view's workload while the app is enabled.
+
+The third layer, admin-custom, is deliberately empty: an activity harness carries code (`render`,
+`verify`, `check`), and Talaria does not run code out of a database row. What an admin *can*
+customize is the model each platform harness runs on.
 
 **If an admin should be able to assign this harness a model**, it needs a `PLATFORM_AGENTS` entry and
 `model.pin` pointing at it; the registry's tests lock the harness↔platform-agent correspondence in both
@@ -693,7 +713,13 @@ where Talaria can neither place its tools nor see the call. `vision` skips every
 
 Replay every registered harness's fixtures through `run_harness` with the candidate pinned. It is a
 driver, not a subsystem: `registry.rs` enumerates, `define.rs` supplies the fixtures, `run.rs` already
-takes a pin and a transport seam.
+takes a pin and a transport seam. An enabled app's harness is in the same list, but the api holds
+only its metadata, so the sweep's `run_app_case` asks the app host to replay that fixture
+(`POST /api/app-host/<slug>/harnesses/<id>/cases/<name>`). The host runs it on its runner with the
+candidate pinned and the run ledger off, and returns the captured run and the fixture's verdict. The
+case is scored by the same partition as a builtin's: the floor refusing is a skip, a gap is
+unscored, and the drill-down is kept for a failure. A host that cannot replay leaves the case
+skipped with its sentence.
 
 Five numbers per harness — `contractRate` (held on the first attempt), `repairRate` (held at all,
 cumulative), `taskScore` (the fixture's own `check`), `guardRate`, and latency/cost. **`repairRate` is
@@ -736,10 +762,16 @@ limp follow-ups and the candidate reports a safety record it did not earn.
 ### Bands, per slot (`api/crates/talaria-fitness/src/score.rs`)
 
 The verdict is **per slot, never one number for a model**. A slot is a thing an admin actually picks a
-model for, and Talaria has exactly two kinds: the 11 `MODEL_ROLES` assignments and the
-`PLATFORM_AGENTS` assignments. The harness→slot binding is *derived* — `roles_reaching` runs the real
+model for: the 11 `MODEL_ROLES` assignments, the `PLATFORM_AGENTS` assignments, and the two fleet
+slots. The harness→slot binding is *derived* — `roles_reaching` runs the real
 resolution chain over instrumented dependencies and records which roles it asked for, rather than
 copying the step order into a file where it would become an eighth spelling of the same policy.
+
+**App slots** are the exception: one `app` column per harness an enabled app ships (`app_slots`),
+keyed `app:<slug>/<harness id>` and labelled `<App name> · <label>`. Each is bound to its own
+harness only. An app harness never binds into a role, agent or fleet column, whatever its `model`
+spec names: its model is its app's choice, and a third-party fixture must not move the verdict on a
+slot the platform's own features run on.
 
 A verdict is produced for **every slot**; the matrix draws a **column only for the ones a harness can
 reach**. The five it drops are `unbound` for every model forever, and they were dead for

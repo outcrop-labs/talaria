@@ -1,9 +1,9 @@
-// Load an app's server/mcp/client module. Dev: Vite SSR graph (HMR). Prod:
-// the independently-built artifact. Never a host glob — the host build does
-// not see apps/.
+// Load an app's server/mcp/client module and its harness files. Dev: Vite
+// SSR graph (HMR). Prod: the independently-built artifact. Never a host glob
+// — the host build does not see apps/.
 import { existsSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
-import { appSrc, slugOk } from './app-build/paths'
+import { appSrc, HARNESS_FILE, harnessSourceFiles, slugOk } from './app-build/paths'
 import { readCurrent } from './app-build/status'
 import { appBuildKeyDir } from './app-build/paths'
 
@@ -48,6 +48,41 @@ export function appHasServer(slug: string): boolean {
 
 export function appHasMcp(slug: string): boolean {
   return existsSync(appSrc(slug, 'mcp.ts')) || builtFile(slug, 'mcp.js') !== null
+}
+
+/** One module under `apps/<slug>/harnesses/`, not yet imported: each file is
+ *  loaded on its own, so a module that throws at import costs that file and
+ *  nothing beside it (app-harnesses.ts). */
+export interface AppHarnessFile {
+  /** The file name under `harnesses/`, e.g. `triage.ts`. */
+  file: string
+  load: () => Promise<unknown>
+}
+
+/** The harness files under `apps/<slug>/harnesses/`, sorted. Dev: each source
+ *  file through the Vite SSR graph. Prod: the build's `harnesses.js`, whose
+ *  `harnesses` export maps each file name to a lazy import of its own chunk
+ *  (build.ts). Empty when the app ships none, or its build is not ready. */
+export async function loadAppHarnesses(slug: string): Promise<AppHarnessFile[]> {
+  if (!slugOk(slug)) return []
+  const dir = appSrc(slug, 'harnesses')
+  if (ssrLoad && existsSync(dir)) {
+    const load = ssrLoad
+    return harnessSourceFiles(dir).map((file) => ({ file, load: () => load(`${dir}/${file}`) }))
+  }
+  const built = builtFile(slug, 'harnesses.js')
+  if (!built) return []
+  const mod = (await importFile(built)) as { harnesses?: unknown } | null
+  const table = mod?.harnesses
+  if (!table || typeof table !== 'object') return []
+  return Object.entries(table as Record<string, unknown>)
+    .filter((entry): entry is [string, () => Promise<unknown>] => HARNESS_FILE.test(entry[0]) && typeof entry[1] === 'function')
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([file, load]) => ({ file, load }))
+}
+
+export function appHasHarnesses(slug: string): boolean {
+  return harnessSourceFiles(appSrc(slug, 'harnesses')).length > 0 || builtFile(slug, 'harnesses.js') !== null
 }
 
 export async function loadAppClient(slug: string): Promise<unknown> {
