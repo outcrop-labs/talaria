@@ -2,7 +2,7 @@
 // it, and the links and navigation an app makes within itself.
 //
 // An app owns every route below its surfaces. /x/<slug>/<rest> renders the
-// work surface and /x/<slug>/manage/<rest> the manage surface (router.ts
+// work surface and /x/<slug>/manage/<rest> the manage surface (route-table.ts
 // mounts each once for any <rest>); a settings tab, /settings/app:<slug>, is
 // one page with nothing below it. The split is the route gate's own
 // (appViewFor in app-grants.ts), so where a link lands and who may open it
