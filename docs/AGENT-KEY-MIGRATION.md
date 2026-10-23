@@ -15,8 +15,9 @@ still minted into the file but reaches no container. Same lifecycle as `TALARIA_
 rewritten from the DB every render, kept for a retired agent, stripped (and the key revoked) for a
 slug that no longer exists in `agent_defs`. A rotation is reported as a render warning — roll the
 container to pick the new key up. The relay reads the key name as the agent: budgets it under the
-agent's model id, refuses any model outside its rendered set (`gateway_agent_models`), and leaves
-its spend unmetered there because the chat flow ledgers the turn.
+agent's model id, refuses any model outside its rendered set (`gateway_agent_models`), and meters
+every call on it there — one row per upstream call, attributed to the conversation Hermes stamps on
+it (`x-talaria-session`; see ARCHITECTURE.md, "Agent spend").
 
 ## What a legacy caller is, and is not
 
@@ -185,12 +186,11 @@ curl -sS -b /tmp/talaria.cookies -X POST \
   -H 'content-type: application/json' -d '{"action":"roll"}'
 ```
 
-The call returns `{"ok":true,"rolling":true}` immediately and the work continues detached: a fresh
-container comes up on a new port, health is waited for, the manifest cuts over, and the old container
-drains for `TALARIA_ROLL_DRAIN_SECONDS` (default 45) before it retires. A replacement that never
-becomes healthy is discarded and the old container keeps serving — which also means **a failed roll
-leaves that agent on the org-wide key**. The equivalent UI path is Agents → the ⟳/Repeat icon
-("Roll — zero-downtime replacement"), admin only.
+The call returns `{"ok":true,"rolling":true}` immediately and the work continues detached: the
+container is recreated in place on the new render (it stops gracefully, a fresh one starts on the same
+volume), and health is waited for. A roll whose new container never reports healthy is recorded as
+failed on `GET /api/fleet/roll` — check that agent's logs before moving on. The equivalent UI path is
+Agents → the ⟳/Repeat icon ("Roll"), for the agent's managers and admins.
 
 Check each rolled agent two ways. The container really holds its own credential:
 
@@ -200,7 +200,7 @@ docker inspect talaria-fleet-agent-<department>-1 \
   | grep -q '^TALARIA_AGENT_KEY=tak_' && echo "own credential" || echo "STILL ON THE ORG KEY"
 ```
 
-(A rolled agent lives in the `-b-1` container until its next roll — `docker ps` tells you which.)
+(An agent an old blue/green roll left in the `-b-1` container moves back to `-1` on this roll.)
 
 And Talaria has actually *seen* it authenticate with that credential:
 
@@ -224,7 +224,8 @@ curl -sS -b /tmp/talaria.cookies -X POST http://127.0.0.1:5273/api/fleet/render
 #   Any remaining line names exactly who is still pending.
 ```
 
-Give a rolled agent a heartbeat interval (default 45s, `TALARIA_HEARTBEAT_SECONDS`) to show up.
+A rolled agent shows up once Hermes connects its Talaria MCP toolkit, which verifies the key
+against `GET /api/agent/whoami` (that stamps `last_used_at`) — normally within a minute of boot.
 
 ## Step 5 — Close the window
 

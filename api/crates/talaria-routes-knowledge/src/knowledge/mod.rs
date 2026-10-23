@@ -18,6 +18,5 @@ pub mod memory_id;
 pub mod rag_collections;
 pub mod rag_collections_id;
 pub mod rag_search;
-pub mod search;
 pub mod templates;
 pub mod templates_id;

@@ -393,7 +393,7 @@ pub fn real_agent_hire_deps(state: talaria_state::AppState) -> AgentHireDeps {
                     // post-arm failure surfaces through the render's own error
                     // path rather than a poisoned closure.
                     let sb = st.secretbox().await.unwrap_or_default();
-                    let out = talaria_fleet_render::render_fleet(&st.pg, &sb, None).await?;
+                    let out = talaria_fleet_render::render_fleet(&st.pg, &sb).await?;
                     Ok(RenderOutcome {
                         warnings: out.warnings,
                     })

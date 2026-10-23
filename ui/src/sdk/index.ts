@@ -12,16 +12,16 @@
 // every platform permission and ACL applies unchanged — an app can never do
 // more than the person using it. App authors never write Rust.
 
-import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import type { Component, ComponentProps } from 'svelte'
 
 // ── App definition ─────────────────────────────────────────────────────────
 export interface AppSurfaces {
-  /** The app's main view, shown in the Work section of the nav. */
+  /** The app's main view at /x/<slug>: a tile in the top dock's Apps group. */
   work?: Component
-  /** Admin-ish controls, shown in the Manage section (default-denied for members, grantable). */
+  /** Admin-ish controls at /x/<slug>/manage, listed in the manage area behind
+   *  the dock's gear (default-denied for members, grantable). */
   manage?: Component
-  /** A panel added to each user's Settings page. */
+  /** A tab added to the Settings page of people who have access. */
   settings?: Component
 }
 
@@ -103,59 +103,43 @@ export { type RichEditorHandle } from '@/components/ui/rich-editor'
 export { controlSizes, submitOnEnter, inlineEditKeys, type ControlSize } from '@/components/ui/control'
 export { cn } from '@/lib/cn'
 
+// ── Query state: loading, broken, or resolved ─────────────────────────────
+// The host rule, handed to apps: a failed read renders as a failure, never as
+// "there are none of these". `QueryState` takes the whole query and your own
+// skeleton and gives you the error branch for free; `listQuery` does the same
+// for a list you lay out yourself. See docs/sdk/client.md.
+export { default as QueryState } from '@/components/ui/QueryState.svelte'
+export { default as QueryError } from '@/components/ui/QueryError.svelte'
+export { listQuery, type ListQuery, type QueryLike, type QueryErrorProps } from '@/components/ui/query-state'
+
+// Host primitives an app's records and registries are built from — the same
+// components the core surfaces use, so an app's list reads like the host's.
+export { default as SortHeader } from '@/components/ui/SortHeader.svelte'
+export { default as AddRow } from '@/components/ui/AddRow.svelte'
+export { default as RenameField } from '@/components/ui/RenameField.svelte'
+export { default as RecordTitle } from '@/components/ui/RecordTitle.svelte'
+export { default as LibraryPane, type LibraryGroup } from '@/components/ui/LibraryPane.svelte'
+
 // ── Session + data hooks ───────────────────────────────────────────────────
 export { useSession as useMe, useHasPerm, useIsAdmin, type SessionUser } from '@/lib/session'
 export { createQuery, createMutation, useQueryClient, keepPreviousData } from '@tanstack/svelte-query'
+// The live firehose: run, notification, brief and message transitions, ids
+// only. One shared connection per tab — subscribe through this, never a second
+// EventSource of your own.
+export { useUserEvents, type UserEvent } from '@/lib/user-events.svelte'
 
-/** JSON fetch against any platform API (runs as the signed-in user). */
-export async function api<T = unknown>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
-  const { json: body, ...rest } = init ?? {}
-  const res = await fetch(path, {
-    credentials: 'same-origin',
-    ...rest,
-    ...(body !== undefined
-      ? { headers: { 'content-type': 'application/json', ...(rest.headers ?? {}) }, body: JSON.stringify(body) }
-      : {}),
-  })
-  if (!res.ok) {
-    const j = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new Error(j.error ?? `${res.status}`)
-  }
-  return res.json() as Promise<T>
-}
+// ── HTTP: the host's own door ──────────────────────────────────────────────
+// `api()` and `appApi()` go through the same verbs the host's surfaces use
+// (ui/src/lib/fetch-json.ts): a non-2xx rejects with an `HttpError` carrying
+// the status and the server's own sentence, a 2xx that isn't JSON rejects
+// with a sentence that says so, and every read carries a deadline.
+export { HttpError, errorMessage, getStream, postStream } from '@/lib/fetch-json'
+export { openStream } from '@/lib/sse'
+export { api, appApi, appQueryKey, type ApiInit, type AppApi, type AppApiInit } from '@/lib/app-client'
 
-/** Fetch helpers bound to THIS app's server routes (/api/apps/<slug>/…). */
-export function appApi(slug: string) {
-  const base = `/api/apps/${slug}`
-  return {
-    get: <T = unknown>(path: string) => api<T>(`${base}/${path}`),
-    post: <T = unknown>(path: string, body?: unknown) => api<T>(`${base}/${path}`, { method: 'POST', json: body ?? {} }),
-    put: <T = unknown>(path: string, body?: unknown) => api<T>(`${base}/${path}`, { method: 'PUT', json: body ?? {} }),
-    patch: <T = unknown>(path: string, body?: unknown) => api<T>(`${base}/${path}`, { method: 'PATCH', json: body ?? {} }),
-    del: <T = unknown>(path: string, body?: unknown) =>
-      api<T>(`${base}/${path}`, { method: 'DELETE', ...(body !== undefined ? { json: body } : {}) }),
-  }
-}
-
-/** Svelte-query wrapper over an app server GET — the common read path.
- *  `path` may be a getter (`() => string`) so a path built from reactive
- *  state re-keys the query as that state changes (options are a function,
- *  re-run on rune changes). Call during component init. */
-export function useAppQuery<T = unknown>(slug: string, path: string | (() => string)) {
-  return createQuery(() => {
-    const p = typeof path === 'function' ? path() : path
-    return {
-      queryKey: ['app', slug, p],
-      queryFn: () => appApi(slug).get<T>(p),
-    }
-  })
-}
-
-/** Invalidate this app's queries after a write. Call during component init
- *  (it grabs the query client from context); the returned function is safe
- *  anywhere. */
-export function useAppInvalidate(slug: string) {
-  const qc = useQueryClient()
-  return (path?: string) =>
-    qc.invalidateQueries({ queryKey: path ? ['app', slug, path] : ['app', slug] })
-}
+// ── The app this surface belongs to ────────────────────────────────────────
+// `useApp()` says which app; the hooks default to it, reading the slug once at
+// init (ui/src/lib/app-hooks.ts says why).
+export type { AppContext, AppSurfaceName } from '@/lib/app-context'
+export type { AppManifest } from '@/lib/apps'
+export { useApp, useAppApi, useAppQuery, useAppInvalidate, type AppQueryOptions } from '@/lib/app-hooks'

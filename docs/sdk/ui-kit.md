@@ -5,8 +5,16 @@ automatic, and nothing needs installing. Full export list: [reference.md](./refe
 
 ```svelte
 <script lang="ts">
-  import { Button, Chip, EmptyState, Input, SkeletonRows, fade, QUICK } from '@talaria/sdk'
+  import { Button, Chip, Input, fade, QUICK } from '@talaria/sdk'
+
+  let name = $state('')
 </script>
+
+<div class="flex items-center gap-2" in:fade={QUICK}>
+  <Input bind:value={name} placeholder="Name" size="sm" />
+  <Button size="sm" disabled={!name.trim()}>Save</Button>
+  <Chip>draft</Chip>
+</div>
 ```
 
 Icons come from `@lucide/svelte` (host-resolved — note the unscoped `lucide-svelte` is an
@@ -28,16 +36,30 @@ is not one the host shares, so the build fails and names the import.
 | Tabs / a switch | `Tabs`, `Segmented` |
 | A label pill | `Chip` (tones; filter pills via onSelect/selected; removable tokens via onRemove) |
 | Empty / loading / working | `EmptyState` · `Skeleton`/`SkeletonRows`/`SkeletonCard` · `Generating*`/`Waiting*` |
+| A read's three answers | `QueryState` (loading, broken, resolved) · a list → `listQuery` · the error alone → `QueryError` |
 | Rich text | `RichEditor` (WYSIWYG, markdown stored); render markdown → `Markdown` |
-| Inline edit | `InlineCreate` + `submitOnEnter` + `inlineEditKeys` — the platform's contract |
+| Add a record by name | `AddRow` (always open, names its action); the click-to-reveal `+` → `InlineCreate` |
+| Rename in place | `RenameField`; a record's emoji + title heading → `RecordTitle` |
+| Key handling | `submitOnEnter` (Enter presses the button) · `inlineEditKeys` (Enter commits via blur, Escape reverts) |
+| A sortable column head | `SortHeader` (the affordance; the sort cycle stays yours) |
+| A library beside its detail | `LibraryPane` (picker on the left, the selected record on the right) |
 
 The three loading states are deliberately distinct: **Skeleton** = a fetch hasn't resolved,
 **Generating** = model output is being written, **Waiting** = an agent is working right now.
-An app declares its own waiting site inline:
+An app declares its own waiting site inline, and the `label` is required — it is the live
+region a screen reader announces (the mark itself is decorative):
 
 ```svelte
-<Waiting site={{ key: 'my-app/summarise', role: 'reasoning' }} />
+<script lang="ts">
+  import { Waiting } from '@talaria/sdk'
+</script>
+
+<Waiting site={{ key: 'my-app/summarise', role: 'reasoning' }} label="Summarising the thread" />
 ```
+
+A failed read is a fourth state, and never an empty one: render it through `QueryState` or
+`listQuery` ([client.md](./client.md#rendering-a-read-loading-broken-or-empty)), so a 500 reads
+as "Could not load …" with a Retry, not as "No items yet".
 
 ## Motion
 

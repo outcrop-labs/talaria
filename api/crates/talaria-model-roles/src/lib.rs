@@ -102,8 +102,11 @@ pub const MODEL_ROLES: [RoleSpec; 11] = [
     RoleSpec {
         role: "vision",
         label: "Image understanding",
-        hint: "Reserved: image inference for surfaces that analyze uploads without an agent persona.",
-        wired: false,
+        hint: "Reads images for agents whose own model is not known to see: each such agent's Hermes gets it as its image reader, for attached images, fetched attachments and screenshots. Saving it re-renders the fleet. Auto: none, and those agents cannot read images.",
+        // Wired into every fleet agent whose models are not all known to see
+        // (talaria-fleet-render's `fleet_vision`, as Hermes'
+        // `auxiliary.vision`), and into the Apps SDK's in-process describer.
+        wired: true,
         requires: &["vision"],
     },
     RoleSpec {
@@ -351,7 +354,9 @@ mod tests {
         assert_eq!(MODEL_ROLES[3].label, "Utility");
         assert!(MODEL_ROLES[3].requires.is_empty());
         assert_eq!(MODEL_ROLES[4].requires, &["code", "tools"]);
-        assert!(!MODEL_ROLES[7].wired);
+        assert_eq!(MODEL_ROLES[7].role, "vision");
+        assert!(MODEL_ROLES[7].wired);
+        assert!(!MODEL_ROLES[8].wired);
         assert_eq!(MODEL_ROLES[10].role, "reranker");
     }
 
