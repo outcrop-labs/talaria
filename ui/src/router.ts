@@ -1,4 +1,5 @@
 import { createRouter } from 'sv-router'
+import { bindViewTitlePath } from './lib/view-title.svelte'
 import NotFound from './routes/NotFound.svelte'
 import { splitHref } from '@/lib/route-tabs'
 
@@ -251,6 +252,11 @@ export const { p, navigate, isActive, preload, route } = createRouter({
   },
   '*': NotFound,
 })
+
+// View-title claims are keyed by this router's pathname. The binding runs
+// this way round so that module stays loadable outside a browser (see
+// lib/view-title.svelte.ts).
+bindViewTitlePath(() => route.pathname)
 
 /** Navigate to a server-supplied href (alert / notification / activity links)
  *  or an app's own (appNavigate). The typed `navigate` wants a route-path

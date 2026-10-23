@@ -18,7 +18,9 @@ automatic, and nothing needs installing. Full export list: [reference.md](./refe
 ```
 
 Icons come from `@lucide/svelte` (host-resolved — note the unscoped `lucide-svelte` is an
-unrelated package).
+unrelated package). Import them by name from the package root
+(`import { Check } from '@lucide/svelte'`). A deep path such as `@lucide/svelte/icons/check`
+is not one the host shares, so the build fails and names the import.
 
 ## Picking a component
 

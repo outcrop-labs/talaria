@@ -2,6 +2,10 @@
 // server/mcp chunks, every shared specifier external and rewritten to the
 // host's /runtime/rt-*.js entries. A bundled svelte is a build error
 // (`effect_orphan` at runtime), not a surprise later.
+//
+// Changing what this file emits, or how the host reads it? Bump BUILD_RECIPE
+// in ./key.ts in the same change, so builds made by the old recipe are
+// rebuilt instead of reused.
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -10,7 +14,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 import {
   bundledShared,
-  clientSpecifiers,
+  clientRuntimePath,
   hostBuildStamp,
   isClientSpecifier,
   isServerSpecifier,
@@ -82,12 +86,17 @@ async function buildClient(appDir: string, outDir: string): Promise<void> {
       cssCodeSplit: true,
       rollupOptions: {
         input: { app: join(appDir, 'app.ts'), style: cssEntry },
+        // The host imports app.js and reads its default export (defineApp).
+        // Vite's app-build default (false) lets Rollup drop an entry's
+        // exports, which left app.js with none: the probe refused it and the
+        // host had no surfaces to mount.
+        preserveEntrySignatures: 'strict',
         external: (id) => isClientSpecifier(id),
         output: {
           format: 'es',
           entryFileNames: (c) => (c.name === 'app' ? 'app.js' : '_style.js'),
           assetFileNames: (a) => (typeof a.name === 'string' && a.name.endsWith('.css') ? 'app.css' : 'assets/[name][extname]'),
-          paths: (id) => (isClientSpecifier(id) ? `/runtime/${shimFileName(clientSpecifiers().find((s) => id === s || id.startsWith(`${s}/`)) ?? id)}.js` : id),
+          paths: (id) => (isClientSpecifier(id) ? clientRuntimePath(id) : id),
         },
       },
     },
