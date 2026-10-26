@@ -112,6 +112,9 @@ const API_ENV_VARS = [
   'TALARIA_APP_HOST_URL',
   'TALARIA_FLEET_PROJECT',
   'TALARIA_WORKTREE',
+  'TALARIA_MCP_PORT',
+  'TALARIA_OMP_AUTH_PORT',
+  'TALARIA_GATEWAY_PORT_BASE',
   'TALARIA_APPS_LOCAL_SOURCES',
 ] as const
 
@@ -145,6 +148,13 @@ const API_ENV_VARS = [
  *  also how the api reaches this app host for app harnesses (fitness reads
  *  them from /api/app-host/harnesses on loopback); TALARIA_APP_HOST_URL
  *  overrides that address outright.
+ *
+ *  TALARIA_MCP_PORT, TALARIA_OMP_AUTH_PORT and TALARIA_GATEWAY_PORT_BASE are
+ *  a worktree's own ports for what the api spawns and renders: the toolkit
+ *  MCP child, the omp auth bridge child, and the first agent gateway port.
+ *  The api reads all three and nothing else does, so without the lift every
+ *  stack's api fell back to :5280, :5276 and :8770 and the second stack
+ *  collided with the first (talaria worktree says how).
  *
  *  TALARIA_WORKTREE names the instance in every container the api owns: an
  *  app's database (`talaria-appdb-<instance>-<slug>`) and an MCP package's
