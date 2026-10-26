@@ -236,18 +236,24 @@ pub fn validate_manifest(value: &Value, host_sdk: &str) -> Result<Manifest, Stri
                         ));
                     }
                 }
-                let cron = t
-                    .get("cron")
-                    .and_then(Value::as_str)
-                    .is_some_and(|s| !s.trim().is_empty());
-                let event = t
-                    .get("event")
-                    .and_then(Value::as_str)
-                    .is_some_and(|s| !s.trim().is_empty());
-                if cron == event {
-                    return Err(format!(
-                        "\"triggers[{i}]\" needs exactly one of \"cron\" or \"event\" (a non-empty string)"
-                    ));
+                // Exactly one of the two keys, whatever its value — as the
+                // schema's oneOf reads it — and that one a non-blank string.
+                let key = match (t.contains_key("cron"), t.contains_key("event")) {
+                    (true, false) => "cron",
+                    (false, true) => "event",
+                    _ => {
+                        return Err(format!(
+                            "\"triggers[{i}]\" needs exactly one of \"cron\" or \"event\""
+                        ));
+                    }
+                };
+                match t.get(key) {
+                    Some(Value::String(v)) if !v.trim().is_empty() => {}
+                    _ => {
+                        return Err(format!(
+                            "\"triggers[{i}].{key}\" must be a string that is not only whitespace"
+                        ));
+                    }
                 }
             }
         }
@@ -575,6 +581,26 @@ mod tests {
         let err =
             validate_manifest(&json!({"name": "X", "slug": "Bad Slug"}), SDK_VERSION).unwrap_err();
         assert!(err.contains("not a usable app slug"), "{err}");
+    }
+
+    /// A trigger has exactly one of `cron` or `event` — the key's presence
+    /// counts, as the schema's oneOf counts it — and that one is a string that
+    /// is not only whitespace (the schema's `"pattern": "\\S"`).
+    #[test]
+    fn a_trigger_is_read_as_the_published_schema_reads_it() {
+        let judge =
+            |t: Value| validate_manifest(&json!({"name": "X", "triggers": [t]}), SDK_VERSION);
+        let err = judge(json!({"id": "a", "cron": " "})).unwrap_err();
+        assert!(
+            err.contains("\"triggers[0].cron\" must be a string"),
+            "{err}"
+        );
+        let err = judge(json!({"id": "a", "event": "x", "cron": 5})).unwrap_err();
+        assert!(err.contains("exactly one of"), "{err}");
+        let err = judge(json!({"id": "a", "event": null})).unwrap_err();
+        assert!(err.contains("\"triggers[0].event\""), "{err}");
+        assert!(judge(json!({"id": "a", "cron": "0 3 * * *"})).is_ok());
+        assert!(judge(json!({"id": "a", "event": " ticket.created "})).is_ok());
     }
 
     #[test]

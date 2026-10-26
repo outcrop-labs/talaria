@@ -11,9 +11,9 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_apps::{
-    AppHost, InstallRequest, PlatformCredentials, catalog_url, enabled_app_slugs, fetch_catalog,
-    install_app, set_app_enabled, set_catalog_url, source_records, uninstall_app, update_app,
-    update_checks,
+    AppHost, InstallError, InstallRequest, KeptDataChoice, PlatformCredentials, catalog_url,
+    enabled_app_slugs, fetch_catalog, install_app, set_app_enabled, set_catalog_url,
+    source_records, uninstall_app, update_app, update_checks,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::parse;
@@ -81,7 +81,9 @@ pub async fn get(
     // The one admin-family read that /apps Manage holders share with admins.
     let viewer = require_view(&state, &headers, "/apps").await?;
     let query = talaria_api_facades::google::oauth::query_pairs(uri.query());
-    // ?updates=1 is admin-only: each check spends the app's read credential.
+    // ?updates=1 is admin-only: each check mints the app's read token. (A
+    // source read with a workspace secret is never checked: that would spend
+    // a use of the secret.)
     let want_updates = query.get("updates").map(String::as_str) == Some("1");
     if want_updates && viewer.role != "admin" {
         return Ok(house_error(
@@ -246,8 +248,10 @@ pub async fn put(
                     target_id: Some(&app),
                     target_label: outcome.error.as_deref(),
                     before: Some(json!({ "sha": outcome.from })),
+                    // The commit apps/<slug> holds now: the new one when it
+                    // landed, or when the swap back failed (not rolled back).
                     after: Some(json!({
-                        "sha": if outcome.ok { outcome.to.clone() } else { outcome.from.clone() },
+                        "sha": if outcome.ok || !outcome.rolled_back { outcome.to.clone() } else { outcome.from.clone() },
                         "ref": outcome.git_ref,
                         "attempted": outcome.to,
                         "rolledBack": outcome.rolled_back,
@@ -388,6 +392,18 @@ pub async fn post(
         Ok(s) => s,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // keptData: data an earlier install of the slug kept — "adopt" gives it
+    // to this app, "wipe" deletes it first (default: adopt only its own).
+    let kept_data = match talaria_body::optional_enum_member(obj, "keptData", &["adopt", "wipe"]) {
+        Ok(k) => k.map(|k| {
+            if k == "wipe" {
+                KeptDataChoice::Wipe
+            } else {
+                KeptDataChoice::Adopt
+            }
+        }),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
     let creds = PlatformCredentials {
         pg: &state.pg,
         sb: &sb,
@@ -399,6 +415,7 @@ pub async fn post(
         slug: slug_override.as_deref(),
         git_ref: git_ref.as_deref(),
         secret: secret.as_deref(),
+        kept_data,
         actor: &actor,
     };
     Ok(
@@ -417,6 +434,7 @@ pub async fn post(
                             "sha": installed.sha,
                             "ref": git_ref,
                             "keptData": installed.kept_data,
+                            "wipedData": installed.wiped_data,
                         })),
                     },
                 )
@@ -425,12 +443,25 @@ pub async fn post(
                     "slug": installed.slug,
                     "sha": installed.sha,
                     "keptData": installed.kept_data,
+                    "wipedData": installed.wiped_data,
                     "build": installed.build,
                     "buildError": installed.build_error,
                 }))
                 .into_response()
             }
-            Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
+            // Data kept from another repository (or an unrecorded one)
+            // stands in the way of an install that did not choose: 409, with
+            // `conflict: {slug, keptFrom, installing}` naming both, and
+            // Manage → Apps offers the two choices.
+            Err(InstallError {
+                error,
+                kept_data: Some(conflict),
+            }) => (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": error, "conflict": conflict })),
+            )
+                .into_response(),
+            Err(InstallError { error, .. }) => house_error(StatusCode::BAD_REQUEST, &error),
         },
     )
 }

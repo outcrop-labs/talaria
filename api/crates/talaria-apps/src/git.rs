@@ -299,12 +299,18 @@ fn renameat2(from: &Path, to: &Path, flags: libc::c_uint) -> std::io::Result<()>
     }
 }
 
+/// Whether this platform has the one-step swap `exchange` needs. Update asks
+/// before it fetches anything: without it, the fetch, the build and the probe
+/// would all run for a swap that is then refused.
+pub const ATOMIC_SWAP: bool = cfg!(target_os = "linux");
+
 /// Swap two directories in ONE step: after the call each name holds what the
 /// other held, and at no instant is either name missing. The app host's
 /// watcher drops an app's database the moment `apps/<slug>` disappears
 /// (ui/src/server/app-build/reconcile.ts), so an update can never move the
 /// live tree aside and the new one in with two renames. Linux only
-/// (renameat2 RENAME_EXCHANGE); elsewhere it refuses rather than leave a gap.
+/// (renameat2 RENAME_EXCHANGE, `ATOMIC_SWAP`); elsewhere it refuses rather
+/// than leave a gap.
 pub fn exchange(a: &Path, b: &Path) -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
     {

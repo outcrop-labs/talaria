@@ -118,9 +118,13 @@ export function validateManifest(value: unknown, hostSdk: string = SDK_VERSION):
       if (typeof trigger.id !== 'string' || !SLUG_RE.test(trigger.id)) {
         return fail(`"triggers[${i}].id" must be a lowercase id (letters, digits, dashes)`)
       }
-      const cron = typeof trigger.cron === 'string' && trigger.cron.trim() !== ''
-      const event = typeof trigger.event === 'string' && trigger.event.trim() !== ''
-      if (cron === event) return fail(`"triggers[${i}]" needs exactly one of "cron" or "event" (a non-empty string)`)
+      // Exactly one of the two keys, whatever its value — as the schema's
+      // oneOf reads it — and that one a non-blank string.
+      const hasCron = Object.hasOwn(trigger, 'cron')
+      if (hasCron === Object.hasOwn(trigger, 'event')) return fail(`"triggers[${i}]" needs exactly one of "cron" or "event"`)
+      const key = hasCron ? 'cron' : 'event'
+      const v = trigger[key]
+      if (typeof v !== 'string' || !v.trim()) return fail(`"triggers[${i}].${key}" must be a string that is not only whitespace`)
     }
   }
 

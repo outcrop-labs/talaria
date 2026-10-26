@@ -64,8 +64,17 @@ slug is whatever this instance installed the app as, and the SDK's hooks bind to
    An install from git fetches the one commit into a staging directory, checks `talaria.json`,
    and only then moves it into `apps/<slug>`. The slug is the one the manifest declares, else
    the repository's name without a `talaria-app-` prefix (or an override you give); a slug that
-   is taken or reserved is refused. The repository, the ref and the commit are recorded
-   (`app_sources`), and the install asks the host to build the app and answers with the outcome.
+   is taken or reserved is refused, and so is one an update or uninstall is working on. The
+   repository, the ref and the commit are recorded (`app_sources`), the repository is also
+   recorded in the app's data directory (`app-data/<slug>/source.json`), and the install asks
+   the host to build the app and answers with the outcome.
+
+   **Kept data.** When an earlier install left data under the slug (see Uninstall), the install
+   adopts it only if it was kept from the same repository. Data kept from another repository,
+   or from an install that did not record one, is another app's store and database password:
+   the install is refused (409, naming both repositories) until it says what to do —
+   `keptData: "adopt"` gives the data to the new app, `keptData: "wipe"` deletes it first.
+   Manage → Apps offers both as buttons.
 
    **Private repositories.** A github.com repository the GitHub connection
    ([WORKBENCH.md](./WORKBENCH.md)) can see is fetched with a token scoped to that one
@@ -92,22 +101,30 @@ slug is whatever this instance installed the app as, and the SDK's hooks bind to
    ([server.md](./sdk/server.md#grants)). The compiled client is served under the same rule.
 5. **Update** — Manage → Apps shows where each app installed from git came from (repository,
    ref, commit), checks whether the ref now points at a newer commit (`git ls-remote`), and
-   offers **Update** (`PUT /api/admin/apps {app, update: true, ref?}`, admin, audited). An
-   update fetches the new commit into `apps/.<slug>.next`, builds and load-probes it there while
-   the live app keeps serving, then swaps the two directories in one step (`renameat2`
+   offers **Update** (`PUT /api/admin/apps {app, update: true, ref?}`, admin, audited). The check
+   never asks a source read with a workspace secret: a check would spend a use of the secret,
+   and the page checks on its own whenever an admin opens it. Such an app shows **update not
+   checked**; Update fetches with the secret. An update fetches the new commit into
+   `apps/.<slug>.next`, builds and load-probes it there while the live app keeps serving, then
+   swaps the two directories in one step (`renameat2`
    `RENAME_EXCHANGE`: `apps/<slug>` is never missing, so the host never mistakes the app for
-   uninstalled). The previous version stays as `apps/.<slug>.prev`. A version that fails to
-   build or load — before the swap or after it — is rolled back automatically: the app keeps
-   running the previous commit and stays enabled, and the answer says why. An update never
-   touches the app's data. Atomic swap needs Linux; elsewhere update refuses.
+   uninstalled). Once the new version is live, the one it replaced becomes `apps/.<slug>.prev`
+   (the source record's `previousSha`); a failed update leaves `.prev` as it was. A version that
+   fails to build or load — before the swap or after it — is rolled back automatically: the app
+   keeps running the previous commit and stays enabled, and the answer says why. If swapping the
+   previous version back fails too, the answer says it was not rolled back and that
+   `apps/<slug>` holds the new commit. An update never touches the app's data. The atomic swap
+   needs Linux: elsewhere update refuses before it fetches anything.
 6. **Uninstall** — disables the app, deletes its MCP server row and every grant on it, stops and
    removes its database container, and deletes the codebase, any update staging directories,
    its build output, its compose file and its source record. Its **data is kept** — the
-   Postgres files, `db.env` and the sealed password — so reinstalling the same slug reattaches
-   it (the install says so). With `wipeData: true` the app's store is emptied while its database
-   still runs, the database is stopped, and the whole data directory is deleted (through a
-   throwaway container when its files belong to the database container's user), along with the
-   password. Manage → Apps asks which. Audited, like enable/disable/install/update.
+   Postgres files, `db.env`, the sealed password and the record of the repository they belong
+   to — so reinstalling the same repository under the same slug reattaches it (the install says
+   so; another repository has to choose, see Install). With `wipeData: true` the app's store is
+   emptied while its database still runs, the database is stopped, and the whole data directory
+   is deleted (through a throwaway container when its files belong to the database container's
+   user), along with the password. Manage → Apps asks which. Audited, like
+   enable/disable/install/update.
 
 
 ## The marketplace

@@ -13,7 +13,8 @@ import { stopAppDatabase } from '@/server/app-db'
 //             apps/.<slug>.next, beside the live app, which keeps serving
 //   activate  after the api swapped the trees, switch the app to that build
 //             and probe it live; a failure restores the previous build
-//   release   let go of an update the api abandoned
+//   release   let go of an update the api abandoned, discarding its staged
+//             build
 //   removed   the api uninstalled the app: close its database pool
 //
 // Each answers { ok, build?, error? }. A failed step is an answer, not a

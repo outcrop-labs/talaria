@@ -30,10 +30,47 @@ const fixture = JSON.parse(readFileSync(join(ROOT, 'api/tests/it/fixtures/app-ma
   }>
   ranges: Array<{ range: string; version: string; satisfied?: boolean; error?: string }>
 }
+interface StringSchema {
+  type?: string
+  pattern?: string
+  minLength?: number
+  maxLength?: number
+}
 const schema = JSON.parse(readFileSync(join(ROOT, 'docs/sdk/talaria.schema.json'), 'utf8')) as {
   required: string[]
-  properties: Record<string, { pattern?: string; not?: { enum: string[] }; maxLength?: number; properties?: Record<string, { maxLength?: number }>; additionalProperties?: boolean }>
+  properties: Record<
+    string,
+    {
+      pattern?: string
+      not?: { enum: string[] }
+      maxLength?: number
+      properties?: Record<string, StringSchema>
+      additionalProperties?: boolean
+      items?: { type: string; required: string[]; properties: Record<string, StringSchema>; oneOf: Array<{ required: string[] }> }
+    }
+  >
   'x-talaria-sdk-version': string
+}
+
+/** Whether the schema's `triggers.items` admits `item`, read for exactly the
+ *  keywords it uses (type, required, properties' type/minLength/pattern,
+ *  oneOf of required), as a JSON Schema validator would. */
+function schemaAdmitsTrigger(item: unknown): boolean {
+  const s = schema.properties.triggers?.items
+  if (!s) throw new Error('the schema lost triggers.items')
+  if (s.type !== 'object' || typeof item !== 'object' || item === null || Array.isArray(item)) return false
+  const obj = item as Record<string, unknown>
+  const has = (k: string) => Object.hasOwn(obj, k)
+  if (!s.required.every(has)) return false
+  for (const [k, p] of Object.entries(s.properties)) {
+    if (!has(k)) continue
+    const v = obj[k]
+    if (p.type === 'string' && typeof v !== 'string') return false
+    if (typeof v !== 'string') continue
+    if (p.minLength !== undefined && [...v].length < p.minLength) return false
+    if (p.pattern !== undefined && !new RegExp(p.pattern, 'u').test(v)) return false
+  }
+  return s.oneOf.filter((alt) => alt.required.every(has)).length === 1
 }
 const grants = JSON.parse(readFileSync(join(ROOT, 'api/tests/it/fixtures/app-grants.json'), 'utf8')) as {
   routes: { reservedSlugs: string[] }
@@ -97,6 +134,17 @@ describe('docs/sdk/talaria.schema.json', () => {
     expect(schema.properties.slug?.pattern).toBe(SLUG_RE.source)
     expect(schema.properties.slug?.not?.enum).toEqual([...RESERVED_APP_SLUGS])
     expect([...RESERVED_APP_SLUGS]).toEqual(grants.routes.reservedSlugs)
+  })
+  it('reads triggers as the validator reads them, case for case', () => {
+    expect(schema.properties.triggers?.items?.properties.id?.pattern).toBe(SLUG_RE.source)
+    const cases = fixture.manifests.filter((c) => Array.isArray((c.manifest as { triggers?: unknown }).triggers))
+    // The fixture's trigger cases: the valid pair and every refusal.
+    expect(cases.length).toBeGreaterThanOrEqual(8)
+    for (const c of cases) {
+      const triggers = (c.manifest as { triggers: unknown[] }).triggers
+      const validator = validateManifest({ name: 'X', triggers }).ok
+      expect({ about: c.about, schema: triggers.every(schemaAdmitsTrigger) }).toEqual({ about: c.about, schema: validator })
+    }
   })
   it('caps the lengths the validator caps, and knows only three surfaces', () => {
     expect(schema.properties.name?.maxLength).toBe(LIMITS.name)

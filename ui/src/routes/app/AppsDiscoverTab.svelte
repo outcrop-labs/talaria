@@ -6,11 +6,11 @@
   import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import { alert } from '@/components/ui/confirm.svelte'
+  import { alert, confirm } from '@/components/ui/confirm.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { cn } from '@/lib/cn'
-  import { fetchAdminApps, post, shortSha } from './apps'
+  import { fetchAdminApps, installApp, shortSha, type KeptDataConflict } from './apps'
 
   let { isAdmin }: { isAdmin: boolean } = $props()
 
@@ -28,32 +28,36 @@
 
   const installed = $derived(new Set((query.data?.apps ?? []).map((a) => a.slug)))
 
-  type InstallAnswer = {
-    error?: string
-    slug?: string
-    sha?: string
-    keptData?: boolean
-    build?: { ok: boolean; error?: string } | null
-    buildError?: string
-  }
+  type InstallArgs = { url: string; slug?: string; ref?: string; secret?: string }
+  /** An install refused over data another repository's install kept: the
+   *  sentence, both repositories, and the request to repeat with a choice. */
+  let keptConflict = $state<{ error: string; conflict: KeptDataConflict; args: InstallArgs } | null>(null)
 
-  const install = async (url: string, slug?: string, extra: { ref?: string; secret?: string } = {}) => {
-    busy = slug ?? url
+  const install = async (args: InstallArgs, keptData?: 'adopt' | 'wipe') => {
+    busy = args.slug ?? args.url
     notice = null
+    keptConflict = null
     try {
-      const r = (await post({
-        installUrl: url,
-        ...(slug ? { slug } : {}),
-        ...(extra.ref ? { ref: extra.ref } : {}),
-        ...(extra.secret ? { secret: extra.secret } : {}),
-      })) as InstallAnswer
-      if (r.error) {
+      const r = await installApp({
+        installUrl: args.url,
+        ...(args.slug ? { slug: args.slug } : {}),
+        ...(args.ref ? { ref: args.ref } : {}),
+        ...(args.secret ? { secret: args.secret } : {}),
+        ...(keptData ? { keptData } : {}),
+      })
+      if (r.conflict) {
+        keptConflict = { error: r.error ?? 'the slug holds data another install kept', conflict: r.conflict, args }
+      } else if (r.error) {
         void alert({ title: 'Install failed', message: r.error })
       } else {
         const built = r.build?.ok
           ? 'It built and loaded; enable it under Installed.'
           : `It did not build: ${r.build?.error ?? r.buildError ?? 'unknown error'}. Fix the app and Rebuild, or uninstall it.`
-        const kept = r.keptData ? ' The data a previous install kept is attached again.' : ''
+        const kept = r.keptData
+          ? ' The data a previous install kept is attached again.'
+          : r.wipedData
+            ? ' The data a previous install kept was deleted first.'
+            : ''
         notice = `Installed apps/${r.slug} at ${shortSha(r.sha)}. ${built}${kept}`
         gitUrl = ''
         gitRef = ''
@@ -65,6 +69,23 @@
     } finally {
       busy = null
     }
+  }
+
+  /** Repeat the refused install, giving it the kept data or deleting that
+   *  data first. Deleting is for good, so it asks once more. */
+  const settleKept = async (choice: 'adopt' | 'wipe') => {
+    const k = keptConflict
+    if (!k) return
+    if (choice === 'wipe') {
+      const ok = await confirm({
+        title: `Delete the data kept under "${k.conflict.slug}"?`,
+        message: `Every record ${k.conflict.keptFrom ?? 'the earlier install'} stored is deleted for good, and ${k.conflict.installing} installs with an empty store.`,
+        confirmLabel: 'Delete data and install',
+        danger: true,
+      })
+      if (!ok) return
+    }
+    await install(k.args, choice)
   }
 
   const catalog = $derived(query.data?.catalog)
@@ -85,6 +106,21 @@
   </div>
 
   {#if notice}<div class="rounded-lg border border-line bg-card px-4 py-3 font-sans text-xs text-fg">{notice}</div>{/if}
+  {#if keptConflict}
+    <!-- Kept data from another repository: never adopted silently. -->
+    <div class="space-y-2 rounded-lg border border-line bg-card px-4 py-3" data-kept-data-conflict>
+      <div class="font-sans text-xs text-fg">
+        Not installed. The slug <code>{keptConflict.conflict.slug}</code> holds data kept from
+        {#if keptConflict.conflict.keptFrom}<code class="break-all">{keptConflict.conflict.keptFrom}</code>{:else}an earlier install that did not record its repository{/if},
+        and this install is <code class="break-all">{keptConflict.conflict.installing}</code>.
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <Button size="sm" disabled={busy !== null} onclick={() => void settleKept('adopt')}>Install, adopting that data</Button>
+        <Button size="sm" variant="ghost" disabled={busy !== null} onclick={() => void settleKept('wipe')}>Delete that data, then install</Button>
+        <Button size="sm" variant="ghost" disabled={busy !== null} onclick={() => (keptConflict = null)}>Cancel</Button>
+      </div>
+    </div>
+  {/if}
 
   {#if query.isLoading}
     <SkeletonRows rows={4} />
@@ -124,7 +160,7 @@
             {#if installed.has(c.slug)}
               <Chip>installed</Chip>
             {:else if isAdmin}
-              <Button size="sm" disabled={busy !== null} onclick={() => void install(c.repo, c.slug)}>
+              <Button size="sm" disabled={busy !== null} onclick={() => void install({ url: c.repo, slug: c.slug })}>
                 <Download size={12} /> Install
               </Button>
             {/if}
@@ -153,7 +189,7 @@
         <Input bind:value={gitSecret} placeholder="workspace secret (optional)" class="w-52" />
         <Button
           disabled={!/^(https|http|file):\/\/.+/.test(gitUrl.trim()) || busy !== null}
-          onclick={() => void install(gitUrl.trim(), undefined, { ref: gitRef.trim(), secret: gitSecret.trim() })}
+          onclick={() => void install({ url: gitUrl.trim(), ref: gitRef.trim(), secret: gitSecret.trim() })}
         >
           Install
         </Button>
