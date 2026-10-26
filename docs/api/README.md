@@ -6,7 +6,7 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-338 routes across 24 groups.
+340 routes across 24 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
@@ -14,7 +14,7 @@
 | [`activity`](./activity.md) | What happened, what it cost, what the machine is doing, what needs you. | 11 |
 | [`admin`](./admin.md) | Instance administration (admin session required). | 27 |
 | [`agents`](./agents.md) | Agent CRUD, skills, runs. | 27 |
-| [`apps`](./apps.md) | The app platform surface, the app-server gateway, and the host's own app routes. | 6 |
+| [`apps`](./apps.md) | The app platform surface, the app-server gateway, and the host's own app routes. | 7 |
 | [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views, workchains. | 19 |
 | [`brief`](./brief.md) | The personal brief: items, replies, delegation. | 5 |
 | [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 32 |
@@ -22,7 +22,7 @@
 | [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 26 |
 | [`inbox`](./inbox.md) | The focus inbox and its command surface. | 7 |
 | [`integrations`](./integrations.md) | Connected accounts — Google Workspace and the rest. | 42 |
-| [`internal`](./internal.md) | Service-to-service calls from the app host — never a user's or an agent's. | 1 |
+| [`internal`](./internal.md) | Service-to-service calls from the app host — never a user's or an agent's. | 2 |
 | [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, blueprints, search. | 20 |
 | [`llm`](./llm.md) | The OpenAI-compatible wire (llm.v1.*). | 2 |
 | [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 16 |

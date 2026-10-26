@@ -82,10 +82,10 @@
 
 Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_apps.rs)
 
-> /api/admin/apps. App administration. GET → installed apps (+ ?catalog=1
-> for the marketplace feed, ?updates=1 for whether each app's source has a
-> newer commit). Reads are open to anyone granted the /apps Manage view;
-> mutations (enable/disable, install, update, uninstall, catalog source) and
+> /api/admin/apps. App administration. GET → installed apps, each with its
+> triggers and their newest runs (+ ?catalog=1 for the marketplace feed,
+> ?updates=1 for whether each app's source has a newer commit). Reads are
+> open to anyone granted the /apps Manage view; mutations (enable/disable,
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

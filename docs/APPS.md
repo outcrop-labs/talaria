@@ -13,11 +13,12 @@ and the community. Core ships with none enabled.
 
 ```
 apps/<slug>/
-  talaria.json   manifest — name, icon, version, description, surfaces (+ slug, sdk)
+  talaria.json   manifest — name, icon, version, description, surfaces (+ slug, sdk, triggers)
   app.ts         UI surfaces (Svelte 5) — default-exports defineApp({...});
                  required only when talaria.json declares a surface
   *.svelte       one component per surface (plus whatever else you need)
-  server.ts      optional API — defineAppServer(...) → /api/apps/<slug>/*
+  server.ts      optional API — defineAppServer(...) → /api/apps/<slug>/*, and the
+                 handlers for the manifest's triggers
   mcp.ts         optional agent tools — defineAppMcp(...) → governed MCP server
   harnesses/     optional activity harnesses — one defineHarness per file, scored in Models → Fitness
 ```
@@ -34,7 +35,8 @@ still be uninstalled.
 
 Every path under `/api/apps/<slug>/` is the app's own. The host's routes about an app live under
 `/api/app-host/<slug>/`: `POST …/rebuild`, which Manage → Apps calls to compile and probe an app
-before enabling it, and `POST …/lifecycle`, which only the api calls during an update; plus the two
+before enabling it, `POST …/lifecycle`, which only the api calls during an update, and
+`POST …/trigger/<id>`, which only the api's trigger scheduler calls (below); plus the two
 loopback-only routes the api's fitness plane reads app harnesses through (below).
 
 ## Surfaces
@@ -52,6 +54,59 @@ The app owns the routes below its surfaces: `/x/<slug>/items/42` mounts the work
 ([client.md](./sdk/client.md#routes-inside-your-app)). A surface never hard-codes its slug: the
 slug is whatever this instance installed the app as, and the SDK's hooks bind to it
 (`useApp()`).
+
+## Triggers
+
+An app's code can run with nobody calling it: on a schedule, or when something happens on the
+platform. `talaria.json` declares each trigger, and `server.ts` answers it by id
+([server.md](./sdk/server.md#triggers)):
+
+```json
+{ "name": "Lead scorer", "triggers": [
+  { "id": "nightly", "cron": "0 3 * * *" },
+  { "id": "on-ticket", "event": "ticket.created" }
+] }
+```
+
+- **`cron`** is a five-field schedule read in **UTC**: minute, hour, day of month, month, day of
+  week, each `*`, a number, a range `a-b`, a step `*/s`, `a-b/s` or `a/s`, or a comma list of
+  them; or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`. Numbers only, no month or day
+  names. When both day fields are restricted, a day matches if either does (classic cron). The
+  api's scheduler fires a schedule within 30 seconds of its minute. A trigger is armed when the
+  scheduler first sees it, so installing a nightly job at noon doesn't fire the 3am it "missed";
+  minutes missed while the api was down fire once, for the latest.
+- **`event`** names a platform event. There are two:
+
+  | event | when | the handler receives |
+  | :--- | :--- | :--- |
+  | `ticket.created` | a ticket is created, on any board | `ticketId`, `boardId` |
+  | `ticket.moved` | a ticket changes column, however it moved: a drag, promotion by assignment, an agent's status write, a review's rejection | `ticketId`, `boardId`, `from` and `to` (column keys), `closed` (whether `to` is terminal: done, failed, cancelled) |
+
+  These are the two changes the platform already announces internally (work dispatch and the
+  watchers' notifications ride the same writes). **An event carries ids, never content**: a
+  triggered run has no person behind it, so a ticket's title in the payload would be a read path
+  around every board's membership. An app that needs the ticket reads it later, as a person.
+
+**A triggered run acts as the app, with no user.** Its context has the app's store, the secrets
+an admin gave the app, and the cause (the schedule's minute or the event). It has no `ctx.user`,
+no `ctx.api` (there is no session to call the platform with), and it may not drive an agent:
+`ctx.agents.turn` refuses from a trigger. Model spend in a triggered run is the app's
+(ledger source `app`), not any person's.
+
+**Which apps fire.** Only an enabled app with a ready build. Disabling an app, or a failed
+build, disarms its schedules; turning it back on arms them afresh rather than catching up. An
+update or a reinstall that changes a schedule re-arms it. A run queued for an app that was turned
+off before it started is recorded as **skipped**.
+
+**Every run is recorded.** Manage → Apps shows each trigger on the app's row: its schedule (and,
+on hover, when it next fires) or its event, when it last ran, and how: the string the handler
+returned, or the error in red. **A failing trigger never turns the app off.** A handler that
+throws, misses its 10-minute deadline, or isn't in `server.ts` at all is a failed run there, and
+the next one runs as usual. Runs are kept for two weeks.
+
+**How it runs.** The api decides when and keeps the record (`app_trigger_runs`); it calls the
+host's `POST /api/app-host/<slug>/trigger/<id>`, loopback only with the internal service
+credential, and the host runs the handler. The api never loads app code.
 
 ## Lifecycle
 
@@ -205,6 +260,13 @@ rather than failing to build it.
 - Everything an app's users do runs under their own session, the app server's `ctx.api` calls
   included: platform permissions, resource ACLs, and the audit log apply exactly as in core
   surfaces.
+- An app's code drives a fleet agent only through `ctx.agents.turn`
+  ([server.md](./sdk/server.md#driving-an-agent)), and only as far as whoever started that code
+  could: from a person's request, an agent that person may use (never someone else's personal
+  assistant); from an MCP tool, only the agent calling the tool, proven by its own key; from a
+  trigger, none. The api decides it (`POST /api/internal/apps/agent-turn`), from what the host
+  authenticated, never from anything the app says. The turn's spend is booked to the agent under
+  ledger source `app`.
 
 
 ## Shipping a harness

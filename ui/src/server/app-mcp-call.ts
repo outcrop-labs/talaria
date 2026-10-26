@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { dispatchJsonRpc, type Rpc, type ToolAnswer } from './mcp-jsonrpc'
 import type { AppMcpCaller, AppMcpContext, AppMcpTool, AppToolContent, AppToolResult } from '@/sdk/server'
 import type { AppStore } from './app-store'
+import { NO_AGENTS, agentsFollowing, type AppAgents } from './app-agents'
 
 // ── The checks a tool passes before any agent sees it ──────────────────────
 // Every tool an app declares is checked when its module loads — by the build
@@ -341,6 +342,10 @@ export interface AppToolCallFacts {
   /** The person the agent acts for, when the gateway knows it. */
   actingUserId: string | null
   store: AppStore
+  /** `ctx.agents`, bound to this caller by the host (app-mcp.ts builds it
+   *  with `appServices`). Absent where no host is — a unit test that gave
+   *  none gets one that says so. */
+  agents?: AppAgents
   /** The request's signal: aborts when the agent disconnects. */
   signal?: AbortSignal
   /** The server's `timeoutSecs`; null or absent is the 120 s default. */
@@ -399,6 +404,9 @@ export async function runAppTools(
         actingUserId: facts.actingUserId,
         store: facts.store,
         signal: ctl.signal,
+        // Every turn follows THIS call's signal — the deadline and the
+        // agent's disconnect — on top of any the handler passes.
+        agents: facts.agents ? agentsFollowing(facts.agents, ctl.signal) : NO_AGENTS,
       }
       try {
         const running = Promise.resolve().then(() => tool.handler(args, ctx))

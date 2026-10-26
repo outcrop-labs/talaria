@@ -59,6 +59,7 @@ const TS_RESIDENT_FILES = [
   'ui/src/routes/api/app-host.harnesses.ts',
   'ui/src/routes/api/app-host.$app.harnesses.$id.cases.$name.ts',
   'ui/src/routes/api/app-host.$app.lifecycle.ts',
+  'ui/src/routes/api/app-host.$app.trigger.$id.ts',
 ]
 const CHECK = process.argv.includes('--check')
 

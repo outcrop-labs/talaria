@@ -5,7 +5,7 @@
 // a host glob.
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { storeFor } from './app-store'
+import { appServices } from './app-context'
 import { rpcError, type Rpc } from './mcp-jsonrpc'
 import type { AppMcp, AppMcpCaller } from '@/sdk/server'
 import { catalogOf, checkAppMcpTools, runAppTools, type CallCut, type CheckedAppMcp } from './app-mcp-call'
@@ -187,5 +187,9 @@ export async function dispatchAppMcp(
   // Only the tools that passed their checks exist for an agent — listed,
   // callable, or not at all.
   const tools = mcp.tools.filter((t) => allowed === null || allowed.includes(t.name))
-  return runAppTools(slug, tools, rpc, { ...facts, store: storeFor(slug) })
+  // Bound to THIS caller through the one factory every context uses: the
+  // calling agent is the only one its tools may drive. Each call's own signal
+  // (its deadline, the agent leaving) is added per call by runAppTools.
+  const services = appServices(slug, { kind: 'mcp', caller: facts.caller, actingUserId: facts.actingUserId })
+  return runAppTools(slug, tools, rpc, { ...facts, store: services.store, agents: services.agents })
 }

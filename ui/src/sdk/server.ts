@@ -6,11 +6,17 @@
 // of its surfaces, then hands over with a context: the signed-in user, which
 // surfaces and permissions they hold, the sub-path, a per-app document store
 // (namespaced Postgres, no migrations needed), the platform API as the
-// caller, the secrets the app was given, and the request's abort signal.
+// caller, the secrets the app was given, the request's abort signal, and the
+// fleet agents the caller may drive.
+//
+// The same default export may also answer `triggers`: handlers the host runs
+// on a schedule or a platform event, as the app, with no user (talaria.json
+// `triggers`).
 import { json } from '@/server/http'
 import type { SessionUser } from '@/server/auth/session'
 import type { AppStore } from '@/server/app-store'
 import type { PlatformApi, PlatformApiInit } from '@/server/app-context'
+import type { AppAgents } from '@/server/app-agents'
 import type { TOOL_RESULT } from '@/server/app-mcp-call'
 
 export { json }
@@ -29,6 +35,9 @@ export { parseBody } from '@/server/api-guard'
 export { z } from 'zod'
 export type { SessionUser, AppStore }
 export type { AppDoc } from '@/server/app-store'
+// `ctx.agents`: one turn to a fleet agent, on a session it keeps or fresh,
+// watched as it lands or awaited.
+export type { AppAgents, AgentTurnOptions, AgentTurnReply, AgentTurnEvent } from '@/server/app-agents'
 
 export interface AppRequestContext {
   /** The signed-in user this request runs as. */
@@ -78,10 +87,67 @@ export interface AppRequestContext {
   /** Aborts when the caller disconnects before the answer is done. Pass it to
    *  long work (`runHarness`, `fetch`) so it stops spending for nobody. */
   signal: AbortSignal
+  /** Drive a fleet agent: `ctx.agents.turn({ agent, message, session?,
+   *  watch? })`. Only an agent the signed-in person may use; their personal
+   *  assistant is theirs alone. The turn follows `signal`. */
+  agents: AppAgents
 }
 
+// ── Triggers ───────────────────────────────────────────────────────────────
+// talaria.json declares `triggers: [{ id, cron }]` or `[{ id, event }]`; the
+// server answers each id under `triggers`. The host runs a handler as the
+// APP, with no user behind it: no `ctx.user`, no `ctx.api` (there is no
+// session to call the platform with), and `ctx.agents` refuses — a triggered
+// run drives no agent. What it has is the app's own: the store, the secrets
+// an admin gave the app, and the cause. Every run is recorded on the app's
+// row in Manage → Apps; a handler that throws is a failed run there, and the
+// app keeps running.
+
+/** A platform event, as a trigger receives it: ids, never content. */
+export type AppTriggerEvent =
+  /** A ticket was created, on any board. */
+  | { name: 'ticket.created'; ticketId: string; boardId: string }
+  /** A ticket moved columns, however it moved. `from` and `to` are the
+   *  board's column keys; `closed` says `to` is terminal (done, failed,
+   *  cancelled). */
+  | { name: 'ticket.moved'; ticketId: string; boardId: string; from: string; to: string; closed: boolean }
+
+/** Why this run started: a schedule's minute (ISO, UTC) or an event. */
+export type AppTriggerCause = { kind: 'cron'; dueAt: string } | { kind: 'event'; event: AppTriggerEvent }
+
+export interface AppTriggerContext {
+  /** This app's slug. */
+  app: string
+  /** The trigger's id, as talaria.json names it. */
+  trigger: string
+  /** This run's id — the row Manage → Apps shows. */
+  runId: string
+  cause: AppTriggerCause
+  /** The app's document store — the same one its server and tools use. */
+  store: AppStore
+  /** A workspace secret an admin gave this app (`talaria-app://<slug>` in
+   *  its allowed hosts), or null. The spend is audited with no person. */
+  secret: (name: string) => Promise<string | null>
+  /** `AUTH_PUBLIC_URL`, for absolute links — null when the operator set
+   *  none (a trigger has no request to read the origin from). */
+  origin: string | null
+  /** Refuses every turn: a triggered run acts as the app, with no user, and
+   *  no agent is lent to it. */
+  agents: AppAgents
+  /** Aborts at the run's deadline (10 minutes). Pass it to long work. */
+  signal: AbortSignal
+}
+
+/** A trigger's handler. A string it returns is the run's result line in
+ *  Manage → Apps (`"scored 3 leads"`); a throw is a failed run. */
+export type AppTriggerHandler = (ctx: AppTriggerContext) => void | string | Promise<void | string>
+
 export interface AppServer {
-  fetch: (request: Request, ctx: AppRequestContext) => Response | Promise<Response>
+  /** The handler for `/api/apps/<slug>/*`. Optional for an app whose server
+   *  only answers triggers. */
+  fetch?: (request: Request, ctx: AppRequestContext) => Response | Promise<Response>
+  /** One handler per `triggers` id in talaria.json. */
+  triggers?: Record<string, AppTriggerHandler>
 }
 
 export const defineAppServer = (server: AppServer): AppServer => server
@@ -129,6 +195,10 @@ export interface AppMcpContext {
    *  work (`fetch`, `runHarness`); the gateway answers at that moment either
    *  way, and nothing the handler returns afterwards reaches anyone. */
   signal: AbortSignal
+  /** Drive the CALLING agent only (`caller.name`), and only when the gateway
+   *  proved it (`caller.proven`) — say, a turn on a session of its own. Any
+   *  other agent is refused. Each turn follows `signal`. */
+  agents: AppAgents
 }
 
 /** One MCP content block, as a `toolResult` carries it. */

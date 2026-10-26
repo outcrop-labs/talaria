@@ -158,9 +158,17 @@ import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp
 
 | symbol | kind | what it is |
 | :--- | :--- | :--- |
-| `defineAppServer` | fn | Declare the fetch handler; default-export from server.ts |
-| `AppServer` | type | What `defineAppServer` takes |
-| `AppRequestContext` | type | ctx: user, access, perms, can, app, path, segments, url, origin, store, api, secret, signal |
+| `defineAppServer` | fn | Declare the fetch handler and the trigger handlers; default-export from server.ts |
+| `AppServer` | type | What `defineAppServer` takes: `fetch?`, `triggers?` |
+| `AppRequestContext` | type | ctx: user, access, perms, can, app, path, segments, url, origin, store, api, secret, signal, agents |
+| `AppTriggerHandler` | type | One trigger's handler: takes ctx, may return the run's line for Manage → Apps (a string) |
+| `AppTriggerContext` | type | A trigger's ctx, as the app with no user: app, trigger, runId, cause, store, secret, origin, agents (refuses), signal |
+| `AppTriggerCause` | type | Why the run started: `{ kind: 'cron', dueAt }` or `{ kind: 'event', event }` |
+| `AppTriggerEvent` | type | A platform event, ids only: `ticket.created` or `ticket.moved` |
+| `AppAgents` | type | `ctx.agents`: `turn(options)` drives one agent turn the caller may drive |
+| `AgentTurnOptions` | type | agent, message, system, session, effort, watch, signal |
+| `AgentTurnReply` | type | A finished turn: agent, text, tools, session |
+| `AgentTurnEvent` | type | What the turn's watch callback receives: the agent's words, or a tool it started or finished |
 | `HttpError` | class | What ctx.api throws on a non-2xx answer: status + the server's sentence |
 | `PlatformApiInit` | type | ctx.api's options: method, body, headers, signal, timeoutMs |
 | `SessionUser` | type | The authenticated user the handler runs as |
@@ -177,7 +185,7 @@ import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp
 | `defineAppMcp` | fn | Declare agent-callable tools; default-export from mcp.ts |
 | `AppMcp` | type | The tools map `defineAppMcp` takes |
 | `AppMcpTool` | type | One tool: name, description, inputSchema, outputSchema, handler |
-| `AppMcpContext` | type | Tool handler ctx: app, agent, caller, actingUserId, store, signal |
+| `AppMcpContext` | type | Tool handler ctx: app, agent, caller, actingUserId, store, signal, agents (the calling agent only) |
 | `AppMcpCaller` | type | Who calls: the agent's name and id, and whether that is proven (its own key, not the org-wide one) |
 | `toolResult` | fn | A whole MCP result for a handler to return: content blocks, structuredContent, isError |
 | `AppToolResult` / `AppToolContent` | types | What `toolResult` makes, and one content block (text, image, audio, resource_link, resource) |
@@ -188,7 +196,7 @@ import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp
 | symbol | kind | what it is |
 | :--- | :--- | :--- |
 | `callAppTool` | fn | Call one tool of an mcp.ts as the gateway would, with no host; answers what the agent receives |
-| `AppToolCallOptions` / `AppToolCallResult` | types | `callAppTool`'s context (caller, actingUserId, store, timeoutSecs, signal, tools) and its answer |
+| `AppToolCallOptions` / `AppToolCallResult` | types | `callAppTool`'s context (caller, actingUserId, store, agents, timeoutSecs, signal, tools) and its answer |
 | `memoryStore` | fn | An in-memory document store with the installed store's interface and answers |
 
 ## `@talaria/sdk/server` — activity harnesses

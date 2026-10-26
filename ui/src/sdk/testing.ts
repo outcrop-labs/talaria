@@ -20,7 +20,7 @@
 // belongs in mcp.ts or server.ts: an app build does not resolve this entry.
 import { memoryStore } from '@/server/app-store-memory'
 import { checkAppMcpTools, runAppTools } from '@/server/app-mcp-call'
-import type { AppMcp, AppMcpCaller, AppToolContent, AppStore } from './server'
+import type { AppAgents, AppMcp, AppMcpCaller, AppToolContent, AppStore } from './server'
 
 export { memoryStore }
 
@@ -37,6 +37,9 @@ export interface AppToolCallOptions {
   actingUserId?: string | null
   /** The store (`ctx.store`). Default a fresh `memoryStore()`. */
   store?: AppStore
+  /** `ctx.agents`, as your test wants it to answer. Default one that refuses
+   *  every turn: there is no fleet in a unit test. */
+  agents?: AppAgents
   /** The server's timeout in seconds. Default 120, as on a server an admin
    *  left alone. */
   timeoutSecs?: number
@@ -94,6 +97,7 @@ export async function callAppTool(
     caller,
     actingUserId: ctx.actingUserId ?? null,
     store: ctx.store ?? memoryStore(),
+    ...(ctx.agents ? { agents: ctx.agents } : {}),
     signal: ctx.signal,
     timeoutSecs: ctx.timeoutSecs,
   })

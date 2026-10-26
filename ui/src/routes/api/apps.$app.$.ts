@@ -2,8 +2,7 @@ import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { appServerModule } from '@/server/apps'
 import { authorizeApp, canFor } from '@/server/app-access'
-import { appOrigin, appPathSegments, appSecretReader, platformApi } from '@/server/app-context'
-import { storeFor } from '@/server/app-store'
+import { appOrigin, appPathSegments, appSecretReader, appServices, platformApi } from '@/server/app-context'
 import type { AppServer } from '@/sdk/server'
 import { isolateApp } from '@/server/app-isolate'
 
@@ -29,6 +28,9 @@ const dispatch = async ({ request, params }: { request: Request; params: { app: 
   const path = appPathSegments(new URL(request.url).pathname)
   if (!path.ok) return json({ error: path.error }, { status: 400 })
   const segments = path.segments
+  // Everything bound to this caller — the store, the agents they may drive —
+  // from the one factory every context is built through.
+  const services = appServices(app, { kind: 'request', user: { id: caller.user.id, role: caller.user.role } }, request.signal)
   const ran = await isolateApp(app, 'server', async () => {
     const mod = (await appServerModule(app)) as { default?: AppServer } | null
     if (!mod?.default?.fetch) return json({ error: 'this app has no server' }, { status: 404 })
@@ -40,13 +42,14 @@ const dispatch = async ({ request, params }: { request: Request; params: { app: 
         segments: [...segments],
         url: new URL(request.url),
         origin: appOrigin(request),
-        store: storeFor(app),
+        store: services.store,
         access: { ...caller.access },
         perms: [...caller.perms],
         can: canFor(caller),
         api: platformApi(request),
         secret: appSecretReader(app, caller.user.id),
         signal: request.signal,
+        agents: services.agents,
       })
     } catch (e) {
       // The caller left and the app's work was cut with it (ctx.signal):

@@ -4,11 +4,46 @@
 // request's abort signal. Kept apart from the route file so each piece is
 // pinned on its own (app-context.test.ts) and the route stays the wiring.
 import { HttpError } from '@/lib/fetch-json'
+import type { AppMcpCaller } from '@/sdk/server'
+import { appAgents, type AppAgents } from './app-agents'
+import { storeFor, type AppStore } from './app-store'
 import { getAuthConfig } from './auth/config'
 import { rustApiUrl } from './rust-proxy'
 import { resolveAppSecret } from './workspace-secrets'
 
 export { HttpError }
+
+// ── Who started the app's code ───────────────────────────────────────────────
+
+/** What the host authenticated before an app's code ran — the actor every
+ *  context's capabilities are bound to. */
+export type AppActor =
+  /** A signed-in person, through `/api/apps/<slug>/*`. */
+  | { kind: 'request'; user: { id: string; role: string } }
+  /** An agent calling one of the app's MCP tools: who it is, whether the
+   *  gateway proved it, and the person it acts for. */
+  | { kind: 'mcp'; caller: AppMcpCaller; actingUserId: string | null }
+  /** A schedule or a platform event (`talaria.json` `triggers`): the app
+   *  itself, with no user. */
+  | { kind: 'trigger'; trigger: string }
+
+/** What every app context carries whatever started it. */
+export interface AppServices {
+  store: AppStore
+  agents: AppAgents
+}
+
+/** THE ONE FACTORY the request, MCP-tool and trigger contexts are built
+ *  through: everything that is bound to the actor, built from the actor, in
+ *  one place. A capability added for every context (the bound harness
+ *  runner, `ctx.harness`) is added here, once. `signal` is the context's
+ *  own — the request's disconnect, the tool's deadline, the trigger's. */
+export function appServices(app: string, actor: AppActor, signal?: AbortSignal): AppServices {
+  return {
+    store: storeFor(app),
+    agents: appAgents({ app, actor, signal }),
+  }
+}
 
 /** The app's sub-path as decoded segments, or why the path is refused.
  *
@@ -206,8 +241,10 @@ export function platformApi(request: Request, apiBase: () => string | undefined 
  *  code. `name` is the doc (`crm`) or the doc and an entry (`crm.api_key`) —
  *  the handle grammar without the «secret:…» marks. Resolves to null when the
  *  secret does not resolve for this app; the reason goes to the host log,
- *  never to the caller (the rule is `resolveAppSecret`). */
-export function appSecretReader(slug: string, userId: string): (name: string) => Promise<string | null> {
+ *  never to the caller (the rule is `resolveAppSecret`). `userId` is the
+ *  person whose request reads it, recorded on the spend; null for a trigger's
+ *  run, which has no person behind it. */
+export function appSecretReader(slug: string, userId: string | null): (name: string) => Promise<string | null> {
   return async (name: string) => {
     const r = await resolveAppSecret(slug, name, userId)
     if (r.ok) return r.value

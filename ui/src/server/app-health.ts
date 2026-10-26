@@ -23,11 +23,20 @@ import { checkAppMcpTools, clearAppMcpCatalog, syncAppMcpCatalog } from './app-m
 import { resyncAppMcpServers } from './internal-api'
 
 
-export function moduleHasFetch(mod: unknown): boolean {
+/** Whether a server module default-exports `defineAppServer(...)`: a
+ *  `fetch` handler, or `triggers` (an object of handlers) for an app whose
+ *  server answers only its schedules and events — or both. */
+export function moduleIsAppServer(mod: unknown): boolean {
   if (!mod || typeof mod !== 'object' || !('default' in mod)) return false
-  const exported = mod.default
-  if (!exported || typeof exported !== 'object' || !('fetch' in exported)) return false
-  return typeof exported.fetch === 'function'
+  const exported = mod.default as { fetch?: unknown; triggers?: unknown } | null
+  if (!exported || typeof exported !== 'object') return false
+  const fetchOk = typeof exported.fetch === 'function'
+  const t = exported.triggers
+  const triggersOk =
+    !!t && typeof t === 'object' && !Array.isArray(t) && Object.values(t).length > 0 && Object.values(t).every((h) => typeof h === 'function')
+  if (exported.fetch !== undefined && !fetchOk) return false
+  if (t !== undefined && !triggersOk) return false
+  return fetchOk || triggersOk
 }
 
 export function moduleHasMcpTools(mod: unknown): boolean {
@@ -147,8 +156,8 @@ export async function probeLoad(
   if (appHasServer(slug, tree) || has('server.ts')) {
     const loaded = await isolateApp(slug, 'load server', () => loadAppServer(slug, tree))
     if (!loaded.ok) return { ok: false, error: `server failed to load: ${loaded.error}` }
-    if (!moduleHasFetch(loaded.value)) {
-      return { ok: false, error: 'server.ts must default-export defineAppServer({ fetch })' }
+    if (!moduleIsAppServer(loaded.value)) {
+      return { ok: false, error: 'server.ts must default-export defineAppServer({ fetch, triggers }) — a fetch handler, trigger handlers, or both' }
     }
   }
   if (appHasMcp(slug, tree) || has('mcp.ts')) {
