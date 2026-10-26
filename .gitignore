@@ -57,6 +57,12 @@ fleet.json
 ui/.uploads/
 .uploads/
 
+# The app platform's runtime state in dev (TALARIA_APP_DATA_DIR and
+# TALARIA_APP_BUILDS_DIR default here): each app's database files and
+# db.env password file, and its compiled builds. Never source.
+/app-data/
+/app-builds/
+
 # Reference repos studied but not vendored
 .reference/
 .inspect/

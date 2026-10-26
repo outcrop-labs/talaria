@@ -1,10 +1,13 @@
 // The SDK reference tripwire's own edges: what the export parser sees, how a
 // reference row is read, and what the diff calls a failure. A wrong answer
 // here either fails every PR on a phantom or waves through a row an app
-// author will copy into a broken build. Run by `bun run check`.
-import { readFileSync, existsSync, statSync } from 'node:fs'
+// author will copy into a broken build. The markdown walk's edges close the
+// file. Run by `bun run check`.
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { walkMarkdown } from './markdown-walk.mjs'
 import { diffReference, kindFits, parseReference, sdkExportNames, sdkExports, stripComments } from './sdk-reference.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -215,6 +218,44 @@ check('the real tree: every entry point matches docs/sdk/reference.md', () => {
   // except re-exports from a package the check cannot read.
   const unresolved = [...byEntry.get('@talaria/sdk')].filter(([, k]) => k === 'value').map(([n]) => n).sort()
   eq(unresolved, ['createMutation', 'createQuery', 'keepPreviousData', 'useQueryClient'])
+})
+
+// The walk: an app that has run its database leaves app-data/<slug>/pg owned
+// by the container's user, and `bun run check` died on EACCES reading it.
+check('the walk: app runtime dirs are not walked, and an unreadable dir is skipped, not a crash', () => {
+  const root = mkdtempSync(join(tmpdir(), 'check-docs-walk-'))
+  const locked = [join(root, 'app-data/crm/pg'), join(root, 'docs/locked')]
+  try {
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(join(root, 'README.md'), '# r')
+    writeFileSync(join(root, 'docs/a.md'), '# a')
+    for (const d of ['app-data/crm', 'app-builds/crm/k1']) {
+      mkdirSync(join(root, d), { recursive: true })
+      writeFileSync(join(root, d, 'notes.md'), '# runtime')
+    }
+    for (const d of locked) {
+      mkdirSync(d, { recursive: true })
+      chmodSync(d, 0o000)
+    }
+    const unreadable = []
+    const found = walkMarkdown(root, [], unreadable).map((f) => f.slice(root.length + 1)).sort()
+    eq(found, ['README.md', 'docs/a.md'])
+    // root reads a 000 directory anyway, so only a non-root run sees it refused.
+    eq(unreadable, process.getuid?.() === 0 ? [] : [join(root, 'docs/locked')])
+  } finally {
+    for (const d of locked) chmodSync(d, 0o755)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+check('the walk: a missing root is still an error, not an empty docset', () => {
+  let threw = false
+  try {
+    walkMarkdown(join(tmpdir(), 'check-docs-walk-does-not-exist'))
+  } catch {
+    threw = true
+  }
+  eq(threw, true)
 })
 
 if (failed) {

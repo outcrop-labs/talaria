@@ -6,6 +6,7 @@
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
 import { compose, stackComposeFiles, waitFor } from '../compose'
@@ -139,6 +140,19 @@ LLM_API_KEY=
       { mode: 0o600 },
     )
   }
+}
+
+/** Whether the worktree's own checkout carries a different `talaria
+ *  worktree` from the one running. The command runs the CLI of the checkout
+ *  it is invoked from (the primary, usually on main), never the base ref's,
+ *  so a worktree cut from a newer ref gets the older setup and nothing says
+ *  so: on 2026-10-22 a stack cut from rc got no TALARIA_FLEET_PROJECT,
+ *  because the primary's CLI predated that line. A base ref that predates
+ *  this file has nothing to compare. */
+export function setupDiffers(running: string, wt: string): boolean {
+  const own = join(wt, 'cli/src/cmd/worktree.ts')
+  if (!existsSync(own) || !existsSync(running)) return false
+  return readFileSync(own, 'utf8') !== readFileSync(running, 'utf8')
 }
 
 /** Clears the gateway ports a seed copied from main (see the seed step). */
@@ -327,7 +341,12 @@ TALARIA_GATEWAY_PORT_BASE=${slot.gatewayBase}
   // checkout: the renderer writes into it, and a hire against a missing
   // fleet/.env fails honestly rather than inventing one.
   ctx.log.say('Fleet config plane (fleet/)')
-  seedFleetPlane(ctx, root, wt)
+  // The chassis comes from the worktree's own checkout, so it matches the
+  // renderer that checkout runs. Taking it from the checkout this CLI runs in
+  // gave a stack cut from rc main's chassis: an older Hermes pin and env
+  // lines rc's renderer had dropped. A base ref without the template falls
+  // back to this checkout's.
+  seedFleetPlane(ctx, existsSync(join(wt, 'scripts/chassis.template.yml')) ? wt : root, wt)
   ctx.log.ok('fleet/ seeded')
 
   ctx.log.say('Sharing node_modules')
@@ -348,6 +367,14 @@ Worktree "${name}" ready — fully isolated from main.
     git worktree remove --force ${wt} && git branch -D wt/${name}
   Or later, from the primary checkout:  bun talaria cleanup
 `)
+  const running = fileURLToPath(import.meta.url)
+  if (setupDiffers(running, wt)) {
+    ctx.log.warn(
+      `this stack was set up by ${running}, which differs from ${base}'s own cli/src/cmd/worktree.ts. ` +
+        `ui/.env, fleet/ and the ports follow the running checkout's rules, not ${base}'s. ` +
+        `Bring that checkout up to ${base} and recut, or check ui/.env against ${join(wt, 'docs/WORKTREES.md')}.`,
+    )
+  }
   return 0
 }
 
