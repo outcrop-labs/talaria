@@ -4,11 +4,12 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getSetting, logAudit, setSetting } from './audit'
 import { isolateApp } from './app-isolate'
-import { clientlessError, declaredSurfacesAt, slugOk } from './app-build/paths'
+import { clientlessError, declaredSurfacesAt, listInstalledApps, slugOk } from './app-build/paths'
 import { readCurrent, writeCurrent } from './app-build/status'
 import {
   appClientArtifact,
   appHasClient,
+  appHasHarnesses,
   appHasMcp,
   appHasServer,
   liveTree,
@@ -17,7 +18,7 @@ import {
   loadAppServer,
   type AppTree,
 } from './app-load'
-import { checkAppHarnessesOf, recordAppHarnessReport } from './app-harnesses'
+import { checkAppHarnessesOf, recordAppHarnessReport, refreshAppHarnessReports } from './app-harnesses'
 import { checkAppMcpTools, clearAppMcpCatalog, syncAppMcpCatalog } from './app-mcp'
 import { resyncAppMcpServers } from './internal-api'
 
@@ -49,6 +50,14 @@ export function moduleHasSurfaces(mod: unknown): boolean {
  *  export, the defineApp surfaces it mounts. */
 export function clientArtifactOk(source: string): boolean {
   return source.length > 32 && /\bexport\s*(?:default\b|\{[^}]*\bas\s+default\b)/.test(source)
+}
+
+/** Rewrite every enabled app's harness report (app-harnesses.ts) — unless no
+ *  installed app ships a harness, when there is no report to rewrite and no
+ *  reason to read which apps are on. Never throws. */
+async function refreshHarnessReports(slug: string): Promise<void> {
+  if (!listInstalledApps().some((a) => appHasHarnesses(a.slug))) return
+  await isolateApp(slug, 'refresh harness reports', () => refreshAppHarnessReports())
 }
 
 
@@ -86,6 +95,8 @@ export async function failHealth(slug: string, error: string): Promise<void> {
       targetId: slug,
       targetLabel: error,
     })
+    // An id this app held is free now: the app that lost it gets it back.
+    await refreshHarnessReports(slug)
   }
   await resyncAppMcpServers(`${slug}: ${next.length !== enabled.length ? 'turned off' : 'failed'}`)
 }
@@ -160,5 +171,9 @@ export async function probeLoad(
     slug,
     harnesses.ok ? harnesses.value : { registered: [], problems: [`harnesses/: the check could not run: ${harnesses.error}`] },
   )
+  // What this app now ships can take an id from another enabled app, or give
+  // one back: every enabled app's report is rewritten from the same listing.
+  // Not for a staged tree — nothing an update has not switched to is live.
+  if (publish) await refreshHarnessReports(slug)
   return { ok: true }
 }

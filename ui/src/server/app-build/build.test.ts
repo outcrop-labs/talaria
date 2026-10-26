@@ -1,12 +1,13 @@
 // A real app build, end to end: the shape the host loads in production.
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { clientRuntimePath, clientSpecifiers } from '@/app-runtime/specifiers'
 import { clientArtifactOk, probeLoad } from '../app-health'
-import { setSsrLoader } from '../app-load'
-import { buildApp } from './build'
+import { checkAppHarnessesOf, listAppHarnesses } from '../app-harnesses'
+import { loadAppHarnesses, setSsrLoader } from '../app-load'
+import { buildApp, setServerShim } from './build'
 import { BUILD_RECIPE, sourceKey } from './key'
 import { appBuildKeyDir, appSrc } from './paths'
 import { readCurrent, writeCurrent } from './status'
@@ -180,3 +181,111 @@ describe('buildApp (no client)', () => {
   }, 180_000)
 })
 
+
+// A HARNESS FILE THAT DOES NOT COMPILE COSTS ITSELF, never the app. A failed
+// app build is a disabled app (reconcile → failHealth), and a harness is
+// something the app ships for model fitness, not something it needs to run.
+// The server-side builds link `@talaria/sdk/server` to the host build's shim;
+// with no host build here, a stand-in shim takes its place.
+describe('buildApp (harnesses)', () => {
+  let root = ''
+  const prev = { apps: process.env.TALARIA_APPS_DIR, builds: process.env.TALARIA_APP_BUILDS_DIR }
+  const manifest = JSON.stringify({ name: 'Harness Check', icon: '⬡', version: '0.1.0' })
+  const server = 'export default { fetch: async () => new Response("ok") }\n'
+  const good = `import { defineHarness } from '@talaria/sdk/server'
+export default defineHarness({
+  id: 'check:good',
+  label: 'Good',
+  job: 'A harness that compiles.',
+  requires: [],
+  floor: { capabilities: [], refuseBelow: false, note: 'Runs on anything.' },
+  model: {},
+  render: (input: string) => [{ role: 'user', content: input }],
+  output: { kind: 'text' },
+  onFailure: 'null',
+  evals: [{ name: 'says hi', input: 'hi', check: () => null }],
+})
+`
+  const app = (slug: string, files: Record<string, string>) => {
+    const dir = join(root, 'apps', slug)
+    mkdirSync(join(dir, 'harnesses'), { recursive: true })
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body)
+  }
+  const only = (slug: string) => ({ enabled: async () => [{ slug, name: slug }], warn: () => {} })
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'app-build-harnesses-'))
+    process.env.TALARIA_APPS_DIR = join(root, 'apps')
+    process.env.TALARIA_APP_BUILDS_DIR = join(root, 'app-builds')
+    const shim = join(root, 'rt-talaria-sdk-server.js')
+    writeFileSync(shim, 'export const defineHarness = (h) => h\n')
+    setServerShim(shim)
+    app('mixed', {
+      'talaria.json': manifest,
+      'server.ts': server,
+      'harnesses/good.ts': good,
+      'harnesses/broken.ts': 'export default {\n',
+      'harnesses/unresolved.ts': "import missing from './not-there'\nexport default missing\n",
+    })
+    app('all-broken', { 'talaria.json': manifest, 'server.ts': server, 'harnesses/broken.ts': 'export default {\n' })
+  })
+
+  afterAll(() => {
+    setServerShim(undefined)
+    setSsrLoader(null)
+    if (prev.apps === undefined) delete process.env.TALARIA_APPS_DIR
+    else process.env.TALARIA_APPS_DIR = prev.apps
+    if (prev.builds === undefined) delete process.env.TALARIA_APP_BUILDS_DIR
+    else process.env.TALARIA_APP_BUILDS_DIR = prev.builds
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('builds an app with one good and two broken harness files ready; the good one registers, each broken one is reported', async () => {
+    const cur = await buildApp('mixed')
+    expect(cur.error ?? null).toBeNull()
+    expect(cur.status).toBe('ready')
+    expect(cur.files).toEqual(['server.js', 'harnesses.js'])
+    const out = appBuildKeyDir('mixed', cur.key)
+    // The per-file checks leave nothing behind.
+    expect(existsSync(join(out, '.harness-check'))).toBe(false)
+    expect(existsSync(join(out, '.harnesses-entry.js'))).toBe(false)
+
+    setSsrLoader(null)
+    const files = await loadAppHarnesses('mixed')
+    expect(files.map((f) => [f.file, f.compileError !== undefined])).toEqual([
+      ['broken.ts', true],
+      ['good.ts', false],
+      ['unresolved.ts', true],
+    ])
+
+    const listing = await listAppHarnesses(only('mixed'))
+    expect(listing.harnesses.map((h) => h.def.id)).toEqual(['check:good'])
+    expect(listing.problems.map((p) => p.file)).toEqual(['broken.ts', 'unresolved.ts'])
+    for (const p of listing.problems) expect(p.reason).toMatch(/^it failed to compile: /)
+    // The compiler's sentence, one line, naming the file by its path in the
+    // app — no code frame, no absolute or host-relative path.
+    expect(listing.problems[0]!.reason).toMatch(/^it failed to compile: .*harnesses\/broken\.ts:2:0: ERROR: /)
+    expect(listing.problems[1]!.reason).toContain('Could not resolve "./not-there" from "harnesses/unresolved.ts"')
+    for (const p of listing.problems) {
+      expect(p.reason).not.toContain(root)
+      expect(p.reason).not.toContain('../')
+      expect(p.reason).not.toContain('|')
+    }
+
+    // What the load probe writes on the build status, where Manage → Apps reads it.
+    const report = await checkAppHarnessesOf('mixed', only('mixed'))
+    expect(report.registered).toEqual(['check:good'])
+    expect(report.problems.map((p) => p.split(':')[0])).toEqual(['harnesses/broken.ts', 'harnesses/unresolved.ts'])
+  }, 180_000)
+
+  it('still builds ready when no harness file compiles — with no harness, and each file named', async () => {
+    const cur = await buildApp('all-broken')
+    expect(cur.error ?? null).toBeNull()
+    expect(cur.status).toBe('ready')
+    expect(cur.files).toContain('harnesses.js')
+    setSsrLoader(null)
+    const listing = await listAppHarnesses(only('all-broken'))
+    expect(listing.harnesses).toEqual([])
+    expect(listing.problems.map((p) => [p.file, p.reason.startsWith('it failed to compile: ')])).toEqual([['broken.ts', true]])
+  }, 180_000)
+})

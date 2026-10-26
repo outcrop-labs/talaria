@@ -73,6 +73,33 @@ describe('the harness files an app ships', () => {
     expect(await files[0]!.load()).toMatchObject({ default: { built: true } })
   })
 
+  it("name each file the build could not compile, from the build's skipped export", async () => {
+    setSsrLoader(null)
+    const key = 'def456'
+    const out = appBuildKeyDir('support', key)
+    mkdirSync(join(out, '_harnesses'), { recursive: true })
+    writeFileSync(join(out, '_harnesses', 'triage.js'), 'export default { id: "support:triage", built: true }\n')
+    writeFileSync(
+      join(out, 'harnesses.js'),
+      `export const harnesses = {
+  "triage.ts": () => import("./_harnesses/triage.js"),
+}
+export const skipped = {
+  "broken.ts": "harnesses/broken.ts:2:0: ERROR: Unexpected end of file",
+  "../escape.ts": "x",
+  "odd.ts": 42,
+}
+`,
+    )
+    writeCurrent('support', { key, status: 'ready', hostBuild: 'h', builtAt: 1, bytes: 1, files: ['harnesses.js'] })
+    const files = await loadAppHarnesses('support')
+    expect(files.map((f) => [f.file, f.compileError ?? null])).toEqual([
+      ['broken.ts', 'harnesses/broken.ts:2:0: ERROR: Unexpected end of file'],
+      ['triage.ts', null],
+    ])
+    await expect(files[0]!.load()).rejects.toThrow('Unexpected end of file')
+  })
+
   it('are nothing for a build that is not ready', async () => {
     setSsrLoader(null)
     writeCurrent('support', { key: 'abc123', status: 'failed', hostBuild: 'h', builtAt: 1, bytes: 1, files: ['harnesses.js'], error: 'x' })
@@ -89,6 +116,11 @@ describe('the harnesses.js build', () => {
         '  "triage.ts": () => import("/apps/support/harnesses/triage.ts"),\n' +
         '}\n',
     )
+  })
+
+  it('names the files it left out only when there are some', () => {
+    expect(harnessesEntrySource('/h', ['a.ts'])).not.toContain('skipped')
+    expect(harnessesEntrySource('/h', ['a.ts'], { 'b.ts': 'it broke' })).toContain('export const skipped = {\n  "b.ts": "it broke"\n}\n')
   })
 
   it('writes its chunks under _harnesses/, never beside the client', () => {

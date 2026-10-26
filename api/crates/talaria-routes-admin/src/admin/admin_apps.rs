@@ -47,6 +47,17 @@ fn app_host(state: &AppState) -> AppHost {
     AppHost::new(state.cfg.secret_root.internal_token())
 }
 
+/// The enabled set changed: have the app host rewrite every enabled app's
+/// harness report, so an id one app took from another shows on the app that
+/// lost it (talaria_app_harnesses::refresh_app_reports). Best-effort — the
+/// change itself is done, and the next load probe writes the reports too.
+async fn refresh_harness_reports(state: &AppState) {
+    let token = state.cfg.secret_root.internal_token();
+    if let Err(e) = talaria_app_harnesses::refresh_app_reports(&token).await {
+        tracing::warn!("[admin/apps] the harness reports were not refreshed: {e}");
+    }
+}
+
 /// One source record as the listing serves it: where the app came from and
 /// the commit it runs. The workspace secret it is read with stays out.
 fn git_of(rec: &talaria_apps::SourceRecord) -> Value {
@@ -276,6 +287,7 @@ pub async fn put(
         if let Err(msg) = set_app_enabled(&state.pg, &sb, &app, enabled).await {
             return Ok(house_error(StatusCode::BAD_REQUEST, &msg));
         }
+        refresh_harness_reports(&state).await;
         log_audit(
             &state.pg,
             AuditEntry {
@@ -447,6 +459,7 @@ pub async fn delete(
         Ok(d) => d,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    refresh_harness_reports(&state).await;
     log_audit(
         &state.pg,
         AuditEntry {

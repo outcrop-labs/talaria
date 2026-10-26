@@ -112,10 +112,17 @@ const CAPABILITIES = new Set<string>(Object.keys(CAPABILITY_SET))
  *  `family:job`; no spaces, no slashes. */
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,119}$/
 const MAX_CASE_NAME = 200
+/** Repair turns a json harness may ask for. The runner loops that many times
+ *  on a malformed reply and the api reads the count as a u32, so it is a
+ *  whole number — NaN and Infinity reached the wire as null — and a small
+ *  one: every turn is spend, in a fitness sweep times every fixture. The
+ *  builtins ask for 0 to 2. */
+const MAX_REPAIR = 5
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const isFilled = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
 const isStringList = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === 'string')
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
 /** A definition that passed every check, with the JSON floor derived. I and O
  *  are `unknown` because that is what a registry can honestly claim about a
@@ -136,10 +143,20 @@ function structuralProblems(value: Record<string, unknown>): string[] {
   if (!isFilled(value.job)) out.push('it has no job line for the admin panel')
   if (typeof value.render !== 'function') out.push('it has no render function')
   if (!isStringList(value.requires)) out.push('requires is not a list of capabilities')
-  if (!isObject(value.model)) out.push('it has no model spec')
+  const model = value.model
+  if (!isObject(model)) out.push('it has no model spec')
+  else {
+    // wireOf copies these onto the listing; a chain that is not a list threw
+    // there and took every app's harnesses out of the fitness plane.
+    if (model.pin != null && typeof model.pin !== 'string') out.push('its model pin is not a platform slot name')
+    if (model.role != null && typeof model.role !== 'string') out.push('its model role is not a role name')
+    if (model.chain != null && !isStringList(model.chain)) out.push('its model chain is not a list')
+  }
   const floor = value.floor
   if (!isObject(floor) || !isStringList(floor.capabilities) || typeof floor.refuseBelow !== 'boolean' || typeof floor.note !== 'string') {
     out.push('its floor is not { capabilities, refuseBelow, note }')
+  } else if (floor.suppliable !== undefined && !isStringList(floor.suppliable)) {
+    out.push('floor.suppliable is not a list of capabilities')
   }
   const output = value.output
   if (!isObject(output)) out.push('it has no output contract')
@@ -149,6 +166,10 @@ function structuralProblems(value: Record<string, unknown>): string[] {
     if (!isObject(output.schema) || typeof (output.schema as { safeParse?: unknown }).safeParse !== 'function') {
       out.push('its json output has no schema to parse with')
     }
+    const repair = output.repair
+    if (repair !== undefined && !(typeof repair === 'number' && Number.isInteger(repair) && repair >= 0 && repair <= MAX_REPAIR)) {
+      out.push(`its repair ${String(repair)} is not a whole number of turns from 0 to ${MAX_REPAIR}`)
+    }
   } else if (output.kind !== 'text') {
     out.push(`its output kind ${JSON.stringify(output.kind)} is neither text nor json`)
   }
@@ -156,6 +177,7 @@ function structuralProblems(value: Record<string, unknown>): string[] {
   if (!(onFailure === 'null' || onFailure === 'throw' || (isObject(onFailure) && ('fallback' in onFailure || onFailure.escalate === true)))) {
     out.push("its onFailure is not 'null', 'throw', { fallback } or { escalate: true }")
   }
+  if (value.widen !== undefined && (!isObject(value.widen) || !isStringList(value.widen.requires))) out.push('it widens on nothing')
   if (value.evals !== undefined) {
     // Validated as a WHOLE: a fixture with no check would take a column in the
     // org's fitness matrix and fill it with "check is not a function", which
@@ -216,17 +238,22 @@ function platformProblems(def: AppHarnessDef): string[] {
 }
 
 /** Check one module's default export. Pure: no ids from other apps, no
- *  builtins — the listing below adds those. */
+ *  builtins — the listing below adds those. Never throws: a definition shaped
+ *  so oddly that checking it throws is a problem on that one harness. */
 export function checkAppHarness(value: unknown): HarnessCheck {
   if (!isObject(value)) return { ok: false, id: null, problems: ['it does not default-export a harness (defineHarness)'] }
   const id = isFilled(value.id) ? value.id : null
-  const structural = structuralProblems(value)
-  if (structural.length > 0) return { ok: false, id, problems: structural }
-  // THE JSON FLOOR, DERIVED — the same function the SDK's defineHarness is, so
-  // a definition written without it is held to the floor it would have had.
-  const def = defineHarness(value as unknown as AppHarnessDef)
-  const problems = platformProblems(def)
-  return problems.length > 0 ? { ok: false, id, problems } : { ok: true, def }
+  try {
+    const structural = structuralProblems(value)
+    if (structural.length > 0) return { ok: false, id, problems: structural }
+    // THE JSON FLOOR, DERIVED — the same function the SDK's defineHarness is, so
+    // a definition written without it is held to the floor it would have had.
+    const def = defineHarness(value as unknown as AppHarnessDef)
+    const problems = platformProblems(def)
+    return problems.length > 0 ? { ok: false, id, problems } : { ok: true, def }
+  } catch (e) {
+    return { ok: false, id, problems: [`it could not be checked: ${errText(e)}`] }
+  }
 }
 
 // ── The listing ─────────────────────────────────────────────────────────────
@@ -261,20 +288,36 @@ export interface AppHarnessLayer {
   warn: (message: string) => void
 }
 
+/** `sink`, called once per distinct message for the life of the process.
+ *  The api re-lists every few seconds while the fitness matrix polls, and the
+ *  replay route lists once per fixture, so one broken harness logged on every
+ *  listing buried the log. A skip's message names the app, the file and the
+ *  problem, so a changed problem is logged again. Bounded: past `cap`
+ *  distinct messages the memory starts over rather than growing. */
+export function onceEach(sink: (message: string) => void, cap = 1000): (message: string) => void {
+  const seen = new Set<string>()
+  return (message) => {
+    if (seen.has(message)) return
+    if (seen.size >= cap) seen.clear()
+    seen.add(message)
+    sink(message)
+  }
+}
+
 const REAL_LAYER: AppHarnessLayer = {
   enabled: async () => (await enabledApps()).map((a) => ({ slug: a.slug, name: a.name })),
   files: loadAppHarnesses,
-  warn: (message) => console.warn(`[app-harness] ${message}`),
+  warn: onceEach((message) => console.warn(`[app-harness] ${message}`)),
 }
-
-const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
 /** EVERY ENABLED APP'S HARNESSES, checked. Apps in slug order, files in name
  *  order, so two processes always agree which of two apps claiming one id
- *  keeps it (the first). A file that throws on import, a default export that
- *  is not a harness, a definition that fails a check, an id a builtin or an
- *  earlier app holds — each is a problem on that one file, logged, and the
- *  rest of the app's harnesses still register. */
+ *  keeps it (the first). A file the app build could not compile, a file that
+ *  throws on import, a default export that is not a harness, a definition
+ *  that fails a check, an id a builtin or an earlier app holds — each is a
+ *  problem on that one file, logged, and the rest of the app's harnesses
+ *  still register. Every harness listed here goes on the wire (`wireOf`)
+ *  without throwing. */
 export async function listAppHarnesses(layer: Partial<AppHarnessLayer> = {}): Promise<AppHarnessListing> {
   const edges: AppHarnessLayer = { ...REAL_LAYER, ...layer }
   const apps = [...(await edges.enabled())].sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0))
@@ -294,7 +337,11 @@ export async function listAppHarnesses(layer: Partial<AppHarnessLayer> = {}): Pr
       skip(app.slug, '*', null, `the harness modules could not be listed: ${errText(e)}`)
       continue
     }
-    for (const { file, load } of files) {
+    for (const { file, load, compileError } of files) {
+      if (compileError !== undefined) {
+        skip(app.slug, file, null, `it failed to compile: ${compileError}`)
+        continue
+      }
       let mod: unknown
       try {
         mod = await load()
@@ -317,8 +364,17 @@ export async function listAppHarnesses(layer: Partial<AppHarnessLayer> = {}): Pr
         skip(app.slug, file, id, holder === app.slug ? `another file in this app already registers "${id}"` : `app "${holder}" already registers "${id}"`)
         continue
       }
+      const harness: AppHarness = { slug: app.slug, appName: app.name, file, def: checked.def }
+      // The checks cover every field wireOf reads; this is the backstop that
+      // keeps one definition they missed from failing the whole listing route.
+      try {
+        wireOf(harness)
+      } catch (e) {
+        skip(app.slug, file, id, `it could not be listed: ${errText(e)}`)
+        continue
+      }
       owner.set(id, app.slug)
-      harnesses.push({ slug: app.slug, appName: app.name, file, def: checked.def })
+      harnesses.push(harness)
     }
   }
   return { harnesses, problems }
@@ -332,6 +388,12 @@ export interface AppHarnessReport {
   registered: string[]
   problems: string[]
 }
+
+/** `slug`'s line of a listing, as the report spells it. */
+const reportOf = (listing: AppHarnessListing, slug: string): AppHarnessReport => ({
+  registered: listing.harnesses.filter((h) => h.slug === slug).map((h) => h.def.id),
+  problems: listing.problems.filter((p) => p.app === slug).map((p) => `harnesses/${p.file}: ${p.reason}`),
+})
 
 /** THE PROBE'S HALF: check `slug`'s harnesses as if it were enabled beside the
  *  apps that already are, and keep its own line of the result. Run by the load
@@ -350,21 +412,46 @@ export async function checkAppHarnessesOf(slug: string, layer: Partial<AppHarnes
       return on.some((a) => a.slug === slug) ? on : [...on, { slug, name: slug }]
     },
   })
-  return {
-    registered: listing.harnesses.filter((h) => h.slug === slug).map((h) => h.def.id),
-    problems: listing.problems.filter((p) => p.app === slug).map((p) => `harnesses/${p.file}: ${p.reason}`),
-  }
+  return reportOf(listing, slug)
 }
 
 /** Put the report on the app's current build pointer. Nothing to write
- *  without one (the probe always runs after a build wrote it). */
+ *  without one (the probe always runs after a build wrote it), and nothing
+ *  written when the pointer already says it. */
 export function recordAppHarnessReport(slug: string, report: AppHarnessReport): void {
   const cur = readCurrent(slug)
   if (!cur) return
+  const empty = report.registered.length === 0 && report.problems.length === 0
+  if (JSON.stringify(cur.harnesses ?? null) === JSON.stringify(empty ? null : report)) return
   const next = { ...cur }
-  if (report.registered.length === 0 && report.problems.length === 0) delete next.harnesses
-  else next.harnesses = report
+  if (empty) delete next.harnesses
+  else next.harnesses = { registered: [...report.registered], problems: [...report.problems] }
   writeCurrent(slug, next)
+}
+
+/** EVERY ENABLED APP'S REPORT, rewritten from one listing. A report the load
+ *  probe wrote is true of the enabled set it saw: when an app that sorts
+ *  first is enabled later and claims the same id, it takes the id, and the
+ *  app that held it still read "N harnesses" with nothing skipped. So this
+ *  runs whenever the set changes — after a live load probe, when a failed
+ *  app is switched off (app-health.ts), and when the api enables, disables
+ *  or uninstalls one (`POST /api/app-host/harnesses`). A disabled app keeps
+ *  its last report; Manage → Apps says its harnesses are not registered
+ *  while it is off. Returns the reports written, by slug. */
+export async function refreshAppHarnessReports(
+  layer: Partial<AppHarnessLayer> = {},
+  record: (slug: string, report: AppHarnessReport) => void = recordAppHarnessReport,
+): Promise<Map<string, AppHarnessReport>> {
+  const edges: AppHarnessLayer = { ...REAL_LAYER, ...layer }
+  const apps = await edges.enabled()
+  const listing = await listAppHarnesses({ ...edges, enabled: async () => apps })
+  const reports = new Map<string, AppHarnessReport>()
+  for (const { slug } of apps) {
+    const report = reportOf(listing, slug)
+    reports.set(slug, report)
+    record(slug, report)
+  }
+  return reports
 }
 
 // ── The wire ────────────────────────────────────────────────────────────────

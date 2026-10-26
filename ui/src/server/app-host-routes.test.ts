@@ -18,6 +18,10 @@ vi.mock('@/server/app-harnesses', () => ({
   wireOf: (h: { def: { id: string }; slug: string }) => ({ id: h.def.id, source: `app:${h.slug}` }),
   replayAppCase: async (_h: unknown, name: string, model: string) =>
     name === 'known' ? { harness: 'support:triage', case: name, model, verdict: 'pass' } : null,
+  refreshAppHarnessReports: async () => {
+    if (listing.value instanceof Error) throw listing.value
+    return new Map([['support', { registered: ['support:triage'], problems: [] }]])
+  },
 }))
 
 const { Route: List } = await import('@/routes/api/app-host.harnesses')
@@ -112,6 +116,25 @@ describe('GET /api/app-host/harnesses', () => {
   it('says the enabled set could not be read rather than answering an empty list', async () => {
     listing.value = new Error('the apps_enabled setting is not a list of app slugs')
     const res = await List.handlers.GET!({ request: req('/api/app-host/harnesses'), params: {} })
+    expect(res.status).toBe(503)
+  })
+})
+
+describe('POST /api/app-host/harnesses — the reports, rewritten after the enabled set changed', () => {
+  it('rewrites every enabled app’s report for the api', async () => {
+    const res = await List.handlers.POST!({ request: req('/api/app-host/harnesses', { body: {} }), params: {} })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, apps: ['support'] })
+  })
+
+  it('refuses a caller without the credential', async () => {
+    const res = await List.handlers.POST!({ request: req('/api/app-host/harnesses', { body: {}, token: null }), params: {} })
+    expect(res.status).toBe(403)
+  })
+
+  it('says the enabled set could not be read', async () => {
+    listing.value = new Error('the apps_enabled setting is not a list of app slugs')
+    const res = await List.handlers.POST!({ request: req('/api/app-host/harnesses', { body: {} }), params: {} })
     expect(res.status).toBe(503)
   })
 })
