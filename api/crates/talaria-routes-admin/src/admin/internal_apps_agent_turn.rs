@@ -7,7 +7,8 @@
 // doc: agent that person may use (never someone else's personal assistant);
 // doc: from an MCP tool, only the calling agent, proven by its own key; from a
 // doc: trigger, no agent. A refusal is a 403 with the sentence, before any turn
-// doc: starts. The app must be enabled with a ready build. The turn goes
+// doc: starts. The app must be enabled with a ready build and under its LLM
+// doc: budget (`app:<slug>`, the subject its relay calls are held to). The turn goes
 // doc: through the fleet's own chat door — on a Hermes session keyed per app,
 // doc: per person or calling agent, per `session` key, when one is given — and
 // doc: its spend is booked to the agent under ledger source `app`. The answer

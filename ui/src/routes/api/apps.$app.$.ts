@@ -28,9 +28,15 @@ const dispatch = async ({ request, params }: { request: Request; params: { app: 
   const path = appPathSegments(new URL(request.url).pathname)
   if (!path.ok) return json({ error: path.error }, { status: 400 })
   const segments = path.segments
-  // Everything bound to this caller — the store, the agents they may drive —
-  // from the one factory every context is built through.
-  const services = appServices(app, { kind: 'request', user: { id: caller.user.id, role: caller.user.role } }, request.signal)
+  const api = platformApi(request)
+  // Everything bound to this caller — the store, the agents they may drive,
+  // the harness runner — from the one factory every context is built
+  // through. An agent pin is checked against the agents the api lets THEM
+  // use (`usable_agent_gate`, asked with their own cookie through the same
+  // client the app gets as `ctx.api`).
+  const services = appServices(app, { kind: 'request', user: { id: caller.user.id, role: caller.user.role } }, request.signal, {
+    usableAgents: async () => ((await api<{ agents?: Array<{ id: string }> }>('/api/agents'))?.agents ?? []).map((a) => a.id),
+  })
   const ran = await isolateApp(app, 'server', async () => {
     const mod = (await appServerModule(app)) as { default?: AppServer } | null
     if (!mod?.default?.fetch) return json({ error: 'this app has no server' }, { status: 404 })
@@ -46,10 +52,11 @@ const dispatch = async ({ request, params }: { request: Request; params: { app: 
         access: { ...caller.access },
         perms: [...caller.perms],
         can: canFor(caller),
-        api: platformApi(request),
+        api,
         secret: appSecretReader(app, caller.user.id),
         signal: request.signal,
         agents: services.agents,
+        harness: services.harness,
       })
     } catch (e) {
       // The caller left and the app's work was cut with it (ctx.signal):

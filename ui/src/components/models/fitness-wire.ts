@@ -13,7 +13,6 @@ import type { Capability, CapabilityFact, CapabilityKey } from '@/server/harness
 import type { EvalBand } from '@/server/harness/define'
 import type { ToolPolicy } from '@/server/harness/transport'
 import type { Finding } from '@/server/guardrails'
-import type { GatewayPulse } from '@/server/llm-gateway'
 import type { ModelRole } from '@/server/model-roles'
 import type { PlatformAgentId } from '@/server/platform-agents'
 
@@ -747,6 +746,11 @@ export interface MatrixView {
     minObservedRuns: number
   }
   registry: { harnesses: number; fixtures: number; provocations: number; unfixtured: string[] }
+  /** THE APP COLUMNS' MODEL SETTINGS — an app slot's key (`app:<slug>/<id>`)
+   *  to the model an admin assigned it, for the app columns on screen. An
+   *  unassigned slot is absent: the harness runs on its own chain. Written by
+   *  `PUT /api/admin/app-harness-models`. */
+  appModels: Record<string, string>
 }
 
 /** A RUN IN FLIGHT, as the drill-down can show it.
@@ -1292,6 +1296,16 @@ export interface Trial {
   note: string
   /** The model's reply, bounded. Null when the trial never got one. */
   raw: string | null
+}
+
+/** The gateway's live pulse over its recent calls — the api's wire shape. */
+export interface GatewayPulse {
+  /** Upstream calls in the last 15 minutes. */
+  requests: number
+  errors: number
+  /** Time-to-first-byte percentiles over those calls, ms. */
+  p50: number | null
+  p95: number | null
 }
 
 export interface LatencyReading extends GatewayPulse {

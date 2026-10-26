@@ -13,7 +13,7 @@ Import them as:
 ```ts
 import { Button, useAppQuery } from '@talaria/sdk'          // client
 import { defineAppServer, z } from '@talaria/sdk/server'    // server
-import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp.ts
+import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp.ts and harnesses
 ```
 
 ## `@talaria/sdk` — app definition
@@ -160,9 +160,9 @@ import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp
 | :--- | :--- | :--- |
 | `defineAppServer` | fn | Declare the fetch handler and the trigger handlers; default-export from server.ts |
 | `AppServer` | type | What `defineAppServer` takes: `fetch?`, `triggers?` |
-| `AppRequestContext` | type | ctx: user, access, perms, can, app, path, segments, url, origin, store, api, secret, signal, agents |
+| `AppRequestContext` | type | ctx: user, access, perms, can, app, path, segments, url, origin, store, api, secret, signal, agents, harness |
 | `AppTriggerHandler` | type | One trigger's handler: takes ctx, may return the run's line for Manage → Apps (a string) |
-| `AppTriggerContext` | type | A trigger's ctx, as the app with no user: app, trigger, runId, cause, store, secret, origin, agents (refuses), signal |
+| `AppTriggerContext` | type | A trigger's ctx, as the app with no user: app, trigger, runId, cause, store, secret, origin, agents (refuses), harness (no agent pin), signal |
 | `AppTriggerCause` | type | Why the run started: `{ kind: 'cron', dueAt }` or `{ kind: 'event', event }` |
 | `AppTriggerEvent` | type | A platform event, ids only: `ticket.created` or `ticket.moved` |
 | `AppAgents` | type | `ctx.agents`: `turn(options)` drives one agent turn the caller may drive |
@@ -185,19 +185,21 @@ import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp
 | `defineAppMcp` | fn | Declare agent-callable tools; default-export from mcp.ts |
 | `AppMcp` | type | The tools map `defineAppMcp` takes |
 | `AppMcpTool` | type | One tool: name, description, inputSchema, outputSchema, handler |
-| `AppMcpContext` | type | Tool handler ctx: app, agent, caller, actingUserId, store, signal, agents (the calling agent only) |
+| `AppMcpContext` | type | Tool handler ctx: app, agent, caller, actingUserId, store, signal, agents (the calling agent only), harness |
 | `AppMcpCaller` | type | Who calls: the agent's name and id, and whether that is proven (its own key, not the org-wide one) |
 | `toolResult` | fn | A whole MCP result for a handler to return: content blocks, structuredContent, isError |
 | `AppToolResult` / `AppToolContent` | types | What `toolResult` makes, and one content block (text, image, audio, resource_link, resource) |
 | `isUnresolvedHandle` | fn | Whether a value still carries a `«secret:…»` handle the gateway could not resolve |
 
-## `@talaria/sdk/testing` — unit tests of MCP tools
+## `@talaria/sdk/testing` — unit tests of MCP tools and harnesses
 
 | symbol | kind | what it is |
 | :--- | :--- | :--- |
 | `callAppTool` | fn | Call one tool of an mcp.ts as the gateway would, with no host; answers what the agent receives |
-| `AppToolCallOptions` / `AppToolCallResult` | types | `callAppTool`'s context (caller, actingUserId, store, agents, timeoutSecs, signal, tools) and its answer |
+| `AppToolCallOptions` / `AppToolCallResult` | types | `callAppTool`'s context (caller, actingUserId, store, agents, harness, timeoutSecs, signal, tools) and its answer |
 | `memoryStore` | fn | An in-memory document store with the installed store's interface and answers |
+| `runHarnessOffline` | fn | Run a harness through the real runner against scripted replies — no gateway, no database, nothing recorded |
+| `OfflineRunOptions` / `OfflineRun` / `OfflineReply` | types | Its options (replies or a reply function, model, capabilities on record), its result (`HarnessResult` plus every request), one scripted turn |
 
 ## `@talaria/sdk/server` — activity harnesses
 
@@ -207,8 +209,8 @@ import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp
 | `HarnessDefinition` | type | The full activity contract (render, output, model, evals…) |
 | `RenderContext` | type | What the render step receives |
 | `Message` | type | One chat message |
-| `Grounding` | type | Retrieval grounding for a render |
-| `ModelSpec` | type | The model chain spec |
+| `Grounding` | type | The turn's real tool record, which the guard checks citations and outage claims against |
+| `ModelSpec` | type | The model chain spec: pin, role, chain, and slot: the harness's own model setting, which the host sets |
 | `Capability` | type | A capability a harness requires of a model |
 | `RoleFloor` | type | The minimum-model declaration |
 | `Verify` | type | Output verifier signature |
@@ -221,15 +223,22 @@ import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp
 | `ToolDefinition` | type | A tool offered on one turn (OpenAI wire shape) |
 | `ToolCall` | type | The model's use of one |
 | `ToolPolicy` | type | Whether a turn may use tools at all |
+| `HarnessLoop` | type | A tool loop the runner holds: tools, maxTurns |
+| `HarnessTool` | type | One loop tool: a ToolDefinition plus exactly one of handler, mcp or org, and an optional simulate |
+| `HarnessToolContext` | type | What a loop tool's handler receives: app, harness, actingUserId, turn, signal |
+| `HarnessToolWorld` | type | What a loop tool's simulate receives: the run's input |
 
 ## `@talaria/sdk/server` — the runner (bridge pattern)
 
 | symbol | kind | what it is |
 | :--- | :--- | :--- |
-| `runHarness` | fn | The one runner — resolve, floor, render, call, parse, repair, guard, meter |
+| `AppHarnessRunner` | type | `ctx.harness`: run(def, input, opts) and stream(def, input, { onDelta }), bound by the host to the caller |
+| `HarnessRunOptions` / `HarnessStreamOptions` | types | What a bound run takes: model (checked), tier, effort, ledger (refId, taskId), signal, and onDelta for a stream |
+| `runHarness` | fn | The free runner, for apps written before `ctx.harness`: no checks, no deps, a warning when it pins an agent |
 | `resolveHarnessModel` | fn | Free probe: which chain would carry this harness, or null |
-| `RunContext` | type | Caller + signal for a direct run |
+| `RunContext` | type | The free runner's context: caller, userId, model, step, tier, effort, ledger, signal, and no deps |
 | `RunLedger` | type | Where the run's cost lands |
+| `LoopCall` | type | One dispatched loop call: tool, args, result, error |
 | `HarnessResult` | type | What `runHarness` resolves to |
 | `ModelChainStep` | type | Which link of the chain answered |
 | `ResolvedHarnessModel` | type | The chain's answer: model + step |

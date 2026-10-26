@@ -835,6 +835,7 @@ pub fn hermes_google_harness() -> HarnessDefinition {
         // sweep's verdict under a model that never sat the exam.
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

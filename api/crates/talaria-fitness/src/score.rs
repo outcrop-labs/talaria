@@ -1607,6 +1607,7 @@ mod tests {
             "Answers.",
             ModelSpec {
                 pin: None,
+                slot: None,
                 role: None,
                 chain: Some(&[]),
                 user_id: None,
@@ -1909,6 +1910,7 @@ mod tests {
         // default chain — the real resolver is asked, which is the point.
         let roles = roles_reaching(&ModelSpec {
             pin: Some("titler"),
+            slot: None,
             role: None,
             chain: None,
             user_id: None,
@@ -1921,6 +1923,7 @@ mod tests {
     async fn finds_a_role_a_spec_names_explicitly() {
         let roles = roles_reaching(&ModelSpec {
             pin: None,
+            slot: None,
             role: Some("code-heavy"),
             chain: None,
             user_id: None,
@@ -1949,6 +1952,7 @@ mod tests {
     fn empty_spec() -> ModelSpec<'static> {
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

@@ -6,6 +6,8 @@
 import { HttpError } from '@/lib/fetch-json'
 import type { AppMcpCaller } from '@/sdk/server'
 import { appAgents, type AppAgents } from './app-agents'
+import { appHarnessRunner, type AppHarnessRunner, type HarnessActor } from './app-harness-runner'
+import type { OrgToolCall } from './app-org-tools'
 import { storeFor, type AppStore } from './app-store'
 import { getAuthConfig } from './auth/config'
 import { rustApiUrl } from './rust-proxy'
@@ -31,17 +33,50 @@ export type AppActor =
 export interface AppServices {
   store: AppStore
   agents: AppAgents
+  harness: AppHarnessRunner
+}
+
+/** What a context knows beyond the actor, for the bound harness runner. */
+export interface AppServiceEdges {
+  /** A request's: the agent ids the signed-in person may use — the api's
+   *  `usable_agent_gate`, asked with their own session. Absent, a request's
+   *  run may pin no agent. */
+  usableAgents?: () => Promise<string[]>
+  /** An MCP call's: how a loop's `org` tool is called, as the calling agent. */
+  orgTools?: OrgToolCall | null
+}
+
+/** The actor as the bound harness runner reads it. */
+function harnessActorOf(actor: AppActor, edges: AppServiceEdges): HarnessActor {
+  switch (actor.kind) {
+    case 'request':
+      return {
+        kind: 'request',
+        user: { id: actor.user.id, role: actor.user.role === 'admin' ? 'admin' : 'member' },
+        usableAgents: edges.usableAgents ?? (async () => []),
+      }
+    case 'mcp':
+      return { kind: 'mcp', caller: actor.caller, actingUserId: actor.actingUserId }
+    case 'trigger':
+      return { kind: 'trigger' }
+  }
 }
 
 /** THE ONE FACTORY the request, MCP-tool and trigger contexts are built
  *  through: everything that is bound to the actor, built from the actor, in
- *  one place. A capability added for every context (the bound harness
- *  runner, `ctx.harness`) is added here, once. `signal` is the context's
- *  own — the request's disconnect, the tool's deadline, the trigger's. */
-export function appServices(app: string, actor: AppActor, signal?: AbortSignal): AppServices {
+ *  one place. A capability added for every context is added here, once.
+ *  `signal` is the context's own — the request's disconnect, the tool's
+ *  deadline, the trigger's. */
+export function appServices(app: string, actor: AppActor, signal?: AbortSignal, edges: AppServiceEdges = {}): AppServices {
   return {
     store: storeFor(app),
     agents: appAgents({ app, actor, signal }),
+    harness: appHarnessRunner({
+      app,
+      actor: harnessActorOf(actor, edges),
+      ...(edges.orgTools !== undefined ? { orgTools: edges.orgTools } : {}),
+      ...(signal ? { signal } : {}),
+    }),
   }
 }
 

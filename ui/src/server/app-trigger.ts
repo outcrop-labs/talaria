@@ -11,7 +11,8 @@
 //
 // THE CONTEXT IS THE APP'S, with no user: there is no session to call the
 // platform API with (no `ctx.api`), no person's grants (no `ctx.access`), and
-// `ctx.agents` refuses — a triggered run drives no agent. It is built through
+// `ctx.agents` refuses — a triggered run drives no agent; `ctx.harness` runs
+// as the app and may pin no agent. It is built through
 // `appServices`, the factory the request and tool contexts use, so whatever
 // every context carries reaches this one too. The payload of an event is
 // ids, never content (talaria-platform-events).
@@ -19,6 +20,7 @@ import type { AppServer, AppTriggerCause, AppTriggerContext, AppTriggerEvent } f
 import { appServerModule, enabledAppSlugs } from './apps'
 import { appSecretReader, appServices } from './app-context'
 import { errorMessageOf } from './app-isolate'
+import { withApp } from './app-scope'
 import { getAuthConfig } from './auth/config'
 import { PLATFORM_EVENTS } from './app-build/manifest'
 
@@ -133,12 +135,15 @@ export async function runAppTrigger(
     cause,
     store: services.store,
     agents: services.agents,
+    harness: services.harness,
     secret: appSecretReader(slug, null),
     origin: getAuthConfig().publicUrl,
     signal: ctl.signal,
   }
   try {
-    const running = Promise.resolve().then(() => handler(ctx))
+    // As the app: every model call the handler makes, at any depth, goes to
+    // the relay on this app's key (app-scope.ts).
+    const running = Promise.resolve().then(() => withApp(slug, () => handler(ctx)))
     running.catch(() => {}) // a cut run's late rejection is nobody's
     const result = await Promise.race([running, cutting])
     const detail = typeof result === 'string' && result.trim() ? result.trim() : undefined

@@ -330,8 +330,9 @@ const RULES = [
  *  site it policed was in the deleted engines, and the persona-conversation
  *  path it carried as its one permanent exception (channel-replies.ts) serves
  *  from the Rust api now. Model access in the live TS tier goes through the
- *  transports (gateway.ts, llm-gateway.ts) and the one runner that may call
- *  them (harness/run.ts). */
+ *  one runner (harness/run.ts) and its transports (harness/transport.ts), which
+ *  call the Rust relay on the app's gateway key — the TS tier holds no provider
+ *  key and reaches no model any other way. */
 
 const CENSUS = [
   {

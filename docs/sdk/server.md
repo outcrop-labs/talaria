@@ -51,6 +51,7 @@ export default defineAppServer({
 | `ctx.secret(name)` | A workspace secret's value, when an admin gave it to this app (below) |
 | `ctx.signal` | Aborts when the caller disconnects (below) |
 | `ctx.agents` | Drive a fleet agent the caller may use ([below](#driving-an-agent)) |
+| `ctx.harness` | Runs a harness as this caller: `run(def, input, options)` and `stream(…, { onDelta })` ([harnesses](./harnesses.md#running-one--ctxharness)) |
 
 ## The path
 
@@ -183,10 +184,10 @@ instance.
 ## Cancellation
 
 `ctx.signal` aborts when the caller disconnects before your answer is done, such as a closed tab
-or an aborted fetch. Pass it to long work, `runHarness` and your own `fetch` calls, so that work
-stops instead of spending for nobody. `ctx.api` already follows it on reads, and deliberately
-not on writes ([Platform data](#platform-data)). A handler that throws because the
-caller left isn't logged as a crash.
+or an aborted fetch. Pass it to long work, such as your own `fetch` calls, so that work stops
+instead of spending for nobody. `ctx.harness` already follows it, and `ctx.api` does on reads
+but deliberately not on writes ([Platform data](#platform-data)). A handler that throws because
+the caller left isn't logged as a crash.
 
 ## Driving an agent
 
@@ -219,7 +220,8 @@ return json({ note: reply.text, tools: reply.tools })
 
 It resolves to `{ agent, text, tools, session }`: everything the agent said, the tools it used by
 name, and the session's id (null without a key). It throws an `HttpError`: **403** with the
-reason when this caller may not drive that agent, **502** when the agent failed, was down past
+reason when this caller may not drive that agent or your app is over its LLM budget, **502**
+when the agent failed, was down past
 two minutes, or sent nothing for ten minutes. A turn has no fixed deadline beyond that silence:
 an agent may work for a long time, and every tool call it makes counts as life.
 
@@ -236,7 +238,8 @@ code says:
 A session key is scoped to your app and to the person (or, from a tool, the calling agent), so
 `session: 'notes'` for one person never reaches another's conversation, or a chat's. The turn's
 spend is booked to the agent under ledger source `app`. The app must be enabled with a ready
-build.
+build, and under its budget (`app:<slug>`, the one its harness runs are held to): an app over it
+starts no turn.
 
 ## Triggers
 
@@ -285,6 +288,7 @@ leave out `fetch`.
 | `ctx.secret(name)` | A workspace secret an admin gave this app; the spend is audited with no person |
 | `ctx.origin` | `AUTH_PUBLIC_URL`, or null when the operator set none |
 | `ctx.agents` | Refuses every turn: a triggered run drives no agent |
+| `ctx.harness` | Runs a harness as the app, on your app's key and budget. It may pin no agent ([harnesses](./harnesses.md#running-one--ctxharness)) |
 | `ctx.signal` | Aborts at the run's 10-minute deadline |
 
 An event is **ids, never content**: `ticket.created` gives `ticketId` and `boardId`;

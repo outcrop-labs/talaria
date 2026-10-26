@@ -159,8 +159,8 @@ fn priced() -> &'static str {
 
 /// Billable spend over a rolling window, optionally for one caller
 /// (`agent_model` — a fleet model id for persona rows, `api:<key>` for
-/// gateway rows). Called before every budgeted call and
-/// cached by budget.rs.
+/// gateway rows, `app:<slug>` for an app's, which sums every caller stamp
+/// under it). Called before every budgeted call and cached by budget.rs.
 pub async fn spend_since(
     pg: &PgPool,
     window_hours: i64,
@@ -172,6 +172,9 @@ pub async fn spend_since(
     // every read ("function make_interval(hours => bigint) does not exist"),
     // and `check_budget` fails open on a failed read, so no budget ever bound.
     let hours = window_hours.clamp(1, 24 * 365) as i32;
+    // An app's subject (`app:<slug>`) is the app's whole spend: every row its
+    // runs booked under their caller stamps (`app:<slug>:…`, app_keys.rs).
+    let family = agent_model.and_then(crate::app_keys::app_family_prefix);
     // sqlx can't interpolate the interval literal as a bind for `now() - $1`
     // with unit attached — build `make_interval(hours => $1)` instead, which
     // stays a bound parameter.
@@ -182,13 +185,15 @@ pub async fn spend_since(
                 coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where cost is null), 0)::bigint as unpriced \
          from priced \
          where created_at > now() - make_interval(hours => $1) \
-           and ($2::text is null or agent_model = $2)"
+           and ($2::text is null or agent_model = $2 \
+                or ($3::text is not null and left(agent_model, length($3)) = $3))"
     );
     // AssertSqlSafe: the only interpolation is the PRICED const above — no
-    // caller text reaches this string, and both runtime values stay binds.
+    // caller text reaches this string, and every runtime value stays a bind.
     let row: Option<(i64, f64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(hours)
         .bind(agent_model)
+        .bind(family)
         .fetch_optional(pg)
         .await?;
     Ok(row
@@ -716,6 +721,7 @@ pub async fn record_gateway_usage_with_spend(
         RELAY_SOURCE,
         caller,
         None,
+        &StatedFlow::default(),
         endpoint_name,
         endpoint_class,
         upstream_model,
@@ -724,6 +730,17 @@ pub async fn record_gateway_usage_with_spend(
         spend,
     )
     .await
+}
+
+/// The flow a caller states for its own rows, beside the one a recorded
+/// affinity key would give them: an app run's ref and ticket. Each is booked
+/// only when it is a uuid — a ref the app made up (a support message id, a
+/// slug) is dropped from the row, never the row with it. A flow recorded for
+/// the call's affinity key still wins.
+#[derive(Debug, Clone, Default)]
+pub struct StatedFlow {
+    pub ref_id: Option<String>,
+    pub task_id: Option<String>,
 }
 
 /// The source a relay row carries when the calling key is the writer of
@@ -751,6 +768,7 @@ pub async fn record_relay_usage(
     source: &str,
     caller: &str,
     affinity_key: Option<&str>,
+    stated: &StatedFlow,
     endpoint_name: &str,
     endpoint_class: &str,
     upstream_model: &str,
@@ -768,7 +786,8 @@ pub async fn record_relay_usage(
                                   estimated, endpoint_class, llm_model, endpoint, \
                                   provider_cost, cost_source, cost_provider, cost_variant, \
                                   cost_fetched_at, generation_id) \
-         select $1, coalesce(a.source, $16), a.ref_id, a.task_id, $17, \
+         select $1, coalesce(a.source, $16), coalesce(a.ref_id, $18::uuid), \
+                coalesce(a.task_id, $19::uuid), $17, \
                 $2, $3, $4, $5, $6, $7, $8, $9, $10, \
                 $11, $12, $13, $14, case when $11::numeric is null then null else now() end, $15 \
          from (values (1)) as one (x) \
@@ -800,6 +819,8 @@ pub async fn record_relay_usage(
     .bind(spend.generation_id)
     .bind(source)
     .bind(affinity_key)
+    .bind(uuid_or_none(stated.ref_id.as_deref()))
+    .bind(uuid_or_none(stated.task_id.as_deref()))
     .execute(pg)
     .await?;
     // A cloud row with no charge of its own is priced from a published rate;
@@ -1406,6 +1427,7 @@ mod live_db {
             source,
             agent,
             key,
+            &StatedFlow::default(),
             "live-test-endpoint",
             "local",
             "live-test-model",
@@ -1649,5 +1671,92 @@ mod live_db {
         );
         assert_eq!(row(&pg, &a, 15).await, ("chat".into(), Some(chat), None));
         cleanup(&pg, &a).await;
+    }
+
+    /// An app's rows: booked under the caller stamp with source `app`, the
+    /// run's stated ref and ticket kept when they are uuids and dropped —
+    /// never the row with them — when they are not; and the app's budget
+    /// subject sums every stamp under it, and nothing beside it.
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn an_app_books_under_its_stamps_and_its_budget_sums_them() {
+        let pg = pg().await;
+        let slug = format!("live-{}", &uuid()[..8]);
+        let own = crate::app_keys::app_key_name(&slug);
+        let (triage, fitness, neighbour) = (
+            format!("{own}:triage"),
+            format!("{own}:fitness:triage"),
+            format!("{own}x"),
+        );
+        for name in [&own, &triage, &fitness, &neighbour] {
+            cleanup(&pg, name).await;
+        }
+        let (refd, ticket) = (uuid(), uuid());
+        let counts = |prompt: i64| TokenCounts {
+            prompt_tokens: prompt,
+            completion_tokens: 1,
+            ..TokenCounts::default()
+        };
+        let booked = |name: String, prompt: i64, stated: StatedFlow| {
+            let pg = pg.clone();
+            async move {
+                record_relay_usage(
+                    &pg,
+                    crate::app_keys::APP_SOURCE,
+                    &name,
+                    None,
+                    &stated,
+                    "live-test-endpoint",
+                    "local",
+                    "live-test-model",
+                    &counts(prompt),
+                    false,
+                    None,
+                )
+                .await
+                .expect("the relay's insert");
+            }
+        };
+        booked(
+            triage.clone(),
+            21,
+            StatedFlow {
+                ref_id: Some(refd.clone()),
+                task_id: Some(ticket.clone()),
+            },
+        )
+        .await;
+        booked(
+            fitness.clone(),
+            22,
+            StatedFlow {
+                ref_id: Some("msg-41".into()),
+                task_id: Some("t-41".into()),
+            },
+        )
+        .await;
+        booked(own.clone(), 23, StatedFlow::default()).await;
+        booked(neighbour.clone(), 1000, StatedFlow::default()).await;
+
+        assert_eq!(
+            row(&pg, &triage, 21).await,
+            ("app".into(), Some(refd), Some(ticket))
+        );
+        assert_eq!(
+            row(&pg, &fitness, 22).await,
+            ("app".into(), None, None),
+            "a ref that is not a uuid leaves the row, not the ledger"
+        );
+        let spend = spend_since(&pg, 24, Some(&own))
+            .await
+            .expect("the app window");
+        assert_eq!(spend.tokens, 21 + 22 + 23 + 3, "every stamp under the app");
+        let one = spend_since(&pg, 24, Some(&triage))
+            .await
+            .expect("one stamp");
+        assert_eq!(one.tokens, 22, "a stamp is its own name alone");
+        for name in [&own, &triage, &fitness, &neighbour] {
+            cleanup(&pg, name).await;
+        }
     }
 }

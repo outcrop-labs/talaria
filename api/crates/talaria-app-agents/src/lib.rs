@@ -159,7 +159,8 @@ pub fn actor_refusal(req: &TurnRequest) -> Option<String> {
 
 /// Why this turn may not run, or None. The app enabled with a ready build,
 /// the actor's rule (`actor_refusal`), the person's agent access for a
-/// request, and the agent a rendered member of the fleet.
+/// request, the agent a rendered member of the fleet, and the app under its
+/// budget.
 pub async fn refusal(pg: &PgPool, req: &TurnRequest) -> Result<Option<String>, sqlx::Error> {
     if !talaria_apps::enabled_app_slugs(pg).await.contains(&req.app) {
         return Ok(Some(format!("app \"{}\" is not enabled", req.app)));
@@ -193,6 +194,20 @@ pub async fn refusal(pg: &PgPool, req: &TurnRequest) -> Result<Option<String>, s
             "\"{}\" is not a running agent of this fleet",
             req.agent
         )));
+    }
+    // The app's budget, as the relay holds every other call an app makes to
+    // it (`app:<slug>`, summed over every row under the app's stamps): an app
+    // over its budget starts no agent turn either. The agent's own calls
+    // still count against the agent's budget, as any turn's do.
+    let subject = talaria_gateway::app_keys::app_key_name(&req.app);
+    if let Some(denial) = talaria_gateway::budget::check_budget(
+        pg,
+        &subject,
+        talaria_gateway::budget::BudgetLimits::default(),
+    )
+    .await
+    {
+        return Ok(Some(talaria_gateway::budget::budget_message(&denial)));
     }
     Ok(None)
 }

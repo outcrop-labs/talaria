@@ -415,6 +415,59 @@ export interface Grounding {
   errored: boolean | null
 }
 
+/** What a loop tool's `handler` is told about the call it is serving. */
+export interface HarnessToolContext {
+  /** The app whose harness this is, or null for a run with no app binding. */
+  app: string | null
+  /** The harness's id. */
+  harness: string
+  /** The person the run acts for, when it acts for one. */
+  actingUserId: string | null
+  /** The model turn (0-based) that made this call. */
+  turn: number
+  /** Aborts with the run: the caller left, the tool's deadline passed. */
+  signal: AbortSignal
+}
+
+/** What a loop tool's `simulate` is given — the run's input, so a dry run's
+ *  answer can be a function of the fixture it is serving. */
+export interface HarnessToolWorld<I> {
+  input: I
+}
+
+/** ONE TOOL A HARNESS'S LOOP OFFERS: the definition the model sees (the OpenAI
+ *  function shape, as `toolDefs`), plus EXACTLY ONE place the call goes —
+ *
+ *    handler   your own code, in the app host, as the run's caller;
+ *    mcp       one of your app's own MCP tools (mcp.ts), through the same
+ *              dispatch an agent's call takes — its checks, its deadline;
+ *    org       an org MCP tool, `'<server>/<tool>'`, through the MCP gateway
+ *              under the per-agent rules of the agent the run acts for —
+ *              never a direct call.
+ *
+ *  `simulate` is the dry-run stand-in: the fitness sweep calls it instead of
+ *  the tool, so a harness whose tools all simulate can be scored on candidate
+ *  models without touching anything real. Its return value is what the model
+ *  sees as the result. */
+export type HarnessTool<I = unknown> = ToolDefinition & {
+  simulate?: (args: Record<string, unknown>, world: HarnessToolWorld<I>) => unknown | Promise<unknown>
+} & (
+    | { handler: (args: Record<string, unknown>, ctx: HarnessToolContext) => unknown | Promise<unknown>; mcp?: never; org?: never }
+    | { mcp: string; handler?: never; org?: never }
+    | { org: string; handler?: never; mcp?: never }
+  )
+
+/** THE RUNNER-HELD TOOL LOOP. The runner offers `tools`, dispatches every call
+ *  the model makes, puts the results back on the tool channel, and asks again
+ *  — up to `maxTurns` model turns — then holds the final answer to `output`
+ *  exactly as a single-shot run's. */
+export interface HarnessLoop<I> {
+  tools: HarnessTool<I>[]
+  /** Model turns the loop may take. Default 6, at most 12 — the same budget
+   *  the fitness sweep's dry runs keep. */
+  maxTurns?: number
+}
+
 export interface HarnessDefinition<I, O> {
   id: string
   label: string
@@ -626,6 +679,15 @@ export interface HarnessDefinition<I, O> {
    *  GATEWAY model — a fleet persona's tool loop belongs to the agent, and the
    *  fleet transport refuses rather than pretending otherwise. */
   toolDefs?: ToolDefinition[]
+
+  /** A TOOL LOOP THE RUNNER HOLDS — see `HarnessLoop`. Distinct from both
+   *  `tools` (the model's OWN loop, inside a fleet persona) and `toolDefs`
+   *  (tools offered for one turn and executed by nobody): here the platform
+   *  executes what the model calls. Runs on a gateway model, never streams.
+   *
+   *  The result carries `toolCalls`, `calls` and `exhausted`, and the guard
+   *  is grounded in the tools' real results. */
+  loop?: HarnessLoop<I>
 
   /** How long a persona transport may HOLD for an agent that is not answering
    *  yet, in ms. `proxyChat` waits two minutes by default; an agent restarting

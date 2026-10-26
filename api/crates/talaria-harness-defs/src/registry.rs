@@ -830,6 +830,7 @@ mod tests {
                 "Does an app's job.",
                 ModelSpec {
                     pin,
+                    slot: None,
                     role: None,
                     chain: Some(&[]),
                     user_id: None,

@@ -236,6 +236,7 @@ pub fn hermes_authority_harness() -> HarnessDefinition {
         "A workspace agent asked to use Notion, Obsidian, Excel, Box, or a wiki — and reaching for Talaria instead of a parallel store.",
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

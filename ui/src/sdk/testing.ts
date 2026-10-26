@@ -16,13 +16,101 @@
 //   const r = await callAppTool(mcp, 'contacts_search', { query: 'ada' }, { store })
 //   expect(r.isError).toBe(false)
 //
+// `runHarnessOffline(def, input, { replies })` runs a harness through the real
+// runner — render, parse, repair, verify, guard — against replies you script,
+// with no gateway and no database: how a fixture's `check` is exercised before
+// the fitness sweep ever sees it.
+//
 // Nothing here reaches a database, the api or the network — and nothing here
 // belongs in mcp.ts or server.ts: an app build does not resolve this entry.
 import { memoryStore } from '@/server/app-store-memory'
 import { checkAppMcpTools, runAppTools } from '@/server/app-mcp-call'
+import { runHarness as runCore, type HarnessResult } from '@/server/harness/run'
+import type { HarnessDefinition } from '@/server/harness/define'
+import type { Capability, CapabilitySource } from '@/server/harness/capability'
+import type { ToolCall, TransportReply, TransportRequest } from '@/server/harness/transport'
+import type { AppHarnessRunner } from '@/server/app-harness-runner'
 import type { AppAgents, AppMcp, AppMcpCaller, AppToolContent, AppStore } from './server'
 
 export { memoryStore }
+
+// ── A harness, offline ──────────────────────────────────────────────────────
+
+/** One scripted model turn: its text, or the text and the tool calls it made
+ *  (arguments as an object, or the raw string a model sent). */
+export type OfflineReply = string | { text?: string; toolCalls?: Array<{ name: string; args?: Record<string, unknown> | string }> }
+
+export interface OfflineRunOptions {
+  /** The model's replies, one per turn, in order. A run that asks for more
+   *  turns than you scripted gets an empty reply. */
+  replies?: OfflineReply[]
+  /** Or answer each request yourself — to assert on the prompt, or to reply
+   *  from it. */
+  reply?: (request: TransportRequest) => OfflineReply | Promise<OfflineReply>
+  /** The model id the run reports and `render` sees. Default `"test-model"`. */
+  model?: string
+  /** What is on record about the model, as a probe (`source: 'probe'`), an
+   *  admin (`'declared'`) or one upstream 400 (`'learned'`) left it — to see
+   *  your floor refuse, or not. Default nothing on record: unknown, which runs. */
+  capabilities?: Partial<Record<Capability, { value: boolean; source?: CapabilitySource }>>
+  /** A tool loop's tools (`def.loop`). By default handlers run for real and
+   *  `mcp`/`org` tools answer through their `simulate` (there is no host here
+   *  to dispatch them). `true` answers every tool through `simulate`, as the
+   *  fitness sweep's dry run does. */
+  simulate?: boolean
+}
+
+/** Every request the run made, for assertions on the prompt. */
+export interface OfflineRun<O> extends HarnessResult<O> {
+  requests: TransportRequest[]
+}
+
+/** Run `def` on `input` through the real runner against scripted replies. The
+ *  guard runs as an org in its default `observe` mode would run it; nothing is
+ *  recorded and nothing is spent. */
+export async function runHarnessOffline<I, O>(def: HarnessDefinition<I, O>, input: I, opts: OfflineRunOptions = {}): Promise<OfflineRun<O>> {
+  const model = opts.model ?? 'test-model'
+  const queue = [...(opts.replies ?? [])]
+  const requests: TransportRequest[] = []
+  const transport = async (req: TransportRequest): Promise<TransportReply> => {
+    requests.push(req)
+    const scripted: OfflineReply = opts.reply ? await opts.reply(req) : (queue.shift() ?? '')
+    const text = typeof scripted === 'string' ? scripted : (scripted.text ?? '')
+    const calls: ToolCall[] | undefined =
+      typeof scripted === 'string' || !scripted.toolCalls
+        ? undefined
+        : scripted.toolCalls.map((c, i) => ({ name: c.name, args: typeof c.args === 'string' ? c.args : JSON.stringify(c.args ?? {}), id: `call_${requests.length}_${i}` }))
+    return {
+      kind: 'gateway',
+      text,
+      toolNames: (calls ?? []).map((c) => c.name),
+      ...(calls ? { toolCalls: calls } : {}),
+      usage: null,
+      contractDropped: false,
+    }
+  }
+  const result = await runCore(def, input, {
+    caller: `test:${def.id}`,
+    model,
+    loop: opts.simulate ? { app: null, actingUserId: null, simulate: true } : { app: null, actingUserId: null, simulateExternal: true },
+    deps: {
+      routing: async (m: string) => ({ endpoints: ['test'], upstreamModel: m }),
+      personaKeys: async () => [],
+      missingCapabilities: async (_key, asked) => asked.filter((c) => opts.capabilities?.[c]?.value === false),
+      capabilities: async () => ({ ...opts.capabilities }),
+      reach: async () => ({}),
+      slotEffort: async () => null,
+      transport,
+      guardConfig: async () => ({ mode: 'observe', checks: {}, minConfidence: 0.5, policedHosts: [], coach: false }),
+      guardText: async () => [],
+      recordFindings: async () => {},
+      recordRun: async () => {},
+    },
+  })
+  return { ...result, requests }
+}
+
+// ── An MCP tool ─────────────────────────────────────────────────────────────
 
 /** What a test may set about the call; everything has a default. */
 export interface AppToolCallOptions {
@@ -48,6 +136,9 @@ export interface AppToolCallOptions {
   /** The agent's granted tool subset; a tool outside it is not available.
    *  Default every tool. */
   tools?: string[]
+  /** What the handler gets as `ctx.harness`. Default a runner that throws:
+   *  there is no host here to bind one to the caller. */
+  harness?: AppHarnessRunner
 }
 
 /** What the agent receives from one call. */
@@ -100,6 +191,7 @@ export async function callAppTool(
     ...(ctx.agents ? { agents: ctx.agents } : {}),
     signal: ctx.signal,
     timeoutSecs: ctx.timeoutSecs,
+    ...(ctx.harness ? { harness: ctx.harness } : {}),
   })
   const body = JSON.parse(JSON.stringify(r.body)) as {
     error?: { message: string }

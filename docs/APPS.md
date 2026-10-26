@@ -90,8 +90,9 @@ platform. `talaria.json` declares each trigger, and `server.ts` answers it by id
 **A triggered run acts as the app, with no user.** Its context has the app's store, the secrets
 an admin gave the app, and the cause (the schedule's minute or the event). It has no `ctx.user`,
 no `ctx.api` (there is no session to call the platform with), and it may not drive an agent:
-`ctx.agents.turn` refuses from a trigger. Model spend in a triggered run is the app's
-(ledger source `app`), not any person's.
+`ctx.agents.turn` refuses from a trigger, and `ctx.harness` may pin no agent. Model spend in a
+triggered run goes to the relay on the app's own key: the app's, under its budget (ledger source
+`app`), not any person's.
 
 **Which apps fire.** Only an enabled app with a ready build. Disabling an app, or a failed
 build, disarms its schedules; turning it back on arms them afresh rather than catching up. An
