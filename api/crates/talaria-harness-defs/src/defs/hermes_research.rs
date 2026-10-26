@@ -414,6 +414,7 @@ pub fn hermes_research_harness() -> HarnessDefinition {
         // under a model that never sat the exam.
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

@@ -24,6 +24,7 @@ talaria-effort-prefs = { workspace = true }
 talaria-email = { workspace = true }
 talaria-error = { workspace = true }
 talaria-fitness = { workspace = true }
+talaria-harness-model = { workspace = true }
 talaria-instance = { workspace = true }
 talaria-invites = { workspace = true }
 talaria-judge = { workspace = true }

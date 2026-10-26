@@ -9,6 +9,7 @@ import { withApp } from './app-scope'
 import { z } from 'zod'
 import { dispatchJsonRpc, type Rpc, type ToolAnswer } from './mcp-jsonrpc'
 import type { AppMcpCaller, AppMcpContext, AppMcpTool, AppToolContent, AppToolResult } from '@/sdk/server'
+import type { AppHarnessRunner } from './app-harness-runner'
 import type { AppStore } from './app-store'
 
 // ── The checks a tool passes before any agent sees it ──────────────────────
@@ -336,12 +337,34 @@ export const timeoutSecsOf = (s: number | null | undefined): number =>
 export const toolTimedOut = (secs: number): string =>
   `the tool did not finish within ${secs} s (the server's timeout); the call was cut off`
 
+/** `ctx.harness` where nothing bound one: a tool run with no host behind it.
+ *  It refuses rather than running unbound — a harness run with no caller to
+ *  stamp and no person to check is the overreach the bound runner exists to
+ *  stop. `callAppTool` takes a `harness` to stand in. */
+const noHarness = (): never => {
+  throw new Error('ctx.harness is not available here: this call has no host to bind a runner to (in a test, pass `harness` to callAppTool)')
+}
+const NO_HARNESS: AppHarnessRunner = { run: noHarness, stream: noHarness }
+
+/** `harness`, with every run also following `signal`. */
+function followingSignal(harness: AppHarnessRunner, signal: AbortSignal): AppHarnessRunner {
+  const both = (own: AbortSignal | undefined) => (own ? AbortSignal.any([own, signal]) : signal)
+  return {
+    run: (def, input, opts = {}) => harness.run(def, input, { ...opts, signal: both(opts.signal) }),
+    stream: (def, input, opts = {}) => harness.stream(def, input, { ...opts, signal: both(opts.signal) }),
+  }
+}
+
 /** Everything a call knows besides its arguments. */
 export interface AppToolCallFacts {
   caller: AppMcpCaller
   /** The person the agent acts for, when the gateway knows it. */
   actingUserId: string | null
   store: AppStore
+  /** `ctx.harness`, bound to this caller by the host (app-mcp.ts builds it with
+   *  `appHarnessRunner`). Absent where no host is — a unit test that gave
+   *  none gets a runner that says so. */
+  harness?: AppHarnessRunner
   /** The request's signal: aborts when the agent disconnects. */
   signal?: AbortSignal
   /** The server's `timeoutSecs`; null or absent is the 120 s default. */
@@ -400,6 +423,9 @@ export async function runAppTools(
         actingUserId: facts.actingUserId,
         store: facts.store,
         signal: ctl.signal,
+        // The runner follows THIS call's signal — the deadline and the
+        // caller's disconnect — on top of any the handler passes.
+        harness: facts.harness ? followingSignal(facts.harness, ctl.signal) : NO_HARNESS,
       }
       try {
         // As the app: a harness the handler runs signs with this app's key.

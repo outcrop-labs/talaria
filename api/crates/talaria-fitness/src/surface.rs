@@ -3085,6 +3085,11 @@ pub struct MatrixView {
     pub health: Option<HealthBand>,
     pub thresholds: Thresholds,
     pub registry: MatrixRegistry,
+    /// THE APP COLUMNS' MODEL SETTINGS — slot key (`app:<slug>/<harnessId>`)
+    /// to the model an admin assigned it (`app_harness_models`), for the app
+    /// slots this matrix shows. Unassigned slots are absent: the harness runs
+    /// on its own chain. Set with `PUT /api/admin/app-harness-models`.
+    pub app_models: serde_json::Map<String, Value>,
 }
 
 /// The counts off [`crate::health::HealthSummary`], small enough to
@@ -3365,7 +3370,7 @@ pub async fn read_fitness(
 }
 
 async fn matrix_view(deps: &SurfaceDeps) -> Result<MatrixView, String> {
-    let (models, index, runs_view, shape, band) = tokio::join!(
+    let (models, index, runs_view, shape, band, assigned) = tokio::join!(
         model_rows(deps),
         // RAW for the wire field — a stored index entry's keys ride jsonb's
         // canonical order and a typed struct would re-serialize them in
@@ -3376,12 +3381,32 @@ async fn matrix_view(deps: &SurfaceDeps) -> Result<MatrixView, String> {
         // THE CACHED BAND, NOT THE FOLD — one small row stamped by the last
         // archive write (see `HEALTH_KEY`). Reading records here would put one
         // archived report behind every three-second poll.
-        deps.setting::<Option<HealthBand>>(HEALTH_KEY, None)
+        deps.setting::<Option<HealthBand>>(HEALTH_KEY, None),
+        deps.setting::<Value>(
+            talaria_harness_model::APP_HARNESS_MODELS_KEY,
+            Value::Object(serde_json::Map::new())
+        )
     );
     let shape = shape?;
     let runs_view = runs_view?;
+    let slots = slot_views(&shape.harnesses);
+    // Only the app columns on screen, only string assignments: a setting row
+    // for an app since disabled is not this matrix's to show.
+    let app_models = match assigned.unwrap_or(Value::Null) {
+        Value::Object(all) => all
+            .into_iter()
+            .filter(|(k, v)| {
+                v.as_str().is_some_and(|m| !m.is_empty())
+                    && slots
+                        .iter()
+                        .any(|s| s.slot.kind == crate::score::SlotKind::App && &s.key == k)
+            })
+            .collect(),
+        _ => serde_json::Map::new(),
+    };
     Ok(MatrixView {
-        slots: slot_views(&shape.harnesses),
+        slots,
+        app_models,
         models: models?,
         index: index?,
         // The runs the page draws, plus the cap it disables Start at. Several
@@ -4048,6 +4073,7 @@ mod tests {
             "test",
             ModelSpec {
                 pin: None,
+                slot: None,
                 role: None,
                 chain: Some(&[]),
                 user_id: None,

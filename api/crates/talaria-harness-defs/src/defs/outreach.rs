@@ -618,6 +618,7 @@ pub fn outreach_check_in_harness() -> HarnessDefinition {
         // header.
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

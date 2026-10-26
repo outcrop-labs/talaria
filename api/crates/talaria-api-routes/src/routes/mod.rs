@@ -947,6 +947,12 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT, POST") }),
         )
         .route(
+            "/api/admin/app-harness-models",
+            get(talaria_routes_admin::admin::admin_app_harness_models::get)
+                .put(talaria_routes_admin::admin::admin_app_harness_models::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
             "/api/admin/apps",
             get(talaria_routes_admin::admin::admin_apps::get)
                 .put(talaria_routes_admin::admin::admin_apps::put)

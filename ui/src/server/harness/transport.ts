@@ -162,7 +162,11 @@ export interface ToolCall {
 export interface LedgerAttribution {
   /** The agent as the ledger names it: the base persona id, never a tier id. */
   agentModel: string
-  source: 'chat' | 'channel' | 'ticket' | 'research'
+  /** `'app'` is an app's harness run through the bound runner (`ctx.harness`),
+   *  whose caller is `app:<slug>:<harnessId>` — booked as the app's spend on
+   *  either path: the relay files every row on an app's key under source
+   *  `app`, gateway model and fleet agent alike (talaria-gateway app_keys.rs). */
+  source: 'chat' | 'channel' | 'ticket' | 'research' | 'app'
   /** The conversation, channel or research run this spend belongs to. */
   refId: string | null
   /** The ticket this spend belongs to, so it reaches the ticket's cost. */
@@ -988,18 +992,28 @@ export async function pickStreamingTransport(model: string): Promise<StreamingTr
 
 /** Which side of the house a model lives on. The rule, stated once. */
 async function transportKind(model: string): Promise<'gateway' | 'fleet'> {
-  if ((await gatewayModels()).some((m) => m.id === model)) return 'gateway'
+  // Neither side claiming it lands on the gateway: the relay answers a precise
+  // `unknown model "X"`, which is a better failure than a persona stream that
+  // looks like an answer.
+  return (await fleetAgentOf(model)) === null ? 'gateway' : 'fleet'
+}
+
+/** THE FLEET AGENT A MODEL ID RUNS ON — the agent's own id for a live persona or
+ *  one of its tier ids (`<agent>-<alias>`), null for anything the gateway serves
+ *  or nobody does. The same rule `transportKind` routes on, exported because
+ *  the bound runner gates an agent pin on WHICH agent it is (`ctx.harness`,
+ *  app-harness-runner.ts), and a second copy of "is this a persona" is how a
+ *  check and the transport come to disagree about the same id. */
+export async function fleetAgentOf(model: string): Promise<string | null> {
+  if ((await gatewayModels()).some((m) => m.id === model)) return null
   // An empty fleet simply matches nothing here — there is no longer a "did the
   // manifest answer at all" flag to consult, because an unrendered manifest and
   // a fleet with no agents are the same fact.
   const fleet = await listAgents()
-  if (fleet.some((a) => a.id === model)) return 'fleet'
+  if (fleet.some((a) => a.id === model)) return model
   const cut = model.lastIndexOf('-')
-  if (cut > 0 && fleet.some((a) => a.id === model.slice(0, cut))) return 'fleet'
-  // Neither: let the gateway say so. The relay answers a precise `unknown
-  // model "X"`, which is a better failure than a persona stream that looks
-  // like an answer.
-  return 'gateway'
+  if (cut > 0 && fleet.some((a) => a.id === model.slice(0, cut))) return model.slice(0, cut)
+  return null
 }
 
 export const defaultTransport: Transport = async (req) => (await pickTransport(req.model))(req)
