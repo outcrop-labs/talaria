@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AppTriggerContext } from '@/sdk/server'
 import { eventOf, parseTriggerBody, runAppTrigger, type TriggerRunBody } from './app-trigger'
+import { appInScope } from './app-scope'
 
 const cron = (over: Partial<TriggerRunBody> = {}): TriggerRunBody => ({
   runId: '11111111-1111-4111-8111-111111111111',
@@ -72,6 +73,29 @@ describe('runAppTrigger', () => {
     expect(ctx.cause).toEqual({ kind: 'cron', dueAt: '2026-10-26T03:00:00.000Z' })
     expect('user' in ctx || 'api' in ctx || 'access' in ctx).toBe(false)
     expect(typeof ctx.agents.turn).toBe('function')
+  })
+
+  it("runs the handler as the app, with a harness runner that may pin no agent", async () => {
+    let scope: string | null = null
+    let ctx: AppTriggerContext | null = null
+    await runAppTrigger(
+      'crm',
+      'nightly',
+      cron(),
+      undefined,
+      serving({
+        nightly: async (c) => {
+          await Promise.resolve()
+          scope = appInScope()
+          ctx = c
+        },
+      }),
+    )
+    // A model call the handler makes goes to the relay on THIS app's key.
+    expect(scope).toBe('crm')
+    const got = ctx as unknown as AppTriggerContext
+    expect(typeof got.harness.run).toBe('function')
+    expect(typeof got.harness.stream).toBe('function')
   })
 
   it('types an event cause for the handler', async () => {
