@@ -129,6 +129,15 @@ describe('callAppTool', () => {
     expect(JSON.parse(r.text)).toMatchObject({ app: 'crm', agent: 'legacy', caller: { name: 'legacy', id: null, proven: false }, actingUserId: 'u-1' })
   })
 
+  it('a caller on the org-wide key has a null id, as the gateway sends it, unless the test names one', async () => {
+    const legacy = await callAppTool(echo, 'echo', {}, { caller: { proven: false } })
+    expect(JSON.parse(legacy.text).caller).toEqual({ name: 'test-agent', id: null, proven: false })
+    const named = await callAppTool(echo, 'echo', {}, { caller: { name: 'claimed-bot', proven: false } })
+    expect(JSON.parse(named.text).caller).toEqual({ name: 'claimed-bot', id: null, proven: false })
+    const proven = await callAppTool(echo, 'echo', {}, { caller: { name: 'crm-agent' } })
+    expect(JSON.parse(proven.text).caller).toEqual({ name: 'crm-agent', id: 'test-agent', proven: true })
+  })
+
   it('a tool the load checks leave out rejects, saying why; so does one outside the granted subset', async () => {
     await expect(callAppTool(echo, 'nodesc')).rejects.toThrow('tool "nodesc" has no description, so the load checks leave it out')
     await expect(callAppTool(echo, 'Bad Name')).rejects.toThrow('has a name with characters other than letters, digits, _ and -')
@@ -142,12 +151,19 @@ describe('callAppTool', () => {
     expect(r.text).toMatch(/^invalid arguments for echo:/)
   })
 
-  it('cuts at timeoutSecs, and on the signal a test aborts', async () => {
+  it('cuts at timeoutSecs, and on the signal a test aborts, saying which', async () => {
     const late = await callAppTool(echo, 'slow', {}, { timeoutSecs: 0.05 })
-    expect(late).toMatchObject({ isError: true, cut: true })
+    expect(late).toMatchObject({ isError: true, cut: true, cutBy: 'deadline' })
+    expect(late.text).toBe('tool "slow" did not finish within 0.05 s, this server\'s time limit; it was cut off and may have done part of its work')
     const gone = new AbortController()
     setTimeout(() => gone.abort(), 10)
-    expect((await callAppTool(echo, 'slow', {}, { signal: gone.signal })).cut).toBe(true)
+    const left = await callAppTool(echo, 'slow', {}, { signal: gone.signal })
+    expect(left).toMatchObject({ isError: true, cut: true, cutBy: 'caller' })
+    expect(left.text).toBe('tool "slow" was cut off: the caller disconnected before it finished, and it may have done part of its work')
+    // Gone before the call: the handler never starts.
+    const before = await callAppTool(echo, 'slow', {}, { signal: AbortSignal.abort() })
+    expect(before).toMatchObject({ isError: true, cut: true, cutBy: 'caller', text: 'tool "slow" was not started: the caller had already disconnected' })
+    expect(await callAppTool(echo, 'echo')).not.toHaveProperty('cutBy')
   })
 
   it('passes a toolResult through as the agent gets it', async () => {

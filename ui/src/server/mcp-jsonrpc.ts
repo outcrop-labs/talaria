@@ -221,14 +221,37 @@ export function jsonSyntaxError(body: Uint8Array): JsonSyntaxError | null {
       readonly offset: number,
     ) {}
   }
+  // serde reports where its reader stands: one past a byte it peeked at
+  // (`at`), or just past the bytes it consumed (`past`).
   const at = (message: string): never => {
     throw new Stop(message, i + 1)
+  }
+  const past = (message: string): never => {
+    throw new Stop(message, i)
   }
   const eof = (what: string): never => {
     throw new Stop(`EOF while parsing ${what}`, len)
   }
   const ws = () => {
     while (i < len && isWs(body[i])) i++
+  }
+  /** A `\u` escape's code unit, `i` on the `u`; leaves `i` just past its four
+   *  hex digits. */
+  const hexEscape = (): number => {
+    // serde takes all four bytes, then checks them.
+    if (i + 4 >= len) {
+      i = len
+      eof('a string')
+    }
+    for (let k = 1; k <= 4; k++) {
+      if (!isHex(body[i + k])) {
+        i += 4
+        at('invalid escape')
+      }
+    }
+    const n = parseInt(String.fromCharCode(body[i + 1]!, body[i + 2]!, body[i + 3]!, body[i + 4]!), 16)
+    i += 5
+    return n
   }
   const string = () => {
     i++ // the opening quote
@@ -248,18 +271,20 @@ export function jsonSyntaxError(body: Uint8Array): JsonSyntaxError | null {
         if (i >= len) eof('a string')
         const e = body[i]!
         if (e === 0x75) {
-          // serde takes all four bytes, then checks them.
-          if (i + 4 >= len) {
-            i = len
-            eof('a string')
+          // A surrogate escape must come as a pair, the trailing half at once
+          // (serde's `parse_unicode_escape` with `validate`): a lone half is
+          // refused, where JSON.parse admits it.
+          const n = hexEscape()
+          if (n >= 0xdc00 && n <= 0xdfff) past('lone leading surrogate in hex escape')
+          if (n >= 0xd800 && n <= 0xdbff) {
+            if (i >= len) eof('a string')
+            if (body[i] !== 0x5c) at('unexpected end of hex escape')
+            i++
+            if (i >= len) eof('a string')
+            if (body[i] !== 0x75) at('unexpected end of hex escape')
+            const n2 = hexEscape()
+            if (n2 < 0xdc00 || n2 > 0xdfff) past('lone leading surrogate in hex escape')
           }
-          for (let k = 1; k <= 4; k++) {
-            if (!isHex(body[i + k])) {
-              i += 4
-              at('invalid escape')
-            }
-          }
-          i += 5
           continue
         }
         if (![0x22, 0x5c, 0x2f, 0x62, 0x66, 0x6e, 0x72, 0x74].includes(e)) at('invalid escape')
@@ -271,14 +296,19 @@ export function jsonSyntaxError(body: Uint8Array): JsonSyntaxError | null {
         i++
         continue
       }
-      // A multi-byte UTF-8 sequence: a lead byte and its continuations.
+      // A multi-byte UTF-8 sequence: a lead byte and its continuations. The
+      // byte after E0, ED, F0 and F4 has a narrower range, as Rust's
+      // `str::from_utf8` holds it: no overlong form, no encoded surrogate,
+      // nothing past U+10FFFF.
       const need = b >= 0xc2 && b <= 0xdf ? 1 : b >= 0xe0 && b <= 0xef ? 2 : b >= 0xf0 && b <= 0xf4 ? 3 : 0
       if (need === 0) badUtf8 = true
+      const lo = b === 0xe0 ? 0xa0 : b === 0xf0 ? 0x90 : 0x80
+      const hi = b === 0xed ? 0x9f : b === 0xf4 ? 0x8f : 0xbf
       let k = 1
       for (; k <= need; k++) {
         const c = body[i + k]
         if (c === undefined) break // the input ended: the loop's EOF says so
-        if (c < 0x80 || c > 0xbf) {
+        if (c < (k === 1 ? lo : 0x80) || c > (k === 1 ? hi : 0xbf)) {
           badUtf8 = true
           break
         }
@@ -316,10 +346,12 @@ export function jsonSyntaxError(body: Uint8Array): JsonSyntaxError | null {
     }
   }
   const value = (depth: number): void => {
-    if (depth > 128) at('recursion limit exceeded')
     ws()
     if (i >= len) eof('a value')
     const b = body[i]
+    // serde's recursion limit: 127 nested arrays and objects parse; the 128th
+    // is refused at its opening byte, where JSON.parse admits any depth.
+    if ((b === 0x7b || b === 0x5b) && depth >= 127) at('recursion limit exceeded')
     if (b === 0x7b) {
       i++
       ws()
@@ -435,15 +467,22 @@ export function parseErrorMessage(body: Uint8Array, err: JsonSyntaxError): strin
 }
 
 /** A gateway body, read: the parsed value, or why it is not JSON. A leading
- *  BOM is stripped first; an empty body is a parse error. */
+ *  BOM is stripped first; an empty body is a parse error. The serde-modelled
+ *  walk decides, and JSON.parse only builds the value of a body it passed:
+ *  JSON.parse alone admits what serde refuses (nesting past the recursion
+ *  limit, a lone surrogate escape). */
 export function readRpcBody(raw: Uint8Array): { ok: true; value: unknown } | { ok: false; message: string; diagnostic: string } {
   const body = stripBom(raw)
-  try {
-    return { ok: true, value: JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body)) as unknown }
-  } catch {
-    const err = jsonSyntaxError(body) ?? { message: 'invalid unicode code point', offset: 0 }
-    return { ok: false, message: parseErrorMessage(body, err), diagnostic: parseDiagnostic(body, err.offset) }
+  let err = jsonSyntaxError(body)
+  if (!err) {
+    try {
+      return { ok: true, value: JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body)) as unknown }
+    } catch {
+      // The walk passed a body JSON.parse refuses: the walk has a gap.
+      err = { message: 'invalid unicode code point', offset: 0 }
+    }
   }
+  return { ok: false, message: parseErrorMessage(body, err), diagnostic: parseDiagnostic(body, err.offset) }
 }
 
 const methodOf = (v: unknown): string | null => {
