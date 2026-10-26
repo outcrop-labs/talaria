@@ -41,6 +41,7 @@ import type { StreamingTransport } from './harness/transport'
 import type { LoopEdges, ToolOutcome } from './harness/run'
 import type { OrgToolCall } from './app-org-tools'
 import type { AppMcpCallFacts } from './app-mcp'
+import { withApp } from './app-scope'
 
 /** What an app may say about one run. Everything else — who is calling, where
  *  the spend goes, the guard, the recorders — the host decides. */
@@ -301,21 +302,27 @@ export function appHarnessRunner(binding: AppHarnessBinding): AppHarnessRunner {
 
   const edgesOf = async (): Promise<RunnerEdges> => ({ ...(await realEdges()), ...binding.edges })
 
+  // AS THIS APP, whatever scope the call arrived in: the runner was built for
+  // `app`, so its calls go to the relay on `app`'s key (app-scope.ts). The
+  // request and MCP contexts already run inside that scope; a trigger, or a
+  // run a handler started from a detached callback, is held to it here too.
   return {
     async run(def, input, opts = {}) {
       const edges = await edgesOf()
       const p = await prepare(edges, def, opts)
       if (!p.ok) return refuse(edges, def, p.model, p.error)
-      return edges.run(p.def, input, p.ctx)
+      return withApp(app, () => edges.run(p.def, input, p.ctx))
     },
     async stream(def, input, opts = {}) {
       const edges = await edgesOf()
       const p = await prepare(edges, def, opts)
       if (!p.ok) return refuse(edges, def, p.model, p.error)
-      return edges.runStreamed(p.def, input, p.ctx, {
-        stream: async (req, emit) => (await edges.streamTransport(req.model))(req, emit),
-        ...(opts.onDelta ? { onDelta: opts.onDelta } : {}),
-      })
+      return withApp(app, () =>
+        edges.runStreamed(p.def, input, p.ctx, {
+          stream: async (req, emit) => (await edges.streamTransport(req.model))(req, emit),
+          ...(opts.onDelta ? { onDelta: opts.onDelta } : {}),
+        }),
+      )
     },
   }
 }

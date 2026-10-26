@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { appHarnessRunner, runHarnessForApp, type AppHarnessBinding, type RunnerEdges } from './app-harness-runner'
+import { appInScope, withApp } from './app-scope'
 import { defineHarness, type HarnessDefinition } from './harness/define'
 import type { HarnessResult, RunContext } from './harness/run'
 import type { GatewayModel } from './llm-gateway'
@@ -92,6 +93,24 @@ describe('every run is the app’s, whatever the app says', () => {
     expect(def.model).toEqual({ role: 'utility', slot: 'app:helpdesk/helpdesk:triage' })
     // No deps reach the runner.
     expect(ctx.deps).toBeUndefined()
+  })
+
+  it("runs as the app it was built for, whatever app scope the call arrived in", async () => {
+    const seen: Array<string | null> = []
+    const scoped = (async (_def: unknown, _input: unknown, ctx: RunContext) => {
+      seen.push(appInScope())
+      return ok(ctx.model ?? 'resolved')
+    }) as RunnerEdges['run']
+    const runner = appHarnessRunner({
+      app: 'helpdesk',
+      actor: { kind: 'trigger' },
+      edges: { ...edges(spyOf()), run: scoped, runStreamed: scoped as unknown as RunnerEdges['runStreamed'] },
+    })
+    // Outside every scope (a trigger), and inside another app's: the relay
+    // must still be handed this app's key.
+    await runner.run(triage, { text: 'x' })
+    await withApp('billing', () => runner.stream(triage, { text: 'x' }, { onDelta: () => {} }))
+    expect(seen).toEqual(['helpdesk', 'helpdesk'])
   })
 
   it('overwrites a slot the app named itself', async () => {
