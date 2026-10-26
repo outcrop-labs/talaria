@@ -1176,6 +1176,45 @@ pub fn harness_skip_reason(
     ))
 }
 
+/// WHEN AN APP HARNESS'S OWN TOOL LOOP CANNOT BE SCORED on this candidate.
+///
+/// The app host dry-runs it — the runner holds the loop and every tool answers
+/// through its `simulate`, so nothing real is touched — which needs two things:
+/// every tool must have a `simulate`, and the candidate must be one the runner
+/// can hand tool definitions to (a gateway model, not a fleet persona). A loop
+/// with a tool that has no `simulate` keeps #595's reason: the api's sandbox
+/// cannot drive the app's tools.
+pub fn app_loop_skip_reason(
+    label: &str,
+    app: &str,
+    model: &str,
+    tool_definitions: bool,
+    tool_loop: &talaria_app_harnesses::WireLoop,
+) -> Option<String> {
+    let missing = tool_loop.unsimulated();
+    if !missing.is_empty() {
+        let named = missing
+            .iter()
+            .map(|n| format!("\"{n}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(format!(
+            "{label} runs a tool loop, and {named} {verb} no simulate. The sweep dry-runs an app's \
+             tool loop only through simulate: this one is app \"{app}\"'s, its tools run in the \
+             app host, and the api's sandbox cannot drive them. The sweep did not call the model: \
+             nothing here is a measurement of it.",
+            verb = if missing.len() == 1 { "has" } else { "have" },
+        ));
+    }
+    if !tool_definitions {
+        return Some(format!(
+            "{label} runs its own tool loop on a gateway model, and \"{model}\" cannot be handed \
+             tool definitions. The sweep did not call the model: nothing here is a measurement of it."
+        ));
+    }
+    None
+}
+
 /// The record of a fixture that was never sent. Every measured field is a zero
 /// that `score_harness` excludes rather than averages.
 fn skipped_case(harness: &str, name: &str, band: EvalBand, reason: &str) -> EvalCaseScore {
@@ -2469,7 +2508,20 @@ async fn run_case(
     stopped: &StopPred,
 ) -> Option<EvalCaseScore> {
     match app {
-        Some(slug) => run_app_case(slug, def, fixture, model, deps, timeout_ms, stopped).await,
+        Some(slug) => {
+            let tool_loop = talaria_app_harnesses::app_loop(slug, def.id);
+            run_app_case(
+                slug,
+                def,
+                tool_loop.as_ref(),
+                fixture,
+                model,
+                deps,
+                timeout_ms,
+                stopped,
+            )
+            .await
+        }
         None => {
             run_one_case(
                 state,
@@ -2510,9 +2562,11 @@ enum AppCaseOutcome {
 /// THE HOST NOT ANSWERING IS NOT THE MODEL FAILING. A host that is down or
 /// refuses the replay leaves the case skipped with its sentence, measured
 /// nothing about the candidate, and `retry_failed` re-asks it.
+#[allow(clippy::too_many_arguments)]
 async fn run_app_case(
     slug: &'static str,
     def: &'static HarnessDefinition,
+    tool_loop: Option<&talaria_app_harnesses::WireLoop>,
     fixture: &'static EvalCase,
     model: &str,
     deps: &Arc<EvalDeps>,
@@ -2529,7 +2583,12 @@ async fn run_app_case(
         ));
     };
     let started_at = (deps.now)();
-    let turns = turns_per_case(def, false, false);
+    // A LOOP IS ITS TURNS: the host's runner takes up to `maxTurns` of them
+    // plus the closing one, and the clock below is sized from this.
+    let turns = match tool_loop {
+        Some(l) => turns_per_case(def, false, false) + l.max_turns as usize + 1,
+        None => turns_per_case(def, false, false),
+    };
     let live = Arc::new(Mutex::new(InFlightCase {
         harness: def.id.to_string(),
         case: fixture.name.to_string(),
@@ -2697,7 +2756,20 @@ async fn run_app_case(
         prompt: (!clean).then(|| cap(Some(&reply.prompt))).flatten(),
         raw: (!clean).then(|| cap(reply.raw.as_deref())).flatten(),
         turns: None,
-        calls: None,
+        // WHAT THE MODEL DID, for a loop harness — kept for every case as a
+        // builtin dry run's are, results only where the case was not clean.
+        calls: tool_loop.map(|_| {
+            reply
+                .calls
+                .iter()
+                .map(|c| EvalToolCall {
+                    tool: c.tool.clone(),
+                    args: utf16_truncate(&c.args.to_string(), TOOL_CAP),
+                    result: (!clean).then(|| utf16_truncate(&c.result.to_string(), RESULT_CAP)),
+                    error: c.error.clone(),
+                })
+                .collect()
+        }),
         upstream: None,
     })
 }
@@ -3021,13 +3093,21 @@ async fn sweep_inner(
         // progress denominator, and a sweep that merely `continue`d would
         // restart into the same skip and show a progress bar that never
         // reaches its total.
-        // An app harness cannot be dry-run: the sandbox is the api's and its
-        // code is the app host's. So only a candidate that runs its own loop
-        // can be tested on an app harness that wants one, and the skip says
-        // that rather than blaming the model (harness_skip_reason).
+        // An app harness cannot be dry-run HERE: the sandbox is the api's and
+        // its code is the app host's. So only a candidate that runs its own
+        // loop can be tested on an app harness that wants the model's own loop,
+        // and the skip says that rather than blaming the model
+        // (harness_skip_reason). An app harness whose RUNNER-HELD loop
+        // (`def.loop`) answers every tool through `simulate` is dry-run by the
+        // app host instead, on a candidate that can be handed tool
+        // definitions (app_loop_skip_reason).
         let app = h.app_slug();
+        let app_loop = app.and_then(|slug| talaria_app_harnesses::app_loop(slug, h.def.id));
         let dry_runnable = tool_defs && app.is_none();
-        let skip = harness_skip_reason(h.def.label, h.def.tools, model, own_tools, tool_defs, app);
+        let skip = match (app, &app_loop) {
+            (Some(slug), Some(l)) => app_loop_skip_reason(h.def.label, slug, model, tool_defs, l),
+            _ => harness_skip_reason(h.def.label, h.def.tools, model, own_tools, tool_defs, app),
+        };
         if let Some(reason) = skip {
             for fixture in &pending {
                 cases
@@ -3513,6 +3593,7 @@ mod tests {
     fn spec() -> ModelSpec<'static> {
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: None,
             user_id: None,
@@ -4674,6 +4755,148 @@ mod tests {
             );
             assert!(!reason.contains("be handed tool"), "{reason}");
         }
+    }
+
+    /// An app harness with a RUNNER-HELD loop: `simulated` says whether every
+    /// tool has a `simulate`.
+    fn app_loop_harness(id: &str, simulated: bool) -> RegisteredHarness {
+        talaria_app_harnesses::register(
+            &serde_json::from_value(json!({
+                "id": id,
+                "label": "Support lookup",
+                "job": "Looks a customer up before it grades the message.",
+                "source": "app:support",
+                "app": "support",
+                "appName": "Support",
+                "file": "lookup.ts",
+                "requires": ["json", "tools"],
+                "floor": { "capabilities": ["json"], "refuseBelow": true, "note": "Needs JSON." },
+                "outputKind": "json",
+                "repair": 1,
+                "tools": "none",
+                "loop": {
+                    "maxTurns": 4,
+                    "tools": [
+                        { "name": "find_customer", "via": "handler", "simulate": true },
+                        { "name": "recent_orders", "via": "mcp", "simulate": simulated }
+                    ]
+                },
+                "evals": [{ "name": "passes", "band": "standard" }]
+            }))
+            .expect("the wire parses"),
+        )
+        .expect("registers")
+    }
+
+    #[test]
+    fn an_app_loop_is_scored_only_when_every_tool_simulates_and_the_model_takes_definitions() {
+        let l = |simulate: bool| talaria_app_harnesses::WireLoop {
+            max_turns: 4,
+            tools: vec![
+                talaria_app_harnesses::WireLoopTool {
+                    name: "find_customer".into(),
+                    via: "handler".into(),
+                    simulate: true,
+                },
+                talaria_app_harnesses::WireLoopTool {
+                    name: "recent_orders".into(),
+                    via: "mcp".into(),
+                    simulate,
+                },
+            ],
+        };
+        assert_eq!(
+            app_loop_skip_reason("Lookup", "support", "m", true, &l(true)),
+            None
+        );
+        let missing = app_loop_skip_reason("Lookup", "support", "m", true, &l(false))
+            .expect("a tool with no simulate is skipped");
+        assert!(
+            missing.contains("\"recent_orders\" has no simulate"),
+            "{missing}"
+        );
+        assert!(
+            missing.contains("the api's sandbox cannot drive them"),
+            "{missing}"
+        );
+        let persona = app_loop_skip_reason("Lookup", "support", "agent-x", false, &l(true))
+            .expect("a model that takes no definitions is skipped");
+        assert!(
+            persona.contains("cannot be handed tool definitions"),
+            "{persona}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dry_runs_an_app_loop_through_the_host_when_every_tool_simulates() {
+        let _sole = sole();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let host: AppCaseFn = {
+            let asked = asked.clone();
+            Arc::new(move |req: AppCaseRequest, _deadline| {
+                asked.lock().expect("asked").push(req.clone());
+                let reply: AppCaseReply = serde_json::from_value(json!({
+                    "harness": req.harness,
+                    "case": req.case,
+                    "band": "standard",
+                    "model": req.model,
+                    "verdict": "pass",
+                    "schemaValid": true,
+                    "answered": true,
+                    "prompt": "user: look them up",
+                    "calls": [
+                        { "tool": "find_customer", "args": { "email": "a@b.c" }, "result": { "id": 7 }, "error": null },
+                        { "tool": "recent_orders", "args": { "customer": 7 }, "result": "2 orders", "error": null }
+                    ],
+                    "exhausted": false
+                }))
+                .expect("reply");
+                Box::pin(async move { Ok(reply) })
+            })
+        };
+        let b = bench_ex(
+            vec![
+                app_loop_harness("support:lookup-sim", true),
+                app_loop_harness("support:lookup-real", false),
+            ],
+            World {
+                tool_defs: true,
+                ..Default::default()
+            },
+            &Extra {
+                app_case: Some(host),
+                ..Default::default()
+            },
+        );
+        let sweep = sweep(&b, "candidate").await;
+        // Only the harness whose tools all simulate went to the host.
+        let asked = asked.lock().expect("asked").clone();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].harness, "support:lookup-sim");
+        let ran = sweep
+            .cases
+            .iter()
+            .find(|c| c.harness == "support:lookup-sim")
+            .expect("recorded");
+        assert_eq!(ran.task, TaskVerdict::Pass);
+        let calls = ran.calls.as_ref().expect("a loop case keeps its calls");
+        assert_eq!(
+            calls.iter().map(|c| c.tool.as_str()).collect::<Vec<_>>(),
+            ["find_customer", "recent_orders"]
+        );
+        assert_eq!(calls[0].args, "{\"email\":\"a@b.c\"}");
+        // A clean case keeps the names and arguments, not the results.
+        assert!(calls.iter().all(|c| c.result.is_none()));
+        let skipped = sweep
+            .cases
+            .iter()
+            .find(|c| c.harness == "support:lookup-real")
+            .expect("recorded");
+        let reason = skipped.skipped.as_deref().expect("skipped");
+        assert!(
+            reason.contains("\"recent_orders\" has no simulate"),
+            "{reason}"
+        );
     }
 
     #[tokio::test]

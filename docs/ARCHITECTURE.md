@@ -115,6 +115,7 @@ detached branch persisted server-side, so a reply survives a reload mid-stream (
 | Agent | `tak_…` per-agent key (`x-api-key`) | `agent-auth.ts` `resolve()` — the key *proves* identity; `x-agent-name` can narrow, never grant. `agentCaller` (requires the name), `requireAgent` |
 | Legacy shared key | org-wide `TALARIA_AGENT_KEY` | resolves `legacy: true` — identified but untrusted; anything granting privilege refuses it. Close with `TALARIA_AGENT_KEY_LEGACY=off` |
 | LLM gateway | `tlk_…` per-user bearer key | sha256-stored, mint gated by the `models.mint-keys` permission |
+| An app, on the LLM gateway | `tlk_…` key named `app:<slug>`, held by the app host | minted by the api on the host's internal ask, sealed in `app_llm_keys`, revoked on disable and uninstall; the relay trusts it only while that record holds its id ([Apps](#apps)) |
 
 There are no users in a fresh install: the first visit offers `/claim`, and the identity
 created there (password or Google) becomes the admin — the race is serialized on an advisory
@@ -222,8 +223,8 @@ multiplexer.
   v2026.4.30 holds an `flock` on `/opt/data/gateway.lock` in the state volume, so a second
   container on the same volume exits on start and never serves — which is why the blue/green
   roll this replaced never completed for a running agent. The agent is offline for the
-  restart; `proxyChat` re-reads the manifest per attempt and holds a turn up to two minutes
-  across it. An agent an old blue/green roll left in the `agent-<dept>-b` service
+  restart; the persona door (`talaria-gateway` `fleet_chat.rs`) re-reads the manifest per
+  attempt and holds a turn up to two minutes across it. An agent an old blue/green roll left in the `agent-<dept>-b` service
   (`agent_defs.active_slot = 'b'`) moves back to `agent-<dept>` on its next roll: the render
   names the home service, its image is pulled while `-b` still serves (a failed pull puts the
   agent back on `-b`), and only then is `-b` drained and removed. A stop, restart or recreate
@@ -301,7 +302,8 @@ multiplexer.
   `X-Hermes-Session-Id` — and the agent's talaria-events plugin reports, from inside the turn,
   which conversation its key names (`POST /api/agents/affinity` → `usage_affinity_keys`). The
   relay copies the flow onto every row it books for that conversation; anything unclaimed stays
-  `unattended` under the agent. Budgets read the same rows, so a long turn counts while it runs.
+  `unattended` under the agent. A turn an app's harness drives is recorded the same way, as
+  `app` spend, so the agent's calls are that turn's only meter. Budgets read the same rows, so a long turn counts while it runs.
   No flow writes an agent's spend itself any more
   ([`usage.rs`](../api/crates/talaria-gateway/src/usage.rs), "Attribution"). So a fleet an
   operator pointed at a raw upstream (a non-gateway `LLM_BASE_URL` in the fleet `.env`, which
@@ -403,6 +405,24 @@ document API, never a connection string. A throw in an app is isolated: the
 pane shows the crash, the host stays up. Enablement, install, and uninstall
 stay Rust; the UI process owns the compiler and the database spawn. Building
 them: `docs/APPS.md` + `docs/sdk/`.
+
+**An app's model calls go through the one gateway.** A harness an app runs — from its
+server, an MCP tool, or a fitness replay of its fixtures — is executed by the host's TS
+runner (`ui/src/server/harness/run.ts`), and every call that runner makes is a POST to the
+Rust relay (`/api/llm/v1/chat/completions`) on the app's own gateway key, `app:<slug>`
+(`harness/transport.ts`). The host asks the api for that key over the internal route
+(`POST /api/internal/apps/<slug>/llm-key`) and keeps it in memory; app code never sees it.
+Which app is calling is the host's answer, not the app's: the host marks every boundary where
+it runs app code (`isolateApp`, an MCP handler, a replay — `ui/src/server/app-scope.ts`), and a
+model call outside every such scope is refused. The relay treats the key as the app: its
+budget subject is `app:<slug>` (set it in Admin → Settings → LLM budgets), every row it books
+lands under the run's caller stamp inside that namespace with ledger source `app`, and the
+run's ref and ticket ride along when they are uuids. A model that is a live fleet agent is
+driven for the turn through the persona door with the turn recorded as `app` spend. The relay
+runs no guard pass of its own for an app's key; the runner's, with the harness's own rule
+set, is the one of record. Nothing in the UI process holds a provider key or reaches a model
+any other way ([`app_keys.rs`](../api/crates/talaria-gateway/src/app_keys.rs),
+[`llm_key.rs`](../api/crates/talaria-apps/src/llm_key.rs)).
 
 
 

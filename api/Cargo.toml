@@ -212,7 +212,11 @@ talaria-app-harnesses = { path = "crates/talaria-app-harnesses" }
 
 talaria-approvals = { path = "crates/talaria-approvals" }
 
+talaria-app-agents = { path = "crates/talaria-app-agents" }
+
 talaria-app-manifest = { path = "crates/talaria-app-manifest" }
+
+talaria-app-triggers = { path = "crates/talaria-app-triggers" }
 
 talaria-apps = { path = "crates/talaria-apps" }
 
@@ -469,6 +473,7 @@ talaria-plan-drafts = { path = "crates/talaria-plan-drafts" }
 
 talaria-platform-agents = { path = "crates/talaria-platform-agents" }
 
+talaria-platform-events = { path = "crates/talaria-platform-events" }
 talaria-plugins = { path = "crates/talaria-plugins" }
 
 talaria-price-oracle = { path = "crates/talaria-price-oracle" }

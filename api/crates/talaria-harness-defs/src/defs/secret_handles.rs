@@ -745,6 +745,7 @@ pub fn secret_handles_harness() -> HarnessDefinition {
         // `ModelSpec.chain`).
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

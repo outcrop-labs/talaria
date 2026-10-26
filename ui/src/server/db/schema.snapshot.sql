@@ -246,6 +246,31 @@ CREATE TABLE public.app_sources (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_by text
 );
+CREATE TABLE public.app_trigger_runs (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    app_slug text NOT NULL,
+    trigger_id text NOT NULL,
+    kind text NOT NULL,
+    event text,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    due_at timestamp with time zone,
+    state text DEFAULT 'queued'::text NOT NULL,
+    queued_at timestamp with time zone DEFAULT now() NOT NULL,
+    started_at timestamp with time zone,
+    finished_at timestamp with time zone,
+    detail text,
+    error text,
+    attempts integer DEFAULT 0 NOT NULL,
+    CONSTRAINT app_trigger_runs_kind_check CHECK ((kind = ANY (ARRAY['cron'::text, 'event'::text]))),
+    CONSTRAINT app_trigger_runs_state_check CHECK ((state = ANY (ARRAY['queued'::text, 'running'::text, 'ok'::text, 'failed'::text, 'skipped'::text])))
+);
+CREATE TABLE public.app_trigger_state (
+    app_slug text NOT NULL,
+    trigger_id text NOT NULL,
+    cron text NOT NULL,
+    armed_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_due_at timestamp with time zone
+);
 CREATE TABLE public.app_update_requests (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     app_slug text NOT NULL,
@@ -1652,6 +1677,10 @@ ALTER TABLE ONLY public.app_settings
     ADD CONSTRAINT app_settings_pkey PRIMARY KEY (key);
 ALTER TABLE ONLY public.app_sources
     ADD CONSTRAINT app_sources_pkey PRIMARY KEY (slug);
+ALTER TABLE ONLY public.app_trigger_runs
+    ADD CONSTRAINT app_trigger_runs_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.app_trigger_state
+    ADD CONSTRAINT app_trigger_state_pkey PRIMARY KEY (app_slug, trigger_id);
 ALTER TABLE ONLY public.app_update_requests
     ADD CONSTRAINT app_update_requests_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.artifact_folders
@@ -1962,6 +1991,9 @@ CREATE UNIQUE INDEX agent_coding_roles_plan_role_idx ON public.agent_coding_role
 CREATE INDEX agent_managers_user_idx ON public.agent_managers USING btree (user_id);
 CREATE INDEX agent_resource_samples_agent_time ON public.agent_resource_samples USING btree (agent_model, taken_at);
 CREATE INDEX app_data_updated_idx ON public.app_data USING btree (app, collection, updated_at DESC);
+CREATE UNIQUE INDEX app_trigger_runs_due_idx ON public.app_trigger_runs USING btree (app_slug, trigger_id, due_at) WHERE (due_at IS NOT NULL);
+CREATE INDEX app_trigger_runs_open_idx ON public.app_trigger_runs USING btree (queued_at) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text]));
+CREATE INDEX app_trigger_runs_recent_idx ON public.app_trigger_runs USING btree (app_slug, trigger_id, queued_at DESC);
 CREATE UNIQUE INDEX app_update_requests_one_open ON public.app_update_requests USING btree (app_slug) WHERE (status = ANY (ARRAY['pending'::text, 'updating'::text]));
 CREATE INDEX artifact_folders_owner_idx ON public.artifact_folders USING btree (owner_user_id);
 CREATE INDEX artifact_links_target_idx ON public.artifact_links USING btree (target_type, target_id);

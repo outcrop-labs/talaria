@@ -10,7 +10,8 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { p } from '@/router'
   import { delJson, errorMessage, postJson, putJson } from '@/lib/fetch-json'
-  import { fetchAdminApps, fetchAppUpdates, post, requestChange, shortSha, type AppPlugin, type AppUpdateResult, type InstalledApp } from './apps'
+  import { relativeTime } from '@/lib/fleet'
+  import { fetchAdminApps, fetchAppUpdates, post, requestChange, shortSha, type AppPlugin, type AppTriggerInfo, type AppUpdateResult, type InstalledApp } from './apps'
   import AppsInstallRequests from './AppsInstallRequests.svelte'
   import AppsUpdateRequests from './AppsUpdateRequests.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
@@ -18,7 +19,8 @@
   let { isAdmin }: { isAdmin: boolean } = $props()
 
   const qc = useQueryClient()
-  const query = createQuery(() => ({ queryKey: ['admin-apps'], queryFn: () => fetchAdminApps(false) }))
+  // Polled so the trigger lines follow their schedules while the tab is open.
+  const query = createQuery(() => ({ queryKey: ['admin-apps'], queryFn: () => fetchAdminApps(false), refetchInterval: 30_000 }))
   // Whether each app's source has a newer commit: `git ls-remote` against its
   // recorded ref, admin only (a check mints the app's GitHub read token; a
   // source read with a workspace secret is not checked, `notChecked`).
@@ -28,6 +30,12 @@
     enabled: isAdmin,
     staleTime: 60_000,
   }))
+  /** A trigger's hover: when it fires next, and its newest runs. */
+  function triggerTitle(t: AppTriggerInfo): string {
+    const head = t.cron ? `Runs on the schedule ${t.cron} (UTC)${t.nextAt ? `; next ${new Date(t.nextAt).toLocaleString()}` : ''}` : `Runs on every ${t.event}`
+    const runs = t.runs.map((r) => `${new Date(r.queuedAt).toLocaleString()} — ${r.state}${r.error ? `: ${r.error}` : r.detail ? `: ${r.detail}` : ''}`)
+    return [head, ...runs].join('\n')
+  }
   let busy = $state<string | null>(null)
   /** The last update's outcome, per app, shown on its card. */
   let results = $state<Record<string, { ok: boolean; text: string }>>({})
@@ -193,6 +201,39 @@
   {/if}
 {/snippet}
 
+<!-- The app's triggers and how each last ran. A trigger that fails never
+     turns the app off, so this line is where an admin sees it: the failed
+     run's sentence in red, the app's own result line otherwise. -->
+{#snippet triggerLines(a: InstalledApp)}
+  {#each a.triggers ?? [] as t (t.id)}
+    {@const last = t.runs[0]}
+    {@const failed = t.runs.filter((r) => r.state === 'failed').length}
+    <div class="mt-1 flex items-baseline gap-2 font-mono text-[11px] text-muted" data-app-trigger={t.id}>
+      <span class="shrink-0 text-fg">{t.id}</span>
+      <span class="shrink-0" title={triggerTitle(t)}>{t.cron ? `${t.cron} UTC` : `on ${t.event}`}</span>
+      {#if !last}
+        <span class="truncate">{a.enabled ? 'not run yet' : 'off while the app is disabled'}</span>
+      {:else}
+        <span class={`shrink-0 ${last.state === 'failed' ? 'text-danger' : last.state === 'ok' ? 'text-fg' : ''}`}>
+          {last.state === 'ok' ? 'ran' : last.state} {relativeTime(last.finishedAt ?? last.startedAt ?? last.queuedAt)}
+        </span>
+        {#if last.state === 'failed' && last.error}
+          <span class="truncate text-danger" title={last.error}>{last.error}</span>
+        {:else if last.detail}
+          <span class="truncate" title={last.detail}>{last.detail}</span>
+        {:else if last.state === 'skipped' && last.error}
+          <span class="truncate" title={last.error}>{last.error}</span>
+        {/if}
+        {#if failed > 0 && last.state !== 'failed'}
+          <span class="shrink-0 text-danger" title={t.runs.filter((r) => r.state === 'failed').map((r) => r.error ?? '').join('\n')}>
+            {failed} of the last {t.runs.length} failed
+          </span>
+        {/if}
+      {/if}
+    </div>
+  {/each}
+{/snippet}
+
 {#if query.isLoading}
   <SkeletonRows rows={4} />
 {:else if !query.data}
@@ -311,6 +352,7 @@
               <div class="mt-1 break-words font-mono text-[11px] text-warning" data-harness-problem>{problem}</div>
             {/each}
           {/if}
+          {#if !a.broken}{@render triggerLines(a)}{/if}
           {#if results[a.slug]}
             <div class={`mt-1 font-mono text-[11px] ${results[a.slug]!.ok ? 'text-fg' : 'text-danger'}`} data-app-update-result>
               {results[a.slug]!.text}

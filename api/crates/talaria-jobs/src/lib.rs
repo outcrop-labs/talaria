@@ -721,6 +721,18 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         state.pg.clone(),
         Some(upkeep),
     ));
+    // App triggers: the schedule half is a job (the one scheduler), the
+    // event half is the platform-event sink — both deliver to the app host
+    // under the root-derived service credential, and both write the run rows
+    // Manage → Apps reads.
+    {
+        let deps = talaria_app_triggers::TriggerDeps::new(
+            state.pg.clone(),
+            state.cfg.secret_root.internal_token(),
+        );
+        talaria_platform_events::set_sink(talaria_app_triggers::event_sink(deps.clone()));
+        talaria_scheduler::register_job(talaria_app_triggers::job_spec(deps));
+    }
     // The optional trio. mcp-library-refresh mirrors the official MCP
     // registry into the catalog table (leased: one walker per interval);
     // update-check and update-reconcile
@@ -917,6 +929,10 @@ mod tests {
         assert!(
             names.contains(&JobName::SkillsIndexRefresh),
             "skills-index-refresh fell out of the job table"
+        );
+        assert!(
+            names.contains(&JobName::AppTriggers),
+            "app-triggers fell out of the job table — every app's schedule would silently stop"
         );
         assert!(
             names.contains(&JobName::McpHealth),

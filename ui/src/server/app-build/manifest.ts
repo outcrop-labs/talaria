@@ -27,6 +27,14 @@ export const KNOWN_KEYS = ['$schema', 'name', 'slug', 'icon', 'version', 'descri
 
 export const LIMITS = { name: 120, surfaceTitle: 120, icon: 16, version: 64, description: 2000 } as const
 
+/** Every platform event a trigger may name (Rust
+ *  `talaria_platform_events::EVENT_NAMES`; the shared fixture's `events`). */
+export const PLATFORM_EVENTS = ['ticket.created', 'ticket.moved'] as const
+export type PlatformEventName = (typeof PLATFORM_EVENTS)[number]
+
+/** One trigger as read: its id, and its schedule (UTC, trimmed) or event. */
+export type AppTriggerSpec = { id: string; cron: string } | { id: string; event: PlatformEventName }
+
 export interface AppManifest {
   name: string
   slug?: string
@@ -35,6 +43,7 @@ export interface AppManifest {
   version: string
   surfaces: Partial<Record<SurfaceKey, string>>
   sdk?: string
+  triggers: AppTriggerSpec[]
 }
 
 export type ManifestResult = { ok: true; manifest: AppManifest } | { ok: false; error: string }
@@ -51,6 +60,76 @@ function slugInstallable(s: string): string | null {
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+// ── A trigger's schedule ─────────────────────────────────────────────────────
+// The grammar Rust's talaria-app-manifest `cron.rs` reads, with the same
+// refusals: five numeric fields in UTC (`*`, `n`, `a-b`, `*/s`, `a-b/s`,
+// `a/s`, comma lists), or one of the @-shortcuts. Only the api schedules, so
+// this side only judges.
+
+const CRON_MACROS: Record<string, string> = {
+  '@yearly': '0 0 1 1 *',
+  '@annually': '0 0 1 1 *',
+  '@monthly': '0 0 1 * *',
+  '@weekly': '0 0 * * 0',
+  '@daily': '0 0 * * *',
+  '@midnight': '0 0 * * *',
+  '@hourly': '0 * * * *',
+}
+
+const CRON_FIELDS = [
+  { name: 'minute', min: 0, max: 59 },
+  { name: 'hour', min: 0, max: 23 },
+  { name: 'day of month', min: 1, max: 31 },
+  { name: 'month', min: 1, max: 12 },
+  { name: 'day of week', min: 0, max: 7 },
+] as const
+
+/** Why `text` is not a schedule, or null when it is (Rust `parse_cron`). */
+export function cronProblem(text: string): string | null {
+  const trimmed = text.trim()
+  let expanded = trimmed
+  if (trimmed.startsWith('@')) {
+    const m = CRON_MACROS[trimmed]
+    if (!m) return `"${trimmed}" is not a schedule shortcut (@hourly, @daily, @weekly, @monthly, @yearly)`
+    expanded = m
+  }
+  const parts = expanded.split(/\s+/).filter(Boolean)
+  if (parts.length !== 5) {
+    return `a schedule has five fields (minute hour day-of-month month day-of-week), this one has ${parts.length}`
+  }
+  for (const [i, field] of CRON_FIELDS.entries()) {
+    const number = (s: string): string | null => {
+      if (!/^\d+$/.test(s)) return `the ${field.name} field has "${s}" where a number belongs`
+      const n = Number(s)
+      if (n < field.min || n > field.max) return `the ${field.name} field's ${n} is outside ${field.min}-${field.max}`
+      return null
+    }
+    for (const item of parts[i]!.split(',')) {
+      if (!item) return `the ${field.name} field has an empty list item`
+      const slash = item.indexOf('/')
+      const range = slash < 0 ? item : item.slice(0, slash)
+      if (slash >= 0) {
+        const step = item.slice(slash + 1)
+        if (!/^\d+$/.test(step) || Number(step) < 1) {
+          return `the ${field.name} field's step "${step}" is not a whole number of at least 1`
+        }
+      }
+      if (range === '*') continue
+      const dash = range.indexOf('-')
+      if (dash >= 0) {
+        const [a, b] = [range.slice(0, dash), range.slice(dash + 1)]
+        const bad = number(a) ?? number(b)
+        if (bad) return bad
+        if (Number(a) > Number(b)) return `the ${field.name} field's range ${Number(a)}-${Number(b)} runs backwards`
+      } else {
+        const bad = number(range)
+        if (bad) return bad
+      }
+    }
+  }
+  return null
+}
 
 /** The rules, on a parsed value (Rust `validate_manifest`). */
 export function validateManifest(value: unknown, hostSdk: string = SDK_VERSION): ManifestResult {
@@ -110,6 +189,7 @@ export function validateManifest(value: unknown, hostSdk: string = SDK_VERSION):
   if (h !== undefined && h !== null && typeof h !== 'object') {
     return fail('"harnesses" must be an array or an object (reserved for the harness registry)')
   }
+  const triggers: AppTriggerSpec[] = []
   const t = value.triggers
   if (t !== undefined && t !== null) {
     if (!Array.isArray(t)) return fail('"triggers" must be an array')
@@ -118,6 +198,8 @@ export function validateManifest(value: unknown, hostSdk: string = SDK_VERSION):
       if (typeof trigger.id !== 'string' || !SLUG_RE.test(trigger.id)) {
         return fail(`"triggers[${i}].id" must be a lowercase id (letters, digits, dashes)`)
       }
+      const id = trigger.id
+      if (triggers.some((seen) => seen.id === id)) return fail(`"triggers[${i}].id" "${id}" is used by an earlier trigger`)
       // Exactly one of the two keys, whatever its value — as the schema's
       // oneOf reads it — and that one a non-blank string.
       const hasCron = Object.hasOwn(trigger, 'cron')
@@ -125,6 +207,17 @@ export function validateManifest(value: unknown, hostSdk: string = SDK_VERSION):
       const key = hasCron ? 'cron' : 'event'
       const v = trigger[key]
       if (typeof v !== 'string' || !v.trim()) return fail(`"triggers[${i}].${key}" must be a string that is not only whitespace`)
+      const text = v.trim()
+      if (hasCron) {
+        const why = cronProblem(text)
+        if (why) return fail(`"triggers[${i}].cron" is not a schedule: ${why}`)
+        triggers.push({ id, cron: text })
+      } else {
+        if (!(PLATFORM_EVENTS as readonly string[]).includes(text)) {
+          return fail(`"triggers[${i}].event" names no platform event ("${text}"); the events are ${PLATFORM_EVENTS.join(', ')}`)
+        }
+        triggers.push({ id, event: text as PlatformEventName })
+      }
     }
   }
 
@@ -138,6 +231,7 @@ export function validateManifest(value: unknown, hostSdk: string = SDK_VERSION):
       version: version.value || '0.0.0',
       surfaces,
       ...(sdk !== undefined ? { sdk } : {}),
+      triggers,
     },
   }
 }

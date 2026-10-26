@@ -113,6 +113,7 @@ pub enum JobName {
     WorkbenchJobSweep,
     WorkbenchQueueSweep,
     SkillsIndexRefresh,
+    AppTriggers,
 }
 
 impl JobName {
@@ -139,6 +140,7 @@ impl JobName {
             JobName::WorkbenchJobSweep => "workbench-job-sweep",
             JobName::WorkbenchQueueSweep => "workbench-queue-sweep",
             JobName::SkillsIndexRefresh => "skills-index-refresh",
+            JobName::AppTriggers => "app-triggers",
         }
     }
 }

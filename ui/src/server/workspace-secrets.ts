@@ -670,8 +670,9 @@ export const appDestination = (slug: string): string => `talaria-app://${slug}`
 export async function resolveAppSecret(
   slug: string,
   name: string,
-  /** The person whose request is reading it — recorded on the spend. */
-  userId: string,
+  /** The person whose request is reading it — recorded on the spend. Null
+   *  for an app's trigger run, which has no person behind it. */
+  userId: string | null,
 ): Promise<{ ok: true; value: string } | { ok: false; reason: AppSecretRefusal }> {
   const m = typeof name === 'string' ? SECRET_NAME.exec(name.trim()) : null
   if (!m) return { ok: false, reason: 'bad-name' }

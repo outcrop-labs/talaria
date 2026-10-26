@@ -813,6 +813,7 @@ pub async fn execute(
     } else {
         let spec = ModelSpec {
             pin: def.model.pin,
+            slot: def.model.slot,
             role: def.model.role,
             chain: def.model.chain,
             user_id: def.model.user_id,
@@ -1534,6 +1535,7 @@ mod tests {
     fn spec(pin: &'static str) -> ModelSpec<'static> {
         ModelSpec {
             pin: Some(pin),
+            slot: None,
             role: None,
             chain: None,
             user_id: None,

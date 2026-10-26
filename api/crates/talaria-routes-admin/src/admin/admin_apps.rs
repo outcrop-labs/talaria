@@ -1,11 +1,12 @@
-// /api/admin/apps. App administration. GET → installed apps (+ ?catalog=1
-// for the marketplace feed, ?updates=1 for whether each app's source has a
-// newer commit); an app a Developer Agent maintains carries `plugin` (its
-// maintainer, owner, board and update policy). Reads are open to anyone
-// granted the /apps Manage view; mutations (enable/disable, install, update,
-// uninstall, catalog source, a plugin's update policy) and the update check
-// stay admin-only — installing or updating an app adds CODE to the
-// deployment, and a check spends a credential.
+// /api/admin/apps. App administration. GET → installed apps, each with its
+// triggers and their newest runs (+ ?catalog=1 for the marketplace feed,
+// ?updates=1 for whether each app's source has a newer commit); an app a
+// Developer Agent maintains carries `plugin` (its maintainer, owner, board
+// and update policy). Reads are open to anyone granted the /apps Manage view;
+// mutations (enable/disable, install, update, uninstall, catalog source, a
+// plugin's update policy) and the update check stay admin-only — installing
+// or updating an app adds CODE to the deployment, and a check spends a
+// credential.
 
 use axum::Json;
 use axum::extract::State;
@@ -164,6 +165,16 @@ pub async fn get(
             })
         })
         .collect::<Vec<_>>();
+    // Each app's triggers and their newest runs (talaria-app-triggers): where
+    // an admin sees that a schedule fired, and why a run failed — a failing
+    // trigger never turns the app off, so this line is how it is noticed.
+    for app in apps.iter_mut() {
+        let slug = app["slug"].as_str().unwrap_or_default().to_string();
+        let report = talaria_app_triggers::trigger_report(&state.pg, &slug).await;
+        if let Some(obj) = app.as_object_mut() {
+            obj.insert("triggers".into(), report);
+        }
+    }
     // An installed directory whose talaria.json the rules refuse: listed with
     // the reason, never enabled, and still removable.
     for b in broken_apps() {

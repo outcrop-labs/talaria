@@ -401,6 +401,7 @@ pub fn summarizer_harness() -> HarnessDefinition {
         // recorded for. See the same note in the titler.
         ModelSpec {
             pin: Some("summarizer"),
+            slot: None,
             role: None,
             chain: None,
             user_id: None,

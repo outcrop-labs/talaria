@@ -19,6 +19,21 @@ import {
   type Rpc,
 } from '@/server/mcp-jsonrpc'
 import { timeoutSecsOf, toolTimedOut } from '@/server/app-mcp-call'
+import type { OrgToolCall } from '@/server/app-org-tools'
+
+/** The org-tool caller for this request's agent: its own credential, as it
+ *  presented it. Resolved on a harness's first org call, not per dispatch —
+ *  most tool calls run no harness at all. */
+function orgToolsFor(request: Request, name: string): OrgToolCall {
+  return async (server, tool, args, signal) => {
+    const { presentedCredential } = await import('@/server/agent-auth')
+    const credential = presentedCredential(request)
+    const { orgToolsAsAgent } = await import('@/server/app-org-tools')
+    const call = credential ? orgToolsAsAgent(credential, name) : null
+    if (!call) return { text: `"${server}.${tool}" could not be called: there is no agent credential or no api to call it through`, isError: true }
+    return call(server, tool, args, signal)
+  }
+}
 
 // The app-MCP gateway — the registry's ENFORCEMENT point for servers an app
 // publishes (/api/mcp/gw/app-<slug>). Agents never see the module or its
@@ -184,6 +199,10 @@ export const Route = defineApi('/api/mcp/gw/$server', {
           actingUserId: eff.actingUserId,
           signal: request.signal,
           timeoutSecs: eff.server.timeoutSecs,
+          // A harness the tool runs reaches an org MCP tool as THIS agent,
+          // presenting its own key to the gateway — only a proven caller
+          // lends its identity (app-org-tools.ts).
+          orgTools: caller.legacy ? null : orgToolsFor(request, name),
         },
         eff.tools,
       )

@@ -5,9 +5,12 @@
     "(validateManifest, satisfiesRange, SDK_VERSION). Install and update refuse a manifest that fails,",
     "with the error; discovery lists an installed one as broken, still removable. `error` is a substring",
     "both sides' sentence must contain; `parsed` is what a passing manifest reads as. The published shape",
-    "is docs/sdk/talaria.schema.json. sdkVersion is the version of @talaria/sdk this host provides."
+    "is docs/sdk/talaria.schema.json. sdkVersion is the version of @talaria/sdk this host provides.",
+    "`events` is every platform event a trigger may name (talaria-platform-events EVENT_NAMES, the TS twin's",
+    "PLATFORM_EVENTS); `parsed.triggers` is a passing manifest's triggers as read, the text trimmed."
   ],
   "sdkVersion": "1.0.0",
+  "events": ["ticket.created", "ticket.moved"],
   "manifests": [
     {
       "about": "the minimal manifest: a name",
@@ -36,7 +39,14 @@
         "harnesses": [],
         "triggers": [{ "id": "nightly", "cron": "0 3 * * *" }, { "id": "on-ticket", "event": "ticket.created" }]
       },
-      "parsed": { "name": "Field notes", "slug": "field-notes", "icon": "⬡", "version": "0.0.0", "surfaces": ["work"] }
+      "parsed": {
+        "name": "Field notes",
+        "slug": "field-notes",
+        "icon": "⬡",
+        "version": "0.0.0",
+        "surfaces": ["work"],
+        "triggers": [{ "id": "nightly", "cron": "0 3 * * *" }, { "id": "on-ticket", "event": "ticket.created" }]
+      }
     },
     {
       "about": "unknown top-level keys are ignored, so a newer manifest still reads",
@@ -79,7 +89,34 @@
     { "about": "a trigger whose cron is null", "manifest": { "name": "X", "triggers": [{ "id": "a", "cron": null }] }, "error": "\"triggers[0].cron\" must be a string" },
     { "about": "a trigger with an event and a cron that is not a string", "manifest": { "name": "X", "triggers": [{ "id": "a", "event": "x", "cron": 5 }] }, "error": "exactly one of \"cron\" or \"event\"" },
     { "about": "a trigger with an event and a null cron", "manifest": { "name": "X", "triggers": [{ "id": "a", "event": "x", "cron": null }] }, "error": "exactly one of \"cron\" or \"event\"" },
-    { "about": "the second trigger is the one refused", "manifest": { "name": "X", "triggers": [{ "id": "a", "event": "x" }, { "id": "b", "event": "\t" }] }, "error": "\"triggers[1].event\"" }
+    { "about": "the second trigger is the one refused", "manifest": { "name": "X", "triggers": [{ "id": "a", "event": "ticket.created" }, { "id": "b", "event": "\t" }] }, "error": "\"triggers[1].event\"" },
+    {
+      "about": "triggers as the scheduler reads them: a schedule shortcut, an event with spaces around it",
+      "manifest": { "name": "Watcher", "triggers": [{ "id": "hourly", "cron": " @hourly " }, { "id": "closed", "event": " ticket.moved " }] },
+      "parsed": {
+        "name": "Watcher",
+        "icon": "⬡",
+        "version": "0.0.0",
+        "surfaces": [],
+        "triggers": [{ "id": "hourly", "cron": "@hourly" }, { "id": "closed", "event": "ticket.moved" }]
+      }
+    },
+    { "about": "a schedule with four fields", "manifest": { "name": "X", "triggers": [{ "id": "a", "cron": "0 3 * *" }] }, "error": "\"triggers[0].cron\" is not a schedule: a schedule has five fields" },
+    { "about": "a schedule value outside its field", "manifest": { "name": "X", "triggers": [{ "id": "a", "cron": "0 24 * * *" }] }, "error": "the hour field's 24 is outside 0-23" },
+    { "about": "a schedule that names a month", "manifest": { "name": "X", "triggers": [{ "id": "a", "cron": "0 0 1 JAN *" }] }, "error": "the month field has \"JAN\" where a number belongs" },
+    { "about": "a schedule with a zero step", "manifest": { "name": "X", "triggers": [{ "id": "a", "cron": "*/0 * * * *" }] }, "error": "the minute field's step \"0\" is not a whole number of at least 1" },
+    { "about": "a schedule range that runs backwards", "manifest": { "name": "X", "triggers": [{ "id": "a", "cron": "0 0 * * 5-1" }] }, "error": "the day of week field's range 5-1 runs backwards" },
+    { "about": "an unknown schedule shortcut", "manifest": { "name": "X", "triggers": [{ "id": "a", "cron": "@often" }] }, "error": "\"@often\" is not a schedule shortcut" },
+    {
+      "about": "an event the platform does not emit",
+      "manifest": { "name": "X", "triggers": [{ "id": "a", "event": "ticket.deleted" }] },
+      "error": "\"triggers[0].event\" names no platform event (\"ticket.deleted\"); the events are ticket.created, ticket.moved"
+    },
+    {
+      "about": "two triggers with one id",
+      "manifest": { "name": "X", "triggers": [{ "id": "a", "cron": "@daily" }, { "id": "a", "event": "ticket.created" }] },
+      "error": "\"triggers[1].id\" \"a\" is used by an earlier trigger"
+    }
   ],
   "ranges": [
     { "range": "*", "version": "1.0.0", "satisfied": true },

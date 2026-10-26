@@ -243,7 +243,7 @@ function readToolResult(raw: unknown, serverName: string, tool: string): McpTool
 }
 
 /** JSON body, or the LAST data frame of an SSE-encoded response. */
-function parseMcpResponse(text: string): unknown {
+export function parseMcpResponse(text: string): unknown {
   const t = text.trim()
   if (!t) return null
   if (t.startsWith('{') || t.startsWith('[')) {
