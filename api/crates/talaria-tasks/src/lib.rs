@@ -570,6 +570,12 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
     // agents. Detached: the row is the record, the push is a
     // delivery.
     spawn_dispatch(deps, task.clone(), None);
+    // Apps whose triggers name it hear that a ticket exists — its id and its
+    // board, never its text (talaria-platform-events).
+    talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketCreated {
+        ticket_id: id.clone(),
+        board_id: input.board_id.to_string(),
+    });
     {
         let notify = deps.notify.clone();
         let actor = input.created_by.to_string();
@@ -1199,6 +1205,15 @@ pub async fn update_task(
             format!("moved to {next_status} ({why})")
         };
         log_activity(pg, id, &who.id, "status", &moved).await?;
+        // Apps whose triggers name the move hear it: ids and column keys,
+        // never the ticket's text (talaria-platform-events).
+        talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketMoved {
+            ticket_id: id.to_string(),
+            board_id: cur.board_id.clone(),
+            from: cur.status.clone(),
+            to: next_status.clone(),
+            closed: meta.terminal(&next_status),
+        });
         // Watchers + assigned humans hear about status moves (never the
         // actor), and `ticket_audience` re-reads board membership for both
         // halves at this moment — see its doc for why the write-time checks
@@ -2237,6 +2252,17 @@ pub async fn complete_quality_review(
         .await?;
     }
     tx.commit().await?;
+
+    // A rejection moves the ticket; an approval leaves it where it is.
+    if next_status != current.status {
+        talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketMoved {
+            ticket_id: task_id.to_string(),
+            board_id: current.board_id.clone(),
+            from: current.status.clone(),
+            to: next_status.to_string(),
+            closed: meta.terminal(next_status),
+        });
+    }
 
     if meta.agent_start_keys.iter().any(|k| k == next_status)
         && !meta.agent_start_keys.contains(&current.status)

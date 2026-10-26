@@ -177,6 +177,12 @@ pub enum LedgerSource {
     Channel,
     Ticket,
     Research,
+    /// AN APP'S HARNESS RUN — the bound runner the app host hands an app as
+    /// `ctx.harness` (ui/src/server/app-harness-runner.ts), whose caller is
+    /// `app:<slug>:<harnessId>`. Its own source so an app's spend is findable
+    /// as the app's: it used to be booked as `chat`, indistinguishable from a
+    /// person talking to an agent.
+    App,
 }
 
 impl LedgerSource {
@@ -186,6 +192,7 @@ impl LedgerSource {
             LedgerSource::Channel => "channel",
             LedgerSource::Ticket => "ticket",
             LedgerSource::Research => "research",
+            LedgerSource::App => "app",
         }
     }
 }

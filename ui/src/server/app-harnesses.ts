@@ -35,13 +35,19 @@
 // status (Manage → Apps); the app keeps running.
 import { RULES } from './guardrails'
 import type { Capability } from './harness/capability'
-import { defineHarness, isGap, NO_TOOLS, type EvalBand, type HarnessDefinition } from './harness/define'
-import { runHarness, type HarnessDeps, type HarnessResult, type HarnessRunRow } from './harness/run'
+import { defineHarness, isGap, NO_TOOLS, type EvalBand, type EvalContext, type HarnessDefinition } from './harness/define'
+import { MAX_LOOP_TURNS, loopTurnsOf, runHarness, type HarnessDeps, type HarnessResult, type HarnessRunRow, type LoopCall } from './harness/run'
 import { defaultTransport, type Transport } from './harness/transport'
 import { enabledApps } from './apps'
+import { withApp } from './app-scope'
 import { loadAppHarnesses, type AppHarnessFile } from './app-load'
 import { readCurrent, writeCurrent } from './app-build/status'
-import { estimateTokens } from './usage'
+import { appHarnessSlot } from './app-harness-models'
+
+/** The ledger's chars/4 fallback (talaria-gateway `estimate_tokens`), for a
+ *  replay whose reply carried no usage — so the fitness page and the invoice
+ *  estimate one call the same way. */
+const estimateTokens = (chars: number): number => Math.ceil(chars / 4)
 
 /** The ids the api's builtin registry ships (`EXPECTED_IDS` in
  *  api/crates/talaria-harness-defs/src/registry.rs). An app harness may not
@@ -178,6 +184,7 @@ function structuralProblems(value: Record<string, unknown>): string[] {
     out.push("its onFailure is not 'null', 'throw', { fallback } or { escalate: true }")
   }
   if (value.widen !== undefined && (!isObject(value.widen) || !isStringList(value.widen.requires))) out.push('it widens on nothing')
+  if (value.loop !== undefined) out.push(...loopProblems(value.loop, value.toolDefs, value.tools))
   if (value.evals !== undefined) {
     // Validated as a WHOLE: a fixture with no check would take a column in the
     // org's fitness matrix and fill it with "check is not a function", which
@@ -186,6 +193,51 @@ function structuralProblems(value: Record<string, unknown>): string[] {
     else if (!value.evals.every((c) => isObject(c) && isFilled(c.name) && typeof c.check === 'function' && 'input' in c)) {
       out.push('a fixture has no name, no input or no check')
     }
+  }
+  return out
+}
+
+/** A tool name a provider accepts as a function name. */
+const TOOL_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/
+/** `org: '<server>/<tool>'`. */
+const ORG_TOOL_RE = /^[^/\s]+\/[^/\s]+$/
+const MAX_LOOP_TOOLS = 32
+
+/** A TOOL LOOP THE RUNNER CAN HOLD: a list of tools, each a definition the
+ *  model can be offered and exactly one place its call goes, and a turn bound
+ *  inside the runner's ceiling. Checked as a whole at load, because a loop
+ *  that is wrong at call time is a model turn spent on a tool that cannot run. */
+function loopProblems(loop: unknown, toolDefs: unknown, tools: unknown): string[] {
+  if (!isObject(loop)) return ['its loop is not { tools, maxTurns? }']
+  const out: string[] = []
+  if (tools === 'own') out.push("it declares both a loop and tools: 'own' — a turn has one loop")
+  const maxTurns = loop.maxTurns
+  if (maxTurns !== undefined && !(typeof maxTurns === 'number' && Number.isInteger(maxTurns) && maxTurns >= 1 && maxTurns <= MAX_LOOP_TURNS)) {
+    out.push(`its loop's maxTurns ${String(maxTurns)} is not a whole number of turns from 1 to ${MAX_LOOP_TURNS}`)
+  }
+  if (!Array.isArray(loop.tools) || loop.tools.length === 0) return [...out, 'its loop offers no tools']
+  if (loop.tools.length > MAX_LOOP_TOOLS) out.push(`its loop offers ${loop.tools.length} tools; at most ${MAX_LOOP_TOOLS}`)
+  const offered = new Set(Array.isArray(toolDefs) ? toolDefs.flatMap((d) => (isObject(d) && typeof d.name === 'string' ? [d.name] : [])) : [])
+  const seen = new Set<string>()
+  for (const [i, t] of loop.tools.entries()) {
+    if (!isObject(t)) {
+      out.push(`loop tool ${i} is not a tool`)
+      continue
+    }
+    const name = typeof t.name === 'string' ? t.name : null
+    const label = name ? `loop tool "${name}"` : `loop tool ${i}`
+    if (!name || !TOOL_NAME_RE.test(name)) out.push(`${label} needs a name of letters, digits, _ and - (at most 64)`)
+    else if (seen.has(name)) out.push(`two loop tools are named "${name}"`)
+    else if (offered.has(name)) out.push(`${label} is also offered in toolDefs`)
+    if (name) seen.add(name)
+    if (!isFilled(t.description)) out.push(`${label} has no description for the model`)
+    if (!isObject(t.parameters)) out.push(`${label} has no parameters schema`)
+    const roads = [typeof t.handler === 'function', t.mcp !== undefined, t.org !== undefined].filter(Boolean).length
+    if (roads !== 1) out.push(`${label} must name exactly one of handler, mcp or org`)
+    if (t.mcp !== undefined && !isFilled(t.mcp)) out.push(`${label}'s mcp is not one of the app's tool names`)
+    if (t.org !== undefined && !(typeof t.org === 'string' && ORG_TOOL_RE.test(t.org))) out.push(`${label}'s org is not '<server>/<tool>'`)
+    if (t.handler !== undefined && typeof t.handler !== 'function') out.push(`${label}'s handler is not a function`)
+    if (t.simulate !== undefined && typeof t.simulate !== 'function') out.push(`${label}'s simulate is not a function`)
   }
   return out
 }
@@ -477,7 +529,14 @@ export interface AppHarnessWire {
   guard: { rules: string[] | null; redact: boolean } | null
   widen: { requires: string[]; note: string } | null
   temperature: number | null
-  model: { pin: string | null; role: string | null; chain: string[] | null }
+  /** `slot` is the harness's own model setting, `app:<slug>/<id>` — what an
+   *  admin assigns in Admin → Models → Fitness, resolved before `role`. Set
+   *  by the host from the slug and the id; the app's own value is never read. */
+  model: { pin: string | null; role: string | null; chain: string[] | null; slot: string }
+  /** The runner-held tool loop, as data: the turn bound and, per tool, where
+   *  its call goes and whether it can answer a dry run (`simulate`). The api
+   *  dry-runs an app harness only when every tool can. */
+  loop: { maxTurns: number; tools: Array<{ name: string; via: 'handler' | 'mcp' | 'org'; simulate: boolean }> } | null
   evals: Array<{ name: string; band: EvalBand }>
 }
 
@@ -500,7 +559,17 @@ export function wireOf(h: AppHarness): AppHarnessWire {
     guard: d.guard ? { rules: d.guard.rules ? [...d.guard.rules] : null, redact: d.guard.redact === true } : null,
     widen: d.widen ? { requires: [...d.widen.requires], note: d.widen.note } : null,
     temperature: d.temperature ?? null,
-    model: { pin: d.model.pin ?? null, role: d.model.role ?? null, chain: d.model.chain ? [...d.model.chain] : null },
+    model: { pin: d.model.pin ?? null, role: d.model.role ?? null, chain: d.model.chain ? [...d.model.chain] : null, slot: appHarnessSlot(h.slug, d.id) },
+    loop: d.loop
+      ? {
+          maxTurns: loopTurnsOf(d.loop.maxTurns),
+          tools: d.loop.tools.map((t) => ({
+            name: t.name,
+            via: typeof t.handler === 'function' ? ('handler' as const) : t.mcp !== undefined ? ('mcp' as const) : ('org' as const),
+            simulate: typeof t.simulate === 'function',
+          })),
+        }
+      : null,
     evals: (d.evals ?? []).map((e) => ({ name: e.name, band: e.band ?? 'standard' })),
   }
 }
@@ -512,8 +581,8 @@ export function wireOf(h: AppHarness): AppHarnessWire {
  *  swapped: `recordRun` and `recordFindings` capture instead of filing, the
  *  same rule the Rust sweep keeps (a benchmark must not write into the
  *  `harness_runs` and `guard_findings` it is compared against). Token spend is
- *  real spend and reaches the usage ledger through the transport, as every
- *  sweep case's does. */
+ *  real spend: the relay books it as the app's, and the counts below are the
+ *  provider's own, off the reply. */
 export interface CaseReplay {
   harness: string
   case: string
@@ -540,8 +609,15 @@ export interface CaseReplay {
   prompt: string
   promptTokens: number
   completionTokens: number
-  /** The token counts are a chars/4 estimate: the transport reported none. */
+  /** The token counts are a chars/4 estimate: the reply carried no usage —
+   *  a provider that sends none, or an agent turn whose stream reported none.
+   *  A gateway reply's own counts reach here through the relay. */
   estimated: boolean
+  /** A loop harness's dispatched calls — every tool answered by its
+   *  `simulate` — in order; empty for a single-shot one. */
+  calls: LoopCall[]
+  /** The loop hit its turn bound with the model still calling tools. */
+  exhausted: boolean
 }
 
 export interface ReplayOptions {
@@ -575,19 +651,27 @@ export async function replayAppCase(h: AppHarness, name: string, model: string, 
   let result: HarnessResult<unknown> | null = null
   let threw: string | null = null
   try {
-    result = await runHarness(h.def, fixture.input, {
-      caller: `fitness:${h.def.id}`,
-      model,
-      ...(opts.signal ? { signal: opts.signal } : {}),
-      deps: {
-        ...opts.deps,
-        transport,
-        recordRun: async (row) => {
-          capture.row = row
+    // AS THE APP: the replay's calls go to the gateway on the app's key and
+    // land in its ledger as `app` spend, under this stamp.
+    result = await withApp(h.slug, () =>
+      runHarness(h.def, fixture.input, {
+        caller: `app:${h.slug}:fitness:${h.def.id}`,
+        model,
+        // A DRY RUN: a loop tool answers through its `simulate`, never for real.
+        // A fitness sweep must not send a candidate's tool calls to the app's
+        // handlers, its MCP tools or the org's.
+        loop: { app: h.slug, actingUserId: null, simulate: true },
+        ...(opts.signal ? { signal: opts.signal } : {}),
+        deps: {
+          ...opts.deps,
+          transport,
+          recordRun: async (row) => {
+            capture.row = row
+          },
+          recordFindings: async () => {},
         },
-        recordFindings: async () => {},
-      },
-    })
+      }),
+    )
   } catch (e) {
     // `onFailure: 'throw'` throws by declaration; the row was captured before
     // it did, so the case still reads what happened.
@@ -596,9 +680,10 @@ export async function replayAppCase(h: AppHarness, name: string, model: string, 
   const schemaValid = capture.row?.schemaValid ?? result?.schemaValid ?? false
   let verdict: CaseReplay['verdict'] = null
   let reason: string | null = null
+  const calls = result?.calls ?? []
   if (result && schemaValid && result.value !== null && result.value !== undefined && !result.refused) {
     try {
-      const checked = fixture.check(result.value, NO_TOOLS)
+      const checked = fixture.check(result.value, calls.length || h.def.loop ? evalContextOf(calls, result.exhausted ?? false) : NO_TOOLS)
       if (checked === null) verdict = 'pass'
       else if (isGap(checked)) {
         verdict = 'gap'
@@ -633,5 +718,22 @@ export async function replayAppCase(h: AppHarness, name: string, model: string, 
     promptTokens: capture.promptTokens,
     completionTokens: capture.completionTokens,
     estimated: capture.estimated,
+    calls,
+    exhausted: result?.exhausted ?? false,
+  }
+}
+
+/** What a fixture sees of a loop run: the calls, and the order they came in. */
+export function evalContextOf(calls: readonly LoopCall[], exhausted: boolean): EvalContext {
+  const first = (tool: string) => calls.findIndex((c) => c.tool === tool)
+  return {
+    calls,
+    calledBefore: (a, b) => {
+      const ia = first(a)
+      const ib = first(b)
+      return ia >= 0 && ib >= 0 && ia < ib
+    },
+    world: null,
+    exhausted,
   }
 }

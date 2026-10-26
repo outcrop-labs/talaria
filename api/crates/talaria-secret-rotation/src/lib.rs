@@ -171,6 +171,44 @@ pub async fn rotate_secrets(
         }
     }
 
+    // app_llm_keys holds each app's gateway key as { keyId, sealed } under
+    // its slug (talaria-apps `llm_key`). Only `sealed` moves; `keyId` — the
+    // field the relay reads through its hot window — is never touched.
+    let stored: Option<(Value,)> =
+        sqlx::query_as("select value from app_settings where key = 'app_llm_keys' for update")
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(|e| e.to_string())?;
+    if let Some((mut value,)) = stored {
+        let mut changed = false;
+        if let Some(apps) = value.as_object_mut() {
+            for (_slug, entry) in apps.iter_mut() {
+                let Some(v) = entry.get_mut("sealed") else {
+                    continue;
+                };
+                let Some(cipher) = v.as_str().filter(|s| !s.is_empty()) else {
+                    continue;
+                };
+                let plain = sb.open(cipher).map_err(|e| e.to_string())?;
+                let resealed = sb
+                    .seal_with(&fresh, next_version, &plain)
+                    .map_err(|e| e.to_string())?;
+                *v = Value::String(resealed);
+                reencrypted += 1;
+                changed = true;
+            }
+        }
+        if changed {
+            sqlx::query(
+                "update app_settings set value = $1, updated_at = now() where key = 'app_llm_keys'",
+            )
+            .bind(&value)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
     // If the root secret is changing, re-wrap every RETAINED key version under
     // the new KEK so old versions stay unwrappable (old ciphertext keeps working).
     if let Some(material) = new_root_material {

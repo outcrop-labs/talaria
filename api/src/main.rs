@@ -103,6 +103,11 @@ async fn serve() {
         tokio::spawn(async move {
             if let Ok(sb) = state.secretbox().await {
                 talaria_api::apps::disable_broken_apps(&state.pg, &sb).await;
+                // An app that is off holds no gateway key, whoever turned it
+                // off and whenever.
+                if let Err(e) = talaria_api::apps::reconcile_app_llm_keys(&state.pg).await {
+                    tracing::warn!("[apps] boot gateway-key reconcile failed: {e}");
+                }
                 if let Err(e) = talaria_api::apps::sync_app_mcp_servers(&state.pg, &sb).await {
                     tracing::warn!("[apps] boot MCP registry sync failed: {e}");
                 }

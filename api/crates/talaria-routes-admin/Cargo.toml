@@ -12,7 +12,9 @@ workspace = true
 talaria-agent-auth = { workspace = true }
 talaria-agent-defs = { workspace = true }
 talaria-agent-web-search = { workspace = true }
+talaria-app-agents = { workspace = true }
 talaria-app-harnesses = { workspace = true }
+talaria-app-triggers = { workspace = true }
 talaria-apps = { workspace = true }
 talaria-audit = { workspace = true }
 talaria-auth-config = { workspace = true }
@@ -24,6 +26,7 @@ talaria-effort-prefs = { workspace = true }
 talaria-email = { workspace = true }
 talaria-error = { workspace = true }
 talaria-fitness = { workspace = true }
+talaria-harness-model = { workspace = true }
 talaria-instance = { workspace = true }
 talaria-invites = { workspace = true }
 talaria-judge = { workspace = true }
@@ -49,6 +52,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
+futures-util = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 sha2 = { workspace = true }
