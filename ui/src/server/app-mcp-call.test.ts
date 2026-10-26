@@ -11,6 +11,7 @@ import {
   toolResult,
 } from './app-mcp-call'
 import { memoryStore } from './app-store-memory'
+import { appInScope } from './app-scope'
 import { readCallVerdict } from './mcp-jsonrpc'
 import type { AppMcpTool } from '@/sdk/server'
 
@@ -166,6 +167,20 @@ describe('a call, under its deadline', () => {
     const t = tool({ handler: async (_a, ctx) => ((seen = { app: ctx.app, agent: ctx.agent, caller: ctx.caller, acting: ctx.actingUserId }), 'ok') })
     await runAppTools('crm', [t], callOf('crm_find'), { ...facts, actingUserId: 'user-1' })
     expect(seen).toEqual({ app: 'crm', agent: 'crm-agent', caller: { name: 'crm-agent', id: 'def-1', proven: true }, acting: 'user-1' })
+  })
+
+  it('the handler runs as its app, so a harness it runs signs with the app’s gateway key', async () => {
+    let scoped: string | null = null
+    const t = tool({
+      handler: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1))
+        scoped = appInScope()
+        return 'ok'
+      },
+    })
+    await runAppTools('crm', [t], callOf('crm_find'), facts)
+    expect(scoped).toBe('crm')
+    expect(appInScope()).toBeNull()
   })
 
   it('the deadline is the server’s timeoutSecs, 120 s when unset', () => {

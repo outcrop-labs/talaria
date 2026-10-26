@@ -27,7 +27,6 @@ import {
   type Capability,
   type CapabilityFact,
 } from './capability'
-import { LEARNED_PARAM_TTL_MS } from './gateway-params'
 
 const SETTINGS_KEY = 'model_capabilities'
 const KEY = capabilityKey('pl-main', 'qwen3-14b')
@@ -76,10 +75,26 @@ describe('getCapabilities', () => {
     expect(await getCapabilities(KEY)).toEqual({})
   })
 
-  it('round-trips detail and score', async () => {
-    const f = fact({ value: true, source: 'probe', detail: '5/5 nested objects parsed', score: 1 })
+  it('round-trips detail, score and the probe revision', async () => {
+    const f = fact({ value: true, source: 'probe', detail: '5/5 nested objects parsed', score: 1, probeRev: 1 })
     await recordCapability(KEY, 'json-strict', f)
     expect((await getCapabilities(KEY))['json-strict']).toEqual(f)
+  })
+
+  it('reads a probe fact an older probe revision recorded as unknown, as the api does', async () => {
+    // json-strict's first Rust probe recorded `false` for every model that
+    // answered; its facts are below revision 1 and must not refuse a model.
+    seed({
+      [KEY]: {
+        'json-strict': fact({ value: false, source: 'probe', score: 0 }),
+        json: fact({ value: true, source: 'probe' }),
+      },
+    })
+    expect(Object.keys(await getCapabilities(KEY))).toEqual(['json'])
+    expect(await missingCapabilities(KEY, ['json-strict'])).toEqual([])
+    // A declared fact is a person's word, never a probe's: no revision applies.
+    seed({ [KEY]: { 'json-strict': fact({ value: false, source: 'declared' }) } })
+    expect(await missingCapabilities(KEY, ['json-strict'])).toEqual(['json-strict'])
   })
 
   it('drops a learned fact past the TTL, so the provider can be re-discovered', async () => {
@@ -174,7 +189,8 @@ describe('recordCapability', () => {
 
   it('does not lose writes when a probe run records a whole battery at once', async () => {
     const battery: Capability[] = ['json', 'json-strict', 'tools', 'tool-select', 'search']
-    await Promise.all(battery.map((cap) => recordCapability(KEY, cap, fact({ value: true }))))
+    // As the probe suite writes them: stamped with the probe's revision.
+    await Promise.all(battery.map((cap) => recordCapability(KEY, cap, fact({ value: true, probeRev: 1 }))))
     expect(Object.keys(await getCapabilities(KEY)).sort()).toEqual([...battery].sort())
   })
 })
@@ -242,25 +258,6 @@ describe('forgetCapabilities', () => {
     expect(raw()).toEqual({})
   })
 })
-
-// ── The tie between the two learned-fact stores ──────────────────────────────
-
-describe('the learned TTL', () => {
-  it('is the same number the gateway uses to expire a learned parameter strip', () => {
-    // Two stores record ONE event from two angles: `gateway_unsupported_params`
-    // remembers what we stopped sending; `model_capabilities` remembers what
-    // that told us about the model. They are separate constants because
-    // `gateway-params.ts` is pure by construction and importing this module
-    // would put a database on the path of every upstream call — so the
-    // agreement is held here, by a test, instead of by a comment in each file.
-    //
-    // If the strip outlived its capability fact, the gateway would go on quietly
-    // dropping `response_format` while Admin reported the model as
-    // unknown-but-fine. That is audit 1.2 growing back with the fix in place.
-    expect(LEARNED_TTL_MS).toBe(LEARNED_PARAM_TTL_MS)
-  })
-})
-
 
 // ── Source precedence ────────────────────────────────────────────────────────
 

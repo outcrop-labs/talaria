@@ -95,9 +95,7 @@ export {
   gatewayStream,
   gatewayTransport,
   ledgerOf,
-  meterPersonaTurn,
   personaPayload,
-  personaProbeTurn,
   offersToolDefinitions,
   pickTransport,
   pumpPersonaStream,
@@ -1234,9 +1232,10 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
     }
   }
 
-  // 9 ─ Meter. The transports own the token ledger (the gateway writes its own
-  // row inside completeViaGateway; the fleet transport writes one itself), so
-  // all that is left here is the harness_runs row - the production ground truth
-  // behind contract rate and repair rate per harness per model over time.
+  // 9 ─ Meter. The gateway owns the token ledger (the Rust relay books every
+  // call, a fleet agent's turn included, as the app's spend — see
+  // harness/transport.ts), so all that is left here is the harness_runs row -
+  // the production ground truth behind contract rate and repair rate per
+  // harness per model over time.
   return finish({ value, model: routed, step, widened, repairs, schemaValid, escalate, answered, refused: false, raw: rawOf(text), ...(error ? { error } : {}) })
 }

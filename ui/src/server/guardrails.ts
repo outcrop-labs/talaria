@@ -941,32 +941,6 @@ export async function guardStats(): Promise<{ total: number; byCheck: Record<str
   return { total, byCheck }
 }
 
-/** The one-call entry point for the gateway: run guards (if enabled) on a
- *  finished completion, record findings, and return any annotate-mode caveat. */
-export async function guardCompletion(input: {
-  answer: string
-  messages: unknown[]
-  caller: string
-  model: string
-  endpoint: string | null
-}): Promise<{ findings: Finding[]; caveat: string; mode: GuardMode }> {
-  const config = await getGuardConfig()
-  if (config.mode === 'off' || !input.answer) return { findings: [], caveat: '', mode: config.mode }
-  const messages = input.messages as Msg[]
-  const toolRecord = extractToolRecord(messages)
-  let userMessage = ''
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.role === 'user') { userMessage = asText(messages[i]!.content); break }
-  }
-  const findings = runGuardrails(
-    { answer: input.answer, toolRecord, userMessage, inputText: groundingTextOf(messages), policedHosts: config.policedHosts },
-    config,
-  )
-  await recordFindings(findings, { caller: input.caller, model: input.model, endpoint: input.endpoint, mode: config.mode }).catch(() => {})
-  const caveat = config.mode === 'annotate' || config.mode === 'strict' ? caveatFor(findings) : ''
-  return { findings, caveat, mode: config.mode }
-}
-
 /** Guard a CHAT/channel reply. The agent's tool loop runs inside the fleet, so
  *  the stream gives us tool NAMES (did a tool run?) but not results or error
  *  detail — so only zero-tool-claim and secret-leak apply here (ungrounded_ref /

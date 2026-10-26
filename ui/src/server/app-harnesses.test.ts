@@ -10,6 +10,7 @@ import { z } from 'zod'
 import { defineHarness } from '@/sdk/server'
 import type { HarnessDeps } from '@/server/harness/run'
 import type { TransportReply } from '@/server/harness/transport'
+import { appInScope } from '@/server/app-scope'
 import {
   BUILTIN_HARNESS_IDS,
   checkAppHarness,
@@ -483,6 +484,22 @@ describe('replayAppCase', () => {
     const r = await replayAppCase(await registered(), 'an outage grades high', 'm', { deps })
     expect(r?.estimated).toBe(true)
     expect(r?.promptTokens).toBeGreaterThan(0)
+  })
+
+  it('runs as the app: its calls sign with the app\'s gateway key, under the app\'s fitness stamp', async () => {
+    // The transport finds the key by the app in scope (app-scope.ts), never by
+    // a caller name; the stamp is what the relay books the replay's spend under.
+    const { deps } = scripted('{"severity":"high","reason":"x"}')
+    const seen: Array<{ app: string | null; caller: string }> = []
+    const base = deps.transport!
+    deps.transport = async (req) => {
+      seen.push({ app: appInScope(), caller: req.caller })
+      return base(req)
+    }
+    const h = await registered()
+    await replayAppCase(h, 'an outage grades high', 'm', { deps })
+    expect(seen).toEqual([{ app: h.slug, caller: `app:${h.slug}:fitness:support:triage` }])
+    expect(appInScope()).toBeNull()
   })
 
   it('answers null for a fixture the harness does not declare', async () => {

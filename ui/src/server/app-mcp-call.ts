@@ -5,6 +5,7 @@
 // filesystem or the api. That is what lets `@talaria/sdk/testing` run an
 // app's tools through exactly this code in a unit test, and the gateway
 // (app-mcp.ts `dispatchAppMcp`) run them through it in production.
+import { withApp } from './app-scope'
 import { z } from 'zod'
 import { dispatchJsonRpc, type Rpc, type ToolAnswer } from './mcp-jsonrpc'
 import type { AppMcpCaller, AppMcpContext, AppMcpTool, AppToolContent, AppToolResult } from '@/sdk/server'
@@ -401,7 +402,8 @@ export async function runAppTools(
         signal: ctl.signal,
       }
       try {
-        const running = Promise.resolve().then(() => tool.handler(args, ctx))
+        // As the app: a harness the handler runs signs with this app's key.
+        const running = Promise.resolve().then(() => withApp(slug, () => tool.handler(args, ctx)))
         running.catch(() => {}) // a cut call's late rejection is nobody's
         return shapeToolAnswer(tool, await Promise.race([running, cutting]))
       } catch (e) {

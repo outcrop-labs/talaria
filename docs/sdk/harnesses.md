@@ -174,6 +174,8 @@ export default defineAppServer({
 
     const run = await runHarness(triage, { subject, body }, {
       caller: `app:${ctx.app}`,
+      // Booked on the spend row when it is a uuid; any other id is left off
+      // the row, never the row itself.
       ledger: { refId: id },
     })
     // run: HarnessResult<Triage> — value, model, step, answered, refused, repairs…
@@ -191,7 +193,36 @@ export default defineAppServer({
 | `resolveHarnessModel(spec)` | The free probe: `{ model, step }` or null — labels the run without spending a turn |
 | `runHarness(harness, input, ctx)` | The one runner: resolve, floor, render, call, parse, repair, guard, meter, `harness_runs` row — the same runner and accounting the platform's own TS harnesses get |
 | `RunContext` | `{ caller, userId?, model?, step?, tier?, effort?, ledger?, signal?, deps? }` — annotate a context built apart from the call; `deps` is the test seam (a scripted transport, no-op recorders) |
-| `RunLedger` | `{ source?, refId?, taskId? }` — where the turn's spend belongs |
+| `RunLedger` | `{ source?, refId?, taskId? }` — where the turn's spend belongs. `refId` and `taskId` reach the spend row when they are uuids; an app's spend is always booked with source `app` ([below](#where-the-calls-go--one-gateway-your-apps-key)) |
 | `HarnessResult` | What comes back — `value`, `model`, `step`, `answered`, `refused`, `repairs`, `escalate` |
 | `ModelChainStep` | `'pin' \| 'role' \| 'utility' \| 'env' \| 'preferred' \| 'first-routable'` — which step answered |
 | `ResolvedHarnessModel` | `{ model, step }` — what the probe returns |
+
+## Where the calls go — one gateway, your app's key
+
+Every model call the runner makes for your app goes to the Talaria gateway, the same one every
+agent and API key uses. Your code never holds a key, a provider URL or a transport:
+
+- **Your app has its own gateway key**, `app:<slug>`. The host asks Talaria for it the first time
+  your app makes a call, keeps it in memory, and never hands it to app code. Disabling or
+  uninstalling the app revokes it; enabling it again mints a new one.
+- **The host knows which app is calling.** Calls made from your `server.ts`, from an MCP tool
+  handler, or from a fitness replay of your fixtures run as your app. A call made outside all of
+  those (module top-level code, say) is refused: there is no app to charge it to.
+- **Spend is booked as your app's.** Each call is one ledger row with source `app`, named by the
+  run's `caller` kept inside your app's namespace: `app:<slug>` or `app:<slug>:…` is kept as
+  written, and any other caller is prefixed with `app:<slug>:`. The provider's own cost is
+  recorded when it reports one; a reply without usage is still booked, from an estimate.
+- **Your app has a budget.** An admin sets it under Admin → Settings → LLM budgets for the caller
+  `app:<slug>`; it counts every row under your app's namespace. Over it, a run fails with the
+  gateway's sentence (`"app:<slug>" has reached its LLM budget…`) in `error`, and no call is
+  made.
+- **A harness pinned to a fleet agent** runs one turn on that agent. Talaria records the turn as
+  your app's, so every call the agent makes for it is booked once, as `app` spend.
+- **The gateway does not guard your replies a second time.** The runner's guard pass, with your
+  harness's `guard.rules`, is the one of record.
+
+A fitness replay of your fixtures is real spend on the same key, stamped
+`app:<slug>:fitness:<harness id>`, and the token counts the fitness page shows for it are the
+provider's own.
+

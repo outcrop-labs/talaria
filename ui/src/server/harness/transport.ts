@@ -36,6 +36,24 @@
 //   read. `scripts/check-invariants.mjs` no longer carries a shim category, so
 //   nothing outside this file may reach a model on the fleet's behalf again.
 //
+// EVERY CALL HERE GOES TO THE RUST RELAY — ONE GATEWAY. The transports below
+// used to be a second gateway inside this process: they decrypted provider
+// keys, built and fetched the upstream call, learned parameter rejections and
+// wrote their own ledger rows (llm-gateway.ts), and drove persona turns
+// straight at agent containers (gateway.ts). That copy recorded no
+// provider-reported cost, left a reply with no usage unmetered, filed the
+// spend under whatever caller name the app passed, checked a budget on one
+// call path of three, and metered a persona turn a second time beside the
+// relay's own rows for the agent's calls. Now every call is a POST to
+// `/api/llm/v1/chat/completions` on the api (`relay` below), signed with the
+// gateway key of the app whose code is running (app-scope.ts,
+// app-llm-key.ts). The relay routes, prices, budgets and meters it as `app`
+// spend under the run's caller stamp; a live fleet agent it drives for the
+// turn through its persona door, so the agent's own calls are the turn's one
+// meter. It runs no guard pass for an app's key — the runner's is the one of
+// record. Nothing in this file holds a provider key, and nothing in this
+// process reaches a model any other way.
+//
 // AND THE REASON THE SHIMS WERE A PROBLEM RATHER THAN A STYLE COMPLAINT: THREE
 // OF THE FIVE SILENTLY DROPPED `req.temperature` AND `req.jsonMode`. A harness
 // that declared `temperature: 0` ran at the provider's default and nothing
@@ -46,10 +64,12 @@
 // transport that genuinely CANNOT honor a field says so by throwing
 // (`gatewayTransport` and `tools: 'own'`) rather than by ignoring it.
 import { parseAgentStream } from '@/lib/sse-parse'
-import { buildUpstream, completeViaGateway, contractDropsOf, fetchUpstream, gatewayModels, recordGatewayUsage, resolveRoute, type ResponseFormat } from '../llm-gateway'
+import { gatewayModels, type ResponseFormat } from '../llm-gateway'
 import type { WireSchema } from './json-schema'
-import { CANNED_STREAM_HEADER, listAgents, proxyChat } from '../gateway'
-import { estimateTokens, recordUsage } from '../usage'
+import { listAgents } from '../gateway'
+import { appInScope } from '../app-scope'
+import { appGatewayKey, forgetAppGatewayKey } from '../app-llm-key'
+import { rustApiUrl } from '../rust-proxy'
 import type { Message } from './define'
 
 export type TransportKind = 'gateway' | 'fleet'
@@ -116,6 +136,12 @@ export interface ToolCall {
 }
 
 /** Where this turn's spend lands in `usage_events`.
+ *
+ *  THE RELAY WRITES THE ROW NOW, not this process: an app's call is booked
+ *  under the run's caller stamp with source `app`, and `refId` / `taskId`
+ *  ride to it on the call (`relay`), kept when they are uuids — a ref that is
+ *  not one is dropped from the row, never the row with it. The history below
+ *  is why the slots exist at all.
  *
  *  `runHarness` used to meter every persona turn as `{ source: 'chat', refId:
  *  null, tier: null }`, because no other harness had anything to attribute to.
@@ -202,7 +228,7 @@ export interface TransportRequest {
    *  model's default effort still answers the question it was asked. */
   effort?: string
   /** How long a persona transport may HOLD for an agent that is not answering
-   *  yet, in ms. `proxyChat` defaults to two minutes; a restarting agent under a
+   *  yet, in ms. The persona door defaults to two minutes; a restarting agent under a
    *  config propagation refuses connections for tens of seconds, and a work
    *  session must survive a fleet re-render mid-session, so `work-session`
    *  declares ten minutes. Meaningless on the gateway path — there is no
@@ -271,9 +297,8 @@ export const toolNamesOf = (calls: readonly ToolCall[]): string[] => calls.map((
 export const ledgerOf = (req: TransportRequest): LedgerAttribution =>
   req.ledger ?? { agentModel: req.model, source: 'chat', refId: null, taskId: null, tier: null }
 
-/** `proxyChat`'s payload shape. Structural rather than imported because
- *  `gateway.ts` keeps `ChatPayload` private and widening its export surface for
- *  one caller is not worth it; the index signature is the same one it has. */
+/** The persona door's payload shape — what the relay hands the agent for a
+ *  persona turn (talaria-gateway `proxy_chat`). */
 export interface PersonaPayload {
   model: string
   messages: Array<{ role: string; content: string }>
@@ -317,7 +342,7 @@ export function personaPayload(req: TransportRequest): PersonaPayload {
   return payload
 }
 
-// ── Pumping and metering a persona turn ──────────────────────────────────────
+// ── Pumping a persona turn ───────────────────────────────────────────────────
 
 export interface PersonaTurn {
   text: string
@@ -342,47 +367,131 @@ export async function pumpPersonaStream(body: ReadableStream<Uint8Array>, emit?:
   return { text, toolNames, usage }
 }
 
-/** The ledger row for a persona turn. It meters because nothing else will: a
- *  harness turn on a persona writes no chat, channel or ticket row, so this is
- *  the only place the spend can enter. */
-export async function meterPersonaTurn(req: TransportRequest, turn: PersonaTurn): Promise<void> {
-  const led = ledgerOf(req)
-  const promptChars = req.messages.reduce((n, m) => n + m.content.length, 0)
-  await recordUsage({
-    agentModel: led.agentModel,
-    source: led.source,
-    refId: led.refId,
-    taskId: led.taskId,
-    tier: led.tier,
-    promptTokens: turn.usage?.promptTokens ?? estimateTokens(promptChars),
-    completionTokens: turn.usage?.completionTokens ?? estimateTokens(turn.text.length),
-    estimated: !turn.usage,
-  }).catch(() => {})
+// ── The relay: the one door every call goes through ──────────────────────────
+
+/** The gateway's chat route on the api — the same door every key holder
+ *  uses. */
+export const RELAY_PATH = '/api/llm/v1/chat/completions'
+
+/** What the relay says about an app's call beside its body. The names are
+ *  talaria-gateway's `app_keys` constants. */
+export const RELAY_HEADERS = {
+  caller: 'x-talaria-caller',
+  refId: 'x-talaria-ref-id',
+  taskId: 'x-talaria-task-id',
+  holdMs: 'x-talaria-hold-ms',
+  transport: 'x-talaria-transport',
+  contractDrops: 'x-talaria-contract-drops',
+  canned: 'x-talaria-canned',
+} as const
+
+/** The ceiling on one gateway call when the caller names no budget of its
+ *  own. Ten minutes is right for a long completion and far too long for
+ *  anything with a deadline — which is why a call takes the run's `signal`
+ *  too, and dies with it. */
+export const UPSTREAM_TIMEOUT_MS = 600_000
+
+/** NO APP, NO CALL. Every model call this process makes is an app's, signed
+ *  with that app's gateway key; outside an app's code (app-scope.ts) there is
+ *  no key to sign with and no budget to charge, so the call is refused rather
+ *  than made on nobody's account. */
+export const noAppRefusal = (model: string): string =>
+  `a model call to "${model}" was made outside any app's code, and this process makes model calls only on an app's behalf — ` +
+  'on that app\'s gateway key, through the Talaria gateway. Run it from the app\'s server, MCP tool or harness.'
+
+/** A header value the relay can read: printable ASCII, bounded. The relay
+ *  keeps the stamp inside the app's namespace whatever arrives. */
+const headerSafe = (v: string): string => v.replace(/[^\x21-\x7e]/g, '').slice(0, 200)
+
+interface RelayCall {
+  /** The turn the call is for — its model, caller stamp and ledger refs. */
+  req: Pick<TransportRequest, 'model' | 'caller' | 'ledger' | 'signal'>
+  /** The chat body, exactly as the relay forwards it. */
+  body: Record<string, unknown>
+  /** An agent turn's hold window. */
+  holdMs?: number
+  /** This call's own ceiling; absent, an agent turn has none of its own and
+   *  a gateway call has `UPSTREAM_TIMEOUT_MS`. */
+  timeoutMs?: number
+}
+
+/** The relay's own sentence for a refused call — its `{ error: { message } }`
+ *  body, or the bytes it sent. */
+async function relayError(res: Response): Promise<string> {
+  const text = await res.text().catch(() => '')
+  try {
+    const j = JSON.parse(text) as { error?: { message?: unknown } | string }
+    const message = typeof j.error === 'string' ? j.error : j.error?.message
+    if (typeof message === 'string' && message) return `gateway completion ${res.status}: ${message.slice(0, 400)}`
+  } catch {
+    // not JSON: the bytes below
+  }
+  return `gateway completion ${res.status}: ${text.slice(0, 400)}`
+}
+
+/** POST one call to the relay as the app in scope, and hand back its answer
+ *  — a 2xx, or a throw carrying the relay's own sentence (a budget, an
+ *  unknown model, an upstream that refused). A key the relay does not know
+ *  any more (the app was disabled and enabled again, which rotates it) is
+ *  forgotten and asked for once more. */
+async function relay(call: RelayCall): Promise<Response> {
+  const slug = appInScope()
+  if (!slug) throw new Error(noAppRefusal(call.req.model))
+  const base = rustApiUrl()
+  if (base === undefined) {
+    throw new Error('the api is stood down in this process (TALARIA_RUST_API_URL=off), so there is no gateway to make a model call through')
+  }
+  const led = call.req.ledger
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    [RELAY_HEADERS.caller]: headerSafe(call.req.caller),
+  }
+  if (led?.refId) headers[RELAY_HEADERS.refId] = headerSafe(led.refId)
+  if (led?.taskId) headers[RELAY_HEADERS.taskId] = headerSafe(led.taskId)
+  if (call.holdMs !== undefined) headers[RELAY_HEADERS.holdMs] = String(Math.max(1, Math.round(call.holdMs)))
+  const ceiling = call.timeoutMs !== undefined ? AbortSignal.timeout(call.timeoutMs) : null
+  const signals = [call.req.signal, ceiling].filter((x): x is AbortSignal => x != null)
+  const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]
+  const payload = JSON.stringify(call.body)
+  for (let attempt = 0; ; attempt++) {
+    const key = await appGatewayKey(slug)
+    const res = await fetch(`${base}${RELAY_PATH}`, {
+      method: 'POST',
+      headers: { ...headers, authorization: `Bearer ${key}` },
+      body: payload,
+      redirect: 'manual',
+      ...(signal ? { signal } : {}),
+    })
+    if (res.status === 401 && attempt === 0) {
+      await res.body?.cancel().catch(() => {})
+      forgetAppGatewayKey(slug)
+      continue
+    }
+    if (!res.ok) throw new Error(await relayError(res))
+    return res
+  }
+}
+
+/** The contract capabilities the relay says did not reach the model. */
+const contractDropsOf = (res: Response): string[] =>
+  (res.headers.get(RELAY_HEADERS.contractDrops) ?? '')
+    .split(',')
+    .map((c) => c.trim())
+    .filter(Boolean)
+
+const tokens = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0)
+
+/** A completion body's usage as the transports report it — the provider's
+ *  own counts, which is what the fitness replay scores and the relay booked.
+ *  Null when the provider sent none. */
+const usageOf = (u: unknown): TransportReply['usage'] => {
+  if (!u || typeof u !== 'object') return null
+  const r = u as Record<string, unknown>
+  return { promptTokens: tokens(r.prompt_tokens ?? r.input_tokens), completionTokens: tokens(r.completion_tokens ?? r.output_tokens) }
 }
 
 // ── The two real transports ──────────────────────────────────────────────────
 
-/** Non-streaming completion over the ORG gateway: routing, provider keys and
- *  the ledger row are all its business, so this transport does not meter.
- *
- *  Three things travel on this call and each one closes an audit finding:
- *    `responseFormat` constrains decoding at the protocol level (1.3 - the slot
- *                     whose absence made inbox-focus grow a second, weaker
- *                     request helper). The prompt anchor goes out too; they are
- *                     belt and braces, not alternatives.
- *    `guard: false`   this runner does the guard pass itself, with the
- *                     harness's narrowed rule set and an honest `Available` for
- *                     the transport that ran. Leaving `guardCompletion` on
- *                     underneath would file two guard_findings rows for one
- *                     reply and inflate the per-model confabulation rate the
- *                     fitness page reads.
- *    `contractDrops`  whether the constraint actually reached the model (1.2).
- *                     Only a JSON drop concerns THIS call: a dropped `tools`
- *                     parameter is a real fact about the model and the gateway
- *                     has recorded it as one, but it cannot have changed the
- *                     shape of a completion that requested no tools. A turn that
- *                     DID offer tools goes through `gatewayToolTurn` below,
- *                     where the same drop fails the call outright. */
 /** AN ERROR, NOT A SILENT NO-OP, and this is the rule the whole request type is
  *  built on: a field that cannot be honored fails the call. Dropping `tools:
  *  'own'` would run a tool-loop harness as a single-shot completion, which does
@@ -402,8 +511,8 @@ export const gatewayToolsRefusal = (model: string): string =>
  *  `scoreTools` would read "called no tool" off a turn where no tool was ever
  *  offered and write `tools: false` — permanently, since probe facts do not
  *  expire — about a model that may well call tools perfectly. */
-export const toolDefsDroppedRefusal = (model: string, endpoint: string): string =>
-  `harness turn on "${model}" offered the model tool definitions, but endpoint "${endpoint}" rejects the "tools" parameter, ` +
+export const toolDefsDroppedRefusal = (model: string): string =>
+  `harness turn on "${model}" offered the model tool definitions, but the endpoint serving it rejects the "tools" parameter, ` +
   'so the call would have reached the model without them. Refusing rather than answering a question the model was never asked.'
 
 /** A streamed turn cannot offer tools either, for a duller reason than the other
@@ -412,8 +521,8 @@ export const streamToolDefsRefusal = (model: string): string =>
   `harness turn on "${model}" offered tool definitions on a STREAMING transport, which assembles text deltas only. ` +
   'Run a tool-offering turn through the blocking transport.'
 
-/** THE THIRD REFUSAL. A persona's tool loop belongs to the agent: `proxyChat`
- *  hands the payload to the agent's own gateway, which runs Hermes' tool loop
+/** THE THIRD REFUSAL. A persona's tool loop belongs to the agent: the persona
+ *  door hands the payload to the agent's own gateway, which runs Hermes' tool loop
  *  with the agent's own tools, and `parseAgentStream` reports tool NAMES with no
  *  arguments and no way to tell ours from its own. So definitions we sent are
  *  neither guaranteed to reach the model nor observable when they do, which is
@@ -443,21 +552,25 @@ interface WireToolCall {
 const readToolCalls = (raw: WireToolCall[] | undefined): ToolCall[] =>
   (raw ?? []).flatMap((tc, i) => (tc.function?.name ? [{ name: tc.function.name, args: tc.function.arguments ?? '', id: tc.id ?? `call_${i}` }] : []))
 
-/** The gateway call that OFFERS TOOLS, and the reason it is not
- *  `completeViaGateway`: that helper's signature has no slot for tool
- *  definitions and its return type is a string, so it can neither ask the
- *  question nor report the answer. This walks the same route the same way
- *  `gatewayStream` does — `buildUpstream` for the provider key and the
- *  request_defaults merge, `fetchUpstream` for the 400-recovery loop and the
- *  contract-drop record, `recordGatewayUsage` for the ledger row that helper
- *  writes itself.
+/** ONE BLOCKING GATEWAY CALL, as the relay should see it. Whether it offers
+ *  tools, replays a tool round or does neither, the request is decided here.
+ *
+ *  Three things travel on it and each one closes an audit finding:
+ *    `response_format` constrains decoding at the protocol level (1.3). The
+ *                      prompt anchor goes out too; they are belt and braces.
+ *    no guard          the relay runs no guard pass for an app's key: this
+ *                      runner guards with the harness's narrowed rule set and
+ *                      an honest `Available`, and a second pass would file two
+ *                      guard_findings rows for one reply.
+ *    contract drops    whether the constraint reached the model (1.2), from
+ *                      the relay's `x-talaria-contract-drops`. A dropped JSON
+ *                      constraint is reported; a dropped `tools` parameter on
+ *                      a turn that OFFERED tools fails the call outright.
  *
  *  `tool_choice: 'auto'` rather than the policy's `'none'`: `ToolPolicy` governs
  *  the model's OWN tools and this turn is about ours, so suppressing them here
  *  would send four definitions and forbid calling any of them. */
-async function gatewayToolTurn(req: TransportRequest, defs: ToolDefinition[]): Promise<TransportReply> {
-  const route = await resolveRoute(req.model)
-  if (!route) throw new Error(`model "${req.model}" is not on the gateway`)
+async function gatewayCall(req: TransportRequest, defs: ToolDefinition[], toolTurn: boolean): Promise<TransportReply> {
   const body: Record<string, unknown> = {
     model: req.model,
     // `toolWireMessage`, NOT a flatten to `{role, content}`. This is the one
@@ -504,43 +617,34 @@ async function gatewayToolTurn(req: TransportRequest, defs: ToolDefinition[]): P
   // alternative is a 400 the ratchet would answer by stripping effort from every
   // future turn on that model.
   if (defs.length) body.reasoning_effort = 'none'
+  // A turn with no tool channel at all is an ordinary completion, and the
+  // user's effort pick rides on it.
+  else if (!toolTurn && req.effort) body.reasoning_effort = req.effort
   const toolFormat = responseFormatOf(req)
   if (toolFormat) body.response_format = toolFormat
-  const call = await buildUpstream(route, body)
-  const res = await fetchUpstream(call, route)
-  if (!res.ok) throw new Error(`gateway completion ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`)
+  const res = await relay({ req, body, timeoutMs: UPSTREAM_TIMEOUT_MS })
   // BEFORE THE BODY IS READ, because a dropped `tools` parameter makes the body
-  // an answer to a different question. `buildUpstream` pre-strips a remembered
-  // rejection and `fetchUpstream` strips a live one, and both record the drop on
-  // the call — so this one check covers the remembered case and the 400 case.
-  const drops = contractDropsOf(call)
-  if (drops.some((d) => d.capability === 'tools')) throw new Error(toolDefsDroppedRefusal(req.model, route.endpoint.name))
+  // an answer to a different question. The relay pre-strips a remembered
+  // rejection and strips a live one, and says so either way.
+  const drops = contractDropsOf(res)
+  if (defs.length && drops.includes('tools')) {
+    await res.body?.cancel().catch(() => {})
+    throw new Error(toolDefsDroppedRefusal(req.model))
+  }
 
   const j = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string; tool_calls?: WireToolCall[] } }>
-    usage?: { prompt_tokens?: number; completion_tokens?: number }
+    choices?: Array<{ message?: { content?: string | null; tool_calls?: WireToolCall[] } }>
+    usage?: unknown
   }
   const message = j.choices?.[0]?.message
   const text = message?.content ?? ''
+  const usage = usageOf(j.usage)
+  const contractDropped = drops.includes('json')
+  // ABSENT IS NOT EMPTY (see `TransportReply.toolCalls`): only a turn that
+  // speaks the tool channel reports what was called.
+  if (!toolTurn) return { kind: 'gateway', text, toolNames: [], usage, contractDropped }
   const toolCalls = readToolCalls(message?.tool_calls)
-  const usage = j.usage ? { promptTokens: j.usage.prompt_tokens ?? 0, completionTokens: j.usage.completion_tokens ?? 0 } : null
-  const promptChars = req.messages.reduce((n, m) => n + m.content.length, 0)
-  await recordGatewayUsage({
-    caller: req.caller,
-    endpoint: route.endpoint,
-    upstreamModel: route.upstreamModel,
-    promptTokens: usage?.promptTokens ?? estimateTokens(promptChars),
-    completionTokens: usage?.completionTokens ?? estimateTokens(text.length),
-    estimated: !usage,
-  }).catch(() => {})
-  return {
-    kind: 'gateway',
-    text,
-    toolNames: toolNamesOf(toolCalls),
-    toolCalls,
-    usage,
-    contractDropped: drops.some((d) => d.capability === 'json'),
-  }
+  return { kind: 'gateway', text, toolNames: toolNamesOf(toolCalls), toolCalls, usage, contractDropped }
 }
 
 /** Does this conversation CONTAIN a tool round — an assistant turn that called
@@ -566,16 +670,11 @@ export const gatewayTransport: Transport = async (req) => {
   //
   // Three tool turns came back 200 and the fourth 400'd, which is why this read
   // as "the model cannot reach the search tool" — the search had already worked.
-  if (defs.length || replaysTools(req)) return gatewayToolTurn(req, defs)
-  const res = await completeViaGateway(req.model, req.messages, {
-    ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-    caller: req.caller,
-    ...(responseFormatOf(req) ? { responseFormat: responseFormatOf(req)! } : {}),
-    ...(req.effort ? { effort: req.effort } : {}),
-    guard: false,
-  })
-  const droppedJson = res.contractDrops.some((d) => d.capability === 'json')
-  return { kind: 'gateway', text: res.text, toolNames: [], usage: null, contractDropped: droppedJson }
+  //
+  // So the tool channel is rendered whenever the conversation carries one,
+  // offered or not — `toolWireMessage` renders a plain message exactly as a
+  // flatten would, so the ordinary completion goes through the same body.
+  return gatewayCall(req, defs, defs.length > 0 || replaysTools(req))
 }
 
 /** The `response_format` this request should carry, prefering the harness's
@@ -678,9 +777,10 @@ export const toolCallIdOf = (call: ToolCall, index: number): string => call.id ?
  *  `Message.content` is a string by construction (see the note in define.ts), so
  *  there is nowhere in a `TransportRequest` to put image bytes. Rather than widen
  *  every message in the tree into a content-parts union for one caller, the image
- *  rides its own function: the runner still resolves the model, applies the
- *  capability floor and meters the call, and this sends the one payload shape
- *  that carries pixels.
+ *  rides its own function: the runner still resolves the model and applies the
+ *  capability floor, and this sends the one payload shape that carries pixels —
+ *  through the relay, like every other call, on the gateway key of the app in
+ *  scope.
  *
  *  Used by `vision.ts` — see that file for why describing an image is a harness
  *  rather than a raw call. */
@@ -689,10 +789,8 @@ export async function gatewayImageTurn(
   messages: Message[],
   images: readonly string[],
   caller: string,
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<string> {
-  const route = await resolveRoute(model)
-  if (!route) throw new Error(`model "${model}" is not on the gateway`)
   // The LAST user turn carries the image, because that is the turn the question
   // is in — a system prompt with pictures attached is a shape providers accept
   // and models ignore.
@@ -708,86 +806,23 @@ export async function gatewayImageTurn(
       ],
     }
   }
-  const call = {
-    ...(await buildUpstream(route, { model, messages: wire, stream: false })),
-    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
-  }
-  const res = await fetchUpstream(call, route)
-  if (!res.ok) throw new Error(`gateway completion ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`)
-  const j = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>
-    usage?: { prompt_tokens?: number; completion_tokens?: number }
-  }
-  const text = j.choices?.[0]?.message?.content ?? ''
-  await recordGatewayUsage({
-    caller,
-    endpoint: route.endpoint,
-    upstreamModel: route.upstreamModel,
-    promptTokens: j.usage?.prompt_tokens ?? estimateTokens(messages.reduce((n, m) => n + m.content.length, 0)),
-    completionTokens: j.usage?.completion_tokens ?? estimateTokens(text.length),
-    estimated: !j.usage,
-  }).catch(() => {})
-  return text
-}
-
-/** A PERSONA TURN THE PROBE SUITE CAN DRIVE — one blocking round trip against a
- *  fleet agent, returning the assembled turn rather than a stream.
- *
- *  WHY IT IS NOT `fleetTransport`. Two reasons, and the second is the load-bearing
- *  one. A probe wants the raw turn — text AND the tool names the persona reported
- *  — without a harness's contract wrapped around it. And a probe may carry an
- *  IMAGE, which a `TransportRequest` has nowhere to put (`Message.content` is a
- *  string by construction; see the note in define.ts). So this takes messages and
- *  images directly, exactly as `gatewayImageTurn` does on the other side of the
- *  `offersToolDefinitions` fork, and the vision probe can be asked of a persona
- *  and a gateway model with the same call shape. */
-export async function personaProbeTurn(
-  model: string,
-  messages: Message[],
-  opts: { images?: readonly string[]; caller: string; timeoutMs?: number } = { caller: 'probe' },
-): Promise<PersonaTurn> {
-  const images = opts.images ?? []
-  const wire: Array<{ role: string; content: unknown }> = messages.map((m) => ({ role: m.role, content: m.content }))
-  if (images.length > 0) {
-    // The last user turn carries the image: it is the turn the question is in,
-    // and a system prompt with pictures attached is a shape providers accept and
-    // models ignore.
-    const lastUser = wire.map((m) => m.role).lastIndexOf('user')
-    const target = lastUser >= 0 ? lastUser : wire.length - 1
-    const at = wire[target]
-    if (at) {
-      wire[target] = {
-        role: at.role,
-        content: [{ type: 'text', text: String(at.content ?? '') }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))],
-      }
-    }
-  }
-  const upstream = await proxyChat(
-    { model, messages: wire } as unknown as Parameters<typeof proxyChat>[0],
-    opts.timeoutMs !== undefined ? { waitMs: opts.timeoutMs } : {},
-  )
-  if (!upstream.ok || !upstream.body) throw new Error(`persona gateway ${upstream.status}`)
-  const canned = upstream.headers.get(CANNED_STREAM_HEADER)
-  if (canned) {
-    await upstream.body.cancel().catch(() => {})
-    throw new Error(`"${model}" is not a rendered agent (the agents service answered in mock mode)`)
-  }
-  return pumpPersonaStream(upstream.body)
+  const res = await relay({
+    req: { model, caller, ...(opts.signal ? { signal: opts.signal } : {}) },
+    body: { model, messages: wire, stream: false },
+    timeoutMs: opts.timeoutMs ?? UPSTREAM_TIMEOUT_MS,
+  })
+  const j = (await res.json()) as { choices?: Array<{ message?: { content?: string | null } }> }
+  return j.choices?.[0]?.message?.content ?? ''
 }
 
 /** The gateway transport, STREAMED — the sibling of `fleetStream`, and the piece
  *  that makes "a harness may stream" true of both transports rather than only of
- *  personas. The Muse's six prose kinds draft against an ORG GATEWAY model, so
- *  without this they would keep a hand-written `buildUpstream` + `fetchUpstream`
- *  pair however good `runHarnessStreamed` got.
+ *  personas.
  *
- *  `completeViaGateway` cannot serve it: it asks for `stream: false` and hands
- *  back a finished string, which is the one thing a streaming surface must not
- *  wait for. So this walks the same route, asks for `stream: true`, and emits
- *  each delta as it lands — metering exactly as `completeViaGateway` does, and
- *  reporting the same `contractDropped` signal (audit 1.2) from the same
- *  `contractDropsOf`, so a dropped `response_format` is as visible here as it is
- *  on the blocking path. */
+ *  The same relay call as the blocking side with `stream: true`, emitting each
+ *  delta as it lands. The relay meters the stream wherever it ends and reports
+ *  the same contract drops (audit 1.2) in its headers, so a dropped
+ *  `response_format` is as visible here as on the blocking path. */
 export const gatewayStream: StreamingTransport = async (req, emit) => {
   if (toolPolicyOf(req) === 'own') throw new Error(gatewayToolsRefusal(req.model))
   // A STREAMED TURN OFFERS NO TOOLS. Assembling tool calls out of deltas is a
@@ -797,8 +832,6 @@ export const gatewayStream: StreamingTransport = async (req, emit) => {
   // to refuse the field here than to grow a parser that nothing exercises and
   // that would report a half-assembled call as a real one.
   if (toolDefsOf(req).length) throw new Error(streamToolDefsRefusal(req.model))
-  const route = await resolveRoute(req.model)
-  if (!route) throw new Error(`model "${req.model}" is not on the gateway`)
   const body: Record<string, unknown> = {
     model: req.model,
     messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
@@ -808,9 +841,8 @@ export const gatewayStream: StreamingTransport = async (req, emit) => {
   if (req.effort) body.reasoning_effort = req.effort
   const toolFormat = responseFormatOf(req)
   if (toolFormat) body.response_format = toolFormat
-  const call = await buildUpstream(route, body)
-  const res = await fetchUpstream(call, route)
-  if (!res.ok || !res.body) throw new Error(`gateway completion ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`)
+  const res = await relay({ req, body, timeoutMs: UPSTREAM_TIMEOUT_MS })
+  if (!res.body) throw new Error(`gateway completion ${res.status}: the relay answered with no stream`)
 
   let text = ''
   let usage: { promptTokens: number; completionTokens: number } | null = null
@@ -828,13 +860,13 @@ export const gatewayStream: StreamingTransport = async (req, emit) => {
     for (const line of lines) {
       const data = line.startsWith('data:') ? line.slice(5).trim() : null
       if (!data || data === '[DONE]') continue
-      let frame: { usage?: { prompt_tokens?: number; completion_tokens?: number } | null; choices?: Array<{ delta?: { content?: string } }> }
+      let frame: { usage?: unknown; choices?: Array<{ delta?: { content?: string } }> }
       try {
         frame = JSON.parse(data) as typeof frame
       } catch {
         continue
       }
-      if (frame.usage) usage = { promptTokens: frame.usage.prompt_tokens ?? 0, completionTokens: frame.usage.completion_tokens ?? 0 }
+      if (frame.usage) usage = usageOf(frame.usage)
       const piece = frame.choices?.[0]?.delta?.content
       if (piece) {
         text += piece
@@ -843,34 +875,33 @@ export const gatewayStream: StreamingTransport = async (req, emit) => {
     }
   }
 
-  const promptChars = req.messages.reduce((n, m) => n + m.content.length, 0)
-  await recordGatewayUsage({
-    caller: req.caller,
-    endpoint: route.endpoint,
-    upstreamModel: route.upstreamModel,
-    promptTokens: usage?.promptTokens ?? estimateTokens(promptChars),
-    completionTokens: usage?.completionTokens ?? estimateTokens(text.length),
-    estimated: !usage,
-  }).catch(() => {})
-  return { kind: 'gateway', text, toolNames: [], usage, contractDropped: contractDropsOf(call).some((d) => d.capability === 'json') }
+  return { kind: 'gateway', text, toolNames: [], usage, contractDropped: contractDropsOf(res).includes('json') }
 }
 
-/** Streaming completion against a FLEET PERSONA's own gateway. The persona
- *  runs a tool loop we do not control, so this transport collects the tool
- *  names the stream reports and nothing more - which is precisely what the
- *  guard pass is told about it later (`guardChatReply` is the precedent). */
+/** Streaming completion against a FLEET PERSONA. The persona runs a tool loop
+ *  we do not control, so this transport collects the tool names the stream
+ *  reports and nothing more - which is precisely what the guard pass is told
+ *  about it later (`guardChatReply` is the precedent).
+ *
+ *  THROUGH THE RELAY, LIKE EVERYTHING ELSE: the app's key on the same route,
+ *  naming the agent as the model. The relay drives the turn through its
+ *  persona door with the turn recorded as the app's, so every call the agent
+ *  makes for it reaches the relay on the agent's own key and is booked there,
+ *  once, as `app` spend. This side writes no row — it used to, beside the
+ *  relay's, and the turn was metered twice. */
 async function personaTurn(req: TransportRequest, emit?: (delta: string) => void): Promise<TransportReply> {
-  // See `fleetToolDefsRefusal`: the loop on the other side of `proxyChat` is the
+  // See `fleetToolDefsRefusal`: the loop on the other side of the door is the
   // agent's, so a definition we send is neither guaranteed to arrive nor visible
   // when it is called. Refused here rather than in the two exported transports
   // so the streamed persona path cannot grow a quiet exception.
   if (toolDefsOf(req).length) throw new Error(fleetToolDefsRefusal(req.model))
-  const upstream = await proxyChat(personaPayload(req), {
-    ...(req.holdMs !== undefined ? { waitMs: req.holdMs } : {}),
-    ...(req.signal ? { signal: req.signal } : {}),
-  })
-  if (!upstream.ok || !upstream.body) throw new Error(`persona gateway ${upstream.status}`)
-  // A CANNED STREAM IS AN OUTAGE WEARING A 200. `proxyChat` answers an agent
+  const upstream = await relay({ req, body: personaPayload(req), ...(req.holdMs !== undefined ? { holdMs: req.holdMs } : {}) }).catch(
+    (e: unknown) => {
+      throw new Error(`persona gateway: ${e instanceof Error ? e.message : String(e)}`)
+    },
+  )
+  if (!upstream.body) throw new Error(`persona gateway ${upstream.status}`)
+  // A CANNED STREAM IS AN OUTAGE WEARING A 200. The persona door answers an agent
   // that never came back — and one that was never rendered — with an English
   // sentence streamed in OpenAI chunk format, which is the right thing to show a
   // human in a chat window and indistinguishable from a model reply to
@@ -878,13 +909,12 @@ async function personaTurn(req: TransportRequest, emit?: (delta: string) => void
   // runner recorded a held contract, and the sentence was persisted as the
   // agent's work. It is a failed call, so it fails like one: the harness gets
   // `value: null`, the row carries the reason, and the caller keeps what it had.
-  const canned = upstream.headers.get(CANNED_STREAM_HEADER)
+  const canned = upstream.headers.get(RELAY_HEADERS.canned)
   if (canned) {
     await upstream.body.cancel().catch(() => {})
     throw new Error(canned === 'mock' ? `"${req.model}" is not a rendered agent (the agents service answered in mock mode)` : `persona "${req.model}" did not come back within the hold window`)
   }
   const turn = await pumpPersonaStream(upstream.body, emit)
-  await meterPersonaTurn(req, turn)
   // `personaPayload` cannot put `response_format` anywhere Hermes reads it, so a
   // JSON request's protocol constraint never held: say so, the way a gateway
   // that stripped the parameter does.
@@ -906,17 +936,20 @@ export const fleetStream: StreamingTransport = (req, emit) => personaTurn(req, e
 
 /** THE TRANSPORT RULE, in one place so no harness author ever restates it:
  *
- *    a model the ORG GATEWAY serves goes through `completeViaGateway`;
- *    a model that is a LIVE FLEET PERSONA goes through `proxyChat`;
+ *    a model the ORG GATEWAY serves is a gateway call;
+ *    a model that is a LIVE FLEET PERSONA is a persona turn;
  *    the gateway wins when a model is somehow both.
  *
- *  The gateway wins because it is the metered, fully-inspectable path: it knows
- *  the endpoint, it writes the ledger row itself, and the runner gets the whole
- *  message history to guard against. A persona's tool loop runs inside the
+ *  Both go through the relay, which applies the same rule; this side decides
+ *  first because the two refuse different requests (`gatewayToolsRefusal`,
+ *  `fleetToolDefsRefusal`) and report different things to the guard.
+ *
+ *  The gateway wins because it is the fully-inspectable path: it knows the
+ *  endpoint, and the runner gets the whole message history to guard against. A persona's tool loop runs inside the
  *  agent container, so that path can only ever offer tool names.
  *
  *  "Live" is load-bearing. `listAgents` answers with three MOCK agents and
- *  `source: 'mock'` when the fleet has never been rendered, and `proxyChat`
+ *  `source: 'mock'` when the fleet has never been rendered, and the persona door
  *  answers an unknown model with a canned "this is a mock" stream. Treating a
  *  mock as a persona would hand a harness a chatty English sentence to parse as
  *  its verdict, so only `source: 'gateway'` counts.
@@ -963,9 +996,9 @@ async function transportKind(model: string): Promise<'gateway' | 'fleet'> {
   if (fleet.some((a) => a.id === model)) return 'fleet'
   const cut = model.lastIndexOf('-')
   if (cut > 0 && fleet.some((a) => a.id === model.slice(0, cut))) return 'fleet'
-  // Neither: let the gateway say so. `completeViaGateway` throws a precise
-  // "model X is not on the gateway", which is a better failure than a
-  // persona stream that looks like an answer.
+  // Neither: let the gateway say so. The relay answers a precise `unknown
+  // model "X"`, which is a better failure than a persona stream that looks
+  // like an answer.
   return 'gateway'
 }
 

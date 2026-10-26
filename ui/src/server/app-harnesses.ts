@@ -39,9 +39,14 @@ import { defineHarness, isGap, NO_TOOLS, type EvalBand, type HarnessDefinition }
 import { runHarness, type HarnessDeps, type HarnessResult, type HarnessRunRow } from './harness/run'
 import { defaultTransport, type Transport } from './harness/transport'
 import { enabledApps } from './apps'
+import { withApp } from './app-scope'
 import { loadAppHarnesses, type AppHarnessFile } from './app-load'
 import { readCurrent, writeCurrent } from './app-build/status'
-import { estimateTokens } from './usage'
+
+/** The ledger's chars/4 fallback (talaria-gateway `estimate_tokens`), for a
+ *  replay whose reply carried no usage — so the fitness page and the invoice
+ *  estimate one call the same way. */
+const estimateTokens = (chars: number): number => Math.ceil(chars / 4)
 
 /** The ids the api's builtin registry ships (`EXPECTED_IDS` in
  *  api/crates/talaria-harness-defs/src/registry.rs). An app harness may not
@@ -512,8 +517,8 @@ export function wireOf(h: AppHarness): AppHarnessWire {
  *  swapped: `recordRun` and `recordFindings` capture instead of filing, the
  *  same rule the Rust sweep keeps (a benchmark must not write into the
  *  `harness_runs` and `guard_findings` it is compared against). Token spend is
- *  real spend and reaches the usage ledger through the transport, as every
- *  sweep case's does. */
+ *  real spend: the relay books it as the app's, and the counts below are the
+ *  provider's own, off the reply. */
 export interface CaseReplay {
   harness: string
   case: string
@@ -540,7 +545,9 @@ export interface CaseReplay {
   prompt: string
   promptTokens: number
   completionTokens: number
-  /** The token counts are a chars/4 estimate: the transport reported none. */
+  /** The token counts are a chars/4 estimate: the reply carried no usage —
+   *  a provider that sends none, or an agent turn whose stream reported none.
+   *  A gateway reply's own counts reach here through the relay. */
   estimated: boolean
 }
 
@@ -575,19 +582,23 @@ export async function replayAppCase(h: AppHarness, name: string, model: string, 
   let result: HarnessResult<unknown> | null = null
   let threw: string | null = null
   try {
-    result = await runHarness(h.def, fixture.input, {
-      caller: `fitness:${h.def.id}`,
-      model,
-      ...(opts.signal ? { signal: opts.signal } : {}),
-      deps: {
-        ...opts.deps,
-        transport,
-        recordRun: async (row) => {
-          capture.row = row
+    // AS THE APP: the replay's calls go to the gateway on the app's key and
+    // land in its ledger as `app` spend, under this stamp.
+    result = await withApp(h.slug, () =>
+      runHarness(h.def, fixture.input, {
+        caller: `app:${h.slug}:fitness:${h.def.id}`,
+        model,
+        ...(opts.signal ? { signal: opts.signal } : {}),
+        deps: {
+          ...opts.deps,
+          transport,
+          recordRun: async (row) => {
+            capture.row = row
+          },
+          recordFindings: async () => {},
         },
-        recordFindings: async () => {},
-      },
-    })
+      }),
+    )
   } catch (e) {
     // `onFailure: 'throw'` throws by declaration; the row was captured before
     // it did, so the case still reads what happened.

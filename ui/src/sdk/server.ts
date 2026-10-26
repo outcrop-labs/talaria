@@ -262,9 +262,10 @@ export { defineHarness } from '@/server/harness/define'
 // files), so the SDK is the only road in and these two are app surface:
 //
 //   runHarness          — the one runner: resolve, floor, widen, render, call,
-//                         parse, repair, guard, redact, meter, `harness_runs`
-//                         row. Same function the platform's own TS harnesses
-//                         use; an app calling it gets the same accounting.
+//                         parse, repair, guard, redact, `harness_runs` row.
+//                         Every call it makes goes to the Talaria gateway on
+//                         the app's own key and is booked there as the app's
+//                         spend (docs/sdk/harnesses.md, "Where the calls go").
 //   resolveHarnessModel — the free probe (no model call): what chain would
 //                         carry a harness with this spec, or null. A bridge
 //                         labels itself honestly without spending a turn.
