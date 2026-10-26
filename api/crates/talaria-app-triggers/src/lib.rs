@@ -641,6 +641,8 @@ pub async fn trigger_report(pg: &PgPool, slug: &str) -> Value {
         Option<String>,
         Option<String>,
     );
+    // The newest few PER TRIGGER: a schedule firing every minute must not
+    // crowd an event trigger that last ran yesterday out of the listing.
     let rows: Vec<RunRow> = sqlx::query_as(
         "select trigger_id, state, event, \
            (extract(epoch from due_at) * 1000)::bigint, \
@@ -648,10 +650,13 @@ pub async fn trigger_report(pg: &PgPool, slug: &str) -> Value {
            (extract(epoch from started_at) * 1000)::bigint, \
            (extract(epoch from finished_at) * 1000)::bigint, \
            detail, error \
-         from app_trigger_runs where app_slug = $1 \
-         order by queued_at desc limit 200",
+         from (select *, row_number() over (partition by trigger_id order by queued_at desc) as n \
+               from app_trigger_runs where app_slug = $1) newest \
+         where n <= $2 \
+         order by queued_at desc",
     )
     .bind(slug)
+    .bind(REPORT_RUNS as i64)
     .fetch_all(pg)
     .await
     .unwrap_or_else(|e| {
