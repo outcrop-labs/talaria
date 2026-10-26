@@ -39,8 +39,9 @@ failure behavior — it *declares* them, and `run_harness` honors the declaratio
 | `api/crates/talaria-harness-prompt-rules/src/lib.rs` | The prompt clauses more than one harness states — the untrusted-input boundary, and the list of harnesses that carry it. |
 
 The TS twin of the layer (`ui/src/server/harness/`) is the **app-author plane**: `ui/src/sdk/server.ts`
-re-exports it as `@talaria/sdk`'s server contract — `defineHarness`, `runHarness` and the types — and
-app-shipped harnesses are TS by the api's rule 10 — customer code, never port surface. The app host
+re-exports it as `@talaria/sdk`'s server contract — `defineHarness`, the types, and the runner an app
+reaches as `ctx.harness`, which the host binds to the caller (`ui/src/server/app-harness-runner.ts`) —
+and app-shipped harnesses are TS by the api's rule 10 — customer code, never port surface. The app host
 loads and checks them, and the api registers them as data and replays their fixtures through the
 host; see [Shipping one from an app](#how-to-add-a-harness) below. A platform harness is written in
 Rust.
@@ -550,10 +551,28 @@ like this:
   entry at a time, so an entry it cannot read costs that harness, never the other apps'.
 - **Its runs count.** The rows its `server.ts` runs write to `harness_runs` count in the value
   view's workload while the app is enabled.
+- **It runs bound to its caller.** The app reaches the runner as `ctx.harness.run` /
+  `ctx.harness.stream` on its request and MCP tool contexts, built by one factory
+  (`appHarnessRunner`, `ui/src/server/app-harness-runner.ts`) from the identity the host already
+  authenticated. The host stamps the caller `app:<slug>:<harness id>` and books the spend to ledger
+  source `app` (`LedgerSource::App`). It re-applies the load checks to the definition, so a
+  definition built without `defineHarness` still gets the JSON floor. It accepts no `deps`. An agent
+  pin is checked against the caller: from a request, an agent `usable_agent_gate` lets the
+  signed-in member use (asked through `GET /api/agents` with their session); from an MCP tool, only
+  the calling agent, proven by its own key; from a trigger, none. A gateway-model pin is held to the
+  member model allowlist (`modelAllowedFor`) of the person the run acts for. A refusal makes no
+  model call and follows the harness's `onFailure`.
+- **It has its own model setting.** Every app harness has a slot, `app:<slug>/<harness id>`
+  (`ModelSpec.slot`, set by the host and never by the app). The `slot` chain step resolves it before
+  `role` in any chain, from the `app_harness_models` setting that both resolvers read: TS
+  `app-harness-models.ts`, Rust `talaria-harness-model`. An admin assigns it under the matrix in
+  Admin → Models → Fitness (`PUT /api/admin/app-harness-models`). Like a platform pin, it is not
+  gated by the member allowlist, and it wins only while it routes.
 
 The third layer, admin-custom, is deliberately empty: an activity harness carries code (`render`,
 `verify`, `check`), and Talaria does not run code out of a database row. What an admin *can*
-customize is the model each platform harness runs on.
+customize is the model each platform harness runs on, and the model each app harness runs on (its
+slot, above).
 
 **If an admin should be able to assign this harness a model**, it needs a `PLATFORM_AGENTS` entry and
 `model.pin` pointing at it; the registry's tests lock the harness↔platform-agent correspondence in both
@@ -777,8 +796,8 @@ copying the step order into a file where it would become an eighth spelling of t
 **App slots** are the exception: one `app` column per harness an enabled app ships (`app_slots`),
 keyed `app:<slug>/<harness id>` and labelled `<App name> · <label>`. Each is bound to its own
 harness only. An app harness never binds into a role, agent or fleet column, whatever its `model`
-spec names: its model is its app's choice, and a third-party fixture must not move the verdict on a
-slot the platform's own features run on.
+spec names: its model is its own slot's setting, which an admin assigns under the matrix, and a
+third-party fixture must not move the verdict on a slot the platform's own features run on.
 
 A verdict is produced for **every slot**; the matrix draws a **column only for the ones a harness can
 reach**. The five it drops are `unbound` for every model forever, and they are dead for

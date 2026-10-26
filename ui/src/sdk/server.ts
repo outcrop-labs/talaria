@@ -12,6 +12,7 @@ import type { SessionUser } from '@/server/auth/session'
 import type { AppStore } from '@/server/app-store'
 import type { PlatformApi, PlatformApiInit } from '@/server/app-context'
 import type { TOOL_RESULT } from '@/server/app-mcp-call'
+import type { AppHarnessRunner } from '@/server/app-harness-runner'
 
 export { json }
 // What `ctx.api` throws on a non-2xx answer: `status` and the server's own
@@ -76,8 +77,16 @@ export interface AppRequestContext {
    *  hosts; every read is audited. Never send the value to the browser. */
   secret: (name: string) => Promise<string | null>
   /** Aborts when the caller disconnects before the answer is done. Pass it to
-   *  long work (`runHarness`, `fetch`) so it stops spending for nobody. */
+   *  long work (`fetch`) so it stops spending for nobody; `ctx.harness`
+   *  already follows it. */
   signal: AbortSignal
+  /** Run a harness as this caller — `ctx.harness.run(def, input, opts)` and
+   *  `ctx.harness.stream(def, input, { onDelta })`. The host binds it: the run
+   *  is booked to this app (`app:<slug>:<harnessId>`, ledger source `app`),
+   *  it gets the harness's own admin-assigned model first, and a pin is
+   *  checked — an agent only if the signed-in person may use it, a gateway
+   *  model only if the member model allowlist opens it to them. */
+  harness: AppHarnessRunner
 }
 
 export interface AppServer {
@@ -126,9 +135,15 @@ export interface AppMcpContext {
   store: AppStore
   /** Aborts at the server's deadline — its timeout in Manage → MCP, 120 s
    *  unless an admin set one — or when the agent disconnects. Pass it to long
-   *  work (`fetch`, `runHarness`); the gateway answers at that moment either
-   *  way, and nothing the handler returns afterwards reaches anyone. */
+   *  work (`fetch`); `ctx.harness` already follows it. The gateway answers at
+   *  that moment either way, and nothing the handler returns afterwards
+   *  reaches anyone. */
   signal: AbortSignal
+  /** Run a harness for this call — booked to this app, its own model setting
+   *  first. From a tool, a harness may run on an agent only if it is the
+   *  agent calling the tool, proven by its own key; a gateway model pin is
+   *  held to the member model allowlist of the person the agent acts for. */
+  harness: AppHarnessRunner
 }
 
 /** One MCP content block, as a `toolResult` carries it. */
@@ -272,6 +287,20 @@ export { defineHarness } from '@/server/harness/define'
 // `RunContext` rides along by the same argument as `ToolDefinition` above: a
 // bridge that builds its context apart from the call (caller now, signal from
 // the request) has no type to annotate it with otherwise.
-export { runHarness } from '@/server/harness/run'
-export type { RunContext } from '@/server/harness/run'
+//
+// THE FREE RUNNER IS THE ROAD WITH NO CHECKS, kept for apps written before
+// `ctx.harness`: the caller string, the pin and the ledger are whatever the app
+// says. Two things changed under it. `deps` is no longer in its type, and is
+// dropped if passed anyway — nothing an app hands over replaces the guard, the
+// transport or the recorders (`@talaria/sdk/testing`'s `runHarnessOffline`
+// runs a harness against scripted replies). And pinning a fleet agent logs a
+// warning, because nothing here checks the caller may use that agent.
+// `ctx.harness.run` checks; prefer it.
+export { runHarnessForApp as runHarness } from '@/server/app-harness-runner'
+export type { AppRunContext as RunContext } from '@/server/app-harness-runner'
 export { resolveHarnessModel } from '@/server/harness/model'
+
+// ── The bound runner ────────────────────────────────────────────────────────
+// `ctx.harness` on the request and MCP tool contexts: the host builds it bound
+// to the caller it authenticated (server/app-harness-runner.ts).
+export type { AppHarnessRunner, HarnessRunOptions, HarnessStreamOptions } from '@/server/app-harness-runner'

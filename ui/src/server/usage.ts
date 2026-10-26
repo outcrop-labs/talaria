@@ -92,7 +92,7 @@ export interface UsageInput extends Partial<TokenCounts> {
    *  agent-SELF-REPORTED through the retired MCP log_usage tool. None are
    *  written any more — that spend was already metered at the gateway, so the
    *  report counted it twice — but old rows still add to the same totals. */
-  source: 'chat' | 'channel' | 'ticket' | 'research'
+  source: 'chat' | 'channel' | 'ticket' | 'research' | 'app'
   refId?: string | null
   /** Ticket this spend belongs to (the work-session flow's metered rows). */
   taskId?: string | null

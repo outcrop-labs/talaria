@@ -61,6 +61,7 @@ cannot compile (a `$ref`, an unknown draft) are passed through unchecked.
 | `actingUserId` | The person the agent is acting for, when the gateway knows it — else `null` |
 | `store` | Your document store, the same one `server.ts` gets |
 | `signal` | Aborts at the server's deadline, or when the agent disconnects |
+| `harness` | Runs a harness for this call. It may run on an agent only if that agent is the caller, proven ([harnesses](./harnesses.md#running-one--ctxharness)) |
 
 **`caller.proven` is true only when the call came in on that agent's own gateway key.** An agent
 still on the org-wide `TALARIA_AGENT_KEY` (the legacy shared key, on until an admin closes it) is
@@ -78,8 +79,8 @@ record attributes the call to.
 Manage → MCP.** When it passes, `ctx.signal` aborts and the agent is answered at once with a tool
 error that says the call was cut off; when the agent disconnects first, the signal aborts too and
 the call is recorded as cancelled. A call whose agent left before it began never runs the handler.
-Pass the signal to anything long — `fetch(url, { signal: ctx.signal })`, `runHarness(…, { signal:
-ctx.signal })` — so the work stops with the call. JavaScript cannot stop a handler that ignores
+Pass the signal to anything long, such as `fetch(url, { signal: ctx.signal })`, so the work stops
+with the call. `ctx.harness` follows it already. JavaScript cannot stop a handler that ignores
 it: that one runs to its end, and nothing it returns reaches anyone. A tool that can outlast the default needs an admin to raise the server's timeout.
 
 ## Results

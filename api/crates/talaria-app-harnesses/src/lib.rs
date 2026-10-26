@@ -295,9 +295,13 @@ fn build_def(w: &AppHarnessWire) -> HarnessDefinition {
         intern(&w.job),
         // NO CHAIN, NO PIN, NO ROLE: the binding pass derives role and agent
         // columns from the spec, and an app harness belongs in its own column
-        // only — a third-party fixture must not move a platform slot.
+        // only — a third-party fixture must not move a platform slot. ITS OWN
+        // SLOT, though: `app:<slug>/<id>`, the model setting an admin assigns
+        // on that column (`app_harness_models`), derived here from the slug
+        // and the id exactly as the app host derives it.
         ModelSpec {
             pin: None,
+            slot: Some(intern(&app_harness_slot(&w.app, &w.id))),
             role: None,
             chain: Some(&[]),
             user_id: None,
@@ -340,6 +344,14 @@ fn build_def(w: &AppHarnessWire) -> HarnessDefinition {
         })
         .collect();
     def
+}
+
+/// The model-setting key of one app harness — `app:<slug>/<harnessId>`, the
+/// slot an admin assigns a model to (`ModelSpec.slot`). The app host spells it
+/// `appHarnessSlot` (ui/src/server/app-harness-models.ts); both build it from
+/// the slug and the id, never from the app's own spec.
+pub fn app_harness_slot(app: &str, harness: &str) -> String {
+    format!("app:{app}/{harness}")
 }
 
 /// One app harness from the wire, as the registry holds it — or why not.
@@ -758,6 +770,14 @@ mod tests {
         assert_eq!(h.def.model.pin, None);
         assert!(h.def.model.chain.is_some_and(|c| c.is_empty()));
         assert_eq!(talaria_harness_defs::registry::platform_agent_of(&h), None);
+        // Its own model setting: the slot the app host stamps on every run,
+        // derived from the slug and the id — the key the fitness column and
+        // `app_harness_models` share.
+        assert_eq!(h.def.model.slot, Some("app:support/support:triage"));
+        assert_eq!(
+            app_harness_slot("support", "support:triage"),
+            "app:support/support:triage"
+        );
     }
 
     #[test]

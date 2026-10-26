@@ -42,6 +42,7 @@ import { enabledApps } from './apps'
 import { loadAppHarnesses, type AppHarnessFile } from './app-load'
 import { readCurrent, writeCurrent } from './app-build/status'
 import { estimateTokens } from './usage'
+import { appHarnessSlot } from './app-harness-models'
 
 /** The ids the api's builtin registry ships (`EXPECTED_IDS` in
  *  api/crates/talaria-harness-defs/src/registry.rs). An app harness may not
@@ -477,7 +478,10 @@ export interface AppHarnessWire {
   guard: { rules: string[] | null; redact: boolean } | null
   widen: { requires: string[]; note: string } | null
   temperature: number | null
-  model: { pin: string | null; role: string | null; chain: string[] | null }
+  /** `slot` is the harness's own model setting, `app:<slug>/<id>` — what an
+   *  admin assigns in Admin → Models → Fitness, resolved before `role`. Set
+   *  by the host from the slug and the id; the app's own value is never read. */
+  model: { pin: string | null; role: string | null; chain: string[] | null; slot: string }
   evals: Array<{ name: string; band: EvalBand }>
 }
 
@@ -500,7 +504,7 @@ export function wireOf(h: AppHarness): AppHarnessWire {
     guard: d.guard ? { rules: d.guard.rules ? [...d.guard.rules] : null, redact: d.guard.redact === true } : null,
     widen: d.widen ? { requires: [...d.widen.requires], note: d.widen.note } : null,
     temperature: d.temperature ?? null,
-    model: { pin: d.model.pin ?? null, role: d.model.role ?? null, chain: d.model.chain ? [...d.model.chain] : null },
+    model: { pin: d.model.pin ?? null, role: d.model.role ?? null, chain: d.model.chain ? [...d.model.chain] : null, slot: appHarnessSlot(h.slug, d.id) },
     evals: (d.evals ?? []).map((e) => ({ name: e.name, band: e.band ?? 'standard' })),
   }
 }

@@ -26,6 +26,7 @@ import {
   type ToolDefinition,
   type ToolCall,
 } from './server'
+import { runHarnessOffline } from './testing'
 import { runHarness } from '@/server/harness/run'
 import { defineHarness as platformDefineHarness } from '@/server/harness/define'
 
@@ -83,30 +84,15 @@ const answer = (text: string): Parameters<typeof runHarness>[2] => ({
   },
 })
 
-/** The same runner, on a model whose record says it cannot produce JSON —
- *  `source` is who said so. Counts the transport calls, because the claim
- *  under test is that a refusal never reaches the model. */
-const unableToJson = (source: 'probe' | 'declared' | 'learned') => {
-  const calls = { transport: 0 }
-  const ctx: Parameters<typeof runHarness>[2] = {
-    caller: 'test:sdk-doc',
+/** The same runner, offline, on a model whose record says it cannot produce
+ *  JSON — `source` is who said so. `requests` counts the model calls, because
+ *  the claim under test is that a refusal never reaches the model. */
+const unableToJson = (source: 'probe' | 'declared' | 'learned', input: TriageInput) =>
+  runHarnessOffline(triage, input, {
     model: 'qwen3-14b',
-    deps: {
-      routing: async (m: string) => ({ endpoints: ['pl-main'], upstreamModel: m }),
-      transport: async () => {
-        calls.transport++
-        return { kind: 'gateway' as const, text: '{"severity":"high","reason":"total checkout outage"}', toolNames: [], usage: null, contractDropped: false }
-      },
-      capabilities: async () => ({ json: { value: false, source } }),
-      missingCapabilities: async (_key, asked) => asked.filter((c) => c === 'json'),
-      guardConfig: async () => GUARD_OFF,
-      guardText: async () => [],
-      recordFindings: async () => {},
-      recordRun: async () => {},
-    },
-  }
-  return { ctx, calls }
-}
+    replies: ['{"severity":"high","reason":"total checkout outage"}'],
+    capabilities: { json: { value: false, source } },
+  })
 
 describe("SDK.md's activity-harness example", () => {
   it('runs through the real runner and satisfies its own fixture', async () => {
@@ -128,20 +114,31 @@ describe("SDK.md's activity-harness example", () => {
 
 describe("docs/sdk/harnesses.md's bridge example", () => {
   // The bridge's core, transcribed: probe, run, label. The fetch plumbing
-  // around it (path check, request.json) is not executable without a request;
-  // these expressions are the doc's, verbatim.
+  // around it (path check, request.json, the host-bound `ctx.harness`) is not
+  // executable without a request; the run here is the doc's testing road
+  // (`runHarnessOffline`), and the label expressions are the doc's, verbatim.
   it('labels the run model-vs-fallback exactly as the doc does', async () => {
-    const good = await runHarnessFromSdk(
+    const good = await runHarnessOffline(
       triage,
       { subject: 'Checkout is down', body: 'Every card declined since 09:00.' },
-      answer('{"severity":"high","reason":"total checkout outage"}'),
+      { model: 'qwen3-14b', replies: ['{"severity":"high","reason":"total checkout outage"}'] },
     )
     expect(good.value?.severity).toBe('high')
     expect(good.value ? `model:${good.model}` : 'fallback').toBe('model:qwen3-14b')
 
-    const prose = await runHarnessFromSdk(triage, { subject: 'hi', body: 'hello' }, answer('I would say this is probably medium?'))
+    const prose = await runHarnessOffline(triage, { subject: 'hi', body: 'hello' }, { model: 'qwen3-14b', replies: ['I would say this is probably medium?'] })
     expect(prose.value).toBeNull()
     expect(prose.value ? `model:${prose.model}` : 'fallback').toBe('fallback')
+  })
+
+  it("runHarnessOffline repairs once on a malformed reply, as production does, and shows the prompts", async () => {
+    const run = await runHarnessOffline(triage, { subject: 'Checkout is down', body: 'Every card declined.' }, {
+      replies: ['not json', '{"severity":"high","reason":"outage"}'],
+    })
+    expect(run.repairs).toBe(1)
+    expect(run.value?.severity).toBe('high')
+    expect(run.requests).toHaveLength(2)
+    expect(run.requests[0]!.messages.at(-1)?.content).toContain('Checkout is down')
   })
 
   // The doc's probe (`resolveHarnessModel(triage.model)`) reads the org's model
@@ -180,9 +177,8 @@ describe("the SDK's defineHarness is the platform's, JSON floor included", () =>
   })
 
   it('refuses a model a probe measured unable to produce JSON, without calling it', async () => {
-    const { ctx, calls } = unableToJson('probe')
-    const run = await runHarnessFromSdk(triage, { subject: 'Checkout is down', body: 'Every card declined.' }, ctx)
-    expect(calls.transport).toBe(0)
+    const run = await unableToJson('probe', { subject: 'Checkout is down', body: 'Every card declined.' })
+    expect(run.requests).toHaveLength(0)
     expect(run.refused).toBe(true)
     expect(run.value).toBeNull()
     expect(run.error).toContain('json')
@@ -192,16 +188,14 @@ describe("the SDK's defineHarness is the platform's, JSON floor included", () =>
   })
 
   it('refuses on an admin-declared fact too', async () => {
-    const { ctx, calls } = unableToJson('declared')
-    const run = await runHarnessFromSdk(triage, { subject: 'a', body: 'b' }, ctx)
-    expect(calls.transport).toBe(0)
+    const run = await unableToJson('declared', { subject: 'a', body: 'b' })
+    expect(run.requests).toHaveLength(0)
     expect(run.refused).toBe(true)
   })
 
   it('still runs on a fact the gateway only learned from one 400', async () => {
-    const { ctx, calls } = unableToJson('learned')
-    const run = await runHarnessFromSdk(triage, { subject: 'Checkout is down', body: 'Every card declined.' }, ctx)
-    expect(calls.transport).toBe(1)
+    const run = await unableToJson('learned', { subject: 'Checkout is down', body: 'Every card declined.' })
+    expect(run.requests).toHaveLength(1)
     expect(run.refused).toBe(false)
     expect(run.value?.severity).toBe('high')
   })
@@ -236,6 +230,12 @@ describe('the rest of the exported surface, as the docs list it', () => {
     ]
     const call: ToolCall = { name: 'get_weather', args: '{"city":"Lisbon"}' }
     expect(tools[0]?.name).toBe(call.name)
+  })
+
+  it("the free runHarness's context has no deps: an app cannot swap the guard, the transport or the recorders", () => {
+    // @ts-expect-error — `deps` is not part of the SDK's RunContext.
+    const ctx: RunContext = { caller: 'app:x', deps: {} }
+    expect(ctx.caller).toBe('app:x')
   })
 
   it('exports runHarness and resolveHarnessModel, so an app bridge can run its own harnesses', () => {

@@ -7,10 +7,12 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-27 routes.
+28 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
+| [`/api/admin/app-harness-models`](#apiadminapp-harness-models) | GET | `admin` |
+| [`/api/admin/app-harness-models`](#apiadminapp-harness-models) | PUT | `admin` |
 | [`/api/admin/apps`](#apiadminapps) | GET | `session` + `view:/apps` |
 | [`/api/admin/apps`](#apiadminapps) | POST | `admin` |
 | [`/api/admin/apps`](#apiadminapps) | PUT | `admin` |
@@ -77,6 +79,27 @@
 | [`/api/admin/users`](#apiadminusers) | PUT | `admin` |
 | [`/api/admin/workspace-secrets`](#apiadminworkspace-secrets) | GET | `admin` |
 | [`/api/admin/workspace-secrets`](#apiadminworkspace-secrets) | POST | `admin` |
+
+## `/api/admin/app-harness-models`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_app_harness_models.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_app_harness_models.rs)
+
+> /api/admin/app-harness-models. The model each app harness runs on — the
+> setting an admin assigns on the harness's column in Admin → Models →
+> Fitness. GET → the assignments and the app harness slots that can take one.
+> PUT { slot, model|null } → assign (null = back to the harness's own chain).
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{assignments, slots, slotsError}` | 200 | — |
+| PUT | `admin` | [body](#put-apiadminapp-harness-models-body) | `{ok}` | 200, 400, 503 | audit |
+
+### PUT `/api/admin/app-harness-models` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `model` | `nullish` |  |
 
 ## `/api/admin/apps`
 

@@ -559,7 +559,20 @@ export function gatewayPulse(): GatewayPulse {
 export async function completeViaGateway(
   model: string,
   messages: Array<{ role: string; content: string }>,
-  opts: { temperature?: number; caller: string; responseFormat?: ResponseFormat; effort?: string; guard?: boolean; signal?: AbortSignal; timeoutMs?: number },
+  opts: {
+    temperature?: number
+    caller: string
+    /** The ledger row's `source`: `'app'` for an app's bound harness run, else the default `'gateway'`. */
+    source?: 'gateway' | 'app'
+    /** The record and ticket the spend also belongs to. */
+    refId?: string | null
+    taskId?: string | null
+    responseFormat?: ResponseFormat
+    effort?: string
+    guard?: boolean
+    signal?: AbortSignal
+    timeoutMs?: number
+  },
 ): Promise<{ text: string; contractDrops: ContractDrop[] }> {
   const route = await resolveRoute(model)
   if (!route) throw new Error(`model "${model}" is not on the gateway`)
@@ -588,6 +601,9 @@ export async function completeViaGateway(
   if (counts) {
     await recordGatewayUsage({
       caller: opts.caller,
+      ...(opts.source ? { source: opts.source } : {}),
+      refId: opts.refId ?? null,
+      taskId: opts.taskId ?? null,
       endpoint: route.endpoint,
       upstreamModel: route.upstreamModel,
       ...counts,
@@ -607,7 +623,13 @@ export async function completeViaGateway(
  *  endpoint), no agent-def classification involved. */
 export async function recordGatewayUsage(
   u: {
-    caller: string // "api:<key name>" or "user:<email>"
+    caller: string // "api:<key name>", "user:<email>" or "app:<slug>:<harnessId>"
+    /** Default 'gateway'; 'app' for an app's bound harness run. */
+    source?: 'gateway' | 'app'
+    /** The record and the ticket the spend also belongs to (an app run's
+     *  `ledger`), so it reaches the ticket's cost. */
+    refId?: string | null
+    taskId?: string | null
     endpoint: LlmEndpoint
     upstreamModel: string
     estimated: boolean
@@ -616,10 +638,10 @@ export async function recordGatewayUsage(
   const sql = await db()
   const k = (v: number | undefined | null) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0)
   await sql`
-    insert into usage_events (agent_model, source, prompt_tokens, completion_tokens,
+    insert into usage_events (agent_model, source, ref_id, task_id, prompt_tokens, completion_tokens,
                               cache_write_tokens, cache_read_tokens, reasoning_tokens,
                               estimated, endpoint_class, llm_model, endpoint)
-    values (${u.caller}, 'gateway',
+    values (${u.caller}, ${u.source ?? 'gateway'}, ${u.refId ?? null}, ${u.taskId ?? null},
             ${k(u.promptTokens)}, ${k(u.completionTokens)},
             ${k(u.cacheWriteTokens)}, ${k(u.cacheReadTokens)}, ${k(u.reasoningTokens)},
             ${u.estimated}, ${u.endpoint.class}, ${u.upstreamModel}, ${u.endpoint.name})

@@ -380,7 +380,7 @@ describe('wireOf', () => {
       guard: { rules: ['secret_leak', 'pii_leak'], redact: true },
       widen: null,
       temperature: null,
-      model: { pin: null, role: null, chain: null },
+      model: { pin: null, role: null, chain: null, slot: 'app:support/support:triage' },
       evals: [
         { name: 'an outage grades high', band: 'easy' },
         { name: 'a typo grades low', band: 'standard' },

@@ -703,6 +703,7 @@ pub fn work_session_harness() -> HarnessDefinition {
         // ticket as the assigned agent's own work.
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

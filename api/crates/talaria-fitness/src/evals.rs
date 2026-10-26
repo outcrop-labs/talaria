@@ -3513,6 +3513,7 @@ mod tests {
     fn spec() -> ModelSpec<'static> {
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: None,
             user_id: None,
