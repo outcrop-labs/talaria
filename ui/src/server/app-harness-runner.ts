@@ -38,6 +38,9 @@ import type { HarnessCheck } from './app-harnesses'
 import type { HarnessDefinition } from './harness/define'
 import type { HarnessResult, RunContext, RunLedger, runHarness as RunHarnessFn, runHarnessStreamed as RunStreamedFn } from './harness/run'
 import type { StreamingTransport } from './harness/transport'
+import type { LoopEdges, ToolOutcome } from './harness/run'
+import type { OrgToolCall } from './app-org-tools'
+import type { AppMcpCallFacts } from './app-mcp'
 
 /** What an app may say about one run. Everything else — who is calling, where
  *  the spend goes, the guard, the recorders — the host decides. */
@@ -93,6 +96,11 @@ export interface AppHarnessBinding {
   /** The app's slug. */
   app: string
   actor: HarnessActor
+  /** How a loop's `org` tool is called — as the agent that called the app's
+   *  tool, through the MCP gateway (app-org-tools.ts). Only an MCP context
+   *  with a proven caller has one; everywhere else an org tool answers the
+   *  model that it is unavailable, and why. */
+  orgTools?: OrgToolCall | null
   /** The context's own signal — the request's disconnect, the tool's
    *  deadline. Every run follows it. */
   signal?: AbortSignal
@@ -116,6 +124,8 @@ export interface RunnerEdges {
   run: typeof RunHarnessFn
   runStreamed: typeof RunStreamedFn
   streamTransport: (model: string) => Promise<StreamingTransport>
+  /** One of the app's own MCP tools, through the app MCP dispatch. */
+  ownTool: (slug: string, tool: string, args: Record<string, unknown>, facts: AppMcpCallFacts) => Promise<ToolOutcome>
   warn: (message: string) => void
 }
 
@@ -131,7 +141,7 @@ let real: Promise<RunnerEdges> | null = null
 /** The real edges, imported on first use and kept. */
 const realEdges = (): Promise<RunnerEdges> =>
   (real ??= (async () => {
-    const [users, gateway, access, harnesses, models, run, transport] = await Promise.all([
+    const [users, gateway, access, harnesses, models, run, transport, mcp] = await Promise.all([
       import('./users'),
       import('./llm-gateway'),
       import('./model-access'),
@@ -139,6 +149,7 @@ const realEdges = (): Promise<RunnerEdges> =>
       import('./app-harness-models'),
       import('./harness/run'),
       import('./harness/transport'),
+      import('./app-mcp'),
     ])
     return {
       fleetAgentOf: transport.fleetAgentOf,
@@ -151,6 +162,7 @@ const realEdges = (): Promise<RunnerEdges> =>
       run: run.runHarness,
       runStreamed: run.runHarnessStreamed,
       streamTransport: transport.pickStreamingTransport,
+      ownTool: mcp.callOwnAppTool,
       warn: warnOnce,
     }
   })())
@@ -248,8 +260,27 @@ export function appHarnessRunner(binding: AppHarnessBinding): AppHarnessRunner {
     // The JSON floor derived, the slot stamped by the host — whatever the app's
     // own spec said about either.
     const bound = { ...(checked.def as unknown as HarnessDefinition<I, O>), model: { ...checked.def.model, slot: edges.slot(app, id) } }
+    // WHERE A LOOP TOOL'S CALL GOES. The app's own MCP tools dispatch in
+    // process, called by the agent that called the app (from a tool) or by
+    // this run itself, which the host vouches for; an org tool only as a
+    // proven calling agent, through the gateway.
+    const toolCaller =
+      actor.kind === 'mcp' ? actor.caller : { name: `app:${app}:${id}`, id: null, proven: true }
+    const loop: LoopEdges = {
+      app,
+      actingUserId,
+      mcp: (tool, args, sig) => edges.ownTool(app, tool, args, { caller: toolCaller, actingUserId, signal: sig }),
+      ...(binding.orgTools ? { org: binding.orgTools } : {}),
+      orgUnavailable:
+        actor.kind === 'mcp'
+          ? 'org tools run as the agent that called this app, and that agent did not call on its own key — so there is no agent to run them as'
+          : actor.kind === 'request'
+            ? 'org tools run as an agent, under that agent\'s grants, and this run was started by a person, not an agent — run it from an MCP tool to use org tools'
+            : 'org tools run as an agent, under that agent\'s grants, and a triggered run has none',
+    }
     const ctx: RunContext = {
       caller: `app:${app}:${id}`,
+      loop,
       ...(actingUserId ? { userId: actingUserId } : {}),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.tier ? { tier: opts.tier } : {}),
@@ -291,8 +322,9 @@ export function appHarnessRunner(binding: AppHarnessBinding): AppHarnessRunner {
 
 // ── The free runner, as the SDK exports it ──────────────────────────────────
 
-/** `RunContext` without `deps` — what the SDK's free `runHarness` accepts. */
-export type AppRunContext = Omit<RunContext, 'deps'>
+/** `RunContext` without `deps` or `loop` — what the SDK's free `runHarness`
+ *  accepts. Both are the host's to supply, never the app's. */
+export type AppRunContext = Omit<RunContext, 'deps' | 'loop'>
 
 /** THE FREE `runHarness`, kept for apps written before `ctx.harness`. It runs
  *  what it is given — the caller string, the pin and the ledger are the app's
@@ -310,7 +342,10 @@ export async function runHarnessForApp<I, O>(
   edges: Partial<Pick<RunnerEdges, 'fleetAgentOf' | 'run' | 'warn'>> = {},
 ): Promise<HarnessResult<O>> {
   const e = { ...(await realEdges()), ...edges }
-  const { deps, ...rest } = ctx as RunContext
+  // `loop` goes too: where a loop tool's call goes is the host's to say. The
+  // free runner has no host binding, so a loop run here runs its handlers and
+  // answers `mcp`/`org` tools with the reason they are unavailable.
+  const { deps, loop: _loop, ...rest } = ctx as RunContext
   if (deps !== undefined) {
     e.warn(`[sdk] runHarness("${def?.id}") was passed deps from app code; they are ignored. Test a harness with @talaria/sdk/testing's runHarnessOffline.`)
   }

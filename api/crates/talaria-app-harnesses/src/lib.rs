@@ -77,6 +77,45 @@ pub struct AppHarnessWire {
     pub temperature: Option<f64>,
     #[serde(default)]
     pub evals: Vec<WireEval>,
+    /// The runner-held tool loop (`def.loop`), as data: the turn bound and,
+    /// per tool, where its call goes and whether it can answer a dry run.
+    #[serde(default, rename = "loop")]
+    pub tool_loop: Option<WireLoop>,
+}
+
+/// An app harness's tool loop, as the app host lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireLoop {
+    #[serde(default = "default_loop_turns")]
+    pub max_turns: u32,
+    #[serde(default)]
+    pub tools: Vec<WireLoopTool>,
+}
+
+fn default_loop_turns() -> u32 {
+    6
+}
+
+/// One loop tool: its name, where its call goes (`handler`, `mcp` or `org`),
+/// and whether it has a `simulate` the fitness sweep can dry-run it through.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WireLoopTool {
+    pub name: String,
+    pub via: String,
+    #[serde(default)]
+    pub simulate: bool,
+}
+
+impl WireLoop {
+    /// The tools a dry run cannot answer — those with no `simulate`.
+    pub fn unsimulated(&self) -> Vec<&str> {
+        self.tools
+            .iter()
+            .filter(|t| !t.simulate)
+            .map(|t| t.name.as_str())
+            .collect()
+    }
 }
 
 fn tools_none() -> String {
@@ -170,6 +209,25 @@ pub struct AppCaseReply {
     pub completion_tokens: i64,
     #[serde(default)]
     pub estimated: bool,
+    /// A loop harness's dispatched calls, every one answered by the tool's
+    /// `simulate` — empty for a single-shot harness.
+    #[serde(default)]
+    pub calls: Vec<WireCall>,
+    /// The loop hit its turn bound with the model still calling tools.
+    #[serde(default)]
+    pub exhausted: bool,
+}
+
+/// One dispatched loop call, as the app host's replay reports it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WireCall {
+    pub tool: String,
+    #[serde(default)]
+    pub args: Value,
+    #[serde(default)]
+    pub result: Value,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// Which fixture to replay, against which candidate.
@@ -188,6 +246,22 @@ pub struct AppCaseRequest {
 const HOST_ONLY: &str = "an app harness runs in the app host, not the api";
 
 static STRS: LazyLock<Mutex<HashSet<&'static str>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+/// Every app harness's tool loop, by `app:<slug>/<harness id>` — what the sweep
+/// reads to decide whether a candidate can be scored on it (`app_loop`). Kept
+/// beside the interned def rather than on it: the registry's definition type
+/// has no runner-held loop of an app's, and the api never runs one.
+static LOOPS: LazyLock<Mutex<HashMap<String, WireLoop>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The tool loop an app harness declares, as the app host last listed it —
+/// None for a single-shot harness, or one the host has not listed.
+pub fn app_loop(app: &str, harness: &str) -> Option<WireLoop> {
+    LOOPS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&app_harness_slot(app, harness))
+        .cloned()
+}
 static DEFS: LazyLock<Mutex<HashMap<String, &'static HarnessDefinition>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -251,6 +325,21 @@ fn wire_problem(w: &AppHarnessWire) -> Option<String> {
     }
     if w.tools != "none" && w.tools != "own" {
         return Some(format!("\"{}\" has tool policy \"{}\"", w.id, w.tools));
+    }
+    if let Some(l) = &w.tool_loop {
+        if l.tools.is_empty() {
+            return Some(format!("\"{}\" has a tool loop with no tools", w.id));
+        }
+        if let Some(t) = l
+            .tools
+            .iter()
+            .find(|t| !matches!(t.via.as_str(), "handler" | "mcp" | "org"))
+        {
+            return Some(format!(
+                "\"{}\" has loop tool \"{}\" going via \"{}\"",
+                w.id, t.name, t.via
+            ));
+        }
     }
     let mut seen: HashSet<&str> = HashSet::new();
     for e in &w.evals {
@@ -358,6 +447,20 @@ pub fn app_harness_slot(app: &str, harness: &str) -> String {
 pub fn register(w: &AppHarnessWire) -> Result<RegisteredHarness, String> {
     if let Some(problem) = wire_problem(w) {
         return Err(format!("app \"{}\": {problem}", w.app));
+    }
+    {
+        let mut loops = LOOPS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let slot = app_harness_slot(&w.app, &w.id);
+        match &w.tool_loop {
+            Some(l) => {
+                loops.insert(slot, l.clone());
+            }
+            None => {
+                loops.remove(&slot);
+            }
+        }
     }
     let key = serde_json::to_string(w).map_err(|e| e.to_string())?;
     let def: &'static HarnessDefinition = {
@@ -744,6 +847,63 @@ mod tests {
             ]
         }))
         .expect("the host's wire shape parses")
+    }
+
+    #[test]
+    fn keeps_an_app_harness_loop_for_the_sweep_to_read() {
+        let mut w = wire("loopy", "loopy:lookup");
+        w.tool_loop = Some(WireLoop {
+            max_turns: 4,
+            tools: vec![
+                WireLoopTool {
+                    name: "find".into(),
+                    via: "handler".into(),
+                    simulate: true,
+                },
+                WireLoopTool {
+                    name: "orders".into(),
+                    via: "org".into(),
+                    simulate: false,
+                },
+            ],
+        });
+        register(&w).expect("registers");
+        let l = app_loop("loopy", "loopy:lookup").expect("the loop is kept");
+        assert_eq!(l.max_turns, 4);
+        assert_eq!(l.unsimulated(), ["orders"]);
+        // A wire whose loop goes nowhere the host could dispatch is refused.
+        let mut bad = w.clone();
+        bad.id = "loopy:bad".into();
+        if let Some(l) = bad.tool_loop.as_mut() {
+            l.tools[0].via = "shell".into();
+        }
+        assert!(register(&bad).is_err());
+        // Listed again without a loop, it has none.
+        w.tool_loop = None;
+        register(&w).expect("registers");
+        assert!(app_loop("loopy", "loopy:lookup").is_none());
+        // The wire's own spelling of the field is `loop`.
+        let json = serde_json::to_value(wire("loopy", "loopy:x")).expect("wire");
+        assert!(json.get("loop").is_some());
+    }
+
+    #[test]
+    fn reads_a_replays_loop_calls() {
+        let reply: AppCaseReply = serde_json::from_value(serde_json::json!({
+            "harness": "h", "case": "c", "band": "standard", "model": "m",
+            "schemaValid": true,
+            "calls": [{ "tool": "find", "args": { "q": 1 }, "result": "ok", "error": null }],
+            "exhausted": true
+        }))
+        .expect("parses");
+        assert_eq!(reply.calls.len(), 1);
+        assert!(reply.exhausted);
+        // An older host's reply, with neither field, still parses.
+        let old: AppCaseReply = serde_json::from_value(serde_json::json!({
+            "harness": "h", "case": "c", "band": "standard", "model": "m", "schemaValid": true
+        }))
+        .expect("parses");
+        assert!(old.calls.is_empty() && !old.exhausted);
     }
 
     #[test]

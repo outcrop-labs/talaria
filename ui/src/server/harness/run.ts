@@ -78,7 +78,8 @@ import { parseJson, repairPrompt } from './json'
 import { resolveHarnessModel, type ModelChainStep, type ModelSpec } from './model'
 import { agentSlot, roleSlot, slotEffortForModel } from '../effort-prefs'
 import { defaultTransport, type LedgerAttribution, type StreamingTransport, type Transport, type TransportKind, type TransportRequest } from './transport'
-import type { Grounding, HarnessDefinition, Message, RenderContext } from './define'
+import type { EvalContext, Grounding, HarnessDefinition, HarnessTool, Message, RenderContext } from './define'
+import type { ToolCall, ToolDefinition, TransportReply } from './transport'
 
 // The transports moved to harness/transport.ts when `TransportRequest` grew the
 // four slots the five hand-written shims existed to supply (tools, ledger
@@ -196,6 +197,52 @@ export interface HarnessResult<O> {
    *  a caller that will silently stop escalating the day the wording changes. */
   escalate: boolean
   error?: string
+  /** A TOOL-LOOP RUN'S RECORD (`def.loop`) — absent on every other run.
+   *
+   *  `toolCalls` is every call the model made, in order, as the provider
+   *  reported it (the arguments the raw string it sent). `calls` is the same
+   *  list with what each call got back — the `EvalContext.calls` shape a
+   *  fixture asserts over, so production and the fitness sweep read one
+   *  record. `exhausted` is true when the loop hit its turn bound with the
+   *  model still calling tools. */
+  toolCalls?: ToolCall[]
+  calls?: LoopCall[]
+  exhausted?: boolean
+}
+
+/** One dispatched call of a tool loop: the tool, the arguments it was given,
+ *  what it answered (its structured value when it had one, else its text), and
+ *  the error sentence when it failed. */
+export type LoopCall = EvalContext['calls'][number]
+
+/** What a loop tool answered, before the model sees it. */
+export interface ToolOutcome {
+  text: string
+  structured?: unknown
+  isError: boolean
+}
+
+/** WHERE A LOOP TOOL'S CALL CAN GO — supplied by the host that runs the
+ *  harness, never by app code (`ctx.harness` builds it; the free runner and a
+ *  platform harness have none, so `mcp` and `org` tools answer the model with
+ *  an error saying why). */
+export interface LoopEdges {
+  /** The app the harness belongs to. */
+  app: string | null
+  /** The person the run acts for. */
+  actingUserId: string | null
+  /** The app's own MCP tool, through the app MCP dispatch. */
+  mcp?: (tool: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<ToolOutcome>
+  /** An org MCP tool, through the gateway as the agent the run acts for. */
+  org?: (server: string, tool: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<ToolOutcome>
+  /** Why `org` is absent, said to the model when it calls one. */
+  orgUnavailable?: string
+  /** A DRY RUN: every tool answers through its `simulate`, nothing real is
+   *  touched. A tool with no `simulate` answers the model with an error. */
+  simulate?: boolean
+  /** Handlers run for real, but `mcp` and `org` tools answer through their
+   *  `simulate` — an offline test, with no host to dispatch them through. */
+  simulateExternal?: boolean
 }
 
 // ── Injected edges ───────────────────────────────────────────────────────────
@@ -372,6 +419,9 @@ export interface RunContext {
   /** Override any edge. Tests supply a `transport` and no-op recorders; the
    *  fitness suite supplies a transport that records prompts and replies. */
   deps?: Partial<HarnessDeps>
+  /** Where a `def.loop` tool's call goes (see `LoopEdges`). Host-supplied:
+   *  the SDK's free runner does not accept it. */
+  loop?: LoopEdges
 }
 
 /** What `runHarnessStreamed` needs beyond a normal run. */
@@ -587,6 +637,124 @@ function groundingFor<I, O>(def: HarnessDefinition<I, O>, input: I): Grounding |
   return material
 }
 
+/** Two grounding records as one: the tools of both, the results of both, and
+ *  an error when either saw one (unknown only when neither can say). */
+function mergeGrounding(a: Grounding | null, b: Grounding | null): Grounding | null {
+  if (!a) return b
+  if (!b) return a
+  const errored = a.errored === true || b.errored === true ? true : a.errored === null || b.errored === null ? null : false
+  return { tools: [...new Set([...a.tools, ...b.tools])], results: `${a.results}\n\n${b.results}`, errored }
+}
+
+// ── The tool loop ────────────────────────────────────────────────────────────
+//
+// GENERALIZED FROM THE ONE RUNNER-HELD LOOP THE PLATFORM HAD — research's
+// tool-search transport (talaria-harness-defs `tool_search_transport`) and the
+// fitness dry run (talaria-fitness-toolbox `sandbox_transport`) — and it keeps
+// their hard-won rules rather than re-deciding them:
+//
+//   - the model's own turn goes into the transcript FIRST, prose included, and
+//     its calls go on the TOOL CHANNEL, never narrated into its text (models
+//     imitate whatever transcript they are shown);
+//   - at most three calls are honored per turn; the rest are not run;
+//   - a call made on the last turn is still dispatched — the budget bounds how
+//     often the model thinks, never what it already decided to do;
+//   - a failure is a tool RESULT the model sees and adapts to, not a failed run;
+//   - a call to a tool it was not offered is answered with an error, never
+//     dispatched under another name;
+//   - a loop that ends with calls made and nothing said gets one closing turn
+//     with the tools taken away, asking for what it did when it ran out of
+//     turns and for the answer when it simply stopped.
+//
+// It lives HERE, in the TS runner, because an app harness's tools are app code
+// (handlers, mcp.ts) that only the app host can run (RUST-MIGRATION rule 10).
+
+/** Model turns a loop takes when the harness does not say. */
+export const DEFAULT_LOOP_TURNS = 6
+/** The most a harness may ask for — the dry run's `MAX_TURN_CEILING`. */
+export const MAX_LOOP_TURNS = 12
+/** Calls honored per model turn (`MAX_CALLS_PER_TURN` in the dry run). */
+export const MAX_LOOP_CALLS_PER_TURN = 3
+/** What of a tool's result the model sees. */
+const LOOP_RESULT_CAP = 8_000
+
+export const loopTurnsOf = (asked: number | undefined): number =>
+  Math.min(MAX_LOOP_TURNS, Math.max(1, Math.floor(typeof asked === 'number' && Number.isFinite(asked) ? asked : DEFAULT_LOOP_TURNS)))
+
+const LOOP_CLOSING_EXHAUSTED =
+  'You have run out of turns. Do not call any more tools. Answer now from the results above, and say what is still left to do.'
+const LOOP_CLOSING_DONE = 'Stop here and give your answer from the results above. Do not call any more tools.'
+
+/** The model's view of a tool's definition — what `toolDefs` offers. */
+const loopToolDef = (t: HarnessTool<unknown>): ToolDefinition => ({ name: t.name, description: t.description, parameters: t.parameters })
+
+/** A value a tool returned, as the model will read it. */
+function shapeToolValue(value: unknown): ToolOutcome {
+  if (typeof value === 'string') return { text: value, isError: false }
+  if (value === undefined || value === null) return { text: 'null', isError: false }
+  try {
+    return { text: JSON.stringify(value), structured: value, isError: false }
+  } catch {
+    return { text: String(value), isError: false }
+  }
+}
+
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+
+/** Send one call where its tool says it goes. Never throws: a tool that fails
+ *  answers the model with the sentence. */
+async function dispatchLoopTool<I>(
+  harness: string,
+  tool: HarnessTool<I>,
+  args: Record<string, unknown>,
+  input: I,
+  edges: LoopEdges | undefined,
+  turn: number,
+  signal: AbortSignal,
+): Promise<ToolOutcome> {
+  const fail = (text: string): ToolOutcome => ({ text, isError: true })
+  const name = tool.name
+  try {
+    if (edges?.simulate || (edges?.simulateExternal && typeof tool.handler !== 'function')) {
+      if (typeof tool.simulate !== 'function') return fail(`tool "${tool.name}" has no simulate, so a dry run cannot answer it`)
+      return shapeToolValue(await tool.simulate(args, { input }))
+    }
+    if (typeof tool.handler === 'function') {
+      return shapeToolValue(await tool.handler(args, { app: edges?.app ?? null, harness, actingUserId: edges?.actingUserId ?? null, turn, signal }))
+    }
+    if (typeof tool.mcp === 'string') {
+      if (!edges?.mcp) return fail(`tool "${tool.name}" calls the app's own MCP tool "${tool.mcp}", and this run has no app to dispatch it through — run the harness with ctx.harness`)
+      return await edges.mcp(tool.mcp, args, signal)
+    }
+    if (typeof tool.org === 'string') {
+      if (!edges?.org) return fail(edges?.orgUnavailable ?? `tool "${tool.name}" calls the org MCP tool "${tool.org}", and this run has no agent to call it as`)
+      const cut = tool.org.indexOf('/')
+      return await edges.org(tool.org.slice(0, cut), tool.org.slice(cut + 1), args, signal)
+    }
+    return fail(`tool "${name}" has nowhere to go: it declares no handler, mcp or org`)
+  } catch (e) {
+    return fail(`tool "${name}" failed: ${errText(e)}`)
+  }
+}
+
+/** The arguments a call carried, as the object a tool can act on. A string
+ *  that is not a JSON object is an empty object — the dry run's rule. */
+function argsOf(raw: string): Record<string, unknown> {
+  try {
+    const v: unknown = JSON.parse(raw || '{}')
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+/** The turn's grounding material from what the loop's tools really returned —
+ *  the record `ungrounded_ref` and `fabricated_outage` check a reply against. */
+function loopGrounding(calls: readonly LoopCall[], results: readonly string[]): Grounding | null {
+  if (calls.length === 0) return null
+  return { tools: [...new Set(calls.map((c) => c.tool))], results: results.join('\n\n'), errored: calls.some((c) => c.error !== null) }
+}
+
 // ── The runner ───────────────────────────────────────────────────────────────
 
 /** One harness run: resolve, floor, widen, render, call, parse, repair, guard,
@@ -636,6 +804,9 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
   const deps: HarnessDeps = { ...REAL_DEPS, ...ctx.deps }
   const started = deps.now()
   const findings: Finding[] = []
+  /** A tool-loop run's record, once the loop has run — every exit after it
+   *  carries it (see `HarnessResult.toolCalls`). */
+  let loopOut: { toolCalls: ToolCall[]; calls: LoopCall[]; exhausted: boolean } | null = null
 
   // Every exit writes a harness_runs row, including the ones that never reach a
   // model. A harness that resolves nothing, or refuses on a capability, is
@@ -664,7 +835,7 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
         error: runError(r.error),
       })
       .catch(() => {})
-    return { ...r, findings, latencyMs }
+    return { ...r, findings, latencyMs, ...(loopOut ?? {}) }
   }
 
   /** THE FAILURE POLICY ON A RETURN PATH, which is the other half of what
@@ -698,6 +869,16 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
    *  turn one failed run into a memory problem for whatever reads it. */
   const RAW_CAP = 8_000
   const rawOf = (t: string): string | null => (t ? t.slice(0, RAW_CAP) : null)
+
+  // A TOOL LOOP DOES NOT STREAM. Its turns are tool calls and results the
+  // runner dispatches between model turns; a stream would hand the screen the
+  // interstitial prose of a turn that was not the answer.
+  if (def.loop && streaming) {
+    return fail({ ...empty, error: `harness "${def.id}" runs a tool loop, and a tool loop does not stream — run it, don't stream it` })
+  }
+  if (def.loop && def.tools === 'own') {
+    return fail({ ...empty, error: `harness "${def.id}" declares both its own loop (loop) and the model's own tools (tools: 'own') — a turn has one loop` })
+  }
 
   // 1 ─ Resolve the model. Null is an ANSWER, not an exception: on an install
   // whose gateway serves nothing this spec can reach, the harness has no model
@@ -983,6 +1164,68 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
   let kind: TransportKind = 'gateway'
   let toolNames: string[] = []
 
+  /** Every loop tool's result text, labelled by tool — the grounding the guard
+   *  checks the final answer against. */
+  const loopResults: string[] = []
+
+  /** THE LOOP, as the first attempt of a `def.loop` run: offer the tools,
+   *  dispatch each call, hand the results back, until the model answers or the
+   *  turns run out — then the closing turn when there is no answer to parse.
+   *  Resolves to the reply the contract is applied to, like any transport, and
+   *  leaves the conversation in `sent` so a repair turn continues it. */
+  const runLoop = async (request: TransportRequest): Promise<TransportReply> => {
+    const loop = def.loop!
+    const tools = loop.tools as HarnessTool<I>[]
+    const offered = [...(def.toolDefs ?? []), ...tools.map((t) => loopToolDef(t as HarnessTool<unknown>))]
+    const maxTurns = loopTurnsOf(loop.maxTurns)
+    const signal = ctx.signal ?? new AbortController().signal
+    const convo: Message[] = [...request.messages]
+    const toolCalls: ToolCall[] = []
+    const calls: LoopCall[] = []
+    let text = ''
+    let exhausted = false
+    let kind: TransportKind = 'gateway'
+    let contractDropped = false
+    loopOut = { toolCalls, calls, exhausted }
+    for (let turn = 0; turn < maxTurns; turn++) {
+      const reply = await deps.transport({ ...request, messages: [...convo], tools: 'none', toolDefs: offered })
+      kind = reply.kind
+      contractDropped ||= reply.contractDropped
+      text = reply.text
+      const made = (reply.toolCalls ?? []).slice(0, MAX_LOOP_CALLS_PER_TURN)
+      if (made.length === 0) break
+      convo.push({ role: 'assistant', content: reply.text, toolCalls: made })
+      for (const call of made) {
+        toolCalls.push(call)
+        const args = argsOf(call.args)
+        const tool = tools.find((t) => t.name === call.name)
+        const out: ToolOutcome = tool
+          ? await dispatchLoopTool(def.id, tool, args, input, ctx.loop, turn, signal)
+          : { text: `"${call.name}" is not a tool you have here; your tools are ${tools.map((t) => t.name).join(', ')}`, isError: true }
+        calls.push({ tool: call.name, args, result: out.structured ?? out.text, error: out.isError ? out.text : null })
+        loopResults.push(`${call.name}: ${out.text}`)
+        convo.push({ role: 'tool', content: out.text.slice(0, LOOP_RESULT_CAP), toolCallId: call.id })
+      }
+      if (turn === maxTurns - 1) exhausted = true
+    }
+    // THE CLOSING TURN. A loop that ran out of turns ends mid-work — its last
+    // turn was more calls, and any prose beside them is not the answer — and a
+    // model that called tools and then said nothing has given nothing to parse.
+    // Both get one turn with the loop's tools taken away and the results in
+    // front of it.
+    if (exhausted || (!text.trim() && calls.length > 0)) {
+      const ask = exhausted ? LOOP_CLOSING_EXHAUSTED : LOOP_CLOSING_DONE
+      convo.push({ role: 'user', content: structured ? `${ask}\n\n${jsonAnchorFor(wire)}` : ask })
+      const closing = await deps.transport({ ...request, messages: [...convo] })
+      kind = closing.kind
+      contractDropped ||= closing.contractDropped
+      text = closing.text
+    }
+    loopOut = { toolCalls, calls, exhausted }
+    sent = convo
+    return { kind, text, toolNames: toolCalls.map((c) => c.name), toolCalls, usage: null, contractDropped }
+  }
+
   /** The ledger row this turn belongs to, resolved ONCE. `agentModel` is the
    *  base persona and `tier` the alias name, because that is the pair
    *  `recordUsage` prices from; `RunContext` carries the rest. */
@@ -1029,7 +1272,9 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
             streamed += delta
             streaming.onDelta?.(delta)
           })
-        : await deps.transport(request)
+        : def.loop && repairs === 0
+          ? await runLoop(request)
+          : await deps.transport(request)
       text = reply.text || streamed
       answered = text.trim().length > 0
       kind = reply.kind
@@ -1137,7 +1382,10 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
   //            on a persona, and the search hits it is grounded against are
   //            external to that persona's own tool loop entirely.
   const config = await deps.guardConfig().catch(() => null)
-  const material = groundingFor(def, input)
+  // A tool loop's results ARE the turn's tool record, held by this runner, so
+  // the guard grounds the answer in them — beside whatever the harness's own
+  // `ground` declared.
+  const material = mergeGrounding(groundingFor(def, input), loopOut ? loopGrounding(loopOut.calls, loopResults) : null)
   if (config && config.mode !== 'off' && text) {
     const overflowed = material !== null && material.results.length > GROUND_RESULTS_CAP
     // NAMES WITHOUT RESULTS — true on the fleet path always, and on the gateway

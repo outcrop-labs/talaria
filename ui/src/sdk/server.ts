@@ -216,13 +216,16 @@ export { toolResult, isUnresolvedHandle } from '@/server/app-mcp-call'
 // (The coding harness an AGENT drives in its sandbox is not an extension point:
 // the workbench runs Oh My Pi, and only Oh My Pi.)
 export type { HarnessDefinition, EvalCase, EvalBand, EvalContext, RoleFloor, RenderContext, Message, Grounding, Verify } from '@/server/harness/define'
+// The runner-held tool loop (`def.loop`): each tool a definition plus exactly
+// one of handler / mcp / org, and an optional `simulate` for dry runs.
+export type { HarnessTool, HarnessLoop, HarnessToolContext, HarnessToolWorld } from '@/server/harness/define'
 export type { CheckResult } from '@/server/harness/define'
 export type { Capability } from '@/server/harness/capability'
 export type { ModelSpec } from '@/server/harness/model'
 // The chain vocabulary and its resolution — referenced by `ModelSpec`/`HarnessResult`;
 // a bridge author labeling WHICH step answered has no word for it otherwise.
 export type { ModelChainStep, ResolvedHarnessModel } from '@/server/harness/model'
-export type { HarnessResult, RunLedger } from '@/server/harness/run'
+export type { HarnessResult, RunLedger, LoopCall } from '@/server/harness/run'
 // `toolDefs` is a field on the definition above, so its element type has to be
 // nameable out here or the field is only usable as an inline literal — an author
 // who factors four tools into a `const TOOLS = [...]` has no type to annotate it

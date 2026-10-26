@@ -297,3 +297,59 @@ describe('the free runHarness', () => {
     expect(warnings.join('\n')).toMatch(/pins agent "pa-alice" with no check .* ctx\.harness\.run/)
   })
 })
+
+describe('where a loop tool goes, per context', () => {
+  it("from a request: the app's own tools as this run, and no org tools, saying why", async () => {
+    const spy = spyOf()
+    const ownTool = vi.fn(async () => ({ text: 'ok', isError: false }))
+    const runner = appHarnessRunner({
+      app: 'helpdesk',
+      actor: { kind: 'request', user: { id: 'u-1', role: 'member' }, usableAgents: async () => [] },
+      edges: { ...edges(spy), ownTool },
+    })
+    await runner.run(triage, { text: 'x' })
+    const loop = spy.calls[0]!.ctx.loop!
+    expect(loop).toMatchObject({ app: 'helpdesk', actingUserId: 'u-1' })
+    expect(loop.org).toBeUndefined()
+    expect(loop.orgUnavailable).toMatch(/started by a person, not an agent/)
+    const signal = new AbortController().signal
+    await loop.mcp!('orders_recent', { a: 1 }, signal)
+    expect(ownTool).toHaveBeenCalledWith('helpdesk', 'orders_recent', { a: 1 }, {
+      caller: { name: 'app:helpdesk:helpdesk:triage', id: null, proven: true },
+      actingUserId: 'u-1',
+      signal,
+    })
+  })
+
+  it('from an MCP tool: as the calling agent, with the org caller the gateway route lent', async () => {
+    const spy = spyOf()
+    const ownTool = vi.fn(async () => ({ text: 'ok', isError: false }))
+    const orgTools = vi.fn(async () => ({ text: 'docs', isError: false }))
+    const caller = { name: 'helper', id: 'a-1', proven: true }
+    const runner = appHarnessRunner({ app: 'helpdesk', actor: { kind: 'mcp', caller, actingUserId: null }, orgTools, edges: { ...edges(spy), ownTool } })
+    await runner.run(triage, { text: 'x' })
+    const loop = spy.calls[0]!.ctx.loop!
+    expect(loop.org).toBe(orgTools)
+    await loop.mcp!('t', {}, new AbortController().signal)
+    expect((ownTool.mock.calls[0] as unknown[])[3]).toMatchObject({ caller })
+  })
+
+  it('from a trigger: no org tools, saying why', async () => {
+    const spy = spyOf()
+    await appHarnessRunner({ app: 'helpdesk', actor: { kind: 'trigger' }, edges: edges(spy) }).run(triage, { text: 'x' })
+    expect(spy.calls[0]!.ctx.loop!.orgUnavailable).toMatch(/a triggered run has none/)
+  })
+
+  it("keeps loop edges out of the free runner's reach", async () => {
+    const seen: RunContext[] = []
+    await runHarnessForApp(triage, { text: 'x' }, { caller: 'app:x', loop: { app: 'x', actingUserId: null, simulate: true } } as never, {
+      run: (async (_d: unknown, _i: unknown, ctx: RunContext) => {
+        seen.push(ctx)
+        return ok(null)
+      }) as RunnerEdges['run'],
+      warn: () => {},
+      fleetAgentOf: async () => null,
+    })
+    expect(seen[0]!.loop).toBeUndefined()
+  })
+})

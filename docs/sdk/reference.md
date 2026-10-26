@@ -215,6 +215,10 @@ import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp
 | `ToolDefinition` | type | A tool offered on one turn (OpenAI wire shape) |
 | `ToolCall` | type | The model's use of one |
 | `ToolPolicy` | type | Whether a turn may use tools at all |
+| `HarnessLoop` | type | A tool loop the runner holds: tools, maxTurns |
+| `HarnessTool` | type | One loop tool: a ToolDefinition plus exactly one of handler, mcp or org, and an optional simulate |
+| `HarnessToolContext` | type | What a loop tool's handler receives: app, harness, actingUserId, turn, signal |
+| `HarnessToolWorld` | type | What a loop tool's simulate receives: the run's input |
 
 ## `@talaria/sdk/server` — the runner (bridge pattern)
 
@@ -226,6 +230,7 @@ import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp
 | `resolveHarnessModel` | fn | Free probe: which chain would carry this harness, or null |
 | `RunContext` | type | The free runner's context: caller, userId, model, step, tier, effort, ledger, signal, and no deps |
 | `RunLedger` | type | Where the run's cost lands |
+| `LoopCall` | type | One dispatched loop call: tool, args, result, error |
 | `HarnessResult` | type | What `runHarness` resolves to |
 | `ModelChainStep` | type | Which link of the chain answered |
 | `ResolvedHarnessModel` | type | The chain's answer: model + step |

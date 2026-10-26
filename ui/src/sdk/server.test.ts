@@ -267,3 +267,45 @@ describe('the rest of the exported surface, as the docs list it', () => {
     expect(texty.output.kind).toBe('text')
   })
 })
+
+describe('a tool loop, offline', () => {
+  const COUNT = z.object({ orders: z.number() })
+  const counter = defineHarness<{ email: string }, z.infer<typeof COUNT>>({
+    id: 'sdk:counter',
+    label: 'Counter',
+    job: 'Counts a customer’s orders.',
+    requires: ['json', 'tools'],
+    floor: { capabilities: [], refuseBelow: false, note: 'Any model that calls tools.' },
+    model: {},
+    render: (i) => [{ role: 'user', content: `count orders for ${i.email}` }],
+    output: { kind: 'json', schema: COUNT },
+    onFailure: 'null',
+    loop: {
+      tools: [
+        { name: 'find_customer', description: 'Find a customer.', parameters: { type: 'object' }, handler: (args) => ({ id: 'c-7', email: args.email }) },
+        { name: 'recent_orders', description: 'Orders.', parameters: { type: 'object' }, mcp: 'orders_recent', simulate: () => ({ count: 3 }) },
+      ],
+    },
+  })
+
+  it('runs handlers for real and answers mcp tools through simulate, with every call on the result', async () => {
+    const run = await runHarnessOffline(counter, { email: 'ada@example.test' }, {
+      replies: [
+        { toolCalls: [{ name: 'find_customer', args: { email: 'ada@example.test' } }] },
+        { toolCalls: [{ name: 'recent_orders', args: { customer: 'c-7' } }] },
+        '{"orders":3}',
+      ],
+    })
+    expect(run.value).toEqual({ orders: 3 })
+    expect(run.calls?.map((c) => [c.tool, c.result])).toEqual([
+      ['find_customer', { id: 'c-7', email: 'ada@example.test' }],
+      ['recent_orders', { count: 3 }],
+    ])
+    expect(run.requests).toHaveLength(3)
+  })
+
+  it('simulate: true answers every tool through simulate, as the fitness sweep does', async () => {
+    const run = await runHarnessOffline(counter, { email: 'e' }, { simulate: true, replies: [{ toolCalls: [{ name: 'find_customer' }] }, '{"orders":0}'] })
+    expect(run.calls?.[0]?.error).toBe('tool "find_customer" has no simulate, so a dry run cannot answer it')
+  })
+})

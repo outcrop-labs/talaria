@@ -562,6 +562,23 @@ like this:
   the calling agent, proven by its own key; from a trigger, none. A gateway-model pin is held to the
   member model allowlist (`modelAllowedFor`) of the person the run acts for. A refusal makes no
   model call and follows the harness's `onFailure`.
+- **It can hold a tool loop.** `def.loop: { tools, maxTurns? }` is the runner-held loop
+  (`ui/src/server/harness/run.ts`, generalized from research's tool-search transport and the
+  fitness dry run in `talaria-fitness-toolbox`, keeping their rules: three calls a turn, the last
+  turn's calls dispatched, failures as tool results, calls on the tool channel, a closing turn
+  without tools). Each tool is a `ToolDefinition` plus exactly one road:
+  - `handler`, the app's code;
+  - `mcp`, the app's own MCP tool through `callOwnAppTool`;
+  - `org`, an org MCP tool through the MCP gateway as the calling agent, presenting its own key
+    (`ui/src/server/app-org-tools.ts`). Only an MCP-tool context has an agent to lend.
+
+  The result gains `toolCalls`, `calls` and `exhausted`, and the guard is grounded in the tools'
+  results. It lives in TS because the tools are app code.
+- **Its loop can be scored.** The wire carries each loop tool's road and whether it has a
+  `simulate`. The sweep sends a loop harness's fixtures to the host only when every tool simulates
+  and the candidate can be handed tool definitions (`app_loop_skip_reason`). The host replays
+  with every tool answered by `simulate`, and returns the calls into the case's `calls`. A loop
+  with an unsimulated tool keeps #595's skip, naming the tools.
 - **It has its own model setting.** Every app harness has a slot, `app:<slug>/<harness id>`
   (`ModelSpec.slot`, set by the host and never by the app). The `slot` chain step resolves it before
   `role` in any chain, from the `app_harness_models` setting that both resolvers read: TS

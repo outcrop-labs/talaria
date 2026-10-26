@@ -15,6 +15,8 @@ import { appDataDir } from './app-build/paths'
 import { enabledAppSlugs } from './apps'
 import { resyncAppMcpServers } from './internal-api'
 import { appHarnessRunner } from './app-harness-runner'
+import type { OrgToolCall } from './app-org-tools'
+import type { ToolOutcome } from './harness/run'
 
 export const appHasMcp = (slug: string): boolean => hasMcpFile(slug)
 
@@ -171,6 +173,10 @@ export async function appMcpOff(appSlug: string | null | undefined, appOff: stri
 export interface AppMcpCallFacts {
   caller: AppMcpCaller
   actingUserId: string | null
+  /** How a harness this call runs reaches an org MCP tool: as the calling
+   *  agent, through the MCP gateway (app-org-tools.ts). Absent for a caller
+   *  that lends no identity. */
+  orgTools?: OrgToolCall | null
   /** The request's signal: aborts when the agent disconnects. */
   signal?: AbortSignal
   /** The server row's `timeoutSecs`; null is the 120 s default. */
@@ -195,6 +201,27 @@ export async function dispatchAppMcp(
   const harness = appHarnessRunner({
     app: slug,
     actor: { kind: 'mcp', caller: facts.caller, actingUserId: facts.actingUserId },
+    orgTools: facts.orgTools ?? null,
   })
-  return runAppTools(slug, tools, rpc, { ...facts, store: storeFor(slug), harness })
+  const { orgTools: _org, ...call } = facts
+  return runAppTools(slug, tools, rpc, { ...call, store: storeFor(slug), harness })
+}
+
+/** ONE OF THE APP'S OWN TOOLS, called from its own harness's loop
+ *  (`loop.tools[].mcp`) — through the same dispatch an agent's call takes:
+ *  the load checks, the inputSchema, the deadline, the result's shaping. What
+ *  comes back is what the model sees. */
+export async function callOwnAppTool(slug: string, name: string, args: Record<string, unknown>, facts: AppMcpCallFacts): Promise<ToolOutcome> {
+  const rpc = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } } as Rpc
+  const r = await dispatchAppMcp(slug, rpc, facts, null)
+  const body = r.body as { error?: { message?: string }; result?: { content?: Array<{ type: string; text?: string }>; structuredContent?: unknown; isError?: boolean } } | null
+  if (!body) return { text: `tool "${name}" was cut off before it answered`, isError: true }
+  if (body.error) return { text: body.error.message ?? `tool "${name}" failed`, isError: true }
+  const result = body.result ?? {}
+  const text = (result.content ?? []).flatMap((b) => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : [])).join('\n')
+  return {
+    text: text || (result.structuredContent !== undefined ? JSON.stringify(result.structuredContent) : ''),
+    ...(result.structuredContent !== undefined ? { structured: result.structuredContent } : {}),
+    isError: result.isError === true,
+  }
 }

@@ -53,6 +53,11 @@ export interface OfflineRunOptions {
    *  admin (`'declared'`) or one upstream 400 (`'learned'`) left it — to see
    *  your floor refuse, or not. Default nothing on record: unknown, which runs. */
   capabilities?: Partial<Record<Capability, { value: boolean; source?: CapabilitySource }>>
+  /** A tool loop's tools (`def.loop`). By default handlers run for real and
+   *  `mcp`/`org` tools answer through their `simulate` (there is no host here
+   *  to dispatch them). `true` answers every tool through `simulate`, as the
+   *  fitness sweep's dry run does. */
+  simulate?: boolean
 }
 
 /** Every request the run made, for assertions on the prompt. */
@@ -87,6 +92,7 @@ export async function runHarnessOffline<I, O>(def: HarnessDefinition<I, O>, inpu
   const result = await runCore(def, input, {
     caller: `test:${def.id}`,
     model,
+    loop: opts.simulate ? { app: null, actingUserId: null, simulate: true } : { app: null, actingUserId: null, simulateExternal: true },
     deps: {
       routing: async (m: string) => ({ endpoints: ['test'], upstreamModel: m }),
       personaKeys: async () => [],
