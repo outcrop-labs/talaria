@@ -1,6 +1,8 @@
 // The admin console surface.
 pub mod admin_apps;
+pub mod admin_apps_change_request;
 pub mod admin_apps_install_requests;
+pub mod admin_apps_update_requests;
 pub mod admin_coding_accounts;
 pub mod admin_decide;
 pub mod admin_domains;

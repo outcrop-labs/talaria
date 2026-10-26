@@ -694,8 +694,32 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_scheduler::register_job(talaria_workbench_queue::promotion_job_spec(
         state.pg.clone(),
     ));
+    // The workbench job sweep also runs the plugin maintenance pass: it needs
+    // Redis (resuming a maintainer's session) and the app host's credential
+    // (an `auto` update), both read when the pass runs, never at boot.
+    let upkeep: talaria_workbench_mcp::teardown::UpkeepRun = {
+        let state = state.clone();
+        let sb = sb.clone();
+        Arc::new(move || {
+            let state = state.clone();
+            let sb = sb.clone();
+            Box::pin(async move {
+                let deps = talaria_plugins::upkeep::UpkeepDeps {
+                    pg: state.pg.clone(),
+                    sb,
+                    redis: state.redis().await.ok(),
+                    host: talaria_apps::AppHost::new(state.cfg.secret_root.internal_token()),
+                };
+                match talaria_plugins::upkeep::upkeep_pass(&deps).await {
+                    Ok(report) => report.summary(),
+                    Err(e) => Some(format!("plugin upkeep could not run: {e}")),
+                }
+            })
+        })
+    };
     talaria_scheduler::register_job(talaria_workbench_mcp::teardown::job_sweep_spec(
         state.pg.clone(),
+        Some(upkeep),
     ));
     // The optional trio. mcp-library-refresh mirrors the official MCP
     // registry into the catalog table (leased: one walker per interval);

@@ -4243,6 +4243,68 @@ alter table tasks drop column if exists conversation_id`,
   // `protection_note` says why it is not, when it is not.
   `alter table workbench_repo_requests add column if not exists protected boolean`,
   `alter table workbench_repo_requests add column if not exists protection_note text`,
+  // ── Plugin upkeep: the maintenance pass in the workbench job sweep ──────
+  // WHAT THE PASS LAST SAW OF A PLUGIN, so a change it reports is reported
+  // once: `okHost` is the host build the app last built on (a later failure
+  // on another host build is a break after the host upgrade), `bands` the
+  // plugin's harness columns in Models → Fitness at the last pass (a worse
+  // band is an eval regression). Written only by talaria-plugins.
+  `alter table plugins add column if not exists upkeep jsonb not null default '{}'::jsonb`,
+  // EACH OPEN PR ON A PLUGIN'S REPO, as the pass last read it. The two
+  // `*_signalled` markers are what was already reported to the maintainer —
+  // the head commit whose checks failed, the change request by when it was
+  // submitted — so the same failure never wakes the agent twice, and a fix
+  // pushed under a standing change request does not wake it either.
+  // `update_named` marks a merged PR an update approval has already named.
+  `create table if not exists plugin_pr_watch (
+     app_slug text not null references plugins(app_slug) on delete cascade,
+     pr_number bigint not null,
+     head_sha text,
+     state text not null default 'open',
+     checks text,
+     review text,
+     checks_signalled text,
+     review_signalled text,
+     update_named boolean not null default false,
+     task_id uuid references tasks(id) on delete set null,
+     seen_at timestamptz not null default now(),
+     primary key (app_slug, pr_number)
+   )`,
+  // AN UPDATE WAITING FOR AN ADMIN (the `app_update` approval), raised when a
+  // plugin's branch moves past the installed commit. One open per plugin —
+  // it follows the branch while it waits. `status` is pending | updating |
+  // applied | failed | rejected | superseded; an `auto` plugin's updates are
+  // recorded here already decided (`decided_by` 'auto'), so a commit that
+  // failed to apply is not retried every ten minutes.
+  `create table if not exists app_update_requests (
+     id uuid primary key default gen_random_uuid(),
+     app_slug text not null references plugins(app_slug) on delete cascade,
+     target_sha text not null,
+     git_ref text,
+     prs jsonb not null default '[]'::jsonb,
+     status text not null default 'pending',
+     decided_by text,
+     decision_note text,
+     result text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  `create unique index if not exists app_update_requests_one_open
+     on app_update_requests (app_slug) where status in ('pending', 'updating')`,
+  // THE TICKETS THE PASS FILED, and the "Request a change" tickets people
+  // filed, per plugin. The pass files at most one OPEN ticket per plugin per
+  // kind (build_failed, host_upgrade, eval_regression); change_request is a
+  // person's and is never deduplicated.
+  `create table if not exists plugin_notices (
+     id uuid primary key default gen_random_uuid(),
+     app_slug text not null references plugins(app_slug) on delete cascade,
+     kind text not null,
+     task_id uuid references tasks(id) on delete set null,
+     detail text not null default '',
+     created_by text,
+     created_at timestamptz not null default now()
+   )`,
+  `create index if not exists plugin_notices_by_kind on plugin_notices (app_slug, kind)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

@@ -9,15 +9,22 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+redis = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-agent-auth = { workspace = true }
+talaria-approvals = { workspace = true }
 talaria-apps = { workspace = true }
 talaria-audit = { workspace = true }
+talaria-gateway = { workspace = true }
 talaria-github = { workspace = true }
+talaria-realtime = { workspace = true }
+talaria-runs-define = { workspace = true }
 talaria-secretbox = { workspace = true }
+talaria-statuses = { workspace = true }
 talaria-tasks = { workspace = true }
+talaria-tasks-types = { workspace = true }
 talaria-users = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

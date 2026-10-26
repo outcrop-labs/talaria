@@ -10,8 +10,10 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { p } from '@/router'
   import { delJson, errorMessage, postJson, putJson } from '@/lib/fetch-json'
-  import { fetchAdminApps, fetchAppUpdates, post, shortSha, type AppPlugin, type AppUpdateResult, type InstalledApp } from './apps'
+  import { fetchAdminApps, fetchAppUpdates, post, requestChange, shortSha, type AppPlugin, type AppUpdateResult, type InstalledApp } from './apps'
   import AppsInstallRequests from './AppsInstallRequests.svelte'
+  import AppsUpdateRequests from './AppsUpdateRequests.svelte'
+  import Textarea from '@/components/ui/Textarea.svelte'
 
   let { isAdmin }: { isAdmin: boolean } = $props()
 
@@ -132,10 +134,35 @@
     }
   }
 
+  // "Request a change": a ticket for the plugin's maintaining agent on its
+  // board, filed by whoever asks (the api checks they could file one there).
+  let changing = $state<string | null>(null)
+  let changeText = $state('')
+  let filed = $state<Record<string, { ok: boolean; text: string; href?: string }>>({})
+  const sendChange = async (a: InstalledApp) => {
+    const text = changeText.trim()
+    if (!text) return
+    busy = a.slug
+    try {
+      const r = await requestChange(a.slug, text)
+      filed[a.slug] = {
+        ok: true,
+        text: `Filed ${r.ticketRef ?? 'a ticket'} for ${a.plugin?.maintainer?.name ?? a.plugin?.maintainer?.model ?? 'its maintainer'}`,
+        href: `/boards/${r.boardId}/${r.taskId}`,
+      }
+      changing = null
+      changeText = ''
+    } catch (e) {
+      filed[a.slug] = { ok: false, text: `Could not file it: ${errorMessage(e)}` }
+    } finally {
+      busy = null
+    }
+  }
+
   const apps = $derived(query.data?.apps ?? [])
 </script>
 
-{#if isAdmin}<AppsInstallRequests />{/if}
+{#if isAdmin}<AppsInstallRequests /><AppsUpdateRequests />{/if}
 
 {#snippet surfaceChips(surfaces: InstalledApp['surfaces'], mcp?: boolean)}
   <span class="flex gap-1">
@@ -237,7 +264,39 @@
               {:else}
                 <span>updates {pl.updatePolicy === 'auto' ? 'automatic' : 'need approval'}</span>
               {/if}
+              <button
+                type="button"
+                class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-accent"
+                title="Ask its maintainer for a change: a ticket on its board, assigned to the agent"
+                data-request-change
+                onclick={() => {
+                  changing = changing === a.slug ? null : a.slug
+                  changeText = ''
+                }}>Request a change</button
+              >
             </div>
+            {#if changing === a.slug}
+              <div class="mt-2 space-y-2" data-request-change-form>
+                <Textarea
+                  bind:value={changeText}
+                  rows={3}
+                  maxlength={4000}
+                  placeholder={`What should change in ${a.name}? The first line becomes the ticket's title.`}
+                />
+                <div class="flex justify-end gap-2">
+                  <Button size="sm" variant="ghost" onclick={() => (changing = null)}>Cancel</Button>
+                  <Button size="sm" disabled={busy === a.slug || !changeText.trim()} onclick={() => void sendChange(a)}>
+                    {busy === a.slug ? 'Filing…' : 'File the ticket'}
+                  </Button>
+                </div>
+              </div>
+            {/if}
+            {#if filed[a.slug]}
+              {@const f = filed[a.slug]!}
+              <div class={`mt-1 font-sans text-[11px] ${f.ok ? 'text-muted' : 'text-danger'}`} data-request-change-result>
+                {#if f.href}<a href={f.href} class="text-fg hover:underline">{f.text}</a>{:else}{f.text}{/if}
+              </div>
+            {/if}
           {/if}
           {#if a.broken}
             <div class="mt-1 truncate font-mono text-[11px] text-danger" title={a.broken}>{a.broken}</div>

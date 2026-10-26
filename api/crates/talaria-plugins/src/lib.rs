@@ -17,12 +17,27 @@
 //             granting its surfaces stay admin steps.
 //   status    `status::plugin_status` — everything a maintainer reads about
 //             its plugin, every call a read.
+//   upkeep    `upkeep::upkeep_pass`, run by the workbench job sweep: each
+//             plugin's open PRs (failing checks or a change request puts the
+//             maintainer back to work on its ticket), its branch (a merge
+//             raises an `app_update` approval, or applies the update on
+//             `auto`), its build and manifest, and its harness evals (each a
+//             ticket on the plugin's board, one open per kind).
+//   update    `update::decide_update` — an admin's answer to `app_update`.
+//   change    `change::request_change` — "Request a change" in Manage → Apps,
+//             a ticket for the maintainer on the plugin's board.
+//   fitness   `fitness::harness_fitness` — the plugin's columns in Models →
+//             Fitness, for `app_harness_fitness`.
 //
 // TALARIA STOPS AT THE PR. Nothing in this crate merges, pushes or writes to
 // a plugin's repository.
 
+pub mod change;
+pub mod fitness;
 pub mod install;
 pub mod status;
+pub mod update;
+pub mod upkeep;
 
 #[cfg(test)]
 mod live;

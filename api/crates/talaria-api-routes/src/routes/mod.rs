@@ -960,6 +960,17 @@ pub fn router(state: AppState) -> Router {
                 .put(talaria_routes_admin::admin::admin_apps_install_requests::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
+        .route(
+            "/api/admin/apps/update-requests",
+            get(talaria_routes_admin::admin::admin_apps_update_requests::get)
+                .put(talaria_routes_admin::admin::admin_apps_update_requests::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/apps/change-request",
+            post(talaria_routes_admin::admin::admin_apps_change_request::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
         // Service-to-service: the app host's own calls, under the
         // root-derived credential (require_internal). The host's proxy never
         // forwards /api/internal/* from outside.

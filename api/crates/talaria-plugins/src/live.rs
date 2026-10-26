@@ -207,7 +207,7 @@ impl World {
     pub async fn new(pg: &PgPool, tag: &str) -> Self {
         let tag = format!("{tag}-{}", random_hex());
         let user_id: String = sqlx::query_scalar(
-            "insert into users (sub, name) values ($1, 'Plugin Owner') returning id::text",
+            "insert into users (sub, name, role) values ($1, 'Plugin Owner', 'admin') returning id::text",
         )
         .bind(format!("plugins-live-{tag}"))
         .fetch_one(pg)
@@ -485,4 +485,438 @@ async fn a_failed_install_and_a_rejection_each_leave_their_own_line() {
         requests[0]["note"],
         Value::String("not this quarter".into())
     );
+}
+
+// ── The upkeep pass ──────────────────────────────────────────────────────────
+
+/// A loopback GitHub that answers GETs by path from `route`, and records
+/// every request as `METHOD path`. The sweep only reads, so anything but a
+/// GET is answered 500 and recorded for the test to refuse.
+async fn github_stub(
+    route: Arc<dyn Fn(&str) -> (u16, String) + Send + Sync>,
+) -> (String, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            let (log, route) = (log.clone(), route.clone());
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 16384];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let mut words = head.lines().next().unwrap_or_default().split(' ');
+                let method = words.next().unwrap_or_default().to_string();
+                let path = words.next().unwrap_or_default().to_string();
+                log.lock().unwrap().push(format!("{method} {path}"));
+                let (status, body) = if method == "GET" {
+                    route(&path)
+                } else {
+                    (500, r#"{"message":"the sweep only reads"}"#.to_string())
+                };
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(reply.as_bytes()).await;
+            });
+        }
+    });
+    (base, seen)
+}
+
+/// The ticket room's comments that start with `prefix`.
+async fn comments(pg: &PgPool, task_id: &str, prefix: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "select cm.content from channel_messages cm join channels c on c.id = cm.channel_id \
+         where c.task_id = $1::uuid and starts_with(cm.content, $2) order by cm.seq",
+    )
+    .bind(task_id)
+    .bind(prefix)
+    .fetch_all(pg)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "needs a live database (DATABASE_URL)"]
+async fn the_upkeep_pass_reads_prs_raises_the_update_and_files_tickets_once() {
+    use crate::update::{UpdateDecision, decide_update};
+    use crate::upkeep::{UpkeepDeps, upkeep_pass};
+
+    let (_serial, pg) = setup().await;
+    // A run that stopped part way left its plugin behind, with its repository
+    // gone: the pass would count it as an error here.
+    sqlx::query("delete from app_sources where slug like 'pu-upkeep-%'")
+        .execute(&pg)
+        .await
+        .unwrap();
+    let w = World::new(&pg, "upkeep").await;
+    let slug = format!("pu-{}", w.tag);
+    let (repo, sha1) = app_repo(&slug);
+    let gh_repo = format!("acme/{slug}");
+
+    // Installed through the decision, then read as a GitHub plugin: PRs come
+    // from the stub under `acme/<slug>`, commits from the file:// remote.
+    let id = file_request(&pg, &w.ask(&gh_repo)).await.unwrap();
+    point_at(&pg, &id, &repo.url).await;
+    let (host, steps) = mock_host().await;
+    decide(
+        &pg,
+        &NoCreds,
+        &host,
+        &id,
+        Decision::Approve { kept_data: None },
+        None,
+        "admin@example.invalid",
+    )
+    .await
+    .unwrap();
+    sqlx::query("update plugins set git_host_id = 'github' where app_slug = $1")
+        .bind(&slug)
+        .execute(&pg)
+        .await
+        .unwrap();
+    sqlx::query("update app_sources set repo = $2 where slug = $1")
+        .bind(&slug)
+        .bind(&gh_repo)
+        .execute(&pg)
+        .await
+        .unwrap();
+
+    // The maintainer opened PR #7 from the ticket and handed it to review.
+    let meta = talaria_statuses::status_meta(&pg, &w.board_id)
+        .await
+        .unwrap();
+    let review = meta.review_key.clone().expect("a review column");
+    sqlx::query("update tasks set status = $2 where id = $1::uuid")
+        .bind(&w.task_id)
+        .bind(&review)
+        .execute(&pg)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into workbench_jobs (agent_id, agent_model, task_id, repo, branch, status, pr_number, pr_url) \
+         values ($1::uuid, $2, $3::uuid, $4, 'talaria/plg-1-tags', 'pr_open', 7, $5)",
+    )
+    .bind(&w.agent_id)
+    .bind(&w.agent_model)
+    .bind(&w.task_id)
+    .bind(&gh_repo)
+    .bind(format!("https://github.com/{gh_repo}/pull/7"))
+    .execute(&pg)
+    .await
+    .unwrap();
+
+    // A PAT connection the test's own box sealed, restored after.
+    let sb = talaria_secretbox::SecretBox::from_parts(
+        [5u8; 32],
+        std::collections::HashMap::from([(1u32, talaria_secretbox::new_dek().unwrap())]),
+        Some(1),
+    );
+    let prior: Option<Value> =
+        sqlx::query_scalar("select value from app_settings where key = 'github_config'")
+            .fetch_optional(&pg)
+            .await
+            .unwrap();
+    let set_config = |v: Value| {
+        let pg = pg.clone();
+        async move {
+            sqlx::query(
+                "insert into app_settings (key, value) values ('github_config', $1) \
+                 on conflict (key) do update set value = excluded.value",
+            )
+            .bind(v)
+            .execute(&pg)
+            .await
+            .unwrap();
+        }
+    };
+    set_config(json!({ "mode": "pat", "pat": { "tokenEnc": sb.seal("pat-test").unwrap() } })).await;
+
+    // GitHub's recorded answers: PR #7 open with a failing check and a
+    // change request, then merged.
+    let merged = Arc::new(Mutex::new(false));
+    let prefix = format!("/repos/{gh_repo}");
+    let route: Arc<dyn Fn(&str) -> (u16, String) + Send + Sync> = {
+        let merged = merged.clone();
+        let prefix = prefix.clone();
+        let gh_repo = gh_repo.clone();
+        Arc::new(move |path: &str| {
+            let is_merged = *merged.lock().unwrap();
+            let rest = path.strip_prefix(&prefix).unwrap_or(path);
+            if rest.starts_with("/pulls?state=open") {
+                return if is_merged {
+                    (200, "[]".into())
+                } else {
+                    (
+                        200,
+                        json!([
+                            { "number": 7, "html_url": format!("https://github.com/{gh_repo}/pull/7"), "title": "Add tags", "head": { "ref": "talaria/plg-1-tags" }, "base": { "ref": "main" }, "user": { "login": "talaria-app[bot]" }, "draft": false },
+                            { "number": 8, "html_url": format!("https://github.com/{gh_repo}/pull/8"), "title": "Ann's tweak", "head": { "ref": "ann/tweak" }, "base": { "ref": "main" }, "user": { "login": "ann" }, "draft": false },
+                        ]).to_string(),
+                    )
+                };
+            }
+            match rest {
+                // A PR no workbench job opened: its failure is said on the
+                // plugin's ticket, and nobody is put on it.
+                "/pulls/8" => (
+                    200,
+                    json!({ "number": 8, "html_url": format!("https://github.com/{gh_repo}/pull/8"), "title": "Ann's tweak", "state": if is_merged { "closed" } else { "open" }, "merged": false, "head": { "ref": "ann/tweak", "sha": "f00d" }, "base": { "ref": "main" } }).to_string(),
+                ),
+                "/commits/f00d/check-runs?per_page=100" => (
+                    200,
+                    r#"{"check_runs":[{"name":"lint","status":"completed","conclusion":"failure"}]}"#.into(),
+                ),
+                "/commits/f00d/status" => (200, r#"{"statuses":[]}"#.into()),
+                "/pulls/8/reviews?per_page=100" => (200, "[]".into()),
+                "/pulls/7" => (
+                    200,
+                    json!({ "number": 7, "html_url": format!("https://github.com/{gh_repo}/pull/7"), "title": "Add tags", "state": if is_merged { "closed" } else { "open" }, "merged": is_merged, "merged_at": if is_merged { json!("2026-10-26T12:00:00Z") } else { Value::Null }, "head": { "ref": "talaria/plg-1-tags", "sha": "beef" }, "base": { "ref": "main" } }).to_string(),
+                ),
+                "/commits/beef/check-runs?per_page=100" => (
+                    200,
+                    r#"{"check_runs":[{"name":"test","status":"completed","conclusion":"failure"}]}"#.into(),
+                ),
+                "/commits/beef/status" => (200, r#"{"statuses":[]}"#.into()),
+                "/pulls/7/reviews?per_page=100" => (
+                    200,
+                    r#"[{"user":{"login":"ann"},"state":"CHANGES_REQUESTED","submitted_at":"2026-10-26T10:00:00Z"}]"#.into(),
+                ),
+                _ => (404, r#"{"message":"Not Found"}"#.into()),
+            }
+        })
+    };
+    let (base, calls) = github_stub(route).await;
+    let deps = UpkeepDeps {
+        pg: pg.clone(),
+        sb: sb.clone(),
+        redis: None,
+        host: host.clone(),
+    };
+    let pass = || talaria_github::with_api_base(base.clone(), upkeep_pass(&deps));
+
+    // 1. Failing checks and a change request: one comment, and the ticket
+    //    goes back from review to the board's working column with the
+    //    maintainer on it.
+    let r = pass().await.unwrap();
+    assert_eq!((r.plugins >= 1, r.resumed, r.errors), (true, 2, 0), "{r:?}");
+    let ann = comments(&pg, &w.task_id, "Plugin PR #8").await;
+    assert_eq!(ann.len(), 1, "{ann:?}");
+    assert!(
+        ann[0].contains("its checks are failing (lint)")
+            && ann[0].contains(
+                "No workbench job opened it (its author is ann), so no agent was put on it."
+            ),
+        "{}",
+        ann[0]
+    );
+    let said = comments(&pg, &w.task_id, "Plugin PR #7").await;
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("its checks are failing (test) and ann requested changes"),
+        "{}",
+        said[0]
+    );
+    assert!(said[0].contains(&format!(
+        "Talaria put {} back on this ticket",
+        w.agent_model
+    )));
+    let task = talaria_tasks::get_task(&pg, &w.task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        meta.working_keys.contains(&task.status),
+        "moved to {}",
+        task.status
+    );
+    assert!(task.assignees.contains(&w.agent_model));
+
+    // 2. The same state again is not news.
+    let r = pass().await.unwrap();
+    assert_eq!(r.resumed, 0, "{r:?}");
+    assert_eq!(comments(&pg, &w.task_id, "Plugin PR #7").await.len(), 1);
+
+    // 3. The PR merges and moves main: the merge is said on the ticket, and
+    //    one update waits for an admin.
+    *merged.lock().unwrap() = true;
+    let sha2 = repo.commit(&[("version", "2".to_string())], "v2");
+    let r = pass().await.unwrap();
+    assert_eq!((r.merged, r.updates_raised), (1, 1), "{r:?}");
+    let pending: Vec<(String, String, Value)> = sqlx::query_as(
+        "select id::text, target_sha, prs from app_update_requests where app_slug = $1 and status = 'pending'",
+    )
+    .bind(&slug)
+    .fetch_all(&pg)
+    .await
+    .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].1, sha2);
+    assert_eq!(pending[0].2, json!([7]));
+    let lines = w.lines(&pg).await;
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("plugin PR #7 merged into main")),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("waits for an admin's approval in Manage → Apps")),
+        "{lines:?}"
+    );
+    // Announced on the spot, through the one announcer.
+    let announced: Value =
+        sqlx::query_scalar("select value from app_settings where key = 'approval_announce_state'")
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+    assert!(
+        announced["announced"]
+            .get(format!("app_update:{}", pending[0].0))
+            .is_some(),
+        "{announced}"
+    );
+    let r = pass().await.unwrap();
+    assert_eq!(r.updates_raised, 0, "one waiting update per plugin");
+
+    // 4. The admin approves: update_app through the mock host, and the line.
+    let creds = talaria_apps::PlatformCredentials {
+        pg: &pg,
+        sb: &sb,
+        actor: "admin@example.invalid",
+    };
+    steps.lock().unwrap().clear();
+    let decided = decide_update(
+        &pg,
+        &creds,
+        &host,
+        &pending[0].0,
+        UpdateDecision::Approve,
+        None,
+        "admin@example.invalid",
+    )
+    .await
+    .unwrap();
+    assert_eq!(decided.status, "applied", "{decided:?}");
+    assert_eq!(*steps.lock().unwrap(), ["stage", "activate"]);
+    let p = crate::plugin(&pg, &slug).await.unwrap().unwrap();
+    assert_eq!(p.installed_commit.as_deref(), Some(sha2.as_str()));
+    assert!(w.lines(&pg).await.iter().any(|l| l
+        == &format!(
+            "approved update: updated plugin \"{slug}\" from {} to {}",
+            &sha1[..7],
+            &sha2[..7]
+        )));
+    // Running the newest commit now: the pass raises nothing.
+    assert_eq!(pass().await.unwrap().updates_raised, 0);
+
+    // 5. Health: it built on host h1, and fails after an upgrade to h2 — one
+    //    ticket on the plugin's board for its maintainer, however often the
+    //    pass sees it.
+    let builds = talaria_users::app_builds_dir().join(&slug);
+    std::fs::create_dir_all(&builds).unwrap();
+    let pointer = |status: &str, host_build: &str| {
+        std::fs::write(
+            builds.join("current.json"),
+            json!({ "key": "k", "status": status, "hostBuild": host_build, "error": "app.ts: cannot find name 'useApp'" }).to_string(),
+        )
+        .unwrap();
+    };
+    pointer("ready", "h1");
+    assert_eq!(pass().await.unwrap().notices, 0);
+    pointer("failed", "h2");
+    assert_eq!(pass().await.unwrap().notices, 1);
+    assert_eq!(pass().await.unwrap().notices, 0, "one open ticket per kind");
+    let filed: Vec<(String, String, Value)> = sqlx::query_as(
+        "select t.title, n.kind, t.assignees from plugin_notices n join tasks t on t.id = n.task_id \
+         where n.app_slug = $1 order by n.created_at",
+    )
+    .bind(&slug)
+    .fetch_all(&pg)
+    .await
+    .unwrap();
+    assert_eq!(filed.len(), 1);
+    assert_eq!(
+        filed[0].0,
+        format!("[plugin {slug}] broke after the host upgrade")
+    );
+    assert_eq!(filed[0].1, "host_upgrade");
+    assert_eq!(filed[0].2, json!([w.agent_model]));
+
+    // 6. Evals: a band that gets worse is a ticket.
+    let prior_index: Option<Value> =
+        sqlx::query_scalar("select value from app_settings where key = 'model_fitness_index'")
+            .fetch_optional(&pg)
+            .await
+            .unwrap();
+    let index = |band: &str| json!({ "model-a": { "at": "2026-10-26T00:00:00Z", "cells": { format!("app:{slug}/{slug}:triage"): { "band": band, "reason": "contract held 3/10" } } } });
+    let set_index = |v: Value| {
+        let pg = pg.clone();
+        async move {
+            sqlx::query(
+                "insert into app_settings (key, value) values ('model_fitness_index', $1) \
+                 on conflict (key) do update set value = excluded.value",
+            )
+            .bind(v)
+            .execute(&pg)
+            .await
+            .unwrap();
+        }
+    };
+    set_index(index("ready")).await;
+    assert_eq!(
+        pass().await.unwrap().notices,
+        0,
+        "the first pass only records"
+    );
+    set_index(index("unfit")).await;
+    assert_eq!(pass().await.unwrap().notices, 1);
+    let eval: String = sqlx::query_scalar(
+        "select t.description from plugin_notices n join tasks t on t.id = n.task_id \
+         where n.app_slug = $1 and n.kind = 'eval_regression'",
+    )
+    .bind(&slug)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert!(
+        eval.contains(&format!(
+            "{slug}:triage on model-a: ready → unfit (contract held 3/10)"
+        )),
+        "{eval}"
+    );
+
+    // The pass only ever read GitHub.
+    let calls = calls.lock().unwrap().clone();
+    assert!(calls.iter().all(|c| c.starts_with("GET ")), "{calls:?}");
+
+    sqlx::query("delete from app_sources where slug = $1")
+        .bind(&slug)
+        .execute(&pg)
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(talaria_users::apps_dir().join(&slug));
+    match prior_index {
+        Some(v) => set_index(v).await,
+        None => {
+            sqlx::query("delete from app_settings where key = 'model_fitness_index'")
+                .execute(&pg)
+                .await
+                .unwrap();
+        }
+    }
+    match prior {
+        Some(v) => set_config(v).await,
+        None => {
+            sqlx::query("delete from app_settings where key = 'github_config'")
+                .execute(&pg)
+                .await
+                .unwrap();
+        }
+    }
 }
