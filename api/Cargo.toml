@@ -469,6 +469,8 @@ talaria-plan-drafts = { path = "crates/talaria-plan-drafts" }
 
 talaria-platform-agents = { path = "crates/talaria-platform-agents" }
 
+talaria-plugins = { path = "crates/talaria-plugins" }
+
 talaria-price-oracle = { path = "crates/talaria-price-oracle" }
 
 talaria-push = { path = "crates/talaria-push" }
@@ -799,6 +801,7 @@ talaria-personal-agent = { workspace = true }
 talaria-plan-doc = { workspace = true }
 talaria-plan-drafts = { workspace = true }
 talaria-platform-agents = { workspace = true }
+talaria-plugins = { workspace = true }
 talaria-price-oracle = { workspace = true }
 talaria-push = { workspace = true }
 talaria-ratelimit = { workspace = true }

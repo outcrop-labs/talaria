@@ -33,6 +33,7 @@ talaria-outreach = { workspace = true }
 talaria-password-accounts = { workspace = true }
 talaria-permissions = { workspace = true }
 talaria-platform-agents = { workspace = true }
+talaria-plugins = { workspace = true }
 talaria-search = { workspace = true }
 talaria-secret-health = { workspace = true }
 talaria-secret-rotation = { workspace = true }

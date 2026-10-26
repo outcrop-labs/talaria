@@ -4,12 +4,14 @@
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
+  import Select from '@/components/ui/Select.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm, alert } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { p } from '@/router'
   import { delJson, errorMessage, postJson, putJson } from '@/lib/fetch-json'
-  import { fetchAdminApps, fetchAppUpdates, post, shortSha, type AppUpdateResult, type InstalledApp } from './apps'
+  import { fetchAdminApps, fetchAppUpdates, post, shortSha, type AppPlugin, type AppUpdateResult, type InstalledApp } from './apps'
+  import AppsInstallRequests from './AppsInstallRequests.svelte'
 
   let { isAdmin }: { isAdmin: boolean } = $props()
 
@@ -116,8 +118,24 @@
     }
   }
 
+  // A plugin's update policy: approve (every update waits for an admin) or
+  // auto (the maintenance sweep applies it when it sees it). Admin only.
+  const setPolicy = async (a: InstalledApp, updatePolicy: AppPlugin['updatePolicy']) => {
+    busy = a.slug
+    try {
+      await putJson<{ ok: true }>('/api/admin/apps', { app: a.slug, updatePolicy })
+      await refresh()
+    } catch (e) {
+      void alert({ title: 'Could not change the update policy', message: errorMessage(e) })
+    } finally {
+      busy = null
+    }
+  }
+
   const apps = $derived(query.data?.apps ?? [])
 </script>
+
+{#if isAdmin}<AppsInstallRequests />{/if}
 
 {#snippet surfaceChips(surfaces: InstalledApp['surfaces'], mcp?: boolean)}
   <span class="flex gap-1">
@@ -161,9 +179,11 @@
 {:else}
   <div class="space-y-3" data-app-cards>
     {#each apps as a (a.slug)}
-      <div class="flex items-center gap-4 rounded-lg border border-line bg-panel p-4">
+      <!-- Wraps on a phone: the actions drop below the app's lines instead of
+           squeezing them into a sliver beside the buttons. -->
+      <div class="flex flex-wrap items-center gap-4 rounded-lg border border-line bg-panel p-4 sm:flex-nowrap">
         <span class="w-8 text-center text-2xl text-accent">{a.icon}</span>
-        <div class="min-w-0 flex-1">
+        <div class="min-w-0 flex-1 basis-56">
           <div class="flex items-baseline gap-2">
             <span class="font-sans text-sm font-medium text-fg">{a.name}</span>
             {#if a.version}<span class="font-mono text-[10px] tracking-[0.05em] text-muted">v{a.version}</span>{/if}
@@ -187,6 +207,35 @@
                 <span class="shrink-0" title={check.notChecked}>update not checked</span>
               {:else if check?.error}
                 <span class="truncate text-danger" title={check.error}>update check failed</span>
+              {/if}
+            </div>
+          {/if}
+          {#if a.plugin}
+            {@const pl = a.plugin}
+            <!-- A plugin: the Developer Agent that maintains it, the person it
+                 is for, the board its maintenance tickets go to, and how its
+                 updates land. -->
+            <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-sans text-[11px] text-muted" data-app-plugin>
+              <span title="The Developer Agent that maintains this app">maintained by <span class="text-fg">{pl.maintainer?.name ?? pl.maintainer?.model ?? 'no agent'}</span></span>
+              {#if pl.owner}<span title="Who the app was built for">for <span class="text-fg">{pl.owner.name ?? 'a member'}</span></span>{/if}
+              {#if pl.board}<span title="Where its maintenance tickets go">tickets on <span class="text-fg">{pl.board.name ?? 'its board'}</span>{#if pl.ticketRef}{` · ${pl.ticketRef}`}{/if}</span>{/if}
+              {#if isAdmin}
+                <label class="flex items-center gap-1" title="approve: every update waits for an admin's approval. auto: an update is applied as soon as the maintenance sweep sees it.">
+                  updates
+                  <Select
+                    size="sm"
+                    aria-label={`Update policy for ${a.name}`}
+                    value={pl.updatePolicy}
+                    disabled={busy === a.slug}
+                    onchange={(e) => void setPolicy(a, e.currentTarget.value as AppPlugin['updatePolicy'])}
+                    class="w-40"
+                  >
+                    <option value="approve">need approval</option>
+                    <option value="auto">automatic</option>
+                  </Select>
+                </label>
+              {:else}
+                <span>updates {pl.updatePolicy === 'auto' ? 'automatic' : 'need approval'}</span>
               {/if}
             </div>
           {/if}

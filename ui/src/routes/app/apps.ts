@@ -1,5 +1,5 @@
 // Shared types + API calls for the Apps page (Apps.svelte + its tabs).
-import { errorMessage, getJson, postJson, postJsonOr, putJson } from '@/lib/fetch-json'
+import { errorMessage, getJson, postJson, postJsonOr, putJson, putJsonOr } from '@/lib/fetch-json'
 import type { AppBuildInfo } from '@/lib/apps'
 
 /** Where an app installed from git came from, and the commit it runs. */
@@ -15,6 +15,18 @@ export interface AppGitSource {
   installedAt: string | null
   updatedAt: string | null
 }
+/** An installed app a Developer Agent maintains: who, for whom, where its
+ *  maintenance tickets go, and how its updates land. The source half is `git`. */
+export interface AppPlugin {
+  maintainer: { id: string; model: string | null; name: string | null } | null
+  owner: { id: string; name: string | null } | null
+  board: { id: string; name: string | null } | null
+  taskId: string | null
+  ticketRef: string | null
+  gitHost: string | null
+  /** approve: every update waits for an admin; auto: applied when seen. */
+  updatePolicy: 'approve' | 'auto'
+}
 export interface InstalledApp {
   slug: string
   name: string
@@ -29,6 +41,40 @@ export interface InstalledApp {
   build?: AppBuildInfo
   /** talaria.json fails the manifest rules: why. Never enabled; removable. */
   broken?: string
+  plugin?: AppPlugin | null
+}
+/** An agent's request to install the app it built (`request_app_install`). */
+export interface AppInstallRequest {
+  id: string
+  agentId: string
+  agentModel: string
+  agentName: string | null
+  repo: string
+  url: string
+  ref: string | null
+  why: string
+  taskId: string | null
+  ticketRef: string | null
+  boardId: string | null
+  boardName: string | null
+  ownerUserId: string | null
+  ownerName: string | null
+  status: string
+  createdAt: string
+}
+/** PUT /api/admin/apps/install-requests — the decision and the ticket line it wrote. */
+export interface InstallDecision {
+  ok: boolean
+  status: 'approved' | 'failed' | 'rejected'
+  line: string
+  slug: string | null
+  sha: string | null
+  build?: { ok: boolean; error?: string } | null
+  buildError?: string | null
+  warning?: string | null
+  /** On the 409: kept data from another repository; answer with keptData. */
+  error?: string
+  conflict?: KeptDataConflict
 }
 /** `git ls-remote` against an app's recorded ref (GET ?updates=1, admin). */
 export interface AppUpdateCheck {
@@ -76,6 +122,13 @@ export const fetchAdminApps = (withCatalog: boolean): Promise<AdminApps> =>
 
 export const fetchAppUpdates = async (): Promise<Record<string, AppUpdateCheck>> =>
   (await getJson<AdminApps>('/api/admin/apps?updates=1')).updates ?? {}
+
+export const fetchInstallRequests = async (): Promise<AppInstallRequest[]> =>
+  (await getJson<{ requests: AppInstallRequest[] }>('/api/admin/apps/install-requests')).requests
+
+/** Decide an install request. A 409 is an answer (kept data to adopt or wipe). */
+export const decideInstallRequest = async (body: Record<string, unknown>): Promise<InstallDecision> =>
+  putJsonOr<InstallDecision>('/api/admin/apps/install-requests', body, [409])
 
 export const shortSha = (sha: string | null | undefined): string => (sha ? sha.slice(0, 7) : '—')
 
