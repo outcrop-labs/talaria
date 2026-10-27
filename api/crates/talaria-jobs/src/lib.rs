@@ -694,9 +694,45 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_scheduler::register_job(talaria_workbench_queue::promotion_job_spec(
         state.pg.clone(),
     ));
+    // The workbench job sweep also runs the plugin maintenance pass: it needs
+    // Redis (resuming a maintainer's session) and the app host's credential
+    // (an `auto` update), both read when the pass runs, never at boot.
+    let upkeep: talaria_workbench_mcp::teardown::UpkeepRun = {
+        let state = state.clone();
+        let sb = sb.clone();
+        Arc::new(move || {
+            let state = state.clone();
+            let sb = sb.clone();
+            Box::pin(async move {
+                let deps = talaria_plugins::upkeep::UpkeepDeps {
+                    pg: state.pg.clone(),
+                    sb,
+                    redis: state.redis().await.ok(),
+                    host: talaria_apps::AppHost::new(state.cfg.secret_root.internal_token()),
+                };
+                match talaria_plugins::upkeep::upkeep_pass(&deps).await {
+                    Ok(report) => report.summary(),
+                    Err(e) => Some(format!("plugin upkeep could not run: {e}")),
+                }
+            })
+        })
+    };
     talaria_scheduler::register_job(talaria_workbench_mcp::teardown::job_sweep_spec(
         state.pg.clone(),
+        Some(upkeep),
     ));
+    // App triggers: the schedule half is a job (the one scheduler), the
+    // event half is the platform-event sink — both deliver to the app host
+    // under the root-derived service credential, and both write the run rows
+    // Manage → Apps reads.
+    {
+        let deps = talaria_app_triggers::TriggerDeps::new(
+            state.pg.clone(),
+            state.cfg.secret_root.internal_token(),
+        );
+        talaria_platform_events::set_sink(talaria_app_triggers::event_sink(deps.clone()));
+        talaria_scheduler::register_job(talaria_app_triggers::job_spec(deps));
+    }
     // The optional trio. mcp-library-refresh mirrors the official MCP
     // registry into the catalog table (leased: one walker per interval);
     // update-check and update-reconcile
@@ -893,6 +929,10 @@ mod tests {
         assert!(
             names.contains(&JobName::SkillsIndexRefresh),
             "skills-index-refresh fell out of the job table"
+        );
+        assert!(
+            names.contains(&JobName::AppTriggers),
+            "app-triggers fell out of the job table — every app's schedule would silently stop"
         );
         assert!(
             names.contains(&JobName::McpHealth),

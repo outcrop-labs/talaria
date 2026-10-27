@@ -18,8 +18,10 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-app-manifest = { workspace = true }
+talaria-auth = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-github = { workspace = true }
+talaria-llm-keys = { workspace = true }
 talaria-mcp-apply = { workspace = true }
 talaria-safe-fetch = { workspace = true }
 talaria-secretbox = { workspace = true }

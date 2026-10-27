@@ -443,6 +443,7 @@ pub fn hermes_governance_harness() -> HarnessDefinition {
         // and being filed as the assistant's own work.
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

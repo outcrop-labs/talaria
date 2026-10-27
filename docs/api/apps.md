@@ -7,13 +7,14 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-7 routes.
+8 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/app-host/{app}/harnesses/{id}/cases/{name}`](#apiapp-hostappharnessesidcasesname) | POST | `internal` |
 | [`/api/app-host/{app}/lifecycle`](#apiapp-hostapplifecycle) | POST | `internal` |
 | [`/api/app-host/{app}/rebuild`](#apiapp-hostapprebuild) | POST | `admin` |
+| [`/api/app-host/{app}/trigger/{id}`](#apiapp-hostapptriggerid) | POST | `internal` |
 | [`/api/app-host/harnesses`](#apiapp-hostharnesses) | GET | `internal` |
 | [`/api/app-host/harnesses`](#apiapp-hostharnesses) | POST | `internal` |
 | [`/api/apps`](#apiapps) | GET | `session` |
@@ -65,6 +66,26 @@ Source: [`ui/src/routes/api/app-host.$app.rebuild.ts`](../../ui/src/routes/api/a
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `admin` | — | `{ok, slug, build}` | 200, 400 | — |
+
+## `/api/app-host/{app}/trigger/{id}`
+
+Source: [`ui/src/routes/api/app-host.$app.trigger.$id.ts`](../../ui/src/routes/api/app-host.$app.trigger.$id.ts)
+
+> POST /api/app-host/<slug>/trigger/<id> — run one of an enabled app's
+> triggers: the handler its server names for that id
+> (`defineAppServer({ triggers: { <id>: (ctx) => … } })`), as the app,
+> with no user. Body: `{ runId, kind: "cron" | "event", dueAt?, event?,
+> payload, deadlineMs }` — the schedule's minute, or the platform event
+> and its ids. Answers the run's outcome, `{ ok: true, detail? }` (the
+> string the handler returned) or `{ ok: false, error }` (what it threw,
+> or that the deadline cut it); 404 when the app's server has no handler
+> for the id, 409 when the app is not enabled. Loopback only, with the
+> internal credential: the api's trigger scheduler is the one caller, and
+> it records every run for Manage → Apps.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `internal` | — | `…` | 200, 400 + varies | — |
 
 ## `/api/app-host/harnesses`
 

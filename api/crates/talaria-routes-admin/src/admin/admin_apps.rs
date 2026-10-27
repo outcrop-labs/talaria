@@ -1,9 +1,12 @@
-// /api/admin/apps. App administration. GET → installed apps (+ ?catalog=1
-// for the marketplace feed, ?updates=1 for whether each app's source has a
-// newer commit). Reads are open to anyone granted the /apps Manage view;
-// mutations (enable/disable, install, update, uninstall, catalog source) and
-// the update check stay admin-only — installing or updating an app adds CODE
-// to the deployment, and a check spends a credential.
+// /api/admin/apps. App administration. GET → installed apps, each with its
+// triggers and their newest runs (+ ?catalog=1 for the marketplace feed,
+// ?updates=1 for whether each app's source has a newer commit); an app a
+// Developer Agent maintains carries `plugin` (its maintainer, owner, board
+// and update policy). Reads are open to anyone granted the /apps Manage view;
+// mutations (enable/disable, install, update, uninstall, catalog source, a
+// plugin's update policy) and the update check stay admin-only — installing
+// or updating an app adds CODE to the deployment, and a check spends a
+// credential.
 
 use axum::Json;
 use axum::extract::State;
@@ -58,6 +61,25 @@ async fn refresh_harness_reports(state: &AppState) {
     }
 }
 
+/// A plugin as the listing serves it: who maintains it, who it is for, where
+/// its maintenance tickets go, and how its updates land. The source half
+/// (repo, ref, commit) is the app's `git`.
+fn plugin_of(p: &talaria_plugins::Plugin) -> Value {
+    json!({
+        "maintainer": p.maintainer_agent_id.as_ref().map(|id| json!({
+            "id": id,
+            "model": p.maintainer_model,
+            "name": p.maintainer_name,
+        })),
+        "owner": p.owner_user_id.as_ref().map(|id| json!({ "id": id, "name": p.owner_name })),
+        "board": p.board_id.as_ref().map(|id| json!({ "id": id, "name": p.board_name })),
+        "taskId": p.task_id,
+        "ticketRef": p.ticket_ref,
+        "gitHost": p.git_host_id,
+        "updatePolicy": p.update_policy,
+    })
+}
+
 /// One source record as the listing serves it: where the app came from and
 /// the commit it runs. The workspace secret it is read with stays out.
 fn git_of(rec: &talaria_apps::SourceRecord) -> Value {
@@ -93,6 +115,18 @@ pub async fn get(
     }
     let enabled = enabled_app_slugs(&state.pg).await;
     let sources = source_records(&state.pg).await;
+    let plugins: std::collections::BTreeMap<String, Value> =
+        match talaria_plugins::plugins(&state.pg).await {
+            Ok(rows) => rows
+                .iter()
+                .map(|p| (p.app_slug.clone(), plugin_of(p)))
+                .collect(),
+            Err(e) => {
+                tracing::warn!("[admin/apps] could not read plugins: {e}");
+                Default::default()
+            }
+        };
+    let plugin_for = |slug: &str| plugins.get(slug).cloned().unwrap_or(Value::Null);
     let source_of = |slug: &str| {
         sources
             .get(slug)
@@ -127,9 +161,20 @@ pub async fn get(
                 "source": source,
                 "git": git,
                 "build": build,
+                "plugin": plugin_for(&a.slug),
             })
         })
         .collect::<Vec<_>>();
+    // Each app's triggers and their newest runs (talaria-app-triggers): where
+    // an admin sees that a schedule fired, and why a run failed — a failing
+    // trigger never turns the app off, so this line is how it is noticed.
+    for app in apps.iter_mut() {
+        let slug = app["slug"].as_str().unwrap_or_default().to_string();
+        let report = talaria_app_triggers::trigger_report(&state.pg, &slug).await;
+        if let Some(obj) = app.as_object_mut() {
+            obj.insert("triggers".into(), report);
+        }
+    }
     // An installed directory whose talaria.json the rules refuse: listed with
     // the reason, never enabled, and still removable.
     for b in broken_apps() {
@@ -147,6 +192,7 @@ pub async fn get(
             "git": git,
             "build": app_build_status(&b.slug),
             "broken": b.reason,
+            "plugin": plugin_for(&b.slug),
         }));
     }
     // ?catalog=1
@@ -199,13 +245,13 @@ pub async fn put(
     let sb = secretbox_or_500(&state, "[admin/apps] secretbox unavailable").await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
-    // Three bodies on one PUT, dispatched by key presence: { app, update }
-    // updates an app to its source's newer commit, { app, enabled } toggles
-    // an app, { catalogUrl } (nullable — null resets to the default source)
-    // sets the catalog source. A body naming NONE of the keys answers 400
-    // rather than silently falling into the catalog arm and resetting the
-    // source; a catalogUrl that is a string but not a URL answers the field's
-    // own sentence ("Invalid URL").
+    // Four bodies on one PUT, dispatched by key presence: { app, update }
+    // updates an app to its source's newer commit, { app, updatePolicy } sets
+    // a plugin's update policy, { app, enabled } toggles an app, { catalogUrl }
+    // (nullable — null resets to the default source) sets the catalog source.
+    // A body naming NONE of the keys answers 400 rather than silently falling
+    // into the catalog arm and resetting the source; a catalogUrl that is a
+    // string but not a URL answers the field's own sentence ("Invalid URL").
     if obj.contains_key("update") {
         let app = match talaria_body::string_member(obj, "app", 1, usize::MAX) {
             Ok(a) => a,
@@ -273,6 +319,44 @@ pub async fn put(
         }))
         .into_response());
     }
+    if obj.contains_key("updatePolicy") {
+        let app = match talaria_body::string_member(obj, "app", 1, usize::MAX) {
+            Ok(a) => a,
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        };
+        // approve: every update of this plugin waits for an admin's approval;
+        // auto: it does not.
+        let policy =
+            match talaria_body::enum_member(obj, "updatePolicy", &talaria_plugins::UPDATE_POLICIES)
+            {
+                Ok(p) => p,
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+            };
+        let previous = match talaria_plugins::set_update_policy(&state.pg, &app, &policy).await {
+            Ok(Some(previous)) => previous,
+            Ok(None) => {
+                return Ok(house_error(
+                    StatusCode::NOT_FOUND,
+                    &format!("{app} is not a plugin: no agent maintains it"),
+                ));
+            }
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        };
+        log_audit(
+            &state.pg,
+            AuditEntry {
+                actor: &actor,
+                action: "app.update-policy",
+                target_type: "app",
+                target_id: Some(&app),
+                target_label: Some(&policy),
+                before: Some(json!({ "updatePolicy": previous })),
+                after: Some(json!({ "updatePolicy": policy })),
+            },
+        )
+        .await;
+        return Ok(Json(json!({ "ok": true, "updatePolicy": policy })).into_response());
+    }
     if obj.contains_key("app") || obj.contains_key("enabled") {
         let app = match talaria_body::string_member(obj, "app", 1, usize::MAX) {
             Ok(a) => a,
@@ -311,7 +395,7 @@ pub async fn put(
         None => {
             return Ok(house_error(
                 StatusCode::BAD_REQUEST,
-                "body must name app + update, app + enabled, or catalogUrl",
+                "body must name app + update, app + updatePolicy, app + enabled, or catalogUrl",
             ));
         }
         Some(Value::Null) => None,

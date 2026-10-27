@@ -1,7 +1,9 @@
 // /api/workbench/repo-requests. Agent repo-creation requests. GET → pending
 // queue; PUT → approve (creates the repo via the App at the requested or
-// overridden visibility, grants it to the requester) or reject (the note goes
-// on the requesting ticket). Admin — approval mints real org resources.
+// overridden visibility, protects its default branch against force-push and
+// deletion unless the approver says not to, grants it to the requester) or
+// reject (the note goes on the requesting ticket). Admin — approval mints
+// real org resources.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -14,7 +16,8 @@ use sqlx::AssertSqlSafe;
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    enum_member, optional_enum_member, optional_max_string_member, parse, uuid_member,
+    enum_member, optional_boolean_member, optional_enum_member, optional_max_string_member, parse,
+    uuid_member,
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_github as gh;
@@ -85,6 +88,16 @@ fn decision_line(
     }
 }
 
+/// What the approval line adds about the default branch: protected, left
+/// unprotected by choice, or the reason GitHub would not protect it.
+fn protection_line(protection: &Option<Result<(), String>>) -> String {
+    match protection {
+        Some(Ok(())) => " Its default branch is protected: no force-push, no deletion.".into(),
+        Some(Err(why)) => format!(" Its default branch is NOT protected: {why}."),
+        None => " Its default branch was left unprotected, as the approver chose.".into(),
+    }
+}
+
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     require_admin(&state, &headers).await?;
     let rows: Vec<ReqRow> = match sqlx::query_as(AssertSqlSafe(format!(
@@ -125,6 +138,13 @@ pub async fn put(
     let visibility_override = match optional_enum_member(obj, "visibility", &["private", "public"])
     {
         Ok(v) => v.as_deref().and_then(gh::RepoVisibility::parse),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    // Protect the new repo's default branch against force-push and deletion
+    // (a ruleset: no required reviews, no required checks). On unless the
+    // approver says false.
+    let protect = match optional_boolean_member(obj, "protect") {
+        Ok(v) => v.unwrap_or(true),
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let req = match sqlx::query_as::<_, ReqRow>(AssertSqlSafe(format!(
@@ -182,9 +202,18 @@ pub async fn put(
     // partway through is a 400 with the whatever-steps-happened state
     // behind it.
     let sb = state.secretbox().await.unwrap_or_default();
-    let created = match gh::create_repo(&state.pg, &sb, &req.3, &req.4, &req.5, visibility).await {
-        Ok(c) => c,
-        Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
+    let created =
+        match gh::create_repo(&state.pg, &sb, &req.3, &req.4, &req.5, visibility, protect).await {
+            Ok(c) => c,
+            Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
+        };
+    let (protected, protection_note) = match &created.protection {
+        Some(Ok(())) => (Some(true), None),
+        Some(Err(why)) => (Some(false), Some(why.clone())),
+        None => (
+            Some(false),
+            Some("not asked for by the approver".to_string()),
+        ),
     };
     // The requester gets the repo granted the moment it exists — appended
     // after their existing grants, deduped.
@@ -197,12 +226,15 @@ pub async fn put(
     }
     if let Err(e) = sqlx::query(
         "update workbench_repo_requests set status = 'approved', decided_by = $1, \
-         visibility = $3, decision_note = $4, updated_at = now() where id = $2::uuid",
+         visibility = $3, decision_note = $4, protected = $5, protection_note = $6, \
+         updated_at = now() where id = $2::uuid",
     )
     .bind(&actor)
     .bind(&req.0)
     .bind(visibility.as_str())
     .bind(&note)
+    .bind(protected)
+    .bind(&protection_note)
     .execute(&state.pg)
     .await
     {
@@ -216,12 +248,16 @@ pub async fn put(
             task_id,
             &actor,
             "workbench",
-            &decision_line(
-                "approve",
-                &created.full_name,
-                &req.2,
-                visibility.as_str(),
-                note.as_deref(),
+            &format!(
+                "{}{}",
+                decision_line(
+                    "approve",
+                    &created.full_name,
+                    &req.2,
+                    visibility.as_str(),
+                    note.as_deref(),
+                ),
+                protection_line(&created.protection)
             ),
         )
         .await;
@@ -239,17 +275,37 @@ pub async fn put(
                 target_id: Some(&target_id),
                 target_label: None,
                 before: None,
-                after: None,
+                after: Some(json!({ "protected": protected })),
             },
         )
         .await;
     });
-    Ok(Json(json!({ "ok": true, "repo": created.full_name, "url": created.url })).into_response())
+    Ok(Json(json!({
+        "ok": true,
+        "repo": created.full_name,
+        "url": created.url,
+        "protected": protected,
+        "protection": protection_note,
+    }))
+    .into_response())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::decision_line;
+    use super::{decision_line, protection_line};
+
+    #[test]
+    fn the_approval_line_says_whether_the_default_branch_is_protected() {
+        assert_eq!(
+            protection_line(&Some(Ok(()))),
+            " Its default branch is protected: no force-push, no deletion."
+        );
+        assert_eq!(
+            protection_line(&Some(Err("the plan does not allow it".into()))),
+            " Its default branch is NOT protected: the plan does not allow it."
+        );
+        assert!(protection_line(&None).contains("as the approver chose"));
+    }
 
     #[test]
     fn a_decision_line_names_the_repo_the_agent_and_the_reason() {

@@ -552,6 +552,7 @@ pub fn judge_harness() -> HarnessDefinition {
         "Reviews agents’ reported ticket outcomes against the ask — verdicts and findings on boards with judging on.",
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&CHAIN),
             user_id: None,

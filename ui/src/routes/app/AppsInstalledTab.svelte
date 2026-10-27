@@ -4,17 +4,23 @@
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
+  import Select from '@/components/ui/Select.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm, alert } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { p } from '@/router'
   import { delJson, errorMessage, postJson, putJson } from '@/lib/fetch-json'
-  import { fetchAdminApps, fetchAppUpdates, post, shortSha, type AppUpdateResult, type InstalledApp } from './apps'
+  import { relativeTime } from '@/lib/fleet'
+  import { fetchAdminApps, fetchAppUpdates, post, requestChange, shortSha, type AppPlugin, type AppTriggerInfo, type AppUpdateResult, type InstalledApp } from './apps'
+  import AppsInstallRequests from './AppsInstallRequests.svelte'
+  import AppsUpdateRequests from './AppsUpdateRequests.svelte'
+  import Textarea from '@/components/ui/Textarea.svelte'
 
   let { isAdmin }: { isAdmin: boolean } = $props()
 
   const qc = useQueryClient()
-  const query = createQuery(() => ({ queryKey: ['admin-apps'], queryFn: () => fetchAdminApps(false) }))
+  // Polled so the trigger lines follow their schedules while the tab is open.
+  const query = createQuery(() => ({ queryKey: ['admin-apps'], queryFn: () => fetchAdminApps(false), refetchInterval: 30_000 }))
   // Whether each app's source has a newer commit: `git ls-remote` against its
   // recorded ref, admin only (a check mints the app's GitHub read token; a
   // source read with a workspace secret is not checked, `notChecked`).
@@ -24,6 +30,12 @@
     enabled: isAdmin,
     staleTime: 60_000,
   }))
+  /** A trigger's hover: when it fires next, and its newest runs. */
+  function triggerTitle(t: AppTriggerInfo): string {
+    const head = t.cron ? `Runs on the schedule ${t.cron} (UTC)${t.nextAt ? `; next ${new Date(t.nextAt).toLocaleString()}` : ''}` : `Runs on every ${t.event}`
+    const runs = t.runs.map((r) => `${new Date(r.queuedAt).toLocaleString()} — ${r.state}${r.error ? `: ${r.error}` : r.detail ? `: ${r.detail}` : ''}`)
+    return [head, ...runs].join('\n')
+  }
   let busy = $state<string | null>(null)
   /** The last update's outcome, per app, shown on its card. */
   let results = $state<Record<string, { ok: boolean; text: string }>>({})
@@ -116,8 +128,49 @@
     }
   }
 
+  // A plugin's update policy: approve (every update waits for an admin) or
+  // auto (the maintenance sweep applies it when it sees it). Admin only.
+  const setPolicy = async (a: InstalledApp, updatePolicy: AppPlugin['updatePolicy']) => {
+    busy = a.slug
+    try {
+      await putJson<{ ok: true }>('/api/admin/apps', { app: a.slug, updatePolicy })
+      await refresh()
+    } catch (e) {
+      void alert({ title: 'Could not change the update policy', message: errorMessage(e) })
+    } finally {
+      busy = null
+    }
+  }
+
+  // "Request a change": a ticket for the plugin's maintaining agent on its
+  // board, filed by whoever asks (the api checks they could file one there).
+  let changing = $state<string | null>(null)
+  let changeText = $state('')
+  let filed = $state<Record<string, { ok: boolean; text: string; href?: string }>>({})
+  const sendChange = async (a: InstalledApp) => {
+    const text = changeText.trim()
+    if (!text) return
+    busy = a.slug
+    try {
+      const r = await requestChange(a.slug, text)
+      filed[a.slug] = {
+        ok: true,
+        text: `Filed ${r.ticketRef ?? 'a ticket'} for ${a.plugin?.maintainer?.name ?? a.plugin?.maintainer?.model ?? 'its maintainer'}`,
+        href: `/boards/${r.boardId}/${r.taskId}`,
+      }
+      changing = null
+      changeText = ''
+    } catch (e) {
+      filed[a.slug] = { ok: false, text: `Could not file it: ${errorMessage(e)}` }
+    } finally {
+      busy = null
+    }
+  }
+
   const apps = $derived(query.data?.apps ?? [])
 </script>
+
+{#if isAdmin}<AppsInstallRequests /><AppsUpdateRequests />{/if}
 
 {#snippet surfaceChips(surfaces: InstalledApp['surfaces'], mcp?: boolean)}
   <span class="flex gap-1">
@@ -148,6 +201,39 @@
   {/if}
 {/snippet}
 
+<!-- The app's triggers and how each last ran. A trigger that fails never
+     turns the app off, so this line is where an admin sees it: the failed
+     run's sentence in red, the app's own result line otherwise. -->
+{#snippet triggerLines(a: InstalledApp)}
+  {#each a.triggers ?? [] as t (t.id)}
+    {@const last = t.runs[0]}
+    {@const failed = t.runs.filter((r) => r.state === 'failed').length}
+    <div class="mt-1 flex items-baseline gap-2 font-mono text-[11px] text-muted" data-app-trigger={t.id}>
+      <span class="shrink-0 text-fg">{t.id}</span>
+      <span class="shrink-0" title={triggerTitle(t)}>{t.cron ? `${t.cron} UTC` : `on ${t.event}`}</span>
+      {#if !last}
+        <span class="truncate">{a.enabled ? 'not run yet' : 'off while the app is disabled'}</span>
+      {:else}
+        <span class={`shrink-0 ${last.state === 'failed' ? 'text-danger' : last.state === 'ok' ? 'text-fg' : ''}`}>
+          {last.state === 'ok' ? 'ran' : last.state} {relativeTime(last.finishedAt ?? last.startedAt ?? last.queuedAt)}
+        </span>
+        {#if last.state === 'failed' && last.error}
+          <span class="truncate text-danger" title={last.error}>{last.error}</span>
+        {:else if last.detail}
+          <span class="truncate" title={last.detail}>{last.detail}</span>
+        {:else if last.state === 'skipped' && last.error}
+          <span class="truncate" title={last.error}>{last.error}</span>
+        {/if}
+        {#if failed > 0 && last.state !== 'failed'}
+          <span class="shrink-0 text-danger" title={t.runs.filter((r) => r.state === 'failed').map((r) => r.error ?? '').join('\n')}>
+            {failed} of the last {t.runs.length} failed
+          </span>
+        {/if}
+      {/if}
+    </div>
+  {/each}
+{/snippet}
+
 {#if query.isLoading}
   <SkeletonRows rows={4} />
 {:else if !query.data}
@@ -161,9 +247,11 @@
 {:else}
   <div class="space-y-3" data-app-cards>
     {#each apps as a (a.slug)}
-      <div class="flex items-center gap-4 rounded-lg border border-line bg-panel p-4">
+      <!-- Wraps on a phone: the actions drop below the app's lines instead of
+           squeezing them into a sliver beside the buttons. -->
+      <div class="flex flex-wrap items-center gap-4 rounded-lg border border-line bg-panel p-4 sm:flex-nowrap">
         <span class="w-8 text-center text-2xl text-accent">{a.icon}</span>
-        <div class="min-w-0 flex-1">
+        <div class="min-w-0 flex-1 basis-56">
           <div class="flex items-baseline gap-2">
             <span class="font-sans text-sm font-medium text-fg">{a.name}</span>
             {#if a.version}<span class="font-mono text-[10px] tracking-[0.05em] text-muted">v{a.version}</span>{/if}
@@ -190,6 +278,67 @@
               {/if}
             </div>
           {/if}
+          {#if a.plugin}
+            {@const pl = a.plugin}
+            <!-- A plugin: the Developer Agent that maintains it, the person it
+                 is for, the board its maintenance tickets go to, and how its
+                 updates land. -->
+            <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-sans text-[11px] text-muted" data-app-plugin>
+              <span title="The Developer Agent that maintains this app">maintained by <span class="text-fg">{pl.maintainer?.name ?? pl.maintainer?.model ?? 'no agent'}</span></span>
+              {#if pl.owner}<span title="Who the app was built for">for <span class="text-fg">{pl.owner.name ?? 'a member'}</span></span>{/if}
+              {#if pl.board}<span title="Where its maintenance tickets go">tickets on <span class="text-fg">{pl.board.name ?? 'its board'}</span>{#if pl.ticketRef}{` · ${pl.ticketRef}`}{/if}</span>{/if}
+              {#if isAdmin}
+                <label class="flex items-center gap-1" title="approve: every update waits for an admin's approval. auto: an update is applied as soon as the maintenance sweep sees it.">
+                  updates
+                  <Select
+                    size="sm"
+                    aria-label={`Update policy for ${a.name}`}
+                    value={pl.updatePolicy}
+                    disabled={busy === a.slug}
+                    onchange={(e) => void setPolicy(a, e.currentTarget.value as AppPlugin['updatePolicy'])}
+                    class="w-40"
+                  >
+                    <option value="approve">need approval</option>
+                    <option value="auto">automatic</option>
+                  </Select>
+                </label>
+              {:else}
+                <span>updates {pl.updatePolicy === 'auto' ? 'automatic' : 'need approval'}</span>
+              {/if}
+              <button
+                type="button"
+                class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-accent"
+                title="Ask its maintainer for a change: a ticket on its board, assigned to the agent"
+                data-request-change
+                onclick={() => {
+                  changing = changing === a.slug ? null : a.slug
+                  changeText = ''
+                }}>Request a change</button
+              >
+            </div>
+            {#if changing === a.slug}
+              <div class="mt-2 space-y-2" data-request-change-form>
+                <Textarea
+                  bind:value={changeText}
+                  rows={3}
+                  maxlength={4000}
+                  placeholder={`What should change in ${a.name}? The first line becomes the ticket's title.`}
+                />
+                <div class="flex justify-end gap-2">
+                  <Button size="sm" variant="ghost" onclick={() => (changing = null)}>Cancel</Button>
+                  <Button size="sm" disabled={busy === a.slug || !changeText.trim()} onclick={() => void sendChange(a)}>
+                    {busy === a.slug ? 'Filing…' : 'File the ticket'}
+                  </Button>
+                </div>
+              </div>
+            {/if}
+            {#if filed[a.slug]}
+              {@const f = filed[a.slug]!}
+              <div class={`mt-1 font-sans text-[11px] ${f.ok ? 'text-muted' : 'text-danger'}`} data-request-change-result>
+                {#if f.href}<a href={f.href} class="text-fg hover:underline">{f.text}</a>{:else}{f.text}{/if}
+              </div>
+            {/if}
+          {/if}
           {#if a.broken}
             <div class="mt-1 truncate font-mono text-[11px] text-danger" title={a.broken}>{a.broken}</div>
           {:else if a.build?.status === 'failed' && a.build.error}
@@ -203,6 +352,7 @@
               <div class="mt-1 break-words font-mono text-[11px] text-warning" data-harness-problem>{problem}</div>
             {/each}
           {/if}
+          {#if !a.broken}{@render triggerLines(a)}{/if}
           {#if results[a.slug]}
             <div class={`mt-1 font-mono text-[11px] ${results[a.slug]!.ok ? 'text-fg' : 'text-danger'}`} data-app-update-result>
               {results[a.slug]!.text}

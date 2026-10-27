@@ -734,6 +734,7 @@ mod tests {
             "Answers.",
             talaria_harness_model::ModelSpec {
                 pin: None,
+                slot: None,
                 role: None,
                 chain: Some(&[]),
                 user_id: None,

@@ -21,6 +21,8 @@ talaria-attribution = { workspace = true }
 talaria-conversations = { workspace = true }
 talaria-inbox-focus = { workspace = true }
 talaria-tasks = { workspace = true }
+talaria-app-triggers = { workspace = true }
+talaria-platform-events = { workspace = true }
 talaria-tasks-types = { workspace = true }
 talaria-workchains = { workspace = true }
 talaria-kb = { workspace = true }
@@ -31,6 +33,7 @@ talaria-retrieval-http = { workspace = true }
 talaria-google-pending = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-approvals = { workspace = true }
+talaria-apps = { workspace = true }
 talaria-audit = { workspace = true }
 talaria-digest = { workspace = true }
 talaria-fleet-preflight = { workspace = true }
@@ -64,6 +67,7 @@ talaria-teams = { workspace = true }
 talaria-update-job = { workspace = true }
 talaria-uploads = { workspace = true }
 talaria-work-dispatch = { workspace = true }
+talaria-plugins = { workspace = true }
 talaria-workbench-mcp = { workspace = true }
 talaria-workbench-queue = { workspace = true }
 tokio = { workspace = true }

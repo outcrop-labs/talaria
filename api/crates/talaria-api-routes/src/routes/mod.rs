@@ -947,6 +947,12 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT, POST") }),
         )
         .route(
+            "/api/admin/app-harness-models",
+            get(talaria_routes_admin::admin::admin_app_harness_models::get)
+                .put(talaria_routes_admin::admin::admin_app_harness_models::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
             "/api/admin/apps",
             get(talaria_routes_admin::admin::admin_apps::get)
                 .put(talaria_routes_admin::admin::admin_apps::put)
@@ -954,12 +960,39 @@ pub fn router(state: AppState) -> Router {
                 .delete(talaria_routes_admin::admin::admin_apps::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
         )
+        .route(
+            "/api/admin/apps/install-requests",
+            get(talaria_routes_admin::admin::admin_apps_install_requests::get)
+                .put(talaria_routes_admin::admin::admin_apps_install_requests::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/apps/update-requests",
+            get(talaria_routes_admin::admin::admin_apps_update_requests::get)
+                .put(talaria_routes_admin::admin::admin_apps_update_requests::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/apps/change-request",
+            post(talaria_routes_admin::admin::admin_apps_change_request::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
         // Service-to-service: the app host's own calls, under the
         // root-derived credential (require_internal). The host's proxy never
         // forwards /api/internal/* from outside.
         .route(
             "/api/internal/apps/mcp-sync",
             post(talaria_routes_admin::admin::internal_apps_mcp_sync::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/internal/apps/agent-turn",
+            post(talaria_routes_admin::admin::internal_apps_agent_turn::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/internal/apps/{slug}/llm-key",
+            post(talaria_routes_admin::admin::internal_apps_llm_key::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(

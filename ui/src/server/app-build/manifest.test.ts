@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest'
 import {
   KNOWN_KEYS,
   LIMITS,
+  PLATFORM_EVENTS,
   RESERVED_APP_SLUGS,
   SDK_VERSION,
   SLUG_RE,
@@ -22,11 +23,12 @@ import {
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..')
 const fixture = JSON.parse(readFileSync(join(ROOT, 'api/tests/it/fixtures/app-manifest.json'), 'utf8')) as {
   sdkVersion: string
+  events: string[]
   manifests: Array<{
     about: string
     manifest: unknown
     error?: string
-    parsed?: { name: string; slug?: string; icon: string; version: string; surfaces: string[] }
+    parsed?: { name: string; slug?: string; icon: string; version: string; surfaces: string[]; triggers?: unknown[] }
   }>
   ranges: Array<{ range: string; version: string; satisfied?: boolean; error?: string }>
 }
@@ -81,6 +83,10 @@ describe('the shared manifest fixture', () => {
     expect(SDK_VERSION).toBe(fixture.sdkVersion)
   })
 
+  it('names the platform events a trigger may subscribe to', () => {
+    expect([...PLATFORM_EVENTS]).toEqual(fixture.events)
+  })
+
   for (const c of fixture.manifests) {
     it(c.about, () => {
       const got = validateManifest(c.manifest)
@@ -96,6 +102,7 @@ describe('the shared manifest fixture', () => {
         expect(got.manifest.version).toBe(c.parsed.version)
         expect(got.manifest.slug).toBe(c.parsed.slug)
         expect(SURFACES.filter((k) => got.manifest.surfaces[k] !== undefined)).toEqual(c.parsed.surfaces)
+        if (c.parsed.triggers) expect(got.manifest.triggers).toEqual(c.parsed.triggers)
       }
     })
   }
@@ -137,9 +144,18 @@ describe('docs/sdk/talaria.schema.json', () => {
   })
   it('reads triggers as the validator reads them, case for case', () => {
     expect(schema.properties.triggers?.items?.properties.id?.pattern).toBe(SLUG_RE.source)
-    const cases = fixture.manifests.filter((c) => Array.isArray((c.manifest as { triggers?: unknown }).triggers))
-    // The fixture's trigger cases: the valid pair and every refusal.
-    expect(cases.length).toBeGreaterThanOrEqual(8)
+    const escaped = PLATFORM_EVENTS.map((e) => e.replaceAll('.', '\\.')).join('|')
+    expect(schema.properties.triggers?.items?.properties.event?.pattern).toBe(`^\\s*(${escaped})\\s*$`)
+    // The schedule's grammar and the ids' uniqueness are the validator's
+    // alone: a JSON Schema pattern cannot hold a field's range, and
+    // uniqueItems compares whole items. The schema says so in its description.
+    const beyondTheSchema = (c: { manifest: unknown }) => {
+      const got = validateManifest(c.manifest)
+      return !got.ok && /is not a schedule|is used by an earlier trigger/.test(got.error)
+    }
+    const cases = fixture.manifests.filter((c) => Array.isArray((c.manifest as { triggers?: unknown }).triggers) && !beyondTheSchema(c))
+    // The fixture's trigger cases: the valid ones and every refusal.
+    expect(cases.length).toBeGreaterThanOrEqual(10)
     for (const c of cases) {
       const triggers = (c.manifest as { triggers: unknown[] }).triggers
       const validator = validateManifest({ name: 'X', triggers }).ok

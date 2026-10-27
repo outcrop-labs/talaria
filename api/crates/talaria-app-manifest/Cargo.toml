@@ -10,3 +10,4 @@ workspace = true
 
 [dependencies]
 serde_json = { workspace = true }
+talaria-platform-events = { workspace = true }

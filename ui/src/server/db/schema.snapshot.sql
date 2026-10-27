@@ -207,6 +207,26 @@ CREATE TABLE public.app_data (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.app_install_requests (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    agent_id uuid NOT NULL,
+    agent_model text NOT NULL,
+    repo text NOT NULL,
+    url text NOT NULL,
+    git_ref text,
+    why text DEFAULT ''::text NOT NULL,
+    task_id uuid,
+    board_id uuid,
+    owner_user_id uuid,
+    status text DEFAULT 'pending'::text NOT NULL,
+    decided_by text,
+    decision_note text,
+    result text,
+    app_slug text,
+    installed_sha text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.app_settings (
     key text NOT NULL,
     value jsonb NOT NULL,
@@ -225,6 +245,44 @@ CREATE TABLE public.app_sources (
     installed_by text,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_by text
+);
+CREATE TABLE public.app_trigger_runs (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    app_slug text NOT NULL,
+    trigger_id text NOT NULL,
+    kind text NOT NULL,
+    event text,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    due_at timestamp with time zone,
+    state text DEFAULT 'queued'::text NOT NULL,
+    queued_at timestamp with time zone DEFAULT now() NOT NULL,
+    started_at timestamp with time zone,
+    finished_at timestamp with time zone,
+    detail text,
+    error text,
+    attempts integer DEFAULT 0 NOT NULL,
+    CONSTRAINT app_trigger_runs_kind_check CHECK ((kind = ANY (ARRAY['cron'::text, 'event'::text]))),
+    CONSTRAINT app_trigger_runs_state_check CHECK ((state = ANY (ARRAY['queued'::text, 'running'::text, 'ok'::text, 'failed'::text, 'skipped'::text])))
+);
+CREATE TABLE public.app_trigger_state (
+    app_slug text NOT NULL,
+    trigger_id text NOT NULL,
+    cron text NOT NULL,
+    armed_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_due_at timestamp with time zone
+);
+CREATE TABLE public.app_update_requests (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    app_slug text NOT NULL,
+    target_sha text NOT NULL,
+    git_ref text,
+    prs jsonb DEFAULT '[]'::jsonb NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    decided_by text,
+    decision_note text,
+    result text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE public.artifact_folders (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1002,6 +1060,42 @@ CREATE TABLE public.plan_drafts (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.plugin_notices (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    app_slug text NOT NULL,
+    kind text NOT NULL,
+    task_id uuid,
+    detail text DEFAULT ''::text NOT NULL,
+    created_by text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.plugin_pr_watch (
+    app_slug text NOT NULL,
+    pr_number bigint NOT NULL,
+    head_sha text,
+    state text DEFAULT 'open'::text NOT NULL,
+    checks text,
+    review text,
+    checks_signalled text,
+    review_signalled text,
+    update_named boolean DEFAULT false NOT NULL,
+    task_id uuid,
+    seen_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.plugins (
+    app_slug text NOT NULL,
+    git_host_id text,
+    maintainer_agent_id uuid,
+    owner_user_id uuid,
+    board_id uuid,
+    task_id uuid,
+    update_policy text DEFAULT 'approve'::text NOT NULL,
+    created_by text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    upkeep jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT plugins_update_policy_check CHECK ((update_policy = ANY (ARRAY['approve'::text, 'auto'::text])))
+);
 CREATE TABLE public.provider_prices (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     endpoint_id uuid NOT NULL,
@@ -1488,7 +1582,9 @@ CREATE TABLE public.workbench_repo_requests (
     visibility text DEFAULT 'private'::text NOT NULL,
     app_slug text,
     responsible_user_id uuid,
-    decision_note text
+    decision_note text,
+    protected boolean,
+    protection_note text
 );
 CREATE TABLE public.workbench_repos (
     agent_id uuid NOT NULL,
@@ -1575,10 +1671,18 @@ ALTER TABLE ONLY public.agent_versions
     ADD CONSTRAINT agent_versions_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.app_data
     ADD CONSTRAINT app_data_pkey PRIMARY KEY (app, collection, id);
+ALTER TABLE ONLY public.app_install_requests
+    ADD CONSTRAINT app_install_requests_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.app_settings
     ADD CONSTRAINT app_settings_pkey PRIMARY KEY (key);
 ALTER TABLE ONLY public.app_sources
     ADD CONSTRAINT app_sources_pkey PRIMARY KEY (slug);
+ALTER TABLE ONLY public.app_trigger_runs
+    ADD CONSTRAINT app_trigger_runs_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.app_trigger_state
+    ADD CONSTRAINT app_trigger_state_pkey PRIMARY KEY (app_slug, trigger_id);
+ALTER TABLE ONLY public.app_update_requests
+    ADD CONSTRAINT app_update_requests_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.artifact_folders
     ADD CONSTRAINT artifact_folders_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.artifact_links
@@ -1745,6 +1849,12 @@ ALTER TABLE ONLY public.outreach_events
     ADD CONSTRAINT outreach_events_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.plan_drafts
     ADD CONSTRAINT plan_drafts_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.plugin_notices
+    ADD CONSTRAINT plugin_notices_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.plugin_pr_watch
+    ADD CONSTRAINT plugin_pr_watch_pkey PRIMARY KEY (app_slug, pr_number);
+ALTER TABLE ONLY public.plugins
+    ADD CONSTRAINT plugins_pkey PRIMARY KEY (app_slug);
 ALTER TABLE ONLY public.provider_prices
     ADD CONSTRAINT provider_prices_endpoint_id_model_variant_key UNIQUE (endpoint_id, model, variant);
 ALTER TABLE ONLY public.provider_prices
@@ -1881,6 +1991,10 @@ CREATE UNIQUE INDEX agent_coding_roles_plan_role_idx ON public.agent_coding_role
 CREATE INDEX agent_managers_user_idx ON public.agent_managers USING btree (user_id);
 CREATE INDEX agent_resource_samples_agent_time ON public.agent_resource_samples USING btree (agent_model, taken_at);
 CREATE INDEX app_data_updated_idx ON public.app_data USING btree (app, collection, updated_at DESC);
+CREATE UNIQUE INDEX app_trigger_runs_due_idx ON public.app_trigger_runs USING btree (app_slug, trigger_id, due_at) WHERE (due_at IS NOT NULL);
+CREATE INDEX app_trigger_runs_open_idx ON public.app_trigger_runs USING btree (queued_at) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text]));
+CREATE INDEX app_trigger_runs_recent_idx ON public.app_trigger_runs USING btree (app_slug, trigger_id, queued_at DESC);
+CREATE UNIQUE INDEX app_update_requests_one_open ON public.app_update_requests USING btree (app_slug) WHERE (status = ANY (ARRAY['pending'::text, 'updating'::text]));
 CREATE INDEX artifact_folders_owner_idx ON public.artifact_folders USING btree (owner_user_id);
 CREATE INDEX artifact_links_target_idx ON public.artifact_links USING btree (target_type, target_id);
 CREATE INDEX artifacts_folder_idx ON public.artifacts USING btree (folder_id);
@@ -1939,6 +2053,7 @@ CREATE INDEX notifications_unread_idx ON public.notifications USING btree (user_
 CREATE INDEX notifications_user_idx ON public.notifications USING btree (user_id, created_at DESC);
 CREATE INDEX outreach_events_agent_idx ON public.outreach_events USING btree (agent_model, kind, created_at DESC);
 CREATE INDEX plan_drafts_conversation_idx ON public.plan_drafts USING btree (conversation_id, created_at DESC);
+CREATE INDEX plugin_notices_by_kind ON public.plugin_notices USING btree (app_slug, kind);
 CREATE INDEX provider_spend_window_idx ON public.provider_spend USING btree (window_start, endpoint_id);
 CREATE INDEX push_subscriptions_user_idx ON public.push_subscriptions USING btree (user_id);
 CREATE INDEX research_runs_conversation_idx ON public.research_runs USING btree (conversation_id);
@@ -2005,6 +2120,16 @@ ALTER TABLE ONLY public.agent_secrets
     ADD CONSTRAINT agent_secrets_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.agent_versions
     ADD CONSTRAINT agent_versions_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.app_install_requests
+    ADD CONSTRAINT app_install_requests_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.app_install_requests
+    ADD CONSTRAINT app_install_requests_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.app_install_requests
+    ADD CONSTRAINT app_install_requests_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.app_install_requests
+    ADD CONSTRAINT app_install_requests_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.app_update_requests
+    ADD CONSTRAINT app_update_requests_app_slug_fkey FOREIGN KEY (app_slug) REFERENCES public.plugins(app_slug) ON DELETE CASCADE;
 ALTER TABLE ONLY public.artifact_folders
     ADD CONSTRAINT artifact_folders_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.artifact_folders
@@ -2201,6 +2326,24 @@ ALTER TABLE ONLY public.outreach_events
     ADD CONSTRAINT outreach_events_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.plan_drafts
     ADD CONSTRAINT plan_drafts_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.plugin_notices
+    ADD CONSTRAINT plugin_notices_app_slug_fkey FOREIGN KEY (app_slug) REFERENCES public.plugins(app_slug) ON DELETE CASCADE;
+ALTER TABLE ONLY public.plugin_notices
+    ADD CONSTRAINT plugin_notices_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.plugin_pr_watch
+    ADD CONSTRAINT plugin_pr_watch_app_slug_fkey FOREIGN KEY (app_slug) REFERENCES public.plugins(app_slug) ON DELETE CASCADE;
+ALTER TABLE ONLY public.plugin_pr_watch
+    ADD CONSTRAINT plugin_pr_watch_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.plugins
+    ADD CONSTRAINT plugins_app_slug_fkey FOREIGN KEY (app_slug) REFERENCES public.app_sources(slug) ON DELETE CASCADE;
+ALTER TABLE ONLY public.plugins
+    ADD CONSTRAINT plugins_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.plugins
+    ADD CONSTRAINT plugins_maintainer_agent_id_fkey FOREIGN KEY (maintainer_agent_id) REFERENCES public.agent_defs(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.plugins
+    ADD CONSTRAINT plugins_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.plugins
+    ADD CONSTRAINT plugins_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.provider_prices
     ADD CONSTRAINT provider_prices_endpoint_id_fkey FOREIGN KEY (endpoint_id) REFERENCES public.llm_endpoints(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.provider_spend

@@ -18,6 +18,7 @@ uuid = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-agent-secrets = { workspace = true }
 talaria-approvals = { workspace = true }
+talaria-apps = { workspace = true }
 talaria-artifacts = { workspace = true }
 talaria-attribution = { workspace = true }
 talaria-boards = { workspace = true }
@@ -29,6 +30,7 @@ talaria-fleet-layout = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-github = { workspace = true }
 talaria-mcp-jsonrpc = { workspace = true }
+talaria-plugins = { workspace = true }
 talaria-realtime = { workspace = true }
 talaria-repo-env = { workspace = true }
 talaria-runs-define = { workspace = true }
