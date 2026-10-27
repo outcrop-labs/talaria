@@ -1,58 +1,118 @@
 ---
 name: talaria-apps
-description: Build Talaria apps — TypeScript against @talaria/sdk, never Rust. Anatomy, store, MCP tools, UI kit, and the hard rules so an app cannot take down the host.
+description: Build, ship and maintain a Talaria app (a plugin) — TypeScript on @talaria/sdk in a repo of its own, checked with the kit's talaria-app before the PR.
 ---
 
 # Talaria apps
 
-When to use: you are creating or changing a Talaria app (a `talaria-app-<slug>` repo, `@talaria/sdk`). This is the playbook. The programming model is the SDK docset; this skill is what not to get wrong.
+When to use: a ticket asks for a Talaria app — a new one, or a change to one you maintain (a
+maintenance ticket, a "Request a change", a pull request that went red). An app is a git
+repository with `talaria.json` at its root: TypeScript and Svelte 5 against `@talaria/sdk`,
+never Rust, compiled by the instance that installs it. You build it as a workbench job
+(**workbench-driving**: drive the harness, never hand-code), check it in your sandbox with the
+SDK kit's `talaria-app`, and stop at the pull request. A person merges. An admin installs,
+enables and grants.
 
-Talaria apps are **TypeScript** (Svelte 5 runes) that this instance compiles. They render as native platform surfaces — same router, design system, and session. Not iframes, not webhooks, not a second backend. Authors never write Rust.
+## The path
 
-## Start
+1. **A ticket.** No ticket, no app. `get_ticket` first.
+2. **A repo.**
+   - *New app:* `doctor` → `repoCreation.orgs`, then `request_repo` with `org`, `name`
+     (`talaria-app-<slug>`), `why`, `appSlug`, `taskId` (and `visibility`: private unless you
+     ask for `public`). An admin approves; the GitHub App creates the repo (one initial commit,
+     a README) and grants it to you. Carry on with other work: the decision is a line on the
+     ticket, and an approved repo shows in `list_repos`. Never file it twice.
+   - *Existing app:* its repo is in `list_repos`; `plugin_status` lists the plugins you maintain.
+3. **The job.** `start_job` (`taskId`, `repo`, `plan`), clone into the `workdir`, then:
+   - *New repo only:* write a seed `talaria.json` at the root first —
+     `{"name": "Field Notes", "slug": "field-notes"}`, the slug you asked for. `prepare_env`
+     installs the kit only for a repo with a `talaria.json` at its root.
+   - `prepare_env` (`jobId`) installs the kit and puts `talaria-app` on your PATH; its
+     answer's `appKit` says which kit. Open a new shell after it, as for any job.
+   - *New repo only:* `talaria-app scaffold` (add `--harness` for a starter model call). It
+     writes the app around your seed and keeps the README. Then add `"sdk": "^1.0"` to
+     `talaria.json`, for the SDK version `talaria-app version` names.
+4. **Build it.** Grow from the skeleton ([references/skeleton.md](references/skeleton.md)),
+   with the SDK as it is ([references/sdk.md](references/sdk.md),
+   [references/harnesses.md](references/harnesses.md)).
+5. **The loop, before every `finish_job`**, from the repo root:
+   `talaria-app check && talaria-app build && talaria-app eval`. All three pass, or there is no
+   pull request. They run the host's own validator, build recipe, load probe and harness replay,
+   here in the sandbox; the host never loads unmerged code.
+6. **`finish_job`** opens the pull request. A person merges it. Talaria never merges.
+7. **After the merge:** `request_app_install` (`repo`, `taskId`, `why`; no `ref`, so updates
+   follow the default branch).
+   An admin approves in Manage → Apps. The app lands **disabled**: enabling it and granting
+   its surfaces stay with admins. Put in your outcome what to enable and whom to grant.
+8. **You maintain it from then on** (below).
 
-An app is a **git repository**, built like any other code you ship: as a workbench job. There is no Talaria checkout in your container, no `apps/` directory to write into, and no `bun talaria` — those belong to the host an admin runs. The path is:
-
-1. Get a ticket for it and `start_job` on the app's repo — a `talaria-app-<slug>` repository (the `talaria-app-` prefix strips on install; the slug is lowercase kebab, `^[a-z0-9][a-z0-9-]{0,63}$`, and not `layout`, `hooks` or `meta`, which install refuses). A new app starts as a new repo a human creates and grants you; the first job scaffolds it. Drive the harness (**workbench-driving**, **oh-my-pi**); never hand-code.
-2. The anatomy at the repo root: `talaria.json`, `app.ts`, `Work.svelte`, `server.ts`, `mcp.ts` (the last three optional). Build it in the job from the shapes in [references/sdk.md](references/sdk.md).
-3. `finish_job` → the pull request → a human merges. **An admin installs it** from the repo URL (Manage → Apps → install from git, or the marketplace once it is listed), enables it in **Manage → Apps**, and grants views per person in **Admin → People**. You cannot install, enable or grant — put the URL in your outcome and say what to enable.
-4. Read [references/sdk.md](references/sdk.md) before inventing imports.
+Every argument, answer and refusal of these steps:
+[references/lifecycle.md](references/lifecycle.md).
 
 ## The reflexes
 
-**Import only from the SDK.** `@talaria/sdk` (client: kit, session, `api` / `appApi` / `useAppQuery`) and `@talaria/sdk/server` (server, store, MCP). Plus `svelte` and `@lucide/svelte`. Never `ui/src`, never a relative reach into the host, never a raw provider URL.
+**Import only what the host shares.** A surface (`app.ts`, `*.svelte`): `svelte`,
+`@talaria/sdk`, `@lucide/svelte`, `@tanstack/svelte-query`. Server code (`server.ts`, `mcp.ts`,
+`harnesses/*.ts`): `@talaria/sdk/server` and node's builtins. `z` comes from
+`@talaria/sdk/server`. Tests (`*.test.ts`) add `@talaria/sdk/testing` and `vitest`. Anything
+else fails, by name: `"zod" is not shared with apps: …`.
 
-**The host already did the trust work.** `server.ts` runs only after session, enablement, and view grant. `ctx.user` is authenticated. `ctx.store` is *this* app's Postgres — not Talaria's catalog. Never open `DATABASE_URL`. Never `process.exit`.
+**No `package.json`.** The one `package.json` is the kit's own, which `prepare_env` installs
+outside your repo. `scaffold` writes none, and nothing in one would reach the app: the host
+installs no dependencies, and `build` refuses a package it does not share even when a
+`node_modules` nearby would resolve it.
 
-**Surfaces fill the pane.** App views are not `PageSurface` (that's host chrome). Match the skeleton: `h-full overflow-y-auto p-8` and a centred column (`max-w-3xl`). Kit components only — Button, EmptyState, Input, Chip, SkeletonRows, confirm(). Destructive actions are quiet (`DangerLink` / confirm), never a giant red button.
+**Model calls are harnesses.** Declare one per `harnesses/*.ts` with `defineHarness` and run it
+with `ctx.harness.run`. Never a provider URL, a key, or your own fetch to a model.
 
+**The host did the trust work.** `server.ts` runs after session, enablement and grant:
+`ctx.user` is authenticated, `ctx.access` says which surfaces the caller holds, and `ctx.store`
+is this app's own Postgres, the only database it sees. Never open `DATABASE_URL`, never
+`process.exit`.
 
-**Platform data goes through `api()` on the client.** Boards, tickets, agents — `/api/…` as the signed-in user. Every ACL applies. An app cannot do more than the person using it.
+**Never spell the slug.** The instance that installs the app decides it; surfaces read it from
+`useApp()` and call their own server with `useAppApi()` / `useAppQuery('path')`.
 
-**Agents get `mcp.ts`, not a side channel.** Prefix tool names (`pulse_list`, not `list`). Return small JSON. Throws become the message the model sees. Governance is Manage → MCP; you do not opt out, and every call — refused ones too — is recorded (never its arguments). **A tool argument may arrive carrying a resolved credential**: an agent passes a `«secret:…»` handle and the gateway resolves it on the way in, so `args` can hold a real key. Use it for the call and let it go — never `ctx.store.insert(…, args)`, never log arguments, never echo them in a thrown message. Your `inputSchema` is enforced before the handler runs; a bad shape never reaches you.
+**Secrets stay sealed.** None in the repo. Server code reads one an admin gave the app with
+`ctx.secret(name)`. A tool argument may carry a resolved credential: use it, never store, log
+or echo it.
 
-## Hard rules
+**Awaited throws only.** A throw in your UI, server or tool stays in the app when it is awaited.
+A detached `setTimeout(() => { throw })` or an un-awaited rejection is the host's crash.
 
-- TypeScript only. No Rust in an app. No compiling the app into the host bundle — the instance builds it.
-- No `import.meta.glob`, no host rebuild, no "awaiting build" as a reason to edit `ui/`.
-- No secrets in the app tree. Keys stay in Talaria's sealed store; the app uses the session.
-- Do not force a ticket `done`. Do not assign work to others.
-- A throw in your UI, server, or MCP must stay in the app. Do not catch-and-ignore; let it fail so the pane can show the crash. The isolation covers **awaited** throws only: a detached `setTimeout(() => { throw })` or an un-awaited rejecting promise is the host's unhandled rejection, and `process.exit` or an infinite loop is the host's too. Await what you start; do not take the process down.
-- Do not add `package.json` unless this is a gitignored subrepo with its own node_modules (those are excluded from the host typecheck on purpose).
+**Talaria stops at the pull request.** Never merge, never push to the default branch, never
+write CI or branch rules into the repo, never force a ticket `done`.
+
+## Upkeep
+
+- **A red pull request or a change request.** The job sweep reads your plugins' pull requests
+  every ten minutes. Failing checks or a requested change is a comment on the ticket, and the
+  ticket comes back to you. `pr_status` (`jobId`) reads the checks and reviews. `start_job` on
+  the same ticket resumes the same job, branch and pull request; fix it, run the loop,
+  `finish_job` (the pull request is kept and your summary is posted on it).
+- **A merge** becomes an update approval for an admin (or applies itself, on the admin's `auto`
+  policy). There is nothing for you to call.
+- **Maintenance tickets** land on the board of the ticket that started the plugin, assigned to
+  you: `[plugin <slug>] build is failing`, `… broke after the host upgrade`,
+  `… harness evals regressed`. A person's **Request a change** is a ticket too. Work each as an
+  ordinary job on the plugin's repo.
+- **Read-only:** `plugin_status` (`slug`; omit it to list yours), `pr_status` (`jobId`),
+  `app_harness_fitness` (`slug`). None of them merges, updates, rebuilds or enables anything.
 
 ## Quick map
 
 | You need | Reach for |
 |---|---|
-| New app | a `talaria-app-<slug>` repo, built as a workbench job; an admin installs it from the URL |
-| UI kit / motion | `@talaria/sdk` — Button, EmptyState, Input, Chip, `fade`/`QUICK` |
-| Session | `useMe`, `useIsAdmin`, `useHasPerm` |
-| Your API | `appApi(slug)`, `useAppQuery`, `useAppInvalidate` |
-| Platform API | `api('/api/…')` as the signed-in user |
-| Document store | `ctx.store` in `server.ts` / `mcp.ts` (`list/get/insert/update/remove`) |
-| Agent tools | `defineAppMcp` in `mcp.ts` |
-| Body validation | `parseBody(request, z.object({…}))` — 400 on failure |
-| Full docset | `/opt/skills` does not ship the SDK docs; the shapes are in [references/sdk.md](references/sdk.md) |
+| A repo for a new app | `request_repo` with `appSlug` → an admin approves |
+| `talaria-app` on PATH | a `talaria.json` at the root, then `prepare_env` |
+| A new app's files | `talaria-app scaffold [--harness]` |
+| Proof before the PR | `talaria-app check && talaria-app build && talaria-app eval` |
+| Fresh recorded replies | `talaria-app eval --gateway --model <id> --record` (spend goes to the ticket) |
+| The manifest's rules | [references/sdk.md](references/sdk.md#talariajson); the kit's `schema/talaria.schema.json` |
+| The exact API | the kit's declarations, `types/src/sdk/{index,server,testing}.d.ts` |
+| A model call | [references/harnesses.md](references/harnesses.md) |
+| Installed on the instance | `request_app_install` after the merge → an admin approves |
+| How a plugin is doing | `plugin_status`, `pr_status`, `app_harness_fitness` |
 
-Grow from the skeleton, not by inventing a second stack.
-
+The kit's root is `$(dirname "$(readlink -f "$(command -v talaria-app)")")/..`;
+`talaria-app version` names it and the SDK version it serves.

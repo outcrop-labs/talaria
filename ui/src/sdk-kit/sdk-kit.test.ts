@@ -4,7 +4,7 @@
 // harnesses. The whole loop — fetch, scaffold, check, build, eval — is
 // exercised against a running instance (docs/sdk/outside-the-host.md).
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
@@ -133,6 +133,58 @@ describe('scaffold', () => {
     // A second scaffold refuses rather than overwrite an app.
     expect(scaffoldApp(repo)).toBe(`${repo} already holds an app (talaria.json)`)
     expect(nameForDir('/x/talaria-app-field-notes')).toBe('Field Notes')
+  })
+
+  it('fills in the app around a seed talaria.json, keeping every key the seed declares', () => {
+    // A new repo's first file: written so prepare_env (keyed on talaria.json)
+    // installs the kit that scaffolds the rest.
+    const repo = join(root, 'seeded')
+    mkdirSync(repo, { recursive: true })
+    writeFileSync(join(repo, 'README.md'), '# seeded\n')
+    writeFileSync(join(repo, 'talaria.json'), JSON.stringify({ name: 'Field Notes', slug: 'field-notes', sdk: '^1.0' }))
+    const done = scaffoldApp(repo, { harness: true })
+    if (typeof done === 'string') throw new Error(done)
+    expect(done.written).not.toContain('talaria.json')
+    expect(done.written).toContain('app.ts')
+    expect(done.kept.sort()).toEqual(['README.md', 'talaria.json'])
+    expect(JSON.parse(readFileSync(join(repo, 'talaria.json'), 'utf8'))).toEqual({
+      name: 'Field Notes',
+      icon: '⬡',
+      version: '0.1.0',
+      description: 'Field Notes — a Talaria app.',
+      surfaces: { work: 'Field Notes' },
+      slug: 'field-notes',
+      sdk: '^1.0',
+    })
+    expect(readFileSync(join(repo, 'harnesses/tidy-title.ts'), 'utf8')).toContain('"field-notes:tidy-title"')
+    expect(readAppManifest(repo, '1.0.0').ok).toBe(true)
+    // Now it is an app: a talaria.json beside the rest is never a seed.
+    expect(scaffoldApp(repo)).toBe(`${repo} already holds an app (talaria.json)`)
+    // --name wins over the seed's.
+    const named = join(root, 'seeded-named')
+    mkdirSync(named, { recursive: true })
+    writeFileSync(join(named, 'talaria.json'), '{"name":"Old"}')
+    const renamed = scaffoldApp(named, { name: 'New' })
+    if (typeof renamed === 'string') throw new Error(renamed)
+    expect(JSON.parse(readFileSync(join(named, 'talaria.json'), 'utf8')).name).toBe('New')
+    // A seed is a JSON object or nothing is written.
+    const broken = join(root, 'seeded-broken')
+    mkdirSync(broken, { recursive: true })
+    writeFileSync(join(broken, 'talaria.json'), '["Notes"]')
+    expect(scaffoldApp(broken)).toContain('is not a JSON object')
+    writeFileSync(join(broken, 'talaria.json'), '{ nope')
+    expect(scaffoldApp(broken)).toContain('is not JSON')
+    expect(existsSync(join(broken, 'app.ts'))).toBe(false)
+  })
+
+  it("names the app after the repository a workbench job cloned, not the job's directory", () => {
+    const job = join(root, '0b6f3c9e-job')
+    mkdirSync(join(job, '.git'), { recursive: true })
+    writeFileSync(join(job, '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/acme/talaria-app-pulse-log.git\n')
+    expect(nameForDir(job)).toBe('Pulse Log')
+    const done = scaffoldApp(job)
+    if (typeof done === 'string') throw new Error(done)
+    expect(JSON.parse(readFileSync(join(job, 'talaria.json'), 'utf8')).name).toBe('Pulse Log')
   })
 })
 
