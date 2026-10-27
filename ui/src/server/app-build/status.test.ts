@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { pruneSupersededBuilds, servableBuildKey, writeCurrent, type AppBuildStatus } from './status'
+import { pruneSupersededBuilds, readCurrent, servableBuildKey, writeCurrent, type AppBuildStatus } from './status'
 
 const prev = process.env.TALARIA_APP_BUILDS_DIR
 let root = ''
@@ -43,6 +43,17 @@ describe('servableBuildKey', () => {
     // A pointer naming something that is not a key serves nothing.
     point('../other', 'ready')
     expect(servableBuildKey('crm')).toBeNull()
+  })
+})
+
+describe('readCurrent', () => {
+  it('keeps the harness report, warnings included, and leaves an empty warning list off', () => {
+    const base = { key: '0000000000000002', status: 'ready' as const, hostBuild: 'h', builtAt: 1, bytes: 1, files: ['app.js'] }
+    writeCurrent('crm', { ...base, harnesses: { registered: ['crm:a'], problems: [], warnings: ['harnesses/a.ts: harness "crm:a" pins "ep/m"'] } })
+    expect(readCurrent('crm')?.harnesses).toEqual({ registered: ['crm:a'], problems: [], warnings: ['harnesses/a.ts: harness "crm:a" pins "ep/m"'] })
+    // A pointer written before warnings existed reads as it always did.
+    writeCurrent('crm', { ...base, harnesses: { registered: ['crm:a'], problems: [] } })
+    expect(readCurrent('crm')?.harnesses).toEqual({ registered: ['crm:a'], problems: [] })
   })
 })
 

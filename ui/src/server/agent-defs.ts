@@ -3,7 +3,6 @@
 // configurable surface (soul, models/aliases, fallbacks, tools) as an immutable
 // payload. Rendering + orchestration (Phase B) consume the current version.
 import { db } from './db/pg'
-import { seal } from './secretbox'
 
 /** Agent slug / department alphabets. `createAgent` has always enforced these;
  *  they live HERE now because every path that accepts an agent identity needs
@@ -146,57 +145,10 @@ export async function ensureEndpoint(e: {
   `
 }
 
-export async function updateEndpoint(
-  id: string,
-  patch: {
-    class?: 'local' | 'cloud'
-    priceInPerMtok?: number | null
-    priceOutPerMtok?: number | null
-    models?: string[]
-    modelPrices?: Record<string, { in?: number; out?: number }>
-    modelEfforts?: Record<string, string[]>
-    requestDefaults?: Record<string, unknown>
-    /** Raw provider API key: a non-empty string seals + stores it; '' clears it;
-     *  undefined leaves the stored key untouched. Never round-tripped to clients. */
-    apiKey?: string | null
-  },
-): Promise<void> {
-  const sql = await db()
-  if (patch.apiKey !== undefined) {
-    const cipher = patch.apiKey ? seal(patch.apiKey.trim()) : null
-    await sql`update llm_endpoints set api_key_cipher = ${cipher}, updated_at = now() where id = ${id}`
-  }
-  if (patch.class) await sql`update llm_endpoints set class = ${patch.class}, updated_at = now() where id = ${id}`
-  if (patch.requestDefaults)
-    await sql`update llm_endpoints set request_defaults = ${sql.json(patch.requestDefaults as never)}, updated_at = now() where id = ${id}`
-  if (patch.models)
-    await sql`update llm_endpoints set models = ${sql.json(patch.models)}, updated_at = now() where id = ${id}`
-  if (patch.modelEfforts)
-    await sql`update llm_endpoints set model_efforts = ${sql.json(patch.modelEfforts as never)}, updated_at = now() where id = ${id}`
-}
-
-/** Create a user-defined endpoint (Models tab). Name must be fresh. */
-export async function createEndpoint(e: {
-  name: string
-  provider: string
-  baseUrl?: string | null
-  class: 'local' | 'cloud'
-  apiKeyEnv?: string | null
-  /** Raw provider API key — sealed (secretbox) before it's stored. */
-  apiKey?: string | null
-  models?: string[]
-  modelPrices?: Record<string, { in?: number; out?: number }>
-}): Promise<string> {
-  const sql = await db()
-  const cipher = e.apiKey ? seal(e.apiKey.trim()) : null
-  const rows = await sql`
-    insert into llm_endpoints (name, provider, base_url, class, api_key_env, api_key_cipher, models, model_prices)
-    values (${e.name}, ${e.provider}, ${e.baseUrl ?? null}, ${e.class}, ${e.apiKeyEnv ?? null}, ${cipher},
-            ${sql.json(e.models ?? [])}, ${sql.json({})})
-    returning id
-  `
-  return (rows[0] as { id: string }).id
-}
+// No endpoint writer here takes a provider key. The api creates and edits
+// endpoints (`/api/fleet/endpoints`, talaria-routes-fleet) and seals a key
+// there; the copies of those writers that sealed one in this process had no
+// caller left, and an app host holds no provider key.
 
 /** Remove an endpoint. Refused while any ENABLED agent's CURRENT version
  *  targets it (retired agents don't run — their history must not block). */

@@ -209,6 +209,42 @@ describe('listAppHarnesses', () => {
     expect(warn).toHaveBeenCalledTimes(2)
   })
 
+  it('loads a harness whose pin names no platform agent, and warns with the pin and the way to a model', async () => {
+    // `pin` takes a platform agent; an endpoint/model id there resolves to
+    // nothing. It is not a skip — the run falls through to the rest of its
+    // chain — but every run that finds nothing else would only have said "no
+    // model available".
+    const warn = vi.fn()
+    const pinned = raw({ id: 'support:pinned', model: { pin: 'mockep/mock-1' } })
+    const agent = raw({ id: 'support:agent', model: { pin: 'titler' } })
+    const listing = await listAppHarnesses(
+      layerOf({ support: { 'pinned.ts': async () => ({ default: pinned }), 'agent.ts': async () => ({ default: agent }) } }, ['support'], warn),
+    )
+    expect(listing.harnesses.map((h) => h.def.id).sort()).toEqual(['support:agent', 'support:pinned'])
+    expect(listing.problems).toEqual([])
+    expect(listing.warnings).toHaveLength(1)
+    const w = listing.warnings[0]!
+    expect([w.app, w.file, w.id]).toEqual(['support', 'pinned.ts', 'support:pinned'])
+    expect(w.reason).toContain('harness "support:pinned" pins "mockep/mock-1", which names no platform agent')
+    expect(w.reason).toContain('model.role')
+    expect(w.reason).toContain('app:support/support:pinned')
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0]?.[0])).toContain('pinned.ts loads with a warning')
+    // The report the probe writes, and Manage → Apps and the kit read.
+    expect(await checkAppHarnessesOf('support', layerOf({ support: { 'pinned.ts': async () => ({ default: pinned }) } }, ['support']))).toEqual({
+      registered: ['support:pinned'],
+      problems: [],
+      warnings: [`harnesses/pinned.ts: ${w.reason}`],
+    })
+  })
+
+  it('takes a judged guard rule an app harness names, now that the registry declares it', async () => {
+    const judged = raw({ id: 'support:judged', guard: { rules: ['zero_tool_claim', 'implied_completion'] } })
+    const listing = await listAppHarnesses(layerOf({ support: { 'judged.ts': async () => ({ default: judged }) } }, ['support']))
+    expect(listing.problems).toEqual([])
+    expect(listing.harnesses.map((h) => h.def.id)).toEqual(['support:judged'])
+  })
+
   it('follows the enabled set', async () => {
     const listing = await listAppHarnesses(layerOf({ support: { 'triage.ts': async () => ({ default: triage }) } }, []))
     expect(listing.harnesses).toEqual([])
@@ -310,12 +346,13 @@ describe('checkAppHarnessesOf — the load probe’s report', () => {
     expect(await checkAppHarnessesOf('support', layer)).toEqual({
       registered: ['support:other'],
       problems: ['harnesses/triage.ts: app "crm" already registers "support:triage"'],
+      warnings: [],
     })
   })
 
   it('asks nothing of the enabled set for an app that ships no harness', async () => {
     const enabled = vi.fn(async () => [])
-    expect(await checkAppHarnessesOf('plain', { enabled, files: async () => [] })).toEqual({ registered: [], problems: [] })
+    expect(await checkAppHarnessesOf('plain', { enabled, files: async () => [] })).toEqual({ registered: [], problems: [], warnings: [] })
     expect(enabled).not.toHaveBeenCalled()
   })
 })
@@ -333,18 +370,18 @@ describe('refreshAppHarnessReports — every enabled app’s report, when the se
 
   it('moves a contested id to the app that sorts first, and shows the skip on the app that lost it', async () => {
     // zeta alone holds the id.
-    expect(await refresh(['zeta'])).toEqual(new Map([['zeta', { registered: ['support:triage'], problems: [] }]]))
+    expect(await refresh(['zeta'])).toEqual(new Map([['zeta', { registered: ['support:triage'], problems: [], warnings: [] }]]))
     // alpha is enabled and sorts first: it takes the id, and zeta's report
     // says so — it used to keep "1 harness" from its own probe.
     expect(await refresh(['alpha', 'zeta'])).toEqual(
       new Map([
-        ['alpha', { registered: ['alpha:other', 'support:triage'], problems: [] }],
-        ['zeta', { registered: [], problems: ['harnesses/triage.ts: app "alpha" already registers "support:triage"'] }],
+        ['alpha', { registered: ['alpha:other', 'support:triage'], problems: [], warnings: [] }],
+        ['zeta', { registered: [], problems: ['harnesses/triage.ts: app "alpha" already registers "support:triage"'], warnings: [] }],
       ]),
     )
     // alpha is switched off: zeta has it back, and alpha's report is left as
     // it was (Manage → Apps says a disabled app's harnesses are not registered).
-    expect(await refresh(['zeta'])).toEqual(new Map([['zeta', { registered: ['support:triage'], problems: [] }]]))
+    expect(await refresh(['zeta'])).toEqual(new Map([['zeta', { registered: ['support:triage'], problems: [], warnings: [] }]]))
   })
 
   it('reads the enabled set once', async () => {
