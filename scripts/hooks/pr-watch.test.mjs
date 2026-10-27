@@ -6,10 +6,11 @@
 // --json` output (pr-watch.fixtures/README.md); the in-flight variants are
 // derived from them. Run by `bun run check`.
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { classify, headCheck, latestChecks, latestRuns, normalize } from './pr-watch.mjs'
+import { classify, headCheck, latestChecks, latestRuns, normalize, readHeadFacts } from './pr-watch.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const fixture = (name) => JSON.parse(readFileSync(join(HERE, 'pr-watch.fixtures', name), 'utf8'))
@@ -174,7 +175,7 @@ check('recorded at +21s: every run finished on the pushed head — green, exactl
   const r = classify(pr, { head, runs, ciWorkflow: 'CI' })
   eq([r.kind, r.passing.length, r.superseded], ['green', 11, 0])
   // the same recording, read by a checkout that has already pushed the next commit
-  const next = headCheck(pr, { onBranch: true, local: 'd'.repeat(40), tracking: 'd'.repeat(40), prContainsLocal: false })
+  const next = headCheck(pr, { onBranch: true, local: 'd'.repeat(40), tracking: 'd'.repeat(40), relation: 'behind' })
   eq(classify(pr, { head: next, runs, ciWorkflow: 'CI' }).kind, 'pending')
 })
 
@@ -201,8 +202,8 @@ check('a failed run whose jobs are in the rollup is named once, by its jobs', ()
 check('a PR head that is not this checkout\'s pushed HEAD is pending — even over a stale red rollup', () => {
   const pr = asOpen(PR575)
   const local = 'f'.repeat(40)
-  const head = headCheck(pr, { onBranch: true, local, tracking: local, prContainsLocal: false })
-  eq(head.ok, false)
+  const head = headCheck(pr, { onBranch: true, local, tracking: local, relation: 'behind' })
+  eq([head.ok, Boolean(head.needsAction)], [false, false])
   ok(/has not registered the push of ffffffffffff/.test(head.why), head.why)
   const r = classify(pr, { head, runs: RUNS575, ciWorkflow: 'CI' })
   eq(r.kind, 'pending')
@@ -215,17 +216,19 @@ check('a PR head that is not this checkout\'s pushed HEAD is pending — even ov
 
 check('a checkout with commits the PR does not have says to push', () => {
   const pr = asOpen(PR599)
-  const head = headCheck(pr, { onBranch: true, local: 'a'.repeat(40), tracking: pr.headRefOid, prContainsLocal: false })
-  eq(head.ok, false)
+  const head = headCheck(pr, { onBranch: true, local: 'a'.repeat(40), tracking: pr.headRefOid, relation: 'behind' })
+  eq([head.ok, head.needsAction], [false, true])
   ok(/is not pushed .* git push -u origin wt\/w4-triggers/.test(head.why), head.why)
-  const never = headCheck(pr, { onBranch: true, local: 'a'.repeat(40), tracking: null, prContainsLocal: false })
+  const never = headCheck(pr, { onBranch: true, local: 'a'.repeat(40), tracking: null, relation: null })
   ok(/there is no origin\/wt\/w4-triggers/.test(never.why), never.why)
+  // Waiting cannot push it, so the watcher answers at once instead of polling.
+  eq(classify(pr, { head, runs: RUNS599, ciWorkflow: 'CI' }).needsAction, true)
 })
 
 check('the head this checkout pushed, or a PR head ahead of it, passes the head check', () => {
   const pr = asOpen(PR599)
   eq(headCheck(pr, { onBranch: true, local: pr.headRefOid, tracking: pr.headRefOid }), { ok: true })
-  const ahead = headCheck(pr, { onBranch: true, local: 'b'.repeat(40), tracking: 'b'.repeat(40), prContainsLocal: true })
+  const ahead = headCheck(pr, { onBranch: true, local: 'b'.repeat(40), tracking: 'b'.repeat(40), relation: 'ahead' })
   eq(ahead.ok, true)
   const r = classify(pr, { head: ahead, runs: RUNS599, ciWorkflow: 'CI' })
   eq(r.kind, 'green')
@@ -242,6 +245,131 @@ check('from another checkout, the head is compared with the branch on GitHub', (
   eq(unread.ok, false)
   eq(headCheck(pr, { onBranch: false, noHeadRepo: true }).ok, true)
 })
+
+// ── the head facts, read by real git from a scratch repository ────────────
+//
+// The watcher never fetches. A PR head pushed from another checkout is then
+// not in this clone, `git merge-base --is-ancestor` exits 128 (not 1), and the
+// question goes to GitHub's compare — faked here; git is not.
+
+const BRANCH = 'wt/x'
+const scratch = mkdtempSync(join(tmpdir(), 'pr-watch-git-'))
+const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')))
+function sgit(args) {
+  const run = spawnSync(
+    'git',
+    ['-c', 'user.name=pr-watch', '-c', 'user.email=pr-watch@example.invalid', '-c', 'core.hooksPath=/dev/null', ...args],
+    { cwd: scratch, encoding: 'utf8', env: cleanEnv },
+  )
+  return { ok: run.status === 0, out: (run.stdout || '').trim(), status: run.status }
+}
+sgit(['init', '-q'])
+sgit(['symbolic-ref', 'HEAD', `refs/heads/${BRANCH}`])
+sgit(['commit', '-q', '--allow-empty', '--no-gpg-sign', '-m', 'a'])
+const A = sgit(['rev-parse', 'HEAD']).out
+sgit(['commit', '-q', '--allow-empty', '--no-gpg-sign', '-m', 'b'])
+const B = sgit(['rev-parse', 'HEAD']).out
+const C = sgit(['commit-tree', '--no-gpg-sign', `${A}^{tree}`, '-p', A, '-m', 'c']).out // beside B
+const U = 'e'.repeat(40) // pushed from elsewhere; never in this clone
+sgit(['update-ref', `refs/remotes/origin/${BRANCH}`, B]) // B is pushed
+
+/** A fake `gh` that answers the compare and git-ref reads, and records them. */
+function io({ compare, ref } = {}) {
+  const calls = []
+  const answer = (a) => (a === undefined ? { status: 1, stderr: 'not asked for' } : typeof a === 'string' ? { status: 0, stdout: `${a}\n` } : a)
+  return {
+    calls,
+    branch: BRANCH,
+    git: sgit,
+    gh: (args) => {
+      calls.push(args[1])
+      return answer(/\/compare\//.test(args[1]) ? compare : ref)
+    },
+  }
+}
+const prAt = (sha) => ({ headRefName: BRANCH, headRefOid: sha, headRepository: { name: 'talaria' }, headRepositoryOwner: { login: 'outcrop-labs' } })
+
+check('the scratch repository is what the cases below assume', () => {
+  ok([A, B, C].every((s) => /^[0-9a-f]{40}$/.test(s)) && new Set([A, B, C]).size === 3, `commits: ${A} ${B} ${C}`)
+  eq(sgit(['merge-base', '--is-ancestor', B, U]).status, 128)
+  eq(sgit(['merge-base', '--is-ancestor', B, C]).status, 1)
+})
+
+check('a PR head ahead of this checkout but not in this clone passes: GitHub compare says it contains HEAD', () => {
+  const x = io({ compare: 'ahead' })
+  const facts = readHeadFacts(prAt(U), x)
+  eq([facts.local, facts.tracking, facts.relation], [B, B, 'ahead'])
+  eq(x.calls, [`repos/outcrop-labs/talaria/compare/${B}...${U}?per_page=1`])
+  const head = headCheck(prAt(U), facts)
+  eq(head.ok, true)
+  ok(/ahead of this checkout/.test(head.note), head.note)
+  // The reader before this one took exit 128 for "no" and said the push had not registered.
+  ok(!/has not registered/.test(head.why || ''), head.why)
+})
+
+check('a PR head that dropped this checkout\'s pushed HEAD cannot be waited out', () => {
+  const x = io({ compare: 'diverged', ref: U })
+  const head = headCheck(prAt(U), readHeadFacts(prAt(U), x))
+  eq([head.ok, head.needsAction], [false, true])
+  ok(/does not contain this checkout's HEAD .* git fetch origin wt\/x/.test(head.why), head.why)
+  eq(x.calls.length, 2)
+})
+
+check('a compare that does not answer is pending with a fetch hint, and still waited on', () => {
+  const x = io({ compare: { status: 1, stderr: 'HTTP 502: Bad Gateway' }, ref: U })
+  const head = headCheck(prAt(U), readHeadFacts(prAt(U), x))
+  eq([head.ok, Boolean(head.needsAction)], [false, false])
+  ok(/could not tell .*HTTP 502.* git fetch origin wt\/x/.test(head.why), head.why)
+})
+
+check('a PR head in this clone is settled by git, and GitHub is asked only what git cannot say', () => {
+  // A is B's parent: the PR has not caught up with the push. No gh call at all.
+  const older = io()
+  const lag = headCheck(prAt(A), readHeadFacts(prAt(A), older))
+  eq([lag.ok, Boolean(lag.needsAction), older.calls], [false, false, []])
+  ok(/has not registered the push of .* the PR still reads/.test(lag.why), lag.why)
+  // C sits beside B. Where the branch is on GitHub decides which story is true.
+  const moved = headCheck(prAt(C), readHeadFacts(prAt(C), io({ ref: C })))
+  eq([moved.ok, moved.needsAction], [false, true])
+  const pushed = headCheck(prAt(C), readHeadFacts(prAt(C), io({ ref: B })))
+  eq([pushed.ok, Boolean(pushed.needsAction)], [false, false])
+  ok(/has not registered the push/.test(pushed.why), pushed.why)
+  const later = headCheck(prAt(C), readHeadFacts(prAt(C), io({ ref: U })))
+  ok(/wt\/x is at eeeeeeeeeeee and the PR still reads/.test(later.why), later.why)
+})
+
+check('an unpushed HEAD exits pending at once, without --once, instead of polling to the wall clock', () => {
+  sgit(['update-ref', `refs/remotes/origin/${BRANCH}`, A]) // B was never pushed
+  try {
+    const head = headCheck(prAt(A), readHeadFacts(prAt(A), io()))
+    eq([head.ok, head.needsAction], [false, true])
+    // End to end: a fake gh on PATH serves the PR; the real watcher runs in the scratch repo.
+    const bin = mkdtempSync(join(tmpdir(), 'pr-watch-bin-'))
+    try {
+      const pr = { ...asOpen(PR599), ...prAt(A), number: 1, url: 'https://example.invalid/pull/1', baseRefName: 'rc' }
+      writeFileSync(join(bin, 'pr.json'), JSON.stringify(pr))
+      writeFileSync(join(bin, 'gh'), `#!/bin/sh\n[ "$1" = pr ] && exec cat "${join(bin, 'pr.json')}"\necho "unexpected: gh $*" >&2\nexit 1\n`, { mode: 0o755 })
+      const t0 = Date.now()
+      const run = spawnSync(process.execPath, [join(HERE, 'pr-watch.mjs'), '--pr', '1'], {
+        cwd: scratch,
+        encoding: 'utf8',
+        timeout: 15_000,
+        env: { ...cleanEnv, PATH: `${bin}:${process.env.PATH}` },
+      })
+      eq(run.status, 2)
+      eq(run.stderr.split('\n')[0], 'pr-watch: pending')
+      ok(/is not pushed .* git push -u origin wt\/x/.test(run.stderr), run.stderr)
+      ok(/Waiting will not change this/.test(run.stderr), run.stderr)
+      ok(Date.now() - t0 < 10_000, `took ${Date.now() - t0} ms`)
+    } finally {
+      rmSync(bin, { recursive: true, force: true })
+    }
+  } finally {
+    sgit(['update-ref', `refs/remotes/origin/${BRANCH}`, B])
+  }
+})
+
+rmSync(scratch, { recursive: true, force: true })
 
 check('no head facts is pending, never green', () => {
   eq(classify(asOpen(PR599), { runs: RUNS599, ciWorkflow: 'CI' }).kind, 'pending')

@@ -98,8 +98,11 @@ capped at 2min, hard stop at 45 minutes) and does not edit, merge, push, or comm
 It reads the latest run of each check, so a judge run that a body edit cancelled and
 re-ran is not red. Green also needs the PR's head to be the commit you pushed and a
 finished CI workflow run for that head, so running it straight after a push waits
-instead of reading the previous head, or a rollup that holds only `judge`. A HEAD
-you have not pushed is pending until you push it.
+instead of reading the previous head, or a rollup that holds only `judge`. A PR
+head that contains your HEAD (someone pushed on top) passes, even when this clone
+has not fetched it. Two head states cannot be waited out, so the watcher exits
+`pending` at once instead of polling: a HEAD you have not pushed, and a PR head
+that no longer contains the HEAD you pushed (the branch moved on GitHub without it).
 
 | Exit | First line | What you do |
 |---|---|---|
@@ -107,7 +110,7 @@ you have not pushed is pending until you push it.
 | 2 | `pr-watch: red` | Read the log tail and the job URL. Diagnose. Fix. Re-run `bun run gate`. If the log names a crate this diff did not touch, `cargo test -p <that crate>` (clippy the same way) — never `api:check`, never a workspace cargo. Push to this same branch. Run the watcher again. |
 | 2 | `pr-watch: conflict` | `git fetch origin rc && git merge origin/rc`. Resolve. Re-run `bun run gate`. Push to this same branch. Run the watcher again. |
 | 2 | `pr-watch: timeout` | Still pending when the wall clock ran out. Not done, and not a pass. Report the PR URL. Do not claim done. |
-| 2 | `pr-watch: pending` | Only with `--once`. Not done. Re-run without `--once` to wait. |
+| 2 | `pr-watch: pending` | With `--once`, or at once when waiting cannot change the head (not pushed, or dropped from the PR). Not done. Do what the reason says (push, or reconcile with `origin/<branch>`), or re-run without `--once` to wait. |
 | 1 | `pr-watch: could not run` | Not a pass. Say so. Do not claim done. |
 
 A stderr line that starts `pr-watch: pending —` is progress, not a decision. The decision
