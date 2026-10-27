@@ -1354,8 +1354,8 @@ describe('when there is no model', () => {
 describe('tool passthrough', () => {
   it("tells the transport when the model may use its OWN tools", async () => {
     // The work session, the outreach check-in and the briefing follow-up are
-    // tool loops. `tools: []` / `tool_choice: 'none'` does not weaken them — it
-    // disarms the agent and then trips `zero_tool_claim` for calling no tool.
+    // tool loops, and say so: 'none' is the wrong ask for them, and a Hermes
+    // session refuses it outright.
     const r = world({ replies: ['picked it up, running the tests now'] })
     const looping: HarnessDefinition<{ transcript: string }, string> = { ...titler, tools: 'own' }
     await run(looping, { transcript: 'x' }, r)

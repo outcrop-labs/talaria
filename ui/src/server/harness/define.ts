@@ -579,14 +579,16 @@ export interface HarnessDefinition<I, O> {
    *
    *  Omitted means 'none', and 'none' is right for every single-shot structured
    *  harness: the runner asks one question and parses one answer, so a tool call
-   *  can only be the model wandering off. It is enforced at the protocol level
-   *  (`tools: []` / `tool_choice: 'none'`), not left to the prompt.
+   *  can only be the model wandering off. On a persona it has no wire form —
+   *  Hermes reads neither `tools` nor `tool_choice` off a chat-completions body —
+   *  so what stands behind it is the guard pass over the tool names the stream
+   *  reports, and a Hermes session turn refuses it outright.
    *
    *  'own' is the three turns whose whole feature IS the tool loop — an agent
    *  working a ticket, an outreach check-in acting through `message_user`, a
    *  briefing follow-up the owner expects to answer from live data. On those,
-   *  'none' does not weaken the answer, it disarms the agent and then trips
-   *  `zero_tool_claim` for having called no tool. A model served by the ORG
+   *  'none' is the wrong ask: a Hermes session turn refuses it, and an agent
+   *  that called no tool trips `zero_tool_claim`. A model served by the ORG
    *  GATEWAY cannot honor 'own' at all, and says so by failing the call rather
    *  than by quietly running a tool-loop harness as a single completion. */
   tools?: ToolPolicy
