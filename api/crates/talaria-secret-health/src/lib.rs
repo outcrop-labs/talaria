@@ -452,7 +452,6 @@ pub async fn secret_health(
     .bind(vec![
         "email_config".to_string(),
         "storage_config".to_string(),
-        "github_config".to_string(),
         "rag_rerank_config".to_string(),
         "app_db_passwords".to_string(),
         "app_llm_keys".to_string(),
@@ -565,20 +564,38 @@ pub async fn secret_health(
         }
     }
 
-    let github = settings.get("github_config");
-    let github_mode = dig(github, &["mode"]);
-    if let Some(mode) = github_mode.as_deref() {
+    // Each GitHub host's sealed credential (talaria-git-hosts keeps the
+    // connection on its `git_hosts` row; other kinds name a workspace
+    // secret, which the workspace-secret store above already covers).
+    let github_hosts: Vec<(String, String, serde_json::Value, Option<i64>)> = sqlx::query_as(
+        "select id, name, auth, (trunc(extract(epoch from updated_at) * 1000))::bigint \
+         from git_hosts where kind = 'github' order by created_at, id",
+    )
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    for (id, name, auth, at) in github_hosts {
+        let dig_auth = |path: &[&str]| -> Option<String> {
+            let mut cur = auth.get(path[0])?;
+            for p in &path[1..] {
+                cur = cur.get(p)?;
+            }
+            cur.as_str().filter(|s| !s.is_empty()).map(String::from)
+        };
+        let Some(mode) = dig_auth(&["mode"]) else {
+            continue;
+        };
         let is_app = mode == "app";
         let cipher = if is_app {
-            dig(github, &["app", "privateKeyEnc"])
+            dig_auth(&["app", "privateKeyEnc"])
         } else {
-            dig(github, &["pat", "tokenEnc"])
+            dig_auth(&["pat", "tokenEnc"])
         };
         let mut f = serde_json::Map::new();
         f.insert(
             "id".into(),
             format!(
-                "setting:github_config:{}",
+                "git-host:{id}:{}",
                 if is_app {
                     "app.privateKeyEnc"
                 } else {
@@ -590,22 +607,25 @@ pub async fn secret_health(
         f.insert("group".into(), "platform".into());
         f.insert(
             "label".into(),
-            if is_app {
-                "GitHub App private key"
-            } else {
-                "GitHub access token"
-            }
+            format!(
+                "{} — {name}",
+                if is_app {
+                    "GitHub App private key"
+                } else {
+                    "GitHub access token"
+                }
+            )
             .into(),
         );
         f.insert(
             "unlocks".into(),
             "Workbench: cloning repos, pushing branches, opening pull requests".into(),
         );
-        f.insert("surface".into(), "Admin → Organization".into());
-        f.insert("href".into(), "/admin".into());
+        f.insert("surface".into(), "Admin → Git hosts".into());
+        f.insert("href".into(), "/admin/git".into());
         f.insert("state".into(), state_of(sb, cipher.as_deref(), None).into());
         f.insert("scope".into(), "instance".into());
-        f.insert("setAt".into(), opt_iso(github.and_then(|(_, at)| *at)));
+        f.insert("setAt".into(), opt_iso(at));
         f.insert("clearable".into(), true.into());
         rows.push(row(f));
     }
@@ -887,6 +907,25 @@ pub async fn clear_secret(pg: &PgPool, secret_id: &str) -> Result<bool, ClearErr
             Err(ClearError::Unknown)
         }
         "setting" => clear_setting_leaf(pg, n(0), &rest[1..].join(":")).await,
+        // A GitHub host's sealed leaf (`git-host:<id>:app.privateKeyEnc` or
+        // `…:pat.tokenEnc`) — the only two this store inventories.
+        "git-host" => {
+            let path: Vec<String> = match rest[1..].join(":").as_str() {
+                "app.privateKeyEnc" => vec!["app".into(), "privateKeyEnc".into()],
+                "pat.tokenEnc" => vec!["pat".into(), "tokenEnc".into()],
+                _ => return Err(ClearError::Unknown),
+            };
+            sqlx::query(
+                "update git_hosts set auth = jsonb_set(auth, $2::text[], 'null'::jsonb), \
+                 updated_at = now() where id = $1 and (auth #>> $2::text[]) is not null",
+            )
+            .bind(n(0))
+            .bind(&path)
+            .execute(pg)
+            .await
+            .map(|r| r.rows_affected() > 0)
+            .map_err(ClearError::from)
+        }
         _ => Err(ClearError::Unknown),
     }
 }

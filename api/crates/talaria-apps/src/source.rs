@@ -31,10 +31,12 @@ pub struct GitSource {
 }
 
 impl GitSource {
-    /// `owner/name` when this is a repository on github.com — the one host
-    /// the GitHub connection can mint a token for.
-    pub fn github_repo(&self) -> Option<&str> {
-        if self.scheme != Scheme::Https || self.host != "github.com" {
+    /// `owner/name` when this URL names a repository the way git hosts do
+    /// (an https origin, or loopback http with local sources on, and exactly
+    /// two path segments) — the shape a registered git host can hand a read
+    /// login for (talaria-git-hosts).
+    pub fn owner_repo(&self) -> Option<&str> {
+        if self.scheme == Scheme::File {
             return None;
         }
         let mut parts = self.repo.split('/');
@@ -159,7 +161,7 @@ mod tests {
         assert_eq!(s.scheme, Scheme::Https);
         assert_eq!(s.host, "github.com");
         assert_eq!(s.repo, "acme/talaria-app-crm");
-        assert_eq!(s.github_repo(), Some("acme/talaria-app-crm"));
+        assert_eq!(s.owner_repo(), Some("acme/talaria-app-crm"));
         assert_eq!(s.name(), "talaria-app-crm");
         let gl = parse_source("https://GitLab.example.com:8443/group/sub/app", false).unwrap();
         assert_eq!(gl.host, "gitlab.example.com");
@@ -168,11 +170,14 @@ mod tests {
         assert_eq!(gl.url, "https://gitlab.example.com:8443/group/sub/app");
         let mixed = parse_source("https://GitHub.com/Acme/CRM.git/", false).unwrap();
         assert_eq!(mixed.url, "https://github.com/Acme/CRM.git");
-        assert_eq!(mixed.github_repo(), Some("Acme/CRM"));
-        assert_eq!(gl.github_repo(), None);
-        // Deeper than owner/name is not a GitHub repository URL.
+        assert_eq!(mixed.owner_repo(), Some("Acme/CRM"));
+        // A nested group path is not owner/name on any host.
+        assert_eq!(gl.owner_repo(), None);
+        let forge = parse_source("https://git.example.com/acme/crm", false).unwrap();
+        assert_eq!(forge.owner_repo(), Some("acme/crm"));
+        // Deeper than owner/name is not a repository URL.
         let deep = parse_source("https://github.com/acme/crm/tree/main", false).unwrap();
-        assert_eq!(deep.github_repo(), None);
+        assert_eq!(deep.owner_repo(), None);
     }
 
     #[test]

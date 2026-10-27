@@ -4,9 +4,11 @@
 // It runs inside the workbench job sweep (`workbench-job-sweep`, every ten
 // minutes), one plugin at a time, four questions each:
 //
-//   pull requests  each open PR on the plugin's repo: its checks and its
-//                  review decision (`talaria_github::pull_request_status`,
-//                  every call a GET). Failing checks or a change request is a
+//   pull requests  each open PR on the plugin's repo, read from the plugin's
+//                  own registered git host (talaria-git-hosts — GitHub,
+//                  Forgejo, whatever the operator chose): its checks and its
+//                  review decision (`pull_request_status`, every call a
+//                  GET). Failing checks or a change request is a
 //                  comment on the PR's ticket and the maintainer is put back
 //                  to work on it — once per head commit for checks, once per
 //                  change request for reviews, never every ten minutes. A PR
@@ -27,8 +29,8 @@
 //                  whose band got worse since the last pass is an
 //                  eval-regression ticket, same rule.
 //
-// TALARIA STOPS AT THE PR. Nothing here merges, pushes, comments on GitHub or
-// edits the repository: the only GitHub calls are GETs, and the only update
+// TALARIA STOPS AT THE PR. Nothing here merges, pushes, comments on the git
+// host or edits the repository: the only host calls are GETs, and the only update
 // that ever runs is an admin's approval or the admin's own `auto` policy.
 
 use std::collections::{BTreeMap, HashSet};
@@ -38,6 +40,7 @@ use sqlx::PgPool;
 
 use talaria_apps::{AppHost, PlatformCredentials};
 use talaria_audit::{AuditEntry, log_audit};
+use talaria_git_hosts::GitHost;
 use talaria_secretbox::SecretBox;
 use talaria_tasks::{
     NewTask, TaskActor, TaskDeps, TaskPatch, add_comment, create_task, dispatch_ticket_of,
@@ -244,15 +247,18 @@ pub fn pr_comment(status: &Value, news: &PrNews, resumed: &str) -> String {
 /// ticket and its agent.
 async fn job_for_pr(
     pg: &PgPool,
+    host_id: &str,
     repo: &str,
     number: i64,
 ) -> Result<Option<(String, Option<String>, String)>, sqlx::Error> {
     sqlx::query_as(
         "select id::text, task_id::text, agent_model from workbench_jobs \
-         where lower(repo) = lower($1) \
-           and (pr_number = $2 or pr_url like '%/pull/' || $2::text) \
+         where host_id = $1 and lower(repo) = lower($2) \
+           and (pr_number = $3 or pr_url like '%/pull/' || $3::text \
+                or pr_url like '%/pulls/' || $3::text) \
          order by updated_at desc limit 1",
     )
+    .bind(host_id)
     .bind(repo)
     .bind(number)
     .fetch_optional(pg)
@@ -332,11 +338,13 @@ async fn resume(deps: &UpkeepDeps, task_id: &str, agent: &str, why: &str) -> Str
 }
 
 async fn pr_pass(deps: &UpkeepDeps, p: &Plugin, report: &mut UpkeepReport) -> Result<(), String> {
-    if p.git_host_id.as_deref() != Some("github") {
+    // A plugin whose source no registered host serves has no PRs to read.
+    let Some(host_id) = p.git_host_id.as_deref() else {
         return Ok(());
-    }
+    };
     let pg = &deps.pg;
-    let open = talaria_github::open_pull_requests(pg, &deps.sb, &p.repo, 30).await?;
+    let host = talaria_git_hosts::host(pg, &deps.sb, host_id).await?;
+    let open = host.open_pull_requests(&p.repo, 30).await?;
     let open_numbers: HashSet<i64> = open.iter().map(|pr| pr.number).collect();
 
     // PRs that were open last pass and are not now: merged or closed.
@@ -351,7 +359,7 @@ async fn pr_pass(deps: &UpkeepDeps, p: &Plugin, report: &mut UpkeepReport) -> Re
         if open_numbers.contains(&number) {
             continue;
         }
-        let status = talaria_github::pull_request_status(pg, &deps.sb, &p.repo, number).await?;
+        let status = host.pull_request_status(&p.repo, number).await?;
         let state = status["state"].as_str().unwrap_or("closed").to_string();
         sqlx::query(
             "update plugin_pr_watch set state = $3, seen_at = now() \
@@ -377,8 +385,8 @@ async fn pr_pass(deps: &UpkeepDeps, p: &Plugin, report: &mut UpkeepReport) -> Re
     }
 
     for pr in open.iter().take(crate::status::STATUS_PR_LIMIT) {
-        let status = talaria_github::pull_request_status(pg, &deps.sb, &p.repo, pr.number).await?;
-        let job = job_for_pr(pg, &p.repo, pr.number)
+        let status = host.pull_request_status(&p.repo, pr.number).await?;
+        let job = job_for_pr(pg, host_id, &p.repo, pr.number)
             .await
             .map_err(|e| format!("job read: {e}"))?;
         let task_id = job

@@ -328,6 +328,12 @@ talaria-gaps = { path = "crates/talaria-gaps" }
 
 talaria-gateway = { path = "crates/talaria-gateway" }
 
+talaria-git-host-types = { path = "crates/talaria-git-host-types" }
+
+talaria-git-hosts = { path = "crates/talaria-git-hosts" }
+
+talaria-forgejo = { path = "crates/talaria-forgejo" }
+
 talaria-github = { path = "crates/talaria-github" }
 
 talaria-google-agent = { path = "crates/talaria-google-agent" }

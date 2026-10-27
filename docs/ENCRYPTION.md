@@ -12,7 +12,7 @@ recoverable.
 Live credentials Talaria must store and replay — provider API keys, per-agent
 secrets and credentials, Google tokens (per-user and org), MCP OAuth tokens and
 headers, the email transport credential, external object-storage keys, the
-GitHub App key or PAT, the reranker key, the agent web-search vendor key, and each enabled
+GitHub App key or PAT (on its git host's row, `git_hosts.auth`), the reranker key, the agent web-search vendor key, and each enabled
 app's gateway key (`app_llm_keys`, the `tlk_` key the app host makes the app's model calls
 with). A repo's project env (`repo_env`,
 the values a workbench job's build reads) is sealed the same way and is

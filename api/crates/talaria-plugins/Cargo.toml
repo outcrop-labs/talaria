@@ -18,6 +18,7 @@ talaria-approvals = { workspace = true }
 talaria-apps = { workspace = true }
 talaria-audit = { workspace = true }
 talaria-gateway = { workspace = true }
+talaria-git-hosts = { workspace = true }
 talaria-github = { workspace = true }
 talaria-realtime = { workspace = true }
 talaria-runs-define = { workspace = true }

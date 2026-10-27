@@ -1180,7 +1180,7 @@ async fn dispatch_prompt(
 }
 
 async fn hygiene_step(pg: &PgPool, agent_id: &str) -> Option<String> {
-    let rules = talaria_github::repo_rules(pg, agent_id).await;
+    let rules = talaria_git_hosts::repo_rules(pg, agent_id).await;
     if rules.is_empty() {
         return None;
     }

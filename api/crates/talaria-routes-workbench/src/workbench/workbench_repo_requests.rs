@@ -1,9 +1,10 @@
 // /api/workbench/repo-requests. Agent repo-creation requests. GET → pending
-// queue; PUT → approve (creates the repo via the App at the requested or
-// overridden visibility, protects its default branch against force-push and
-// deletion unless the approver says not to, grants it to the requester) or
-// reject (the note goes on the requesting ticket). Admin — approval mints
-// real org resources.
+// queue; PUT → approve (creates the repo on the git host the request names,
+// through that host's connection, at the requested or overridden
+// visibility, protects its default branch against force-push and deletion
+// unless the approver says not to, grants it to the requester) or reject
+// (the note goes on the requesting ticket). Admin — approval mints real org
+// resources.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -20,7 +21,7 @@ use talaria_body::{
     uuid_member,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_github as gh;
+use talaria_git_hosts::{self as hosts, GitHost};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 use talaria_tasks::log_activity;
@@ -28,7 +29,7 @@ use talaria_tasks::log_activity;
 const ROW: &str = "id::text, agent_id::text, agent_model, org, name, description, why, \
                    task_id::text, status, decided_by, \
                    (trunc(extract(epoch from created_at) * 1000))::bigint, \
-                   visibility, app_slug, responsible_user_id::text";
+                   visibility, app_slug, responsible_user_id::text, host_id";
 
 type ReqRow = (
     String,
@@ -45,11 +46,13 @@ type ReqRow = (
     String,
     Option<String>,
     Option<String>,
+    String,
 );
 
 fn req_wire(r: &ReqRow) -> serde_json::Value {
     json!({
         "id": r.0,
+        "host": r.14,
         "agentId": r.1,
         "agentModel": r.2,
         "org": r.3,
@@ -89,7 +92,7 @@ fn decision_line(
 }
 
 /// What the approval line adds about the default branch: protected, left
-/// unprotected by choice, or the reason GitHub would not protect it.
+/// unprotected by choice, or the reason the host would not protect it.
 fn protection_line(protection: &Option<Result<(), String>>) -> String {
     match protection {
         Some(Ok(())) => " Its default branch is protected: no force-push, no deletion.".into(),
@@ -137,12 +140,12 @@ pub async fn put(
     // Overrides the visibility the agent asked for; absent keeps it.
     let visibility_override = match optional_enum_member(obj, "visibility", &["private", "public"])
     {
-        Ok(v) => v.as_deref().and_then(gh::RepoVisibility::parse),
+        Ok(v) => v.as_deref().and_then(hosts::RepoVisibility::parse),
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Protect the new repo's default branch against force-push and deletion
-    // (a ruleset: no required reviews, no required checks). On unless the
-    // approver says false.
+    // (no required reviews, no required checks). On unless the approver says
+    // false.
     let protect = match optional_boolean_member(obj, "protect") {
         Ok(v) => v.unwrap_or(true),
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
@@ -195,18 +198,36 @@ pub async fn put(
         return Ok(Json(json!({ "ok": true })).into_response());
     }
     let visibility = visibility_override
-        .or_else(|| gh::RepoVisibility::parse(&req.11))
+        .or_else(|| hosts::RepoVisibility::parse(&req.11))
         .unwrap_or_default();
     // Approve — any failure folds into one 400 {error}: repo creation, the
     // grant, the decision write, the (only log) activity line. A failure
     // partway through is a 400 with the whatever-steps-happened state
     // behind it.
     let sb = state.secretbox().await.unwrap_or_default();
-    let created =
-        match gh::create_repo(&state.pg, &sb, &req.3, &req.4, &req.5, visibility, protect).await {
-            Ok(c) => c,
-            Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
-        };
+    // The host the request named, and its allowlist as it stands NOW: an org
+    // an admin took off the list since the agent asked is not created.
+    let row = match hosts::get_host(&state.pg, &req.14).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                &format!("the git host \"{}\" this request names is gone", req.14),
+            ));
+        }
+        Err(e) => return Ok(internal("[workbench/repo-requests] host read failed", e)),
+    };
+    if let Some(why) = row.repo_creation_allowlist_refusal(&req.3) {
+        return Ok(house_error(StatusCode::BAD_REQUEST, &why));
+    }
+    let host = hosts::connect(&state.pg, &sb, &row).await;
+    let created = match host
+        .create_repo(&req.3, &req.4, &req.5, visibility, protect)
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
+    };
     let (protected, protection_note) = match &created.protection {
         Some(Ok(())) => (Some(true), None),
         Some(Err(why)) => (Some(false), Some(why.clone())),
@@ -217,11 +238,15 @@ pub async fn put(
     };
     // The requester gets the repo granted the moment it exists — appended
     // after their existing grants, deduped.
-    let mut grants = gh::granted_repos(&state.pg, &req.1).await;
-    if !grants.iter().any(|g| g == &created.full_name) {
-        grants.push(created.full_name.clone());
+    let mut grants = hosts::granted_repos(&state.pg, &req.1).await;
+    let new_grant = hosts::RepoRef {
+        host_id: row.id.clone(),
+        repo: created.full_name.clone(),
+    };
+    if !grants.contains(&new_grant) {
+        grants.push(new_grant);
     }
-    if let Err(e) = gh::set_granted_repos(&state.pg, &req.1, &grants).await {
+    if let Err(e) = hosts::set_granted_repos(&state.pg, &req.1, &grants).await {
         return Ok(house_error(StatusCode::BAD_REQUEST, &e));
     }
     if let Err(e) = sqlx::query(
@@ -265,6 +290,7 @@ pub async fn put(
     let pg = state.pg.clone();
     let target_id = created.full_name.clone();
     let audit_actor = actor.clone();
+    let audit_host = row.id.clone();
     tokio::spawn(async move {
         log_audit(
             &pg,
@@ -275,13 +301,14 @@ pub async fn put(
                 target_id: Some(&target_id),
                 target_label: None,
                 before: None,
-                after: Some(json!({ "protected": protected })),
+                after: Some(json!({ "protected": protected, "host": audit_host })),
             },
         )
         .await;
     });
     Ok(Json(json!({
         "ok": true,
+        "host": row.id,
         "repo": created.full_name,
         "url": created.url,
         "protected": protected,

@@ -254,16 +254,17 @@ async fn forget_source(pg: &PgPool, slug: &str) -> Result<(), String> {
 
 // ── Credentials ──────────────────────────────────────────────────────────────
 
-/// Where a fetch's credential comes from. The default is the GitHub
-/// connection; tests substitute a fixed one.
+/// Where a fetch's credential comes from. The default is the git host the
+/// operator registered at the source's origin; tests substitute a fixed one.
 pub trait Credentials: Sync {
-    /// A read-only token for `owner/name` on github.com, or None when the
-    /// connection has none to give (not configured, or it cannot see the
+    /// A read-only `(username, password)` for `src` from the git host
+    /// registered at its origin, or None when no host is registered there or
+    /// the host has none to give (not configured, or it cannot see the
     /// repository — a public one then clones anonymously).
-    fn github_read_token(
+    fn host_read_login(
         &self,
-        repo: &str,
-    ) -> impl std::future::Future<Output = Result<Option<String>, String>> + Send;
+        src: &GitSource,
+    ) -> impl std::future::Future<Output = Result<Option<(String, String)>, String>> + Send;
     /// The login the workspace secret `name` holds for `host`.
     fn secret_login(
         &self,
@@ -272,9 +273,9 @@ pub trait Credentials: Sync {
     ) -> impl std::future::Future<Output = Result<(String, String), String>> + Send;
 }
 
-/// The platform's credentials: the GitHub connection
-/// (`talaria_github::github_token_for`, narrowed to `REPO_READ_PERMISSIONS`)
-/// and workspace secrets (`credential_from_secret`).
+/// The platform's credentials: the registered git hosts (talaria-git-hosts —
+/// a GitHub App mints a token for that one repository, narrowed to read) and
+/// workspace secrets (`credential_from_secret`).
 pub struct PlatformCredentials<'a> {
     pub pg: &'a PgPool,
     pub sb: &'a SecretBox,
@@ -282,14 +283,19 @@ pub struct PlatformCredentials<'a> {
 }
 
 impl Credentials for PlatformCredentials<'_> {
-    async fn github_read_token(&self, repo: &str) -> Result<Option<String>, String> {
-        talaria_github::github_token_for(
-            self.pg,
-            self.sb,
-            Some(repo),
-            talaria_github::RepoAccess::Read,
-        )
-        .await
+    async fn host_read_login(&self, src: &GitSource) -> Result<Option<(String, String)>, String> {
+        use talaria_git_hosts::GitHost;
+        let Some(repo) = src.owner_repo() else {
+            return Ok(None);
+        };
+        let Some(row) = talaria_git_hosts::host_row_for_url(self.pg, &src.url).await? else {
+            return Ok(None);
+        };
+        let host = talaria_git_hosts::connect(self.pg, self.sb, &row).await;
+        Ok(host
+            .repo_login(repo, talaria_git_hosts::RepoAccess::Read)
+            .await?
+            .map(|l| (l.username, l.password)))
     }
 
     async fn secret_login(&self, name: &str, host: &str) -> Result<(String, String), String> {
@@ -302,9 +308,10 @@ impl Credentials for PlatformCredentials<'_> {
 }
 
 /// How a fetch of `src` authenticates, and a note for the error when the
-/// GitHub connection had no token to give. A named workspace secret wins;
-/// a github.com repository the connection can read gets a repo-scoped,
-/// read-only token; anything else is fetched anonymously.
+/// registered host had no login to give. A named workspace secret wins; a
+/// repository on a registered git host gets that host's read login (on
+/// GitHub, a repo-scoped, read-only token); anything else is fetched
+/// anonymously.
 pub async fn auth_for(
     creds: &impl Credentials,
     src: &GitSource,
@@ -324,13 +331,13 @@ pub async fn auth_for(
             None,
         ));
     }
-    if let Some(repo) = src.github_repo() {
-        return Ok(match creds.github_read_token(repo).await {
-            Ok(Some(token)) => (
+    if let Some(repo) = src.owner_repo() {
+        return Ok(match creds.host_read_login(src).await {
+            Ok(Some((username, password))) => (
                 GitAuth::Login {
                     host: src.host.clone(),
-                    username: "x-access-token".into(),
-                    password: token,
+                    username,
+                    password,
                 },
                 None,
             ),
@@ -338,7 +345,8 @@ pub async fn auth_for(
             Err(e) => (
                 GitAuth::Anonymous,
                 Some(format!(
-                    "the GitHub connection has no read token for {repo} ({e}), so it was fetched anonymously"
+                    "the git host at {} has no read login for {repo} ({e}), so it was fetched anonymously",
+                    src.host
                 )),
             ),
         });
@@ -962,7 +970,7 @@ fn check_cache() -> &'static CheckCache {
 }
 
 /// A check is reused for this long — the page that asks is opened often, and
-/// every check mints a GitHub read token. (A workspace secret is never spent
+/// every check mints a read login from the source's git host. (A workspace secret is never spent
 /// by a check at all: `NOT_CHECKED_SECRET`.)
 const CHECK_TTL_MS: i64 = 60_000;
 
@@ -1242,8 +1250,14 @@ mod tests {
     struct Asked(Mutex<Vec<String>>);
 
     impl Credentials for Asked {
-        async fn github_read_token(&self, repo: &str) -> Result<Option<String>, String> {
-            self.0.lock().unwrap().push(format!("github:{repo}"));
+        async fn host_read_login(
+            &self,
+            src: &GitSource,
+        ) -> Result<Option<(String, String)>, String> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("host:{}/{}", src.host, src.repo));
             Ok(None)
         }
 

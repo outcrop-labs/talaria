@@ -948,6 +948,9 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "# owner/repo from an https or ssh remote URL.\n",
     "repo=$(printf %s \"$remote_url\" | sed -nE -e 's#^[a-z+]+://[^/]+/([^/]+/[^/]+)/?$#\\1#p' -e 's#^([^@]+@)?[^:]+:([^/]+/[^/]+)/?$#\\2#p' | sed 's#\\.git$##')\n",
     "[ -n \"$repo\" ] || exit 0\n",
+    "# And the host (with any port) the remote is on: the same owner/repo on\n",
+    "# two git hosts is two repositories with two sets of rules.\n",
+    "host=$(printf %s \"$remote_url\" | sed -nE -e 's#^[a-z+]+://([^@/]+@)?([^/]+)/.*$#\\2#p' -e 's#^([^@]+@)?([^:/]+):.*$#\\2#p')\n",
     "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>.\n",
     "refs=\"\"; n=0\n",
     "while read -r _ _ remote_ref _; do\n",
@@ -958,7 +961,7 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "[ \"$n\" -gt 0 ] || exit 0\n",
     "refs=\"${refs%,}\"\n",
     "url=\"$TALARIA_API_URL/api/secrets/git-push-check\"\n",
-    "body=\"{\\\"repo\\\":\\\"$repo\\\",\\\"refs\\\":[$refs]}\"\n",
+    "body=\"{\\\"repo\\\":\\\"$repo\\\",\\\"host\\\":\\\"$host\\\",\\\"refs\\\":[$refs]}\"\n",
     "if command -v curl >/dev/null 2>&1; then\n",
     "  resp=$(curl -sS -X POST \"$url\" \\\n",
     "    -H \"X-Agent-Name: $API_SERVER_MODEL_NAME\" -H \"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
@@ -4940,6 +4943,12 @@ empty_list: []
         assert!(
             asked.contains(r#""repo":"acme/widgets""#),
             "the repo string must be .git-suffix-free: {asked}"
+        );
+        // The remote's host rides along: the route resolves the grant on
+        // the git host the push goes to.
+        assert!(
+            asked.contains(r#""host":"github.com""#),
+            "the host must arrive bare: {asked}"
         );
         let (code, err, _) = run(r#"{"error":"acme/widgets is not yours to push"}"#);
         assert_eq!(code, 1, "a refused push must abort");
