@@ -139,6 +139,45 @@ check('CI started but still running — its first job done, the rest not yet cre
   ok(r.waiting.some((w) => /not finished: CI/.test(w)), `waiting: ${r.waiting}`)
 })
 
+// #607 (this change's own PR), recorded 4, 17 and 21 seconds after `gh pr create`.
+const at = (t) => [fixture(`pr-607-t${t}.json`), fixture(`runs-607-t${t}.json`)]
+
+check('recorded at +4s: both runs queued and no check in the rollup yet — pending', () => {
+  const [pr, runs] = at(4)
+  eq(pr.statusCheckRollup.length, 0)
+  const r = classify(pr, { head: HEAD_OK, runs, ciWorkflow: 'CI' })
+  eq(r.kind, 'pending')
+  ok(r.waiting.some((w) => /not finished: judge, CI/.test(w)), `waiting: ${r.waiting}`)
+})
+
+check('recorded at +17s: CI\'s skipped jobs registered, judge and invariants running — pending', () => {
+  const [pr, runs] = at(17)
+  const r = classify(pr, { head: HEAD_OK, runs, ciWorkflow: 'CI' })
+  eq(r.kind, 'pending')
+  eq(names(r.pending), ['invariants (no deps)', 'judge (standards)'])
+  ok(r.waiting.some((w) => /not finished: CI/.test(w)), `waiting: ${r.waiting}`)
+})
+
+check('the +17s rollup with its last jobs done but the CI run not yet marked finished is still pending', () => {
+  // The rollup alone now has nothing pending, which is all the old rule asked.
+  const [pr, runs] = at(17)
+  for (const c of pr.statusCheckRollup) if (c.status === 'IN_PROGRESS') Object.assign(c, { status: 'COMPLETED', conclusion: 'SUCCESS' })
+  const r = classify(pr, { head: HEAD_OK, runs, ciWorkflow: 'CI' })
+  eq(r.pending, [])
+  eq(r.kind, 'pending')
+  eq(classify(pr, { head: HEAD_OK, runs: at(21)[1], ciWorkflow: 'CI' }).kind, 'green')
+})
+
+check('recorded at +21s: every run finished on the pushed head — green, exactly as recorded', () => {
+  const [pr, runs] = at(21)
+  const head = headCheck(pr, { onBranch: true, local: pr.headRefOid, tracking: pr.headRefOid })
+  const r = classify(pr, { head, runs, ciWorkflow: 'CI' })
+  eq([r.kind, r.passing.length, r.superseded], ['green', 11, 0])
+  // the same recording, read by a checkout that has already pushed the next commit
+  const next = headCheck(pr, { onBranch: true, local: 'd'.repeat(40), tracking: 'd'.repeat(40), prContainsLocal: false })
+  eq(classify(pr, { head: next, runs, ciWorkflow: 'CI' }).kind, 'pending')
+})
+
 check('workflow runs that could not be read are pending, never a pass', () => {
   const r = classify(asOpen(PR599), { head: HEAD_OK, runs: null, runsError: 'HTTP 502', ciWorkflow: 'CI' })
   eq(r.kind, 'pending')
