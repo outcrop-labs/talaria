@@ -1,10 +1,13 @@
 # Admin: Agents
 
 The Agents page is the roster: hire agents, set their identity and brains, bind their tools,
-and retire them. Changes to a running agent deploy like software — a fresh container rolls up
-beside the old one, a health check runs, then traffic cuts over — so nobody's conversation
-dies to an edit. The policy panels in **Admin → Agents** govern how all agents behave; this
-page governs each one.
+and retire them. Most changes reach a running agent in place, from its next turn, without a
+restart: its tools and toolsets, its delegation cap, its soul (from its next new
+conversation), and its MCP servers and tools (within a few minutes). A change the agent can only take
+at start — its Developer switch, a rotated key, a model or tier, most config edits — restarts
+its container: the agent is offline for about a minute, and a turn in flight waits for it.
+The policy panels in **Admin → Agents** govern how all agents behave; this page governs each
+one.
 
 Open: **Manage → Agents**. Members need the view granted (and the **Manage agents**
 permission to edit anything).
@@ -79,8 +82,10 @@ tally and every failure sentence until you dismiss it.
 - **Soul** — the SOUL.md workspace: *who the agent is*. Saving it publishes a soul-only
   version on top of the last saved config.
 
-Applying config rolls out safely: *new container rolling up beside the old one, health
-check, then traffic cuts over*. Add a version note if the change deserves one.
+Applying config writes it to the running agent in place. If the edit touches something the
+agent reads only at start (a model, a tier, most config keys), its container restarts — offline
+for about a minute, with a turn in flight waiting for it; a soul-only edit restarts nothing and
+reaches the agent's next new conversation. Add a version note if the change deserves one.
 
 ### Versions
 

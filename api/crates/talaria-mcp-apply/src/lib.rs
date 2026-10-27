@@ -1,11 +1,24 @@
-// Applying MCP registry changes to RUNNING agents. The render rewrites each
-// agent's config.yaml in place, and a running Hermes reconciles its
-// `mcp_servers` against it by NAME about once a minute — so a granted or
-// revoked server lands on its own. What that reconcile does not pick up is a
-// changed timeout, URL or header under an unchanged name, so the change is
-// also followed by the fleet's roll (an in-place recreate), applied to
-// exactly the agents a change touches. Rolls run sequentially off a deduped
-// queue: a burst of registry edits becomes one roll per department.
+// Applying MCP registry changes to RUNNING agents. What a running Hermes
+// takes on its own, and what this crate does about the rest:
+//
+// · A server GRANTED or REVOKED is a name in the agent's `mcp_servers`. The
+//   render rewrites config.yaml in place and Hermes reconciles the live
+//   servers against it by name about once a minute, so those changes APPLY
+//   (fleet-reconcile's `apply_agent_change`: render, recreate only a
+//   container the render moved — an MCP edit moves none).
+// · A tool list that changes UNDER a name the agent already holds — a tool
+//   subset widened, a team or user grant, an app's catalog — reaches it
+//   through the gateway: [`bump_tool_lists`] counts the change, and the
+//   gateway answers the agent's next keepalive ping on that server with a
+//   `notifications/tools/list_changed` first (routes-fleet's mcp_gw_server),
+//   which Hermes answers by listing the tools again.
+// · A `timeout` or an auth mode changed under a name still ROLLS: the
+//   reconcile does not reconnect a server whose entry changed, and a session
+//   minted under the old credentials is the old session.
+//
+// Both kinds run sequentially off one deduped queue — a burst of registry
+// edits becomes one render and at most one roll per department, and a
+// department queued for both is rolled once.
 
 use serde_json::json;
 use sqlx::PgPool;
@@ -30,21 +43,58 @@ pub static ROLL_AGENT: OnceLock<
     >,
 > = OnceLock::new();
 
-/// The process-local roll queue: a deduped department list plus a running
-/// flag the pump clears when it drains.
-static QUEUE: LazyLock<Mutex<(Vec<String>, bool)>> =
+/// One verdict per department, in the order asked: what
+/// [`APPLY_AGENTS`] answers.
+pub type ApplyVerdicts = Vec<(String, Result<Option<String>, String>)>;
+
+/// Wired from the api binary: fleet-reconcile's `apply_agent_changes` — one
+/// render, then a roll only for a container the render moved.
+pub static APPLY_AGENTS: OnceLock<
+    Arc<
+        dyn Fn(sqlx::PgPool, SecretBox, Vec<String>) -> BoxFuture<'static, ApplyVerdicts>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
+
+/// What a queued department is owed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Render, and recreate only if the container moved.
+    Apply,
+    /// Recreate regardless — the change is one Hermes takes only from a
+    /// fresh start.
+    Roll,
+}
+
+/// The process-local queue: deduped departments with what each is owed, plus
+/// a running flag the pump clears when it drains.
+static QUEUE: LazyLock<Mutex<(Vec<(String, Mode)>, bool)>> =
     LazyLock::new(|| Mutex::new((Vec::new(), false)));
 
+/// Merge a request into the queue: a department already queued keeps its
+/// place, and a roll supersedes an apply (a roll renders too).
+fn merge_into(queue: &mut Vec<(String, Mode)>, departments: &[String], mode: Mode) {
+    for d in departments {
+        match queue.iter_mut().find(|(q, _)| q == d) {
+            Some(entry) => {
+                if mode == Mode::Roll {
+                    entry.1 = Mode::Roll;
+                }
+            }
+            None => queue.push((d.clone(), mode)),
+        }
+    }
+}
+
 /// The one pump. Lazily armed so a test environment with no runtime still
-/// links; in the process it's the tokio handle the routes spawn under.
-fn enqueue(departments: &[String], pg: &PgPool, sb: &SecretBox) {
+/// links; in the process it's the tokio handle the routes spawn under. Each
+/// turn takes everything queued: the applies share one render, then the
+/// rolls run one at a time.
+fn enqueue(departments: &[String], mode: Mode, pg: &PgPool, sb: &SecretBox) {
     {
         let mut q = QUEUE.lock().unwrap_or_else(|p| p.into_inner());
-        for d in departments {
-            if !q.0.contains(d) {
-                q.0.push(d.clone());
-            }
-        }
+        merge_into(&mut q.0, departments, mode);
         if q.1 {
             return;
         }
@@ -54,39 +104,54 @@ fn enqueue(departments: &[String], pg: &PgPool, sb: &SecretBox) {
     let sb = sb.clone();
     tokio::spawn(async move {
         loop {
-            let next = {
+            let batch: Vec<(String, Mode)> = {
                 let mut q = QUEUE.lock().unwrap_or_else(|p| p.into_inner());
                 if q.0.is_empty() {
                     q.1 = false;
                     return;
                 }
-                q.0.remove(0)
+                std::mem::take(&mut q.0)
             };
-            let rolled = match ROLL_AGENT.get() {
-                Some(f) => f(pg.clone(), sb.clone(), next.clone()).await,
-                None => Ok(None),
-            };
-            // `{ok:false}` AND a thrown step both land here: the roll verdict
-            // is a sentence for the operator's audit trail, never a caller's
-            // problem — the mutation that triggered it is already committed.
-            let error = match rolled {
-                Ok(None) => continue,
-                Ok(Some(error)) => error,
-                Err(thrown) => thrown,
-            };
-            log_audit(
-                &pg,
-                AuditEntry {
-                    actor: "talaria",
-                    action: "mcp.roll_failed",
-                    target_type: "department",
-                    target_id: Some(&next),
-                    target_label: None,
-                    before: None,
-                    after: Some(json!({ "error": error })),
-                },
-            )
-            .await;
+            let (rolls, applies): (Vec<_>, Vec<_>) =
+                batch.into_iter().partition(|(_, m)| *m == Mode::Roll);
+            let applies: Vec<String> = applies.into_iter().map(|(d, _)| d).collect();
+            let mut verdicts: ApplyVerdicts = Vec::new();
+            if !applies.is_empty()
+                && let Some(f) = APPLY_AGENTS.get()
+            {
+                verdicts.extend(f(pg.clone(), sb.clone(), applies).await);
+            }
+            for (department, _) in rolls {
+                let rolled = match ROLL_AGENT.get() {
+                    Some(f) => f(pg.clone(), sb.clone(), department.clone()).await,
+                    None => Ok(None),
+                };
+                verdicts.push((department, rolled));
+            }
+            for (department, verdict) in verdicts {
+                // `{ok:false}` AND a thrown step both land here: the verdict
+                // is a sentence for the operator's audit trail, never a
+                // caller's problem — the mutation that triggered it is
+                // already committed.
+                let error = match verdict {
+                    Ok(None) => continue,
+                    Ok(Some(error)) => error,
+                    Err(thrown) => thrown,
+                };
+                log_audit(
+                    &pg,
+                    AuditEntry {
+                        actor: "talaria",
+                        action: "mcp.roll_failed",
+                        target_type: "department",
+                        target_id: Some(&department),
+                        target_label: None,
+                        before: None,
+                        after: Some(json!({ "error": error })),
+                    },
+                )
+                .await;
+            }
         }
     });
 }
@@ -125,20 +190,7 @@ pub async fn carriers_for_server(pg: &PgPool, server_id: &str) -> Result<Vec<Str
     Ok(rows.into_iter().map(|(d,)| d).collect())
 }
 
-/// Queue rolls for an explicit department list (e.g. captured pre-delete).
-pub fn enqueue_rolls(departments: &[String], pg: &PgPool, sb: &SecretBox) {
-    enqueue(departments, pg, sb);
-}
-
-/// Roll every managed agent that carries this server (all-agents or assigned).
-pub async fn roll_agents_for_server(pg: &PgPool, sb: &SecretBox, server_id: &str) {
-    if let Ok(departments) = carriers_for_server(pg, server_id).await {
-        enqueue(&departments, pg, sb);
-    }
-}
-
-/// Roll one user's personal assistant (their connect/disconnect took effect).
-pub async fn roll_agent_for_user(pg: &PgPool, sb: &SecretBox, user_id: &str) {
+async fn departments_for_user(pg: &PgPool, user_id: &str) -> Vec<String> {
     let rows: Vec<(String,)> = sqlx::query_as(
         "select department from agent_defs where owner_user_id = $1::uuid and managed and enabled",
     )
@@ -146,12 +198,10 @@ pub async fn roll_agent_for_user(pg: &PgPool, sb: &SecretBox, user_id: &str) {
     .fetch_all(pg)
     .await
     .unwrap_or_default();
-    let departments = rows.into_iter().map(|(d,)| d).collect::<Vec<_>>();
-    enqueue(&departments, pg, sb);
+    rows.into_iter().map(|(d,)| d).collect()
 }
 
-/// Roll one specific agent model's department.
-pub async fn roll_agent_for_model(pg: &PgPool, sb: &SecretBox, model: &str) {
+async fn departments_for_model(pg: &PgPool, model: &str) -> Vec<String> {
     let rows: Vec<(String,)> = sqlx::query_as(
         "select department from agent_defs where model = $1 and managed and enabled",
     )
@@ -159,6 +209,123 @@ pub async fn roll_agent_for_model(pg: &PgPool, sb: &SecretBox, model: &str) {
     .fetch_all(pg)
     .await
     .unwrap_or_default();
-    let departments = rows.into_iter().map(|(d,)| d).collect::<Vec<_>>();
-    enqueue(&departments, pg, sb);
+    rows.into_iter().map(|(d,)| d).collect()
+}
+
+// ── Apply: render, recreate only what moved ─────────────────────────────────
+
+/// Queue an apply for an explicit department list (e.g. captured pre-delete).
+pub fn enqueue_applies(departments: &[String], pg: &PgPool, sb: &SecretBox) {
+    enqueue(departments, Mode::Apply, pg, sb);
+}
+
+/// Apply a change to every managed agent that carries this server.
+pub async fn apply_agents_for_server(pg: &PgPool, sb: &SecretBox, server_id: &str) {
+    if let Ok(departments) = carriers_for_server(pg, server_id).await {
+        enqueue(&departments, Mode::Apply, pg, sb);
+    }
+}
+
+/// Apply a change to one user's personal assistant.
+pub async fn apply_agent_for_user(pg: &PgPool, sb: &SecretBox, user_id: &str) {
+    let departments = departments_for_user(pg, user_id).await;
+    enqueue(&departments, Mode::Apply, pg, sb);
+}
+
+/// Apply a change to one specific agent model's department.
+pub async fn apply_agent_for_model(pg: &PgPool, sb: &SecretBox, model: &str) {
+    let departments = departments_for_model(pg, model).await;
+    enqueue(&departments, Mode::Apply, pg, sb);
+}
+
+// ── Roll: recreate regardless ───────────────────────────────────────────────
+
+/// Roll every managed agent that carries this server — for an edit Hermes
+/// takes only from a reconnect (a timeout, an auth mode).
+pub async fn roll_agents_for_server(pg: &PgPool, sb: &SecretBox, server_id: &str) {
+    if let Ok(departments) = carriers_for_server(pg, server_id).await {
+        enqueue(&departments, Mode::Roll, pg, sb);
+    }
+}
+
+/// Roll one specific agent model's department — the Developer switch and a
+/// key rotation, both of which change the container's own env.
+pub async fn roll_agent_for_model(pg: &PgPool, sb: &SecretBox, model: &str) {
+    let departments = departments_for_model(pg, model).await;
+    enqueue(&departments, Mode::Roll, pg, sb);
+}
+
+// ── Tool lists that change under a name ─────────────────────────────────────
+
+/// The `app_settings` row counting changes to what any agent's tool lists
+/// should hold. The gateway compares it with the count each agent last saw
+/// on each server, and tells an agent behind the count to list again.
+pub const TOOL_LISTS_EPOCH_SETTING: &str = "mcp.tool_lists_epoch";
+
+/// Count a change that may alter a tool list an agent already holds under a
+/// server name it keeps — a subset widened or narrowed, a team or user
+/// grant, an app's new catalog, a refreshed catalog, a connected account.
+/// Over-counting is harmless: an agent told to list again lists the same
+/// tools. Call it after the change commits, so the list it prompts reads
+/// the new state. Best effort; a failure is logged, and the agent keeps the
+/// list it has until its next reconnect.
+pub async fn bump_tool_lists(pg: &PgPool) {
+    let bumped = sqlx::query(
+        "insert into app_settings (key, value) values ($1, '1'::jsonb) \
+         on conflict (key) do update \
+           set value = to_jsonb(coalesce((app_settings.value #>> '{}')::bigint, 0) + 1), \
+               updated_at = now()",
+    )
+    .bind(TOOL_LISTS_EPOCH_SETTING)
+    .execute(pg)
+    .await;
+    if let Err(e) = bumped {
+        tracing::warn!(
+            "[mcp] tool-list change not counted ({e}) — agents keep their lists until they reconnect"
+        );
+    }
+}
+
+/// The current count ([`bump_tool_lists`]); `None` when it cannot be read,
+/// 0 before the first change.
+pub async fn tool_lists_epoch(pg: &PgPool) -> Option<i64> {
+    sqlx::query_as::<_, (Option<i64>,)>(
+        "select (value #>> '{}')::bigint from app_settings where key = $1",
+    )
+    .bind(TOOL_LISTS_EPOCH_SETTING)
+    .fetch_optional(pg)
+    .await
+    .ok()
+    .map(|row| row.and_then(|(n,)| n).unwrap_or(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn q(items: &[(&str, Mode)]) -> Vec<(String, Mode)> {
+        items.iter().map(|(d, m)| (d.to_string(), *m)).collect()
+    }
+
+    #[test]
+    fn a_burst_dedupes_and_a_roll_supersedes_an_apply() {
+        let mut queue = Vec::new();
+        merge_into(&mut queue, &["ops".into(), "eng".into()], Mode::Apply);
+        merge_into(&mut queue, &["ops".into()], Mode::Apply);
+        assert_eq!(queue, q(&[("ops", Mode::Apply), ("eng", Mode::Apply)]));
+        // A roll asked for a department already queued to apply rolls it,
+        // in the place it already held — once.
+        merge_into(&mut queue, &["eng".into(), "fin".into()], Mode::Roll);
+        assert_eq!(
+            queue,
+            q(&[
+                ("ops", Mode::Apply),
+                ("eng", Mode::Roll),
+                ("fin", Mode::Roll)
+            ])
+        );
+        // An apply never downgrades a queued roll.
+        merge_into(&mut queue, &["fin".into()], Mode::Apply);
+        assert_eq!(queue[2], ("fin".to_string(), Mode::Roll));
+    }
 }

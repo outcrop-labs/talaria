@@ -182,7 +182,7 @@ pub fn app_mcp_plan(apps: &[AppFacts], rows: &[String]) -> BTreeMap<String, AppM
 
 /// What one sync changed: the app server names that serve, the rows that
 /// went from serving to off or back, and the serving rows whose catalog
-/// changed. The carriers of both lists are rolled, each row once.
+/// changed. The carriers of both lists are applied to, each row once.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncReport {
     pub serving: Vec<String>,
@@ -197,11 +197,12 @@ pub struct SyncReport {
 /// that says what the row already holds changes nothing. Compared as JSON
 /// values, so key order (jsonb keeps its own) is not a change.
 ///
-/// A running Hermes reads an MCP server's tools/list once, when it starts
-/// (the roll comment in `talaria_mcp_apply`), so an app update that adds,
-/// renames or removes a tool, or edits a description or a schema, reaches
-/// an agent only by a roll — and a catalog that did not change must roll
-/// nobody: every host boot and every probe re-sends the same file.
+/// A running Hermes keeps the tools/list it read from a server until the
+/// server says the list changed (the header of `talaria_mcp_apply`), so an
+/// app update that adds, renames or removes a tool, or edits a description
+/// or a schema, reaches an agent only through that notice — and a catalog
+/// that did not change must send it to nobody: every host boot and every
+/// probe re-sends the same file.
 pub fn catalog_changed(stored: &Value, fresh: Option<&Value>) -> bool {
     fresh.is_some_and(|f| f != stored)
 }
@@ -287,9 +288,9 @@ async fn sync_app_mcp_rows(
                     .and_then(|a| a.catalog.clone())
                     .unzip();
                 // A row that was serving, is on, and gets a different catalog
-                // rolls its carriers so they list the new tools. (A row coming
-                // back from off rolls as flipped; an admin's disabled row is
-                // carried by nobody.)
+                // tells its carriers to list the new tools. (A row coming
+                // back from off applies as flipped; an admin's disabled row
+                // is carried by nobody.)
                 let retooled = had.is_some_and(|(_, _, off, stored, enabled)| {
                     off.is_none() && *enabled && catalog_changed(stored, tools.as_ref())
                 });
@@ -322,7 +323,7 @@ async fn sync_app_mcp_rows(
                     synced.flipped.push(id);
                 } else if retooled {
                     tracing::info!(
-                        "[apps] {server}: the tool catalog changed; rolling the agents that carry it"
+                        "[apps] {server}: the tool catalog changed; the agents that carry it will list it again"
                     );
                     synced.retooled.push(id);
                 }
@@ -355,8 +356,8 @@ async fn sync_app_mcp_rows(
 /// Reconcile the registry rows of app-published MCP servers with the apps
 /// (`app_mcp_plan`): an enabled app that publishes tools gets a serving row,
 /// created if missing, and every other app's row is turned off with the
-/// reason. A row that changes between serving and off rolls the agents that
-/// carry it by grant, so its tools leave them, or return, with every
+/// reason. A row that changes between serving and off applies to the agents
+/// that carry it by grant, so its tools leave them, or return, with every
 /// assignment, team grant and user grant intact. Answers the app server names
 /// that serve.
 ///
@@ -386,18 +387,26 @@ pub async fn sync_app_mcp_servers_over(
 }
 
 /// The same sync, answering everything it changed (`SyncReport`): the rows
-/// whose carriers it rolled, not only the servers that serve.
+/// whose carriers it applied to, not only the servers that serve.
 pub async fn sync_app_mcp_servers_report(
     pg: &PgPool,
     sb: &SecretBox,
     facts: impl FnOnce(&BTreeSet<String>) -> Vec<AppFacts>,
 ) -> Result<SyncReport, sqlx::Error> {
     let synced = sync_app_mcp_rows(pg, facts).await?;
-    // After the commit, so each replacement renders the state it was rolled
-    // for: a flipped row's tools arrive or leave, a retooled row's catalog is
-    // the one the agent lists.
+    // After the commit, so what reaches each carrier is the state it was
+    // applied for. A FLIPPED row is a server name arriving in or leaving its
+    // carriers' configs — the render writes it and a running Hermes
+    // reconciles names within a minute. A RETOOLED row is a new catalog under
+    // the same name — the gateway tells each carrier to list again on its
+    // next keepalive (`bump_tool_lists`). Neither moves a container, so the
+    // carriers APPLY (talaria-mcp-apply), which restarts nobody unless the
+    // render moved their container for some other reason.
+    if !synced.retooled.is_empty() || !synced.flipped.is_empty() {
+        talaria_mcp_apply::bump_tool_lists(pg).await;
+    }
     for id in synced.flipped.iter().chain(&synced.retooled) {
-        talaria_mcp_apply::roll_agents_for_server(pg, sb, id).await;
+        talaria_mcp_apply::apply_agents_for_server(pg, sb, id).await;
     }
     Ok(synced)
 }
@@ -405,8 +414,8 @@ pub async fn sync_app_mcp_servers_report(
 /// Delete an app's MCP registry row, and with it, by cascade, every agent
 /// assignment, team grant and user grant on it. Uninstall only; every other
 /// way an app stops serving turns the row off (`sync_app_mcp_servers`). A row
-/// that was still serving rolls its carriers, read before the cascade takes
-/// the grants that name them.
+/// that was still serving applies to its carriers (the name leaves their
+/// configs), read before the cascade takes the grants that name them.
 pub async fn remove_app_mcp_server(
     pg: &PgPool,
     sb: &SecretBox,
@@ -433,7 +442,7 @@ pub async fn remove_app_mcp_server(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    talaria_mcp_apply::enqueue_rolls(&departments, pg, sb);
+    talaria_mcp_apply::enqueue_applies(&departments, pg, sb);
     Ok(())
 }
 
@@ -462,7 +471,7 @@ pub async fn set_app_enabled(
         .await
         .map_err(|e| e.to_string())?;
     // Apps that publish MCP tools follow their enablement into the registry:
-    // a row serves or turns off (keeping its grants), and its carriers roll.
+    // a row serves or turns off (keeping its grants), and its carriers apply.
     if let Err(e) = sync_app_mcp_servers(pg, sb).await {
         tracing::warn!("[apps] {slug}: MCP registry sync failed: {e}");
     }

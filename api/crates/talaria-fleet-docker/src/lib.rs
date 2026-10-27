@@ -5,9 +5,12 @@
 //
 // Covers service naming, the external network guarantee, the lifecycle verbs
 // (up, recreate, stop, restart, remove), the image pull, the healthcheck
-// wait, the 5s-cached `docker ps` status the roster and Home poll, and the
-// shared `docker exec` wrapper the cron and memory surfaces use to reach an
-// agent's own filesystem. Nothing here execs into an agent after it comes up:
+// wait, the fit check that decides whether a change needs a recreate at all
+// (`container_fit`), the 5s-cached `docker ps` status the roster and Home
+// poll, and the shared `docker exec` wrapper that reaches into a running
+// agent: the memory surface (talaria-agent-memory), the lost-turn discard
+// (`lost_turns.rs`) and the workbench's jobs, dev env and teardown
+// (talaria-workbench-mcp). Bring-up itself runs no post-start exec step:
 // Hermes keeps replaced bundled skills off by itself (talaria-hermes-skills),
 // and its image already carries the browser the toolset drives.
 //
@@ -194,6 +197,102 @@ pub async fn fleet_recreate(pg: &PgPool, department: &str) -> Result<String, Str
         Duration::from_secs(AGENT_STOP_GRACE_SECS + 120),
     )
     .await
+}
+
+/// The label compose stamps on every container it creates: a digest of the
+/// service definition it created it from — image, environment (with each
+/// `${VAR}` interpolated and every `env_file` read in), mounts, limits and
+/// labels, the render's start-config label among them. `docker compose up`
+/// recreates exactly when the rendered service's digest differs from this.
+pub const CONFIG_HASH_LABEL: &str = "com.docker.compose.config-hash";
+
+/// Whether a department's running container is what the current render
+/// describes — the question `apply_agent_change` (fleet_reconcile) asks
+/// before it recreates anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerFit {
+    /// Created from exactly the rendered service: everything that changed
+    /// reached it in place, and a recreate would only interrupt it.
+    Matches,
+    /// Created from something else — or the digest could not be read on
+    /// either side, which is read as a change: a recreate it did not need
+    /// costs a restart, a skipped one strands the change.
+    Differs,
+    /// No running container: its next start reads the render.
+    NotRunning,
+}
+
+/// The fit, from what `docker inspect` said of the container (`None` when
+/// there is none; else whether it runs and the [`CONFIG_HASH_LABEL`] it
+/// carries) and the digest compose computes for the rendered service.
+pub fn fit_of(container: Option<(bool, Option<&str>)>, rendered: Option<&str>) -> ContainerFit {
+    match container {
+        None | Some((false, _)) => ContainerFit::NotRunning,
+        Some((true, running)) => match (running, rendered) {
+            (Some(have), Some(want)) if !have.is_empty() && have == want => ContainerFit::Matches,
+            _ => ContainerFit::Differs,
+        },
+    }
+}
+
+/// The digest `docker compose config --hash <svc>` printed for `svc`: one
+/// `<service> <hash>` line per service asked for.
+pub fn parse_config_hash(stdout: &str, service: &str) -> Option<String> {
+    stdout.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some(svc), Some(hash), None) if svc == service && !hash.is_empty() => {
+                Some(hash.to_string())
+            }
+            _ => None,
+        }
+    })
+}
+
+/// Ask compose and the container itself whether the render moved the
+/// service under a running agent ([`ContainerFit`]). Compose's own digest is
+/// the comparison because compose's own digest is what a recreate would be
+/// decided by; nothing here re-derives it.
+pub async fn container_fit(pg: &PgPool, department: &str) -> ContainerFit {
+    let slot = active_slot(pg, department).await;
+    let svc = slot_service(department, slot);
+    let container = slot_container(department, slot);
+    let inspected = docker(
+        &[
+            "inspect",
+            "-f",
+            &format!("{{{{.State.Running}}}} {{{{index .Config.Labels \"{CONFIG_HASH_LABEL}\"}}}}"),
+            &container,
+        ],
+        Duration::from_secs(10),
+    )
+    .await
+    .ok()
+    .map(|(out, _)| {
+        let mut parts = out.split_whitespace();
+        let running = parts.next() == Some("true");
+        (running, parts.next().map(str::to_string))
+    });
+    if !inspected.as_ref().is_some_and(|(running, _)| *running) {
+        return ContainerFit::NotRunning;
+    }
+    let args = compose_args(&["config", "--hash", &svc]);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let rendered = match docker(&refs, Duration::from_secs(30)).await {
+        Ok((out, _)) => parse_config_hash(&out, &svc),
+        Err(e) => {
+            tracing::warn!(
+                "[fleet] {svc}: could not read the rendered service's config hash ({e}) — treating it as changed"
+            );
+            None
+        }
+    };
+    fit_of(
+        inspected
+            .as_ref()
+            .map(|(running, hash)| (*running, hash.as_deref())),
+        rendered.as_deref(),
+    )
 }
 
 /// Stop the agent's gateway THROUGH ITS OWN SUPERVISOR, and wait for it to
@@ -571,10 +670,11 @@ pub async fn fleet_stop(pg: &PgPool, department: &str) -> Result<String, String>
 }
 
 /// Restart a managed agent's process in its EXISTING container — the same
-/// image, env and mounts. A config.yaml change needs neither this nor a roll
-/// (the render rewrites it in place and Hermes reloads it); an env, image or
-/// limit change needs a roll (`roll_agent`, fleet_reconcile), which
-/// recreates the container.
+/// image, env and mounts. Applying a change is not this: fleet_reconcile's
+/// `apply_agent_change` re-renders (config.yaml lands in place, and the keys
+/// Hermes reads live take effect from it) and recreates the container only
+/// when [`container_fit`] says the service moved — env, image, limits, or the
+/// part of config.yaml Hermes reads at start.
 pub async fn fleet_restart(pg: &PgPool, department: &str) -> Result<String, String> {
     compose_verb(
         pg,
@@ -766,6 +866,57 @@ mod tests {
         assert!(args[4].ends_with("docker-compose.yml"), "{}", args[4]);
         assert!(args[6].ends_with("/.env"), "{}", args[6]);
         assert_eq!(&args[7..], ["up", "-d", "agent-research"]);
+    }
+
+    #[test]
+    fn the_hash_comparison_decides_the_recreate() {
+        let h = "4392ddf6aaf63585ca9f4f21314a3463990d5a0259266354f5abdc66be12a91d";
+        // Created from exactly the rendered service: nothing to recreate.
+        assert_eq!(
+            fit_of(Some((true, Some(h))), Some(h)),
+            ContainerFit::Matches
+        );
+        // The render moved the service (env, an env_file value, the image, a
+        // mount, a limit, the start-config label): recreate.
+        assert_eq!(
+            fit_of(Some((true, Some(h))), Some("0353ec3c")),
+            ContainerFit::Differs
+        );
+        // A container compose did not label, or a digest compose would not
+        // print, is read as moved — the roll the caller used to do anyway.
+        assert_eq!(
+            fit_of(Some((true, Some("<no value>"))), Some(h)),
+            ContainerFit::Differs
+        );
+        assert_eq!(fit_of(Some((true, None)), Some(h)), ContainerFit::Differs);
+        assert_eq!(
+            fit_of(Some((true, Some(""))), Some("")),
+            ContainerFit::Differs
+        );
+        assert_eq!(fit_of(Some((true, Some(h))), None), ContainerFit::Differs);
+        // Stopped or absent: the next start reads the render; nothing to do.
+        assert_eq!(
+            fit_of(Some((false, Some(h))), Some("x")),
+            ContainerFit::NotRunning
+        );
+        assert_eq!(fit_of(None, Some(h)), ContainerFit::NotRunning);
+    }
+
+    #[test]
+    fn the_config_hash_is_read_for_the_service_asked_about() {
+        let out = "agent-research 0efc77db680582df\nagent-ops ef9fd7d574ec0e33\n";
+        assert_eq!(
+            parse_config_hash(out, "agent-ops").as_deref(),
+            Some("ef9fd7d574ec0e33")
+        );
+        assert_eq!(
+            parse_config_hash(out, "agent-research").as_deref(),
+            Some("0efc77db680582df")
+        );
+        // A prefix of another service is not that service.
+        assert_eq!(parse_config_hash(out, "agent-res"), None);
+        assert_eq!(parse_config_hash("", "agent-ops"), None);
+        assert_eq!(parse_config_hash("agent-ops\n", "agent-ops"), None);
     }
 
     // parse_health's order is the whole test: "(unhealthy)" CONTAINS

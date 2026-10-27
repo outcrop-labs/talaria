@@ -11,7 +11,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
-use talaria_api_facades::mcp::apply::roll_agent_for_user;
+use talaria_api_facades::mcp::apply::{apply_agent_for_user, bump_tool_lists};
 use talaria_api_facades::mcp::oauth::{drop_oauth_tokens, has_oauth_tokens};
 use talaria_api_facades::mcp::registry::{
     get_mcp_server, has_user_credentials, list_mcp_servers, set_user_credentials,
@@ -229,10 +229,14 @@ pub async fn put(
     let (pg, sb_) = (state.pg.clone(), sb.clone());
     let user_id = user.id.clone();
     tokio::spawn(async move {
-        // Config truth first…
+        // The gateway speaks for the person's account from this moment (or
+        // stops, on a disconnect); their assistant keeps the server it holds
+        // and re-lists its tools on the gateway's list-changed notice at its
+        // next keepalive. The apply renders, and restarts the assistant only
+        // if the render moved its container (talaria-mcp-apply).
         let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb_).await;
-        // …then the live cutover.
-        roll_agent_for_user(&pg, &sb_, &user_id).await;
+        bump_tool_lists(&pg).await;
+        apply_agent_for_user(&pg, &sb_, &user_id).await;
     });
     Ok(Json(json!({ "ok": true })).into_response())
 }

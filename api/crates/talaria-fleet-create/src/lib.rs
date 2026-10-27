@@ -443,7 +443,6 @@ pub async fn delete_agent_forever(
         "delete from board_agents where agent_model = $1",
         "delete from channel_agents where agent_model = $1",
         "delete from rag_collection_access where principal_type = 'agent' and principal_id = $1",
-        "delete from fleet_agents where name = $1",
     ] {
         sqlx::query(stmt)
             .bind(&model)

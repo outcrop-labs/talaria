@@ -71,7 +71,6 @@ pub const GOVERNED_TOOLSETS: &[&str] = &[
     "clarify",
     "code_execution",
     "computer_use",
-    "connections",
     "context_engine",
     "cronjob",
     "delegation",
@@ -99,12 +98,17 @@ pub const GOVERNED_TOOLSETS: &[&str] = &[
 /// it, the stricter reading, because a list that said "closed" must not come
 /// back open. `coding` (a posture), `project` and `desktop_ui` (GUI client
 /// surfaces) closed nothing on an API-server agent, so they map to nothing.
+/// `connections` is Hermes's own switch for its Nous connectors
+/// (`manage_connections`), which the render pins off on every agent
+/// (`tools.connectors.enabled: false`) — closed whatever a list says, so a
+/// list that named it expands to nothing and loses nothing.
 ///
 /// A stored def, an org floor, the floor's env twin, or an older editor tab
 /// can still spell one of these; [`toolset_names`] expands it rather than
 /// refusing what used to be a valid list or, worse, dropping a closed name.
 pub const RETIRED_TOOLSETS: &[(&str, &[&str])] = &[
     ("coding", &[]),
+    ("connections", &[]),
     ("debugging", &["terminal", "web", "file"]),
     ("desktop_ui", &[]),
     ("project", &[]),
@@ -1270,6 +1274,14 @@ mod tests {
                 "image_gen".to_string()
             ],
             "an org floor that closed a composite must not reopen its members"
+        );
+        // `connections` was a governed switch over a tool the render pins off
+        // (`tools.connectors.enabled: false`): a stored list that names it
+        // still validates, and it closes nothing it did not already close.
+        assert_eq!(toolset_names("connections"), Some(vec![]));
+        assert_eq!(
+            validate_toolsets(&["connections".into(), "terminal".into()]).unwrap(),
+            vec!["terminal".to_string()]
         );
         // Every expansion lands on governed names only, and no retired name
         // is still governed — the two tables never overlap.

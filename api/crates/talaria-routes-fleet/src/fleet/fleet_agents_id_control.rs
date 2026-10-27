@@ -76,11 +76,11 @@ pub async fn post(
         });
     }
 
+    // Docker and pg failure text is operator context, not a user sentence:
+    // the answer names the verb, and the log line holds the why — compose's
+    // own stderr, which `docker()` carries in the error.
     let catch = |e: String| -> Response {
-        // Docker and pg failure text is operator context, not a user
-        // sentence — the message names the verb, the logs hold the why.
-        let _ = e;
-        house_error(StatusCode::INTERNAL_SERVER_ERROR, &could_not(&action))
+        control_failure(&action, &def.display_name, &def.department, &e)
     };
     Ok(match action.as_str() {
         "up" => {
@@ -179,15 +179,14 @@ pub async fn post(
         "retire" => {
             // Spin down + drop from the fleet. Container removed; the state
             // volume and the version history stay (re-hire with 'unretire').
-            if sqlx::query(
+            if let Err(e) = sqlx::query(
                 "update agent_defs set enabled = false, updated_at = now() where id = $1::uuid",
             )
             .bind(&def.id)
             .execute(&state.pg)
             .await
-            .is_err()
             {
-                return Ok(catch(String::new()));
+                return Ok(catch(e.to_string()));
             }
             if let Err(e) = fleet_remove(&state.pg, &def.department).await {
                 return Ok(catch(e));
@@ -197,7 +196,7 @@ pub async fn post(
                 Err(e) => return Ok(catch(e)),
             };
             match render_fleet(&state.pg, &sb).await {
-                // manifest drops it; bridge hot-reloads
+                // the manifest drops it; the persona door re-reads it on each attempt
                 Ok(render) => Json(json!({ "ok": true, "render": render.agents })).into_response(),
                 Err(e) => catch(e),
             }
@@ -215,22 +214,21 @@ pub async fn post(
                     Json(json!({ "ok": true, "removedVolume": removed_volume })).into_response()
                 }
                 // Includes delete_agent_forever's own refusals — every throw
-                // flattens to the same operator sentence.
-                Err(_) => catch(String::new()),
+                // flattens to the same operator sentence, and the log keeps it.
+                Err(e) => catch(e),
             }
         }
         "unretire" => {
             // Re-hire: re-enable, re-render (manifest + compose pick it back
             // up), and start the managed container from its preserved volume.
-            if sqlx::query(
+            if let Err(e) = sqlx::query(
                 "update agent_defs set enabled = true, updated_at = now() where id = $1::uuid",
             )
             .bind(&def.id)
             .execute(&state.pg)
             .await
-            .is_err()
             {
-                return Ok(catch(String::new()));
+                return Ok(catch(e.to_string()));
             }
             let sb = match state.secretbox().await {
                 Ok(sb) => sb,
@@ -254,4 +252,11 @@ pub async fn post(
 /// The catch arm's sentence — the em dash is part of the wire contract.
 fn could_not(action: &str) -> String {
     format!("could not {action} the agent — see server logs")
+}
+
+/// The catch arm: log what failed and why — the server logs the wire
+/// sentence points at — and answer the fixed sentence.
+fn control_failure(action: &str, display_name: &str, department: &str, error: &str) -> Response {
+    tracing::warn!("[fleet] {action} of {display_name} ({department}) failed: {error}");
+    house_error(StatusCode::INTERNAL_SERVER_ERROR, &could_not(action))
 }

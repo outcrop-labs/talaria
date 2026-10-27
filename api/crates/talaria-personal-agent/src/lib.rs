@@ -421,7 +421,11 @@ pub async fn create_personal_agent(
     {
         let _ = rf(pg.clone(), sb.clone()).await;
     }
-    let _ = fleet_up(pg, &department).await;
+    // The assistant row is written either way; a bring-up that fails is
+    // the operator's to read — compose's own words, never the user's.
+    if let Err(e) = fleet_up(pg, &department).await {
+        tracing::warn!("[personal-agent] {department}: the assistant did not come up: {e}");
+    }
     wait_healthy_spawn(state, &department);
 
     personal_agent_for(pg, user.id)
@@ -517,14 +521,6 @@ async fn rename_agent_slug(
         (
             "update rag_collection_access set principal_id = $1 \
              where principal_type = 'agent' and principal_id = $2",
-            vec![new_model.as_str(), def.model.as_str()],
-        ),
-        (
-            "delete from fleet_agents where name = $1",
-            vec![new_model.as_str()],
-        ),
-        (
-            "update fleet_agents set name = $1 where name = $2",
             vec![new_model.as_str(), def.model.as_str()],
         ),
     ] {
@@ -706,10 +702,16 @@ pub async fn update_personal_agent(
             // name, config-mount path), so the container must be RECREATED
             // (up -d), not restarted — restart keeps the old mounts and
             // crashes on the moved dir.
-            if rehandled {
-                let _ = fleet_up(pg, &department).await;
+            let brought = if rehandled {
+                fleet_up(pg, &department).await
             } else {
-                let _ = fleet_restart(pg, &department).await;
+                fleet_restart(pg, &department).await
+            };
+            if let Err(e) = brought {
+                tracing::warn!(
+                    "[personal-agent] {department}: the assistant did not {} after the update: {e}",
+                    if rehandled { "come back up" } else { "restart" }
+                );
             }
         }
     }

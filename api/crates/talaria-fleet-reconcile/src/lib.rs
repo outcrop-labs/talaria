@@ -197,14 +197,126 @@ pub static RENDER_FLEET: OnceLock<
 /// a slow first boot of a freshly pulled image.
 const ROLL_HEALTH_WAIT_MS: u64 = 180_000;
 
+// ── Applying a change ────────────────────────────────────────────────────────
+//
+// Before 2026-10-22 a roll was how any change reached a running agent, and
+// most edit paths kept rolling after the render learned to rewrite
+// config.yaml in place. A roll restarts the agent: every conversation on it
+// waits out the restart, for a toolset checkbox Hermes would have read on
+// its next turn anyway.
+//
+// So an edit APPLIES instead: render, then ask whether the running
+// container still matches what the render describes (talaria-fleet-docker's
+// `container_fit` — compose's own config hash against the one the container
+// was created from, which covers its env, env_file contents, image, mounts,
+// limits, and the label carrying the part of config.yaml Hermes reads only
+// at start). Only a container that no longer matches is rolled. A stopped
+// agent stays stopped; its next start reads the render.
+//
+// What still rolls on purpose: the Developer switch (env, image, mounts),
+// a key rotation (env), the operator's own roll and restart, the update
+// job's fleet roll (a new image), and an MCP timeout or auth-mode edit
+// (talaria-mcp-apply), whose effect Hermes only takes from a reconnect.
+
+/// Apply a change to one department's agent: render, then roll it only if
+/// the render moved its container ([`talaria_fleet_docker::ContainerFit`]).
+/// The verdict has [`roll_agent`]'s shape: `Ok(None)` when the change is in
+/// place (live, or waiting for a stopped agent's next start), `Ok(Some(_))`
+/// a roll's soft failure, `Err` a failed step.
+pub async fn apply_agent_change(
+    pg: &PgPool,
+    sb: &SecretBox,
+    department: &str,
+) -> Result<Option<String>, String> {
+    render(pg, sb).await?;
+    apply_rendered(pg, sb, department).await
+}
+
+/// [`apply_agent_change`] for several departments on ONE render — what a
+/// burst of registry edits costs: one render, one fit check per agent, and a
+/// roll only where a container moved.
+pub async fn apply_agent_changes(
+    pg: &PgPool,
+    sb: &SecretBox,
+    departments: &[String],
+) -> Vec<(String, Result<Option<String>, String>)> {
+    if let Err(e) = render(pg, sb).await {
+        return departments
+            .iter()
+            .map(|d| (d.clone(), Err(e.clone())))
+            .collect();
+    }
+    let mut out = Vec::with_capacity(departments.len());
+    for department in departments {
+        out.push((department.clone(), apply_rendered(pg, sb, department).await));
+    }
+    out
+}
+
+/// The fleet-wide form, for an identity edit every soul carries (the org
+/// profile): one render, then a roll for each RUNNING agent whose container
+/// the render moved — none, for an edit that only rewrote SOUL.md. Answers
+/// the agents it rolled and the warnings, like [`roll_running_agents`].
+pub async fn apply_running_agents(
+    pg: &PgPool,
+    sb: &SecretBox,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let (_, mut warnings) = render(pg, sb).await?;
+    let managed: Vec<(String, String)> = sqlx::query_as(
+        "select department, display_name from agent_defs where managed and enabled order by slug",
+    )
+    .fetch_all(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut rolled = Vec::new();
+    for (department, display_name) in &managed {
+        match talaria_fleet_docker::container_fit(pg, department).await {
+            talaria_fleet_docker::ContainerFit::Differs => {
+                match roll_agent(pg, sb, department).await {
+                    Ok(None) => rolled.push(display_name.clone()),
+                    Ok(Some(error)) => warnings.push(error),
+                    Err(e) => warnings.push(e),
+                }
+            }
+            talaria_fleet_docker::ContainerFit::Matches
+            | talaria_fleet_docker::ContainerFit::NotRunning => {}
+        }
+    }
+    Ok((rolled, warnings))
+}
+
+/// One department against a render that already ran.
+async fn apply_rendered(
+    pg: &PgPool,
+    sb: &SecretBox,
+    department: &str,
+) -> Result<Option<String>, String> {
+    match talaria_fleet_docker::container_fit(pg, department).await {
+        talaria_fleet_docker::ContainerFit::Matches => {
+            tracing::info!(
+                "[fleet] {department}: change applied in place — the running container already matches the render"
+            );
+            Ok(None)
+        }
+        talaria_fleet_docker::ContainerFit::NotRunning => Ok(None),
+        talaria_fleet_docker::ContainerFit::Differs => {
+            tracing::info!(
+                "[fleet] {department}: the render moved the container (env, image, limits or start-time config) — rolling it"
+            );
+            roll_agent(pg, sb, department).await
+        }
+    }
+}
+
 /// The roll verdict. `Err` is a failed step (the caller decides what that
 /// means); `Ok(Some(error))` is a deliberate soft failure with a sentence
 /// for the UI.
 ///
 /// What a roll is FOR: everything a container fixes at creation — its env
-/// (a rotated key, the Developer switch), its image, its limits. A
-/// config.yaml change does not need one: the render rewrites the file in
-/// place and Hermes reloads it on its own.
+/// (a rotated key, the Developer switch), its image, its limits, and the
+/// part of config.yaml Hermes reads only at start. An edit that may or may
+/// not touch those goes through [`apply_agent_change`], which rolls only
+/// when the render moved the container.
 pub async fn roll_agent(
     pg: &PgPool,
     sb: &SecretBox,
@@ -379,11 +491,8 @@ async fn set_active_slot(pg: &PgPool, slug: &str, slot: &str) -> Result<(), Stri
         .map_err(|e| e.to_string())
 }
 
-/// Propagate an identity-level change (e.g. the org profile) to the live
-/// fleet: re-render every managed soul, then ROLL running agents one at a
-/// time, so only one agent is restarting at any moment. Agents someone
-/// deliberately stopped stay stopped (they read the new render on next
-/// start).
+/// What [`reconcile_fleet`] did: the render's agent count, the agents it
+/// started, the ones already running, and the render's warnings.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReconcileResult {
@@ -456,6 +565,10 @@ pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileRes
     })
 }
 
+/// Render, then ROLL every running managed agent one at a time, whether or
+/// not its container moved — the update job's fleet roll (a new image is
+/// the point). Agents someone deliberately stopped stay stopped (they read
+/// the new render on next start). An edit uses [`apply_running_agents`].
 pub async fn roll_running_agents(
     pg: &PgPool,
     sb: &SecretBox,

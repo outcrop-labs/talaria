@@ -69,6 +69,24 @@ describe('maybeProxy', () => {
     expect(res!.headers.get('server')).toBeNull()
   })
 
+  it("an MCP gateway answer keeps its session id — an agent's session is that header", async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    vi.stubGlobal(
+      'fetch',
+      (async () =>
+        new Response('{"jsonrpc":"2.0","id":1,"result":{}}', {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'mcp-session-id': 'sess-abc', server: 'axum' },
+        })) as unknown as typeof globalThis.fetch,
+    )
+    const res = await maybeProxy(
+      req('/api/mcp/gw/github', { method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"initialize"}' }),
+      '/api/mcp/gw/github',
+    )
+    expect(res!.headers.get('mcp-session-id')).toBe('sess-abc')
+    expect(res!.headers.get('server')).toBeNull()
+  })
+
   it('the one prefix carries the whole surface — one path from every family the port moved', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))

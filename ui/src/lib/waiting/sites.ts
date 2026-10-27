@@ -113,7 +113,7 @@ export const WAITING_SITES = {
   'fleet/agent-create': { role: 'submitting', slot: 'button', note: 'Create-agent modal submitting.' },
   'fleet/agent-design': { role: 'reasoning', slot: 'inline', note: 'Designing an agent: identity, soul, starter skills.' },
   'fleet/agent-hire': { role: 'tool', slot: 'inline', note: 'Rendering config, starting the container, waiting for health.' },
-  'fleet/agent-apply': { role: 'tool', slot: 'inline', note: 'Rolling a new container up beside the old one.' },
+  'fleet/agent-apply': { role: 'tool', slot: 'inline', note: 'Applying an edit in place; the container restarts only if the edit needs it.' },
   'fleet/cron-save': { role: 'submitting', slot: 'button', note: 'Cron form submitting.' },
 
   /* ── Boards ──────────────────────────────────────────────────────────── */

@@ -103,7 +103,13 @@ const HOP_BY_HOP = new Set(['host', 'connection', 'content-length', 'transfer-en
 // (`content-security-policy` + `x-content-type-options`) crosses for the
 // same reason: the api buckles it so a served file can't execute where it
 // lands, and the belt is worthless if it stops at this boundary.
-const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-request-id', 'location', 'x-conversation-id', 'x-message-id', 'pragma', 'referrer-policy', 'content-disposition', 'content-security-policy', 'x-content-type-options']
+// `mcp-session-id` is the MCP gateway's: agents reach /api/mcp/gw through
+// this hop (their gateway URL is the app's), and streamable HTTP hands the
+// session an `initialize` minted to the client in that header. Without it no
+// agent ever held a session — an upstream that keeps sessions refused every
+// request after the handshake, and the in-house not-connected session a
+// connect ends (mcp_gw_server.rs) never reached anyone.
+const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-request-id', 'location', 'x-conversation-id', 'x-message-id', 'pragma', 'referrer-policy', 'content-disposition', 'content-security-policy', 'x-content-type-options', 'mcp-session-id']
 
 // The upstream hop carries a deadline to FIRST RESPONSE on READS, never on
 // writes and never to body end. Reads (the polls surfaces live on — the

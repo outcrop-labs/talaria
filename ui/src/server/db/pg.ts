@@ -94,9 +94,12 @@ const MIGRATIONS: string[] = [
    )`,
   `create index if not exists messages_conv_idx on messages(conversation_id, seq)`,
   // Fleet agent registry — the retired mission-control heartbeat's table.
-  // Nothing registers or heartbeats any more (those routes are gone); it stays,
-  // with the personal-agent / fleet-create cleanup that touches it, until a
-  // contract migration drops it.
+  // Nothing reads or writes it any more: the heartbeat routes went in #566
+  // and the last writers (the fleet-create delete and the personal-agent
+  // rename) in the 2026-10-27 roll follow-up. It stays until the contract
+  // migration that drops it, which by the expand-contract rule
+  // (docs/UPDATES.md) ships at least one release after a release carrying
+  // both: an app from before #566 still heartbeats into it during a drain.
   `create table if not exists fleet_agents (
      id uuid primary key default gen_random_uuid(),
      name text unique not null,

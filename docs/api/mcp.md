@@ -102,8 +102,8 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_gw_server.rs`](../../api/c
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `agent` | — | `…` | 200, 403, 405, 502 | SSE |
-| POST | `agent` | — | `…` | 200, 202, 403, 502 | SSE |
+| GET | `agent` | — | `…` | 200, 403, 404, 405, 502 | SSE |
+| POST | `agent` | — | `…` | 200, 202, 403, 404, 502 | SSE |
 
 ## `/api/mcp/health`
 
@@ -224,7 +224,7 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_servers.rs`](../../api/cra
 > /api/mcp/servers.
 > The org MCP registry. GET → servers + their assignments + user/team access
 > (admin/agents.manage view). POST → register a server. Every mutation
-> re-renders the fleet so configs pick the change up (Hermes re-reads on
+> re-renders the fleet so configs pick the change up: Hermes re-reads its
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

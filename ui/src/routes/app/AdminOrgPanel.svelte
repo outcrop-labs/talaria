@@ -46,8 +46,8 @@
   <SectionHeader class="mb-1" title="Organization" />
   <p class="mb-3 text-xs text-muted">
     The business your agents work for. Baked into every agent's identity automatically. Generated souls anchor to
-    this team, and saving here rolls running agents (a fresh container comes up and traffic cuts over only once
-    it's healthy), so your agents speak the new identity without interrupting anyone's conversation.
+    this team. Saving here rewrites every agent's identity in place, without a restart: each agent speaks the new
+    identity from its next new conversation, and a conversation already under way keeps the one it started with.
   </p>
   <QueryState query={query} errorTitle="Could not load your organization" errorVariant="compact">
     {#snippet skeleton()}

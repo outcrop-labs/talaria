@@ -31,6 +31,10 @@
 //     a session recorded for ANOTHER agent is refused (-32602) rather than
 //     relayed — two agents sharing an org credential cannot ride each
 //     other's sessions; a session the gateway never saw passes through
+//   · TELLS an agent when its tool list may have changed under a server it
+//     keeps: the keepalive ping of an agent behind the tool-list count is
+//     answered here with `notifications/tools/list_changed` ahead of its
+//     result, and the agent lists again (the tool-list notice, below)
 // so a hand-edited agent config can never exceed what the registry granted.
 
 use axum::Json;
@@ -41,6 +45,7 @@ use axum::response::{IntoResponse, Response};
 use redis::AsyncCommands;
 use serde_json::{Value, json};
 use talaria_agent_auth::{AgentSubject, presented, require_agent, subject_model};
+use talaria_api_facades::mcp::apply::tool_lists_epoch;
 use talaria_api_facades::mcp::calls::{
     ACCESS_FAILED, BATCH_REFUSED, CallLog, Outcome, TappedStream, batch_needs_refusal,
     classify_answer, recorded_members, upstream_text,
@@ -178,6 +183,61 @@ fn not_connected_reply(nc: &NotConnected, rpc: Option<&Value>, base: &str) -> Re
         )
             .into_response(),
     }
+}
+
+// ── The in-house session ─────────────────────────────────────────────────────
+//
+// The not-connected answer is a real handshake, so a running Hermes keeps
+// the server — and keeps that conversation going after someone connects the
+// account, when the gateway starts relaying instead. An upstream that keeps
+// sessions would refuse it (no session it minted), and the first call after
+// the connect would fail. So the in-house handshake issues a session id of
+// its own, and once the server is connected a request that still carries
+// one is answered HTTP 404 — streamable HTTP's "that session is over". The
+// MCP client reads it as "Session terminated"; Hermes reconnects on it (a
+// failed keepalive, or a call's session-expired retry), and the new
+// handshake reaches the real server. This is what a connect used to restart
+// every carrying agent for.
+
+/// What an in-house session id starts with; the rest is random.
+const IN_HOUSE_SESSION_PREFIX: &str = "talaria-nc-";
+
+/// The call record's sentence for a call refused on an ended in-house session.
+const IN_HOUSE_SESSION_OVER: &str =
+    "the agent's session predates the connection; it was ended so the agent reconnects";
+
+fn in_house_session_id() -> String {
+    format!("{IN_HOUSE_SESSION_PREFIX}{}", uuid::Uuid::new_v4().simple())
+}
+
+fn is_in_house_session(session_id: &str) -> bool {
+    session_id.starts_with(IN_HOUSE_SESSION_PREFIX)
+}
+
+/// The in-house session id a request presents, if it presents one.
+fn presented_in_house_session(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .filter(|sid| is_in_house_session(sid))
+}
+
+/// The answer to a request on an in-house session once the server answers
+/// for real: 404, with a JSON-RPC body for a reader that wants words.
+fn in_house_session_ended(rpc: Option<&Value>) -> Response {
+    let id = rpc
+        .and_then(|r| r.get("id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    (
+        StatusCode::NOT_FOUND,
+        Json(rpc_error(
+            &id,
+            -32001,
+            "session terminated: the server is connected now — start a new session",
+        )),
+    )
+        .into_response()
 }
 
 /// A body that failed to parse is answered here, never forwarded: only a
@@ -408,6 +468,181 @@ fn is_initialize(rpc: Option<&Value>) -> bool {
     rpc.and_then(|r| r.get("method")).and_then(Value::as_str) == Some("initialize")
 }
 
+// ── The tool-list notice ─────────────────────────────────────────────────────
+//
+// A running Hermes lists a server's tools when it connects and again only
+// when that server sends `notifications/tools/list_changed`
+// (`tools/mcp_tool_health.py`). Behind this gateway an agent's list can
+// change under a server name it keeps — a subset widened, a team or user
+// grant, an app's new catalog, an account connected — and the upstream knows
+// nothing of it: the change is Talaria's. So the gateway sends the notice
+// itself.
+//
+// It rides the answer to the agent's KEEPALIVE. Hermes pings every remote
+// MCP server it holds (`ping`, every `keepalive_interval`, 180 s by default)
+// with `Accept: application/json, text/event-stream`, and its client hands a
+// notification that arrives on a request's SSE answer to the same handler as
+// one on the notification stream. The GET stream is no route here: the
+// client opens it only when the server issued a session id, which the
+// builtin toolkit (stateless) and the in-house not-connected answer never
+// do — so for most servers the stream an agent would hear it on does not
+// exist.
+//
+// The count is talaria-mcp-apply's `tool_lists_epoch`, bumped by every
+// change that can move a list. Per agent and server the gateway remembers
+// the count it last saw (Redis, refreshed on every keepalive); a handshake
+// starts that count only when none is remembered (a reconnect keeps what it
+// finds — Hermes re-publishes a re-listed catalog only when it has nothing
+// registered), and a keepalive behind it is answered here — the notice, then
+// the ping's own empty result — instead of being relayed. The agent then
+// lists the tools again, through the gateway's filter, and its next turn has
+// them. A session that replaces an in-house one (see "The in-house session")
+// is told on its first `tools/list` instead, without waiting for a keepalive.
+
+/// How long the remembered count lives. Every keepalive refreshes it, so it
+/// only lapses for an agent that stopped asking.
+const TOOLS_SEEN_TTL_SECONDS: u64 = 24 * 60 * 60;
+
+fn tools_seen_key(server_name: &str, caller: &str) -> String {
+    format!("talaria:mcp-tools-seen:v1:{server_name}:{caller}")
+}
+
+fn is_ping(rpc: &Value) -> bool {
+    rpc.get("method").and_then(Value::as_str) == Some("ping") && rpc.get("id").is_some()
+}
+
+fn accepts_event_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::ACCEPT)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.contains("text/event-stream"))
+}
+
+/// THE STALENESS RULE, pure: the count this agent last saw on this server
+/// against the current one. Nothing remembered (a session from before this
+/// gateway counted, or a lapsed key) is adopted as current, not notified —
+/// the change it would announce predates the agent's last look or reached
+/// it some other way.
+fn tool_list_is_stale(seen: Option<i64>, epoch: i64) -> bool {
+    seen.is_some_and(|seen| seen < epoch)
+}
+
+/// The keepalive answer that carries the notice: an SSE body with the
+/// notification first and the ping's result second, the order the client's
+/// SSE reader needs (it stops at the response).
+fn list_changed_answer(rpc: &Value) -> Response {
+    let id = rpc.get("id").cloned().unwrap_or(Value::Null);
+    let notice = json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" });
+    let result = json!({ "jsonrpc": "2.0", "id": id, "result": {} });
+    let body = format!("event: message\ndata: {notice}\n\nevent: message\ndata: {result}\n\n");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from(body))
+        .unwrap_or_else(|e| internal("[mcp/gw] response build failed", e))
+}
+
+/// Record the count an agent now holds on a server, answering the one it
+/// held before. `None` when Redis is out of reach — no notice, the relay
+/// goes on as it always did.
+async fn swap_tools_seen(
+    state: &AppState,
+    server_name: &str,
+    caller: &str,
+    epoch: i64,
+) -> Option<Option<i64>> {
+    let mut redis = match state.redis().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("[mcp/gw:{server_name}] tool-list count unavailable (redis): {e}");
+            return None;
+        }
+    };
+    let key = tools_seen_key(server_name, caller);
+    let seen: Option<i64> = redis.get(&key).await.ok().flatten();
+    let _: Result<(), _> = redis.set_ex(&key, epoch, TOOLS_SEEN_TTL_SECONDS).await;
+    Some(seen)
+}
+
+/// Start the count for an agent the gateway has none for. Only where none
+/// is remembered: Hermes re-lists a server's tools on a reconnect but
+/// re-publishes them only when it has none registered, so a reconnect that
+/// lands between a change and the next keepalive must still be told — the
+/// count it last saw stays until a keepalive answers it.
+async fn start_tools_seen(state: &AppState, server_name: &str, caller: &str, epoch: i64) {
+    let Ok(mut conn) = state.redis().await else {
+        return;
+    };
+    let _: Result<Option<String>, _> = redis::cmd("SET")
+        .arg(tools_seen_key(server_name, caller))
+        .arg(epoch)
+        .arg("NX")
+        .arg("EX")
+        .arg(TOOLS_SEEN_TTL_SECONDS)
+        .query_async(&mut conn)
+        .await;
+}
+
+fn relist_key(server_name: &str, caller: &str) -> String {
+    format!("talaria:mcp-relist:v1:{server_name}:{caller}")
+}
+
+/// Mark an agent whose next session on this server must re-list at once:
+/// set when the gateway ends its in-house session (the server got
+/// connected), consumed by the new session's first `tools/list`
+/// ([`take_relist`]). An hour is far longer than a reconnect takes.
+async fn mark_relist(state: &AppState, server_name: &str, caller: &str) {
+    if let Ok(mut conn) = state.redis().await {
+        let _: Result<(), _> = conn.set_ex(relist_key(server_name, caller), 1, 3600).await;
+    }
+}
+
+/// Whether this `tools/list` is the first one since the gateway ended the
+/// agent's in-house session — and, if so, the mark is spent.
+async fn take_relist(state: &AppState, server_name: &str, caller: &str) -> bool {
+    let Ok(mut conn) = state.redis().await else {
+        return false;
+    };
+    let taken: Result<Option<i64>, _> = redis::cmd("GETDEL")
+        .arg(relist_key(server_name, caller))
+        .query_async(&mut conn)
+        .await;
+    matches!(taken, Ok(Some(_)))
+}
+
+/// Where the notice is decided, for a request the gateway already let in
+/// (allowed, or answered in-house): a handshake starts the agent's count
+/// when it has none; a keepalive behind it gets [`list_changed_answer`].
+async fn tool_list_notice(
+    state: &AppState,
+    server_name: &str,
+    caller: &str,
+    rpc: Option<&Value>,
+    headers: &HeaderMap,
+) -> Option<Response> {
+    let rpc = rpc?;
+    if is_initialize(Some(rpc)) {
+        if let Some(epoch) = tool_lists_epoch(&state.pg).await {
+            start_tools_seen(state, server_name, caller, epoch).await;
+        }
+        return None;
+    }
+    if !is_ping(rpc) || !accepts_event_stream(headers) {
+        return None;
+    }
+    let epoch = tool_lists_epoch(&state.pg).await?;
+    let seen = swap_tools_seen(state, server_name, caller, epoch).await?;
+    if !tool_list_is_stale(seen, epoch) {
+        return None;
+    }
+    tracing::info!(
+        "[mcp/gw:{server_name}] {caller}: its tool list may have changed — the keepalive answer carries tools/list_changed"
+    );
+    Some(list_changed_answer(rpc))
+}
+
 pub async fn post(
     State(state): State<AppState>,
     Path(server_name): Path<String>,
@@ -478,6 +713,9 @@ pub async fn post(
         // container, whose origin for a host-run app is host.docker.internal.
         McpAccess::NotConnected(nc) => {
             let rpc = parsed.as_ref().ok();
+            if let Some(resp) = tool_list_notice(&state, &server_name, &name, rpc, &headers).await {
+                return Ok(resp);
+            }
             let base = browser_base(&super::oauth_callback_base(&state, &headers, &uri).await);
             let method = rpc
                 .and_then(|r| r.get("method"))
@@ -501,13 +739,43 @@ pub async fn post(
                 c.with_server(&nc.server.id)
                     .finish(Outcome::NotConnected, Some(status), sentence);
             }
-            return Ok(not_connected_reply(&nc, rpc, &base));
+            let mut reply = not_connected_reply(&nc, rpc, &base);
+            // The in-house handshake's own session (see "The in-house
+            // session"), so a connect can end it.
+            if is_initialize(rpc)
+                && reply.status().is_success()
+                && let Ok(sid) = in_house_session_id().parse()
+            {
+                reply.headers_mut().insert("mcp-session-id", sid);
+            }
+            return Ok(reply);
         }
     };
     let logs: Vec<CallLog> = logs
         .into_iter()
         .map(|c| c.with_server(&eff.server.id))
         .collect();
+
+    // A session the in-house not-connected answer issued, presented now that
+    // the server answers for real: over (see "The in-house session").
+    if presented_in_house_session(&headers).is_some() {
+        tracing::info!(
+            "[mcp/gw:{server_name}] {name} is still on the not-connected session — ending it so it reconnects to the server"
+        );
+        for c in &logs {
+            c.finish(Outcome::Error, Some(404), Some(IN_HOUSE_SESSION_OVER));
+        }
+        mark_relist(&state, &server_name, &name).await;
+        return Ok(in_house_session_ended(parsed.as_ref().ok()));
+    }
+
+    // A keepalive from an agent whose tool list may be stale is answered
+    // here with the notice; a handshake starts the agent's count.
+    if let Some(resp) =
+        tool_list_notice(&state, &server_name, &name, parsed.as_ref().ok(), &headers).await
+    {
+        return Ok(resp);
+    }
 
     // A batch that carries a tools/call or a tools/list would ride past the
     // tool gate, the spend boundary and the catalog filter, which all read a
@@ -847,12 +1115,22 @@ pub async fn post(
     {
         bind_session(&state, &server_name, sid, &name).await;
     }
+    // The new session's first tools/list after the gateway ended an in-house
+    // one carries the list-changed notice too: Hermes keeps the placeholder
+    // it registered from the in-house catalog until it is told to refresh.
+    let relist = rpc
+        .as_ref()
+        .and_then(|r| r.get("method"))
+        .and_then(Value::as_str)
+        == Some("tools/list")
+        && take_relist(&state, &server_name, &name).await;
     Ok(relay(
         upstream,
         rpc.as_ref(),
         eff.tools.as_deref(),
         &server_name,
         call,
+        relist,
     )
     .await)
 }
@@ -887,6 +1165,11 @@ pub async fn get(
             return Ok((StatusCode::METHOD_NOT_ALLOWED, Body::empty()).into_response());
         }
     };
+    // The notification stream of an in-house session, once the server is
+    // connected: over, like the POST side.
+    if presented_in_house_session(&headers).is_some() {
+        return Ok((StatusCode::NOT_FOUND, Body::empty()).into_response());
+    }
     // App servers have no notification stream — decline politely.
     if eff.server.app_slug.is_some() {
         return Ok((StatusCode::METHOD_NOT_ALLOWED, Body::empty()).into_response());
@@ -1029,6 +1312,7 @@ async fn relay(
     tools: Option<&[String]>,
     server_name: &str,
     call: Option<CallLog>,
+    relist: bool,
 ) -> Response {
     let status = upstream.status().as_u16();
     // A redirect is not followed and not relayed: the Location is a hop the
@@ -1078,14 +1362,38 @@ async fn relay(
         builder = builder.header("mcp-session-id", session);
     }
 
-    // The list filter: rewrite result.tools inside JSON or SSE-framed
-    // bodies. Everything else streams back verbatim.
-    if rpc
+    let is_list = rpc
         .map(|r| r.get("method"))
         .and_then(|m| m.and_then(Value::as_str))
-        == Some("tools/list")
-        && let Some(allowed) = tools
-    {
+        == Some("tools/list");
+    // The relist notice rides ahead of the list itself (the tool-list notice).
+    if is_list && relist {
+        let text = upstream.text().await.unwrap_or_default();
+        let text = match tools {
+            Some(allowed) => filter_bodies(&text, allowed, &content_type),
+            None => text,
+        };
+        if let Some(out) = with_list_changed_first(&text, &content_type) {
+            tracing::info!(
+                "[mcp/gw:{server_name}] the first tools/list of a new session carries tools/list_changed"
+            );
+            let mut builder = Response::builder()
+                .status(StatusCode::from_u16(status).unwrap_or(StatusCode::OK))
+                .header(header::CONTENT_TYPE, "text/event-stream");
+            if let Some(session) = &session {
+                builder = builder.header("mcp-session-id", session);
+            }
+            return builder
+                .body(Body::from(out))
+                .unwrap_or_else(|e| internal("[fleet] response build failed", e));
+        }
+        return builder
+            .body(Body::from(text))
+            .unwrap_or_else(|e| internal("[fleet] response build failed", e));
+    }
+    // The list filter: rewrite result.tools inside JSON or SSE-framed
+    // bodies. Everything else streams back verbatim.
+    if is_list && let Some(allowed) = tools {
         let text = upstream.text().await.unwrap_or_default();
         let out = filter_bodies(&text, allowed, &content_type);
         return builder
@@ -1104,6 +1412,20 @@ async fn relay(
     builder
         .body(body)
         .unwrap_or_else(|e| internal("[fleet] response build failed", e))
+}
+
+/// An answer re-framed as SSE with `notifications/tools/list_changed` as its
+/// first event: an SSE body keeps its own events after it, a JSON body
+/// becomes one event (re-serialized onto one line, as a `data:` line must
+/// be). `None` for a JSON body that does not parse — it passes as it came.
+fn with_list_changed_first(text: &str, content_type: &str) -> Option<String> {
+    let notice = json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" });
+    let first = format!("event: message\ndata: {notice}\n\n");
+    if content_type.contains("text/event-stream") {
+        return Some(format!("{first}{text}"));
+    }
+    let msg: Value = serde_json::from_str(text.trim()).ok()?;
+    Some(format!("{first}event: message\ndata: {msg}\n\n"))
 }
 
 /// The tools/list filter over JSON or SSE-framed text. An SSE body is read
@@ -1555,6 +1877,127 @@ mod tests {
         assert!(host_allowed("talaria-pkg://github-mcp", &allowed));
         assert!(!host_allowed("talaria-pkg://other", &allowed));
         assert!(!host_allowed("mcp.notion.com", &allowed));
+    }
+
+    #[tokio::test]
+    async fn an_in_house_session_is_recognised_and_ended_with_a_404() {
+        let sid = in_house_session_id();
+        assert!(is_in_house_session(&sid), "{sid}");
+        assert!(sid.len() > IN_HOUSE_SESSION_PREFIX.len() + 16, "{sid}");
+        assert_ne!(sid, in_house_session_id(), "random per handshake");
+        // An upstream's own session id is never mistaken for one.
+        assert!(!is_in_house_session("3f2a9c1e-upstream"));
+
+        let mut h = HeaderMap::new();
+        assert!(presented_in_house_session(&h).is_none());
+        h.insert("mcp-session-id", "upstream-abc".parse().unwrap());
+        assert!(presented_in_house_session(&h).is_none());
+        h.insert("mcp-session-id", sid.parse().unwrap());
+        assert_eq!(presented_in_house_session(&h), Some(sid.as_str()));
+
+        // 404 is the status the MCP client reads as "Session terminated"
+        // and Hermes reconnects on; the body keeps the request's id.
+        let resp = in_house_session_ended(Some(
+            &json!({ "jsonrpc": "2.0", "id": 5, "method": "ping" }),
+        ));
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = body_of(resp).await;
+        assert_eq!(body["id"], json!(5));
+        assert_eq!(body["error"]["code"], json!(-32001));
+    }
+
+    #[test]
+    fn a_keepalive_is_told_only_when_the_count_moved_past_what_it_saw() {
+        assert!(tool_list_is_stale(Some(3), 4));
+        assert!(!tool_list_is_stale(Some(4), 4));
+        // A newer count than the store (a bump racing the read) is not stale.
+        assert!(!tool_list_is_stale(Some(5), 4));
+        // Nothing remembered is adopted, never announced.
+        assert!(!tool_list_is_stale(None, 4));
+        assert!(!tool_list_is_stale(None, 0));
+    }
+
+    #[test]
+    fn only_a_ping_that_takes_an_event_stream_carries_the_notice() {
+        assert!(is_ping(
+            &json!({ "jsonrpc": "2.0", "id": 7, "method": "ping" })
+        ));
+        assert!(
+            !is_ping(&json!({ "jsonrpc": "2.0", "method": "ping" })),
+            "a notification"
+        );
+        assert!(!is_ping(
+            &json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/list" })
+        ));
+
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::ACCEPT,
+            "application/json, text/event-stream".parse().unwrap(),
+        );
+        assert!(accepts_event_stream(&h));
+        let mut json_only = HeaderMap::new();
+        json_only.insert(header::ACCEPT, "application/json".parse().unwrap());
+        assert!(!accepts_event_stream(&json_only));
+        assert!(!accepts_event_stream(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn a_relisted_answer_carries_the_notice_first_in_either_framing() {
+        let notice = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n";
+        // JSON: one event after the notice, on one line however it came.
+        let json_body = "{\n  \"jsonrpc\": \"2.0\", \"id\": 3,\n  \"result\": {\"tools\": []}\n}";
+        let out = with_list_changed_first(json_body, "application/json").expect("parses");
+        let rest = out.strip_prefix(notice).expect("the notice comes first");
+        let line = rest
+            .strip_prefix("event: message\ndata: ")
+            .and_then(|r| r.strip_suffix("\n\n"))
+            .expect("one event");
+        assert!(!line.contains('\n'), "a data line is one line: {line}");
+        assert_eq!(
+            serde_json::from_str::<Value>(line).unwrap(),
+            json!({ "jsonrpc": "2.0", "id": 3, "result": { "tools": [] } })
+        );
+        // SSE: the upstream's own events follow untouched.
+        let sse = "event: message\nid: 9\ndata: {\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[]}}\n\n";
+        assert_eq!(
+            with_list_changed_first(sse, "text/event-stream").unwrap(),
+            format!("{notice}{sse}")
+        );
+        // A JSON body that does not parse is left as it came.
+        assert_eq!(
+            with_list_changed_first("not json", "application/json"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn the_notice_comes_first_and_the_ping_result_closes_the_stream() {
+        let resp = list_changed_answer(&json!({ "jsonrpc": "2.0", "id": 42, "method": "ping" }));
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/event-stream"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        let events: Vec<Value> = text
+            .split("\n\n")
+            .filter(|e| !e.trim().is_empty())
+            .map(|e| {
+                assert!(e.starts_with("event: message\ndata: "), "{e}");
+                serde_json::from_str(e.trim_start_matches("event: message\ndata: ")).unwrap()
+            })
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" }),
+                json!({ "jsonrpc": "2.0", "id": 42, "result": {} }),
+            ]
+        );
     }
 
     #[test]

@@ -236,7 +236,7 @@
   {#if busy === 'apply'}
     <Generating
       site="fleet/agent-apply"
-      label={`Applying to ${def.displayName}: new container rolling up beside the old one, health check, then traffic cuts over`}
+      label={`Applying to ${def.displayName}: the change lands in place, and the agent restarts only if the edit needs it (offline for about a minute)`}
       lines={2}
     />
   {/if}

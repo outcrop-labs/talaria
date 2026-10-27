@@ -95,6 +95,11 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     let _ = talaria_mcp_apply::ROLL_AGENT.set(std::sync::Arc::new(|pg, sb, dept| {
         Box::pin(async move { talaria_fleet_reconcile::roll_agent(&pg, &sb, &dept).await })
     }));
+    let _ = talaria_mcp_apply::APPLY_AGENTS.set(std::sync::Arc::new(|pg, sb, depts| {
+        Box::pin(
+            async move { talaria_fleet_reconcile::apply_agent_changes(&pg, &sb, &depts).await },
+        )
+    }));
     let _ = talaria_update_job::ROLL_FLEET.set(std::sync::Arc::new(|pg, sb| {
         Box::pin(async move { talaria_fleet_reconcile::roll_running_agents(&pg, &sb).await })
     }));
@@ -979,6 +984,16 @@ mod tests {
         assert!(
             talaria_update_job::ROLL_FLEET.get().is_some(),
             "the post-deploy fleet roll fell out of the boot wiring — an update would land and leave every agent on the old container"
+        );
+        // The MCP queue's two edges: an unwired apply would leave every
+        // registry edit unrendered for running agents, in silence.
+        assert!(
+            talaria_mcp_apply::APPLY_AGENTS.get().is_some(),
+            "the MCP apply edge fell out of the boot wiring — registry edits would never reach a running agent"
+        );
+        assert!(
+            talaria_mcp_apply::ROLL_AGENT.get().is_some(),
+            "the MCP roll edge fell out of the boot wiring — a timeout or auth-mode edit would never reach a running agent"
         );
         // The announce edge a queued Google write calls. This assertion is the
         // one that was missing, and its absence is the whole story: the edge

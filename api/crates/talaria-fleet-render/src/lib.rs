@@ -9,8 +9,17 @@
 // IN PLACE (`talaria_fleet_brain::write_in_place` — same inode, flock'd,
 // unchanged bytes skipped, mtime bumped last). Hermes re-reads config.yaml
 // whenever its stat signature changes. A rename-over-the-target write would
-// land on the host and never reach the container. Env, image and limit
-// changes are the container's own and need a roll (fleet-reconcile).
+// land on the host and never reach the container. SOUL.md is read when a
+// session's system prompt is built, so an edit reaches new sessions; a
+// session with history keeps the prompt it stored, restart or not.
+//
+// Re-reading the file is not the same as acting on every key in it: most of
+// config.yaml is read once, at start (`model_routes`, plugins, providers).
+// So each service carries a digest of the part a running agent would NOT
+// see (`START_CONFIG_LABEL`, `start_config_fingerprint`), beside the env,
+// image and limits that are the container's own. A change to any of those
+// moves compose's config hash for the service, and fleet-reconcile's
+// `apply_agent_change` recreates a running container exactly when it moved.
 //
 // THIS MODULE carries the whole render: the DATA PLANE (the managed-agent
 // roster, the stable loopback port assignment, the chassis parse), the KEY
@@ -1035,6 +1044,21 @@ const HERMES_IMAGE_DEFAULTS: &[&str] = &[
 /// together).
 pub const HERMES_IMAGE_PIN: &str = HERMES_IMAGE_DEFAULTS[HERMES_IMAGE_DEFAULTS.len() - 1];
 
+/// The config schema version every rendered config.yaml declares as
+/// `_config_version`: the pinned image's own `DEFAULT_CONFIG["_config_version"]`
+/// (`hermes_cli/config_defaults.py`), read from the image with
+/// `python -c 'from hermes_cli.config_defaults import DEFAULT_CONFIG;
+/// print(DEFAULT_CONFIG["_config_version"])'`. BUMP WITH THE PIN — a test
+/// holds the pair together.
+///
+/// Without it Hermes reads the file as unversioned on every boot: the boot
+/// bootstrap logs "config migration skipped: This config predates version
+/// 12", and stage2's `docker_config_migrate.py` tries to migrate it and
+/// fails on the read-only bind. The render writes the whole schema Talaria
+/// means, so there is nothing for Hermes to migrate; stamping the current
+/// version says so, and both paths skip as up to date.
+pub const HERMES_CONFIG_VERSION: u64 = 51;
+
 /// What every agent's service gets whatever chassis it was seeded from:
 /// the current pin in place of any stock default a past template shipped,
 /// and a stop grace long enough for Hermes to drain
@@ -1439,6 +1463,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         fleet_tool_loop_guardrails(&mut routed);
         fleet_title_generation(&mut routed);
         fleet_model_routes(&mut routed, &def.model);
+        fleet_config_version(&mut routed);
         match talaria_model_efforts::EffortVoices::read(pg).await {
             Ok(voices) => {
                 let efforts = target_efforts(&voices, &version.config, &routed);
@@ -1456,6 +1481,10 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
 
         let cfg_path = agent_dir.join("config.yaml");
         let cfg_text = config_yaml_text(&def.model, version.version, &routed);
+        // What of this config a running agent would only see on a restart —
+        // labelled on the service below, so a change to it is a change to
+        // the service, and a change to the rest is not.
+        let start_fingerprint = start_config_fingerprint(&routed);
         // Written after the loop, once the relay's scope already allows
         // what it routes to (the scope write, below).
         staged_configs.push((cfg_path.clone(), cfg_text));
@@ -1529,6 +1558,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             obj.remove("depends_on");
             obj.remove("profiles");
             apply_service_defaults(obj);
+            label_start_config(obj, &start_fingerprint);
             if !dial_is_container() {
                 let port = ports.get(&def.slug).copied().unwrap_or(0);
                 obj.insert("ports".into(), json!([format!("127.0.0.1:{port}:8642")]));
@@ -2595,6 +2625,110 @@ fn fleet_title_generation(routed: &mut Map<String, Value>) {
     titles.insert("model_upgrade_enabled".into(), json!(false));
     aux.insert("title_generation".into(), Value::Object(titles));
     routed.insert("auxiliary".into(), Value::Object(aux));
+}
+
+/// The schema version the render writes against ([`HERMES_CONFIG_VERSION`]),
+/// set over whatever the authored config carried: an imported or federated
+/// def may hold an older stamp, and an older stamp is what sends Hermes into
+/// a migration of a file it cannot write.
+fn fleet_config_version(routed: &mut Map<String, Value>) {
+    routed.insert("_config_version".into(), json!(HERMES_CONFIG_VERSION));
+}
+
+/// The compose label that carries [`start_config_fingerprint`]. A label is
+/// part of the service definition, so compose's own config hash
+/// (`com.docker.compose.config-hash`) moves when it does — which is how a
+/// change Hermes reads only at start reaches the one comparison that decides
+/// a recreate (talaria-fleet-docker's `container_fit`).
+pub const START_CONFIG_LABEL: &str = "talaria.config-start-hash";
+
+/// The config.yaml paths a RUNNING Hermes (v0.22.4) picks up from the
+/// in-place rewrite, each read against its source:
+///
+/// - `agent.disabled_toolsets` — every API turn builds its AIAgent from
+///   `_load_gateway_config()` and `_get_platform_tools(…, "api_server")`,
+///   which applies the list last (`gateway/platforms/api_server.py`,
+///   `hermes_cli/tools_config.py`).
+/// - `delegation.max_concurrent_children` — read on each delegate call
+///   through `load_config_readonly()` (`tools/delegate_tool_config.py`).
+/// - `mcp_servers` — the housekeeping tick reconciles the live servers
+///   against the file BY NAME (`reconcile_mcp_servers_with_config`). Only the
+///   name set is live; an entry that changes under the same name is not
+///   reconnected. The render builds every entry from the registry and the
+///   only field that can move under a name is `timeout`, whose edit keeps
+///   its own roll (talaria-mcp-apply).
+///
+/// Everything else is treated as read at start — `platforms.api_server.extra.
+/// model_routes` is parsed once in the adapter's constructor, plugins load
+/// at boot — and a path joins this list only with the same evidence.
+const LIVE_CONFIG_PATHS: &[&[&str]] = &[
+    &["agent", "disabled_toolsets"],
+    &["delegation", "max_concurrent_children"],
+    &["mcp_servers"],
+];
+
+/// A digest of the config.yaml a container needs to be RESTARTED to see:
+/// the routed config minus [`LIVE_CONFIG_PATHS`], keys sorted so the same
+/// config always digests the same. Rendered as [`START_CONFIG_LABEL`].
+pub fn start_config_fingerprint(routed: &Map<String, Value>) -> String {
+    fn without(map: &mut Map<String, Value>, path: &[&str]) {
+        match path {
+            [] => {}
+            [leaf] => {
+                map.remove(*leaf);
+            }
+            [head, rest @ ..] => {
+                if let Some(Value::Object(inner)) = map.get_mut(*head) {
+                    without(inner, rest);
+                    if inner.is_empty() {
+                        map.remove(*head);
+                    }
+                }
+            }
+        }
+    }
+    fn canonical(v: &Value) -> Value {
+        match v {
+            Value::Object(m) => {
+                let mut keys: Vec<&String> = m.keys().collect();
+                keys.sort();
+                let mut out = Map::new();
+                for k in keys {
+                    out.insert(k.clone(), canonical(&m[k]));
+                }
+                Value::Object(out)
+            }
+            Value::Array(a) => Value::Array(a.iter().map(canonical).collect()),
+            other => other.clone(),
+        }
+    }
+    let mut start_only = routed.clone();
+    for path in LIVE_CONFIG_PATHS {
+        without(&mut start_only, path);
+    }
+    let text = serde_json::to_string(&canonical(&Value::Object(start_only))).unwrap_or_default();
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Stamp [`START_CONFIG_LABEL`] on a service, in whichever form the
+/// chassis spelled its labels (a map, or compose's `KEY=value` list).
+fn label_start_config(svc: &mut Map<String, Value>, fingerprint: &str) {
+    match svc.get_mut("labels") {
+        Some(Value::Array(list)) => {
+            let prefix = format!("{START_CONFIG_LABEL}=");
+            list.retain(|l| !l.as_str().is_some_and(|s| s.starts_with(&prefix)));
+            list.push(json!(format!("{prefix}{fingerprint}")));
+        }
+        Some(Value::Object(map)) => {
+            map.insert(START_CONFIG_LABEL.into(), json!(fingerprint));
+        }
+        _ => {
+            svc.insert("labels".into(), json!({ START_CONFIG_LABEL: fingerprint }));
+        }
+    }
 }
 
 /// THE PERSONA'S TIERS, as Hermes' API server routes them. Talaria publishes
@@ -4166,6 +4300,105 @@ service:
             );
             assert_eq!(chosen.get("stop_grace_period"), Some(&json!("90s")));
         }
+    }
+
+    #[test]
+    fn the_config_version_is_the_pinned_images_own() {
+        // BUMP WITH THE PIN. When this fails, read the new image's
+        // DEFAULT_CONFIG["_config_version"] (the HERMES_CONFIG_VERSION doc
+        // has the one-liner) and update the constant and this pair together.
+        let tag = HERMES_IMAGE_PIN
+            .split_once(':')
+            .and_then(|(_, rest)| rest.split_once('@'))
+            .map(|(tag, _)| tag)
+            .expect("the pin is repo:tag@digest");
+        assert_eq!(
+            (tag, HERMES_CONFIG_VERSION),
+            ("v0.22.4", 51),
+            "HERMES_CONFIG_VERSION must be the pinned image's own _config_version"
+        );
+    }
+
+    #[test]
+    fn every_render_declares_the_schema_version_over_an_authored_one() {
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!({ "default": "m" }));
+        // An imported def stamped by an older Hermes: overridden, not kept —
+        // an older stamp is what starts a migration of the read-only file.
+        routed.insert("_config_version".into(), json!(9));
+        fleet_config_version(&mut routed);
+        let text = config_yaml_text("x-eng", 3, &routed);
+        assert!(text.contains("\n_config_version: 51\n"), "{text}");
+        let back: Value = serde_yaml_ng::from_str(&text).expect("parses");
+        assert_eq!(back["_config_version"], json!(HERMES_CONFIG_VERSION));
+    }
+
+    #[test]
+    fn the_start_fingerprint_ignores_what_hermes_reads_live_and_nothing_else() {
+        let base = json!({
+            "model": { "default": "m", "provider": "talaria" },
+            "agent": { "disabled_toolsets": ["todo", "clarify"], "max_turns": 60 },
+            "delegation": { "max_concurrent_children": 3 },
+            "mcp_servers": { "talaria": { "url": "http://gw/talaria" } },
+            "platforms": { "api_server": { "extra": { "model_routes": { "a-fast": { "model": "f" } } } } },
+        });
+        let base = base.as_object().cloned().expect("object");
+        let print = start_config_fingerprint(&base);
+        assert_eq!(print.len(), 64, "a sha256 hex digest");
+
+        // What a running agent takes from the in-place rewrite does not move it.
+        let mut live = base.clone();
+        live["agent"]["disabled_toolsets"] = json!(["todo", "clarify", "terminal"]);
+        live["delegation"]["max_concurrent_children"] = json!(8);
+        live["mcp_servers"]["github"] = json!({ "url": "http://gw/github", "timeout": 30 });
+        assert_eq!(start_config_fingerprint(&live), print, "live paths only");
+        // A section the live path empties is the same as one that never had it.
+        let mut bare = base.clone();
+        bare.remove("delegation");
+        assert_eq!(start_config_fingerprint(&bare), print);
+
+        // Key order is not a change.
+        let mut reordered = Map::new();
+        for (k, v) in base.iter().rev() {
+            reordered.insert(k.clone(), v.clone());
+        }
+        assert_eq!(start_config_fingerprint(&reordered), print);
+
+        // Everything else is read at start, and does.
+        let mut sibling = base.clone();
+        sibling["agent"]["max_turns"] = json!(90);
+        assert_ne!(start_config_fingerprint(&sibling), print, "agent.max_turns");
+        let mut routes = base.clone();
+        routes["platforms"]["api_server"]["extra"]["model_routes"]["a-fast"]["model"] = json!("g");
+        assert_ne!(start_config_fingerprint(&routes), print, "model_routes");
+        let mut model = base.clone();
+        model["model"]["default"] = json!("n");
+        assert_ne!(start_config_fingerprint(&model), print, "model");
+    }
+
+    #[test]
+    fn the_start_label_lands_in_whichever_form_the_chassis_used() {
+        let mut none = Map::new();
+        label_start_config(&mut none, "abc");
+        assert_eq!(none["labels"], json!({ START_CONFIG_LABEL: "abc" }));
+
+        let mut map = Map::new();
+        map.insert("labels".into(), json!({ "team": "ops" }));
+        label_start_config(&mut map, "abc");
+        label_start_config(&mut map, "def");
+        assert_eq!(
+            map["labels"],
+            json!({ "team": "ops", START_CONFIG_LABEL: "def" })
+        );
+
+        let mut list = Map::new();
+        list.insert("labels".into(), json!(["team=ops"]));
+        label_start_config(&mut list, "abc");
+        label_start_config(&mut list, "def");
+        assert_eq!(
+            list["labels"],
+            json!(["team=ops", format!("{START_CONFIG_LABEL}=def")])
+        );
     }
 
     #[test]

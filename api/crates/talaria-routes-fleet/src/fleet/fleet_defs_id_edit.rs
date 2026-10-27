@@ -13,7 +13,7 @@ use talaria_agent_defs::{
     AliasTarget, CompressionEdits, ConfigEdits, Knob, ModelTarget, NewVersion,
     add_version_if_changed, apply_config_edits, list_versions,
 };
-use talaria_api_facades::fleet::reconcile::roll_agent;
+use talaria_api_facades::fleet::reconcile::apply_agent_change;
 use talaria_api_facades::gateway::provider::catalog_models;
 use talaria_api_facades::gateway::registry::{LlmEndpoint, add_endpoint_models, list_endpoints};
 use talaria_audit::{AuditEntry, log_audit};
@@ -208,7 +208,8 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    // Re-render + restart the managed container so the edit takes effect now.
+    // Apply the edit to the running agent now: re-render (config and soul land in place) and
+    // restart the managed container only if the edit changed something it reads only at start.
     let apply = match optional_boolean_member(obj, "apply") {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
@@ -358,11 +359,14 @@ pub async fn post(
     }
     let mut applied = false;
     if created && apply && managed {
-        // Roll, don't restart: the new config comes up beside the old
-        // container and traffic cuts over only after health — applying an
-        // edit never interrupts conversations in flight.
+        // Apply, don't roll by default: the render rewrites config.yaml and
+        // SOUL.md in place, and the agent restarts only when the edit moved
+        // its container — a key Hermes reads only at start, an env value.
+        // An edit to the soul alone reaches the agent's next new session
+        // without interrupting anyone; one that does roll takes the agent
+        // offline for about a minute, and a turn in flight waits for it.
         let sb = secretbox_or_500(&state, "[fleet/defs/edit] secretbox unavailable").await?;
-        match roll_agent(&state.pg, &sb, &department).await {
+        match apply_agent_change(&state.pg, &sb, &department).await {
             Ok(None) => applied = true,
             Ok(Some(warning)) => {
                 return Ok(Json(json!({

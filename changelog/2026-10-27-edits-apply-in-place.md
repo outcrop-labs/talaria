@@ -1,0 +1,42 @@
+- **Editing a running agent no longer restarts it unless the edit needs a restart. A toolset or delegation-cap switch, a soul edit, an MCP grant, an assignment, a team or user grant, a connected account, a server or app turned on, off or removed, the org profile and the org toolset floor all reach the agent in place from its next turn. A container is recreated only when compose says its service moved.** Every one of those edits used to roll the agent: it went offline for about a minute and held a turn in flight, for a change Hermes would have read on its next turn anyway.
+  - **Apply, not roll** (`apply_agent_change`, talaria-fleet-reconcile). An apply renders, then compares `docker compose config --hash` for the agent's service with the `com.docker.compose.config-hash` label on the running container (`container_fit`, talaria-fleet-docker). That hash is compose's own digest of the image, the environment (every `${VAR}` interpolated, every `env_file` read in), mounts, limits and labels. Only a container that no longer matches is rolled. A stopped agent stays stopped and reads the render when it starts.
+  - **The part of config.yaml Hermes reads only at start** (`model_routes` is parsed once in the API server adapter's constructor, and plugins load at boot) is a service label, `talaria.config-start-hash`. It is a digest of the rendered config minus the paths a running Hermes v0.22.4 takes from the in-place rewrite: `agent.disabled_toolsets`, `delegation.max_concurrent_children` and the `mcp_servers` names (`LIVE_CONFIG_PATHS`). An edit to anything else moves the label, so the agent rolls.
+  - **A tool list that changes under a server name the agent keeps.** This covers a subset widened, a team or user grant, an app's new catalog and a connected account. The change is counted (`bump_tool_lists`). The MCP gateway answers that agent's next keepalive `ping` (every 180 s by default) with `notifications/tools/list_changed` ahead of the result, and Hermes lists the tools again. The Rust gateway does this, and its TS twin does the same for `app-*` servers.
+  - **A server connected after the agent saw it unconnected.** The in-house not-connected handshake now issues a `talaria-nc-` session id. Once the account is connected, a request on that session is answered 404, which Hermes reconnects on. The new session's first `tools/list` carries the notice, so the real catalog replaces the `connection_required` placeholder.
+  - **The app's api proxy passes `mcp-session-id` through.** It had dropped the header from every MCP gateway answer, so no agent ever held an upstream session, and every MCP server that keeps sessions refused the requests after its handshake.
+  - **What still rolls:** the Developer switch, a key rotation, an MCP server's timeout or auth-mode edit, the operator's roll and restart, and the update job's fleet roll.
+  - **Also in this change:**
+    - Every rendered config.yaml stamps `_config_version: 51`, the pinned image's own schema version (`HERMES_CONFIG_VERSION`, paired with the pin by a test). Hermes no longer reads the file as unversioned on every boot.
+    - The agent control route logs compose's real stderr before its fixed 500 sentence. The personal-assistant bring-ups log theirs too, where they had dropped it.
+    - The inert `connections` toolset leaves the governed vocabulary. The render pins Nous connectors off, so the switch did nothing. A stored list that names it still validates and expands to nothing.
+    - The last writes to the retired `fleet_agents` table are gone. The table itself drops one release later, per the expand-contract rule.
+    - The blue/green wording left in the UI, the user docs and comments is swept.
+    - `docs/ARCHITECTURE.md` records the decision not to adopt Hermes's `HERMES_MANAGED_DIR` managed scope.
+
+  Verified:
+  - **Unit tests.** `bun run gate` ran clippy `-D warnings`, cargo tests for every touched crate, svelte-check and the touched vitest files, and was green. New tests cover:
+    - the hash comparison that decides a recreate;
+    - the start-config fingerprint (live paths do not move it, key order does not, every other key does);
+    - the label in both compose spellings;
+    - the config-version/pin pairing;
+    - the queue merge, where a roll supersedes an apply;
+    - the keepalive notice and the relisted answer in JSON and SSE framing;
+    - the in-house session's 404;
+    - the TS notice twin and the proxy's `mcp-session-id` pass-through.
+
+    CI is the full compile and test line.
+  - **Live, on a worktree stack with two agents on the pinned `hermes-agent:v0.22.4@sha256:7a69…`.** A scripted mock model logged every request, so these were not real model calls. Two mock MCP servers sat behind the gateway, one stateless and one stateful per-user.
+    - **Toolsets and the delegation cap.** Closing and reopening toolsets changed Hermes's `/v1/toolsets` and the next turn's tool array (`delegate_task` gone, then back). The container id and start time were unchanged across four applies, each logged "change applied in place".
+    - **Def edits.** A soul-only edit applied in 2 s with no restart, and the new soul was in the next new conversation's system prompt. A compaction-threshold edit moved the start-config label, and the agent rolled onto a container whose compose hash matched the render, healthy in 22 s.
+    - **MCP grant and subset widening.** Assigning a server with a one-tool subset was reconciled by Hermes in 41 s ("added=['mockmcp']", one tool). Widening the subset was answered at the next keepalive with `tools/list_changed`, and Hermes logged "added: mcp__mockmcp__whoami". The next turn's deferred catalog listed both tools, and a `tool_call` reached the upstream. There was no restart.
+    - **Personal connect on a stateful upstream.** Before the proxy fix, the server refused every request after its handshake (400) and Hermes parked it. After the fix, the keepalive on the in-house session got the 404 ("session terminated: the server is connected now"). Hermes reconnected with the user's bearer onto a new upstream session. The first `tools/list` carried the notice and replaced `connection_required` with `echo` and `whoami`. `whoami` answered `Bearer fu-rolls-toke…` on that session, and the container's start time was unchanged.
+    - **Org profile and org floor.** An org-profile edit reached both agents' SOUL.md, and an org-floor edit reached both agents' `disabled_toolsets` (`/v1/toolsets` dropped `image_gen`). Neither restarted either agent.
+    - **Narrowed roll.** An MCP timeout edit still rolled its carrier, and `timeout: 45` was in the new container's config.
+    - **`_config_version`.** Hermes's own version check reads the rendered config as 51 of 51 (up to date). The same file without the stamp reads 0, the "predates version 12" path. No such line is in the agent's logs.
+    - **Compose stderr.** A `control up` with the agent's host port held logged `docker compose failed: … failed to bind host port 127.0.0.1:20900/tcp: address already in use`, and the route still answered its fixed sentence.
+  - **Not exercised live:**
+    - an OAuth connect (no OAuth provider; it is the same gateway transition as the personal connect above);
+    - the app MCP sync and the TS app-gateway notice (vitest only);
+    - team membership edits;
+    - the Developer switch roll, which is unchanged;
+    - the personal-assistant bring-up logging.
