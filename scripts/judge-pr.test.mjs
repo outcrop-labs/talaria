@@ -94,6 +94,20 @@ check('a `## ` line inside a code fence does not cut the section', () => {
   eq(section(body, 'Verified'), '```md\n## not a heading\n```\nexercised it')
 })
 
+check('a fence closes on a bare run at least as long as its opener, never on an info string or a shorter run', () => {
+  // A ```bash line inside an open fence is text. Closing on it would read `## inner`
+  // as a section, then reopen a fence that swallows the real heading after it.
+  const body = '## Verified\n```\n```bash\n## inner\n```\nx\n## CHANGELOG entry\ny\n'
+  eq(section(body, 'Verified'), '```\n```bash\n## inner\n```\nx')
+  eq(section(body, 'inner'), null)
+  eq(section(body, 'CHANGELOG entry'), 'y')
+  const longer = '## Verified\n````md\n```\n## not yet\n````\nran it\n## Next\nz\n'
+  eq(section(longer, 'Verified'), '````md\n```\n## not yet\n````\nran it')
+  eq(section(longer, 'Next'), 'z')
+  // tildes and backticks do not close each other
+  eq(section('## Verified\n~~~\n```\n## no\n~~~\n## Next\nz\n', 'Next'), 'z')
+})
+
 check('a heading inside an HTML comment does not render, so it does not count', () => {
   eq(section('<!--\n## Verified\nhidden\n-->\n## Other\n', 'Verified'), null)
 })

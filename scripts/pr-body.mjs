@@ -19,7 +19,11 @@
 // GitHub web edits send `\r\n`; HTML comments are prompts, not answers, and a
 // heading inside one does not render. Both are normalized away first.
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})/
+/** A fence line: the run of backticks or tildes, and what follows it. An open
+ *  fence closes only on a run of the same character at least as long, with
+ *  nothing after it (CommonMark). Inside a fence, a line that opens another
+ *  one (three backticks and `bash`) is text, not the end. */
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
 /** A level-2 ATX heading as GitHub renders one: `##`, then a space or the end
  *  of the line (`##Verified` is a paragraph), an optional closing `##`. */
 const H2 = /^ {0,3}##(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/
@@ -42,8 +46,9 @@ export function sections(markdown) {
   for (const line of normalize(markdown).split('\n')) {
     const f = FENCE.exec(line)
     if (f) {
-      if (fence === null) fence = f[1][0]
-      else if (f[1][0] === fence) fence = null
+      const [, run, rest] = f
+      if (fence === null) fence = run
+      else if (run[0] === fence[0] && run.length >= fence.length && rest.trim() === '') fence = null
     }
     const h = fence === null && !f ? H2.exec(line) : null
     if (h) {
