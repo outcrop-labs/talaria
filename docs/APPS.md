@@ -186,8 +186,12 @@ credential, and the host runs the handler. The api never loads app code.
    for it to be installed (`request_app_install`), an admin approves it here, and the install
    records who maintains it, who it is for and which board its maintenance tickets go to. Its
    card shows that, with the plugin's **update policy** (`approve`: every update waits for an
-   admin, the default; `auto`). Approval installs only — the app lands disabled, and enabling
-   and granting are the steps above. See [WORKBENCH.md](./WORKBENCH.md#plugins).
+   admin, the default; `auto`) and **Request a change**, which files a ticket for its
+   maintainer. Approval installs only — the app lands disabled, and enabling and granting are
+   the steps above. The workbench job sweep keeps it maintained: a merged PR raises an update
+   approval here (**Plugin updates**), and a failed build, a break after a host upgrade (the
+   `sdk` range names the version the app needs) or an eval regression becomes a ticket on its
+   board. See [WORKBENCH.md](./WORKBENCH.md#plugins).
 
 
 ## The marketplace

@@ -18,6 +18,7 @@ talaria-app-triggers = { workspace = true }
 talaria-apps = { workspace = true }
 talaria-audit = { workspace = true }
 talaria-auth-config = { workspace = true }
+talaria-boards = { workspace = true }
 talaria-body = { workspace = true }
 talaria-coding-accounts = { workspace = true }
 talaria-omp-auth = { workspace = true }
@@ -45,6 +46,7 @@ talaria-session = { workspace = true }
 talaria-state = { workspace = true }
 talaria-storage = { workspace = true }
 talaria-uploads = { workspace = true }
+talaria-tasks = { workspace = true }
 talaria-users = { workspace = true }
 talaria-workspace-secrets = { workspace = true }
 axum = { workspace = true }

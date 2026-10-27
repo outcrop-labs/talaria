@@ -147,6 +147,44 @@ export const fetchAdminApps = (withCatalog: boolean): Promise<AdminApps> =>
 export const fetchAppUpdates = async (): Promise<Record<string, AppUpdateCheck>> =>
   (await getJson<AdminApps>('/api/admin/apps?updates=1')).updates ?? {}
 
+/** A plugin update waiting for an admin (`app_update`): the plugin's branch
+ *  moved past the installed commit, usually a merged PR. */
+export interface AppUpdateRequest {
+  id: string
+  appSlug: string
+  repo: string
+  ref: string | null
+  fromSha: string | null
+  targetSha: string
+  /** Merged PR numbers the maintenance pass saw move the branch. */
+  prs: number[]
+  maintainer: string | null
+  boardName: string | null
+  createdAt: string
+}
+/** PUT /api/admin/apps/update-requests — the decision and its ticket line. */
+export interface UpdateDecision {
+  ok: boolean
+  status: 'applied' | 'failed' | 'rejected'
+  line: string
+  slug: string
+  from: string | null
+  to: string | null
+  upToDate: boolean
+  rolledBack: boolean
+  error?: string | null
+}
+
+export const fetchUpdateRequests = async (): Promise<AppUpdateRequest[]> =>
+  (await getJson<{ requests: AppUpdateRequest[] }>('/api/admin/apps/update-requests')).requests
+
+export const decideUpdateRequest = (body: Record<string, unknown>): Promise<UpdateDecision> =>
+  putJson<UpdateDecision>('/api/admin/apps/update-requests', body)
+
+/** "Request a change": a ticket for the plugin's maintainer on its board. */
+export const requestChange = (app: string, request: string): Promise<{ ok: true; taskId: string; ticketRef: string | null; boardId: string }> =>
+  postJson('/api/admin/apps/change-request', { app, request })
+
 export const fetchInstallRequests = async (): Promise<AppInstallRequest[]> =>
   (await getJson<{ requests: AppInstallRequest[] }>('/api/admin/apps/install-requests')).requests
 

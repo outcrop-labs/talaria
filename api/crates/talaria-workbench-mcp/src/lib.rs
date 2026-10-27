@@ -348,6 +348,11 @@ pub fn workbench_tools() -> Vec<Value> {
             "description": "Read a plugin (an installed app) you maintain: the commit installed and the one its branch points at now (updateAvailable), the repo's open pull requests with each one's checks verdict and review decision, whether the app is enabled and its build loads (app.build, app.broken), and what the host made of its harnesses. Omit slug to list the plugins you maintain and your install requests from the last 30 days. Read-only: it never merges, updates, rebuilds or enables anything.",
             "inputSchema": { "type": "object", "properties": { "slug": { "type": "string", "description": "The app's slug (plugin_status with no slug lists yours). Omit to list." } } },
         }),
+        json!({
+            "name": "app_harness_fitness",
+            "description": "Read a plugin you maintain's harness columns in Models → Fitness: for each model swept with the app's harnesses (harnesses/*.ts), each harness's band (ready, workable, unfit, untested, unbound) and its reason, and for the most recently swept models the harness's own scores (task score, contract rate, latency). Also the host's harness report — which harnesses registered and why any were skipped. A band that got worse since the last check files an eval-regression ticket on the plugin's board. Read-only: it never runs a sweep.",
+            "inputSchema": { "type": "object", "properties": { "slug": { "type": "string", "description": "The plugin's slug — one you maintain (plugin_status with no slug lists yours)" } }, "required": ["slug"] },
+        }),
     ]
 }
 
@@ -2023,20 +2028,10 @@ async fn call_tool(
                 }
                 return CallOutcome::Ok(out);
             }
-            let plugin = match talaria_plugins::plugin(pg, &slug).await {
-                Ok(Some(p)) => p,
-                Ok(None) => {
-                    return CallOutcome::Fail(format!(
-                        "no plugin \"{slug}\" — plugin_status with no slug lists the plugins you maintain"
-                    ));
-                }
-                Err(e) => return thrown(format!("plugin read: {e}")),
+            let plugin = match maintained_plugin(pg, &agent.id, &slug).await {
+                Ok(p) => p,
+                Err(outcome) => return outcome,
             };
-            if plugin.maintainer_agent_id.as_deref() != Some(agent.id.as_str()) {
-                return CallOutcome::Fail(format!(
-                    "you do not maintain \"{slug}\" — plugin_status with no slug lists the plugins you maintain"
-                ));
-            }
             let creds = talaria_apps::PlatformCredentials {
                 pg,
                 sb: &deps.sb,
@@ -2047,8 +2042,47 @@ async fn call_tool(
             )
         }
 
+        "app_harness_fitness" => {
+            let slug = arg_str(args, "slug").trim().to_lowercase();
+            if slug.is_empty() {
+                return CallOutcome::Fail(
+                    "slug is required — plugin_status with no slug lists the plugins you maintain"
+                        .into(),
+                );
+            }
+            let plugin = match maintained_plugin(pg, &agent.id, &slug).await {
+                Ok(p) => p,
+                Err(outcome) => return outcome,
+            };
+            CallOutcome::Ok(talaria_plugins::fitness::harness_fitness(pg, &plugin).await)
+        }
+
         _ => CallOutcome::Fail(format!("unknown tool \"{name}\"")),
     }
+}
+
+/// The plugin `slug`, when `agent_id` maintains it — the one door the
+/// plugin tools read through, so an agent reads only its own plugins.
+async fn maintained_plugin(
+    pg: &PgPool,
+    agent_id: &str,
+    slug: &str,
+) -> Result<talaria_plugins::Plugin, CallOutcome> {
+    let plugin = match talaria_plugins::plugin(pg, slug).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return Err(CallOutcome::Fail(format!(
+                "no plugin \"{slug}\" — plugin_status with no slug lists the plugins you maintain"
+            )));
+        }
+        Err(e) => return Err(thrown(format!("plugin read: {e}"))),
+    };
+    if plugin.maintainer_agent_id.as_deref() != Some(agent_id) {
+        return Err(CallOutcome::Fail(format!(
+            "you do not maintain \"{slug}\" — plugin_status with no slug lists the plugins you maintain"
+        )));
+    }
+    Ok(plugin)
 }
 
 /// The argv that runs `script` in the shell the AGENT'S TERMINAL gives it.
@@ -3236,7 +3270,8 @@ mod tests {
                 "prepare_env",
                 "pr_status",
                 "request_app_install",
-                "plugin_status"
+                "plugin_status",
+                "app_harness_fitness"
             ]
         );
         // The per-tool schema assertions below look their tool up BY NAME. The
@@ -3289,6 +3324,12 @@ mod tests {
         assert!(install.contains("DISABLED") && install.contains("never merges"));
         let status = tool("plugin_status")["description"].as_str().unwrap();
         assert!(status.contains("Read-only") && status.contains("never merges"));
+        assert_eq!(
+            tool("app_harness_fitness")["inputSchema"]["required"],
+            json!(["slug"])
+        );
+        let fitness = tool("app_harness_fitness")["description"].as_str().unwrap();
+        assert!(fitness.contains("Read-only") && fitness.contains("never runs a sweep"));
     }
 
     #[test]

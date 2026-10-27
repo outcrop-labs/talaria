@@ -551,7 +551,26 @@ async fn reclaim_pass(pg: &PgPool) -> Result<u64, String> {
 /// removal that outlives it is skipped (not doubled) by the overlap guard.
 const SWEEP_EVERY_MS: u64 = 10 * 60_000;
 
-pub fn job_sweep_spec(pg: PgPool) -> talaria_scheduler::JobSpec {
+/// The plugin maintenance pass (`talaria_plugins::upkeep`), run after the
+/// workspace passes on every sweep. A closure rather than its deps because
+/// the pass needs Redis (to put a maintainer back to work) and the app host's
+/// credential (to apply an `auto` update), which the composition root holds
+/// and this crate does not. Answers its summary line, or None when it did
+/// nothing.
+pub type UpkeepRun =
+    Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, Option<String>> + Send + Sync>;
+
+/// The sweep's whole line: the workspace half, then the plugin half.
+fn sweep_line(workspaces: Option<String>, plugins: Option<String>) -> Option<String> {
+    match (workspaces, plugins) {
+        (None, None) => None,
+        (Some(w), None) => Some(w),
+        (None, Some(p)) => Some(p),
+        (Some(w), Some(p)) => Some(format!("{w}; {p}")),
+    }
+}
+
+pub fn job_sweep_spec(pg: PgPool, upkeep: Option<UpkeepRun>) -> talaria_scheduler::JobSpec {
     talaria_scheduler::JobSpec {
         name: talaria_scheduler::JobName::WorkbenchJobSweep,
         every_ms: SWEEP_EVERY_MS,
@@ -564,7 +583,18 @@ pub fn job_sweep_spec(pg: PgPool) -> talaria_scheduler::JobSpec {
         max_run_ms: Some(30 * 60_000),
         run: Arc::new(move || {
             let pg = pg.clone();
-            Box::pin(async move { sweep_job_workspaces(&pg).await })
+            let upkeep = upkeep.clone();
+            Box::pin(async move {
+                // The workspace passes first, and their failure is the
+                // sweep's; the plugin pass reads and files tickets, and its
+                // own failures are its line, never a reason to skip it.
+                let workspaces = sweep_job_workspaces(&pg).await?;
+                let plugins = match upkeep {
+                    Some(run) => run().await,
+                    None => None,
+                };
+                Ok(sweep_line(workspaces, plugins))
+            })
         }),
     }
 }
@@ -572,6 +602,17 @@ pub fn job_sweep_spec(pg: PgPool) -> talaria_scheduler::JobSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sweep_line_joins_the_workspace_and_plugin_halves() {
+        assert_eq!(sweep_line(None, None), None);
+        assert_eq!(sweep_line(Some("w".into()), None).as_deref(), Some("w"));
+        assert_eq!(sweep_line(None, Some("p".into())).as_deref(), Some("p"));
+        assert_eq!(
+            sweep_line(Some("w".into()), Some("p".into())).as_deref(),
+            Some("w; p")
+        );
+    }
 
     #[test]
     fn a_workdir_is_only_ever_a_uuid_under_the_jobs_root() {
