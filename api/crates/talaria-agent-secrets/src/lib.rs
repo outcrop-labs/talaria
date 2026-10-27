@@ -26,8 +26,9 @@ mod config_seal;
 mod env_file;
 pub use config_seal::{
     CONFIG_SECRET_PREFIX, ConfigLiteral, ConfigSeal, config_secret_handles, config_secret_paths,
-    copy_config_secrets, plan_config_seal, plan_config_seal_dropping_undeliverable,
-    seal_config_literals, withhold_config_secret, withhold_config_secrets,
+    copy_config_secrets, held_config_secrets, plan_config_seal,
+    plan_config_seal_dropping_undeliverable, seal_config_literals, withhold_config_secret,
+    withhold_config_secrets, withhold_unheld_config_secrets,
 };
 
 /// Container-env name: UPPER_SNAKE, must not collide with the stamped vars.
@@ -156,7 +157,7 @@ pub fn reserved(name: &str) -> Option<String> {
     }
     if hermes_stripped().contains(name) {
         return Some(format!(
-            "{name} is one of Hermes's own provider, platform or tool names: Hermes strips it from every command the agent runs, so no tool of the agent's would see it, and reads it for itself instead. Give the secret a name of your own"
+            "{name} is one of Hermes's own provider, platform or tool names: Hermes strips it from every command the agent runs, so no tool of the agent's would see it, and reads it for itself instead. A key a command of the agent's reads goes under a name of your own; Hermes's own web search takes its key from Admin → Search"
         ));
     }
     None
@@ -386,11 +387,18 @@ pub fn sealed_manifest(names: &[String]) -> String {
 /// it.
 ///
 /// A row under a name that is refused now ([`reserved`], saved before the
-/// rule) is not written. None of those names is one a tool of the agent's
-/// could read: Hermes strips its own provider, platform and tool names from
-/// every command, and the rest reconfigure the agent or are Talaria's. Loading
-/// one only let it do that — a `TELEGRAM_BOT_TOKEN` switched on an adapter
-/// outside Talaria's channels, a `TERMINAL_ENV` moved the shell.
+/// rule) is not written. No command the agent runs could read one of those
+/// names: Hermes strips its own provider, platform and tool names from every
+/// command, and the rest reconfigure the agent or are Talaria's. Loading one
+/// let it reconfigure the agent: a `TELEGRAM_BOT_TOKEN` switched on an
+/// adapter outside Talaria's channels, a `TERMINAL_ENV` moved the shell.
+///
+/// One thing does stop working. Hermes's own in-process tools read their
+/// vendor keys from its environment (v0.22.4's web search picks Tavily when
+/// `TAVILY_API_KEY` is set, `plugins/web/tavily/provider.py`), so a per-agent
+/// tool key saved before the rule stops reaching them on the agent's next
+/// recreate. Web search takes its key from Admin → Search, for every agent
+/// (talaria-agent-web-search); the render logs each row it leaves out.
 pub async fn materialize_agent_secrets(
     pg: &PgPool,
     sb: &SecretBox,

@@ -326,6 +326,39 @@ pub async fn container_running(name: &str) -> bool {
     .is_ok_and(|(out, _)| out.trim() == "true")
 }
 
+/// Whether the named container is running (`Some(true)`), exists stopped
+/// (`Some(false)`: exited, created, dead), or does not exist (`None`). An
+/// Err is docker failing to answer, which is not the same as "absent": a
+/// caller that acts on the container's absence must not guess.
+pub async fn container_state(name: &str) -> Result<Option<bool>, String> {
+    match docker(
+        &["inspect", "-f", "{{.State.Running}}", name],
+        Duration::from_secs(10),
+    )
+    .await
+    {
+        Ok((out, _)) => Ok(Some(out.trim() == "true")),
+        // "no such object" (inspect, lowercase on docker 29) or "No such
+        // container" (rm), depending on the CLI and the verb.
+        Err(e) if e.to_lowercase().contains("no such") => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Remove a STOPPED container, so the next start has to create it from the
+/// current render (`compose restart` would otherwise start it again with the
+/// env, mounts and image it was created with). A plain `docker rm`: it
+/// refuses a running container, so a container someone started since the
+/// caller looked is left alone and the caller hears why. A container that is
+/// already gone counts as removed.
+pub async fn remove_stopped_container(name: &str) -> Result<(), String> {
+    match docker(&["rm", name], Duration::from_secs(60)).await {
+        Ok(_) => Ok(()),
+        Err(e) if e.to_lowercase().contains("no such") => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Wait for the managed container to report healthy (or give up). `unhealthy`
 /// is an answer, not an error — the run files it as a warning and the roster
 /// knows how to show it. A docker error mid-wait means the container is not

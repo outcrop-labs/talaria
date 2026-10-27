@@ -98,10 +98,15 @@ pub async fn delete(
             _ => return Ok(house_error(StatusCode::BAD_REQUEST, "missing name")),
         },
     };
-    // Take the settings that name this CONFIG_* secret out of the config too, in a new version.
-    let remove_setting = obj
-        .and_then(|obj| optional_boolean_member(obj, "removeSetting").ok().flatten())
-        .unwrap_or(false)
+    // Take the settings that name this CONFIG_* secret out of the config too,
+    // in a new version. A body that says something other than a boolean is a
+    // 400, not a quiet "no": the caller meant something.
+    let body_remove = match obj.map(|obj| optional_boolean_member(obj, "removeSetting")) {
+        Some(Ok(v)) => v,
+        Some(Err(msg)) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        None => None,
+    };
+    let remove_setting = body_remove.unwrap_or(false)
         || query_param(&uri, "removeSetting").is_some_and(|v| v == "true" || v == "1");
 
     // A CONFIG_* secret is a credential sealed out of the agent's own config,

@@ -1284,8 +1284,31 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             }
         }
 
+        // A `${CONFIG_…}` handle names a sealed credential the agent's env
+        // must hold, and Hermes keeps an unresolved one as its own text: a
+        // token that fails, or a password anyone who can read the config
+        // knows. So a handle with no secret behind it (removed by a path the
+        // Secrets route's guard does not cover, a secret-health clear or a
+        // hand edit) leaves its setting out of this render, and says so,
+        // until the secret is set again under that name.
+        let held = talaria_agent_secrets::held_config_secrets(pg, &def.id)
+            .await
+            .map_err(|e| format!("{}: agent secrets read failed: {e}", def.slug))?;
+        let (config, withheld, missing) =
+            talaria_agent_secrets::withhold_unheld_config_secrets(&version.config, &held);
+        if !withheld.is_empty() {
+            let warning = format!(
+                "{}: left out {} of its config: the sealed credential {} it names does not exist. Set it again under that name in the Secrets tab to restore the setting",
+                def.display_name,
+                withheld.join(", "),
+                missing.join(", ")
+            );
+            tracing::warn!("[fleet] {warning}");
+            result.warnings.push(warning);
+        }
+
         // Un-interweave: all model tiers point at Talaria's gateway.
-        let mut raw = def_raw_config(&version.config);
+        let mut raw = def_raw_config(&config);
         // How this agent reads an image, from what Talaria knows its models
         // can see — written into the authored config BEFORE the transform,
         // so an image-reader spec is routed and key-scoped like every other.

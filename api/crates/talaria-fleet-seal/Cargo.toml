@@ -13,6 +13,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-agent-secrets = { workspace = true }
+talaria-audit = { workspace = true }
 talaria-fleet-docker = { workspace = true }
 talaria-fleet-reconcile = { workspace = true }
 talaria-fleet-render = { workspace = true }

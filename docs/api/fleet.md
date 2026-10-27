@@ -586,5 +586,6 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_seal_configs.rs`](../.
 | :--- | :--- | :--- |
 | `dryRun` | `bool?` | Default true: report what sealing would do, write nothing. |
 | `dropUndeliverable` | `bool?` | Take a literal no secret can carry (multi-line, over 8 KB) out of the config instead of skipping its agent. |
-| `agentId` | `uuid?` | One agent; absent, every agent. |
+| `agentId` | `uuid?` | One agent; with agentIds, added to them. Neither: every agent. |
+| `agentIds` | `uuid[]?(1000)` | These agents: an apply sends the ones its dry run listed. |
 

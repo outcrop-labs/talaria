@@ -13,7 +13,9 @@ use serde_json::{Value, json};
 use talaria_agent_defs::{
     AgentVersionRow, NewVersion, add_version_if_changed, get_agent_def_wire, list_versions,
 };
-use talaria_agent_secrets::{config_secret_handles, withhold_config_secret};
+use talaria_agent_secrets::{
+    config_secret_handles, held_config_secrets, withhold_unheld_config_secrets,
+};
 use talaria_body::{NumKind, number_member, parse};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{require_agent_manager, require_agent_reader};
@@ -144,29 +146,18 @@ pub async fn post(
 }
 
 /// `config` without the settings that name a sealed credential (`${CONFIG_…}`)
-/// this agent does not hold, and the paths they sat at.
+/// this agent does not hold, and the paths they sat at. The render leaves
+/// them out too; leaving them out of the version as well keeps the stored
+/// config honest about what the agent runs.
 async fn without_missing_secrets(
     pg: &sqlx::PgPool,
     agent_id: &str,
     config: &Value,
 ) -> Result<(Value, Vec<String>), sqlx::Error> {
-    let handles = config_secret_handles(config);
-    if handles.is_empty() {
+    if config_secret_handles(config).is_empty() {
         return Ok((config.clone(), Vec::new()));
     }
-    let held: Vec<String> = sqlx::query_scalar(
-        "select name from agent_secrets where agent_id = $1::uuid and name = any($2)",
-    )
-    .bind(agent_id)
-    .bind(&handles)
-    .fetch_all(pg)
-    .await?;
-    let mut out = config.clone();
-    let mut missing = Vec::new();
-    for name in handles.iter().filter(|n| !held.contains(n)) {
-        let (next, paths) = withhold_config_secret(&out, name);
-        out = next;
-        missing.extend(paths);
-    }
+    let held = held_config_secrets(pg, agent_id).await?;
+    let (out, missing, _) = withhold_unheld_config_secrets(config, &held);
     Ok((out, missing))
 }

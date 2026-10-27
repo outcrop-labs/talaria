@@ -1,9 +1,10 @@
 // Live-DB proof of the stored-config seal (talaria-fleet-seal): a def whose
 // history holds a credential as written — v1 one value, v2 another — comes
 // out with a handle in EVERY version, one per-agent secret holding the
-// current value, and a second run that finds nothing to do. The dry run
-// writes nothing. House rule: #[ignore]d; CI's api-integration job runs it
-// against a scratch database.
+// current value, an `agent.config_sealed` audit row with names and paths
+// only, and a second run that finds nothing to do. The dry run writes
+// nothing. House rule: #[ignore]d; CI's api-integration job runs it against a
+// scratch database.
 //
 //   DATABASE_URL=postgres://… cargo test -p talaria-api --test it seal_configs_live:: -- --ignored
 
@@ -17,6 +18,14 @@ use talaria_fleet_seal::{SealRequest, seal_stored_configs};
 const SLUG: &str = "sealconfigslive";
 
 async fn cleanup(pg: &PgPool) {
+    sqlx::query(
+        "delete from audit_log where target_type = 'agent' and target_id in \
+         (select id::text from agent_defs where slug = $1)",
+    )
+    .bind(SLUG)
+    .execute(pg)
+    .await
+    .unwrap();
     sqlx::query("delete from agent_defs where slug = $1")
         .bind(SLUG)
         .execute(pg)
@@ -75,9 +84,10 @@ async fn every_version_is_sealed_with_the_current_value_and_a_rerun_is_a_no_op()
 
     let req = |dry_run| SealRequest {
         dry_run,
-        agent_id: Some(id.as_str()),
+        agent_ids: Some(vec![id.clone()]),
         drop_undeliverable: false,
-        actor: "seal-configs-live",
+        actor: "seal-configs-live".into(),
+        audit_as: "seal-configs-live".into(),
     };
 
     // The dry run reports and writes nothing.
@@ -88,6 +98,8 @@ async fn every_version_is_sealed_with_the_current_value_and_a_rerun_is_a_no_op()
     assert_eq!(mine.sealed, vec!["CONFIG_PLATFORMS_TELEGRAM_TOKEN"]);
     assert_eq!(mine.changed, vec!["platforms.telegram.token (v1)"]);
     assert!(!mine.roll, "an unmanaged agent never rolls");
+    assert!(!mine.remove_stopped, "nor has a container to remove");
+    assert_eq!(dry.agents.len(), 1, "agentIds limits the run to them");
     assert_eq!(
         literal_rows(&pg, &id).await,
         2,
@@ -138,11 +150,44 @@ async fn every_version_is_sealed_with_the_current_value_and_a_rerun_is_a_no_op()
             .await
             .unwrap();
     assert_eq!(versions, 2, "a redaction, not a new version");
+    // One audit row, written by the run itself: names and paths, no value.
+    let audits: Vec<(String, String, serde_json::Value)> = sqlx::query_as(
+        "select action, actor, after from audit_log where target_type = 'agent' \
+         and target_id = $1 order by created_at",
+    )
+    .bind(&id)
+    .fetch_all(&pg)
+    .await
+    .unwrap();
+    assert_eq!(audits.len(), 1, "{audits:?}");
+    assert_eq!(audits[0].0, "agent.config_sealed");
+    assert_eq!(audits[0].1, "seal-configs-live");
+    assert_eq!(
+        audits[0].2["sealed"],
+        json!(["CONFIG_PLATFORMS_TELEGRAM_TOKEN"])
+    );
+    assert_eq!(
+        audits[0].2["changed"],
+        json!(["platforms.telegram.token (v1)"])
+    );
+    let text = audits[0].2.to_string();
+    assert!(
+        !text.contains("tg-live-A") && !text.contains("tg-live-B"),
+        "{text}"
+    );
 
     // A second run finds nothing to do.
     let again = seal_stored_configs(&pg, &sb, &req(false)).await.unwrap();
     assert_eq!(again.agents[0].status, "clean", "{:?}", again.agents[0]);
     assert!(again.agents[0].versions.is_empty());
+    let audits: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log where target_type = 'agent' and target_id = $1",
+    )
+    .bind(&id)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert_eq!(audits, 1, "a clean run audits nothing");
 
     cleanup(&pg).await;
 }

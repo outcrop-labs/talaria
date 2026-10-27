@@ -40,11 +40,16 @@ becomes one of the agent's `CONFIG_…` secrets with the value its current versi
 every version, old ones included, keeps a reference in its place, so the history and the
 history views stop serving the credential. The value the agent runs on does not change. A
 running agent that gains secrets restarts once, before its config changes, so it never reads a
-reference it cannot resolve. A credential only older versions held is not kept: those versions
-keep a reference with nothing behind it, and reverting to one leaves that setting out. One too
-long or multi-line to seal skips its agent unless you tick **Take out credentials that cannot
-be sealed**. Each sealed agent writes an `agent.config_sealed` audit row with the secret names
-and paths, never a value. Database backups taken before the seal still hold the old literals.
+reference it cannot resolve. A stopped one's container is removed instead (a restart would
+bring back the old container, which lacks the secrets); **Start** creates a new one. **Seal**
+acts on the agents the dry run listed, and no others. A credential only older versions held is
+not kept: those versions keep a reference with nothing behind it, and reverting to one leaves
+that setting out. One too long or multi-line to seal skips its agent unless you tick **Take out
+credentials that cannot be sealed**. Each sealed agent writes an `agent.config_sealed` audit row
+with the secret names and paths, never a value; one whose secrets were stored but whose configs
+were not rewritten (its restart failed, or an edit landed meanwhile) writes
+`agent.config_seal_incomplete` with the reason. Ask again and it finishes. The seal keeps going
+if you close the dialog. Database backups taken before the seal still hold the old literals.
 
 ## The manage modal
 
@@ -114,7 +119,13 @@ the agent's runtime use themselves are refused with the reason — `TALARIA_*`, 
 `OPENAI_API_KEY`, `GITHUB_TOKEN` or `TELEGRAM_BOT_TOKEN`, which Hermes strips from every
 command the agent runs; give the credential a name of its own instead. An entry saved
 under such a name before the rule is marked **Not loaded** in the list with the same reason:
-the render leaves it out of the container, and it stays listed until you remove it. Nothing entered?
+the render leaves it out of the container (and logs each one), and it stays listed until you
+remove it. Most of these did nothing a tool could use, but one kind did: a key Hermes's own
+tools read for themselves, such as a `TAVILY_API_KEY` its web search used. That stops working
+when the agent next restarts; pick the web search provider and its key for every agent in
+**Admin → Search → Agent web search** instead. Upgrading a live instance? Releases before
+this one mark the same entries **Would be refused today**, so the Secrets tabs show beforehand
+which ones stop loading. Nothing entered?
 *"Everything it needs comes from the shared platform env."*
 Which secrets an agent may spend is admin-only; members see **Admins only.**
 
@@ -124,7 +135,8 @@ and the config refers to it by that name; the list says where (**used at**
 one the current config still uses removes that setting too: the confirm names it, and the
 config gets a new version without it, so the agent never reads the `${CONFIG_…}` text itself as
 the value. (The API refuses the delete with a 409 unless the caller asks for the setting to go
-as well.) Hermes reads these values for itself; they are kept out of every command the agent
+as well.) If one goes some other way, the render leaves out the setting that names it and warns,
+until the secret is set again under that name. Hermes reads these values for itself; they are kept out of every command the agent
 runs (its terminal, background processes and code execution), the way Hermes keeps its own
 platform tokens out. That is a guard, not a wall: the values are still in the environment of
 the agent's own process, which runs as the same user as its commands. An agent hired

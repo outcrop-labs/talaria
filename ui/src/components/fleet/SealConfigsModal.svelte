@@ -23,6 +23,9 @@
     undeliverable: string[]
     roll: boolean
     rolled: boolean
+    /** Its container exists, stopped: applying removes it, so its next start creates one that holds the secrets. */
+    removeStopped: boolean
+    removed: boolean
   }
   interface SealReport {
     dryRun: boolean
@@ -32,9 +35,10 @@
 
   // Configs stored before federation sealed inline credentials still hold
   // them as written, in every version. This asks the server what sealing them
-  // would do (a dry run: nothing is written), then does it on the admin's say.
-  // The server's order keeps a running agent working: secrets first, a roll
-  // so the container holds them, and only then the configs.
+  // would do (a dry run: nothing is written), then does it on the admin's say,
+  // for exactly the agents the dry run listed. The server's order keeps a
+  // running agent working: secrets first, a roll so the container holds them
+  // (a stopped one's container is removed instead), and only then the configs.
   let { onClose }: { onClose: () => void } = $props()
 
   const qc = useQueryClient()
@@ -46,13 +50,24 @@
   const run = async (dryRun: boolean) => {
     busy = true
     err = null
+    // An apply seals what the dry run listed, not whatever is sealable by the
+    // time the button is pressed: an agent that became sealable since (and
+    // might restart) waits for the next dry run.
+    const agentIds = dryRun ? undefined : planned.map((a) => a.agentId)
     try {
-      const j = await postJson<{ result?: SealReport }>('/api/fleet/seal-configs', { dryRun, dropUndeliverable })
+      const j = await postJson<{ result?: SealReport }>('/api/fleet/seal-configs', { dryRun, dropUndeliverable, agentIds })
       if (!j.result) {
         err = 'the server sent no report'
         return
       }
-      report = j.result
+      if (dryRun || report === null) {
+        report = j.result
+      } else {
+        // The apply answers for the agents it was given; every other row
+        // keeps what the dry run said about it.
+        const done = new Map(j.result.agents.map((a) => [a.agentId, a]))
+        report = { ...j.result, agents: report.agents.map((a) => done.get(a.agentId) ?? a) }
+      }
       if (!dryRun) {
         await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
         await qc.invalidateQueries({ queryKey: ['agent-versions'] })
@@ -76,6 +91,7 @@
   const clean = $derived((report?.agents.length ?? 0) - shown.length)
   const planned = $derived(shown.filter((a) => a.status === 'planned'))
   const rolls = $derived(planned.filter((a) => a.roll).length)
+  const removals = $derived(planned.filter((a) => a.removeStopped).length)
   const anyUndeliverable = $derived(shown.some((a) => a.undeliverable.length > 0))
   const applied = $derived(report !== null && !report.dryRun)
 
@@ -93,7 +109,8 @@
       <p class="text-sm leading-relaxed text-muted">
         Agents federated before credentials were sealed on the way in still store each inline credential as written, in every version of
         their config. Sealing makes each one a <code class="text-fg">CONFIG_…</code> secret of that agent and leaves a placeholder in every
-        version. The value the agent runs on does not change. A running agent that gains secrets restarts once, before its config changes.
+        version. The value the agent runs on does not change. A running agent that gains secrets restarts once, before its config changes; a
+        stopped one's container is removed, and <span class="text-fg">Start</span> creates a new one.
       </p>
 
       {#if report === null && busy}
@@ -107,7 +124,9 @@
           {:else if shown.length === 0}
             Every stored config is clean: nothing to seal.
           {:else}
-            {planned.length} to seal{rolls ? ` (${rolls} restart${rolls === 1 ? '' : 's'})` : ''} · {shown.length - planned.length} skipped · {clean} already clean
+            {planned.length} to seal{rolls ? ` (${rolls} restart${rolls === 1 ? '' : 's'})` : ''}{removals
+              ? ` (${removals} stopped container${removals === 1 ? '' : 's'} to remove)`
+              : ''} · {shown.length - planned.length} skipped · {clean} already clean
           {/if}
         </div>
         {#if shown.length > 0}
@@ -118,6 +137,8 @@
                   <span class="font-mono text-xs text-fg">{a.slug}</span>
                   {#if a.roll}
                     <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{a.rolled ? 'restarted' : 'restarts'}</span>
+                  {:else if a.removeStopped}
+                    <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{a.removed ? 'container removed' : 'stopped'}</span>
                   {/if}
                   <span
                     class={cn(

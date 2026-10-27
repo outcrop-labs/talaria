@@ -23,11 +23,22 @@
 //      no config changes yet);
 //   2. if the agent is running, roll it — the render's config.yaml is still
 //      the literal one, byte for byte, and the new container starts with the
-//      `CONFIG_*` env;
+//      `CONFIG_*` env. If its container exists but is stopped, remove it:
+//      `compose restart` (the roster's restart, a cascade's) would start that
+//      container again with the env it was created with, which lacks them,
+//      while `up` (Start, reconcile) creates a fresh one from the render;
 //   3. rewrite every version row to handles, in place;
 //   4. render once more, so config.yaml takes the handles, which now resolve.
 //
-// An agent that is not running skips the roll; its next start gets both.
+// An agent with no container at all needs neither: its next start creates
+// one from the render, which holds both. A container whose state docker
+// cannot report skips the agent; nothing of it is touched.
+//
+// Each agent audits as soon as its outcome is known, names and paths only:
+// `agent.config_sealed`, or `agent.config_seal_incomplete` when its secrets
+// were stored but its configs were not rewritten (the roll failed, an edit
+// landed meanwhile). The route runs this detached, so a caller that hangs up
+// does not stop it halfway.
 //
 // History is rewritten in place rather than appended to: an appended version
 // would leave the old literals servable and revertible. The handle resolves
@@ -41,27 +52,31 @@
 // leaves the setting out (fleet_defs_id_versions).
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::collections::{BTreeMap, HashSet};
 
 use talaria_agent_secrets::{
-    ConfigLiteral, plan_config_seal_dropping_undeliverable, seal_config_literals,
+    ConfigLiteral, held_config_secrets, plan_config_seal_dropping_undeliverable,
+    seal_config_literals,
 };
+use talaria_audit::{AuditEntry, log_audit};
 use talaria_secretbox::SecretBox;
 
-/// What the admin asked for.
+/// What the admin asked for. Owned, so the route can run it detached.
 #[derive(Debug, Clone)]
-pub struct SealRequest<'a> {
+pub struct SealRequest {
     /// Report only: nothing is written, nothing rolls.
     pub dry_run: bool,
-    /// One agent, or every agent.
-    pub agent_id: Option<&'a str>,
+    /// These agents (the ones a dry run listed), or every agent.
+    pub agent_ids: Option<Vec<String>>,
     /// Take a literal no per-agent secret can carry (multi-line, over 8 KB)
     /// out of the config, instead of leaving that agent as it is.
     pub drop_undeliverable: bool,
     /// Who the sealed secrets are stamped as updated by.
-    pub actor: &'a str,
+    pub actor: String,
+    /// Who each agent's audit row names.
+    pub audit_as: String,
 }
 
 /// One agent's part of the report. Names and paths only, never a value.
@@ -96,6 +111,10 @@ pub struct AgentSeal {
     /// secrets).
     pub roll: bool,
     pub rolled: bool,
+    /// Whether applying removes its container (it exists, stopped, and the
+    /// agent gains secrets), so its next start creates one that holds them.
+    pub remove_stopped: bool,
+    pub removed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -243,13 +262,13 @@ type DefRow = (String, String, String, String, bool, bool, i32);
 pub async fn seal_stored_configs(
     pg: &PgPool,
     sb: &SecretBox,
-    req: &SealRequest<'_>,
+    req: &SealRequest,
 ) -> Result<SealReport, String> {
     let defs: Vec<DefRow> = sqlx::query_as(
         "select id::text, slug, department, display_name, managed, enabled, current_version \
-         from agent_defs where ($1::text is null or id::text = $1) order by slug",
+         from agent_defs where ($1::text[] is null or id::text = any($1)) order by slug",
     )
-    .bind(req.agent_id)
+    .bind(&req.agent_ids)
     .fetch_all(pg)
     .await
     .map_err(|e| format!("agent defs read failed: {e}"))?;
@@ -278,15 +297,11 @@ pub async fn seal_stored_configs(
                 config,
             })
             .collect();
-        let held: HashSet<String> = sqlx::query_scalar(
-            "select name from agent_secrets where agent_id = $1::uuid and name like 'CONFIG\\_%'",
-        )
-        .bind(&id)
-        .fetch_all(pg)
-        .await
-        .map_err(|e| format!("{slug}: agent secrets read failed: {e}"))?
-        .into_iter()
-        .collect();
+        let held: HashSet<String> = held_config_secrets(pg, &id)
+            .await
+            .map_err(|e| format!("{slug}: agent secrets read failed: {e}"))?
+            .into_iter()
+            .collect();
         let plan = plan_def(&versions, current, &held, req.drop_undeliverable);
         let mut agent = AgentSeal {
             agent_id: id.clone(),
@@ -317,16 +332,31 @@ pub async fn seal_stored_configs(
             report.agents.push(agent);
             continue;
         }
-        // A running agent that gains secrets is recreated, so its env holds
-        // them before any handle reaches its config.yaml.
-        agent.roll = managed
-            && enabled
-            && !plan.sealed.is_empty()
-            && talaria_fleet_docker::container_running(&talaria_fleet_docker::slot_container(
+        // A managed agent that gains secrets needs a container that holds
+        // them before any handle reaches its config.yaml: a running one is
+        // recreated, a stopped one removed (see the module header).
+        let container = if managed && !plan.sealed.is_empty() {
+            let name = talaria_fleet_docker::slot_container(
                 &department,
                 talaria_fleet_docker::active_slot(pg, &department).await,
-            ))
-            .await;
+            );
+            match talaria_fleet_docker::container_state(&name).await {
+                Ok(Some(true)) => agent.roll = enabled,
+                Ok(Some(false)) => agent.remove_stopped = true,
+                Ok(None) => {}
+                Err(e) => {
+                    agent.status = "skipped";
+                    agent.reason = Some(format!(
+                        "its container's state could not be read ({e}). Nothing of this agent was changed; ask again"
+                    ));
+                    report.agents.push(agent);
+                    continue;
+                }
+            }
+            Some(name)
+        } else {
+            None
+        };
         if req.dry_run {
             agent.status = "planned";
             report.agents.push(agent);
@@ -334,28 +364,41 @@ pub async fn seal_stored_configs(
         }
 
         // 1. The secrets, before anything names them.
-        if let Err(e) = seal_config_literals(pg, sb, &id, &plan.sealed, Some(req.actor)).await {
+        if let Err(e) = seal_config_literals(pg, sb, &id, &plan.sealed, Some(&req.actor)).await {
             agent.status = "skipped";
             agent.reason = Some(format!("sealing failed: {e}. Nothing was changed"));
             report.agents.push(agent);
             continue;
         }
-        // 2. The roll.
-        if agent.roll {
-            let failed = match talaria_fleet_reconcile::roll_agent(pg, sb, &department).await {
-                Ok(None) => None,
-                Ok(Some(soft)) => Some(soft),
-                Err(e) => Some(e),
-            };
-            if let Some(why) = failed {
-                agent.status = "skipped";
-                agent.reason = Some(format!(
-                    "the roll did not finish ({why}). Its secrets are stored, its configs are not rewritten; ask again once it runs"
-                ));
-                report.agents.push(agent);
-                continue;
+        // 2. A container that holds them: the roll, or the stopped one gone.
+        let step2 = if agent.roll {
+            match talaria_fleet_reconcile::roll_agent(pg, sb, &department).await {
+                Ok(None) => {
+                    agent.rolled = true;
+                    Ok(())
+                }
+                Ok(Some(soft)) => Err(format!("the roll did not finish ({soft})")),
+                Err(e) => Err(format!("the roll did not finish ({e})")),
             }
-            agent.rolled = true;
+        } else if let (true, Some(name)) = (agent.remove_stopped, &container) {
+            match talaria_fleet_docker::remove_stopped_container(name).await {
+                Ok(()) => {
+                    agent.removed = true;
+                    Ok(())
+                }
+                Err(e) => Err(format!("its stopped container could not be removed ({e})")),
+            }
+        } else {
+            Ok(())
+        };
+        if let Err(why) = step2 {
+            agent.status = "skipped";
+            agent.reason = Some(format!(
+                "{why}. Its secrets are stored, its configs are not rewritten; ask again"
+            ));
+            audit(pg, req, &agent).await;
+            report.agents.push(agent);
+            continue;
         }
         // 3. Every version, in place — only if nothing moved since the read.
         match rewrite(pg, &id, versions.len(), &plan.rewrites).await {
@@ -376,6 +419,7 @@ pub async fn seal_stored_configs(
                 ));
             }
         }
+        audit(pg, req, &agent).await;
         report.agents.push(agent);
     }
     // 4. One render, so the handles reach every rendered config.yaml.
@@ -388,6 +432,51 @@ pub async fn seal_stored_configs(
         }
     }
     Ok(report)
+}
+
+/// One applied agent's audit row, names and paths only. A skipped agent
+/// whose secrets were stored is `agent.config_seal_incomplete`: secrets were
+/// written, and nothing else says so. One that stored nothing has nothing to
+/// audit.
+async fn audit(pg: &PgPool, req: &SealRequest, agent: &AgentSeal) {
+    let (action, after) = match agent.status {
+        "sealed" => (
+            "agent.config_sealed",
+            json!({
+                "versions": agent.versions,
+                "sealed": agent.sealed,
+                "changed": agent.changed,
+                "historyOnly": agent.history_only,
+                "dropped": agent.dropped,
+                "undeliverable": agent.undeliverable,
+                "rolled": agent.rolled,
+                "removedStoppedContainer": agent.removed,
+            }),
+        ),
+        _ if !agent.sealed.is_empty() => (
+            "agent.config_seal_incomplete",
+            json!({
+                "sealed": agent.sealed,
+                "reason": agent.reason,
+                "rolled": agent.rolled,
+                "removedStoppedContainer": agent.removed,
+            }),
+        ),
+        _ => return,
+    };
+    log_audit(
+        pg,
+        AuditEntry {
+            actor: &req.audit_as,
+            action,
+            target_type: "agent",
+            target_id: Some(&agent.agent_id),
+            target_label: Some(&agent.display_name),
+            before: None,
+            after: Some(after),
+        },
+    )
+    .await;
 }
 
 /// Rewrite the planned rows in one transaction. False (and nothing written)
@@ -422,6 +511,21 @@ async fn rewrite(
             tx.rollback().await?;
             return Ok(false);
         }
+    }
+    // The row locks hold the rows read; they do not stop a version writer
+    // (`add_version_if_changed`) inserting the next one. A version that
+    // committed while these updates ran copied a config read before them,
+    // literal and all: write nothing, and the caller asks again. One that
+    // commits after this one cannot be caught here. The next run (its dry
+    // run lists it) seals it, as it would a literal pasted in later.
+    let recount: i64 =
+        sqlx::query_scalar("select count(*) from agent_versions where agent_id = $1::uuid")
+            .bind(agent_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if recount != expected_rows as i64 {
+        tx.rollback().await?;
+        return Ok(false);
     }
     tx.commit().await?;
     Ok(true)

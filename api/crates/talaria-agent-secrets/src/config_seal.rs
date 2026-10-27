@@ -502,6 +502,45 @@ pub fn withhold_config_secret(config: &Value, name: &str) -> (Value, Vec<String>
     withhold_where(config, &|s| names_secret(s, name))
 }
 
+/// [`withhold_config_secrets`] for the handles nothing backs: every value in
+/// `raw` that names a sealed secret missing from `held` (the agent's
+/// `CONFIG_*` names) is taken out, and every backed handle stays. Returns the
+/// config, the paths taken out, and the missing names.
+///
+/// A handle with no secret behind it reaches Hermes as its own text, so the
+/// render and a revert both leave that setting out. The render does it on
+/// every pass, so a secret removed by any writer, not only the Secrets
+/// route, can never leave the agent reading `${CONFIG_…}` as a value. Set
+/// the secret again under that name and the next render restores the setting.
+pub fn withhold_unheld_config_secrets(
+    config: &Value,
+    held: &[String],
+) -> (Value, Vec<String>, Vec<String>) {
+    let unheld = |name: &str| !held.iter().any(|h| h == name);
+    let (out, paths) = withhold_where(config, &|s| {
+        handle_re().captures_iter(s).any(|cap| unheld(&cap[1]))
+    });
+    let missing = config
+        .get("raw")
+        .map(config_secret_handles)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| unheld(n))
+        .collect();
+    (out, paths, missing)
+}
+
+/// The agent's sealed secret names (`CONFIG_*`), sorted.
+pub async fn held_config_secrets(pg: &PgPool, agent_id: &str) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "select name from agent_secrets where agent_id = $1::uuid and name like 'CONFIG\\_%' \
+         order by name",
+    )
+    .bind(agent_id)
+    .fetch_all(pg)
+    .await
+}
+
 /// Where a config's `raw` names the sealed secret `name`, as dotted paths
 /// (`platforms.telegram.token`, `list[2].token`).
 pub fn config_secret_paths(config: &Value, name: &str) -> Vec<String> {
@@ -1084,5 +1123,54 @@ mod tests {
         );
         assert_eq!(out["main"], config["main"]);
         assert!(config_secret_paths(&out, name).is_empty());
+    }
+
+    #[test]
+    fn a_handle_nothing_backs_is_withheld_and_a_backed_one_stays() {
+        let config = json!({
+            "main": { "endpoint": "e", "model": "m", "note": "${CONFIG_OUTSIDE_RAW}" },
+            "raw": {
+                "dashboard": { "basic_auth": { "username": "ops", "password": "${CONFIG_DASHBOARD_BASIC_AUTH_PASSWORD}" } },
+                "platforms": { "telegram": { "token": "${CONFIG_PLATFORMS_TELEGRAM_TOKEN}" } },
+                // One missing name in a template takes the whole value out.
+                "headers": [ "Bearer ${CONFIG_PLATFORMS_TELEGRAM_TOKEN} ${CONFIG_GONE}" ],
+                "model": { "api_key": "${LLM_API_KEY}" },
+            },
+        });
+        let held = vec!["CONFIG_PLATFORMS_TELEGRAM_TOKEN".to_string()];
+        let (out, paths, missing) = withhold_unheld_config_secrets(&config, &held);
+        assert_eq!(paths, vec!["dashboard.basic_auth.password", "headers[0]"]);
+        assert_eq!(
+            missing,
+            vec!["CONFIG_DASHBOARD_BASIC_AUTH_PASSWORD", "CONFIG_GONE"],
+            "only names `raw` carries; `main` is not the Hermes config"
+        );
+        assert_eq!(
+            out["raw"]["dashboard"]["basic_auth"],
+            json!({ "username": "ops" })
+        );
+        assert_eq!(
+            out["raw"]["platforms"]["telegram"]["token"],
+            json!("${CONFIG_PLATFORMS_TELEGRAM_TOKEN}"),
+            "a backed handle stays"
+        );
+        assert_eq!(out["raw"]["headers"], json!([]));
+        assert_eq!(
+            out["raw"]["model"]["api_key"],
+            json!("${LLM_API_KEY}"),
+            "not a sealed handle"
+        );
+        assert_eq!(out["main"], config["main"]);
+        // Everything backed: nothing changes.
+        let all: Vec<String> = [
+            "CONFIG_DASHBOARD_BASIC_AUTH_PASSWORD",
+            "CONFIG_PLATFORMS_TELEGRAM_TOKEN",
+            "CONFIG_GONE",
+        ]
+        .map(String::from)
+        .to_vec();
+        let (same, paths, missing) = withhold_unheld_config_secrets(&config, &all);
+        assert_eq!(same, config);
+        assert!(paths.is_empty() && missing.is_empty());
     }
 }
