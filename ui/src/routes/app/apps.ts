@@ -1,5 +1,5 @@
 // Shared types + API calls for the Apps page (Apps.svelte + its tabs).
-import { errorMessage, getJson, postJson, postJsonOr, putJson, putJsonOr } from '@/lib/fetch-json'
+import { delJson, errorMessage, getJson, postJson, postJsonOr, putJson, putJsonOr } from '@/lib/fetch-json'
 import type { AppBuildInfo } from '@/lib/apps'
 
 /** Where an app installed from git came from, and the commit it runs. */
@@ -133,16 +133,54 @@ export interface CatalogApp {
   author: string
   official: boolean
   version?: string
+  /** The catalog it was listed by (the first one, when several list it). */
+  catalog: { id: string; name: string }
+}
+/** One marketplace catalog — a list the operator fills
+ *  (/api/admin/apps/catalogs). */
+export interface AppCatalog {
+  id: string
+  name: string
+  url: string
+  enabled: boolean
+  position: number
+  createdBy: string | null
+}
+/** A catalog as Discover read it: how many apps it listed, or why it could
+ *  not be read (null both when it is turned off), and the slugs an earlier
+ *  catalog already showed. */
+export interface AppCatalogStatus extends AppCatalog {
+  apps: number | null
+  error: string | null
+  shadowed: string[]
 }
 export interface AdminApps {
   apps: InstalledApp[]
-  catalog: { apps: CatalogApp[]; error?: string } | null
-  catalogUrl: string
+  /** ?catalog=1: every enabled catalog's apps, one per slug, and each
+   *  catalog's status. An empty `catalogs` is the operator's choice — nothing
+   *  re-adds a default. */
+  catalog: { apps: CatalogApp[]; catalogs: AppCatalogStatus[] } | null
   updates: Record<string, AppUpdateCheck> | null
 }
 
 export const fetchAdminApps = (withCatalog: boolean): Promise<AdminApps> =>
   getJson<AdminApps>(`/api/admin/apps${withCatalog ? '?catalog=1' : ''}`)
+
+/** POST — add a catalog at the end of the list. The answer reads it once:
+ *  `apps` is how many it lists, `error` why it could not be read (it is
+ *  added either way). */
+export const addCatalog = (name: string, url: string): Promise<{ ok: true; catalog: AppCatalog; apps: number | null; error: string | null }> =>
+  postJson('/api/admin/apps/catalogs', { name, url })
+
+/** PUT — edit one catalog (any of name, url, enabled). */
+export const editCatalog = (id: string, patch: { name?: string; url?: string; enabled?: boolean }): Promise<{ ok: true; catalog: AppCatalog }> =>
+  putJson('/api/admin/apps/catalogs', { id, ...patch })
+
+/** PUT — the whole list in this order (every id, once). */
+export const reorderCatalogs = (order: string[]): Promise<{ ok: true; catalogs: AppCatalog[] }> =>
+  putJson('/api/admin/apps/catalogs', { order })
+
+export const removeCatalog = (id: string): Promise<{ ok: true }> => delJson('/api/admin/apps/catalogs', { id })
 
 export const fetchAppUpdates = async (): Promise<Record<string, AppUpdateCheck>> =>
   (await getJson<AdminApps>('/api/admin/apps?updates=1')).updates ?? {}

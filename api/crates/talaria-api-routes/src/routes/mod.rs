@@ -961,6 +961,14 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
         )
         .route(
+            "/api/admin/apps/catalogs",
+            get(talaria_routes_admin::admin::admin_apps_catalogs::get)
+                .post(talaria_routes_admin::admin::admin_apps_catalogs::post)
+                .put(talaria_routes_admin::admin::admin_apps_catalogs::put)
+                .delete(talaria_routes_admin::admin::admin_apps_catalogs::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
+        )
+        .route(
             "/api/admin/apps/install-requests",
             get(talaria_routes_admin::admin::admin_apps_install_requests::get)
                 .put(talaria_routes_admin::admin::admin_apps_install_requests::put)

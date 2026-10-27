@@ -63,8 +63,8 @@ Distilled from [`CONTRIBUTING.md`](./CONTRIBUTING.md) — the full text is the c
 - Never force a `done` transition — agents create and triage; a human signs off.
 - Reuse the `ui/src/components/ui/` primitives; don't recreate them.
 - Generated docs are regenerated, never hand-edited:
-  [`docs/CLI-REFERENCE.md`](./docs/CLI-REFERENCE.md) and
-  [`docs/api/`](./docs/api/README.md) both come out of the generator behind
+  [`docs/CLI-REFERENCE.md`](./docs/CLI-REFERENCE.md), [`docs/api/`](./docs/api/README.md)
+  and the talaria-apps skill's `references/skeleton.md` all come out of the generator behind
   `bun run check` — change the source, run `bun run docs:api`.
 - Local pre-push is `bun run gate` ([`scripts/gate.mjs`](./scripts/gate.mjs)): `check` always; compile and test only the surfaces and packages the diff touches. Do not run a workspace cargo (`api:check`, `desktop:check`, `cargo test` / `clippy` without `-p`) — it locks `api/target` and pins the machine. CI runs the full surface job.
 - Do not report dev work done while its open pull request has failing checks, pending
@@ -169,7 +169,8 @@ or push.
 - `fleet/` — rendered from the chassis by the app; never hand-edit.
 - `scripts/skills/` — **product surface**: those skills ship to Hermes agent containers.
   Repo tooling skills go in `.claude/skills/`, never here.
-- `docs/api/**` and `docs/CLI-REFERENCE.md` — generated; drift fails `bun run check`.
+- `docs/api/**`, `docs/CLI-REFERENCE.md` and `scripts/skills/talaria-apps/references/skeleton.md`
+  — generated; drift fails `bun run check`.
 
 - `api/` is a Cargo workspace — a thin `talaria-api` binary plus one crate
   per engine under `api/crates/`. New domains get their own crate; the crate

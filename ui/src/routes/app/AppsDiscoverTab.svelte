@@ -11,6 +11,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { cn } from '@/lib/cn'
   import { fetchAdminApps, installApp, shortSha, type KeptDataConflict } from './apps'
+  import AppsCatalogs from './AppsCatalogs.svelte'
 
   let { isAdmin }: { isAdmin: boolean } = $props()
 
@@ -89,12 +90,24 @@
   }
 
   const catalog = $derived(query.data?.catalog)
+  const catalogs = $derived(catalog?.catalogs ?? [])
+  /** The enabled catalogs that could not be read, by name and reason. */
+  const unreadable = $derived(catalogs.filter((c) => c.enabled && c.error).map((c) => `${c.name}: ${c.error}`))
+  /** Why Discover lists nothing, in the operator's terms: no catalog at
+   *  all, every catalog off, the catalogs could not be read, or they are
+   *  simply empty. */
+  const emptyWhy = $derived.by(() => {
+    if (catalogs.length === 0) return { title: 'No catalog configured', hint: 'Add a catalog below, or install any app from its git URL' }
+    if (!catalogs.some((c) => c.enabled)) return { title: 'Every catalog is off', hint: 'Turn one on below, or install any app from its git URL' }
+    if (unreadable.length > 0) return { title: 'Catalogs unreachable', hint: `${unreadable.join('; ')}. You can still install any app from its git URL below` }
+    return { title: 'No apps in the catalogs yet', hint: 'Install any app from its git URL below' }
+  })
 </script>
 
 <div class="space-y-6">
   <div class="flex items-center justify-between">
     <div class="font-sans text-xs text-muted">
-      Community and official apps from the marketplace index.
+      Community and official apps from the catalogs this instance lists.
       <InfoTip text="Installing an app clones its repository into this deployment and its code runs fully trusted, like the platform itself. Install only apps you trust. Official apps are maintained by Outcrop Labs." />
     </div>
     <button
@@ -125,17 +138,13 @@
   {#if query.isLoading}
     <SkeletonRows rows={4} />
   {:else if !query.data}
-    <!-- Distinct from "Marketplace unreachable" below: THAT is the server
-         telling us it could not reach the catalog feed (a real, reported
-         answer, with `catalog.error` to quote). This is OUR read of the
+    <!-- Distinct from "Catalogs unreachable" below: THAT is the server
+         telling us it could not read a catalog (a real, reported answer,
+         with each catalog's `error` to quote). This is OUR read of the
          server failing, which says nothing about the marketplace at all. -->
     <QueryError error={query.error} title="Could not load apps" onRetry={() => void query.refetch()} />
   {:else if (catalog?.apps ?? []).length === 0}
-    <EmptyState
-      icon="◎"
-      title="Marketplace unreachable"
-      hint={catalog?.error ? `${catalog.error}. You can still install any app from its git URL below` : 'No apps in the catalog yet. Install from a git URL below'}
-    />
+    <EmptyState icon="◎" title={emptyWhy.title} hint={emptyWhy.hint} />
   {:else}
     <!-- data-app-cards: the hook Apps.svelte's data-stagger-items selector
          targets — these cards cascade on the page entrance. -->
@@ -149,7 +158,7 @@
                 <span class="truncate font-sans text-sm font-medium text-fg">{c.name}</span>
                 {#if c.official}<Chip tone="accent">official</Chip>{/if}
               </div>
-              <div class="font-mono text-[10px] tracking-[0.05em] text-muted">by {c.author}</div>
+              <div class="truncate font-mono text-[10px] tracking-[0.05em] text-muted" title={`Listed by the ${c.catalog.name} catalog`}>by {c.author} · {c.catalog.name}</div>
             </div>
           </div>
           <div class="flex-1 font-sans text-xs text-muted">{c.description}</div>
@@ -168,6 +177,10 @@
         </div>
       {/each}
     </div>
+  {/if}
+
+  {#if query.data && catalog}
+    <AppsCatalogs {catalogs} {isAdmin} />
   {/if}
 
   {#if isAdmin}

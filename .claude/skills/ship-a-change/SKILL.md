@@ -95,6 +95,11 @@ Same exit contract as [`scripts/hooks/README.md`](../../../scripts/hooks/README.
 script is [`scripts/hooks/pr-watch.mjs`](../../../scripts/hooks/pr-watch.mjs). It polls
 check runs and mergeable state (first poll immediate, then 20s exponential backoff
 capped at 2min, hard stop at 45 minutes) and does not edit, merge, push, or comment.
+It reads the latest run of each check, so a judge run that a body edit cancelled and
+re-ran is not red. Green also needs the PR's head to be the commit you pushed and a
+finished CI workflow run for that head, so running it straight after a push waits
+instead of reading the previous head, or a rollup that holds only `judge`. A HEAD
+you have not pushed is pending until you push it.
 
 | Exit | First line | What you do |
 |---|---|---|

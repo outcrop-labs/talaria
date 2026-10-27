@@ -1,6 +1,7 @@
 // The admin console surface.
 pub mod admin_app_harness_models;
 pub mod admin_apps;
+pub mod admin_apps_catalogs;
 pub mod admin_apps_change_request;
 pub mod admin_apps_install_requests;
 pub mod admin_apps_update_requests;

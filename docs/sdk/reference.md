@@ -205,7 +205,7 @@ import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp
 
 | symbol | kind | what it is |
 | :--- | :--- | :--- |
-| `defineHarness` | fn | Declare a model call Talaria runs; default-export one per `harnesses/*.ts` to register it for fitness, run it from server.ts with `runHarness` |
+| `defineHarness` | fn | Declare a model call Talaria runs; default-export one per `harnesses/*.ts` to register it for fitness, run it from server.ts or mcp.ts with `ctx.harness.run` |
 | `HarnessDefinition` | type | The full activity contract (render, output, model, evals…) |
 | `RenderContext` | type | What the render step receives |
 | `Message` | type | One chat message |
