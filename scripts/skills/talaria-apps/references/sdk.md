@@ -18,7 +18,7 @@ harnesses/recorded/<file>.json   replies `talaria-app eval` replays offline
 *.test.ts          your tests; `talaria-app check` runs them
 ```
 
-All of them sit at the repo's root. No `package.json`: the host installs no dependencies.
+The repo's root is the app's root. No `package.json`: the host installs no dependencies.
 
 ## talaria.json
 
