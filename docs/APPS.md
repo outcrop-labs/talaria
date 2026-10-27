@@ -32,7 +32,11 @@ Developer Agent's sandbox — builds against the **SDK kit** the instance serves
 (`GET /api/sdk/kit.tgz`): the SDK's declarations, the host's own build recipe and load probe,
 and the `talaria-app` CLI (`scaffold`, `check`, `build`, `eval`). A workbench job on a repo with a
 `talaria.json` gets it from `prepare_env`. See
-[Building an app outside the host](./sdk/outside-the-host.md).
+[Building an app outside the host](./sdk/outside-the-host.md). A Developer Agent builds, ships and
+maintains one by the `talaria-apps` product skill
+([`scripts/skills/talaria-apps`](../scripts/skills/talaria-apps/SKILL.md)): a repo from
+`request_repo`, the kit's loop before every pull request, `request_app_install` after a person
+merges it, and the job sweep's upkeep after that (Plugins, below).
 
 The manifest's rules — required `name`, the `surfaces` shape, an optional `slug` and an optional
 `sdk` version range — are published as [`sdk/talaria.schema.json`](./sdk/talaria.schema.json).
@@ -299,8 +303,8 @@ one runner: [harnesses.md](./sdk/harnesses.md), deep contract in [HARNESSES.md](
 `harnesses/*.ts`. The build compiles them into `harnesses.js`, one chunk per file, and the load
 probe checks each one against the rules the platform holds its own harnesses to. A harness that
 passes gets a column in **Models → Fitness**, labelled with the app's name, and the eval sweep
-replays its `evals` against every candidate model. Your `server.ts` still runs it in production
-with `runHarness`.
+replays its `evals` against every candidate model. Your `server.ts` or `mcp.ts` runs it in
+production with `ctx.harness.run`, bound to the caller ([harnesses.md](./sdk/harnesses.md#running-one--ctxharness)).
 
 - **It must:** name only guard rules that exist; keep its floor inside `requires` and empty
   unless it refuses; for a JSON harness, list `json` in `requires`, because the floor is derived

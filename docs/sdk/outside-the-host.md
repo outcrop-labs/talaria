@@ -59,7 +59,13 @@ a usage error.
 - **`scaffold`** writes the skeleton `talaria app new` writes (the same source,
   `cli/src/cmd/app/skeleton.ts`) at a repo's root, plus a `.gitignore` and a README. `--harness`
   adds a starter harness under `harnesses/` with a recorded reply for its fixture, so `eval` runs
-  offline from the first commit. A README or `.gitignore` the repo already has is kept.
+  offline from the first commit. A README or `.gitignore` the repo already has is kept. A
+  `talaria.json` with none of the app's other files beside it is a **seed**: scaffold keeps every
+  key it declares (its `name` and `slug` above all) and writes the rest of the app around it. A
+  `talaria.json` beside any of them is an app, and scaffold refuses rather than overwrite it.
+  Without `--name` or a seed's `name`, the app is named after the repository the checkout came
+  from (its `origin` remote), never the directory a workbench job cloned into. No `package.json`:
+  an app has none, and the kit's own is the only one.
 - **`check`** holds `talaria.json` to the host's rules (the same validator install uses, pinned
   to the schema), typechecks with svelte-check against the kit's declarations and the host's
   compiler options, and runs the app's own `*.test.ts` with vitest, `@talaria/sdk/testing`
@@ -103,7 +109,12 @@ from some `node_modules` above the app.
 ## The sandbox loop
 
 A Developer Agent's job on a repo with a `talaria.json` at its root gets the kit from
-`prepare_env`, keyed on that file and nothing else (never on the repo being Talaria's):
+`prepare_env`, keyed on that file and nothing else (never on the repo being Talaria's). A new
+app's repo — the one `request_repo` created, with only its README — gets a seed `talaria.json`
+(`{"name": "Field Notes", "slug": "field-notes"}`) first, so that `prepare_env` installs the kit,
+and `talaria-app scaffold` then writes the app around it. The whole procedure, from the request
+for a repo to the plugin's upkeep, is the `talaria-apps` product skill
+([`scripts/skills/talaria-apps`](../../scripts/skills/talaria-apps/SKILL.md)).
 
 1. **Install.** The sandbox fetches the kit as the agent — its own credential and the app's
    origin are already in the container's environment — and installs it once per kit version on

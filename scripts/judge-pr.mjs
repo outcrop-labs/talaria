@@ -193,7 +193,7 @@ if (productSkills.length) {
 
 // ── 3. generated references must be generated, not edited ──────────────────
 
-const generatedDocs = touched(/^docs\/(api\/|CLI-REFERENCE\.md)/)
+const generatedDocs = touched(/^(docs\/(api\/|CLI-REFERENCE\.md)|scripts\/skills\/talaria-apps\/references\/skeleton\.md)/)
 if (generatedDocs.length) {
   let drift = ''
   try {
