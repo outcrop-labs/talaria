@@ -72,6 +72,17 @@ const LOST_TURN_CODE: &str = "unknown_execution";
 /// lost one (`ADMISSION_QUEUE_MAX`). Only the completions arm treats it as a
 /// lost turn: a conversation wedged before this repair existed reaches it, and
 /// a fresh session is the way out of it too.
+///
+/// A HEALTHY FIFO ANSWERS IT TOO: Hermes counts every `queued` admission on
+/// the session, wedged or not (hermes_state_runtime.py). A conversation does
+/// not get there that way: one conversation drives one turn at a time (a
+/// message sent mid-turn waits in the conversation, and chat-persist's
+/// `guarded_drive` sends it next) and its opening names it, so its derived
+/// session holds 32 queued turns only behind a lost one. A one-shot whose
+/// opening 32 concurrent turns share could, and then the move only means it
+/// runs now on a session of its own instead of being refused; a one-shot keeps
+/// no thread. Waiting for an `unknown_execution` first would leave a
+/// conversation already past 32 refusals wedged for good.
 const QUEUE_FULL_CODE: &str = "queue_full";
 
 /// The most the watch below holds while a frame is still arriving. A turn's

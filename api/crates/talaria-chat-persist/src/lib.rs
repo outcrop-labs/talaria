@@ -637,6 +637,7 @@ async fn continue_inner(
         Some(e) if efforts_for_model(&state.pg, &routed).await.contains(&e) => Some(e),
         _ => None,
     };
+    let sent_at_ms = held.is_none().then(now_ms);
     let upstream = match held {
         // Nothing left this process: the turn the agent is finishing is
         // metered at the relay, call by call, under its session's key.
@@ -683,6 +684,7 @@ async fn continue_inner(
         work_prompts: meta.work_prompts.clone(),
         sender: meta.sender.clone(),
         resumed: resume.is_some(),
+        sent_at_ms,
     };
     // Detached — the chain's own tail continues it. The
     // plain-fn seam is load-bearing: this chain is continue → persist →
@@ -736,6 +738,13 @@ pub struct PersistMeta {
     /// same row. The death path reads it: a resumed turn that dies again
     /// STAYS dead — one quiet retry, then the error is a person's to look at.
     pub resumed: bool,
+    /// When this drive's request left for the agent (epoch ms). The landing
+    /// write takes only the tool verdicts from after it: an earlier turn's
+    /// verdict may carry the same call id (talaria-conversations
+    /// `fold_tool_failures`). None for a stream a restart handed back, whose
+    /// calls ran before this process saw it; that is the session arm, where
+    /// Hermes keeps a call id unique across the whole session.
+    pub sent_at_ms: Option<i64>,
 }
 
 /// A dead stream's reason, appended after whatever prose it had drained
@@ -803,24 +812,27 @@ pub async fn persist_assistant_stream(
     // THE TURN'S LANDING WRITE carries the agent's own verdict on its tool
     // calls. The completions stream calls every finished call `completed`;
     // the agent's talaria-events plugin, which read the result, reports a
-    // failed one to the tool-events door, and the door keeps it
-    // (talaria-conversations `fold_tool_failures`). The verdicts are read
-    // before the write and once more after it: a verdict the door kept in
-    // between marked the row this write just replaced, and the second read
-    // is what puts it back.
-    let verdict_agent: Option<String> = usage_meta.as_ref().map(|m| m.agent_model.clone());
+    // failed one to the tool-events door, and the door keeps it per
+    // conversation and call id, with the time the call finished
+    // (talaria-conversations `fold_tool_failures`). Only the verdicts from
+    // after this drive was sent are its own. They are read before the write
+    // and once more after it: a verdict the door kept in between marked the
+    // row this write just replaced, and the second read is what puts it back.
+    let verdict_agent: Option<(String, Option<i64>)> = usage_meta
+        .as_ref()
+        .map(|m| (m.agent_model.clone(), m.sent_at_ms));
     macro_rules! land {
         ($status:expr) => {
             let mut redis = match &verdict_agent {
                 Some(_) if tools.iter().any(|t| t.id.is_some()) => state.redis().await.ok(),
                 _ => None,
             };
-            if let (Some(agent), Some(conn)) = (&verdict_agent, redis.as_mut()) {
-                fold_tool_failures(conn, agent, &mut tools).await;
+            if let (Some((agent, since)), Some(conn)) = (&verdict_agent, redis.as_mut()) {
+                fold_tool_failures(conn, agent, &conversation_id, *since, &mut tools).await;
             }
             flush!($status);
-            if let (Some(agent), Some(conn)) = (&verdict_agent, redis.as_mut())
-                && fold_tool_failures(conn, agent, &mut tools).await
+            if let (Some((agent, since)), Some(conn)) = (&verdict_agent, redis.as_mut())
+                && fold_tool_failures(conn, agent, &conversation_id, *since, &mut tools).await
             {
                 flush!($status);
             }

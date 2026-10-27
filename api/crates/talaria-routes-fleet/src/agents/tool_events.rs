@@ -21,9 +21,10 @@
 // land in the conversation the session id names (for a pinned agent the
 // Hermes session id is the conversation id), and without one only while
 // exactly one turn could be meant. A call the plugin reports FAILED is also
-// marked failed on the chat reply that ran it, by its tool-call id: Hermes'
-// completions stream calls every finished call `completed`, so this door is
-// the only place a chat turn learns otherwise.
+// marked failed on the chat reply that ran it, found by the conversation its
+// session names, its tool-call id and when it finished: Hermes' completions
+// stream calls every finished call `completed`, so this door is the only
+// place a chat turn learns otherwise.
 
 use axum::Json;
 use axum::extract::State;
@@ -157,18 +158,30 @@ pub async fn post(
     // THE VERDICT THE CHAT STREAM CANNOT CARRY. Hermes' completions stream
     // ends every finished tool call `completed`, a command its approval gate
     // refused included; this post is the only place that says the call
-    // failed. Kept for the turn still running it and marked on a reply that
-    // already landed (talaria-conversations `record_tool_failure`), keyed by
-    // the same tool-call id the stream's frames carry.
+    // failed. Kept for the conversation's turn still running it and marked on
+    // the reply that was running when it finished (talaria-conversations
+    // `record_tool_failure`), keyed by the conversation the session names,
+    // the tool-call id the stream's frames carry, and the call's own time:
+    // the id alone repeats across turns.
     if status == "error"
         && let Some(call_id) = parsed.get("toolCallId").and_then(|v| v.as_str())
     {
+        let session = parsed
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let at = talaria_conversations::verdict_at(
+            parsed.get("at").and_then(|v| v.as_i64()),
+            talaria_agent_auth::now_ms(),
+        );
         let mut conn = redis.clone();
         if let Err(e) = talaria_conversations::record_tool_failure(
             &state.pg,
             conn.as_mut(),
             &caller.model,
+            session,
             call_id,
+            at,
         )
         .await
         {
