@@ -333,7 +333,10 @@ multiplexer.
     text: no tool calls or reasoning, and `MEDIA:` tags unresolved. A run parked on an approval
     has its open prompt (the projection's `pending_controls`) raised once as the
     `approval.request` frame its live stream carried, through the same approval tap, so it is
-    refused (or carded) within a poll rather than waiting out the agent's approval timeout.
+    refused (or carded) within a poll rather than waiting out the agent's approval timeout. The
+    projection does not say when a prompt was asked, so the frame carries the earliest moment it
+    can have been (the lost stream's last bytes, or the poll before), and a card raised from it
+    counts its 115 s from then.
 
   Pinned sessions stay a per-agent switch, off by default. One thing blocks making them the
   default: on a session, a per-message tier is not honoured, and the session runs its main
@@ -382,11 +385,15 @@ once** / **Deny**; anyone else reading the thread sees it read-only. The answer 
 the card expired. A Developer Agent renders `approvals.timeout: 120`. The card closes itself at
 115 s, answers `deny` and reads expired, and a boot sweep closes the cards a restart left open.
 A person's answer is audited as `agent.approval_allowed` / `agent.approval_denied` with that
-person as the actor; an expired card is `agent.approval_denied` by `talaria`. Every other request
-(an ordinary agent's, or one on a channel, ticket, research, app or harness turn) is refused at
-once, as above. Cards stay out of the approvals census: a card lives two minutes, and the
-census's announce and escalation sweeps work in hours. A request nobody answers is refused by
-Hermes after `approvals.timeout` (60 s for an ordinary agent).
+person as the actor; an expired card is `agent.approval_denied` by `talaria`. An answer that
+reaches an agent no longer waiting took nothing, and is `agent.approval_expired` by the person,
+never an allow. An allowed step is past the ask, not past Hermes' other limits: on the pinned
+image, file tools write only under `HERMES_WRITE_SAFE_ROOT=/opt/data`, which the
+protected-instruction gate exempts, so an allowed instruction-file write is refused there.
+Every other request (an ordinary agent's, or one on a channel, ticket, research, app or harness
+turn) is refused at once, as above. Cards stay out of the approvals census: a card lives two
+minutes, and the census's announce and escalation sweeps work in hours. A request nobody answers
+is refused by Hermes after `approvals.timeout` (60 s for an ordinary agent).
 
 The same render pins Nous-hosted connectors (`tools.connectors.enabled`) and the Nous guest
 identity (`nous.guest`) off: SaaS goes through the MCP gateway, and models through the LLM

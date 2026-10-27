@@ -33,7 +33,11 @@
 //     closes itself at 115 s (`card_window`), answers `deny`, and says
 //     "expired", rather than leaving Hermes' timeout to refuse it silently.
 //     The session's later turns queue behind an open request, so it is never
-//     longer.
+//     longer. The 115 s count from when Hermes asked. A live frame arrives as
+//     it is asked; a request first seen by a reattached stream may have been
+//     asked any time after the lost stream's last bytes (or the previous
+//     poll), so its card counts from then (`closes_at`), and one with too
+//     little left to answer is refused instead.
 //
 // THE CARD IS A `chat_approvals` ROW of kind `hermes_approval` and an
 // `approval` chip on the turn's own message, the plane every other chat
@@ -44,7 +48,10 @@
 // THE RECORD. A person's answer is an `agent.approval_allowed` or
 // `agent.approval_denied` audit row with that person as the actor; a card
 // that expired is `agent.approval_denied` by `talaria`, beside the door's
-// own policy refusals.
+// own policy refusals. An answer that reached an agent no longer waiting
+// (Hermes' own timeout, a stop, the run's end got there first) took nothing,
+// so it is neither: `agent.approval_expired`, by the person, with the choice
+// they made.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -54,7 +61,8 @@ use talaria_chips::{
     ApprovalRow, Target, ensure_approval, land_chips, landing_target, set_chip_status,
 };
 use talaria_gateway::fleet_approvals::{
-    ApprovalAsked, ApprovalTurn, CardAsk, Delivery, answer_card, card_window, recorded_command,
+    ANSWER_WINDOW, ApprovalAsked, ApprovalTurn, CardAsk, Delivery, answer_card, card_window,
+    recorded_command,
 };
 
 pub use talaria_gateway::fleet_approvals::Choice;
@@ -176,6 +184,34 @@ async fn read_facts(
 
 // ── Raising a card ───────────────────────────────────────────────────────────
 
+/// The least time a card is worth raising with: under this, nobody could
+/// read the request and answer it, and the door refuses it now instead.
+const MIN_CARD_WINDOW: Duration = Duration::from_secs(10);
+
+/// When a card raised at `now_ms` closes: `card_window` after Hermes asked,
+/// which is now on a live frame and no earlier than `asked_after_ms` on a
+/// frame a reattached stream rebuilt. That bound only ever shortens the
+/// window (a later one than now is read as now). None when less than
+/// `MIN_CARD_WINDOW` would be left.
+pub fn closes_at(now_ms: i64, asked_after_ms: Option<i64>) -> Option<i64> {
+    let asked = asked_after_ms.map_or(now_ms, |t| t.min(now_ms));
+    let closes = asked + card_window().as_millis() as i64;
+    (closes - now_ms >= MIN_CARD_WINDOW.as_millis() as i64).then_some(closes)
+}
+
+/// How long a person's answer holds its request after the card is claimed:
+/// the send's own window, plus the manifest read and the claim before it.
+const ANSWER_IN_FLIGHT: Duration = Duration::from_secs(ANSWER_WINDOW.as_secs() + 5);
+
+/// Whether a settled card is still holding its request: a person's answer
+/// claimed it `decided_ms_ago` and may still be on its way to the agent.
+/// The door must not race it with a `deny` of its own; if the answer fails,
+/// the card opens again and its deadline answers.
+pub fn answer_in_flight(status: &str, decided_ms_ago: Option<i64>) -> bool {
+    matches!(status, "approved" | "denied")
+        && decided_ms_ago.is_some_and(|ago| ago < ANSWER_IN_FLIGHT.as_millis() as i64)
+}
+
 /// The row's `external_id`: one card per request, so a reattached stream
 /// that raises the same request again finds the card already waiting.
 fn external_id(asked: &ApprovalAsked) -> String {
@@ -252,6 +288,7 @@ fn asked_of(payload: &Value) -> ApprovalAsked {
                     .collect()
             })
             .unwrap_or_default(),
+        asked_after_ms: None,
     }
 }
 
@@ -307,19 +344,22 @@ async fn raise_for(
     let external = external_id(asked);
     // The same request raised again (the reattached stream after the api
     // lost the live one): a card still waiting is the card, and its deadline
-    // is armed again, since a restart lost the timer. A card already settled
-    // means the answer went out, or the card expired; the door refuses
-    // whatever Hermes is still holding.
-    let existing: Option<(String, String, Value)> = sqlx::query_as(
-        "select id::text, status, payload from chat_approvals \
+    // is armed again, since a restart lost the timer. So is a card whose
+    // person's answer is still on its way: a `deny` from the door could
+    // reach Hermes first. A card settled otherwise means the answer went
+    // out, or the card expired; the door refuses whatever Hermes still holds.
+    let existing: Option<(String, String, Value, Option<i64>)> = sqlx::query_as(
+        "select id::text, status, payload, \
+                (extract(epoch from (now() - decided_at)) * 1000)::bigint \
+           from chat_approvals \
           where external_id = $1 and kind = $2 order by created_at desc limit 1",
     )
     .bind(&external)
     .bind(KIND)
     .fetch_optional(pg)
     .await?;
-    if let Some((id, status, payload)) = existing {
-        if status == "pending" {
+    if let Some((id, status, payload, decided_ms_ago)) = existing {
+        if status == "pending" || answer_in_flight(&status, decided_ms_ago) {
             arm(
                 pg.clone(),
                 redis,
@@ -330,6 +370,14 @@ async fn raise_for(
         }
         return Ok(false);
     }
+    let Some(expires_at) = closes_at(now_ms(), asked.asked_after_ms) else {
+        tracing::info!(
+            "{LOG} {agent_model}: a flagged call ({}) reached the api too late to put to a \
+             person before Hermes' timeout; the door refuses it",
+            asked.description
+        );
+        return Ok(false);
+    };
     let Target::Found(landed) = landing_target(pg, agent_model, Some(conversation_id)).await?
     else {
         tracing::info!(
@@ -338,7 +386,6 @@ async fn raise_for(
         );
         return Ok(false);
     };
-    let expires_at = now_ms() + card_window().as_millis() as i64;
     let payload = card_payload(agent_model, conversation_id, asked, expires_at);
     let id = ensure_approval(
         pg,
@@ -368,7 +415,7 @@ async fn raise_for(
         "{LOG} {agent_model}: put a flagged call ({}) to its manager in conversation \
          {conversation_id}; the card closes in {}s",
         asked.description,
-        card_window().as_secs()
+        (expires_at - now_ms()).max(0) / 1000
     );
     arm(pg.clone(), redis, id, expires_at);
     Ok(true)
@@ -420,6 +467,7 @@ pub async fn expire(pg: &PgPool, redis: Redis, id: &str) {
         pg,
         "talaria",
         "agent.approval_denied",
+        Choice::Deny,
         &agent_model,
         id,
         &payload,
@@ -550,10 +598,7 @@ pub async fn decide(
         Err(e) => return Decided::Db(e),
     }
     let delivery = answer_card(&agent_model, &asked, choice).await;
-    let action = match choice {
-        Choice::Once => "agent.approval_allowed",
-        Choice::Deny => "agent.approval_denied",
-    };
+    let action = answer_action(choice, &delivery);
     match &delivery {
         Delivery::Taken => {
             show(
@@ -569,6 +614,7 @@ pub async fn decide(
                 pg,
                 person.actor,
                 action,
+                choice,
                 &agent_model,
                 &row.id,
                 &row.payload,
@@ -596,11 +642,12 @@ pub async fn decide(
                 pg,
                 person.actor,
                 action,
+                choice,
                 &agent_model,
                 &row.id,
                 &row.payload,
                 &delivery,
-                false,
+                true,
             )
             .await;
             Decided::Expired
@@ -660,6 +707,18 @@ fn delivery_word(delivery: &Delivery) -> String {
     }
 }
 
+/// The audit action for a person's answer, by what the agent did with it.
+/// Only an answer Hermes took is an allow or a deny: one that reached an
+/// agent no longer waiting took nothing (Hermes had already settled the
+/// request), and is recorded as expired, never as an allow.
+pub fn answer_action(choice: Choice, delivery: &Delivery) -> &'static str {
+    match (delivery, choice) {
+        (Delivery::Taken, Choice::Once) => "agent.approval_allowed",
+        (Delivery::Taken, Choice::Deny) => "agent.approval_denied",
+        _ => "agent.approval_expired",
+    }
+}
+
 /// The audit body of an answered card.
 pub fn audit_after(
     approval_id: &str,
@@ -690,17 +749,13 @@ async fn record(
     pg: &PgPool,
     actor: &str,
     action: &str,
+    choice: Choice,
     agent_model: &str,
     approval_id: &str,
     payload: &Value,
     delivery: &Delivery,
     expired: bool,
 ) {
-    let choice = if action == "agent.approval_allowed" {
-        Choice::Once
-    } else {
-        Choice::Deny
-    };
     // `model` is unique, so this is the agent's own def or nothing.
     let agent_id =
         sqlx::query_scalar::<_, String>("select id::text from agent_defs where model = $1")
@@ -862,6 +917,7 @@ mod tests {
             command: "<write to AGENTS.md>".into(),
             description: "Write to protected agent-instruction file(s): AGENTS.md.".into(),
             choices: choices(&["once", "deny"]),
+            asked_after_ms: None,
         }
     }
 
@@ -931,5 +987,66 @@ mod tests {
         assert_eq!(late["answered"], false);
         assert_eq!(late["expired"], true);
         assert_eq!(late["error"], "409 approval_not_pending");
+    }
+
+    #[test]
+    fn a_person_s_answer_the_agent_never_took_is_not_an_allow() {
+        assert_eq!(
+            answer_action(Choice::Once, &Delivery::Taken),
+            "agent.approval_allowed"
+        );
+        assert_eq!(
+            answer_action(Choice::Deny, &Delivery::Taken),
+            "agent.approval_denied"
+        );
+        // Hermes' timeout (or a stop, or the run's end) settled it first: the
+        // allow went nowhere, and the audit log must not count one.
+        for late in [
+            Delivery::NotPending("409 approval_not_pending".into()),
+            Delivery::NotPending("already_resolved".into()),
+        ] {
+            assert_eq!(answer_action(Choice::Once, &late), "agent.approval_expired");
+            assert_eq!(answer_action(Choice::Deny, &late), "agent.approval_expired");
+            let after = audit_after("a-1", &json!({}), &late, Choice::Once, true);
+            assert_eq!(after["choice"], "once");
+            assert_eq!(after["answered"], false);
+            assert_eq!(after["expired"], true);
+        }
+    }
+
+    #[test]
+    fn a_card_closes_on_the_earliest_clock_hermes_can_be_on() {
+        let now = 1_792_699_100_000_i64;
+        let window = card_window().as_millis() as i64;
+        // A live frame: asked now, the full 115 s.
+        assert_eq!(closes_at(now, None), Some(now + window));
+        // Rebuilt by a reattach 16 s after the lost stream's last bytes: the
+        // card closes 115 s after those, not after the reattach saw it.
+        assert_eq!(
+            closes_at(now, Some(now - 16_000)),
+            Some(now - 16_000 + window)
+        );
+        // A bound in the future cannot lengthen it.
+        assert_eq!(closes_at(now, Some(now + 60_000)), Some(now + window));
+        // Too little left to read and answer: no card, the door refuses.
+        assert_eq!(closes_at(now, Some(now - window + 9_000)), None);
+        assert_eq!(closes_at(now, Some(now - 600_000)), None);
+        assert_eq!(
+            closes_at(now, Some(now - window + 10_000)),
+            Some(now + 10_000)
+        );
+    }
+
+    #[test]
+    fn a_person_s_answer_on_its_way_holds_the_request_from_the_door() {
+        // Claimed a moment ago: the `once` may not have reached Hermes yet,
+        // and a `deny` from a reattach must not race it.
+        assert!(answer_in_flight("approved", Some(200)));
+        assert!(answer_in_flight("denied", Some(9_000)));
+        // Long enough ago that the send is over, one way or the other.
+        assert!(!answer_in_flight("approved", Some(60_000)));
+        // Expired is the deadline's own close, not a person's answer.
+        assert!(!answer_in_flight("expired", Some(200)));
+        assert!(!answer_in_flight("approved", None));
     }
 }

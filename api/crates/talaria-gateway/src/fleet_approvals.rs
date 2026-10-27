@@ -97,10 +97,19 @@ pub fn approval_timeout_secs(developer: bool) -> u64 {
     }
 }
 
-/// How long a card stays answerable after it is raised.
+/// How long a card stays answerable after Hermes raised its request.
 pub fn card_window() -> Duration {
     Duration::from_secs(CARD_APPROVAL_TIMEOUT_SECS - CARD_DEADLINE_MARGIN_SECS)
 }
+
+/// How long one answer can be on its way to the agent: every send here runs
+/// inside the same control window as a steer or a stop.
+pub const ANSWER_WINDOW: Duration = CONTROL_WINDOW;
+
+/// The frame key under which a reattached stream (`fleet_lost_turns`) says
+/// how early Hermes can have raised the request it rebuilt from the run's
+/// projection ([`ApprovalAsked::asked_after_ms`]). Hermes writes no such key.
+pub const ASKED_AFTER_KEY: &str = "talaria_asked_after_ms";
 
 /// One `approval.request` frame, as Hermes writes it on both streams.
 #[derive(Debug, Clone, PartialEq)]
@@ -122,6 +131,13 @@ pub struct ApprovalAsked {
     /// The answers Hermes will take for this request (`once`, `deny`, and
     /// `session` / `always` unless the gate forbids them).
     pub choices: Vec<String>,
+    /// The earliest moment (epoch ms) Hermes can have raised this request,
+    /// on a frame a reattached stream rebuilt from the run's projection
+    /// ([`ASKED_AFTER_KEY`]). A lost stream, or a poll, can lie between the
+    /// ask and the tap seeing it, and Hermes' `approvals.timeout` counts from
+    /// the ask. None on a live frame, which arrives as it is raised. A card
+    /// reads it only to close sooner, never later.
+    pub asked_after_ms: Option<i64>,
 }
 
 /// An answer the door, or a person through a card, sends. Only these two:
@@ -297,6 +313,7 @@ pub fn approval_asked(frame: &str) -> Option<ApprovalAsked> {
                     .collect()
             })
             .unwrap_or_default(),
+        asked_after_ms: json.get(ASKED_AFTER_KEY).and_then(Value::as_i64),
     })
 }
 
@@ -553,6 +570,10 @@ mod tests {
         let c = approval_asked(COMPLETIONS_FRAME).expect("completions frame");
         assert_eq!(c.run_id, "chatcmpl-d484a8983c0e44eebebe78e2bcd02");
         assert_eq!(c.execution_generation, Some(1));
+
+        // A live frame arrives as it is raised: nothing to say it is late.
+        assert_eq!(s.asked_after_ms, None);
+        assert_eq!(c.asked_after_ms, None);
     }
 
     #[test]

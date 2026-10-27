@@ -444,20 +444,25 @@ pub async fn continue_conversation(state: &AppState, conversation_id: &str, meta
 
 /// The auto-resume drive, through the same guard: a resumed turn and a queued
 /// turn can never both drive one conversation, whichever wins the race.
+/// `heard_at_ms` is when the dead attempt's stream last delivered anything
+/// (epoch ms).
 pub async fn resume_conversation(
     state: &AppState,
     conversation_id: &str,
     meta: &TurnMeta,
     row_id: &str,
+    heard_at_ms: i64,
 ) {
-    guarded_drive(state, conversation_id, meta, Some(row_id)).await;
+    guarded_drive(state, conversation_id, meta, Some((row_id, heard_at_ms))).await;
 }
 
+/// `resume` is the dead attempt's row, and when its stream was last heard
+/// from.
 async fn guarded_drive(
     state: &AppState,
     conversation_id: &str,
     meta: &TurnMeta,
-    resume: Option<&str>,
+    resume: Option<(&str, i64)>,
 ) {
     {
         let mut set = CONTINUING.lock().unwrap();
@@ -474,8 +479,10 @@ async fn continue_inner(
     state: &AppState,
     conversation_id: &str,
     meta: &TurnMeta,
-    resume: Option<&str>,
+    resume: Option<(&str, i64)>,
 ) {
+    let heard_at_ms = resume.map_or_else(now_ms, |(_, heard)| heard);
+    let resume = resume.map(|(row, _)| row);
     if active_streaming_assistant(&state.pg, conversation_id)
         .await
         .ok()
@@ -566,11 +573,13 @@ async fn continue_inner(
         Some(row) => match message_run_id(&state.pg, row).await.ok().flatten() {
             Some(run) => {
                 // The run may be parked on an approval: its prompt is put
-                // to the tap again, and carded or refused like a live one.
+                // to the tap again, and carded or refused like a live one,
+                // on the clock it has run on since the stream was lost.
                 let held = reattach_session_run(
                     &meta.agent_model,
                     &run,
                     ApprovalTurn::attended_chat(conversation_id),
+                    heard_at_ms,
                 )
                 .await;
                 if held.is_some() {
@@ -786,6 +795,9 @@ pub async fn persist_assistant_stream(
     // timeout this replaced killed every turn longer than ten minutes
     // mid-flight: the API hung up on a container that was still working (the
     // "· interrupted" knowledgebase turns) and dropped its partial reply.
+    // When the stream last delivered anything: a resume after it dies
+    // reads an approval its tap never saw as asked no earlier than this.
+    let mut heard_at_ms = now_ms();
     let death: Option<TurnDeath> = loop {
         match tokio::time::timeout(stream_idle(), stream.next()).await {
             // Silence past the ceiling: the agent's gateway stopped talking.
@@ -809,6 +821,7 @@ pub async fn persist_assistant_stream(
                 break Some(TurnDeath::Reset);
             }
             Ok(Some(Ok(chunk))) => {
+                heard_at_ms = now_ms();
                 if let Some(tx) = &forward {
                     // The client's branch ends on hang-up; ours drains on.
                     let _ = tx.send(Ok(chunk.clone())).await;
@@ -899,7 +912,7 @@ pub async fn persist_assistant_stream(
         content = with_error_line(&content, &format!("(agent error: {})", died.reason()));
         flush!("error");
         if let Some(meta) = usage_meta.filter(|m| !m.resumed) {
-            maybe_resume(&state, &conversation_id, &message_id, &meta);
+            maybe_resume(&state, &conversation_id, &message_id, &meta, heard_at_ms);
         }
         return;
     }
@@ -1102,7 +1115,13 @@ pub async fn persist_assistant_stream(
 /// is the retry-once gate: a turn that dies twice stays dead where a person
 /// can see it. Detached, so the dying persist returns and the client branch
 /// closes on schedule.
-fn maybe_resume(state: &AppState, conversation_id: &str, message_id: &str, meta: &PersistMeta) {
+fn maybe_resume(
+    state: &AppState,
+    conversation_id: &str,
+    message_id: &str,
+    meta: &PersistMeta,
+    heard_at_ms: i64,
+) {
     let state = state.clone();
     let conversation_id = conversation_id.to_string();
     let message_id = message_id.to_string();
@@ -1128,7 +1147,7 @@ fn maybe_resume(state: &AppState, conversation_id: &str, message_id: &str, meta:
         // The stamp precedes the drive on purpose: if the drive then loses to
         // a newer turn (the active-streaming check inside), the row stays an
         // explained error rather than re-queueing itself forever.
-        resume_conversation(&state, &conversation_id, &turn, &message_id).await;
+        resume_conversation(&state, &conversation_id, &turn, &message_id, heard_at_ms).await;
     });
 }
 
