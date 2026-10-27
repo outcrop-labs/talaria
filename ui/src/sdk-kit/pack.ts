@@ -108,6 +108,11 @@ export interface TarEntry {
 
 const encoder = new TextEncoder()
 
+/** Every file's mtime in the archive: one fixed moment (2026-01-01), so the
+ *  bytes depend on the content alone — and not the epoch, which extracts as
+ *  1970 and reads as stale to anything that compares times. */
+export const KIT_MTIME = 1_767_225_600
+
 function octal(n: number, width: number): string {
   return `${n.toString(8).padStart(width - 1, '0')}\0`
 }
@@ -133,7 +138,7 @@ function header(path: string, size: number, mode: number): Uint8Array {
   put(octal(0, 8), 108, 8) // uid
   put(octal(0, 8), 116, 8) // gid
   put(octal(size, 12), 124, 12)
-  put(octal(0, 12), 136, 12) // mtime: fixed, so the same kit is the same bytes
+  put(octal(KIT_MTIME, 12), 136, 12) // fixed, so the same kit is the same bytes
   put('        ', 148, 8) // checksum placeholder
   put('0', 156, 1) // a regular file
   put('ustar\0', 257, 6)
@@ -146,8 +151,7 @@ function header(path: string, size: number, mode: number): Uint8Array {
 }
 
 /** A gzipped ustar archive of `entries`, in the order given. Directories are
- *  implied by the paths; every timestamp is zero, so the bytes depend on the
- *  content alone. */
+ *  implied by the paths; every timestamp is `KIT_MTIME`. */
 export function tarGz(entries: readonly TarEntry[]): Buffer {
   const parts: Uint8Array[] = []
   for (const e of entries) {

@@ -106,6 +106,10 @@ The api asks the app host to run the case: the real runner, the candidate pinned
   A harness with `tools: 'own'` (a fleet agent's own loop) is scored only on a candidate that runs
   one.
 
+In a plugin repo of its own, the SDK kit's `talaria-app eval` replays every registered harness's
+fixtures the way the sweep does — against replies recorded in `harnesses/recorded/`, or through the
+gateway — with the host's own replay ([outside-the-host.md](./outside-the-host.md)).
+
 To run fixtures before you ship, use `runHarnessOffline` from `@talaria/sdk/testing`: the real
 runner (render, parse, the repair turn, `verify`, the guard) against replies you script, with no
 gateway and no database. Then call the fixture's `check` on the value:

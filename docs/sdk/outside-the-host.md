@@ -21,6 +21,12 @@ GET /api/sdk/kit.tgz
 | `schema/talaria.schema.json` | The manifest's [published schema](./talaria.schema.json) |
 | `bin/talaria-app` | The CLI below |
 
+**Never a stale copy.** The declarations are generated from the host's own SDK source when the kit
+is built, and the runtime is the host's own modules, so the kit carries exactly what that host
+serves: `ctx.harness` and `ctx.agents` on the request, MCP and trigger contexts, `triggers` in
+`defineAppServer` and in `talaria.json`, every manifest field the host's validator knows, and
+every `@talaria/sdk/testing` helper.
+
 **Versioned with the host build.** The version is the host build stamp — the one the host's own
 app builds are keyed on — then a digest of the kit's contents: `dev-a962c3625153-4149a895`.
 The response carries it as `x-talaria-kit-version` (and `x-talaria-sdk-version`, and an `etag`
@@ -77,7 +83,9 @@ a usage error.
     back to the recording, merged over what was there. Without `--model` the CLI lists the models
     the gateway serves.
 
-  `--harness <id or file>` and `--case <name>` narrow the run. A `fail` or an `ERROR` (the
+  A harness with a `loop` is dry-run, as the host replays it: every tool answers through its
+  `simulate`, and a tool without one answers the model with an error (the fitness sweep skips such
+  a harness's cases). `--harness <id or file>` and `--case <name>` narrow the run. A `fail` or an `ERROR` (the
   contract did not hold) fails the run; a `gap` (the fixture could not fairly ask) and a
   `REFUSED` do not. The sandbox has no capability probes, so a capability is unknown — and
   unknown is not missing: the floor never refuses here.

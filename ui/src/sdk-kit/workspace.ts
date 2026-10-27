@@ -26,12 +26,32 @@ export function findAppDir(start: string): string | null {
   }
 }
 
+/** The repository name the checkout at `dir` came from: the last segment of
+ *  its `origin` remote, read out of .git/config. A workbench job clones into
+ *  a directory named for the job, so the directory's own name says nothing
+ *  about the repo an install will read. Null without a checkout or a remote. */
+export function originRepoName(dir: string): string | null {
+  let config: string
+  try {
+    config = readFileSync(join(dir, '.git', 'config'), 'utf8')
+  } catch {
+    return null
+  }
+  const section = /\[remote "origin"\]([^[]*)/.exec(config)?.[1]
+  const url = section ? /^\s*url\s*=\s*(\S+)\s*$/m.exec(section)?.[1] : undefined
+  const name = url?.replace(/\/+$/, '').split(/[/:]/).pop()
+  return name ? name : null
+}
+
 /** The slug the kit builds the app as. The one talaria.json declares, else
- *  the one an install from a repository of this directory's name would take
- *  (talaria-apps `install_slug`: lowercased, without a `talaria-app-`
- *  prefix). Null when neither is a slug an install would accept. */
+ *  the one an install of its repository would take (talaria-apps
+ *  `install_slug`: the repo's name, lowercased, without `.git` or a
+ *  `talaria-app-` prefix) — the origin remote's name when the checkout has
+ *  one, else the directory's. Null when that is not a slug an install would
+ *  accept. */
 export function slugFor(dir: string, manifest: Pick<AppManifest, 'slug'> | null, override?: string): string | null {
-  const candidate = (override ?? manifest?.slug ?? basename(dir).replace(/\.git$/, '').toLowerCase().replace(/^talaria-app-/, '')).trim()
+  const repo = originRepoName(dir) ?? basename(dir)
+  const candidate = (override ?? manifest?.slug ?? repo.replace(/\.git$/, '').toLowerCase().replace(/^talaria-app-/, '')).trim()
   return SLUG_RE.test(candidate) && !RESERVED_APP_SLUGS.includes(candidate) ? candidate : null
 }
 

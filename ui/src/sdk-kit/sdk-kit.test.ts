@@ -80,6 +80,15 @@ describe('where an app is', () => {
     // …unless talaria.json declares one, or the caller names one.
     expect(slugFor(app, { slug: 'notes' })).toBe('notes')
     expect(slugFor(app, { slug: 'notes' }, 'other')).toBe('other')
+    // A checkout's origin names the repo an install reads, whatever the
+    // directory is called (a workbench job clones into a directory named
+    // for the job).
+    const job = join(root, '6f1c0e2a-job')
+    mkdirSync(join(job, '.git'), { recursive: true })
+    writeFileSync(join(job, '.git', 'config'), '[core]\n\tbare = false\n[remote "origin"]\n\turl = https://github.com/acme/talaria-app-field-notes.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n')
+    expect(slugFor(job, {})).toBe('field-notes')
+    writeFileSync(join(job, '.git', 'config'), '[remote "origin"]\n\turl = git@github.com:acme/Pulse-Log\n')
+    expect(slugFor(job, {})).toBe('pulse-log')
     // A name an install would refuse is no slug at all.
     expect(slugFor(join(root, 'Has Spaces'), {})).toBeNull()
     expect(slugFor(join(root, 'hooks'), {})).toBeNull()
