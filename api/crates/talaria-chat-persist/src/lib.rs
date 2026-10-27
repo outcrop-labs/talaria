@@ -25,6 +25,7 @@ use talaria_conversations::{
 };
 use talaria_fleet_agents::routed_model_for;
 use talaria_fleet_layout::describe_agent;
+use talaria_gateway::fleet_approvals::ApprovalTurn;
 use talaria_gateway::fleet_chat::{
     AgentStreamEvent, AgentStreamParser, ChatStream, ToolCall, chat_payload, merge_tool,
     proxy_chat, proxy_session_turn,
@@ -564,7 +565,14 @@ async fn continue_inner(
     let held = match resume.filter(|_| pinned) {
         Some(row) => match message_run_id(&state.pg, row).await.ok().flatten() {
             Some(run) => {
-                let held = reattach_session_run(&meta.agent_model, &run).await;
+                // The run may be parked on an approval: its prompt is put
+                // to the tap again, and carded or refused like a live one.
+                let held = reattach_session_run(
+                    &meta.agent_model,
+                    &run,
+                    ApprovalTurn::attended_chat(conversation_id),
+                )
+                .await;
                 if held.is_some() {
                     tracing::info!(
                         "[chat_persist] {row}: {} still holds run {run}; picking it up instead of \
