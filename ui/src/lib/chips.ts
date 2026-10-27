@@ -72,8 +72,19 @@ export interface ChatChip {
   actionId?: string
   actionKind?: string
   summary?: string
-  status?: 'pending' | 'approved' | 'denied' | 'running' | 'done' | 'error'
+  status?: 'pending' | 'approved' | 'denied' | 'expired' | 'running' | 'done' | 'error'
   tools?: string[]
+  /** Agent approval cards only (`approval` chips whose `actionKind` is
+   *  `hermes_approval`): what the agent asked to do, as Hermes redacted it
+   *  ("<write to AGENTS.md>"); `summary` carries Hermes' reason. */
+  command?: string
+  /** Agent approval cards only: the one person who may answer — the
+   *  conversation's owner, who manages the agent. Everyone else reading the
+   *  thread sees the card without buttons. The server checks again. */
+  deciderId?: string
+  /** Agent approval cards only: epoch ms when the card closes itself and the
+   *  agent is told no — a few seconds before the agent stops waiting. */
+  expiresAt?: number
   approvalId?: string
   /** `todo` chips only: the agent's plan as it stood when this chip landed.
    *  The WHOLE list, not a delta — the stream is read top-to-bottom and
@@ -390,6 +401,54 @@ export function chipTitle(chip: { entity?: ChipEntity; title?: string }): string
 export function invokeText(tool: string, inputs: Record<string, string>): string {
   const filled = Object.fromEntries(Object.entries(inputs).filter(([, v]) => v.trim()))
   return `Run ${tool} with these inputs:\n\`\`\`json\n${JSON.stringify(filled, null, 2)}\n\`\`\``
+}
+
+/** The `actionKind` of an agent's own approval request, put to a person. */
+export const AGENT_APPROVAL = 'hermes_approval'
+
+/** An agent asking a person before it goes on (`talaria-approval-cards`),
+ *  rather than a protected action Talaria queued. */
+export function isAgentApproval(chip: ChatChip): boolean {
+  return chip.kind === 'approval' && chip.actionKind === AGENT_APPROVAL
+}
+
+export interface AgentApprovalView {
+  /** The card's small caps line. */
+  heading: 'Agent is asking' | 'Allowed once' | 'Denied' | 'Expired'
+  /** Still open: nobody answered and the time has not run out. */
+  waiting: boolean
+  /** The viewer is the one person who may answer, and it is still open. */
+  canAnswer: boolean
+  /** Whole seconds until it closes, while it is open. */
+  secondsLeft: number | null
+}
+
+/** How an agent approval card reads for one viewer at one moment. A card
+ *  past its `expiresAt` reads expired even before the server's own deadline
+ *  repaints it — the agent has stopped waiting either way. */
+export function agentApprovalView(chip: ChatChip, viewerId: string | null | undefined, now: number): AgentApprovalView {
+  const past = typeof chip.expiresAt === 'number' && now >= chip.expiresAt
+  const open = (chip.status ?? 'pending') === 'pending' && !past
+  const heading =
+    chip.status === 'approved'
+      ? 'Allowed once'
+      : chip.status === 'denied'
+        ? 'Denied'
+        : open
+          ? 'Agent is asking'
+          : 'Expired'
+  return {
+    heading,
+    waiting: open,
+    canAnswer: open && !!viewerId && viewerId === chip.deciderId,
+    secondsLeft: open && typeof chip.expiresAt === 'number' ? Math.max(0, Math.ceil((chip.expiresAt - now) / 1000)) : null,
+  }
+}
+
+/** `m:ss`, for the time an open card has left. */
+export function clockText(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
 export async function decideChip(

@@ -283,6 +283,7 @@ async fn open(pg: &PgPool, req: &TurnRequest) -> Result<(ChatStream, Option<Stri
         source: "app".into(),
         ref_id: None,
         task_id: None,
+        attended: false,
     };
     match &req.session {
         Some(key) => {

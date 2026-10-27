@@ -1129,6 +1129,13 @@ pub struct TurnAttribution {
     pub source: String,
     pub ref_id: Option<String>,
     pub task_id: Option<String>,
+    /// A person is reading this turn as it is written: a conversation turn
+    /// sent from `/api/chat`, or chained from one, with `ref_id` the
+    /// conversation. `source` alone cannot say so, because a work session
+    /// and the plan-document harness book their spend as `chat` too, and
+    /// nobody watches either. Only an attended turn can put an agent's
+    /// approval request to a person (fleet_approvals); the ledger ignores it.
+    pub attended: bool,
 }
 
 fn uuid_or_none(v: Option<&str>) -> Option<String> {
@@ -1469,6 +1476,7 @@ mod live_db {
             source: source.to_string(),
             ref_id: Some(ref_id.to_string()),
             task_id: task_id.map(str::to_string),
+            attended: false,
         }
     }
 

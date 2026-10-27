@@ -1,5 +1,5 @@
-// Hermes' approval requests on the turns Talaria drives, refused at the
-// door and recorded.
+// Hermes' approval requests on the turns Talaria drives: refused at the door
+// and recorded, or put to the one person who may answer one.
 //
 // WHY THIS EXISTS. A STREAMED turn (POST /api/sessions/{id}/chat/stream, or
 // /v1/chat/completions with `stream: true`, which between them carry every
@@ -19,25 +19,35 @@
 // (talaria-fleet-render's `fleet_approvals`: `manual` with deny, or `off`
 // for a Developer Agent), so no model approves anything. This module is the
 // other half. The door taps each stream as its bytes go past and answers
-// every request `deny`, then records it in the audit log. The bytes pass
-// through untouched, so every consumer downstream still sees the frame and
-// ignores it as it always did.
+// every request itself, off to the side. The bytes pass through untouched,
+// so every consumer downstream still sees the frame and ignores it as it
+// always did.
 //
-// WHY THE DOOR NEVER CONSENTS, NOT EVEN FOR A DEVELOPER AGENT. A Developer
-// Agent's policy is that flagged commands run, and `mode: off` already says
-// so inside the container: Hermes skips every gate that policy covers (the
-// dangerous-command and execute_code guards, plugin rules, ssh config and
-// computer-use writes) without asking. What a Developer Agent still asks is
-// a gate Hermes built never to be auto-approved: a write to a project's
-// AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / `.hermes/` (the
-// prompt-injection persistence vector), an untrusted MCP server's write tool
-// or spend limit, a saved payment card fill. Each ignores yolo and
-// `mode: off`, and each wants a person. This door is not one. Nor can it
-// tell those apart from a command: v0.22's session authority projects a
-// request down to its command, description, choices and generation, and
-// drops Hermes' `pattern_key`, so a card fill reads exactly like `rm -rf`.
-// A door that answered `once` would be consenting, blind, to whichever one
-// it got. The only answer it can give for every request is `deny`.
+// THE DOOR NEVER CONSENTS. A Developer Agent's policy is that flagged
+// commands run, and `mode: off` already says so inside the container: Hermes
+// skips every gate that policy covers (the dangerous-command and
+// execute_code guards, plugin rules, ssh config and computer-use writes)
+// without asking. What a Developer Agent still asks is a gate Hermes built
+// never to be auto-approved: a write to a project's AGENTS.md / CLAUDE.md /
+// SOUL.md / .cursorrules / `.hermes/` (the prompt-injection persistence
+// vector), an untrusted MCP server's write tool or spend limit, a saved
+// payment card fill. Each ignores yolo and `mode: off`, and each wants a
+// person. This door is not one. Nor can it tell those apart from a command:
+// v0.22's session authority projects a request down to its command,
+// description, choices and generation, and drops Hermes' `pattern_key`, so
+// a card fill reads exactly like `rm -rf`. A door that answered `once` would
+// be consenting, blind, to whichever one it got. The only answer the door
+// itself gives is `deny`.
+//
+// A PERSON MAY, ON ONE KIND OF TURN. A request on an ATTENDED conversation
+// turn (`TurnAttribution::attended`: a turn sent from /api/chat, whose
+// sender is reading the reply) is first offered to the card seam,
+// `RAISE_CARD` (talaria-approval-cards, wired at boot). The seam raises a
+// card only for a Developer Agent, whose requests are by construction those
+// human-only gates, and only when the conversation's owner manages the
+// agent. The card is answered by that person, `once` or `deny`, or by the
+// seam's own deadline, `deny`, five seconds before Hermes' timeout would
+// refuse it anyway. Everything the seam declines is refused here at once.
 //
 // The answer goes through the agent's own door with its own bearer, the same
 // as a steer or a stop, inside the same control window. If the answer cannot
@@ -48,6 +58,7 @@
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use axum::body::Bytes;
 use futures_util::Stream;
@@ -55,7 +66,41 @@ use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 
 use crate::fleet_chat::{ByteStream, CONTROL_WINDOW, ChatStream, agent_post, control_failure};
-use talaria_fleet_layout::ManifestEntry;
+use crate::usage::TurnAttribution;
+use talaria_fleet_layout::{ManifestEntry, read_manifest};
+
+/// How long Hermes holds a flagged call open for an answer, written as
+/// `approvals.timeout` by the render (talaria-fleet-render's
+/// `fleet_approvals`, through [`approval_timeout_secs`]). The door refuses
+/// every policy request within milliseconds; this is the backstop for one
+/// nobody is left to answer (the stream that carried it dropped, the api
+/// restarted mid-turn). Hermes refuses the call when it runs out, and the
+/// session's next turn queues behind the wait, so a minute rather than
+/// Hermes' own five.
+pub const APPROVAL_TIMEOUT_SECS: u64 = 60;
+
+/// The same backstop for a Developer Agent, the one agent whose requests can
+/// become a card: two minutes, so a person has time to read what is asked.
+pub const CARD_APPROVAL_TIMEOUT_SECS: u64 = 120;
+
+/// How long before Hermes' own timeout a card closes and the door answers
+/// `deny` itself. Talaria, not the timeout, then closes the card, and the
+/// card can say "expired" rather than go quiet.
+pub const CARD_DEADLINE_MARGIN_SECS: u64 = 5;
+
+/// The `approvals.timeout` an agent renders with.
+pub fn approval_timeout_secs(developer: bool) -> u64 {
+    if developer {
+        CARD_APPROVAL_TIMEOUT_SECS
+    } else {
+        APPROVAL_TIMEOUT_SECS
+    }
+}
+
+/// How long a card stays answerable after it is raised.
+pub fn card_window() -> Duration {
+    Duration::from_secs(CARD_APPROVAL_TIMEOUT_SECS - CARD_DEADLINE_MARGIN_SECS)
+}
 
 /// One `approval.request` frame, as Hermes writes it on both streams.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,14 +119,34 @@ pub struct ApprovalAsked {
     pub command: String,
     /// Hermes' own name for why it is flagged ("delete in root path").
     pub description: String,
+    /// The answers Hermes will take for this request (`once`, `deny`, and
+    /// `session` / `always` unless the gate forbids them).
+    pub choices: Vec<String>,
 }
 
-/// The one answer this door gives (see the header for why it is never
-/// `once`). `session` and `always` would also write into a config.yaml the
-/// render owns.
+/// An answer the door, or a person through a card, sends. Only these two:
+/// `session` and `always` would also write into a config.yaml the render
+/// owns and mounts read-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    Once,
+    Deny,
+}
+
+impl Choice {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Choice::Once => "once",
+            Choice::Deny => "deny",
+        }
+    }
+}
+
+/// The one answer this door gives on its own (see the header for why it is
+/// never `once`).
 pub const ANSWER: &str = "deny";
 
-/// One answered request, for the audit log.
+/// One request the door refused, for the audit log.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalRecord {
     /// The agent the turn belongs to, the name its def is found under.
@@ -96,16 +161,80 @@ pub struct ApprovalRecord {
 
 pub type RecordFn = Arc<dyn Fn(ApprovalRecord) -> BoxFuture<'static, ()> + Send + Sync>;
 
-/// Where an answered request is recorded. Wired from the boot assembly
+/// Where a refused request is recorded. Wired from the boot assembly
 /// (talaria-jobs), because this crate holds no pool. Unset records nothing,
 /// and the answer still goes out.
 pub static RECORD_APPROVAL: OnceLock<RecordFn> = OnceLock::new();
 
+/// Whose turn a request arrived on, as far as a card needs to know: the
+/// conversation, when a person is reading the turn, and the flow's ledger
+/// source for the log line.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ApprovalTurn {
+    /// `TurnAttribution::source` (`chat`, `channel`, `ticket`, `research`,
+    /// `app`, `workbench`), or None for a turn nobody attributed.
+    pub source: Option<String>,
+    /// The conversation an attended `chat` turn belongs to. None on every
+    /// other turn, which no card can be raised from.
+    pub conversation_id: Option<String>,
+}
+
+impl ApprovalTurn {
+    /// The turn as the door reads it off the flow its caller handed over. A
+    /// conversation is named only for an attended `chat` turn: a work
+    /// session books `chat` against its ticket, and the plan-document
+    /// harness against its conversation, and nobody reads either one live.
+    pub fn of(attribution: Option<&TurnAttribution>) -> Self {
+        let Some(a) = attribution else {
+            return ApprovalTurn::default();
+        };
+        let conversation_id = (a.attended && a.source == "chat")
+            .then(|| a.ref_id.clone())
+            .flatten()
+            .filter(|id| uuid::Uuid::parse_str(id).is_ok());
+        ApprovalTurn {
+            source: Some(a.source.clone()),
+            conversation_id,
+        }
+    }
+
+    /// A conversation turn the person who sent it is reading: the pinned
+    /// session's own turn picked back up after its stream dropped
+    /// (`fleet_lost_turns::reattach_session_run`).
+    pub fn attended_chat(conversation_id: &str) -> Self {
+        ApprovalTurn {
+            source: Some("chat".into()),
+            conversation_id: uuid::Uuid::parse_str(conversation_id)
+                .is_ok()
+                .then(|| conversation_id.to_string()),
+        }
+    }
+}
+
+/// A request offered to the card seam.
+#[derive(Debug, Clone)]
+pub struct CardAsk {
+    /// The agent the turn belongs to (never a tier's longer name).
+    pub agent_model: String,
+    pub turn: ApprovalTurn,
+    pub asked: ApprovalAsked,
+}
+
+/// Answers whether a card was raised. `true` hands the request to the card:
+/// the person or the card's deadline answers it. `false` leaves it to the
+/// door, which refuses it.
+pub type CardFn = Arc<dyn Fn(CardAsk) -> BoxFuture<'static, bool> + Send + Sync>;
+
+/// Where a request that a person may answer becomes a card. Wired from the
+/// boot assembly (talaria-jobs → talaria-approval-cards). Unset, every
+/// request is refused, as it was before cards existed.
+pub static RAISE_CARD: OnceLock<CardFn> = OnceLock::new();
+
 /// The body `POST /v1/runs/{run_id}/approval` takes: exactly
 /// `{request_id, execution_generation, choice}` when the request carried a
 /// generation, and `{request_id, choice}` when it did not.
-pub fn answer_body(asked: &ApprovalAsked) -> Value {
-    let mut body = json!({ "request_id": asked.request_id, "choice": ANSWER });
+pub fn answer_body(asked: &ApprovalAsked, choice: Choice) -> Value {
+    let mut body = json!({ "request_id": asked.request_id, "choice": choice.as_str() });
     if let Some(generation) = asked.execution_generation {
         body["execution_generation"] = json!(generation);
     }
@@ -158,6 +287,16 @@ pub fn approval_asked(frame: &str) -> Option<ApprovalAsked> {
         execution_generation: json.get("execution_generation").and_then(Value::as_i64),
         command: text("command"),
         description: text("description"),
+        choices: json
+            .get("choices")
+            .and_then(Value::as_array)
+            .map(|c| {
+                c.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -201,12 +340,13 @@ impl ApprovalFrames {
 }
 
 /// The stream with the tap on it: every chunk passes through unchanged, and
-/// each approval request it completes is refused off to the side.
+/// each approval request it completes is answered off to the side.
 struct ApprovalTap {
     inner: ByteStream,
     frames: ApprovalFrames,
     entry: ManifestEntry,
     agent_model: String,
+    turn: ApprovalTurn,
 }
 
 impl Stream for ApprovalTap {
@@ -217,7 +357,12 @@ impl Stream for ApprovalTap {
         let polled = this.inner.as_mut().poll_next(cx);
         if let Poll::Ready(Some(Ok(chunk))) = &polled {
             for asked in this.frames.feed(chunk) {
-                tokio::spawn(answer(owned(&this.entry), this.agent_model.clone(), asked));
+                tokio::spawn(handle(
+                    owned(&this.entry),
+                    this.agent_model.clone(),
+                    this.turn.clone(),
+                    asked,
+                ));
             }
         }
         polled
@@ -226,12 +371,14 @@ impl Stream for ApprovalTap {
 
 /// Put the tap on a turn's stream. `agent_model` is the agent the turn
 /// belongs to (a tier row dials the same container under a longer name), the
-/// name the audit row is filed under. A stream that is not a 2xx carries no
-/// frames to answer and is returned as it came.
-pub fn refuse_approvals(
+/// name the audit row and any card are filed under; `turn` is whose turn it
+/// is. A stream that is not a 2xx carries no frames to answer and is
+/// returned as it came.
+pub fn tap_approvals(
     mut stream: ChatStream,
     entry: &ManifestEntry,
     agent_model: &str,
+    turn: ApprovalTurn,
 ) -> ChatStream {
     if !stream.ok() {
         return stream;
@@ -242,6 +389,7 @@ pub fn refuse_approvals(
         frames: ApprovalFrames::default(),
         entry: owned(entry),
         agent_model: agent_model.to_string(),
+        turn,
     });
     stream
 }
@@ -257,22 +405,101 @@ fn owned(entry: &ManifestEntry) -> ManifestEntry {
 }
 
 /// How much of a flagged command the audit row keeps.
-const RECORDED_COMMAND_CHARS: usize = 500;
+pub const RECORDED_COMMAND_CHARS: usize = 500;
 
-/// Refuse one request, then record what happened.
-async fn answer(entry: ManifestEntry, agent_model: String, asked: ApprovalAsked) {
+/// The command as a record keeps it: redacted again with Talaria's own
+/// credential patterns, then clamped.
+pub fn recorded_command(command: &str) -> String {
+    let (command, _) = crate::guard::redact_secrets(command, None);
+    command.chars().take(RECORDED_COMMAND_CHARS).collect()
+}
+
+/// One request: a card when the seam raises one, otherwise refused here.
+async fn handle(
+    entry: ManifestEntry,
+    agent_model: String,
+    turn: ApprovalTurn,
+    asked: ApprovalAsked,
+) {
+    if let Some(raise) = RAISE_CARD.get() {
+        let ask = CardAsk {
+            agent_model: agent_model.clone(),
+            turn,
+            asked: asked.clone(),
+        };
+        if raise(ask).await {
+            return;
+        }
+    }
+    refuse(entry, agent_model, asked).await;
+}
+
+/// What became of an answer sent to the agent.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Delivery {
+    /// Hermes took it.
+    Taken,
+    /// The agent is no longer waiting on this request: it settled another
+    /// way (its timeout, a stop, another answer) or the run is over. Hermes'
+    /// words for why ride along (`409 approval_not_pending`,
+    /// `409 stale_generation`, `already_resolved`).
+    NotPending(String),
+    /// The answer did not arrive: the agent was unreachable, or refused the
+    /// body itself.
+    Failed(String),
+}
+
+/// Send one answer through the agent's own door.
+async fn deliver(entry: &ManifestEntry, asked: &ApprovalAsked, choice: Choice) -> Delivery {
     let sent = tokio::time::timeout(
         CONTROL_WINDOW,
-        agent_post(&entry, &format!("/v1/runs/{}/approval", asked.run_id))
-            .json(&answer_body(&asked))
+        agent_post(entry, &format!("/v1/runs/{}/approval", asked.run_id))
+            .json(&answer_body(asked, choice))
             .send(),
     )
     .await;
-    let failure = match sent {
-        Ok(Ok(res)) if res.status().is_success() => None,
-        Ok(Ok(res)) => Some(control_failure(res).await),
-        Ok(Err(e)) => Some(e.to_string()),
-        Err(_) => Some("the agent did not answer the approval".into()),
+    match sent {
+        // v0.22's session authority answers 200 `already_resolved` for a
+        // prompt that settled before this answer arrived, which took
+        // nothing; the older bridge answers with its own receipt.
+        Ok(Ok(res)) if res.status().is_success() => {
+            match res
+                .json::<Value>()
+                .await
+                .ok()
+                .and_then(|b| b["status"].as_str().map(str::to_string))
+            {
+                Some(status) if status == "already_resolved" => Delivery::NotPending(status),
+                _ => Delivery::Taken,
+            }
+        }
+        Ok(Ok(res)) if matches!(res.status().as_u16(), 404 | 409) => {
+            Delivery::NotPending(control_failure(res).await)
+        }
+        Ok(Ok(res)) => Delivery::Failed(control_failure(res).await),
+        Ok(Err(e)) => Delivery::Failed(e.to_string()),
+        Err(_) => Delivery::Failed("the agent did not answer the approval".into()),
+    }
+}
+
+/// Answer a request a card is holding, through the agent's manifest row.
+/// The card's person, or its deadline, is the one answering.
+pub async fn answer_card(agent_model: &str, asked: &ApprovalAsked, choice: Choice) -> Delivery {
+    if !safe_run_id(&asked.run_id) {
+        return Delivery::Failed("the request names no run".into());
+    }
+    let manifest = read_manifest().await;
+    let Some(entry) = manifest.iter().find(|m| m.model == agent_model) else {
+        return Delivery::Failed(format!("{agent_model} is not in the fleet manifest"));
+    };
+    deliver(entry, asked, choice).await
+}
+
+/// Refuse one request, then record what happened.
+async fn refuse(entry: ManifestEntry, agent_model: String, asked: ApprovalAsked) {
+    let failure = match deliver(&entry, &asked, Choice::Deny).await {
+        Delivery::Taken => None,
+        Delivery::NotPending(why) | Delivery::Failed(why) => Some(why),
     };
     // The command stays out of the log line: the description names the
     // flag, and the audit row carries the (redacted) command.
@@ -288,11 +515,10 @@ async fn answer(entry: ManifestEntry, agent_model: String, asked: ApprovalAsked)
         ),
     }
     if let Some(record) = RECORD_APPROVAL.get() {
-        let (command, _) = crate::guard::redact_secrets(&asked.command, None);
         record(ApprovalRecord {
             agent_model,
             run_id: asked.run_id,
-            command: command.chars().take(RECORDED_COMMAND_CHARS).collect(),
+            command: recorded_command(&asked.command),
             description: asked.description,
             failure,
         })
@@ -382,7 +608,7 @@ mod tests {
             let asked = approval_asked(frame).expect(request_id);
             assert_eq!(asked.run_id, run_id);
             assert_eq!(
-                answer_body(&asked),
+                answer_body(&asked, Choice::Deny),
                 json!({ "request_id": request_id, "execution_generation": 1, "choice": "deny" })
             );
         }
@@ -398,9 +624,109 @@ mod tests {
             ..approval_asked(SESSION_FRAME).unwrap()
         };
         assert_eq!(
-            answer_body(&older),
+            answer_body(&older, Choice::Deny),
             json!({ "request_id": "f27f3b67938548a1af19d5c2d9707b64", "choice": "deny" })
         );
+    }
+
+    #[test]
+    fn a_person_s_answer_is_once_or_deny_in_exactly_the_three_keys() {
+        // v0.22's session authority refuses a body with any other key set
+        // (`set(body) != {request_id, execution_generation, choice}`), and
+        // the card offers only these two answers: `session` and `always`
+        // would write the render-owned config.yaml.
+        let asked = approval_asked(PROTECTED_WRITE_FRAME).unwrap();
+        for (choice, word) in [(Choice::Once, "once"), (Choice::Deny, "deny")] {
+            let body = answer_body(&asked, choice);
+            let keys: Vec<&str> = body
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(keys.len(), 3, "{body}");
+            assert_eq!(
+                body,
+                json!({
+                    "request_id": "44e98bc6bc544867860b37c800ac72cc",
+                    "execution_generation": 1,
+                    "choice": word,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn the_frame_says_which_answers_hermes_will_take() {
+        let dangerous = approval_asked(SESSION_FRAME).unwrap();
+        assert_eq!(dangerous.choices, ["once", "session", "always", "deny"]);
+        // The protected-instruction gate forbids session and always.
+        let protected = approval_asked(PROTECTED_WRITE_FRAME).unwrap();
+        assert_eq!(protected.choices, ["once", "deny"]);
+        // A frame without the list offers nothing beyond what the door sends.
+        let bare = approval_asked(
+            "event: approval.request\ndata: {\"run_id\": \"run_1\", \"request_id\": \"r1\"}",
+        )
+        .unwrap();
+        assert!(bare.choices.is_empty());
+    }
+
+    #[test]
+    fn a_developer_agent_waits_two_minutes_and_its_card_closes_five_seconds_early() {
+        assert_eq!(approval_timeout_secs(false), 60);
+        assert_eq!(approval_timeout_secs(true), 120);
+        assert_eq!(card_window(), std::time::Duration::from_secs(115));
+    }
+
+    fn flow(pg: &sqlx::PgPool, source: &str, ref_id: &str, attended: bool) -> TurnAttribution {
+        TurnAttribution {
+            pg: pg.clone(),
+            agent_model: "dex".into(),
+            source: source.into(),
+            ref_id: Some(ref_id.into()),
+            task_id: None,
+            attended,
+        }
+    }
+
+    #[tokio::test]
+    async fn only_an_attended_chat_turn_names_a_conversation_a_card_could_land_in() {
+        let pg = sqlx::PgPool::connect_lazy("postgres://nobody@127.0.0.1:9/none").unwrap();
+        let id = "6113b5bc-6935-46e1-a67c-60bd58daf4f0";
+        // /api/chat's turn (and its chained and resumed turns).
+        assert_eq!(
+            ApprovalTurn::of(Some(&flow(&pg, "chat", id, true)))
+                .conversation_id
+                .as_deref(),
+            Some(id)
+        );
+        // Booked as `chat` but read by nobody: a work session's turn (ref is
+        // the ticket) and the plan-document harness (ref is the conversation).
+        assert_eq!(
+            ApprovalTurn::of(Some(&flow(&pg, "chat", id, false))).conversation_id,
+            None
+        );
+        // Every other flow: nobody is reliably reading the stream.
+        for source in ["channel", "ticket", "research", "app", "workbench"] {
+            for attended in [false, true] {
+                let turn = ApprovalTurn::of(Some(&flow(&pg, source, id, attended)));
+                assert_eq!(turn.conversation_id, None, "{source} attended={attended}");
+                assert_eq!(turn.source.as_deref(), Some(source));
+            }
+        }
+        // A ref that is not a conversation id names nothing.
+        assert_eq!(
+            ApprovalTurn::of(Some(&flow(&pg, "chat", "not-a-uuid", true))).conversation_id,
+            None
+        );
+        // An unattributed turn.
+        assert_eq!(ApprovalTurn::of(None), ApprovalTurn::default());
+        // The reattached session turn names its conversation the same way.
+        assert_eq!(
+            ApprovalTurn::attended_chat(id).conversation_id.as_deref(),
+            Some(id)
+        );
+        assert_eq!(ApprovalTurn::attended_chat("run_1").conversation_id, None);
     }
 
     #[test]
@@ -450,7 +776,7 @@ mod tests {
             url: "http://127.0.0.1:9".into(),
             key: None,
         };
-        let tapped = refuse_approvals(stream, &entry, "nobody");
+        let tapped = tap_approvals(stream, &entry, "nobody", ApprovalTurn::default());
         let read: Vec<Bytes> = tapped.body.map(|c| c.unwrap()).collect().await;
         assert_eq!(read.concat(), chunks.concat().as_bytes());
     }

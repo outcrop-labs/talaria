@@ -210,6 +210,8 @@ talaria-api-routes = { path = "crates/talaria-api-routes" }
 
 talaria-app-harnesses = { path = "crates/talaria-app-harnesses" }
 
+talaria-approval-cards = { path = "crates/talaria-approval-cards" }
+
 talaria-approvals = { path = "crates/talaria-approvals" }
 
 talaria-app-agents = { path = "crates/talaria-app-agents" }

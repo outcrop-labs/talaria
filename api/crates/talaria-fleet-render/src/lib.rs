@@ -2346,15 +2346,6 @@ fn fleet_vision(
     main.sees == Some(false) && reader.is_none() && !own_backend
 }
 
-/// How long Hermes holds a flagged call open waiting for an answer. Talaria
-/// refuses every approval request on a turn it drives within seconds
-/// (talaria-gateway's `fleet_approvals`); this is the backstop for a
-/// request nobody is left to answer — the stream that carried it dropped, the
-/// api restarted mid-turn. Hermes refuses the call when it runs out, and the
-/// session's next turn queues behind the wait, so a minute rather than
-/// Hermes' own five.
-const APPROVAL_TIMEOUT_SECS: u64 = 60;
-
 /// The approval policy, written whole every render: a def cannot author its
 /// way around any of these keys, and every other key in its `approvals` block
 /// is left alone.
@@ -2384,8 +2375,9 @@ const APPROVAL_TIMEOUT_SECS: u64 = 60;
 ///   hardline floor and an authored `approvals.deny` list still hold. So do
 ///   the gates Hermes never lets anything auto-approve (a write to a
 ///   project's AGENTS.md / CLAUDE.md / SOUL.md, an untrusted MCP server's
-///   write tool, a saved card fill): they still ask, and Talaria's door
-///   answers `deny`, as it does for every request.
+///   write tool, a saved card fill): they still ask. On a conversation turn
+///   whose owner manages the agent, Talaria's door puts the request to that
+///   person as a card; everywhere else it answers `deny`.
 /// - Every other agent gets `mode: manual` and `deny`. No guardian, so no
 ///   model ever approves a command. A streamed turn's request reaches
 ///   Talaria's door, which answers `deny` and records it; an unattended path
@@ -2395,6 +2387,12 @@ const APPROVAL_TIMEOUT_SECS: u64 = 60;
 ///   closes that an operator might want is `execute_code` on a non-Developer
 ///   agent. That is the Developer switch's job, and the toolset editor says
 ///   so.
+///
+/// `timeout` is how long Hermes holds a request open: a minute for an
+/// ordinary agent, whose requests the door refuses in milliseconds, and two
+/// for a Developer Agent, whose card a person has to read. The values and
+/// why live with the door (`talaria_gateway::fleet_approvals`), because the
+/// card closes itself five seconds before this runs out.
 fn fleet_approvals(routed: &mut Map<String, Value>, developer: bool) {
     let mut cfg = routed
         .get("approvals")
@@ -2407,7 +2405,12 @@ fn fleet_approvals(routed: &mut Map<String, Value>, developer: bool) {
         ("manual", "deny")
     };
     cfg.insert("mode".into(), json!(mode));
-    cfg.insert("timeout".into(), json!(APPROVAL_TIMEOUT_SECS));
+    cfg.insert(
+        "timeout".into(),
+        json!(talaria_gateway::fleet_approvals::approval_timeout_secs(
+            developer
+        )),
+    );
     cfg.insert("unattended_mode".into(), json!(unattended));
     cfg.insert("cron_mode".into(), json!(unattended));
     routed.insert("approvals".into(), Value::Object(cfg));
@@ -3509,14 +3512,16 @@ service:
         );
 
         // A Developer Agent gets approvals off and approve: the sandbox runs
-        // code all day, streamed turn or not.
+        // code all day, streamed turn or not. What it still asks can become a
+        // card a person reads, so Hermes holds it two minutes, and the card
+        // closes itself five seconds before that.
         let mut dev = Map::new();
         dev.insert("model".into(), json!("x"));
         fleet_approvals(&mut dev, true);
         assert_eq!(
             dev.get("approvals"),
             Some(&json!({
-                "mode": "off", "timeout": 60,
+                "mode": "off", "timeout": 120,
                 "unattended_mode": "approve", "cron_mode": "approve"
             }))
         );

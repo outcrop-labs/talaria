@@ -375,6 +375,8 @@ pub async fn send_turn(
         source: "chat".into(),
         ref_id: Some(conversation_id.to_string()),
         task_id: None,
+        // The person who sent it (or queued it) is reading the reply.
+        attended: true,
     };
     if pinned {
         let (system_message, message) = session_turn_parts(messages);

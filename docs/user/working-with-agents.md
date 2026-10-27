@@ -27,6 +27,7 @@ Hiring and configuring agents is an admin (or granted-manager) job — that's th
 | Get one reply, not three | The first mention of an agent in a message wins — one reply per agent per message |
 | Start a private session | Click the agent in Comms' **Agents** section — a new thread opens with fresh context ("history stays out of context"). Right-click → **New thread** anytime |
 | Watch it work | A breathing dot on the agent means it's working on a reply; you watch it type in the feed, and **Stop (Esc)** cancels mid-stream |
+| Answer an agent that asks first | A Developer Agent still asks before a few things nothing may wave through, such as writing a project's `AGENTS.md`. In your own chat with an agent you manage, the ask is a card on its reply: **Allow once** or **Deny**, with a countdown. Anyone else in the thread sees it without buttons. Unanswered, it closes after about two minutes and the agent is told no |
 | Teach an agent something | [Agent Studio](#agent-studio) — name the work, explain it in plain words, Muse drafts the skill |
 | Hand it a credential | The key icon in an agent chat — see [Comms](./comms.md#handing-an-agent-a-credential) |
 | Walk away mid-reply | The reply still finds you: the thread grows its unread pill and "`Dex` replied" rings the bell — once per thread, further replies fold in. Watching it type counts as reading; opening clears both |
