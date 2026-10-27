@@ -359,8 +359,11 @@ export function classify(pr, ctx = {}) {
 
   if (pr.state !== 'MERGED') {
     // Before red and conflict: both are about a head this push may have replaced.
+    // So are its checks — a stale head's verdict lists are not reported at all.
     const head = ctx.head ?? { ok: false, why: 'the pushed head was not read' }
-    if (!head.ok) return { kind: 'pending', ...base, waiting: [head.why] }
+    if (!head.ok) {
+      return { kind: 'pending', ...base, failing: [], pending: [], passing: [], checks: 0, superseded: 0, stale: true, waiting: [head.why] }
+    }
     base.note = head.note || ''
   }
 
@@ -550,6 +553,7 @@ A resolution you cannot make honestly — product behavior, or a generated file 
 
 function pendingSummary(result) {
   const parts = [...(result.waiting || [])]
+  if (result.stale) return parts.join('; ')
   if (result.pending.length) parts.push(result.pending.map((c) => c.name).join(', '))
   else if (result.checks === 0) parts.push('no checks reported yet')
   if (result.mergeable !== 'MERGEABLE') parts.push(`mergeable=${result.mergeable}`)

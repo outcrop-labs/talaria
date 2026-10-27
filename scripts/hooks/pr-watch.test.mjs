@@ -207,6 +207,8 @@ check('a PR head that is not this checkout\'s pushed HEAD is pending — even ov
   const r = classify(pr, { head, runs: RUNS575, ciWorkflow: 'CI' })
   eq(r.kind, 'pending')
   eq(r.waiting, [head.why])
+  // The stale head's checks are not this push's: none is reported, red or pending.
+  eq([r.failing.length, r.pending.length, r.passing.length, r.stale], [0, 0, 0, true])
   // and over a stale conflict
   eq(classify({ ...pr, mergeable: 'CONFLICTING' }, { head, runs: RUNS575 }).kind, 'pending')
 })
