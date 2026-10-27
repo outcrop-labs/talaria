@@ -203,10 +203,28 @@ credential, and the host runs the handler. The api never loads app code.
 
 ## The marketplace
 
-Manage → Apps → **Discover** reads a catalog index of community + official apps (configurable
-source URL; defaults to Outcrop's registry). Official apps are maintained by Outcrop Labs and
-labeled as such; community apps list their author and repo. The catalog being unreachable degrades
-gracefully — install-from-git always works.
+Manage → Apps → **Discover** lists apps from the **catalogs** the operator configures. A catalog
+is an https URL serving a JSON index — `{"apps": [{slug, name, repo, description, icon, author,
+official, version}]}`, where `repo` is an https git URL — and the list lives in Postgres
+(`app_catalogs`), edited on the Discover tab's **Catalogs** panel or at
+[`/api/admin/apps/catalogs`](./api/admin.md): add, rename, change the URL, turn off, reorder,
+remove. Reads are open to anyone with the Apps view; every change is an admin's and is audited.
+
+- Every enabled catalog is read at once, through the SSRF guard. Each app card names the catalog
+  it came from; when two catalogs list the same slug, Discover shows the one higher in the list
+  and the lower catalog notes it as shadowed.
+- A catalog that cannot be read shows its own error next to it; the others still list their apps.
+  Adding a catalog reads it once and says how many apps it lists or why it could not be read.
+- **The default is a migration, not a fallback.** Upgrading moved the old single catalog URL
+  (`apps_catalog_url`) in as the first catalog, or seeded Outcrop's registry
+  (`outcrop-labs/talaria-apps`) when none was set, so nothing an install showed went missing. No
+  code ever re-adds it: an operator who removes every catalog gets an empty Discover tab that says
+  no catalog is configured, and install from Git keeps working.
+- A dev stack can list a catalog served from this machine: `TALARIA_APPS_LOCAL_SOURCES=1` admits an
+  `http://` URL to loopback, and the SSRF guard needs that host in `TALARIA_FETCH_ALLOW_HOSTS`.
+
+Official apps are maintained by Outcrop Labs and labeled as such; community apps list their author
+and repo.
 
 **Trust:** installing an app adds code to your deployment that runs fully trusted, like the
 platform itself. Install only apps you trust; the UI says this wherever code enters the system.
@@ -220,7 +238,8 @@ The runtime safety boundary is the user session — see the
    kit's `talaria-app check && talaria-app build && talaria-app eval`
    ([outside-the-host.md](./sdk/outside-the-host.md)): the build is the host's own recipe.
 2. Anyone can now install it from its git URL.
-3. To appear in the marketplace, submit it to the catalog index (`outcrop-labs/talaria-apps`).
+3. To appear in an instance's Discover tab, list it in a catalog that instance reads: submit it to
+   Outcrop's index (`outcrop-labs/talaria-apps`), or serve your own index and add it as a catalog.
 
 Version bumps ship as git commits; an instance shows **update available** when the installed
 ref moves, and an admin updates it in one click (Lifecycle → Update above). Declare `sdk` (for
