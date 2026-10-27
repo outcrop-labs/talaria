@@ -27,6 +27,13 @@ The programming model — `defineApp`, the app server, the document store, MCP t
 is the [SDK docset](./sdk/README.md). Scaffold with `bun talaria app new <slug>`. An app with no
 UI (a server or agent tools only) declares no surfaces and ships no `app.ts`.
 
+An app written outside a Talaria checkout — a plugin repo of its own, on a laptop or in a
+Developer Agent's sandbox — builds against the **SDK kit** the instance serves
+(`GET /api/sdk/kit.tgz`): the SDK's declarations, the host's own build recipe and load probe,
+and the `talaria-app` CLI (`scaffold`, `check`, `build`, `eval`). A workbench job on a repo with a
+`talaria.json` gets it from `prepare_env`. See
+[Building an app outside the host](./sdk/outside-the-host.md).
+
 The manifest's rules — required `name`, the `surfaces` shape, an optional `slug` and an optional
 `sdk` version range — are published as [`sdk/talaria.schema.json`](./sdk/talaria.schema.json).
 Install and update refuse a manifest that breaks them, with the reason; an installed app whose
@@ -209,7 +216,9 @@ The runtime safety boundary is the user session — see the
 ## Publishing an app
 
 1. Push the app to a public https git repository with `talaria.json` at the root. Repo naming
-   convention: `talaria-app-<slug>` (the prefix strips on install).
+   convention: `talaria-app-<slug>` (the prefix strips on install). Check it first with the SDK
+   kit's `talaria-app check && talaria-app build && talaria-app eval`
+   ([outside-the-host.md](./sdk/outside-the-host.md)): the build is the host's own recipe.
 2. Anyone can now install it from its git URL.
 3. To appear in the marketplace, submit it to the catalog index (`outcrop-labs/talaria-apps`).
 

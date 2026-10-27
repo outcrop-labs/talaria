@@ -6,8 +6,9 @@
 // Changing what this file emits, or how the host reads it? Bump BUILD_RECIPE
 // in ./key.ts in the same change, so builds made by the old recipe are
 // rebuilt instead of reused.
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { builtinModules } from 'node:module'
+import { join, relative, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { build as viteBuild, type Plugin } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
@@ -35,6 +36,49 @@ function externalsGuard(): Plugin {
           throw new Error(`shared specifier bundled into app chunk: ${leaked[0]}`)
         }
       }
+    },
+  }
+}
+
+/** Why `source`, imported by an app's own file, does not resolve for an app —
+ *  or null when it may. An app has no node_modules of its own where it is
+ *  installed (a git checkout, built in place), so a bare import resolves only
+ *  if the host shares it: the client specifiers in a surface, the server
+ *  specifiers and node's builtins in server, mcp and harness code. Anything
+ *  else used to fail as Rollup's "failed to resolve import" — or, in a tree
+ *  that happened to sit under some node_modules (a plugin repo checked out
+ *  for development, the SDK kit's sandbox), to bundle a copy and pass, then
+ *  fail on the host. One rule, said the same way wherever the recipe runs. */
+export function unsharedImport(source: string, kind: 'client' | 'server'): string | null {
+  // A path (relative, absolute, a bundler's own `\0` virtual id) or a URL
+  // scheme (`node:`, `data:`) is not a package lookup.
+  if (/^[./\0]/.test(source) || /^[a-z][a-z0-9+.-]*:/i.test(source)) return null
+  if (kind === 'client' ? isClientSpecifier(source) : isServerSpecifier(source)) return null
+  if (kind === 'server' && builtinModules.includes(source)) return null
+  const shared = kind === 'client' ? 'svelte, @talaria/sdk, @lucide/svelte and @tanstack/svelte-query' : "@talaria/sdk/server (which re-exports zod as z) and node's builtins"
+  return `"${source}" is not shared with apps: an app has no node_modules of its own where it is installed, so a ${kind === 'client' ? 'surface' : 'server-side module'} may import only ${shared}`
+}
+
+/** `unsharedImport`, as a build plugin over the app's own files: imports made
+ *  from outside `appRoot` (the build's own entries, the host's stylesheet)
+ *  are not the app's to answer for. */
+function sharedImportsOnly(appRoot: string, kind: 'client' | 'server'): Plugin {
+  let root = appRoot
+  try {
+    root = realpathSync(appRoot)
+  } catch {
+    // A tree that is gone fails the build on its own.
+  }
+  const own = (importer: string | undefined) =>
+    !!importer && (importer.startsWith(`${root}${sep}`) || importer.startsWith(`${appRoot}${sep}`)) && !importer.includes(`${sep}node_modules${sep}`)
+  return {
+    name: 'talaria-app-shared-imports-only',
+    enforce: 'pre',
+    resolveId(source, importer) {
+      if (!own(importer)) return null
+      const why = unsharedImport(source, kind)
+      if (why) this.error(why)
+      return null
     },
   }
 }
@@ -85,6 +129,7 @@ async function buildClient(appDir: string, outDir: string): Promise<void> {
     plugins: [
       tailwindcss(),
       svelte({ configFile: join(uiRoot(), 'svelte.config.ts') }),
+      sharedImportsOnly(appDir, 'client'),
       externalsGuard(),
       dropCssImport(),
     ],
@@ -193,7 +238,7 @@ export async function buildHarnesses(dir: string, files: readonly string[], outD
     const entry = join(target, '..', '.harnesses-entry.js')
     writeFileSync(entry, harnessesEntrySource(dir, names, skipped))
     try {
-      await buildServerish(entry, target)
+      await buildServerish(entry, target, join(dir, '..'))
     } finally {
       rmSync(entry, { force: true })
     }
@@ -243,7 +288,7 @@ export async function buildHarnesses(dir: string, files: readonly string[], outD
   return { built: [], skipped }
 }
 
-async function buildServerish(entry: string, outFile: string): Promise<void> {
+async function buildServerish(entry: string, outFile: string, appRoot: string): Promise<void> {
   const shim = sdkServerShim()
   if (!shim) return
   const outDir = join(outFile, '..')
@@ -252,7 +297,7 @@ async function buildServerish(entry: string, outFile: string): Promise<void> {
     root: join(entry, '..'),
     cacheDir: join(outDir, '.cache-ssr'),
     logLevel: 'warn',
-    plugins: [externalsGuard()],
+    plugins: [sharedImportsOnly(appRoot, 'server'), externalsGuard()],
     ssr: { noExternal: [] },
     build: {
       ssr: true,
@@ -338,8 +383,8 @@ export async function buildAppAt(slug: string, dir: string, opts: { pointer: boo
     // and gets no app.js; one that declares a surface must ship app.ts.
     if (existsSync(join(dir, 'app.ts'))) await buildClient(dir, outDir)
     else clientlessOk(dir, existsSync(serverTs) || existsSync(mcpTs))
-    if (existsSync(serverTs)) await buildServerish(serverTs, join(outDir, 'server.js'))
-    if (existsSync(mcpTs)) await buildServerish(mcpTs, join(outDir, 'mcp.js'))
+    if (existsSync(serverTs)) await buildServerish(serverTs, join(outDir, 'server.js'), dir)
+    if (existsSync(mcpTs)) await buildServerish(mcpTs, join(outDir, 'mcp.js'), dir)
     // harnesses/*.ts → harnesses.js: the activity harnesses the app ships,
     // which the host registers for fitness (app-harnesses.ts). A file that
     // will not compile is left out and named there (buildHarnesses); it

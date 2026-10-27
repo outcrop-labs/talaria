@@ -26,8 +26,10 @@ never by importing a router of its own.
 | [mcp.md](./mcp.md) | Tools your app gives the org's agents |
 | [harnesses.md](./harnesses.md) | Activity harnesses: model calls Talaria runs for you |
 | [reference.md](./reference.md) | Every export, one row each — enforced against the source |
+| [outside-the-host.md](./outside-the-host.md) | Building an app outside the host: the SDK kit, `talaria-app`, the sandbox loop |
 
-Scaffold a new app with `bun talaria app new <slug>`.
+Scaffold a new app with `bun talaria app new <slug>` in a Talaria checkout, or with the SDK kit's
+`talaria-app scaffold` in a repo of its own ([outside-the-host.md](./outside-the-host.md)).
 
 ## Security model
 

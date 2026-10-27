@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-7 routes.
+8 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -19,6 +19,8 @@
 | [`/api/app-host/harnesses`](#apiapp-hostharnesses) | POST | `internal` |
 | [`/api/apps`](#apiapps) | GET | `session` |
 | [`/api/apps/{app}/*`](#apiappsapp) | ANY | `session` |
+| [`/api/sdk/kit.tgz`](#apisdkkittgz) | GET | `dual` |
+| [`/api/sdk/kit.tgz`](#apisdkkittgz) | HEAD | `dual` |
 
 ## `/api/app-host/{app}/harnesses/{id}/cases/{name}`
 
@@ -131,4 +133,25 @@ Source: [`ui/src/routes/api/apps.$app.$.ts`](../../ui/src/routes/api/apps.$app.$
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | ANY | `session` | — | `app-defined` | — | — |
+
+## `/api/sdk/kit.tgz`
+
+Source: [`ui/src/routes/api/sdk.kit.tgz.ts`](../../ui/src/routes/api/sdk.kit.tgz.ts)
+
+> GET /api/sdk/kit.tgz — the SDK kit this host build serves: declarations
+> for @talaria/sdk, /server and /testing, the host's app build recipe and
+> load probe, the shared-module list, talaria.json's schema, and the
+> `talaria-app` CLI (scaffold, check, build, eval), as a gzipped tar.
+> `x-talaria-kit-version` names the kit (the host build it came from, then
+> a digest of its contents), `x-talaria-sdk-version` the SDK it serves, and
+> `etag` its bytes (`if-none-match` answers 304; HEAD, the headers alone).
+> An enabled agent presenting its own credential (`x-api-key`), or a
+> signed-in member, may fetch it: it carries no secret, but it names this
+> host's build exactly. A workbench job's prepare_env installs it when the
+> repo has a talaria.json. See docs/sdk/outside-the-host.md.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `dual` | — | `…` | — | — |
+| HEAD | `dual` | — | `…` | — | — |
 

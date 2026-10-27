@@ -7854,6 +7854,7 @@ dependencies = [
  "talaria-fleet-budget",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
+ "talaria-gateway",
  "talaria-github",
  "talaria-mcp-jsonrpc",
  "talaria-plugins",

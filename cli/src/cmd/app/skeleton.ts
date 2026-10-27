@@ -227,3 +227,105 @@ export default defineAppMcp({
 `,
   }
 }
+
+/** A name as a harness id's family: lowercase words joined by dashes, the
+ *  way a builtin spells `muse:ticket`. The id must be unique across the
+ *  instance's enabled apps (the first slug in sort order keeps a contested
+ *  one), so it carries the app's name rather than a fixed word every
+ *  scaffolded app would share. */
+export function harnessFamily(name: string): string {
+  const family = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
+  return family || 'app'
+}
+
+/** The starter harness: one JSON activity harness under `harnesses/`, with one
+ *  fixture, and a reply recorded for that fixture so `talaria-app eval` runs
+ *  offline from the first commit. By path under the app's root. */
+export function harnessStarterFiles(opts: { name: string }): Record<string, string> {
+  const id = `${harnessFamily(opts.name)}:tidy-title`
+  const fixture = 'a rambling title gets shorter'
+  return {
+    'harnesses/tidy-title.ts': `// An activity harness: a model call this app declares — a prompt, an output
+// contract, a failure policy, and fixtures the fitness sweep scores candidate
+// models on (Admin → Models → Fitness). One per file under harnesses/.
+// \`talaria-app eval\` replays the fixtures against the replies recorded in
+// harnesses/recorded/, or through the Talaria gateway with --gateway.
+import { defineHarness, z } from '@talaria/sdk/server'
+
+const TIDY = z.object({ title: z.string().min(1), changed: z.boolean() })
+
+export default defineHarness<{ title: string }, z.infer<typeof TIDY>>({
+  id: ${JSON.stringify(id)},
+  label: 'Tidy an item title',
+  job: 'Rewrites a rough item title as a short, specific one.',
+  requires: ['json', 'instruction-following'],
+  floor: {
+    capabilities: [],
+    refuseBelow: false,
+    note: 'Needs a model that returns JSON; one probed unable to is refused rather than asked.',
+  },
+  model: {},
+  render: (input) => [
+    {
+      role: 'system',
+      content:
+        'Rewrite the item title as a short, specific title of at most 8 words. Reply with JSON: {"title": string, "changed": boolean}.',
+    },
+    { role: 'user', content: input.title },
+  ],
+  output: { kind: 'json', schema: TIDY },
+  onFailure: 'null',
+  evals: [
+    {
+      name: ${JSON.stringify(fixture)},
+      input: { title: 'so basically we need to remember to call the supplier about the late invoice from march' },
+      check: (v) => (v.title.trim().split(/\\s+/).length <= 8 ? null : \`"\${v.title}" is longer than 8 words\`),
+    },
+  ],
+})
+`,
+    'harnesses/recorded/tidy-title.json': `${JSON.stringify(
+      {
+        harness: id,
+        note: 'Replies talaria-app eval replays offline, by fixture name. Re-record through the gateway with `talaria-app eval --gateway --model <id> --record`.',
+        model: 'recorded by hand',
+        cases: {
+          [fixture]: [{ text: JSON.stringify({ title: 'Call the supplier about the March invoice', changed: true }) }],
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  }
+}
+
+/** What a plugin repo carries beyond the app: the ignore list and a README
+ *  that says how the app is checked before a pull request. By path under the
+ *  repo's root, which is the app's root. */
+export function standaloneRepoFiles(opts: { name: string }): Record<string, string> {
+  return {
+    '.gitignore': `# talaria-app writes its work here; the kit lives outside the repo.
+.talaria/
+node_modules/
+`,
+    'README.md': `# ${opts.name}
+
+A Talaria app: \`talaria.json\` is its manifest, \`app.ts\` its surfaces, \`server.ts\`
+its API under \`/api/apps/<slug>/\`, \`mcp.ts\` the tools agents can call, and
+\`harnesses/\` the model calls it declares.
+
+It builds against \`@talaria/sdk\`, which the Talaria instance serves as a kit
+(\`GET /api/sdk/kit.tgz\`). With the kit's \`talaria-app\` on the PATH:
+
+    talaria-app check   # talaria.json, typecheck, the app's own tests
+    talaria-app build   # the host's build recipe and load probe, run here
+    talaria-app eval    # the harnesses' fixtures, against harnesses/recorded/
+
+An admin installs it from this repository (Manage → Apps → Install from Git).
+`,
+  }
+}
