@@ -37,6 +37,30 @@
 // not a conflict (`strict` is off on `rc`); it is named in the proof line and
 // does not block.
 //
+// ONE VERDICT PER CHECK, AND ONLY FOR THE COMMIT YOU PUSHED. The rollup GitHub
+// returns lists every check run on the head commit, superseded ones included:
+// judge.yml re-runs on a body edit with cancel-in-progress, so editing the body
+// right after `gh pr create` leaves a CANCELLED `judge (standards)` beside the
+// newer green one. Checks are grouped by workflow and name and the latest wins
+// (job id, then start time); a CANCELLED run that is itself the latest is
+// still red. Green also needs (1) the PR's head to be the pushed commit — this
+// checkout's HEAD when it is on the PR's branch (and pushed: `origin/<branch>`
+// is what `git push` sent), or a PR head that contains it; the branch's head on
+// GitHub from anywhere else. This script never fetches, so a PR head pushed
+// from elsewhere is often not in this clone: git cannot say whether it contains
+// HEAD (`merge-base` exits 128), and GitHub's compare answers instead.
+// For a moment after `git push`, `gh pr view` still returns the previous head
+// and its finished rollup; a head mismatch is pending, ahead of red and
+// conflict, since both describe a head the push replaced. A mismatch that
+// waiting cannot clear — HEAD not pushed, or a PR head that dropped it — exits
+// `pending` at once, as `--once` would, instead of polling to the wall clock.
+// (2) A CI run (ci.yml's
+// `name:`; it has no paths filter, so it always runs) for that head, with
+// every workflow run on the head completed. Right after a push the rollup can
+// hold only the fastest workflow; "nothing pending" is not "everything ran".
+// A workflow run that failed with no failing check in the rollup (a startup
+// failure has no jobs) is red.
+//
 // BOUNDS. First poll is immediate. Then exponential backoff from 20s, capped
 // at 2min, until a 45-minute wall clock. The skill quotes these numbers; they
 // are the contract. A poll that is still pending at the wall clock exits 2
@@ -51,7 +75,10 @@
 //   No --pr: the open PR for the current branch. Run from the repo root.
 
 import { spawnSync } from 'node:child_process'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const argv = process.argv.slice(2)
 
@@ -105,20 +132,26 @@ const FIELDS = [
   'baseRefName',
   'headRefName',
   'headRefOid',
+  'headRepository',
+  'headRepositoryOwner',
   'statusCheckRollup',
   'title',
 ].join(',')
+
+const RUN_FIELDS = 'databaseId,workflowName,event,status,conclusion,headSha,createdAt,url'
 
 function couldNotRun(why) {
   console.error(`pr-watch: could not run — not a pass: ${why}`)
   process.exit(1)
 }
 
-if (flag('--help') || flag('-h')) {
+function printHelp() {
   console.log(`pr-watch — poll a pull request's checks and mergeable state.
 
-exit 0   checks green and the PR is mergeable against rc. Proof line on stdout.
-exit 2   red | conflict | pending (--once) | timeout | closed | base. Reason on stderr.
+exit 0   checks green (the latest run of each) on the pushed head, the CI workflow's
+         run for that head finished, and the PR mergeable against rc. Proof line on stdout.
+exit 2   red | conflict | pending (--once, or a head that waiting cannot fix) | timeout |
+         closed | base. Reason on stderr.
 exit 1   could not run. Not a pass.
 
   node scripts/hooks/pr-watch.mjs [--pr <n|url>] [--once] [--json]
@@ -147,8 +180,6 @@ const backoff = numberArg('--backoff', 2, 1)
 const deadlineSec = numberArg('--deadline', 45 * 60, 1)
 const logLines = numberArg('--log-lines', 80, 1)
 
-if (positional.length > 1) couldNotRun(`unexpected arguments: ${positional.slice(1).join(' ')}`)
-if (maxInterval < intervalStart) couldNotRun('--max-interval must be >= --interval')
 
 function gh(args, timeoutMs) {
   return spawnSync('gh', args, {
@@ -175,7 +206,25 @@ function currentBranch() {
   return name && name !== 'HEAD' ? name : null
 }
 
-function normalize(raw) {
+const short = (sha) => String(sha || '').slice(0, 12)
+
+/** A check's job id, from an Actions URL (`/actions/runs/<run>/job/<job>`).
+ *  Job ids are allocated when the job is created, so a newer run's job — or a
+ *  re-run's — has the larger one. null for anything that is not an Actions job. */
+function jobIdOf(url) {
+  const m = /\/actions\/runs\/\d+\/job\/(\d+)/.exec(String(url || ''))
+  return m ? Number(m[1]) : null
+}
+
+/** A start time in ms, or Infinity when the check has not started: gh renders
+ *  a queued run's missing start as the zero time, and a queued run of a name
+ *  is newer than the finished one it is replacing. */
+function startOf(iso) {
+  const t = Date.parse(iso || '')
+  return Number.isFinite(t) && t > 0 ? t : Infinity
+}
+
+export function normalize(raw, index = 0) {
   const name = raw.name || raw.context || '(unnamed check)'
   const status = String(raw.status || '').toUpperCase()
   const conclusion = String(raw.conclusion || '').toUpperCase()
@@ -185,20 +234,145 @@ function normalize(raw) {
   if (PASS.has(settled)) verdict = 'pass'
   else if (FAIL.has(settled)) verdict = 'fail'
   else if (settled && settled !== 'PENDING' && status === 'COMPLETED') verdict = 'fail'
+  const url = raw.detailsUrl || raw.targetUrl || ''
+  const workflow = raw.workflowName || ''
   return {
     name,
     verdict,
     conclusion: settled || status || 'PENDING',
-    url: raw.detailsUrl || raw.targetUrl || '',
-    workflow: raw.workflowName || '',
+    url,
+    workflow,
+    key: `${workflow}\u0000${name}`,
+    jobId: jobIdOf(url),
+    started: startOf(raw.startedAt),
+    index,
   }
 }
 
-function classify(pr) {
-  const checks = (pr.statusCheckRollup || []).map(normalize)
+function newer(a, b) {
+  if (a.jobId !== null && b.jobId !== null && a.jobId !== b.jobId) return a.jobId > b.jobId
+  if (a.started !== b.started) return a.started > b.started
+  return a.index > b.index
+}
+
+/** One entry per workflow + check name: the latest. The rollup also carries
+ *  the runs that a newer one superseded (a cancelled judge beside the re-run
+ *  a body edit started); `gh pr checks` drops those, and so does this. */
+export function latestChecks(checks) {
+  const latest = new Map()
+  for (const c of checks) {
+    const seen = latest.get(c.key)
+    if (!seen || newer(c, seen)) latest.set(c.key, c)
+  }
+  return [...latest.values()].sort((a, b) => a.index - b.index)
+}
+
+/** `gh run list --commit <head>` rows → the latest run per workflow and event,
+ *  with a verdict. A re-run keeps its id and reports its newest attempt. */
+export function latestRuns(rows, headSha) {
+  const latest = new Map()
+  for (const r of rows || []) {
+    if (headSha && r.headSha && r.headSha !== headSha) continue
+    const key = `${r.workflowName}\u0000${r.event}`
+    const seen = latest.get(key)
+    const id = Number(r.databaseId) || 0
+    const seenId = seen ? Number(seen.databaseId) || 0 : -1
+    if (!seen || id > seenId || (id === seenId && startOf(r.createdAt) > startOf(seen.createdAt))) latest.set(key, r)
+  }
+  return [...latest.values()].map((r) => {
+    const status = String(r.status || '').toUpperCase()
+    const conclusion = String(r.conclusion || '').toUpperCase()
+    let verdict = 'pending'
+    if (status === 'COMPLETED') verdict = PASS.has(conclusion) ? 'pass' : 'fail'
+    return {
+      workflow: r.workflowName || '(unnamed workflow)',
+      event: r.event || '',
+      verdict,
+      conclusion: status === 'COMPLETED' ? conclusion || 'UNKNOWN' : status || 'PENDING',
+      url: r.url || '',
+    }
+  })
+}
+
+/** Is the PR's head the commit that was pushed? `facts` is readHeadFacts():
+ *  on the PR's branch, this checkout's HEAD, its `origin/<branch>` ref (which
+ *  `git push` sets to the commit it sent), where the PR head stands against
+ *  HEAD (`relation`, in GitHub compare's words from the PR head's side), and —
+ *  when that does not settle it — the branch's head on GitHub; anywhere else,
+ *  just the branch's head on GitHub. `ok: false` is pending: the PR has not
+ *  caught up yet, or (`needsAction`) it cannot without someone acting. */
+export function headCheck(pr, facts) {
+  const want = pr.headRefOid
+  const branch = pr.headRefName
+  if (!facts) return { ok: false, why: 'the pushed head was not read' }
+  if (facts.onBranch) {
+    const { local, tracking, relation, remote } = facts
+    if (local === want) return { ok: true }
+    if (relation === 'ahead') {
+      return { ok: true, note: `the PR head is ahead of this checkout (${short(local)})` }
+    }
+    if (tracking !== local) {
+      const at = tracking ? `origin/${branch} is ${short(tracking)}` : `there is no origin/${branch}`
+      return {
+        ok: false,
+        needsAction: true,
+        why: `this checkout's HEAD ${short(local)} is not pushed (${at}) — push it: git push -u origin ${branch}`,
+      }
+    }
+    // HEAD is pushed, as far as this clone knows, and the PR reads another commit.
+    if (relation === 'behind' || remote === local) {
+      return { ok: false, why: `GitHub has not registered the push of ${short(local)} yet — the PR still reads ${short(want)}` }
+    }
+    if (remote && remote !== want) {
+      return { ok: false, why: `${branch} is at ${short(remote)} and the PR still reads ${short(want)} — GitHub has not registered the push yet` }
+    }
+    if (remote === want && relation === 'diverged') {
+      return {
+        ok: false,
+        needsAction: true,
+        why: `the PR head ${short(want)} does not contain this checkout's HEAD ${short(local)} — ${branch} moved on GitHub without it. Reconcile before claiming done: git fetch origin ${branch} && git log --oneline --left-right HEAD...origin/${branch}`,
+      }
+    }
+    if (remote === want) {
+      return {
+        ok: false,
+        why: `could not tell whether the PR head ${short(want)} contains this checkout's HEAD ${short(local)} (${facts.compareError || 'no answer'}) — git fetch origin ${branch} lets git answer it`,
+      }
+    }
+    if (facts.noHeadRepo) {
+      return { ok: false, needsAction: true, why: `the PR reads ${short(want)}, not this checkout's HEAD ${short(local)}, and its head repository is gone` }
+    }
+    return {
+      ok: false,
+      why: `the PR reads ${short(want)}, not this checkout's pushed HEAD ${short(local)}, and ${branch} on GitHub could not be read: ${facts.remoteError || 'no answer'}`,
+    }
+  }
+  if (facts.noHeadRepo) return { ok: true, note: 'the head repository is gone, so the head was not compared' }
+  if (!facts.remote) return { ok: false, why: `could not read the pushed head of ${branch}: ${facts.remoteError || 'no answer'}` }
+  if (facts.remote === want) return { ok: true }
+  return {
+    ok: false,
+    why: `${branch} is at ${short(facts.remote)} and the PR still reads ${short(want)} — GitHub has not registered the push yet`,
+  }
+}
+
+/** The verdict. `ctx.head` is headCheck()'s answer, `ctx.runs` the raw
+ *  `gh run list` rows for the head (or null with `ctx.runsError`), and
+ *  `ctx.ciWorkflow` the CI workflow's name. Merged and closed PRs skip the
+ *  head and run checks: there is no push left to wait for. */
+export function classify(pr, ctx = {}) {
+  const all = (pr.statusCheckRollup || []).map(normalize)
+  const checks = latestChecks(all)
   const failing = checks.filter((c) => c.verdict === 'fail')
   const pending = checks.filter((c) => c.verdict === 'pending')
   const passing = checks.filter((c) => c.verdict === 'pass')
+  const runs = Array.isArray(ctx.runs) ? latestRuns(ctx.runs, pr.headRefOid) : null
+  // A run that failed with no failing check to show for it — a startup failure
+  // has no jobs, so the rollup alone would read it as "nothing pending".
+  for (const r of runs || []) {
+    if (r.verdict !== 'fail' || failing.some((c) => c.workflow === r.workflow)) continue
+    failing.push({ name: `${r.workflow} (workflow run)`, verdict: 'fail', conclusion: r.conclusion, url: r.url, workflow: r.workflow })
+  }
   const mergeable = String(pr.mergeable || 'UNKNOWN').toUpperCase()
   const mergeState = String(pr.mergeStateStatus || 'UNKNOWN').toUpperCase()
   const conflict = mergeable === 'CONFLICTING' || mergeState === 'DIRTY'
@@ -209,17 +383,139 @@ function classify(pr) {
     mergeable,
     mergeState,
     checks: checks.length,
+    superseded: all.length - checks.length,
+    waiting: [],
+    note: '',
   }
 
   if (pr.state === 'CLOSED') return { kind: 'closed', ...base }
   if (pr.baseRefName !== 'rc') return { kind: 'base', ...base }
+
+  if (pr.state !== 'MERGED') {
+    // Before red and conflict: both are about a head this push may have replaced.
+    // So are its checks — a stale head's verdict lists are not reported at all.
+    const head = ctx.head ?? { ok: false, why: 'the pushed head was not read' }
+    if (!head.ok) {
+      return {
+        kind: 'pending',
+        ...base,
+        failing: [],
+        pending: [],
+        passing: [],
+        checks: 0,
+        superseded: 0,
+        stale: true,
+        needsAction: Boolean(head.needsAction),
+        waiting: [head.why],
+      }
+    }
+    base.note = head.note || ''
+  }
+
   if (conflict) return { kind: 'conflict', ...base }
   if (failing.length) return { kind: 'red', ...base }
   if (pr.state === 'MERGED') return { kind: 'green', ...base, merged: true }
 
+  const ci = ctx.ciWorkflow || 'CI'
+  const waiting = []
+  if (!runs) {
+    waiting.push(`workflow runs for ${short(pr.headRefOid)} not read${ctx.runsError ? `: ${ctx.runsError}` : ''}`)
+  } else {
+    if (!runs.some((r) => r.workflow === ci)) waiting.push(`no ${ci} workflow run for ${short(pr.headRefOid)} yet`)
+    const unsettled = runs.filter((r) => r.verdict === 'pending')
+    if (unsettled.length) waiting.push(`workflow run(s) not finished: ${unsettled.map((r) => r.workflow).join(', ')}`)
+  }
+
   const mergeKnown = mergeable === 'MERGEABLE'
-  if (!mergeKnown || pending.length || checks.length === 0) return { kind: 'pending', ...base }
+  if (!mergeKnown || pending.length || checks.length === 0 || waiting.length) {
+    return { kind: 'pending', ...base, waiting }
+  }
   return { kind: 'green', ...base }
+}
+
+/** ci.yml's top-level `name:` — what `gh run list` calls the CI workflow. */
+function ciWorkflowName() {
+  const file = resolve(process.cwd(), '.github/workflows/ci.yml')
+  if (!existsSync(file)) return 'CI'
+  const m = /^name:[ \t]*['"]?([^'"#\n]+?)['"]?[ \t]*(?:#.*)?$/m.exec(readFileSync(file, 'utf8'))
+  return m ? m[1].trim() : 'CI'
+}
+
+function git(args) {
+  const run = spawnSync('git', args, { cwd: process.cwd(), encoding: 'utf8' })
+  return { ok: run.status === 0, out: (run.stdout || '').trim(), status: run.status }
+}
+
+function headRepoPath(pr) {
+  const owner = pr.headRepositoryOwner?.login
+  const name = pr.headRepository?.name
+  return owner && name ? `${owner}/${name}` : null
+}
+
+/** The branch's head on GitHub, from the git ref API. */
+function readRemoteHead(pr, io) {
+  const path = headRepoPath(pr)
+  if (!path) return { noHeadRepo: true }
+  const ref = String(pr.headRefName).split('/').map(encodeURIComponent).join('/')
+  const run = io.gh(['api', `repos/${path}/git/ref/heads/${ref}`, '--jq', '.object.sha'], 60_000)
+  if (run.status !== 0) return { remote: null, remoteError: ghFailure(run).split('\n')[0] }
+  return { remote: String(run.stdout).trim() }
+}
+
+const RELATIONS = new Set(['ahead', 'behind', 'diverged'])
+
+/** Where the PR head `want` stands against `local`, in the words of GitHub's
+ *  compare from the PR head's side: 'ahead' (it contains local), 'behind'
+ *  (local contains it), 'diverged', or null with `compareError`. git answers
+ *  when both commits are in this clone. This script never fetches, so a head
+ *  pushed from another checkout often is not, and `merge-base` exits 128 —
+ *  which is not a "no". GitHub's compare answers that case. */
+function relationOf(pr, local, want, io) {
+  const ancestor = (a, b) => io.git(['merge-base', '--is-ancestor', a, b]).status
+  const up = ancestor(local, want)
+  if (up === 0) return { relation: 'ahead' }
+  if (up === 1) {
+    const down = ancestor(want, local)
+    if (down === 0) return { relation: 'behind' }
+    if (down === 1) return { relation: 'diverged' }
+  }
+  const path = headRepoPath(pr)
+  if (!path) return { relation: null, compareError: 'the head repository is gone' }
+  const run = io.gh(['api', `repos/${path}/compare/${local}...${want}?per_page=1`, '--jq', '.status'], 60_000)
+  if (run.status !== 0) return { relation: null, compareError: `compare: ${ghFailure(run).split('\n')[0]}` }
+  const status = String(run.stdout).trim()
+  if (status === 'identical') return { relation: 'ahead' }
+  if (RELATIONS.has(status)) return { relation: status }
+  return { relation: null, compareError: `compare answered ${status || 'nothing'}` }
+}
+
+/** What headCheck() needs, read from this checkout and GitHub. `io` is the
+ *  git and gh runners and the current branch, injected so the test can drive
+ *  the real git reads against a scratch repository. */
+export function readHeadFacts(pr, io = { branch: currentBranch(), git, gh }) {
+  const want = String(pr.headRefOid)
+  if (io.branch !== pr.headRefName) return { onBranch: false, ...readRemoteHead(pr, io) }
+  const local = io.git(['rev-parse', 'HEAD']).out
+  const tracking = io.git(['rev-parse', '--verify', '-q', `refs/remotes/origin/${pr.headRefName}`])
+  const facts = { onBranch: true, local, tracking: tracking.ok ? tracking.out : null }
+  if (local === want) return facts
+  Object.assign(facts, relationOf(pr, local, want, io))
+  // Settled without GitHub's branch: the PR contains HEAD, HEAD is not pushed,
+  // or the PR is an older commit of HEAD's own history (the push not registered).
+  if (facts.relation === 'ahead' || facts.relation === 'behind' || facts.tracking !== local) return facts
+  return { ...facts, ...readRemoteHead(pr, io) }
+}
+
+function readRuns(sha) {
+  const args = ['run', 'list', '--commit', String(sha), '--limit', '100', '--json', RUN_FIELDS]
+  if (repo) args.push('--repo', repo)
+  const run = gh(args, 60_000)
+  if (run.status !== 0) return { runs: null, runsError: ghFailure(run).split('\n')[0] }
+  try {
+    return { runs: JSON.parse(run.stdout) }
+  } catch (e) {
+    return { runs: null, runsError: `gh run list did not return JSON (${e.message})` }
+  }
 }
 
 function readPr() {
@@ -278,8 +574,11 @@ function payloadOf(pr, result) {
     mergeStateStatus: result.mergeState,
     failing: result.failing.map((c) => ({ name: c.name, conclusion: c.conclusion, url: c.url })),
     pending: result.pending.map((c) => ({ name: c.name, conclusion: c.conclusion, url: c.url })),
+    waiting: result.waiting,
+    needsAction: Boolean(result.needsAction),
     passing: result.passing.length,
     skipped: result.passing.filter((c) => c.conclusion === 'SKIPPED').length,
+    superseded: result.superseded,
   }
 }
 
@@ -341,13 +640,16 @@ A resolution you cannot make honestly — product behavior, or a generated file 
 }
 
 function pendingSummary(result) {
-  if (result.pending.length) return result.pending.map((c) => c.name).join(', ')
-  if (result.checks === 0) return 'no checks reported yet'
-  if (result.mergeable !== 'MERGEABLE') return `mergeable=${result.mergeable}`
-  return 'not settled'
+  const parts = [...(result.waiting || [])]
+  if (result.stale) return parts.join('; ')
+  if (result.pending.length) parts.push(result.pending.map((c) => c.name).join(', '))
+  else if (result.checks === 0) parts.push('no checks reported yet')
+  if (result.mergeable !== 'MERGEABLE') parts.push(`mergeable=${result.mergeable}`)
+  return parts.join('; ') || 'not settled'
 }
 
 async function main() {
+  const ciWorkflow = ciWorkflowName()
   const started = Date.now()
   const deadlineMs = deadlineSec * 1000
   let interval = intervalStart
@@ -372,7 +674,13 @@ async function main() {
     sawRead = true
     readFailures = 0
     const pr = read.pr
-    const result = classify(pr)
+    const open = pr.state !== 'MERGED' && pr.state !== 'CLOSED'
+    const ctx = { ciWorkflow }
+    if (open) {
+      ctx.head = headCheck(pr, readHeadFacts(pr))
+      if (ctx.head.ok) Object.assign(ctx, readRuns(pr.headRefOid))
+    }
+    const result = classify(pr, ctx)
     const payload = payloadOf(pr, result)
 
     if (result.kind === 'green') {
@@ -380,10 +688,13 @@ async function main() {
       const draft = pr.isDraft ? ' draft' : ''
       const behind = result.mergeState === 'BEHIND' ? ' behind rc (strict is off; not a conflict).' : ''
       const merged = result.merged ? ' already merged.' : ''
+      const superseded = result.superseded ? `, ${result.superseded} superseded run(s) ignored` : ''
+      const ran = result.merged ? '' : `, ${ciWorkflow} run settled`
+      const note = result.note ? ` (${result.note})` : ''
       emit(
         0,
         'pr-watch: green',
-        `#${pr.number}${draft} ${pr.url} — ${result.passing.length} checks passed (${skipped} skipped), mergeable=${result.mergeable} at ${String(pr.headRefOid).slice(0, 12)}.${behind}${merged}`,
+        `#${pr.number}${draft} ${pr.url} — ${result.passing.length} checks passed (${skipped} skipped${superseded})${ran}, mergeable=${result.mergeable} at ${short(pr.headRefOid)}${note}.${behind}${merged}`,
         payload,
       )
     }
@@ -409,11 +720,15 @@ async function main() {
 
     const elapsed = Date.now() - started
     const left = Math.max(0, Math.ceil((deadlineMs - elapsed) / 1000))
-    if (once) {
+    // Waiting cannot clear a HEAD nobody pushed, so the answer comes now.
+    if (once || result.needsAction) {
+      const next = result.needsAction
+        ? 'Waiting will not change this: do what it says, then run this watcher again.'
+        : 'Re-run without --once to wait, or run this again.'
       emit(
         2,
         'pr-watch: pending',
-        `${branchNote(pr)}#${pr.number} is not done — ${pendingSummary(result)}.\n${pr.url}\n${result.pending.map(checkLine).join('\n')}\nRe-run without --once to wait, or run this again. Do not claim done.`,
+        `${branchNote(pr)}#${pr.number} is not done — ${pendingSummary(result)}.\n${pr.url}\n${result.pending.map(checkLine).join('\n')}\n${next} Do not claim done.`,
         payload,
       )
     }
@@ -435,4 +750,20 @@ async function main() {
   }
 }
 
-main().catch((err) => couldNotRun(err.message))
+function invokedDirectly() {
+  const file = process.argv[1]
+  if (!file) return false
+  try {
+    return realpathSync(file) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return pathToFileURL(resolve(file)).href === import.meta.url
+  }
+}
+
+// The verdict above is imported by pr-watch.test.mjs; only a direct run polls.
+if (invokedDirectly()) {
+  if (flag('--help') || flag('-h')) printHelp()
+  if (positional.length > 1) couldNotRun(`unexpected arguments: ${positional.slice(1).join(' ')}`)
+  if (maxInterval < intervalStart) couldNotRun('--max-interval must be >= --interval')
+  main().catch((err) => couldNotRun(err.message))
+}

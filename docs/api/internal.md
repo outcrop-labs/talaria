@@ -7,13 +7,41 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-3 routes.
+4 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
+| [`/api/internal/apps/{slug}/guard`](#apiinternalappsslugguard) | POST | `internal` |
 | [`/api/internal/apps/{slug}/llm-key`](#apiinternalappsslugllm-key) | POST | `internal` |
 | [`/api/internal/apps/agent-turn`](#apiinternalappsagent-turn) | POST | `internal` |
 | [`/api/internal/apps/mcp-sync`](#apiinternalappsmcp-sync) | POST | `internal` |
+
+## `/api/internal/apps/{slug}/guard`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/internal_apps_guard.rs`](../../api/crates/talaria-routes-admin/src/admin/internal_apps_guard.rs)
+
+> The app host hands over the final reply of one harness run an app's
+> code made, for the guard's semantic rules — the ones a pattern cannot
+> answer and the operator's decision model judges (`implied_completion`:
+> does the reply claim something was done that nothing in its tool record
+> did?). `{ answer, tools, model, caller?, rules }`: `tools` is the run's
+> tool record (the backing tools the host's own structural pass read),
+> `rules` the semantic rules the harness's `guard.rules` keeps (all of
+> them when it declares none) and an admin has on — the host asks
+> nothing when that leaves none. The host runs every structural rule
+> itself and the relay runs none for an app's key, so each rule is judged
+> once: the structural ones there, these here. A rule is judged only
+> while an admin has it on and a decision model is configured; the pass
+> runs detached, after the reply has gone back to the app, so it records
+> findings under the run's caller stamp (kept inside `app:<slug>`) and
+> can never change the answer. Answers 202 with the rules it took; 404
+> when the app is not enabled. Callable only with the root-derived
+> service credential (`x-talaria-internal`); the host's proxy never
+> forwards `/api/internal/*`.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `internal` | — | `{ok, rules}` | 200, 202, 400, 404 | — |
 
 ## `/api/internal/apps/{slug}/llm-key`
 

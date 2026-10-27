@@ -56,9 +56,16 @@ budget, and drives a fleet agent's turn through its persona door so the agent's 
 the turn's one meter. It skips its own guard pass for an app's key, because the TS runner has
 already guarded the reply with the harness's narrowed rule set. The TS runner still resolves the
 model chain and reads the capability floor itself, against the same `model_capabilities` facts
-(probe facts below their probe's revision read as unknown, as in Rust); its guard registry
-carries the structural rules, and `implied_completion` — a semantic rule judged by the decision
-model — runs only on the api's side.
+(probe facts below their probe's revision read as unknown, as in Rust). Its guard registry runs
+the structural rules and declares `implied_completion`, the semantic rule the operator's decision
+model judges. The decision model and its key live in the api, so after its own pass the runner
+hands the run's final reply, with the tool record that pass read, to
+`POST /api/internal/apps/{slug}/guard`, once per run. The api judges the semantic rules the
+harness keeps and an admin has on, detached, and files what fires under the run's caller stamp.
+Each rule is judged once: the structural ones in the host, the semantic ones in the api, and the
+relay runs neither for an app's key. A relay call could not have done it: it cannot tell a run's
+answer from a repair turn or a loop turn, and it never sees a tool record the harness grounded
+itself.
 
 **One chokepoint, and the architecture holds it.** The hand-written-harness census this file used
 to cite left with the port — the last entry it carried (`channel-replies`, a live persona

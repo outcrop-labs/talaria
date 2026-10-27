@@ -43,6 +43,7 @@ import { withApp } from './app-scope'
 import { loadAppHarnesses, type AppHarnessFile } from './app-load'
 import { readCurrent, writeCurrent } from './app-build/status'
 import { appHarnessSlot } from './app-harness-models'
+import { strayPin, strayPinSentence } from './harness/model'
 
 /** The ledger's chars/4 fallback (talaria-gateway `estimate_tokens`), for a
  *  replay whose reply carried no usage — so the fitness page and the invoice
@@ -329,6 +330,20 @@ export interface AppHarnessProblem {
 export interface AppHarnessListing {
   harnesses: AppHarness[]
   problems: AppHarnessProblem[]
+  /** Harnesses that registered but will not run as their author meant —
+   *  today, a `model.pin` that names no platform agent. One sentence each,
+   *  shaped like a problem; the harness is in `harnesses` all the same. */
+  warnings: AppHarnessProblem[]
+}
+
+/** What a harness that passed every check may still get wrong without
+ *  failing one: a pin that names no platform agent. Not a skip — the run
+ *  falls through to the rest of its chain, and the agent may be one a later
+ *  host knows — but the author meant a model, and every run that finds
+ *  nothing else would say only "no model available". */
+export function harnessWarnings(slug: string, def: AppHarnessDef): string[] {
+  const pin = strayPin(def.model)
+  return pin ? [strayPinSentence(def.id, pin, appHarnessSlot(slug, def.id))] : []
 }
 
 /** The edges the listing reads, injected — the module loader and the enabled
@@ -377,6 +392,7 @@ export async function listAppHarnesses(layer: Partial<AppHarnessLayer> = {}): Pr
   const owner = new Map<string, string>()
   const harnesses: AppHarness[] = []
   const problems: AppHarnessProblem[] = []
+  const warnings: AppHarnessProblem[] = []
   const skip = (app: string, file: string, id: string | null, reason: string) => {
     problems.push({ app, file, id, reason })
     edges.warn(`app "${app}": harnesses/${file} skipped — ${reason}`)
@@ -427,9 +443,13 @@ export async function listAppHarnesses(layer: Partial<AppHarnessLayer> = {}): Pr
       }
       owner.set(id, app.slug)
       harnesses.push(harness)
+      for (const reason of harnessWarnings(app.slug, checked.def)) {
+        warnings.push({ app: app.slug, file, id, reason })
+        edges.warn(`app "${app.slug}": harnesses/${file} loads with a warning — ${reason}`)
+      }
     }
   }
-  return { harnesses, problems }
+  return { harnesses, problems, warnings }
 }
 
 // ── The build status report ─────────────────────────────────────────────────
@@ -439,12 +459,15 @@ export async function listAppHarnesses(layer: Partial<AppHarnessLayer> = {}): Pr
 export interface AppHarnessReport {
   registered: string[]
   problems: string[]
+  /** Registered harnesses that load with a warning (`harnessWarnings`). */
+  warnings: string[]
 }
 
 /** `slug`'s line of a listing, as the report spells it. */
 const reportOf = (listing: AppHarnessListing, slug: string): AppHarnessReport => ({
   registered: listing.harnesses.filter((h) => h.slug === slug).map((h) => h.def.id),
   problems: listing.problems.filter((p) => p.app === slug).map((p) => `harnesses/${p.file}: ${p.reason}`),
+  warnings: listing.warnings.filter((w) => w.app === slug).map((w) => `harnesses/${w.file}: ${w.reason}`),
 })
 
 /** THE PROBE'S HALF: check `slug`'s harnesses as if it were enabled beside the
@@ -456,7 +479,7 @@ export async function checkAppHarnessesOf(slug: string, layer: Partial<AppHarnes
   // Most apps ship no harness: nothing to check, and no settings read to ask
   // which other apps are on.
   const own = await edges.files(slug).catch(() => null)
-  if (own !== null && own.length === 0) return { registered: [], problems: [] }
+  if (own !== null && own.length === 0) return { registered: [], problems: [], warnings: [] }
   const listing = await listAppHarnesses({
     ...edges,
     enabled: async () => {
@@ -473,11 +496,17 @@ export async function checkAppHarnessesOf(slug: string, layer: Partial<AppHarnes
 export function recordAppHarnessReport(slug: string, report: AppHarnessReport): void {
   const cur = readCurrent(slug)
   if (!cur) return
-  const empty = report.registered.length === 0 && report.problems.length === 0
-  if (JSON.stringify(cur.harnesses ?? null) === JSON.stringify(empty ? null : report)) return
+  const warnings = report.warnings ?? []
+  const empty = report.registered.length === 0 && report.problems.length === 0 && warnings.length === 0
+  // `warnings` only when there is one, so a pointer written before warnings
+  // existed reads the same as one written now.
+  const written = empty
+    ? null
+    : { registered: [...report.registered], problems: [...report.problems], ...(warnings.length ? { warnings: [...warnings] } : {}) }
+  if (JSON.stringify(cur.harnesses ?? null) === JSON.stringify(written)) return
   const next = { ...cur }
-  if (empty) delete next.harnesses
-  else next.harnesses = { registered: [...report.registered], problems: [...report.problems] }
+  if (written === null) delete next.harnesses
+  else next.harnesses = written
   writeCurrent(slug, next)
 }
 
@@ -577,10 +606,11 @@ export function wireOf(h: AppHarness): AppHarnessWire {
 // ── Replaying one fixture ───────────────────────────────────────────────────
 
 /** One fixture, replayed once against a pinned model — what the api's sweep
- *  turns into an `EvalCaseScore`. The run is the real runner with two edges
- *  swapped: `recordRun` and `recordFindings` capture instead of filing, the
- *  same rule the Rust sweep keeps (a benchmark must not write into the
- *  `harness_runs` and `guard_findings` it is compared against). Token spend is
+ *  turns into an `EvalCaseScore`. The run is the real runner with three edges
+ *  swapped: `recordRun` captures, and `recordFindings` and `judgeSemantic`
+ *  file nothing — the same rule the Rust sweep keeps (a benchmark must not
+ *  write into the `harness_runs` and `guard_findings` it is compared
+ *  against). Token spend is
  *  real spend: the relay books it as the app's, and the counts below are the
  *  provider's own, off the reply. */
 export interface CaseReplay {
@@ -669,6 +699,7 @@ export async function replayAppCase(h: AppHarness, name: string, model: string, 
             capture.row = row
           },
           recordFindings: async () => {},
+          judgeSemantic: () => {},
         },
       }),
     )

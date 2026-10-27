@@ -47,7 +47,7 @@ on the first request, and again whenever the sources it is built from change.
 ```
 talaria-app scaffold [dir]   write a new app (--name, --icon, --harness)
 talaria-app check [dir]      talaria.json, a typecheck, the app's own tests
-talaria-app build [dir]      the host's build recipe and load probe
+talaria-app build [dir]      the host's build recipe and load probe, and the triggers
 talaria-app eval [dir]       every harness fixture, recorded or through the gateway
 talaria-app version
 ```
@@ -59,7 +59,13 @@ a usage error.
 - **`scaffold`** writes the skeleton `talaria app new` writes (the same source,
   `cli/src/cmd/app/skeleton.ts`) at a repo's root, plus a `.gitignore` and a README. `--harness`
   adds a starter harness under `harnesses/` with a recorded reply for its fixture, so `eval` runs
-  offline from the first commit. A README or `.gitignore` the repo already has is kept.
+  offline from the first commit. A README or `.gitignore` the repo already has is kept. A
+  `talaria.json` with none of the app's other files beside it is a **seed**: scaffold keeps every
+  key it declares (its `name` and `slug` above all) and writes the rest of the app around it. A
+  `talaria.json` beside any of them is an app, and scaffold refuses rather than overwrite it.
+  Without `--name` or a seed's `name`, the app is named after the repository the checkout came
+  from (its `origin` remote), never the directory a workbench job cloned into. No `package.json`:
+  an app has none, and the kit's own is the only one.
 - **`check`** holds `talaria.json` to the host's rules (the same validator install uses, pinned
   to the schema), typechecks with svelte-check against the kit's declarations and the host's
   compiler options, and runs the app's own `*.test.ts` with vitest, `@talaria/sdk/testing`
@@ -69,10 +75,14 @@ a usage error.
   either. `z` comes from `@talaria/sdk/server`.
 - **`build`** runs the host's build recipe and the host's load probe, and reports what Manage →
   Apps would: the build (its key, files and size), the surfaces, the server, each MCP tool kept or
-  left out with the reason, each harness registered or skipped with the reason, and the probe. A
-  failed build or probe is what turns an app off on the host, and fails here. A skipped harness or
-  a tool left out does not, on the host or here. The build key is the host's: build the same tree
-  against the same host build and the key matches.
+  left out with the reason, each harness registered or skipped with the reason (and a warning on
+  one that registers but pins a name that is no platform agent), each trigger `talaria.json`
+  declares with when it fires and whether `server.ts` answers it, and the probe. A failed build or
+  probe is what turns an app off on the host, and fails here. A skipped harness, a warning or a
+  tool left out does not, on the host or here. **A declared trigger with no handler fails here**,
+  though the host loads the app: there it is a failed run every time the trigger fires, seen only
+  afterwards on Manage → Apps. A handler no trigger names is listed, and fails nothing. The build
+  key is the host's: build the same tree against the same host build and the key matches.
 - **`eval`** replays every fixture of every harness that registers, through the host's own replay
   (the real runner with the model pinned, graded by the fixture's own `check`):
   - **Recorded** (the default). Replies come from `harnesses/recorded/<file>.json`, by fixture
@@ -103,7 +113,12 @@ from some `node_modules` above the app.
 ## The sandbox loop
 
 A Developer Agent's job on a repo with a `talaria.json` at its root gets the kit from
-`prepare_env`, keyed on that file and nothing else (never on the repo being Talaria's):
+`prepare_env`, keyed on that file and nothing else (never on the repo being Talaria's). A new
+app's repo — the one `request_repo` created, with only its README — gets a seed `talaria.json`
+(`{"name": "Field Notes", "slug": "field-notes"}`) first, so that `prepare_env` installs the kit,
+and `talaria-app scaffold` then writes the app around it. The whole procedure, from the request
+for a repo to the plugin's upkeep, is the `talaria-apps` product skill
+([`scripts/skills/talaria-apps`](../../scripts/skills/talaria-apps/SKILL.md)).
 
 1. **Install.** The sandbox fetches the kit as the agent — its own credential and the app's
    origin are already in the container's environment — and installs it once per kit version on

@@ -20,7 +20,7 @@ Scaffold one with `bun talaria app new <slug>`, or drop a directory under `apps/
 from **Manage → Apps**). Enable it in **Manage → Apps**. An app with no UI (a server or agent
 tools only) declares no surfaces and ships no `app.ts` ([server.md](./server.md#an-app-with-no-ui)).
 Each file in `harnesses/` registers while the app is enabled: it gets a column in Models → Fitness,
-scored on its own `evals`, and your `server.ts` runs it with `runHarness`
+scored on its own `evals`, and your `server.ts` runs it with `ctx.harness.run`
 ([harnesses.md](./harnesses.md)).
 
 ## The manifest

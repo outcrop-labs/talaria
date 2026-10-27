@@ -4353,6 +4353,34 @@ alter table tasks drop column if exists conversation_id`,
      created_at timestamptz not null default now()
    )`,
   `create index if not exists plugin_notices_by_kind on plugin_notices (app_slug, kind)`,
+  // THE MARKETPLACE CATALOGS, a list the operator fills (talaria-apps
+  // `catalog`). Discover read ONE url, `apps_catalog_url`, defaulting to
+  // Outcrop's registry. The insert below moves that url in as the first row —
+  // or, with none set, seeds Outcrop's registry — so no install loses what its
+  // Discover tab showed. It is the ONLY place a catalog is ever added for the
+  // operator: no code re-seeds, so an operator who removes every catalog gets
+  // an empty Discover tab that says so. The old setting is left where it was
+  // and nothing reads it.
+  `create table if not exists app_catalogs (
+     id uuid primary key default gen_random_uuid(),
+     name text not null,
+     url text not null unique,
+     enabled boolean not null default true,
+     position integer not null default 0,
+     created_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  `insert into app_catalogs (name, url, position, created_by)
+   select case when c.url = 'https://raw.githubusercontent.com/outcrop-labs/talaria-apps/main/index.json'
+               then 'Outcrop Labs'
+               else coalesce(nullif(split_part(split_part(c.url, '://', 2), '/', 1), ''), 'Catalog') end,
+          c.url, 0, 'migration'
+     from (select coalesce(
+             (select nullif(btrim(value #>> '{}'), '') from app_settings
+               where key = 'apps_catalog_url' and jsonb_typeof(value) = 'string'),
+             'https://raw.githubusercontent.com/outcrop-labs/talaria-apps/main/index.json') as url) c
+    where not exists (select 1 from app_catalogs)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

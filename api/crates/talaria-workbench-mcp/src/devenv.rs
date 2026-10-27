@@ -932,6 +932,12 @@ pub fn eval_session_json(key: &str, job_id: &str) -> String {
 /// finish_job. `session` is the job's eval session (`eval_session_json`), or
 /// None when none could be recorded — eval through the gateway still works,
 /// booked to the workbench key without a ticket.
+/// What `prepare_env` tells an agent about the kit it just installed: the
+/// loop to run before finish_job, and how a new app starts. A new repo has
+/// no talaria.json, and prepare_env installs the kit only for one that does,
+/// so an app starts from a seed manifest the agent writes first.
+pub const APP_KIT_USAGE: &str = "This repo is a Talaria app. Before finish_job, from the repo: `talaria-app check` (talaria.json, typecheck, the app's own tests), `talaria-app build` (the host's own build recipe and load probe, per surface, per harness and per trigger) and `talaria-app eval` (every harness fixture, against the replies in harnesses/recorded/; add `--gateway --model <id>` to run them through the Talaria gateway, booked to this job's ticket, and `--record` to keep the replies). To start an app in a new repo: write a seed talaria.json at its root that declares the app's name and slug, call prepare_env, then run `talaria-app scaffold`, which keeps the seed and writes the rest of the app around it. All of it runs here, never on the instance.";
+
 pub async fn install_app_kit(
     pg: &PgPool,
     department: &str,
@@ -984,7 +990,7 @@ pub async fn install_app_kit(
         "version": version,
         "bin": if linked { KIT_TERMINAL_LINK.to_string() } else { format!("{bin}/talaria-app") },
         "evalSession": session.map(|_| format!("{workdir}/{EVAL_SESSION_FILE}")),
-        "usage": "This repo is a Talaria app. Before finish_job, from the repo: `talaria-app check` (talaria.json, typecheck, the app's own tests), `talaria-app build` (the host's own build recipe and load probe, per surface and per harness) and `talaria-app eval` (every harness fixture, against the replies in harnesses/recorded/; add `--gateway --model <id>` to run them through the Talaria gateway, booked to this job's ticket, and `--record` to keep the replies). `talaria-app scaffold` starts an app in an empty repo. All of it runs here, never on the instance.",
+        "usage": APP_KIT_USAGE,
     }))
 }
 
@@ -1739,6 +1745,27 @@ mod tests {
         // The scan reads the manifest at the root only.
         assert!(MARKERS.contains(&"talaria.json"));
         assert!(!MARKERS.contains(&"*/talaria.json"));
+    }
+
+    #[test]
+    fn the_kit_usage_gives_the_whole_loop_and_starts_an_app_from_a_seed_manifest() {
+        // The loop before finish_job, in order: check, build, eval.
+        let check = APP_KIT_USAGE.find("`talaria-app check`").expect("check");
+        let build = APP_KIT_USAGE.find("`talaria-app build`").expect("build");
+        let eval = APP_KIT_USAGE.find("`talaria-app eval`").expect("eval");
+        assert!(check < build && build < eval, "{APP_KIT_USAGE}");
+        // A new app: the seed talaria.json first (prepare_env installs the
+        // kit only for a repo that has one), then prepare_env, then scaffold.
+        let seed = APP_KIT_USAGE.find("seed talaria.json").expect("seed");
+        let prepare = APP_KIT_USAGE[seed..]
+            .find("prepare_env")
+            .expect("prepare_env")
+            + seed;
+        let scaffold = APP_KIT_USAGE
+            .find("`talaria-app scaffold`")
+            .expect("scaffold");
+        assert!(seed < prepare && prepare < scaffold, "{APP_KIT_USAGE}");
+        assert!(!APP_KIT_USAGE.contains("empty repo"), "{APP_KIT_USAGE}");
     }
 
     #[test]

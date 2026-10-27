@@ -9,11 +9,13 @@ Everything a [Talaria app](../APPS.md) imports. Two entry points:
 
 The stack is **Svelte 5 (runes) + @tanstack/svelte-query v6 + Tailwind 4**, rendered inside the
 host's own router. Both entry points resolve from the host at build time — an app **installs
-nothing**; `svelte`, svelte-query, zod, and `@lucide/svelte` (icons) all resolve from the host,
-exactly one copy in the deployment. Import `svelte` and icons freely; import everything else
-through the SDK — routing included: an app's routes are the host's, reached through
-`useAppRoute`, `appHref` and `appNavigate` ([client.md](./client.md#routes-inside-your-app)),
-never by importing a router of its own.
+nothing** and carries no `package.json`; `svelte`, svelte-query and `@lucide/svelte` (icons)
+resolve from the host, exactly one copy in the deployment, and zod rides along as `z` from
+`@talaria/sdk/server`. Import `svelte` and icons freely; import everything else through the SDK —
+routing included: an app's routes are the host's, reached through `useAppRoute`, `appHref` and
+`appNavigate` ([client.md](./client.md#routes-inside-your-app)), never by importing a router of its
+own. A bare import of anything else, `zod` included, fails the build by name
+(`"zod" is not shared with apps: …`).
 
 ## The docset
 
@@ -29,7 +31,10 @@ never by importing a router of its own.
 | [outside-the-host.md](./outside-the-host.md) | Building an app outside the host: the SDK kit, `talaria-app`, the sandbox loop |
 
 Scaffold a new app with `bun talaria app new <slug>` in a Talaria checkout, or with the SDK kit's
-`talaria-app scaffold` in a repo of its own ([outside-the-host.md](./outside-the-host.md)).
+`talaria-app scaffold` in a repo of its own ([outside-the-host.md](./outside-the-host.md)). A
+Developer Agent builds, ships and maintains an app by the `talaria-apps` product skill
+([`scripts/skills/talaria-apps`](../../scripts/skills/talaria-apps/SKILL.md)), which ships to
+agent containers with the skeleton as a generated reference.
 
 ## Security model
 
