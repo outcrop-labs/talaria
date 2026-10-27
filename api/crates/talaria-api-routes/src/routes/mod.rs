@@ -1379,6 +1379,10 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::fleet::fleet_federate::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/fleet/seal-configs",
+            post(talaria_routes_fleet::fleet::fleet_seal_configs::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/fleet/defs",
             get(talaria_routes_fleet::fleet::fleet_defs::get).fallback(|| async { method_not_allowed("GET") }),
         )

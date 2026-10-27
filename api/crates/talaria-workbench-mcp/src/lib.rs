@@ -2241,7 +2241,9 @@ async fn harness_probe(pg: &PgPool, department: &str) -> Result<String, String> 
 /// how a harness with no key read as healthy. So, in the agent's terminal
 /// shell ([`agent_terminal_argv`]), every name Hermes strips
 /// (talaria-agent-secrets' snapshot of the pinned image) is unset first, and
-/// what is left is what omp has when the agent starts it.
+/// so is every `CONFIG_*` credential sealed out of the agent's config (the
+/// sealed manifest has Hermes strip those too), and what is left is what omp
+/// has when the agent starts it.
 ///
 /// Ok is the model's reply; Err is omp's own last word on why not.
 async fn harness_auth_probe(
@@ -2255,6 +2257,7 @@ async fn harness_auth_probe(
     // The stripped names arrive as positional args, never inside the script.
     let script = format!(
         "for n do unset \"$n\" 2>/dev/null || true; done\n\
+         {UNSET_SEALED}\n\
          out=$({line} 2>&1 </dev/null); rc=$?\n\
          printf '%s\\n{AUTH_EXIT_MARK}%s\\n' \"$out\" \"$rc\""
     );
@@ -2265,6 +2268,11 @@ async fn harness_auth_probe(
         .map_err(|e| format!("the model call could not be run in the sandbox: {e}"))?;
     auth_probe_verdict(&format!("{stdout}\n{stderr}"))
 }
+
+/// Unset every `CONFIG_*` name in the probe's shell, by prefix (bash's
+/// `${!prefix@}`): whatever the container holds, the agent's terminal holds
+/// none of them.
+const UNSET_SEALED: &str = "for n in ${!CONFIG_@}; do unset \"$n\" 2>/dev/null || true; done";
 
 /// What the auth probe's output says. omp exits non-zero when the call
 /// fails; either way the line that matters is its LAST one that is not noise
@@ -3103,6 +3111,35 @@ async fn log_wtool_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_probe_shell_unsets_every_sealed_config_name() {
+        // Real bash, as the probe runs: the prefix expansion must clear every
+        // CONFIG_* the container holds and nothing else.
+        let out = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!("{UNSET_SEALED}\nenv"))
+            .env_clear()
+            .env("CONFIG_PLATFORMS_TELEGRAM_TOKEN", "tg")
+            .env("CONFIG_DASHBOARD_BASIC_AUTH_PASSWORD", "pw")
+            .env("FIGMA_TOKEN", "keep")
+            .env("MY_CONFIG_X", "keep")
+            .output()
+            .expect("bash runs");
+        let env = String::from_utf8_lossy(&out.stdout);
+        assert!(!env.contains("CONFIG_PLATFORMS"), "{env}");
+        assert!(!env.contains("CONFIG_DASHBOARD"), "{env}");
+        assert!(env.contains("FIGMA_TOKEN=keep"), "{env}");
+        assert!(env.contains("MY_CONFIG_X=keep"), "{env}");
+        // With none set, the loop is a no-op, not an error.
+        let none = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!("set -u; {UNSET_SEALED}; echo ok"))
+            .env_clear()
+            .output()
+            .expect("bash runs");
+        assert_eq!(String::from_utf8_lossy(&none.stdout).trim(), "ok");
+    }
 
     #[test]
     fn an_eval_session_key_is_one_the_relay_keeps() {

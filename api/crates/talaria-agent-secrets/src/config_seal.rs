@@ -67,6 +67,10 @@ pub struct ConfigSeal {
     pub sealed: Vec<ConfigLiteral>,
     /// Where each dropped literal sat in the raw config.
     pub dropped: Vec<String>,
+    /// Where each literal no per-agent secret can carry sat, when the plan
+    /// was asked to take those out ([`plan_config_seal_dropping_undeliverable`])
+    /// rather than refuse. Always empty from [`plan_config_seal`].
+    pub undeliverable: Vec<String>,
 }
 
 /// Whether a config key names a credential, on the key's last word: `api_key`,
@@ -167,7 +171,10 @@ fn deliverable(path: &str, value: &str) -> Result<(), String> {
 struct Planner {
     sealed: Vec<ConfigLiteral>,
     dropped: Vec<String>,
+    undeliverable: Vec<String>,
     names: HashSet<String>,
+    /// Take an undeliverable literal out instead of refusing the config.
+    drop_undeliverable: bool,
 }
 
 impl Planner {
@@ -207,9 +214,17 @@ impl Planner {
         name
     }
 
-    fn seal(&mut self, path: &[Seg], value: &str) -> Result<String, String> {
+    /// The handle that replaces the literal, or None when the literal cannot
+    /// be delivered and the plan takes it out.
+    fn seal(&mut self, path: &[Seg], value: &str) -> Result<Option<String>, String> {
         let at = dotted(path);
-        deliverable(&at, value)?;
+        if let Err(why) = deliverable(&at, value) {
+            if self.drop_undeliverable {
+                self.undeliverable.push(at);
+                return Ok(None);
+            }
+            return Err(why);
+        }
         let name = self.name_for(path);
         if !crate::name_ok(&name) {
             return Err(format!("{at}: no secret name fits this path"));
@@ -219,7 +234,7 @@ impl Planner {
             path: at,
             value: value.to_string(),
         });
-        Ok(format!("${{{name}}}"))
+        Ok(Some(format!("${{{name}}}")))
     }
 
     /// The render's walk, mirrored: a model spec's `api_key` is the one key
@@ -240,6 +255,7 @@ impl Planner {
                 let Value::Object(map) = v else {
                     unreachable!("matched as an object above")
                 };
+                let mut gone: Vec<String> = Vec::new();
                 for (key, child) in map.iter_mut() {
                     if path.is_empty() && key == "secrets" {
                         continue;
@@ -250,13 +266,18 @@ impl Planner {
                             self.dropped.push(dotted(path));
                             *child = Value::String(talaria_fleet_brain::GATEWAY_API_KEY.into());
                         } else {
-                            let handle = self.seal(path, lit)?;
-                            *child = Value::String(handle);
+                            match self.seal(path, lit)? {
+                                Some(handle) => *child = Value::String(handle),
+                                None => gone.push(key.clone()),
+                            }
                         }
                     } else {
                         self.walk(child, path, in_spec || spec)?;
                     }
                     path.pop();
+                }
+                for key in gone {
+                    map.remove(&key);
                 }
             }
             _ => {}
@@ -313,10 +334,25 @@ impl Planner {
 /// any). Pure: nothing is written. Refuses a literal no per-agent secret can
 /// carry, naming where it sat.
 pub fn plan_config_seal(config: &Value) -> Result<ConfigSeal, String> {
+    plan_with(config, false)
+}
+
+/// [`plan_config_seal`], except that a literal no per-agent secret can carry
+/// (multi-line, or over 8 KB) is taken out of the config and listed in
+/// `undeliverable`, instead of refusing the whole config. For redacting a
+/// config already stored, where refusing would leave the plaintext in place:
+/// the setting it held becomes unconfigured.
+pub fn plan_config_seal_dropping_undeliverable(config: &Value) -> Result<ConfigSeal, String> {
+    plan_with(config, true)
+}
+
+fn plan_with(config: &Value, drop_undeliverable: bool) -> Result<ConfigSeal, String> {
     let mut planner = Planner {
         sealed: Vec::new(),
         dropped: Vec::new(),
+        undeliverable: Vec::new(),
         names: HashSet::new(),
+        drop_undeliverable,
     };
     let mut out = config.clone();
     if let Some(raw @ Value::Object(_)) = out.get_mut("raw") {
@@ -345,6 +381,7 @@ pub fn plan_config_seal(config: &Value) -> Result<ConfigSeal, String> {
         config: out,
         sealed: planner.sealed,
         dropped: planner.dropped,
+        undeliverable: planner.undeliverable,
     })
 }
 
@@ -454,10 +491,55 @@ pub async fn copy_config_secrets(
 /// a string every fleet reader can see. Taken out, the setting is simply not
 /// configured (a basic-auth dashboard with no password does not register).
 pub fn withhold_config_secrets(config: &Value) -> (Value, Vec<String>) {
-    fn names(v: &Value) -> bool {
-        v.as_str().is_some_and(|s| handle_re().is_match(s))
+    withhold_where(config, &|s| handle_re().is_match(s))
+}
+
+/// [`withhold_config_secrets`] for one sealed secret: every value in `raw`
+/// that names `name` is taken out, every other handle stays. What deleting
+/// that secret does to the config, so no value is left reading the handle's
+/// own text.
+pub fn withhold_config_secret(config: &Value, name: &str) -> (Value, Vec<String>) {
+    withhold_where(config, &|s| names_secret(s, name))
+}
+
+/// Where a config's `raw` names the sealed secret `name`, as dotted paths
+/// (`platforms.telegram.token`, `list[2].token`).
+pub fn config_secret_paths(config: &Value, name: &str) -> Vec<String> {
+    fn walk(v: &Value, name: &str, path: &mut Vec<Seg>, out: &mut Vec<String>) {
+        match v {
+            Value::String(s) if names_secret(s, name) => out.push(dotted(path)),
+            Value::Object(map) => {
+                for (key, child) in map {
+                    path.push(Seg::Key(key.clone()));
+                    walk(child, name, path, out);
+                    path.pop();
+                }
+            }
+            Value::Array(items) => {
+                for (i, item) in items.iter().enumerate() {
+                    path.push(Seg::Index(i));
+                    walk(item, name, path, out);
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
     }
-    fn walk(v: &mut Value, path: &mut Vec<Seg>, out: &mut Vec<String>) {
+    let mut out = Vec::new();
+    if let Some(raw) = config.get("raw") {
+        walk(raw, name, &mut Vec::new(), &mut out);
+    }
+    out
+}
+
+/// Whether a string carries `name`'s handle (alone or inside a template).
+fn names_secret(s: &str, name: &str) -> bool {
+    handle_re().captures_iter(s).any(|cap| &cap[1] == name)
+}
+
+fn withhold_where(config: &Value, hit: &dyn Fn(&str) -> bool) -> (Value, Vec<String>) {
+    fn walk(v: &mut Value, path: &mut Vec<Seg>, out: &mut Vec<String>, hit: &dyn Fn(&str) -> bool) {
+        let names = |v: &Value| v.as_str().is_some_and(hit);
         match v {
             Value::Object(map) => {
                 let gone: Vec<String> = map
@@ -473,7 +555,7 @@ pub fn withhold_config_secrets(config: &Value) -> (Value, Vec<String>) {
                 }
                 for (key, child) in map.iter_mut() {
                     path.push(Seg::Key(key.clone()));
-                    walk(child, path, out);
+                    walk(child, path, out, hit);
                     path.pop();
                 }
             }
@@ -483,7 +565,7 @@ pub fn withhold_config_secrets(config: &Value) -> (Value, Vec<String>) {
                     if names(&item) {
                         out.push(dotted(path));
                     } else {
-                        walk(&mut item, path, out);
+                        walk(&mut item, path, out, hit);
                         items.push(item);
                     }
                     path.pop();
@@ -495,7 +577,7 @@ pub fn withhold_config_secrets(config: &Value) -> (Value, Vec<String>) {
     let mut out = config.clone();
     let mut withheld = Vec::new();
     if let Some(raw) = out.get_mut("raw") {
-        walk(raw, &mut Vec::new(), &mut withheld);
+        walk(raw, &mut Vec::new(), &mut withheld, hit);
     }
     (out, withheld)
 }
@@ -930,5 +1012,77 @@ mod tests {
             config_secret_handles(&config),
             vec!["CONFIG_PLATFORMS_TELEGRAM_TOKEN", "CONFIG_A", "CONFIG_B"]
         );
+    }
+
+    #[test]
+    fn an_undeliverable_literal_is_taken_out_only_when_asked() {
+        let config = json!({ "raw": {
+            "platforms": {
+                "telegram": { "token": "123:abc" },
+                "matrix": { "password": "line one\nline two" },
+            },
+        } });
+        // The federation contract: refuse, naming the path.
+        let refused = plan_config_seal(&config).unwrap_err();
+        assert!(refused.contains("platforms.matrix.password"), "{refused}");
+        // The stored-config redaction: take it out, seal the rest.
+        let out = plan_config_seal_dropping_undeliverable(&config).unwrap();
+        assert_eq!(out.undeliverable, vec!["platforms.matrix.password"]);
+        assert_eq!(out.config["raw"]["platforms"]["matrix"], json!({}));
+        assert_eq!(
+            out.config["raw"]["platforms"]["telegram"]["token"],
+            json!("${CONFIG_PLATFORMS_TELEGRAM_TOKEN}")
+        );
+        assert_eq!(out.sealed.len(), 1);
+        // A config with nothing undeliverable plans the same either way.
+        let fine = json!({ "raw": { "platforms": { "telegram": { "token": "123:abc" } } } });
+        let a = plan_config_seal(&fine).unwrap();
+        let b = plan_config_seal_dropping_undeliverable(&fine).unwrap();
+        assert_eq!(a.config, b.config);
+        assert_eq!(a.sealed, b.sealed);
+        assert!(a.undeliverable.is_empty() && b.undeliverable.is_empty());
+    }
+
+    #[test]
+    fn one_secret_is_found_and_withheld_by_name_alone() {
+        let config = json!({
+            "main": { "endpoint": "e", "model": "m" },
+            "raw": {
+                "dashboard": { "basic_auth": { "username": "ops", "password": "${CONFIG_DASHBOARD_BASIC_AUTH_PASSWORD}" } },
+                "platforms": { "telegram": { "token": "${CONFIG_PLATFORMS_TELEGRAM_TOKEN}" } },
+                "list": [ "Bearer ${CONFIG_DASHBOARD_BASIC_AUTH_PASSWORD}", "${CONFIG_DASHBOARD_BASIC_AUTH_PASSWORD_2}" ],
+            },
+        });
+        let name = "CONFIG_DASHBOARD_BASIC_AUTH_PASSWORD";
+        // A longer name that starts the same is a different secret.
+        assert_eq!(
+            config_secret_paths(&config, name),
+            vec!["dashboard.basic_auth.password", "list[0]"]
+        );
+        assert_eq!(
+            config_secret_paths(&config, "CONFIG_PLATFORMS_TELEGRAM_TOKEN"),
+            vec!["platforms.telegram.token"]
+        );
+        assert!(config_secret_paths(&config, "CONFIG_NOPE").is_empty());
+        // `main` is not the Hermes config: only `raw` is read.
+        assert!(config_secret_paths(&json!({ "main": "${CONFIG_X}" }), "CONFIG_X").is_empty());
+
+        let (out, withheld) = withhold_config_secret(&config, name);
+        assert_eq!(withheld, vec!["dashboard.basic_auth.password", "list[0]"]);
+        assert_eq!(
+            out["raw"]["dashboard"]["basic_auth"],
+            json!({ "username": "ops" })
+        );
+        assert_eq!(
+            out["raw"]["platforms"]["telegram"]["token"],
+            json!("${CONFIG_PLATFORMS_TELEGRAM_TOKEN}"),
+            "every other handle stays"
+        );
+        assert_eq!(
+            out["raw"]["list"],
+            json!(["${CONFIG_DASHBOARD_BASIC_AUTH_PASSWORD_2}"])
+        );
+        assert_eq!(out["main"], config["main"]);
+        assert!(config_secret_paths(&out, name).is_empty());
     }
 }

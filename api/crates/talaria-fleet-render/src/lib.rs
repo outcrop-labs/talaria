@@ -1426,6 +1426,14 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         if !enabled.iter().any(|v| v.as_str() == Some("talaria-events")) {
             enabled.push(json!("talaria-events"));
         }
+        // The sealed manifest is a declaration, never a plugin to load (it
+        // has no adapter): an authored list that names it loses the entry.
+        enabled.retain(|v| {
+            !matches!(
+                v.as_str(),
+                Some("talaria-sealed" | "platforms/talaria-sealed")
+            )
+        });
         plugins.insert("enabled".into(), json!(enabled));
         routed.insert("plugins".into(), Value::Object(plugins));
         // The agent's own secrets, by name, so execute_code gets them too.
@@ -1862,12 +1870,24 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             "{}:/opt/data/plugins/talaria-events:ro",
             fleet_plugins.display()
         ));
+        // The sealed manifest (talaria-agent-secrets' `sealed_manifest`,
+        // written beside secrets.env below): its DIRECTORY, so the rename
+        // that rewrites it reaches a running container. Hermes strips the
+        // names it declares from every command the agent runs.
+        vols.push(format!(
+            "{}:{}:ro",
+            agent_dir
+                .join(talaria_agent_secrets::SEALED_PLUGIN_DIR)
+                .display(),
+            talaria_agent_secrets::SEALED_PLUGIN_MOUNT
+        ));
         let protected = [
             "/opt/data",
             "/opt/data/config.yaml",
             "/opt/data/SOUL.md",
             "/opt/dept-skills",
             "/opt/skills",
+            talaria_agent_secrets::SEALED_PLUGIN_MOUNT,
         ];
         for v in svc
             .get("volumes")
@@ -1898,8 +1918,18 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             .insert("volumes".into(), json!(vols));
 
         // Per-agent secrets (UI-configured, DB-encrypted) materialize into the
-        // agent dir and load via env_file.
-        if talaria_agent_secrets::materialize_agent_secrets(pg, sb, &def.id, &def.slug).await? {
+        // agent dir and load via env_file; the sealed manifest beside them
+        // names the CONFIG_* ones. A row under a name refused now is not
+        // loaded, and says so here on every render until someone removes it.
+        let agent_secrets =
+            talaria_agent_secrets::materialize_agent_secrets(pg, sb, &def.id, &def.slug).await?;
+        for (name, why) in &agent_secrets.skipped {
+            tracing::warn!(
+                "[fleet] {}: per-agent secret {name} is not loaded: {why}",
+                def.slug
+            );
+        }
+        if agent_secrets.env_file {
             svc.as_object_mut().expect("checked above").insert(
                 "env_file".into(),
                 json!([agent_dir.join("secrets.env").display().to_string()]),
