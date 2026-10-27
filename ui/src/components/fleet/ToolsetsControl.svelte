@@ -102,7 +102,9 @@
           title={r.orgClosed
             ? `${r.name} is closed org-wide by an admin (Admin → Security → Agent toolsets)`
             : r.forced
-              ? `Talaria's own ${r.name} tool is the one a person sees, so Hermes' stays closed for every agent`
+              ? r.name === 'todo'
+                ? "Talaria's own todo tool is the one a person sees, and Hermes' would forget its list every turn of an ordinary chat, so it stays closed for every agent"
+                : `Talaria's own ${r.name} tool is the one a person sees, so Hermes' stays closed for every agent`
               : r.on
                 ? `${r.name} is on for this agent`
                 : `${r.name} is closed for this agent`}

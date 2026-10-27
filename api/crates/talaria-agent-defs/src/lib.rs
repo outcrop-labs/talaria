@@ -133,6 +133,16 @@ pub fn toolset_names(raw: &str) -> Option<Vec<&'static str>> {
 /// ahead of an agent's own list (talaria-fleet-render's
 /// `fleet_disabled_toolsets`), so storing them per agent would be noise —
 /// they are the floor, not a choice.
+///
+/// HERMES' `todo_list` STAYS CLOSED FOR A SECOND REASON, and it is the one
+/// that decides when it can open. Its list lives only in the turn's
+/// transcript: v0.22 builds a fresh agent per API request and rehydrates the
+/// list from the newest todo tool result in the history it is handed. A chat
+/// on the completions arm, the default while `agent_defs.pinned_sessions`
+/// defaults off, sends a content-only history, and Hermes' chat-completions
+/// parser drops tool rows anyway, so the list would reset every turn. It can
+/// open when the session arm is the chat default; the migration plan is in
+/// talaria-agent-todo's header.
 pub const MANDATORY_DISABLED: &[&str] = &["todo", "clarify"];
 
 /// The CLOSED DEFAULT for a new agent: what a fresh def's
