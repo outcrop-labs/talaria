@@ -11,8 +11,10 @@ export interface AppBuildInfo {
   key?: string
   error?: string
   /** What the load probe made of the app's `harnesses/*.ts`: the ids it
-   *  registered for model fitness, and one sentence per file it skipped. */
-  harnesses?: { registered: string[]; problems: string[] }
+   *  registered for model fitness, one sentence per file it skipped, and one
+   *  per registered harness that loads with a warning (a pin that names no
+   *  platform agent). */
+  harnesses?: { registered: string[]; problems: string[]; warnings?: string[] }
 }
 
 export interface AppManifest {

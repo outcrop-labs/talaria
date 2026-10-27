@@ -1,6 +1,7 @@
 // The admin console surface.
 pub mod admin_app_harness_models;
 pub mod admin_apps;
+pub mod admin_apps_catalogs;
 pub mod admin_apps_change_request;
 pub mod admin_apps_install_requests;
 pub mod admin_apps_update_requests;
@@ -30,5 +31,6 @@ pub mod admin_updates;
 pub mod admin_users;
 pub mod admin_workspace_secrets;
 pub mod internal_apps_agent_turn;
+pub mod internal_apps_guard;
 pub mod internal_apps_llm_key;
 pub mod internal_apps_mcp_sync;

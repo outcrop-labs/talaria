@@ -4,7 +4,7 @@
 // harnesses. The whole loop — fetch, scaffold, check, build, eval — is
 // exercised against a running instance (docs/sdk/outside-the-host.md).
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
@@ -13,7 +13,7 @@ import { z } from 'zod'
 import { defineHarness } from '@/server/harness/define'
 import type { HarnessDeps } from '@/server/harness/run'
 import type { TransportRequest } from '@/server/harness/transport'
-import { formatBuildReport, type BuildReport } from './build'
+import { formatBuildReport, triggerReport, type BuildReport } from './build'
 import { kitTsconfig, kitVitestConfig } from './check'
 import { main, parseArgs } from './cli'
 import {
@@ -133,6 +133,58 @@ describe('scaffold', () => {
     // A second scaffold refuses rather than overwrite an app.
     expect(scaffoldApp(repo)).toBe(`${repo} already holds an app (talaria.json)`)
     expect(nameForDir('/x/talaria-app-field-notes')).toBe('Field Notes')
+  })
+
+  it('fills in the app around a seed talaria.json, keeping every key the seed declares', () => {
+    // A new repo's first file: written so prepare_env (keyed on talaria.json)
+    // installs the kit that scaffolds the rest.
+    const repo = join(root, 'seeded')
+    mkdirSync(repo, { recursive: true })
+    writeFileSync(join(repo, 'README.md'), '# seeded\n')
+    writeFileSync(join(repo, 'talaria.json'), JSON.stringify({ name: 'Field Notes', slug: 'field-notes', sdk: '^1.0' }))
+    const done = scaffoldApp(repo, { harness: true })
+    if (typeof done === 'string') throw new Error(done)
+    expect(done.written).not.toContain('talaria.json')
+    expect(done.written).toContain('app.ts')
+    expect(done.kept.sort()).toEqual(['README.md', 'talaria.json'])
+    expect(JSON.parse(readFileSync(join(repo, 'talaria.json'), 'utf8'))).toEqual({
+      name: 'Field Notes',
+      icon: '⬡',
+      version: '0.1.0',
+      description: 'Field Notes — a Talaria app.',
+      surfaces: { work: 'Field Notes' },
+      slug: 'field-notes',
+      sdk: '^1.0',
+    })
+    expect(readFileSync(join(repo, 'harnesses/tidy-title.ts'), 'utf8')).toContain('"field-notes:tidy-title"')
+    expect(readAppManifest(repo, '1.0.0').ok).toBe(true)
+    // Now it is an app: a talaria.json beside the rest is never a seed.
+    expect(scaffoldApp(repo)).toBe(`${repo} already holds an app (talaria.json)`)
+    // --name wins over the seed's.
+    const named = join(root, 'seeded-named')
+    mkdirSync(named, { recursive: true })
+    writeFileSync(join(named, 'talaria.json'), '{"name":"Old"}')
+    const renamed = scaffoldApp(named, { name: 'New' })
+    if (typeof renamed === 'string') throw new Error(renamed)
+    expect(JSON.parse(readFileSync(join(named, 'talaria.json'), 'utf8')).name).toBe('New')
+    // A seed is a JSON object or nothing is written.
+    const broken = join(root, 'seeded-broken')
+    mkdirSync(broken, { recursive: true })
+    writeFileSync(join(broken, 'talaria.json'), '["Notes"]')
+    expect(scaffoldApp(broken)).toContain('is not a JSON object')
+    writeFileSync(join(broken, 'talaria.json'), '{ nope')
+    expect(scaffoldApp(broken)).toContain('is not JSON')
+    expect(existsSync(join(broken, 'app.ts'))).toBe(false)
+  })
+
+  it("names the app after the repository a workbench job cloned, not the job's directory", () => {
+    const job = join(root, '0b6f3c9e-job')
+    mkdirSync(join(job, '.git'), { recursive: true })
+    writeFileSync(join(job, '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/acme/talaria-app-pulse-log.git\n')
+    expect(nameForDir(job)).toBe('Pulse Log')
+    const done = scaffoldApp(job)
+    if (typeof done === 'string') throw new Error(done)
+    expect(JSON.parse(readFileSync(join(job, 'talaria.json'), 'utf8')).name).toBe('Pulse Log')
   })
 })
 
@@ -366,7 +418,8 @@ describe('the build report', () => {
     client: { declared: ['work'], built: true },
     server: true,
     mcp: { tools: ['items_list'], leftOut: ['"bad" has no description'] },
-    harnesses: { registered: ['notes:tidy-title'], skipped: ['harnesses/broken.ts: it failed to compile: …'] },
+    harnesses: { registered: ['notes:tidy-title'], skipped: ['harnesses/broken.ts: it failed to compile: …'], warnings: [] },
+    triggers: null,
     probe: { ok: true },
     ok: true,
   }
@@ -379,6 +432,48 @@ describe('the build report', () => {
     expect(text).toContain('harnesses  registered: notes:tidy-title · 1 skipped')
     expect(text).toContain('skipped: harnesses/broken.ts: it failed to compile: …')
     expect(text).toContain('probe      ok')
+  })
+
+  it('names a harness that loads with a warning under the harness line', () => {
+    const warned = { ...base, harnesses: { ...base.harnesses!, warnings: ['harnesses/tidy.ts: harness "notes:tidy-title" pins "mockep/mock-1", which names no platform agent'] } }
+    expect(formatBuildReport(warned)).toContain('warning: harnesses/tidy.ts: harness "notes:tidy-title" pins "mockep/mock-1"')
+  })
+
+  it('lists each trigger with when it fires and whether server.ts answers it', () => {
+    const triggers = triggerReport([{ id: 'nightly', cron: '0 3 * * *' }, { id: 'on-ticket', event: 'ticket.created' }], {
+      default: { triggers: { nightly: () => {}, 'on-ticket': () => {} } },
+    })
+    expect(triggers).toEqual({
+      declared: [
+        { id: 'nightly', cron: '0 3 * * *', handler: true },
+        { id: 'on-ticket', event: 'ticket.created', handler: true },
+      ],
+      unanswered: [],
+      undeclared: [],
+    })
+    const text = formatBuildReport({ ...base, triggers })
+    expect(text).toContain('triggers   2 triggers')
+    expect(text).toContain('nightly · cron 0 3 * * * (UTC) · handler found')
+    expect(text).toContain('on-ticket · on ticket.created · handler found')
+  })
+
+  it('reads a declared trigger with no handler as a failure, and says why the host would not', () => {
+    // server.ts answers a typo of the declared id: one trigger nothing
+    // answers, one handler nothing calls.
+    const triggers = triggerReport([{ id: 'nightly', cron: '0 3 * * *' }], { default: { fetch: () => new Response(), triggers: { nighly: () => {} } } })
+    expect(triggers?.unanswered).toEqual(['nightly'])
+    expect(triggers?.undeclared).toEqual(['nighly'])
+    const text = formatBuildReport({ ...base, triggers, ok: false })
+    expect(text).toContain('triggers   1 trigger · 1 with no handler')
+    expect(text).toContain('nightly · cron 0 3 * * * (UTC) · NO HANDLER — server.ts must answer it in defineAppServer({ triggers: { "nightly": … } })')
+    expect(text).toContain('handler "nighly" answers no trigger in talaria.json')
+    expect(text).toContain('records a failed run each time it fires')
+    // No server at all answers nothing; a server with no triggers and none
+    // declared has no line to report.
+    expect(triggerReport([{ id: 'nightly', cron: '0 3 * * *' }], null)?.unanswered).toEqual(['nightly'])
+    expect(triggerReport([], { default: { fetch: () => new Response() } })).toBeNull()
+    // A non-function under the id is no handler — what the host's trigger route calls.
+    expect(triggerReport([{ id: 'x', event: 'ticket.created' }], { default: { triggers: { x: 'nope' } } })?.unanswered).toEqual(['x'])
   })
 
   it('says a failed build or probe is what the host would refuse', () => {

@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-31 routes.
+32 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -17,6 +17,10 @@
 | [`/api/admin/apps`](#apiadminapps) | POST | `admin` |
 | [`/api/admin/apps`](#apiadminapps) | PUT | `admin` |
 | [`/api/admin/apps`](#apiadminapps) | DELETE | `admin` |
+| [`/api/admin/apps/catalogs`](#apiadminappscatalogs) | GET | `session` + `view:/apps` |
+| [`/api/admin/apps/catalogs`](#apiadminappscatalogs) | POST | `admin` |
+| [`/api/admin/apps/catalogs`](#apiadminappscatalogs) | PUT | `admin` |
+| [`/api/admin/apps/catalogs`](#apiadminappscatalogs) | DELETE | `admin` |
 | [`/api/admin/apps/change-request`](#apiadminappschange-request) | POST | `session` + `view:/apps` |
 | [`/api/admin/apps/install-requests`](#apiadminappsinstall-requests) | GET | `admin` |
 | [`/api/admin/apps/install-requests`](#apiadminappsinstall-requests) | PUT | `admin` |
@@ -118,9 +122,9 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/cr
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `view:/apps` | — | `{apps, catalog, catalogUrl, updates}` | 200, 403 | — |
+| GET | `session` + `view:/apps` | — | `{apps, catalog, updates}` | 200, 403 | — |
 | POST | `admin` | [body](#post-apiadminapps-body) | `{slug, sha, keptData, wipedData, build, buildError}` | 200, 400, 409 | audit |
-| PUT | `admin` | [body](#put-apiadminapps-body) | `{ok, catalogUrl}` | 200, 400, 404 | audit |
+| PUT | `admin` | [body](#put-apiadminapps-body) | `{ok}` | 200, 400, 404 | audit |
 | DELETE | `admin` | [body](#delete-apiadminapps-body) | `{ok, data}` | 200, 400 | audit |
 
 ### POST `/api/admin/apps` body
@@ -155,18 +159,57 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/cr
 | `app` | `string(1)` |  |
 | `enabled` | `bool` |  |
 
-### PUT `/api/admin/apps` body — variant 4
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `catalogUrl` | `url? nullable` |  |
-
 ### DELETE `/api/admin/apps` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `app` | `string(1)` | app: required, min 1 char; wipeData: optional boolean — true deletes the data the app stored, absent or false keeps it for a reinstall. |
 | `wipeData` | `bool?` |  |
+
+## `/api/admin/apps/catalogs`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps_catalogs.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_apps_catalogs.rs)
+
+> /api/admin/apps/catalogs. The marketplace catalogs Manage → Apps →
+> Discover reads — a list the operator fills (talaria-apps `catalog`).
+> GET → the list, in order; POST { name, url } → add one at the end, then
+> read it once and say how many apps it lists or why it could not be read;
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` + `view:/apps` | — | `{catalogs}` | 200 | — |
+| POST | `admin` | [body](#post-apiadminappscatalogs-body) | `…` | 200, 400, 404, 409 | audit |
+| PUT | `admin` | [body](#put-apiadminappscatalogs-body) | `{ok, catalog}` | 200, 400, 404, 409 | audit |
+| DELETE | `admin` | [body](#delete-apiadminappscatalogs-body) | `{ok}` | 200, 400, 404, 409 | audit |
+
+### POST `/api/admin/apps/catalogs` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string(1, 200)` | What Discover calls this catalog, next to each app it lists. |
+| `url` | `string(1, 4000)` | The index's https URL (`{"apps": [...]}`). |
+
+### PUT `/api/admin/apps/catalogs` body — variant 1
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `order` | `uuid[](50)` |  |
+
+### PUT `/api/admin/apps/catalogs` body — variant 2
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `id` | `uuid` |  |
+| `name` | `string?(200)` |  |
+| `url` | `string?(4000)` |  |
+| `enabled` | `bool?` | false: Discover stops reading it, and the row stays in the list. |
+
+### DELETE `/api/admin/apps/catalogs` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `id` | `uuid` |  |
 
 ## `/api/admin/apps/change-request`
 

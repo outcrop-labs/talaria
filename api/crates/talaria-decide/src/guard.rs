@@ -74,6 +74,12 @@ fn subject(answer: &str, tools: &[String]) -> Value {
     })
 }
 
+/// The ids of the rules this pass answers — what a caller that guards the
+/// structural half itself (the app host's harness runner) may ask for.
+pub fn semantic_rule_ids() -> Vec<&'static str> {
+    SEMANTIC_RULES.iter().map(|r| r.id).collect()
+}
+
 /// Judge the enabled semantic rules over one completion. Returns the findings
 /// that fired; never errors, and answers an empty list whenever the port has
 /// nothing — a measurement that could break the thing it measures is worse
@@ -85,6 +91,21 @@ pub async fn semantic_findings(
     answer: &str,
     tools: &[String],
 ) -> Vec<Finding> {
+    semantic_findings_among(state, http, pg, answer, tools, None).await
+}
+
+/// [`semantic_findings`], narrowed to the rules `among` names when it names
+/// any — an app harness's own `guard.rules`. Both have to say yes, as in the
+/// host's `narrowGuardConfig`: the harness list is a relevance filter, the
+/// admin toggle is org policy, and neither turns a rule on by itself.
+pub async fn semantic_findings_among(
+    state: &AppState,
+    http: &HttpFetch,
+    pg: &PgPool,
+    answer: &str,
+    tools: &[String],
+    among: Option<&[String]>,
+) -> Vec<Finding> {
     if answer.trim().is_empty() {
         return Vec::new();
     }
@@ -94,6 +115,7 @@ pub async fn semantic_findings(
     }
     let enabled: Vec<&SemanticRule> = SEMANTIC_RULES
         .iter()
+        .filter(|r| among.is_none_or(|ids| ids.iter().any(|id| id == r.id)))
         .filter(|r| {
             // Same reading as the structural pass's `rule_enabled`: the
             // stored toggle, else the rule's own default — and every semantic
@@ -153,11 +175,29 @@ pub async fn semantic_findings(
 /// answers nothing, so no caller can act on it — the same contract as
 /// `shadow::compare`, for the same reason.
 pub fn observe(state: &AppState, answer: &str, tools: &[String], caller: &str, model: &str) {
+    observe_among(state, answer, tools, caller, model, None);
+}
+
+/// [`observe`], narrowed to the rules `among` names — the door an app
+/// harness run's reply comes through (`POST /api/internal/apps/{slug}/guard`).
+/// The host has already run the structural rules over the same reply with
+/// the same tool record; this is the half that needs the decision model,
+/// which lives here.
+pub fn observe_among(
+    state: &AppState,
+    answer: &str,
+    tools: &[String],
+    caller: &str,
+    model: &str,
+    among: Option<Vec<String>>,
+) {
     let (state, answer, tools) = (state.clone(), answer.to_string(), tools.to_vec());
     let (caller, model) = (caller.to_string(), model.to_string());
     tokio::spawn(async move {
         let http = talaria_retrieval_http::real_http();
-        let findings = semantic_findings(&state, &http, &state.pg, &answer, &tools).await;
+        let findings =
+            semantic_findings_among(&state, &http, &state.pg, &answer, &tools, among.as_deref())
+                .await;
         if findings.is_empty() {
             return;
         }
@@ -186,6 +226,19 @@ mod tests {
                 r.id
             );
         }
+    }
+
+    #[test]
+    fn the_ids_a_caller_may_ask_for_are_exactly_the_registrys_semantic_rules() {
+        // The app host's door (`/api/internal/apps/{slug}/guard`) takes only
+        // these: a rule the registry calls semantic and this pass did not
+        // answer would be a rule an app harness declares and nothing judges.
+        let structural = talaria_gateway::guard::structural_rule_ids();
+        let semantic: Vec<&str> = talaria_gateway::guard::rule_ids()
+            .into_iter()
+            .filter(|id| !structural.contains(id))
+            .collect();
+        assert_eq!(semantic_rule_ids(), semantic);
     }
 
     #[test]

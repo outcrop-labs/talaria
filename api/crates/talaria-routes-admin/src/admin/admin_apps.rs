@@ -3,10 +3,10 @@
 // ?updates=1 for whether each app's source has a newer commit); an app a
 // Developer Agent maintains carries `plugin` (its maintainer, owner, board
 // and update policy). Reads are open to anyone granted the /apps Manage view;
-// mutations (enable/disable, install, update, uninstall, catalog source, a
-// plugin's update policy) and the update check stay admin-only — installing
-// or updating an app adds CODE to the deployment, and a check spends a
-// credential.
+// mutations (enable/disable, install, update, uninstall, a plugin's update
+// policy) and the update check stay admin-only — installing or updating an
+// app adds CODE to the deployment, and a check spends a credential. The
+// catalogs Discover reads are managed at /api/admin/apps/catalogs.
 
 use axum::Json;
 use axum::extract::State;
@@ -14,13 +14,13 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_apps::{
-    AppHost, InstallError, InstallRequest, KeptDataChoice, PlatformCredentials, catalog_url,
-    enabled_app_slugs, fetch_catalog, install_app, set_app_enabled, set_catalog_url,
-    source_records, uninstall_app, update_app, update_checks,
+    AppHost, InstallError, InstallRequest, KeptDataChoice, PlatformCredentials, enabled_app_slugs,
+    fetch_catalogs, install_app, set_app_enabled, source_records, uninstall_app, update_app,
+    update_checks,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::parse;
-use talaria_error::{house_error, object_or_400};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_admin, require_view, secretbox_or_500};
 use talaria_state::AppState;
 use talaria_users::{WireBuild, app_build_status, app_builds_dir, broken_apps, discovered_apps};
@@ -195,16 +195,15 @@ pub async fn get(
             "plugin": plugin_for(&b.slug),
         }));
     }
-    // ?catalog=1
+    // ?catalog=1: every enabled catalog's apps, one per slug, each tagged
+    // with the catalog it came from — and each catalog with what reading it
+    // gave (its app count, or why it could not be read).
     let want_catalog = query.get("catalog").map(String::as_str) == Some("1");
     let catalog = if want_catalog {
-        let (apps, error) = fetch_catalog(&state.pg).await;
-        let mut m = serde_json::Map::new();
-        m.insert("apps".into(), Value::Array(apps));
-        if let Some(e) = error {
-            m.insert("error".into(), Value::String(e));
+        match fetch_catalogs(&state.pg).await {
+            Ok(feed) => serde_json::to_value(feed).unwrap_or(Value::Null),
+            Err(e) => return Ok(internal("[admin/apps] catalog list read failed", e)),
         }
-        Value::Object(m)
     } else {
         Value::Null
     };
@@ -224,7 +223,6 @@ pub async fn get(
     Ok(Json(json!({
         "apps": apps,
         "catalog": catalog,
-        "catalogUrl": catalog_url(&state.pg).await,
         "updates": updates,
     }))
     .into_response())
@@ -245,13 +243,10 @@ pub async fn put(
     let sb = secretbox_or_500(&state, "[admin/apps] secretbox unavailable").await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
-    // Four bodies on one PUT, dispatched by key presence: { app, update }
+    // Three bodies on one PUT, dispatched by key presence: { app, update }
     // updates an app to its source's newer commit, { app, updatePolicy } sets
-    // a plugin's update policy, { app, enabled } toggles an app, { catalogUrl }
-    // (nullable — null resets to the default source) sets the catalog source.
-    // A body naming NONE of the keys answers 400 rather than silently falling
-    // into the catalog arm and resetting the source; a catalogUrl that is a
-    // string but not a URL answers the field's own sentence ("Invalid URL").
+    // a plugin's update policy, and { app, enabled } toggles an app. The
+    // marketplace catalogs have their own route (/api/admin/apps/catalogs).
     if obj.contains_key("update") {
         let app = match talaria_body::string_member(obj, "app", 1, usize::MAX) {
             Ok(a) => a,
@@ -357,79 +352,38 @@ pub async fn put(
         .await;
         return Ok(Json(json!({ "ok": true, "updatePolicy": policy })).into_response());
     }
-    if obj.contains_key("app") || obj.contains_key("enabled") {
-        let app = match talaria_body::string_member(obj, "app", 1, usize::MAX) {
-            Ok(a) => a,
-            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
-        };
-        let enabled = match talaria_body::boolean_member(obj, "enabled") {
-            Ok(e) => e,
-            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
-        };
-        if enabled && let Some(b) = broken_apps().into_iter().find(|b| b.slug == app) {
-            return Ok(house_error(
-                StatusCode::BAD_REQUEST,
-                &format!("{app} cannot be enabled: {}", b.reason),
-            ));
-        }
-        if let Err(msg) = set_app_enabled(&state.pg, &sb, &app, enabled).await {
-            return Ok(house_error(StatusCode::BAD_REQUEST, &msg));
-        }
-        refresh_harness_reports(&state).await;
-        log_audit(
-            &state.pg,
-            AuditEntry {
-                actor: &actor,
-                action: if enabled { "app.enable" } else { "app.disable" },
-                target_type: "app",
-                target_id: Some(&app),
-                target_label: None,
-                before: None,
-                after: None,
-            },
-        )
-        .await;
-        return Ok(Json(json!({ "ok": true })).into_response());
-    }
-    let next_url = match obj.get("catalogUrl") {
-        None => {
-            return Ok(house_error(
-                StatusCode::BAD_REQUEST,
-                "body must name app + update, app + updatePolicy, app + enabled, or catalogUrl",
-            ));
-        }
-        Some(Value::Null) => None,
-        Some(Value::String(u)) => {
-            if !url_ok(u) {
-                return Ok(house_error(StatusCode::BAD_REQUEST, "Invalid URL"));
-            }
-            Some(u.clone())
-        }
-        Some(v) => {
-            return Ok(house_error(
-                StatusCode::BAD_REQUEST,
-                &talaria_body::string_msg(talaria_body::zod_type_name(v)),
-            ));
-        }
+    let app = match talaria_body::string_member(obj, "app", 1, usize::MAX) {
+        Ok(a) => a,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    if let Err(msg) = set_catalog_url(&state.pg, next_url.as_deref()).await {
+    let enabled = match talaria_body::boolean_member(obj, "enabled") {
+        Ok(e) => e,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    if enabled && let Some(b) = broken_apps().into_iter().find(|b| b.slug == app) {
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            &format!("{app} cannot be enabled: {}", b.reason),
+        ));
+    }
+    if let Err(msg) = set_app_enabled(&state.pg, &sb, &app, enabled).await {
         return Ok(house_error(StatusCode::BAD_REQUEST, &msg));
     }
+    refresh_harness_reports(&state).await;
     log_audit(
         &state.pg,
         AuditEntry {
             actor: &actor,
-            action: "app.catalog-url",
+            action: if enabled { "app.enable" } else { "app.disable" },
             target_type: "app",
-            target_id: None,
-            target_label: Some(next_url.as_deref().unwrap_or("default")),
+            target_id: Some(&app),
+            target_label: None,
             before: None,
             after: None,
         },
     )
     .await;
-    let url = catalog_url(&state.pg).await;
-    Ok(Json(json!({ "ok": true, "catalogUrl": url })).into_response())
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn post(

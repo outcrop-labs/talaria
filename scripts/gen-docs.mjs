@@ -4,6 +4,9 @@
 //   docs/api/**            the HTTP API reference, one file per resource group
 //   docs/api/README.md     index + auth legend + envelope summary
 //   docs/CLI-REFERENCE.md  the CLI command reference
+//   scripts/skills/talaria-apps/references/skeleton.md
+//                          the skeleton `talaria-app scaffold` writes, for the
+//                          product skill Developer Agents build apps by
 //
 // THE RELIGION. Hand-maintained reference tables rot — the SDK doc listed
 // exports that didn't exist and missed ones that did, for months, and nothing
@@ -63,6 +66,8 @@ const TS_RESIDENT_FILES = [
   'ui/src/routes/api/sdk.kit.tgz.ts',
 ]
 const CHECK = process.argv.includes('--check')
+// The talaria-apps product skill's generated reference (renderSkillSkeleton).
+const SKILL_SKELETON = 'scripts/skills/talaria-apps/references/skeleton.md'
 
 // ── Grouping ────────────────────────────────────────────────────────────────
 // First path segment after /api/ → group file. EXHAUSTIVE BY DESIGN: an
@@ -1183,6 +1188,57 @@ async function renderCliReference() {
   return lines.join('\n').replace(/\n{3,}/g, '\n\n') + '\n'
 }
 
+// ── The talaria-apps skill's skeleton reference ─────────────────────────────
+// The product skill a Developer Agent builds apps by (scripts/skills/
+// talaria-apps) shows the skeleton `talaria-app scaffold` writes. Imported,
+// like the CLI tree: cli/src/cmd/app/skeleton.ts is the one source scaffold
+// and `talaria app new` write from, and it imports nothing, so this pass runs
+// with no node_modules anywhere. The example name is fixed so the output is.
+
+const SKELETON_EXAMPLE = { name: 'Field Notes', icon: '⬡' }
+
+/** A fence longer than any backtick run in `body`, so a file holding
+ *  template literals or a fence of its own renders whole. */
+function fenced(lang, body) {
+  const longest = Math.max(0, ...[...body.matchAll(/`+/g)].map((m) => m[0].length))
+  const fence = '`'.repeat(Math.max(3, longest + 1))
+  return [`${fence}${lang}`, body.replace(/\n$/, ''), fence]
+}
+
+const LANG = { '.json': 'json', '.ts': 'ts', '.svelte': 'svelte', '.md': 'markdown', '.gitignore': 'gitignore' }
+const langOf = (file) => LANG[Object.keys(LANG).find((ext) => file.endsWith(ext)) ?? ''] ?? ''
+
+async function renderSkillSkeleton() {
+  const { skeletonFiles, harnessStarterFiles, standaloneRepoFiles } = await import('../cli/src/cmd/app/skeleton.ts')
+  const app = skeletonFiles(SKELETON_EXAMPLE)
+  const harness = harnessStarterFiles({ name: SKELETON_EXAMPLE.name })
+  const repo = standaloneRepoFiles({ name: SKELETON_EXAMPLE.name })
+  const lines = []
+  lines.push('# The skeleton `talaria-app scaffold` writes', '')
+  lines.push('> **Generated** from `cli/src/cmd/app/skeleton.ts`, the one source `talaria-app scaffold` (and')
+  lines.push('> `talaria app new` in a Talaria checkout) writes from, by `bun run docs:api` in the Talaria')
+  lines.push('> repository. Do not edit it by hand: `bun run check` fails when it drifts from the source.')
+  lines.push('')
+  lines.push(`Shown for an app named "${SKELETON_EXAMPLE.name}". Scaffold writes the name you give it: \`--name\`, else a`)
+  lines.push("seed `talaria.json`'s `name`, else the repository's name without `talaria-app-`. Every path is")
+  lines.push("relative to the repo's root, which is the app's root. No file spells the app's slug: the instance")
+  lines.push('that installs the app decides it, and the surfaces read it from `useApp()`.')
+  lines.push('')
+  lines.push('| file | written |', '| :--- | :--- |')
+  for (const f of Object.keys(app)) lines.push(`| \`${f}\` | always${f === 'talaria.json' ? '; a seed `talaria.json` keeps every key it declares' : ''} |`)
+  for (const f of Object.keys(harness)) lines.push(`| \`${f}\` | with \`--harness\` |`)
+  for (const f of Object.keys(repo)) lines.push(`| \`${f}\` | when the repo has none${f === '.gitignore' ? '; an existing one gets the missing lines appended' : '; an existing one is kept'} |`)
+  lines.push('')
+  const section = (title, intro, files) => {
+    lines.push(`## ${title}`, '', ...intro, '')
+    for (const [file, body] of Object.entries(files)) lines.push(`### \`${file}\``, '', ...fenced(langOf(file), body), '')
+  }
+  section('The app', ['A work surface with a list and a record page below it (`/x/<slug>/items/<id>`), a document-store API, and one MCP tool.'], app)
+  section('With `--harness`', ['One JSON activity harness, and a reply recorded for its one fixture, so `talaria-app eval` runs offline from the first commit.'], harness)
+  section('The repo', ['The ignore list (the kit writes `.talaria/`) and a README that says how the app is checked.'], repo)
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n')
+}
+
 function leafSection(prefix, leaf) {
   const out = []
   const path = [...prefix, leaf.name].join(' ')
@@ -1289,6 +1345,7 @@ const outputs = new Map()
 for (const [g, rs] of Object.entries(groupRoutes)) outputs.set(join(ROOT, `docs/api/${g}.md`), renderGroup(g, rs))
 outputs.set(join(ROOT, 'docs/api/README.md'), renderApiIndex(groupRoutes))
 outputs.set(join(ROOT, 'docs/CLI-REFERENCE.md'), await renderCliReference())
+outputs.set(join(ROOT, SKILL_SKELETON), await renderSkillSkeleton())
 
 // ── Write or check ──────────────────────────────────────────────────────────
 
@@ -1318,9 +1375,10 @@ if (problems.length) {
   for (const p of problems) console.error(`    ${p}`)
   console.error('')
   console.error('  WHAT TO DO INSTEAD:')
-  console.error('    Never edit docs/api/** or docs/CLI-REFERENCE.md by hand — they are generated.')
-  console.error('    Change the source (route, // doc: note, or CLI declaration), then run')
-  console.error('    `bun run docs:api` and commit the result with your change.')
+  console.error(`    Never edit docs/api/**, docs/CLI-REFERENCE.md or ${SKILL_SKELETON} by hand —`)
+  console.error('    they are generated. Change the source (route, // doc: note, CLI declaration, or')
+  console.error('    cli/src/cmd/app/skeleton.ts), then run `bun run docs:api` and commit the result')
+  console.error('    with your change.')
   console.error(`\n${BAR}\n`)
   process.exit(1)
 }

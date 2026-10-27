@@ -45,7 +45,12 @@
 // the agent's own calls — on its own key, through this relay — are the one
 // meter of that turn. And the relay runs no guard pass of its own: the app
 // host's harness runner guards every reply with the harness's narrowed rule
-// set, and a second pass here would file every finding twice. The answer
+// set, and a second pass here would file every finding twice. The runner
+// runs the structural rules; the semantic ones need the decision model,
+// which lives here, so the runner hands the run's final reply and tool
+// record to `/api/internal/apps/{slug}/guard` once per run — never per call,
+// because a call here cannot tell a run's answer from a repair or a loop
+// turn, and cannot see a tool record the harness grounded itself. The answer
 // says which side served it and which contract parameters never reached the
 // model (`x-talaria-transport`, `x-talaria-contract-drops`).
 //
@@ -476,7 +481,8 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
             .as_array()
             .map(|a| a.iter().any(|v| v.as_str() == Some(id.key_name.as_str())))
             .unwrap_or(false);
-    // An app's call is guarded by the host's runner, never here.
+    // An app's call is guarded by the host's runner, never here — its
+    // semantic rules too, through the internal guard door, once per run.
     let guarded = app_call.is_none();
     let may_annotate = guarded && !is_agent_loop && guard_config(&state.pg).await.mode.discloses();
 
