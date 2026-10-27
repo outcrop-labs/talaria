@@ -333,9 +333,26 @@ multiplexer.
     text: no tool calls or reasoning, `MEDIA:` tags unresolved, and no `approval.request`
     frames, so a run parked on an approval waits out the agent's approval timeout.
 
+  The **completions arm** (every other chat, channel replies, harness and app turns) names no
+  session, but Hermes files each header-less turn under one it derives from the turn's opening
+  (`api-` plus a digest of the system rows and the first user message), so it wedges the same
+  way after a non-graceful restart: every later turn with that opening is refused with
+  `unknown_execution` and queued. There is no run id to withdraw on this arm, so a discard would
+  run every queued refusal, unobserved. The repair (`fleet_chat::Thread`) sends the refused turn
+  again, once, with one more system row in its opening (`SESSION THREAD: n`), which lands it on a
+  fresh derived session and leaves the old one parked with nothing in it ever run. A chat keeps
+  its thread on `conversations.hermes_epoch`, so its later turns open on the fresh session; a
+  one-shot takes a random thread. The log names the abandoned `api-…` session at warn: do not
+  `hermes sessions discard` it.
+
   Pinned sessions stay a per-agent switch, off by default. One thing blocks making them the
   default: on a session, a per-message tier is not honoured, and the session runs its main
-  model (the relay books what ran). Conversations from before the switch stay on replay. The first turn after a crash can wait up to five minutes before it runs: the
+  model (the relay books what ran). The chat surfaces say so: for an agent with pinned
+  sessions the tier chip stays on the rail, off, with that reason. Conversations from before
+  the switch stay on replay. Hermes' own `todo_list` stays closed for every agent until the
+  session arm is the chat default: its list lives in the session transcript, and a
+  completions-arm turn carries none, so it would reset every turn (`MANDATORY_DISABLED` in
+  talaria-agent-defs, and talaria-agent-todo's header for the migration plan). The first turn after a crash can wait up to five minutes before it runs: the
   restarted container's gateway gets the same pid and pid-namespace id as the dead one, so
   Hermes treats the dead turn's transcript lease as live until it expires.
 

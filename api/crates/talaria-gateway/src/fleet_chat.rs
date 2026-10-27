@@ -36,10 +36,11 @@ use axum::body::Bytes;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 
-use crate::fleet_lost_turns::{LostTurnRetry, heal_lost_turn};
+use crate::fleet_lost_turns::{LostTurnRetry, heal_lost_completion, heal_lost_turn};
 use crate::provider::http;
 use crate::usage::{TurnAttribution, affinity_key, backfill_attribution, record_attribution};
 use crate::vault::{SecretVault, seal_content};
+use futures_util::future::BoxFuture;
 use talaria_fleet_layout::{ManifestEntry, describe_agent, read_manifest};
 
 /// The verb of an `agent_request`, re-exported so a caller names one without
@@ -120,6 +121,89 @@ pub fn persona_model_options(effort: Option<&str>) -> Option<Value> {
     effort.map(|e| json!({ "reasoning_effort": e }))
 }
 
+/// Remember that a conversation moved to Hermes thread `n`, so its next turn
+/// opens there too. Called once, after the turn sent on the fresh thread has
+/// opened its stream.
+pub type RememberThread = Box<dyn FnOnce(i32) -> BoxFuture<'static, ()> + Send>;
+
+/// WHICH HERMES SESSION A COMPLETIONS TURN LANDS IN. Talaria names none on
+/// this arm: Hermes derives it from the turn's opening, as `api-` plus a
+/// digest of the system rows and the first user message
+/// (`_derive_chat_session_id`, v0.22). A conversation keeps its opening, so it
+/// keeps one derived session for life.
+///
+/// That session can be wedged. When the container dies mid-turn, v0.22 fences
+/// the running turn as `unknown` at the next boot, and refuses every later
+/// turn on the session with `unknown_execution`. Each refused admission stays
+/// queued behind the lost one, and all of them run the moment someone
+/// discards it. So the repair here never discards anything. It sends the
+/// refused turn again, once, with one more system row in its opening
+/// ([`thread_line`]). That moves the turn to a fresh derived session, and the
+/// wedged one is left parked, with nothing in it ever run.
+///
+/// The thread is the number in that row. A conversation's thread is stored
+/// (`conversations.hermes_epoch`), so its later turns open on the session the
+/// repair moved it to rather than being refused once more each. Epoch 0 is the
+/// opening as Talaria sends it, with no extra row, so a conversation that never
+/// lost a turn keeps the session it always had. A one-shot (a harness turn, an
+/// app turn, a channel reply) has nothing to store a thread on: its repair
+/// takes a random one and nothing remembers it.
+pub struct Thread {
+    epoch: i32,
+    remember: Option<RememberThread>,
+}
+
+impl Thread {
+    /// A turn with no conversation to keep a thread on.
+    pub fn one_shot() -> Self {
+        Thread {
+            epoch: 0,
+            remember: None,
+        }
+    }
+
+    /// A conversation on thread `epoch`, whose move to a fresh one is kept by
+    /// `remember`.
+    pub fn conversation(epoch: i32, remember: RememberThread) -> Self {
+        Thread {
+            epoch: epoch.max(0),
+            remember: Some(remember),
+        }
+    }
+}
+
+/// The system row that moves a completions turn onto Hermes thread `thread`.
+/// It is part of the opening Hermes digests, so a different thread is a
+/// different derived session. The words say what it is, so a model that reads
+/// it has nothing to act on.
+pub fn thread_line(thread: &str) -> Value {
+    json!({
+        "role": "system",
+        "content": format!(
+            "SESSION THREAD: {thread}. (Bookkeeping: this agent restarted during an earlier turn \
+             of this conversation, and the conversation continues on a fresh agent session. \
+             Nothing to act on.)"
+        ),
+    })
+}
+
+/// The payload with `thread`'s row after its leading system rows, or as it
+/// is when there is no thread to name.
+fn on_thread(payload: &Value, thread: Option<&str>) -> Value {
+    let mut payload = payload.clone();
+    if let (Some(thread), Some(list)) = (
+        thread,
+        payload.get_mut("messages").and_then(Value::as_array_mut),
+    ) {
+        let at = list
+            .iter()
+            .position(|m| m["role"] != "system")
+            .unwrap_or(list.len());
+        list.insert(at, thread_line(thread));
+    }
+    payload
+}
+
 /// Send one chat turn to the agent's container. Seals every
 /// message's content through a per-call vault (an image turn's text part is as
 /// credential-prone as any prose turn), retries while the agent's gateway is
@@ -139,10 +223,26 @@ pub fn persona_model_options(effort: Option<&str>) -> Option<Value> {
 /// Hermes answers is recorded under it, so every call the agent makes for
 /// the turn is metered as that flow's. None leaves the turn's calls
 /// `unattended` at the relay — still booked, under the agent.
+///
+/// A turn Hermes refuses because its derived session lost an earlier turn in
+/// a restart is sent again on a fresh session, once ([`Thread`]). This is the
+/// one-shot form; a conversation that keeps its thread calls
+/// [`proxy_chat_on`].
 pub async fn proxy_chat(
     payload: &Value,
     wait_ms: Option<u64>,
     attribution: Option<TurnAttribution>,
+) -> ChatStream {
+    proxy_chat_on(payload, wait_ms, attribution, Thread::one_shot()).await
+}
+
+/// [`proxy_chat`] for a turn that belongs to a conversation's [`Thread`]: it
+/// opens on that thread, and a repair that moves it remembers where to.
+pub async fn proxy_chat_on(
+    payload: &Value,
+    wait_ms: Option<u64>,
+    attribution: Option<TurnAttribution>,
+    thread: Thread,
 ) -> ChatStream {
     let model = payload
         .get("model")
@@ -165,16 +265,21 @@ pub async fn proxy_chat(
 
     match hold_for_agent(
         &model,
-        AgentRequest::ChatCompletions { payload },
+        AgentRequest::ChatCompletions {
+            payload,
+            epoch: thread.epoch,
+            remember: std::sync::Mutex::new(thread.remember),
+        },
         wait_ms,
         attribution,
     )
     .await
     {
         Ok(stream) => stream,
-        // The completions arm names no session, so it has none to lose; the
-        // canned sentence is the honest answer if the type ever says
-        // otherwise.
+        // The completions arm names no session of its own, so there is no
+        // room for it to find gone: its sessions are derived, and a wedged one
+        // is left for a fresh one (`Thread`). The canned sentence is the honest
+        // answer if the type ever says otherwise.
         Err(SessionLost) => canned_chat_stream(&unavailable_reply(&model), "hold"),
     }
 }
@@ -287,7 +392,14 @@ fn report_sealed(vault: &SecretVault, model: &str) {
 /// copy of the loop that drifts from this one.
 enum AgentRequest {
     ChatCompletions {
+        /// The sealed turn, before its thread row: the repair re-opens it on
+        /// a fresh thread from here.
         payload: Value,
+        /// The [`Thread`] it opens on.
+        epoch: i32,
+        /// Taken once, by the repair of the attempt that opened a stream —
+        /// which is the last attempt the hold makes.
+        remember: std::sync::Mutex<Option<RememberThread>>,
     },
     SessionTurn {
         conversation_id: String,
@@ -319,16 +431,34 @@ enum Opened {
 impl AgentRequest {
     /// One attempt against this agent's own gateway. `NotYet` means "not
     /// serving yet" — the hold loop backs off and tries again until its
-    /// deadline.
-    async fn open(&self, entry: &ManifestEntry) -> Opened {
+    /// deadline. `attribution` rides into the completions arm's repair: a
+    /// turn moved to a fresh session is metered under that session's key.
+    async fn open(&self, entry: &ManifestEntry, attribution: Option<&TurnAttribution>) -> Opened {
         match self {
-            AgentRequest::ChatCompletions { payload } => {
-                let mut request = payload.clone();
-                // include_usage: the final chunk reports token counts for the
-                // ledger (gateways that don't support it just ignore the option).
-                request["stream"] = json!(true);
-                request["stream_options"] = json!({ "include_usage": true });
+            AgentRequest::ChatCompletions {
+                payload,
+                epoch,
+                remember,
+            } => {
+                let thread = (*epoch > 0).then(|| epoch.to_string());
+                let request = completions_request(payload, thread.as_deref());
                 match open_stream(agent_post(entry, "/v1/chat/completions"), &request).await {
+                    Some(stream) if stream.ok() => {
+                        let remember = remember.lock().ok().and_then(|mut r| r.take());
+                        let retry = FreshThread {
+                            entry: ManifestEntry {
+                                model: entry.model.clone(),
+                                url: entry.url.clone(),
+                                key: entry.key.clone(),
+                            },
+                            payload: payload.clone(),
+                            next_epoch: *epoch + 1,
+                            remember,
+                            attribution: attribution.cloned(),
+                            abandoned: stream.hermes_session.clone(),
+                        };
+                        Opened::Stream(heal_lost_completion(stream, retry.into_retry()))
+                    }
                     Some(stream) => Opened::Stream(stream),
                     None => Opened::NotYet,
                 }
@@ -371,6 +501,102 @@ impl AgentRequest {
                 }
             }
         }
+    }
+}
+
+/// The completions body the agent's gateway is sent: the turn on its thread,
+/// streamed. include_usage: the final chunk reports token counts for the
+/// ledger (gateways that don't support it just ignore the option).
+fn completions_request(payload: &Value, thread: Option<&str>) -> Value {
+    let mut request = on_thread(payload, thread);
+    request["stream"] = json!(true);
+    request["stream_options"] = json!({ "include_usage": true });
+    request
+}
+
+/// What the completions arm's repair needs to send a refused turn again on a
+/// fresh thread ([`Thread`]).
+struct FreshThread {
+    entry: ManifestEntry,
+    payload: Value,
+    /// The conversation's next thread, when it has one to keep.
+    next_epoch: i32,
+    remember: Option<RememberThread>,
+    attribution: Option<TurnAttribution>,
+    /// The derived session Hermes refused the turn on, for the log line.
+    abandoned: Option<String>,
+}
+
+impl FreshThread {
+    fn into_retry(self) -> LostTurnRetry {
+        let label = self
+            .abandoned
+            .clone()
+            .unwrap_or_else(|| "a derived session".into());
+        LostTurnRetry::new(
+            label,
+            Box::new(move |_refused_run| Box::pin(async move { self.send().await })),
+        )
+    }
+
+    /// Open the turn on the fresh thread. Nothing is withdrawn or discarded
+    /// first: the refused admission and every one queued before it stay
+    /// parked behind the lost turn in the abandoned session, where nothing
+    /// runs them. The fresh session's key is recorded for the turn's flow
+    /// the moment its headers name it, the same as a first attempt.
+    async fn send(self) -> Result<ByteStream, String> {
+        let thread = match self.remember {
+            Some(_) => self.next_epoch.to_string(),
+            None => uuid::Uuid::new_v4().simple().to_string()[..8].to_string(),
+        };
+        let request = completions_request(&self.payload, Some(&thread));
+        let stream = match open_stream(agent_post(&self.entry, "/v1/chat/completions"), &request)
+            .await
+        {
+            Some(stream) if stream.ok() => stream,
+            Some(stream) => {
+                return Err(format!(
+                    "the agent answered the turn sent on a fresh session with HTTP {}",
+                    stream.status
+                ));
+            }
+            None => {
+                return Err(
+                    "the agent went away before the turn could be sent on a fresh session".into(),
+                );
+            }
+        };
+        let fresh = stream.hermes_session.clone();
+        // Said at warn on purpose: the abandoned session still holds the lost
+        // turn and every refusal queued behind it, and `hermes sessions
+        // discard` on it would run them all, unobserved.
+        tracing::warn!(
+            "[fleet] {}: {} lost a turn in a restart; this turn moved to thread {thread} ({}). Do \
+             not discard the abandoned session: its queued turns would run",
+            self.entry.model,
+            self.abandoned.as_deref().unwrap_or("the derived session"),
+            fresh.as_deref().unwrap_or("no session id answered"),
+        );
+        if let Some(remember) = self.remember {
+            remember(self.next_epoch).await;
+        }
+        let body = match (
+            self.attribution,
+            affinity_key(stream.hermes_session.as_deref()),
+        ) {
+            (Some(a), Some(key)) => {
+                record(&a, &key).await;
+                spawn_backfill(&a.pg, &a.agent_model, &key);
+                Box::pin(Attributed {
+                    inner: stream.body,
+                    pg: a.pg,
+                    agent_model: a.agent_model,
+                    key,
+                }) as ByteStream
+            }
+            _ => stream.body,
+        };
+        Ok(body)
     }
 }
 
@@ -428,7 +654,7 @@ async fn hold_for_agent(
         }
 
         if let Some(entry) = entry {
-            match request.open(entry).await {
+            match request.open(entry, attribution.as_ref()).await {
                 Opened::Stream(stream) => {
                     // Hermes' approval requests on this turn are refused
                     // here, and recorded (fleet_approvals.rs).
@@ -1600,10 +1826,19 @@ fn parse_session_frame(
 /// counts or a character estimate" on whether a usage event arrived at all,
 /// so a frame without counts must stay silent here — a reported 0/0 would
 /// be billed as the truth.
+///
+/// THE SESSION STREAM SPELLS THEM THE RESPONSES WAY: Hermes v0.22 puts
+/// `usage: {input_tokens, output_tokens, total_tokens}` on `run.completed`
+/// (and the other `run.*` verdicts) and none on `assistant.completed`
+/// (`gateway/platforms/api_server.py`, `_finish_turn_result`). The
+/// chat-completions spelling is still read, the way talaria-decide's wire
+/// reader reads both.
 fn session_usage(json: &Value) -> Vec<AgentStreamEvent> {
     let usage = json.get("usage");
     let count = |k: &str| usage.and_then(|u| u.get(k)).and_then(Value::as_i64);
-    match (count("prompt_tokens"), count("completion_tokens")) {
+    let input = count("input_tokens").or_else(|| count("prompt_tokens"));
+    let output = count("output_tokens").or_else(|| count("completion_tokens"));
+    match (input, output) {
         (Some(prompt_tokens), Some(completion_tokens)) => vec![AgentStreamEvent::Usage {
             prompt_tokens,
             completion_tokens,
@@ -1689,6 +1924,62 @@ fn session_error_message(json: &Value) -> String {
 mod tests {
     use super::*;
 
+    /// Thread 0 is the opening as sent, so a conversation that never lost a
+    /// turn keeps the derived session it always had; any other thread is one
+    /// more system row after the leading ones, and nothing else changes.
+    #[test]
+    fn a_thread_is_one_system_row_in_the_opening_and_nothing_else() {
+        let payload = json!({
+            "model": "ada-eng",
+            "messages": [
+                { "role": "system", "content": "mode" },
+                { "role": "system", "content": "THIS CONVERSATION'S ID: c1." },
+                { "role": "user", "content": "hi" },
+                { "role": "assistant", "content": "hello" },
+                { "role": "user", "content": "again" },
+            ],
+            "model_options": { "reasoning_effort": "low" },
+        });
+        let plain = completions_request(&payload, None);
+        assert_eq!(plain["messages"], payload["messages"]);
+        assert_eq!(plain["stream"], true);
+        assert_eq!(plain["stream_options"]["include_usage"], true);
+        assert_eq!(plain["model_options"], payload["model_options"]);
+
+        let moved = completions_request(&payload, Some("2"));
+        let mut list = moved["messages"].as_array().unwrap().clone();
+        assert_eq!(list.len(), 6);
+        assert_eq!(list[2], thread_line("2"));
+        assert!(
+            list[2]["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("SESSION THREAD: 2.")
+        );
+        list.remove(2);
+        assert_eq!(Value::Array(list), payload["messages"]);
+        assert_eq!(moved["model"], payload["model"]);
+        // Different threads are different openings, so different sessions.
+        assert_ne!(thread_line("2"), thread_line("3"));
+
+        // A one-shot with no system rows takes its thread row first.
+        let bare = json!({ "model": "m", "messages": [{ "role": "user", "content": "q" }] });
+        assert_eq!(
+            completions_request(&bare, Some("ab12cd34"))["messages"][0]["role"],
+            "system"
+        );
+    }
+
+    #[test]
+    fn a_conversation_thread_never_starts_below_zero() {
+        let t = Thread::conversation(-3, Box::new(|_| Box::pin(async {})));
+        assert_eq!(t.epoch, 0);
+        assert!(t.remember.is_some());
+        let one = Thread::one_shot();
+        assert_eq!(one.epoch, 0);
+        assert!(one.remember.is_none());
+    }
+
     #[test]
     fn a_turn_is_metered_under_the_session_we_made_or_the_id_hermes_answered() {
         let stream = |hermes_session: Option<&str>| ChatStream {
@@ -1713,7 +2004,11 @@ mod tests {
             Some("4f7c2a1e-9d3b-4c8a-b1f2-0e6d5a4c3b2a")
         );
         // The completions arm's key is the one Hermes named for it.
-        let completions = AgentRequest::ChatCompletions { payload: json!({}) };
+        let completions = AgentRequest::ChatCompletions {
+            payload: json!({}),
+            epoch: 0,
+            remember: std::sync::Mutex::new(None),
+        };
         assert_eq!(
             turn_key(&completions, &stream(Some("api-0123456789abcdef"))).as_deref(),
             Some("api-0123456789abcdef")
@@ -2092,7 +2387,10 @@ mod tests {
                     r#"data: {"message_id":"msg_1","text":"Checking the box first.","already_streamed":false}"#,
                     "\n\n",
                     "event: assistant.completed\n",
-                    r#"data: {"message":{"role":"assistant","content":"Hello"},"usage":{"prompt_tokens":12,"completion_tokens":3},"runtime":{}}"#,
+                    r#"data: {"message":{"role":"assistant","content":"Hello"},"runtime":{}}"#,
+                    "\n\n",
+                    "event: run.completed\n",
+                    r#"data: {"messages":[],"usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15},"runtime":{}}"#,
                     "\n\n",
                 )
                 .as_bytes(),
@@ -2159,7 +2457,10 @@ mod tests {
         let events = p.feed(
             concat!(
                 "event: assistant.completed\n",
-                r#"data: {"message":{"role":"assistant","content":"Done — the box is checked."},"usage":{"prompt_tokens":7,"completion_tokens":2}}"#,
+                r#"data: {"message":{"role":"assistant","content":"Done — the box is checked."}}"#,
+                "\n\n",
+                "event: run.completed\n",
+                r#"data: {"usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9}}"#,
                 "\n\n",
             )
             .as_bytes(),
@@ -2205,13 +2506,78 @@ mod tests {
         let mut p = AgentStreamParser::new();
         let events = p.feed(
             concat!(
-                "event: assistant.completed\n",
-                r#"data: {"message":{"role":"assistant","content":""},"usage":{"total_tokens":4}}"#,
+                "event: run.completed\n",
+                r#"data: {"messages":[],"usage":{"total_tokens":4}}"#,
                 "\n\n",
             )
             .as_bytes(),
         );
         assert_eq!(events, vec![]);
+    }
+
+    /// A whole session turn exactly as v0.22.4 streams it (captured from a
+    /// worktree agent on the pinned image, a scripted model behind the
+    /// gateway): the counts ride `run.completed`, spelled `input_tokens` /
+    /// `output_tokens`, and `assistant.completed` carries none.
+    #[test]
+    fn a_real_session_turn_reports_its_counts() {
+        const CAPTURED: &str = r##"event: run.started
+data: {"user_message": {"role": "user", "content": "usage probe"}, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "session_id": "fu-c2-probe", "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 1, "ts": 1793136731.461202}
+
+event: message.started
+data: {"message": {"id": "msg_ab733fc19b2f4862bc7de63d69315bc4", "role": "assistant"}, "session_id": "fu-c2-probe", "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 2, "ts": 1793136731.4612339}
+
+event: assistant.delta
+data: {"message_id": "msg_ab733fc19b2f4862bc7de63d69315bc4", "delta": "SEEN 1 user turns: usage probe || thread=None", "session_id": "fu-c2-probe", "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 3, "ts": 1793136731.6096802}
+
+event: assistant.completed
+data: {"session_id": "fu-c2-probe", "message_id": "msg_ab733fc19b2f4862bc7de63d69315bc4", "content": "SEEN 1 user turns: usage probe || thread=None", "completed": true, "partial": false, "interrupted": false, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 4, "ts": 1793136731.7383509}
+
+event: run.completed
+data: {"session_id": "fu-c2-probe", "message_id": "msg_ab733fc19b2f4862bc7de63d69315bc4", "completed": true, "partial": false, "interrupted": false, "messages": [{"role": "assistant", "content": "SEEN 1 user turns: usage probe || thread=None", "timestamp": 1793136731.6565225, "finish_reason": "stop", "reasoning": null}], "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 5, "ts": 1793136731.7383711}
+
+event: done
+data: {"session_id": "fu-c2-probe", "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 6, "ts": 1793136731.738406}
+
+"##;
+        let mut p = AgentStreamParser::new();
+        let mut events = p.feed(CAPTURED.as_bytes());
+        events.extend(p.finish());
+        assert_eq!(
+            events,
+            vec![
+                AgentStreamEvent::RunStarted {
+                    run_id: "run_caafc7a88e35432ca627e870623b4f1c".into()
+                },
+                AgentStreamEvent::Content {
+                    text: "SEEN 1 user turns: usage probe || thread=None".into()
+                },
+                AgentStreamEvent::Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5
+                },
+            ]
+        );
+    }
+
+    /// The chat-completions spelling of the counts is still read on a
+    /// session frame, beside the Responses spelling Hermes sends there.
+    #[test]
+    fn session_usage_reads_either_spelling() {
+        for usage in [
+            r#"{"input_tokens":11,"output_tokens":3,"total_tokens":14}"#,
+            r#"{"prompt_tokens":11,"completion_tokens":3}"#,
+        ] {
+            let frame = format!("event: run.completed\ndata: {{\"usage\":{usage}}}\n\n");
+            assert_eq!(
+                AgentStreamParser::new().feed(frame.as_bytes()),
+                vec![AgentStreamEvent::Usage {
+                    prompt_tokens: 11,
+                    completion_tokens: 3
+                }],
+                "{usage}"
+            );
+        }
     }
 
     /// A completions stream that NAMES its failure frame still reads through
@@ -2261,7 +2627,7 @@ mod tests {
                 r#"data: {"session_id":"c1","message_id":"m1","content":"OK","completed":true,"runtime":{}}"#,
                 "\n\n",
                 "event: run.completed\n",
-                r#"data: {"session_id":"c1","message_id":"m1","messages":[],"usage":{"prompt_tokens":11,"completion_tokens":3},"runtime":{}}"#,
+                r#"data: {"session_id":"c1","message_id":"m1","messages":[],"usage":{"input_tokens":11,"output_tokens":3,"total_tokens":14},"runtime":{}}"#,
                 "\n\n",
                 "event: done\n",
                 "data: {}\n\n",

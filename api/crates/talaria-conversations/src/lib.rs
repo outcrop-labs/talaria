@@ -1599,6 +1599,36 @@ pub async fn post_agent_turn(
     Ok(id)
 }
 
+/// The Hermes thread this conversation's completions turns open on
+/// (talaria-gateway `fleet_chat::Thread`): 0 until a turn was moved off a
+/// session that lost one in a restart. A missing row is thread 0.
+pub async fn hermes_epoch(pg: &PgPool, conversation_id: &str) -> Result<i32, sqlx::Error> {
+    let epoch: Option<i32> =
+        sqlx::query_scalar("select hermes_epoch from conversations where id = $1::uuid")
+            .bind(conversation_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(epoch.unwrap_or(0))
+}
+
+/// Keep the thread a turn moved this conversation to. Only ever forward: a
+/// slower writer holding an older thread cannot move it back onto the
+/// session it left.
+pub async fn move_hermes_epoch(
+    pg: &PgPool,
+    conversation_id: &str,
+    epoch: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update conversations set hermes_epoch = greatest(hermes_epoch, $2) where id = $1::uuid",
+    )
+    .bind(conversation_id)
+    .bind(epoch)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
 /// Bump the conversation's updated_at, setting a title from the first turn
 /// only while the row's own is empty.
 pub async fn touch_conversation(
@@ -1704,9 +1734,186 @@ pub async fn create_conversation(
     Ok(row.expect("insert … returning always yields a row").0)
 }
 
+// ── A tool call the stream called finished and the agent saw fail ────────────
+//
+// HERMES' COMPLETIONS STREAM CALLS EVERY FINISHED TOOL `completed`. Its
+// `hermes.tool.progress` frame for the end of a call carries no verdict
+// (v0.22.4 `_on_tool_complete` in api_server_openai_routes.py sends
+// `status: "completed"` whatever the result said), so a terminal command the
+// approval gate refused (`{"error": "Command denied: …", "status":
+// "blocked"}`) landed in `messages.tools` as a call that worked. The session
+// arm does not have this problem: its `tool.failed` says so. The completions
+// arm is the chat default, so this is most chats.
+//
+// The agent's talaria-events plugin is the one place the verdict exists: it
+// reads the result and posts `status: "error"` to /api/agents/tool-events,
+// keyed by the same tool-call id the stream's frames carry. That post and the
+// turn's own writes race, so the verdict is kept two ways and either order
+// lands it: the door records it here (Redis, for the turn still streaming)
+// and marks it on any reply row already holding the call; the turn folds the
+// recorded verdicts into its tools when it lands. Only ever toward `error`:
+// a stream that said a call failed is never overruled by a plugin that says
+// it worked.
+
+/// How long the door keeps a verdict for a turn still running the call. A
+/// turn can work for hours (a knowledgebase buildout), and the turn reads the
+/// verdict only when it lands; the same window bounds which landed rows the
+/// door marks.
+const TOOL_FAILURE_SECS: u64 = 6 * 3_600;
+
+fn tool_failure_key(agent_model: &str, tool_call_id: &str) -> String {
+    format!("tool-failed:{agent_model}:{tool_call_id}")
+}
+
+/// A tool-call id a model minted (`call_…`, `toolu_…`), or nothing: the id is
+/// part of a Redis key and a jsonb match, so only plain ids are taken.
+fn plain_call_id(id: &str) -> Option<&str> {
+    let id = id.trim();
+    (!id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':')))
+    .then_some(id)
+}
+
+/// The agent's plugin saw `tool_call_id` fail: keep that for the turn still
+/// running it, and mark it failed on any reply of this agent's that already
+/// holds it. Returns how many reply rows were marked.
+pub async fn record_tool_failure(
+    pg: &PgPool,
+    redis: Option<&mut redis::aio::ConnectionManager>,
+    agent_model: &str,
+    tool_call_id: &str,
+) -> Result<u64, sqlx::Error> {
+    let Some(id) = plain_call_id(tool_call_id) else {
+        return Ok(0);
+    };
+    // Before the rows: a turn that lands after this line reads the verdict,
+    // and one that landed before it is marked below.
+    if let Some(conn) = redis {
+        let set: redis::RedisResult<()> = redis::cmd("SET")
+            .arg(tool_failure_key(agent_model, id))
+            .arg("error")
+            .arg("EX")
+            .arg(TOOL_FAILURE_SECS)
+            .query_async(conn)
+            .await;
+        if let Err(e) = set {
+            tracing::warn!("[tool-events] {agent_model}: could not keep {id} as failed: {e}");
+        }
+    }
+    let marked = sqlx::query(
+        "update messages m \
+            set tools = (select coalesce(jsonb_agg(case when t->>'id' = $2 \
+                                                   then jsonb_set(t, '{status}', '\"error\"') \
+                                                   else t end order by n), '[]'::jsonb) \
+                           from jsonb_array_elements(m.tools) with ordinality as e(t, n)) \
+           from conversations c \
+          where c.id = m.conversation_id and c.agent_model = $1 and m.role = 'assistant' \
+            and m.created_at > now() - make_interval(secs => $3) \
+            and m.tools @> jsonb_build_array(jsonb_build_object('id', $2::text))",
+    )
+    .bind(agent_model)
+    .bind(id)
+    .bind(TOOL_FAILURE_SECS as f64)
+    .execute(pg)
+    .await?;
+    Ok(marked.rows_affected())
+}
+
+/// Fold the verdicts the door recorded into a landing turn's tools: a call
+/// its plugin saw fail is `error`, whatever the stream said. Says whether
+/// anything changed. A Redis that cannot be read changes nothing — the door
+/// still marks the landed row when its post arrives.
+pub async fn fold_tool_failures(
+    redis: &mut redis::aio::ConnectionManager,
+    agent_model: &str,
+    tools: &mut [ToolCall],
+) -> bool {
+    let open: Vec<String> = tools
+        .iter()
+        .filter(|t| t.status != "error")
+        .filter_map(|t| t.id.as_deref().and_then(plain_call_id).map(str::to_string))
+        .collect();
+    if open.is_empty() {
+        return false;
+    }
+    let keys: Vec<String> = open
+        .iter()
+        .map(|id| tool_failure_key(agent_model, id))
+        .collect();
+    let found: Vec<Option<String>> = match redis::cmd("MGET").arg(&keys).query_async(redis).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("[chat_persist] {agent_model}: tool verdicts unreadable: {e}");
+            return false;
+        }
+    };
+    let failed: Vec<&str> = open
+        .iter()
+        .zip(found)
+        .filter(|(_, v)| v.as_deref() == Some("error"))
+        .map(|(id, _)| id.as_str())
+        .collect();
+    mark_tool_failures(tools, &failed)
+}
+
+/// Mark the calls named in `failed` as `error`. A call already `error` stays
+/// so; nothing is ever marked back to working. Says whether anything changed.
+pub fn mark_tool_failures(tools: &mut [ToolCall], failed: &[&str]) -> bool {
+    let mut changed = false;
+    for t in tools.iter_mut() {
+        if t.status != "error" && t.id.as_deref().is_some_and(|id| failed.contains(&id)) {
+            t.status = "error".to_string();
+            changed = true;
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn call(id: Option<&str>, status: &str) -> ToolCall {
+        ToolCall {
+            id: id.map(str::to_string),
+            name: "terminal".into(),
+            label: String::new(),
+            status: status.into(),
+        }
+    }
+
+    /// The plugin's verdict marks exactly the calls it names, only ever
+    /// toward `error`, and a call with no id is never matched.
+    #[test]
+    fn a_failed_verdict_marks_only_its_own_call() {
+        let mut tools = vec![
+            call(Some("call_a"), "completed"),
+            call(Some("call_b"), "completed"),
+            call(None, "completed"),
+            call(Some("call_c"), "running"),
+        ];
+        assert!(mark_tool_failures(&mut tools, &["call_b", "call_c"]));
+        let status: Vec<&str> = tools.iter().map(|t| t.status.as_str()).collect();
+        assert_eq!(status, ["completed", "error", "completed", "error"]);
+        // Nothing left to change: the second fold of a landing is a no-op.
+        assert!(!mark_tool_failures(&mut tools, &["call_b", "call_c"]));
+    }
+
+    #[test]
+    fn only_a_plain_call_id_keys_a_verdict() {
+        assert_eq!(plain_call_id(" call_9x2Lk "), Some("call_9x2Lk"));
+        assert_eq!(plain_call_id("toolu_01A.b:c-d"), Some("toolu_01A.b:c-d"));
+        for bad in ["", "   ", "call a", "call*", "a\"b", &"x".repeat(129)] {
+            assert_eq!(plain_call_id(bad), None, "{bad}");
+        }
+        assert_eq!(
+            tool_failure_key("ada-eng", "call_1"),
+            "tool-failed:ada-eng:call_1"
+        );
+    }
 
     fn row(id: &str, seq: i32) -> MessageRow {
         MessageRow {

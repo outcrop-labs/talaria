@@ -18,16 +18,17 @@ use sqlx::PgPool;
 use talaria_agent_auth::now_ms;
 use talaria_agent_defs::pinned_sessions_for_model;
 use talaria_conversations::{
-    active_streaming_assistant, insert_streaming_assistant, last_user_message_effort,
-    mark_message_resumed, mark_message_stopped, message_run_id, message_still_errored, next_seq,
-    pinned_history_fits, prior_messages, resurrect_streaming_assistant, set_message_guard,
-    set_message_run_id, touch_conversation, unanswered_user_after, update_assistant,
+    active_streaming_assistant, fold_tool_failures, hermes_epoch, insert_streaming_assistant,
+    last_user_message_effort, mark_message_resumed, mark_message_stopped, message_run_id,
+    message_still_errored, move_hermes_epoch, next_seq, pinned_history_fits, prior_messages,
+    resurrect_streaming_assistant, set_message_guard, set_message_run_id, touch_conversation,
+    unanswered_user_after, update_assistant,
 };
 use talaria_fleet_agents::routed_model_for;
 use talaria_fleet_layout::describe_agent;
 use talaria_gateway::fleet_chat::{
-    AgentStreamEvent, AgentStreamParser, ChatStream, ToolCall, chat_payload, merge_tool,
-    proxy_chat, proxy_session_turn,
+    AgentStreamEvent, AgentStreamParser, ChatStream, Thread, ToolCall, chat_payload, merge_tool,
+    proxy_chat_on, proxy_session_turn,
 };
 use talaria_gateway::fleet_lost_turns::reattach_session_run;
 use talaria_gateway::guard::{
@@ -358,6 +359,11 @@ pub fn session_turn_parts(messages: &[Value]) -> (Option<String>, Value) {
 /// tier's effort is not sent — it was validated against the tier's levels,
 /// not the main model's, and the main runs at its own rendered level. The
 /// relay books what actually ran, call by call.
+///
+/// The completions arm opens on the conversation's Hermes thread
+/// (`conversations.hermes_epoch`), so a conversation whose derived session
+/// lost a turn in a restart stays on the fresh session its repair moved it
+/// to (talaria-gateway `fleet_chat::Thread`).
 pub async fn send_turn(
     pg: &PgPool,
     pinned: bool,
@@ -399,12 +405,36 @@ pub async fn send_turn(
             return upstream;
         }
     }
-    proxy_chat(
+    proxy_chat_on(
         &chat_payload(routed_model, &Value::Array(messages.to_vec()), effort),
         None,
         Some(attribution),
+        conversation_thread(pg, conversation_id).await,
     )
     .await
+}
+
+/// The Hermes thread this conversation's completions turn opens on, and how
+/// a move to a fresh one is kept: the conversation's own row. A read that
+/// fails is thread 0, the opening every conversation started on; a move that
+/// cannot be kept still lands this turn, and the next one is refused once
+/// more and moves again.
+async fn conversation_thread(pg: &PgPool, conversation_id: &str) -> Thread {
+    let epoch = hermes_epoch(pg, conversation_id).await.unwrap_or_else(|e| {
+        tracing::warn!("[chat_persist] {conversation_id}: hermes thread read failed: {e}");
+        0
+    });
+    let (pg, id) = (pg.clone(), conversation_id.to_string());
+    Thread::conversation(
+        epoch,
+        Box::new(move |next| {
+            Box::pin(async move {
+                if let Err(e) = move_hermes_epoch(&pg, &id, next).await {
+                    tracing::warn!("[chat_persist] {id}: could not keep hermes thread {next}: {e}");
+                }
+            })
+        }),
+    )
 }
 
 /// The line that tells the agent which conversation this turn is: the
@@ -770,6 +800,32 @@ pub async fn persist_assistant_stream(
             .await;
         };
     }
+    // THE TURN'S LANDING WRITE carries the agent's own verdict on its tool
+    // calls. The completions stream calls every finished call `completed`;
+    // the agent's talaria-events plugin, which read the result, reports a
+    // failed one to the tool-events door, and the door keeps it
+    // (talaria-conversations `fold_tool_failures`). The verdicts are read
+    // before the write and once more after it: a verdict the door kept in
+    // between marked the row this write just replaced, and the second read
+    // is what puts it back.
+    let verdict_agent: Option<String> = usage_meta.as_ref().map(|m| m.agent_model.clone());
+    macro_rules! land {
+        ($status:expr) => {
+            let mut redis = match &verdict_agent {
+                Some(_) if tools.iter().any(|t| t.id.is_some()) => state.redis().await.ok(),
+                _ => None,
+            };
+            if let (Some(agent), Some(conn)) = (&verdict_agent, redis.as_mut()) {
+                fold_tool_failures(conn, agent, &mut tools).await;
+            }
+            flush!($status);
+            if let (Some(agent), Some(conn)) = (&verdict_agent, redis.as_mut())
+                && fold_tool_failures(conn, agent, &mut tools).await
+            {
+                flush!($status);
+            }
+        };
+    }
     // THE DRAIN HAS NO TOTAL TIMEOUT. Frames flowing — deltas, tool progress,
     // keep-alives — mean the agent is working, however long the work takes;
     // only `stream_idle()` of SILENCE ends the read. The total 600s request
@@ -876,7 +932,7 @@ pub async fn persist_assistant_stream(
     // retrying a provider that just refused is the loop this closes.
     if let Some(message) = frame_error {
         content = with_error_line(&content, &format!("(agent error: {message})"));
-        flush!("error");
+        land!("error");
         return;
     }
     // A stream that DIED (as opposed to the agent refusing above) ends the
@@ -887,7 +943,7 @@ pub async fn persist_assistant_stream(
     // covers; a resume that dies again stays down (`resumed` gates it).
     if let Some(died) = death {
         content = with_error_line(&content, &format!("(agent error: {})", died.reason()));
-        flush!("error");
+        land!("error");
         if let Some(meta) = usage_meta.filter(|m| !m.resumed) {
             maybe_resume(&state, &conversation_id, &message_id, &meta);
         }
@@ -903,7 +959,7 @@ pub async fn persist_assistant_stream(
     // just stopped. Everything the completed path does — the guard over the
     // words, the rail's event, the reply notification, the chain — applies to
     // the words a stopped turn managed to say, with two exceptions below.
-    flush!("complete");
+    land!("complete");
     if stopped {
         let _ = mark_message_stopped(&state.pg, &message_id).await;
     }
@@ -965,7 +1021,7 @@ pub async fn persist_assistant_stream(
             if mode == GuardMode::Strict && needs_redaction(&findings) {
                 content = redact_secrets(&content, None).0;
                 reasoning = redact_secrets(&reasoning, None).0;
-                flush!("complete");
+                land!("complete");
             }
             // Scrubbed: a pinned finding carries a verbatim excerpt of the
             // flagged span, and `zero_tool_claim` does not truncate its own.
@@ -1294,21 +1350,53 @@ mod tests {
             );
         }
 
-        /// The completions arm's own telemetry, same verdict: a failure rides
-        /// `hermes.tool.progress` with a status word, and it lands as `error`.
+        /// A terminal command Hermes' approval gate refused, as v0.22.4's
+        /// completions stream actually sends it (captured from a worktree
+        /// agent on the pinned image, the door answering the approval with
+        /// deny): the call ends `completed` on the wire, whatever its result
+        /// said. The agent's talaria-events plugin read the result
+        /// (`{"error": "BLOCKED: Command denied by user…"}`) and reported
+        /// `error`, and that verdict is what lands.
         #[test]
-        fn the_completions_arm_persists_error_too() {
-            let tools = fold(concat!(
-                "event: hermes.tool.progress\n",
-                r#"data: {"tool":"search","toolCallId":"c1","emoji":"🔎","status":"running"}"#,
+        fn a_call_hermes_refused_lands_as_error_from_the_plugins_verdict() {
+            let mut tools = fold(concat!(
+                r#"data: {"id": "chatcmpl-c0ba353357b94408a511aa1786f87", "object": "chat.completion.chunk", "created": 1793136610, "model": "ada-ops", "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}]}"#,
                 "\n\n",
                 "event: hermes.tool.progress\n",
-                r#"data: {"tool":"search","toolCallId":"c1","label":"quota exhausted","status":"error"}"#,
+                r#"data: {"tool": "terminal", "emoji": "\ud83d\udcbb", "label": "rm -rf /tmp/fu-canary", "toolCallId": "call_8b732cd27d", "status": "running"}"#,
                 "\n\n",
+                "event: approval.request\n",
+                r#"data: {"execution_generation": 1, "command": "rm -rf /tmp/fu-canary", "description": "delete in root path", "request_id": "8ac426f873db45509251debcfa952ef7", "allow_session": true, "allow_permanent": true, "event": "approval.request", "run_id": "chatcmpl-c0ba353357b94408a511aa1786f87", "timestamp": 1793136611.2572691, "session_id": "api-6bc93538c8727c5a", "choices": ["once", "session", "always", "deny"]}"#,
+                "\n\n",
+                "event: hermes.tool.progress\n",
+                r#"data: {"tool": "terminal", "toolCallId": "call_8b732cd27d", "status": "completed"}"#,
+                "\n\n",
+                r#"data: {"id": "chatcmpl-c0ba353357b94408a511aa1786f87", "object": "chat.completion.chunk", "created": 1793136610, "model": "ada-ops", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}}"#,
+                "\n\n",
+                "data: [DONE]\n\n",
             ));
             assert_eq!(tools.len(), 1, "{tools:?}");
+            assert_eq!(tools[0].id.as_deref(), Some("call_8b732cd27d"));
+            assert_eq!(tools[0].label, "💻 rm -rf /tmp/fu-canary");
+            // What the wire alone would persist: a refused command that "worked".
+            assert_eq!(tools[0].status, "completed");
+            // The plugin said error for this call id: the landing write folds it in.
+            assert!(talaria_conversations::mark_tool_failures(
+                &mut tools,
+                &["call_8b732cd27d"]
+            ));
             assert_eq!(tools[0].status, "error");
-            assert_eq!(tools[0].label, "quota exhausted");
+            // A verdict for some other call changes nothing.
+            let mut other = fold(concat!(
+                "event: hermes.tool.progress\n",
+                r#"data: {"tool": "terminal", "toolCallId": "call_547dfba246", "status": "completed"}"#,
+                "\n\n",
+            ));
+            assert!(!talaria_conversations::mark_tool_failures(
+                &mut other,
+                &["call_8b732cd27d"]
+            ));
+            assert_eq!(other[0].status, "completed");
         }
 
         /// The three words, and only the three: a completed call still
@@ -1437,7 +1525,7 @@ mod tests {
     /// reach. `sync_plan_doc` runs the rewrite through the persona gateway
     /// (run_harness → real transport), which no unit test can fake from this
     /// module — so the DECISION is pure and tested here, and the wiring is
-    /// the single call site on the `flush!("complete")` path.
+    /// the single call site on the `land!("complete")` path.
     mod plan_auto_sync {
         use super::*;
 

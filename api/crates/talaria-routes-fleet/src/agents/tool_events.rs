@@ -20,7 +20,10 @@
 // kept for the frames that cannot say. The CHIPS follow the same key: they
 // land in the conversation the session id names (for a pinned agent the
 // Hermes session id is the conversation id), and without one only while
-// exactly one turn could be meant.
+// exactly one turn could be meant. A call the plugin reports FAILED is also
+// marked failed on the chat reply that ran it, by its tool-call id: Hermes'
+// completions stream calls every finished call `completed`, so this door is
+// the only place a chat turn learns otherwise.
 
 use axum::Json;
 use axum::extract::State;
@@ -150,6 +153,28 @@ pub async fn post(
             }
         }
     }
+    let redis = state.redis().await.ok();
+    // THE VERDICT THE CHAT STREAM CANNOT CARRY. Hermes' completions stream
+    // ends every finished tool call `completed`, a command its approval gate
+    // refused included; this post is the only place that says the call
+    // failed. Kept for the turn still running it and marked on a reply that
+    // already landed (talaria-conversations `record_tool_failure`), keyed by
+    // the same tool-call id the stream's frames carry.
+    if status == "error"
+        && let Some(call_id) = parsed.get("toolCallId").and_then(|v| v.as_str())
+    {
+        let mut conn = redis.clone();
+        if let Err(e) = talaria_conversations::record_tool_failure(
+            &state.pg,
+            conn.as_mut(),
+            &caller.model,
+            call_id,
+        )
+        .await
+        {
+            tracing::warn!("[tool-events] marking {tool} {call_id} failed: {e}");
+        }
+    }
     // THE FLEET'S ONLY FAILURE SIGNAL. A persona tool failing is invisible to
     // every other surface — the model stream says "completed", container
     // health stays green, stats look idle (the 2026-09-22 rot: half an hour
@@ -159,7 +184,7 @@ pub async fn post(
     // turns count too — is what the alerts surface reads. INCR + 6h EXPIRE
     // on a failure, DEL on a success: consecutive by construction, and an
     // idle agent's streak dies with the key instead of alerting forever.
-    if let Ok(mut conn) = state.redis().await {
+    if let Some(mut conn) = redis {
         let streak_key = format!("agent-tools:{}:fail-streak", caller.model);
         if status == "error" {
             let _: Result<i64, redis::RedisError> = redis::cmd("INCR")

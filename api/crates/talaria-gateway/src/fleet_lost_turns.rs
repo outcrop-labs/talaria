@@ -21,6 +21,17 @@
 // `prompt.resolve_unknown` its Desktop's Discard button sends. That is what
 // the resolver behind RESOLVE_LOST_TURNS runs, over docker exec.
 //
+// THE COMPLETIONS ARM WEDGES THE SAME WAY, and is repaired differently. A
+// header-less `/v1/chat/completions` turn lands in a session Hermes derives
+// from its opening, and a conversation keeps its opening, so a turn lost in a
+// restart leaves that derived session refusing every later turn with the same
+// `unknown_execution` (or, after 32 of them, `queue_full`). There is no run id
+// to withdraw on this arm: the admission's id is a random one Hermes keeps to
+// itself. So a discard here would run every refused turn queued behind the
+// lost one, unobserved, with tools. The repair moves the turn to a fresh
+// derived session instead (fleet_chat's `Thread`) and leaves the old one
+// parked, with nothing in it ever run.
+//
 // The second half of this file is the RESUME's question. When Talaria lost
 // its stream to a session turn while the container lived (a network reset, a
 // frozen container that came back), the turn is still running or already
@@ -57,6 +68,12 @@ pub static RESOLVE_LOST_TURNS: OnceLock<ResolveLostTurns> = OnceLock::new();
 /// behind a lost one.
 const LOST_TURN_CODE: &str = "unknown_execution";
 
+/// The code a paused FIFO answers once 32 refused turns are queued behind the
+/// lost one (`ADMISSION_QUEUE_MAX`). Only the completions arm treats it as a
+/// lost turn: a conversation wedged before this repair existed reaches it, and
+/// a fresh session is the way out of it too.
+const QUEUE_FULL_CODE: &str = "queue_full";
+
 /// The most the watch below holds while a frame is still arriving. A turn's
 /// `run.started` echoes the whole message, attachments and all, so this is
 /// generous; past it the stream passes through unwatched.
@@ -68,10 +85,21 @@ const WATCH_LIMIT: usize = 8 * 1024 * 1024;
 /// without a container.
 pub(crate) struct LostTurnRetry {
     session_id: String,
-    retry: Box<dyn FnOnce(Option<String>) -> BoxFuture<'static, Result<ByteStream, String>> + Send>,
+    retry: Retry,
 }
 
+/// One refusal's repair, as the watch below calls it: handed the refused
+/// run's id when the stream named one, it answers the stream to carry on with.
+pub(crate) type Retry =
+    Box<dyn FnOnce(Option<String>) -> BoxFuture<'static, Result<ByteStream, String>> + Send>;
+
 impl LostTurnRetry {
+    /// A repair the caller built: `session_id` names the session that lost
+    /// the turn, for the log lines.
+    pub(crate) fn new(session_id: String, retry: Retry) -> Self {
+        LostTurnRetry { session_id, retry }
+    }
+
     /// The real retry, against the agent's own gateway with its own bearer.
     pub(crate) fn over_http(
         entry: &ManifestEntry,
@@ -213,6 +241,63 @@ fn read_head(frame: &[u8]) -> Head {
     }
 }
 
+/// What one frame at the head of a COMPLETIONS stream says. Hermes opens it
+/// with a role chunk; a turn refused because its derived session lost an
+/// earlier one then ends at once, on a finish chunk with `finish_reason:
+/// "error"`, no delta and `error.message` naming the refusal, then `[DONE]`.
+/// A keep-alive, the role chunk and Hermes' own status frames are the
+/// opening. Anything that says something (content, reasoning, a tool call, a
+/// tool's progress) is work.
+fn read_completion_head(frame: &[u8]) -> Head {
+    let text = String::from_utf8_lossy(frame);
+    let mut event = "";
+    let mut data: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        if let Some(name) = line.strip_prefix("event:") {
+            event = name.trim();
+        } else if let Some(d) = line.strip_prefix("data:") {
+            data.push(d.trim());
+        }
+    }
+    if event.is_empty() && data.is_empty() {
+        return Head::Opening(None);
+    }
+    match event {
+        "" => {}
+        "hermes.status" => return Head::Opening(None),
+        _ => return Head::Work,
+    }
+    let json: Value = serde_json::from_str(&data.join("\n")).unwrap_or(Value::Null);
+    let choice = &json["choices"][0];
+    let delta = &choice["delta"];
+    let said = ["content", "reasoning_content", "reasoning", "tool_calls"]
+        .iter()
+        .any(|k| match &delta[*k] {
+            Value::Null => false,
+            Value::String(s) => !s.is_empty(),
+            _ => true,
+        });
+    if said || !json.is_object() {
+        return Head::Work;
+    }
+    let refused = json["error"]["message"]
+        .as_str()
+        .is_some_and(|m| m == LOST_TURN_CODE || m == QUEUE_FULL_CODE);
+    match choice["finish_reason"].as_str() {
+        None => Head::Opening(None),
+        Some("error") if refused => Head::LostTurn,
+        Some(_) => Head::Work,
+    }
+}
+
+/// Which stream a watch reads: the two arms spell their opening, their
+/// refusal and their error frame differently.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Arm {
+    Session,
+    Completions,
+}
+
 /// Watch a session stream's opening for the lost-turn refusal, and repair it
 /// in place, once. Every frame passes on the moment it is whole, so a healthy
 /// turn is not held back at all. The refusal arrives before any work frame
@@ -224,9 +309,23 @@ fn read_head(frame: &[u8]) -> Head {
 /// LAST run id they see, which is the live one a stop or a steer must name. If
 /// the repair fails, the refusal is replaced by an error frame that says why,
 /// and the turn ends as the error it was.
-pub(crate) fn heal_lost_turn(mut stream: ChatStream, retry: LostTurnRetry) -> ChatStream {
+pub(crate) fn heal_lost_turn(stream: ChatStream, retry: LostTurnRetry) -> ChatStream {
+    watch(stream, retry, Arm::Session)
+}
+
+/// The same watch over a completions stream's opening. On the refusal the
+/// turn is sent again by `retry` (fleet_chat's fresh-thread repair) and the
+/// reader carries on with the new stream: one more role chunk, then the
+/// turn. A refusal after anything was said is not a lost turn, and a repair
+/// that fails replaces the refusal with an error chunk that says why.
+pub(crate) fn heal_lost_completion(stream: ChatStream, retry: LostTurnRetry) -> ChatStream {
+    watch(stream, retry, Arm::Completions)
+}
+
+fn watch(mut stream: ChatStream, retry: LostTurnRetry, arm: Arm) -> ChatStream {
     let inner = std::mem::replace(&mut stream.body, Box::pin(futures_util::stream::empty()));
     let watch = Watch {
+        arm,
         inner,
         head: Vec::new(),
         out: VecDeque::new(),
@@ -240,6 +339,7 @@ pub(crate) fn heal_lost_turn(mut stream: ChatStream, retry: LostTurnRetry) -> Ch
 }
 
 struct Watch {
+    arm: Arm,
     inner: ByteStream,
     /// Bytes not yet judged: the tail of a frame still arriving.
     head: Vec<u8>,
@@ -303,7 +403,11 @@ impl Watch {
                 return;
             };
             let frame: Vec<u8> = self.head.drain(..end + 2).collect();
-            match read_head(&frame) {
+            let head = match self.arm {
+                Arm::Session => read_head(&frame),
+                Arm::Completions => read_completion_head(&frame),
+            };
+            match head {
                 Head::Opening(run) => {
                     if run.is_some() {
                         self.run_id = run;
@@ -334,11 +438,12 @@ impl Watch {
                                 "[fleet] session {session_id} lost a turn in a restart and could \
                                  not be repaired: {why}"
                             );
-                            self.out.push_back(Ok(lost_turn_frame(
-                                self.run_id.as_deref(),
-                                &session_id,
-                                &why,
-                            )));
+                            self.out.push_back(Ok(match self.arm {
+                                Arm::Session => {
+                                    lost_turn_frame(self.run_id.as_deref(), &session_id, &why)
+                                }
+                                Arm::Completions => lost_completion_frame(&why),
+                            }));
                         }
                     }
                 }
@@ -362,6 +467,24 @@ fn lost_turn_frame(run_id: Option<&str>, session_id: &str, why: &str) -> Bytes {
             "run_id": run_id,
         }),
     )
+}
+
+/// The completions arm's refusal, restated with the reason the move to a
+/// fresh session failed, in the chunk shape that arm's readers take as the
+/// turn's failure.
+fn lost_completion_frame(why: &str) -> Bytes {
+    let chunk = json!({
+        "object": "chat.completion.chunk",
+        "choices": [{ "index": 0, "delta": {}, "finish_reason": "error" }],
+        "error": {
+            "message": format!(
+                "{LOST_TURN_CODE}: this agent lost a turn in a restart, and the conversation \
+                 could not be moved to a fresh session ({why})"
+            ),
+            "type": "lost_turn",
+        },
+    });
+    Bytes::from(format!("data: {chunk}\n\n"))
 }
 
 fn sse(event: &str, data: &Value) -> Bytes {
@@ -770,6 +893,147 @@ mod tests {
             None,
             "a refusal after work began is not a lost turn"
         );
+    }
+
+    // ── The completions arm ──────────────────────────────────────────────
+
+    // Verbatim from nousresearch/hermes-agent:v0.22.4 (the pinned digest): a
+    // header-less completions turn whose derived session lost its head to a
+    // `docker kill`, sent again with the same opening after the restart.
+    const ROLE: &str = r#"data: {"id": "chatcmpl-4518651a6edf4de2b188537678d59", "object": "chat.completion.chunk", "created": 1793136591, "model": "ada-ops", "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}]}
+
+"#;
+    const REFUSAL: &str = r#"data: {"id": "chatcmpl-4518651a6edf4de2b188537678d59", "object": "chat.completion.chunk", "created": 1793136591, "model": "ada-ops", "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}], "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, "error": {"message": "unknown_execution", "type": "RuntimeStoreError"}, "hermes": {"completed": true, "partial": false, "failed": true, "error": "unknown_execution", "error_code": "agent_error"}}
+
+"#;
+    const END: &str = "data: [DONE]\n\n";
+
+    fn completion_retry(
+        answer: Result<Vec<&'static str>, &'static str>,
+        calls: Arc<Mutex<u32>>,
+    ) -> LostTurnRetry {
+        LostTurnRetry::new(
+            "api-0123456789abcdef".into(),
+            Box::new(move |_| {
+                *calls.lock().unwrap() += 1;
+                Box::pin(async move {
+                    match answer {
+                        Ok(parts) => Ok(frames(&parts)),
+                        Err(why) => Err(why.to_string()),
+                    }
+                })
+            }),
+        )
+    }
+
+    #[test]
+    fn the_head_of_a_completions_stream_reads_the_way_hermes_writes_it() {
+        assert_eq!(read_completion_head(ROLE.as_bytes()), Head::Opening(None));
+        assert_eq!(
+            read_completion_head(b": keepalive\n\n"),
+            Head::Opening(None)
+        );
+        assert_eq!(
+            read_completion_head(b"event: hermes.status\ndata: {\"status\": \"queued\"}\n\n"),
+            Head::Opening(None)
+        );
+        assert_eq!(read_completion_head(REFUSAL.as_bytes()), Head::LostTurn);
+        let full = REFUSAL.replace("unknown_execution", "queue_full");
+        assert_eq!(read_completion_head(full.as_bytes()), Head::LostTurn);
+        // Any other failure is the turn's own, and it is not this repair's.
+        let provider = REFUSAL.replace("unknown_execution", "provider said no");
+        assert_eq!(read_completion_head(provider.as_bytes()), Head::Work);
+        for work in [
+            "data: {\"choices\": [{\"index\": 0, \"delta\": {\"content\": \"hi\"}, \"finish_reason\": null}]}\n\n",
+            "data: {\"choices\": [{\"index\": 0, \"delta\": {\"reasoning_content\": \"hm\"}, \"finish_reason\": null}]}\n\n",
+            "event: hermes.tool.progress\ndata: {\"tool\": \"terminal\", \"toolCallId\": \"call_1\", \"status\": \"running\"}\n\n",
+            "event: approval.request\ndata: {}\n\n",
+            "data: {\"choices\": [{\"index\": 0, \"delta\": {}, \"finish_reason\": \"stop\"}]}\n\n",
+            END,
+        ] {
+            assert_eq!(read_completion_head(work.as_bytes()), Head::Work, "{work}");
+        }
+    }
+
+    /// The refused turn is sent again, once, and the reader gets one stream:
+    /// the refused opening, then the fresh session's turn, never the
+    /// refusal and never the refused stream's `[DONE]`.
+    #[tokio::test]
+    async fn a_refused_completion_moves_to_a_fresh_session() {
+        let calls = Arc::new(Mutex::new(0));
+        let again = vec![
+            ROLE,
+            "data: {\"choices\": [{\"index\": 0, \"delta\": {\"content\": \"hello again\"}, \"finish_reason\": null}]}\n\n",
+            "data: {\"choices\": [{\"index\": 0, \"delta\": {}, \"finish_reason\": \"stop\"}]}\n\n",
+            END,
+        ];
+        let stream = heal_lost_completion(
+            // The refusal split across chunks, its [DONE] in the same chunk.
+            chat(frames(&[
+                ROLE,
+                &REFUSAL[..40],
+                &format!("{}{END}", &REFUSAL[40..]),
+            ])),
+            completion_retry(Ok(again), calls.clone()),
+        );
+        let text = drain(stream).await;
+        assert_eq!(*calls.lock().unwrap(), 1);
+        assert!(!text.contains("unknown_execution"), "{text}");
+        assert_eq!(text.matches("[DONE]").count(), 1, "{text}");
+        let mut parser = AgentStreamParser::new();
+        assert_eq!(
+            parser.feed(text.as_bytes()),
+            vec![AgentStreamEvent::Content {
+                text: "hello again".into()
+            }]
+        );
+    }
+
+    /// A move that cannot be made leaves the turn the error it was, with the
+    /// reason in it, and the refused stream ends as Hermes ended it.
+    #[tokio::test]
+    async fn a_failed_move_says_why() {
+        let calls = Arc::new(Mutex::new(0));
+        let stream = heal_lost_completion(
+            chat(frames(&[ROLE, REFUSAL, END])),
+            completion_retry(
+                Err("the agent answered the turn sent on a fresh session with HTTP 503"),
+                calls.clone(),
+            ),
+        );
+        let text = drain(stream).await;
+        assert_eq!(*calls.lock().unwrap(), 1);
+        assert_eq!(
+            AgentStreamParser::new().feed(text.as_bytes()),
+            vec![AgentStreamEvent::Error {
+                message: "unknown_execution: this agent lost a turn in a restart, and the \
+                          conversation could not be moved to a fresh session (the agent \
+                          answered the turn sent on a fresh session with HTTP 503)"
+                    .into()
+            }]
+        );
+        assert!(text.ends_with(END), "{text}");
+    }
+
+    /// A turn that said anything is never sent again, whatever follows, and
+    /// passes through byte for byte.
+    #[tokio::test]
+    async fn a_completion_that_spoke_is_never_moved() {
+        let calls = Arc::new(Mutex::new(0));
+        let parts = [
+            &ROLE[..9],
+            &ROLE[9..],
+            ": keepalive\n\n",
+            "data: {\"choices\": [{\"index\": 0, \"delta\": {\"content\": \"hi\"}, \"finish_reason\": null}]}\n\n",
+            REFUSAL,
+            END,
+        ];
+        let stream = heal_lost_completion(
+            chat(frames(&parts)),
+            completion_retry(Ok(vec![]), calls.clone()),
+        );
+        assert_eq!(drain(stream).await, parts.concat());
+        assert_eq!(*calls.lock().unwrap(), 0);
     }
 
     #[test]
