@@ -329,6 +329,25 @@ pub fn workbench_tools() -> Vec<Value> {
             "description": "Read the pull request a job opened: open, closed or merged; each CI check's conclusion (checks.verdict is passing, failing, pending, none or unknown); and the review decision (approved, changes_requested, commented or none) with each reviewer's latest review. Read-only: it never merges, comments, approves or re-runs anything — a person merges. When checks fail or a reviewer asks for changes, start_job on the same ticket again: it resumes this job on its branch and PR, and finish_job updates that PR.",
             "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job or job_status — a job whose PR is open (status pr_open) or was resumed for a revise round. Not a ticket ref." } }, "required": ["jobId"] },
         }),
+        json!({
+            "name": "request_app_install",
+            "description": "Ask for the Talaria app in one of YOUR granted repos to be installed on this instance — once its PR has merged to the default branch (Talaria never merges it for you). Nothing happens until an admin approves in Manage → Apps; approval fetches the repo at its default branch (or `ref`), checks talaria.json, installs and builds it, DISABLED: enabling it and granting its surfaces stay with the admin. The outcome — installed and whether it built, the install's error, or a rejection's reason — is a line on the ticket. From then on you are the app's maintainer: its maintenance tickets go to this ticket's board, and plugin_status reads it. One pending request per repo.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo": { "type": "string", "description": "owner/name — one of your granted repos (list_repos), holding talaria.json at its root" },
+                    "ref": { "type": "string", "description": "A branch, tag or commit to install. Omitted means the default branch, which is what updates then follow." },
+                    "why": { "type": "string", "description": "What the app does and who asked for it, for the approver" },
+                    "taskId": { "type": "string", "description": "The ticket the app was built for — id or ref. Required: its board is where the plugin's maintenance tickets go, and its person is who the plugin is for. Same rule as start_job: a ticket you may not work is refused." },
+                },
+                "required": ["repo", "taskId"],
+            },
+        }),
+        json!({
+            "name": "plugin_status",
+            "description": "Read a plugin (an installed app) you maintain: the commit installed and the one its branch points at now (updateAvailable), the repo's open pull requests with each one's checks verdict and review decision, whether the app is enabled and its build loads (app.build, app.broken), and what the host made of its harnesses. Omit slug to list the plugins you maintain and your install requests from the last 30 days. Read-only: it never merges, updates, rebuilds or enables anything.",
+            "inputSchema": { "type": "object", "properties": { "slug": { "type": "string", "description": "The app's slug (plugin_status with no slug lists yours). Omit to list." } } },
+        }),
     ]
 }
 
@@ -528,8 +547,8 @@ async fn ticket_still_ours(pg: &PgPool, subject: &AgentSubject, task_id: &str) -
 
 /// THE ONLY way this file tells anybody an approval was raised. Not one of
 /// the three ticket doors at the top of the file — a door onto somebody's
-/// inbox — but it is one for exactly the same reason: two verbs here park
-/// work on a human (`workbench_plan`, `repo_request`), both declared in
+/// inbox — but it is one for exactly the same reason: three verbs here park
+/// work on a human (`workbench_plan`, `repo_request`, `app_install`), each declared in
 /// approvals.rs with the AUTHORITY their decision route enforces, and that
 /// declaration is what decides who may be told and how much of it.
 ///
@@ -1883,6 +1902,151 @@ async fn call_tool(
             CallOutcome::Ok(status)
         }
 
+        "request_app_install" => {
+            let repo = arg_str(args, "repo").trim().to_string();
+            if !talaria_plugins::install::repo_ok(&repo) {
+                return CallOutcome::Fail(format!(
+                    "repo must be owner/name, one of your granted repos (list_repos) — got \"{repo}\""
+                ));
+            }
+            // A plugin is installed from a repo its maintainer can push to:
+            // the agent asking is the agent that will keep it working.
+            if !gh::granted_repos(pg, &agent.id)
+                .await
+                .iter()
+                .any(|r| r.eq_ignore_ascii_case(&repo))
+            {
+                return CallOutcome::Fail(format!(
+                    "repo \"{repo}\" is not granted to you — list_repos shows yours. An app is installed from a repo you maintain."
+                ));
+            }
+            let git_ref = args
+                .get("ref")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|r| !r.is_empty())
+                .map(String::from);
+            if args
+                .get("taskId")
+                .and_then(Value::as_str)
+                .is_none_or(|t| t.trim().is_empty())
+            {
+                return CallOutcome::Fail(
+                    "taskId is required: the ticket you built the app for — its board is where the plugin's maintenance tickets go".into(),
+                );
+            }
+            let task_id = match ticket_arg(pg, subject, args).await {
+                Ok(Some(id)) => id,
+                Ok(None) => return CallOutcome::Fail("taskId is required".into()),
+                Err(error) => return CallOutcome::Fail(error),
+            };
+            let board_id = match get_task(pg, &task_id).await {
+                Ok(Some(task)) => task.board_id,
+                Ok(None) => return CallOutcome::Fail("that ticket no longer exists".into()),
+                Err(e) => return thrown(format!("ticket read: {e}")),
+            };
+            // The person the plugin is for: the ticket's own person first,
+            // else the human the agent answers to (the attribution ladder).
+            let owner = match talaria_plugins::install::ticket_owner(pg, &task_id).await {
+                Some(owner) => Some(owner),
+                None => talaria_attribution::responsible_user_for(pg, deps.redis.clone(), subject)
+                    .await
+                    .ok()
+                    .flatten(),
+            };
+            let why = truncate_utf16(&arg_str(args, "why"), 1000).to_string();
+            let filed = match talaria_plugins::install::file_request(
+                pg,
+                &talaria_plugins::install::InstallAsk {
+                    agent_id: &agent.id,
+                    agent_model: &agent.model,
+                    repo: &repo,
+                    git_ref: git_ref.as_deref(),
+                    why: &why,
+                    task_id: &task_id,
+                    board_id: &board_id,
+                    owner_user_id: owner.as_deref(),
+                },
+            )
+            .await
+            {
+                Ok(id) => id,
+                Err(why) => return CallOutcome::Fail(why),
+            };
+            log_ticket(
+                pg,
+                Some(&task_id),
+                &WorkbenchActor::Agent(subject.clone()),
+                &format!(
+                    "asked to install the app in {repo}{} — awaiting an admin's approval in Manage → Apps",
+                    git_ref
+                        .as_deref()
+                        .map(|r| format!(" @ {r}"))
+                        .unwrap_or_default()
+                ),
+            )
+            .await;
+            announce_raised(deps, format!("app_install:{filed}"));
+            CallOutcome::Ok(json!({
+                "requestId": filed,
+                "status": "pending",
+                "repo": repo,
+                "ref": git_ref,
+                "note": "An admin decides in Manage → Apps. The outcome is a line on this ticket, and plugin_status (no slug) lists the request. Approval installs the app disabled; an admin enables it.",
+            }))
+        }
+
+        "plugin_status" => {
+            let slug = arg_str(args, "slug").trim().to_lowercase();
+            if slug.is_empty() {
+                let mine = match talaria_plugins::plugins_maintained_by(pg, &agent.id).await {
+                    Ok(p) => p,
+                    Err(e) => return thrown(format!("plugin read: {e}")),
+                };
+                let mut out = json!({
+                    "plugins": mine.iter().map(|p| json!({
+                        "slug": p.app_slug,
+                        "repo": p.repo,
+                        "branch": p.branch,
+                        "installedCommit": p.installed_commit,
+                        "updatePolicy": p.update_policy,
+                        "board": p.board_name,
+                        "ticket": p.ticket_ref,
+                    })).collect::<Vec<_>>(),
+                });
+                match talaria_plugins::install::requests_by_agent(pg, &agent.id).await {
+                    Ok(rows) => out["installRequests"] = Value::Array(rows),
+                    Err(e) => {
+                        out["installRequestsError"] =
+                            json!(format!("install requests unreadable: {e}"))
+                    }
+                }
+                return CallOutcome::Ok(out);
+            }
+            let plugin = match talaria_plugins::plugin(pg, &slug).await {
+                Ok(Some(p)) => p,
+                Ok(None) => {
+                    return CallOutcome::Fail(format!(
+                        "no plugin \"{slug}\" — plugin_status with no slug lists the plugins you maintain"
+                    ));
+                }
+                Err(e) => return thrown(format!("plugin read: {e}")),
+            };
+            if plugin.maintainer_agent_id.as_deref() != Some(agent.id.as_str()) {
+                return CallOutcome::Fail(format!(
+                    "you do not maintain \"{slug}\" — plugin_status with no slug lists the plugins you maintain"
+                ));
+            }
+            let creds = talaria_apps::PlatformCredentials {
+                pg,
+                sb: &deps.sb,
+                actor: &agent.model,
+            };
+            CallOutcome::Ok(
+                talaria_plugins::status::plugin_status(pg, &deps.sb, &creds, &plugin).await,
+            )
+        }
+
         _ => CallOutcome::Fail(format!("unknown tool \"{name}\"")),
     }
 }
@@ -3070,7 +3234,9 @@ mod tests {
                 "request_repo",
                 "finish_job",
                 "prepare_env",
-                "pr_status"
+                "pr_status",
+                "request_app_install",
+                "plugin_status"
             ]
         );
         // The per-tool schema assertions below look their tool up BY NAME. The
@@ -3114,6 +3280,15 @@ mod tests {
         // reads it.
         let pr_status = tool("pr_status")["description"].as_str().unwrap();
         assert!(pr_status.contains("Read-only") && pr_status.contains("never merges"));
+        // An install request names its ticket: the plugin's board comes from it.
+        assert_eq!(
+            tool("request_app_install")["inputSchema"]["required"],
+            json!(["repo", "taskId"])
+        );
+        let install = tool("request_app_install")["description"].as_str().unwrap();
+        assert!(install.contains("DISABLED") && install.contains("never merges"));
+        let status = tool("plugin_status")["description"].as_str().unwrap();
+        assert!(status.contains("Read-only") && status.contains("never merges"));
     }
 
     #[test]

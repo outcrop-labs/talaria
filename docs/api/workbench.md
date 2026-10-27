@@ -400,13 +400,14 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_repo_reque
 
 > /api/workbench/repo-requests. Agent repo-creation requests. GET → pending
 > queue; PUT → approve (creates the repo via the App at the requested or
-> overridden visibility, grants it to the requester) or reject (the note goes
-> on the requesting ticket). Admin — approval mints real org resources.
+> overridden visibility, protects its default branch against force-push and
+> deletion unless the approver says not to, grants it to the requester) or
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `admin` | — | `{requests}` | 200 | — |
-| PUT | `admin` | [body](#put-apiworkbenchrepo-requests-body) | `{ok, repo, url}` | 200, 400, 404 | audit |
+| PUT | `admin` | [body](#put-apiworkbenchrepo-requests-body) | `{ok, repo, url, protected, protection}` | 200, 400, 404 | audit |
 
 ### PUT `/api/workbench/repo-requests` body
 
@@ -416,6 +417,7 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_repo_reque
 | `action` | `enum(approve|reject)` |  |
 | `note` | `string?(500)` | Why the approver decided. A rejection's note is posted on the requesting ticket and shown to the agent in list_repos. |
 | `visibility` | `enum(private|public)?` | Overrides the visibility the agent asked for; absent keeps it. |
+| `protect` | `bool?` |  |
 
 ## `/api/workbench/repos/{agentId}`
 

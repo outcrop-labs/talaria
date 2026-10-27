@@ -207,6 +207,26 @@ CREATE TABLE public.app_data (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.app_install_requests (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    agent_id uuid NOT NULL,
+    agent_model text NOT NULL,
+    repo text NOT NULL,
+    url text NOT NULL,
+    git_ref text,
+    why text DEFAULT ''::text NOT NULL,
+    task_id uuid,
+    board_id uuid,
+    owner_user_id uuid,
+    status text DEFAULT 'pending'::text NOT NULL,
+    decided_by text,
+    decision_note text,
+    result text,
+    app_slug text,
+    installed_sha text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.app_settings (
     key text NOT NULL,
     value jsonb NOT NULL,
@@ -1027,6 +1047,19 @@ CREATE TABLE public.plan_drafts (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.plugins (
+    app_slug text NOT NULL,
+    git_host_id text,
+    maintainer_agent_id uuid,
+    owner_user_id uuid,
+    board_id uuid,
+    task_id uuid,
+    update_policy text DEFAULT 'approve'::text NOT NULL,
+    created_by text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT plugins_update_policy_check CHECK ((update_policy = ANY (ARRAY['approve'::text, 'auto'::text])))
+);
 CREATE TABLE public.provider_prices (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     endpoint_id uuid NOT NULL,
@@ -1513,7 +1546,9 @@ CREATE TABLE public.workbench_repo_requests (
     visibility text DEFAULT 'private'::text NOT NULL,
     app_slug text,
     responsible_user_id uuid,
-    decision_note text
+    decision_note text,
+    protected boolean,
+    protection_note text
 );
 CREATE TABLE public.workbench_repos (
     agent_id uuid NOT NULL,
@@ -1600,6 +1635,8 @@ ALTER TABLE ONLY public.agent_versions
     ADD CONSTRAINT agent_versions_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.app_data
     ADD CONSTRAINT app_data_pkey PRIMARY KEY (app, collection, id);
+ALTER TABLE ONLY public.app_install_requests
+    ADD CONSTRAINT app_install_requests_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.app_settings
     ADD CONSTRAINT app_settings_pkey PRIMARY KEY (key);
 ALTER TABLE ONLY public.app_sources
@@ -1774,6 +1811,8 @@ ALTER TABLE ONLY public.outreach_events
     ADD CONSTRAINT outreach_events_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.plan_drafts
     ADD CONSTRAINT plan_drafts_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.plugins
+    ADD CONSTRAINT plugins_pkey PRIMARY KEY (app_slug);
 ALTER TABLE ONLY public.provider_prices
     ADD CONSTRAINT provider_prices_endpoint_id_model_variant_key UNIQUE (endpoint_id, model, variant);
 ALTER TABLE ONLY public.provider_prices
@@ -2037,6 +2076,14 @@ ALTER TABLE ONLY public.agent_secrets
     ADD CONSTRAINT agent_secrets_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.agent_versions
     ADD CONSTRAINT agent_versions_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.app_install_requests
+    ADD CONSTRAINT app_install_requests_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.app_install_requests
+    ADD CONSTRAINT app_install_requests_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.app_install_requests
+    ADD CONSTRAINT app_install_requests_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.app_install_requests
+    ADD CONSTRAINT app_install_requests_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.artifact_folders
     ADD CONSTRAINT artifact_folders_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.artifact_folders
@@ -2233,6 +2280,16 @@ ALTER TABLE ONLY public.outreach_events
     ADD CONSTRAINT outreach_events_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.plan_drafts
     ADD CONSTRAINT plan_drafts_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.plugins
+    ADD CONSTRAINT plugins_app_slug_fkey FOREIGN KEY (app_slug) REFERENCES public.app_sources(slug) ON DELETE CASCADE;
+ALTER TABLE ONLY public.plugins
+    ADD CONSTRAINT plugins_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.plugins
+    ADD CONSTRAINT plugins_maintainer_agent_id_fkey FOREIGN KEY (maintainer_agent_id) REFERENCES public.agent_defs(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.plugins
+    ADD CONSTRAINT plugins_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.plugins
+    ADD CONSTRAINT plugins_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.provider_prices
     ADD CONSTRAINT provider_prices_endpoint_id_fkey FOREIGN KEY (endpoint_id) REFERENCES public.llm_endpoints(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.provider_spend

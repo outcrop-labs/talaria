@@ -2,8 +2,8 @@
 // in one shape, with the person who owes the answer attached.
 //
 // WHY THIS FILE EXISTS
-//   "Approvals" is not one queue in Talaria. It is six, and they were written
-//   at six different times by six different features:
+//   "Approvals" is not one queue in Talaria. It is seven, and they were written
+//   at seven different times by seven different features:
 //
 //     google_action    google_pending_actions — an agent drafted something that
 //                      LEAVES the building (an email, an invite).
@@ -20,6 +20,9 @@
 //     board_access     board_agent_requests — a personal assistant asked to be
 //                      let onto a board its owner cannot see, and self-service
 //                      is not available to it for exactly that reason.
+//     app_install      app_install_requests — a Developer Agent asked for the
+//                      app it built to be installed. Admin-only: installing
+//                      adds code to the deployment.
 //
 //   Each of those has its own table, its own surface and its own idea of who
 //   decides. None of them had an idea of how OLD it was, which is the whole
@@ -84,7 +87,7 @@ use talaria_tasks_types::human_assignee_ids;
 
 const LOG: &str = "[approvals]";
 
-/// The six queues. Serialized as its snake_case strings (`google_action`, …),
+/// The seven queues. Serialized as its snake_case strings (`google_action`, …),
 /// which is what the announce marks' failed-kind log lines and the digest's
 /// counters are written in terms of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -96,6 +99,7 @@ pub enum ApprovalKind {
     RepoRequest,
     RunDecision,
     BoardAccess,
+    AppInstall,
 }
 
 impl ApprovalKind {
@@ -107,6 +111,7 @@ impl ApprovalKind {
             ApprovalKind::RepoRequest => "repo_request",
             ApprovalKind::RunDecision => "run_decision",
             ApprovalKind::BoardAccess => "board_access",
+            ApprovalKind::AppInstall => "app_install",
         }
     }
 }
@@ -123,7 +128,7 @@ pub struct Disclosure {
     pub fact: Vec<String>,
 }
 
-/// The census row — the same shape for all six kinds, so the digest and the
+/// The census row — the same shape for all seven kinds, so the digest and the
 /// SLA are looking at exactly what the decision route authorizes against.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -522,6 +527,61 @@ async fn board_access_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sql
         .collect())
 }
 
+/// One pending `app_install_requests` row, in column order — the ticket's
+/// board is nullable (the ticket may have been deleted since).
+type AppInstallRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    i64,
+    Option<String>,
+);
+
+/// `app_install_requests`: a Developer Agent asked for the app it built to be
+/// installed. Like `repo_request` it is an ADMIN's to decide (the decision
+/// route is admin-gated: installing adds code to the deployment), and the
+/// agent's `why` quotes the board it was working, so `on_board` narrows who
+/// may read the words.
+async fn app_install_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sqlx::Error> {
+    let rows: Vec<AppInstallRow> = sqlx::query_as(
+        "select r.id::text, r.agent_model, r.repo, r.git_ref, r.why, \
+                (trunc(extract(epoch from r.created_at) * 1000))::bigint, r.board_id::text \
+         from app_install_requests r \
+         where r.status = 'pending'",
+    )
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, agent_model, repo, git_ref, why, created_ms, board_id)| {
+            let at = git_ref.map(|r| format!(" @ {r}")).unwrap_or_default();
+            let detail = {
+                let trimmed = why.trim();
+                if trimmed.is_empty() {
+                    format!(
+                        "Approving installs it from {repo}{at}, disabled; enabling it and granting its surfaces stay with you."
+                    )
+                } else {
+                    clamp_text(trimmed, 240)
+                }
+            };
+            PendingApproval {
+                kind: ApprovalKind::AppInstall,
+                key: format!("app_install:{id}"),
+                id: id.clone(),
+                title: format!("{agent_model} asked to install the app in {repo}{at}"),
+                detail,
+                href: "/apps".into(),
+                waiting_since: epoch_ms_to_iso(created_ms),
+                owner_user_ids: Vec::new(),
+                authority: Authority::Admin { on_board: board_id },
+            }
+        })
+        .collect())
+}
+
 /// ONE description of what a parked run is as an approval — the census reader
 /// below and the decide route's authorization check both go through this
 /// function, because the only correct way to answer "may this person decide
@@ -663,7 +723,7 @@ async fn run_decision_approvals(
 
 /// Every pending approval in the workspace, oldest first.
 ///
-/// One kind failing must not hide the other five — an escalation sweep that
+/// One kind failing must not hide the others — an escalation sweep that
 /// reports nothing because one table was locked is the silence this whole
 /// module is about. Each kind is settled independently — the contract is
 /// the independence; a rejection is logged and recorded in `failed_kinds` so the
@@ -678,13 +738,14 @@ pub async fn pending_approvals(pg: &PgPool, definition_for: &DefinitionForFn) ->
     let mut failed_kinds = Vec::new();
     // The newest source is also the one most likely to fail on a tree that has
     // not migrated yet (no `runs` table at all), which is precisely what
-    // `failed_kinds` is for: a workspace mid-deploy still gets its other five
+    // `failed_kinds` is for: a workspace mid-deploy still gets its other
     // queues, and the sweep knows not to prune marks it could not see.
-    let reads: [(ApprovalKind, Result<Vec<PendingApproval>, sqlx::Error>); 6] = [
+    let reads: [(ApprovalKind, Result<Vec<PendingApproval>, sqlx::Error>); 7] = [
         (
             ApprovalKind::GoogleAction,
             google_action_approvals(pg).await,
         ),
+        (ApprovalKind::AppInstall, app_install_approvals(pg).await),
         (
             ApprovalKind::WorkbenchPlan,
             workbench_plan_approvals(pg).await,
@@ -1110,6 +1171,7 @@ pub fn kind_label(kind: ApprovalKind) -> &'static str {
             "a long-running job parked on a question only a person can answer"
         }
         ApprovalKind::BoardAccess => "a board a personal assistant asked to join",
+        ApprovalKind::AppInstall => "an app an agent asked to install",
     }
 }
 
@@ -1183,6 +1245,9 @@ fn announce_to_named_only(kind: ApprovalKind) -> bool {
         // attached to the request is the owner who CANNOT see the board.
         // Narrowing to the named would silence every one of them.
         ApprovalKind::BoardAccess => false,
+        // Admin-only and ownerless, like repo_request: narrowing would
+        // silence it, and an agent's finished plugin waits behind it.
+        ApprovalKind::AppInstall => false,
     }
 }
 

@@ -4238,6 +4238,59 @@ alter table tasks drop column if exists conversation_id`,
      on app_trigger_runs (app_slug, trigger_id, queued_at desc)`,
   `create index if not exists app_trigger_runs_open_idx
      on app_trigger_runs (queued_at) where state in ('queued', 'running')`,
+  // ── Plugins: installed apps an agent maintains (2026-10-26) ─────────────
+  // A PLUGIN is an installed app with people and an agent behind it: the
+  // Developer Agent that maintains it, the user it was built for, and the
+  // board the ticket that started it lives on (where maintenance tickets
+  // go). Where its code comes from is NOT repeated here: repo, ref and the
+  // installed commit are the app's `app_sources` row, and this row goes with
+  // it when the app is uninstalled. `git_host_id` names the git host ('github'
+  // today; the git-host registry fills it in later). `update_policy` is the
+  // admin's: 'approve' (every update waits for an admin) or 'auto'. Written
+  // only by talaria-plugins.
+  `create table if not exists plugins (
+     app_slug text primary key references app_sources(slug) on delete cascade,
+     git_host_id text,
+     maintainer_agent_id uuid references agent_defs(id) on delete set null,
+     owner_user_id uuid references users(id) on delete set null,
+     board_id uuid references boards(id) on delete set null,
+     task_id uuid references tasks(id) on delete set null,
+     update_policy text not null default 'approve' check (update_policy in ('approve', 'auto')),
+     created_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  // AN AGENT ASKS FOR ITS APP TO BE INSTALLED (`request_app_install`), and an
+  // admin decides. Approval installs and nothing more: enabling the app and
+  // granting its surfaces stay admin steps. `result` is the sentence the
+  // decision left on the ticket (the install's outcome or its error);
+  // `status` is pending | approved | failed | rejected.
+  `create table if not exists app_install_requests (
+     id uuid primary key default gen_random_uuid(),
+     agent_id uuid not null references agent_defs(id) on delete cascade,
+     agent_model text not null,
+     repo text not null,
+     url text not null,
+     git_ref text,
+     why text not null default '',
+     task_id uuid references tasks(id) on delete set null,
+     board_id uuid references boards(id) on delete set null,
+     owner_user_id uuid references users(id) on delete set null,
+     status text not null default 'pending',
+     decided_by text,
+     decision_note text,
+     result text,
+     app_slug text,
+     installed_sha text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  // WHETHER A REPO TALARIA CREATED HAS ITS DEFAULT BRANCH PROTECTED. The
+  // approver chooses (on by default); `protected` is what GitHub answered
+  // (null: not asked, or approved before the choice existed) and
+  // `protection_note` says why it is not, when it is not.
+  `alter table workbench_repo_requests add column if not exists protected boolean`,
+  `alter table workbench_repo_requests add column if not exists protection_note text`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -10,8 +11,9 @@
 
   /** Agent repo creation: which orgs allow it, and the pending request queue
    *  (agents propose, THIS is where humans ratify — approval creates the repo
-   *  at the visibility chosen here and grants it to the requester; a rejection
-   *  posts its reason on the requesting ticket). */
+   *  at the visibility chosen here, protects its default branch against
+   *  force-push and deletion unless unticked, and grants it to the requester;
+   *  a rejection posts its reason on the requesting ticket). */
   let {
     status,
     save,
@@ -48,17 +50,32 @@
   // The approver's visibility per request; absent = what the agent asked for.
   let chosen = $state<Record<string, Visibility>>({})
   const visibilityOf = (r: RepoReq): Visibility => chosen[r.id] ?? r.visibility ?? 'private'
+  // Default-branch protection (no force-push, no deletion — nothing else) is
+  // on unless the approver unticks it.
+  let unprotected = $state<Record<string, boolean>>({})
   let rejecting = $state<string | null>(null)
   let rejectNote = $state('')
   let decideError = $state<string | null>(null)
+  /** The last approval's word on the default branch: GitHub may refuse to
+   *  protect a private repo on a free plan, and the repo exists anyway. */
+  let decided = $state<string | null>(null)
   const decide = async (r: RepoReq, action: 'approve' | 'reject') => {
     decideError = null
+    decided = null
     try {
       const body =
         action === 'approve'
-          ? { id: r.id, action, visibility: visibilityOf(r) }
+          ? { id: r.id, action, visibility: visibilityOf(r), protect: !unprotected[r.id] }
           : { id: r.id, action, ...(rejectNote.trim() ? { note: rejectNote.trim() } : {}) }
-      await putJson<{ ok: true }>('/api/workbench/repo-requests', body)
+      const res = await putJson<{ ok: true; repo?: string; protected?: boolean; protection?: string | null }>(
+        '/api/workbench/repo-requests',
+        body,
+      )
+      if (action === 'approve' && res.repo) {
+        decided = res.protected
+          ? `${res.repo} created; its default branch is protected.`
+          : `${res.repo} created; its default branch is not protected: ${res.protection ?? 'not asked for'}.`
+      }
       if (action === 'reject') {
         rejecting = null
         rejectNote = ''
@@ -120,6 +137,12 @@
           <option value="private">private</option>
           <option value="public">public</option>
         </Select>
+        <Checkbox
+          checked={!unprotected[r.id]}
+          onChange={(on) => (unprotected[r.id] = !on)}
+          label="protect default branch"
+          title="Block force-push and deletion on the new repo's default branch (a GitHub ruleset; no required reviews or checks)"
+        />
         <Button size="sm" onclick={() => void decide(r, 'approve')}>Create + grant</Button>
         <Button
           size="sm"
@@ -145,4 +168,5 @@
     </div>
   {/each}
   {#if decideError}<div transition:slide={{ duration: 150 }} class="text-xs text-danger">{decideError}</div>{/if}
+  {#if decided}<div transition:slide={{ duration: 150 }} class="text-xs text-muted" data-testid="repo-request-decided">{decided}</div>{/if}
 </div>

@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-28 routes.
+29 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -17,6 +17,8 @@
 | [`/api/admin/apps`](#apiadminapps) | POST | `admin` |
 | [`/api/admin/apps`](#apiadminapps) | PUT | `admin` |
 | [`/api/admin/apps`](#apiadminapps) | DELETE | `admin` |
+| [`/api/admin/apps/install-requests`](#apiadminappsinstall-requests) | GET | `admin` |
+| [`/api/admin/apps/install-requests`](#apiadminappsinstall-requests) | PUT | `admin` |
 | [`/api/admin/coding-accounts`](#apiadmincoding-accounts) | GET | `admin` |
 | [`/api/admin/coding-accounts`](#apiadmincoding-accounts) | PUT | `admin` |
 | [`/api/admin/decide`](#apiadmindecide) | GET | `admin` |
@@ -107,15 +109,15 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/cr
 
 > /api/admin/apps. App administration. GET → installed apps, each with its
 > triggers and their newest runs (+ ?catalog=1 for the marketplace feed,
-> ?updates=1 for whether each app's source has a newer commit). Reads are
-> open to anyone granted the /apps Manage view; mutations (enable/disable,
+> ?updates=1 for whether each app's source has a newer commit); an app a
+> Developer Agent maintains carries `plugin` (its maintainer, owner, board
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `view:/apps` | — | `{apps, catalog, catalogUrl, updates}` | 200, 403 | — |
 | POST | `admin` | [body](#post-apiadminapps-body) | `{slug, sha, keptData, wipedData, build, buildError}` | 200, 400, 409 | audit |
-| PUT | `admin` | [body](#put-apiadminapps-body) | `{ok, catalogUrl}` | 200, 400 | audit |
+| PUT | `admin` | [body](#put-apiadminapps-body) | `{ok, catalogUrl}` | 200, 400, 404 | audit |
 | DELETE | `admin` | [body](#delete-apiadminapps-body) | `{ok, data}` | 200, 400 | audit |
 
 ### POST `/api/admin/apps` body
@@ -141,9 +143,16 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/cr
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `app` | `string(1)` |  |
-| `enabled` | `bool` |  |
+| `updatePolicy` | `enum(…)` |  |
 
 ### PUT `/api/admin/apps` body — variant 3
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `app` | `string(1)` |  |
+| `enabled` | `bool` |  |
+
+### PUT `/api/admin/apps` body — variant 4
 
 | field | schema | notes |
 | :--- | :--- | :--- |
@@ -155,6 +164,30 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/cr
 | :--- | :--- | :--- |
 | `app` | `string(1)` | app: required, min 1 char; wipeData: optional boolean — true deletes the data the app stored, absent or false keeps it for a reinstall. |
 | `wipeData` | `bool?` |  |
+
+## `/api/admin/apps/install-requests`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps_install_requests.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_apps_install_requests.rs)
+
+> /api/admin/apps/install-requests. Agents' requests to install the app they
+> built (the workbench's `request_app_install`). GET → the pending queue;
+> PUT → approve (talaria-apps' credentialed install from the requested repo
+> and ref, then the plugin record: the requesting agent maintains it, the
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{requests}` | 200 | — |
+| PUT | `admin` | [body](#put-apiadminappsinstall-requests-body) | `{ok, status, line, slug, sha, build, buildError, warning}` | 200, 400, 404, 409 | — |
+
+### PUT `/api/admin/apps/install-requests` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `id` | `uuid` |  |
+| `action` | `enum(approve|reject)` |  |
+| `note` | `string?(500)` | Why the admin decided; posted on the requesting ticket with the outcome. |
+| `keptData` | `enum(adopt|wipe)?` | keptData: the answer to a 409 — data an earlier install of the slug kept from another repository is adopted, or wiped first. |
 
 ## `/api/admin/coding-accounts`
 

@@ -182,6 +182,13 @@ credential, and the host runs the handler. The api never loads app code.
    user), along with the password. Manage → Apps asks which. Audited, like
    enable/disable/install/update.
 
+7. **Plugins** — an app a Developer Agent built and maintains is a *plugin*: the agent asks
+   for it to be installed (`request_app_install`), an admin approves it here, and the install
+   records who maintains it, who it is for and which board its maintenance tickets go to. Its
+   card shows that, with the plugin's **update policy** (`approve`: every update waits for an
+   admin, the default; `auto`). Approval installs only — the app lands disabled, and enabling
+   and granting are the steps above. See [WORKBENCH.md](./WORKBENCH.md#plugins).
+
 
 ## The marketplace
 

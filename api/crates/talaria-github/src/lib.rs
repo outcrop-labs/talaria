@@ -1391,6 +1391,9 @@ pub async fn org_installation(
 /// Create a repo in an org (the App must hold the org's Administration
 /// permission), with the token of the installation GitHub says owns that
 /// org. A missing or unselected installation is refused with the fix.
+/// `protect` asks for the default branch to be protected in the same step,
+/// with the same token (`protect_default_branch_with`); the repo exists
+/// either way, and `CreatedRepo::protection` says what GitHub answered.
 pub async fn create_repo(
     pg: &PgPool,
     sb: &SecretBox,
@@ -1398,12 +1401,66 @@ pub async fn create_repo(
     name: &str,
     description: &str,
     visibility: RepoVisibility,
+    protect: bool,
 ) -> Result<CreatedRepo, String> {
     let cfg = get_github_config(pg).await;
-    let created = create_repo_in(sb, &cfg, org, name, description, visibility).await?;
+    let created = create_repo_in(sb, &cfg, org, name, description, visibility, protect).await?;
     // Pool changed.
     *repo_install_cache().lock().unwrap() = None;
     Ok(created)
+}
+
+/// The ruleset a repo Talaria creates gets on its default branch: no
+/// force-push, no deletion — and nothing else. No required reviews, no
+/// required checks, no bypass list: how the branch is reviewed and merged
+/// belongs to the repository's people, never to Talaria.
+pub const DEFAULT_BRANCH_RULESET: &str = "Talaria: protect the default branch";
+
+fn default_branch_ruleset_body() -> String {
+    serde_json::json!({
+        "name": DEFAULT_BRANCH_RULESET,
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
+        "rules": [{ "type": "deletion" }, { "type": "non_fast_forward" }],
+    })
+    .to_string()
+}
+
+/// Protect `repo`'s default branch against force-push and deletion with a
+/// repository ruleset. Err is the sentence an approver reads: GitHub refuses
+/// rulesets on a private repo in an org on the free plan, and an App without
+/// the repository Administration permission cannot write one.
+async fn protect_default_branch_with(token: &str, repo: &str) -> Result<(), String> {
+    let res = gh(
+        &format!("/repos/{repo}/rulesets"),
+        token,
+        "POST",
+        Some(&default_branch_ruleset_body()),
+    )
+    .await?;
+    if res.status().is_success() {
+        return Ok(());
+    }
+    let status = res.status().as_u16();
+    let text = res.text().await.unwrap_or_default();
+    let message = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from))
+        .unwrap_or_else(|| truncate_utf16(&text, 200).to_string());
+    Err(
+        if status == 403 && message.to_lowercase().contains("upgrade") {
+            format!(
+                "GitHub cannot protect a branch of a private repo on this org's plan ({message}) — make the repo public, or protect it once the org's plan allows"
+            )
+        } else if status == 403 || status == 404 {
+            format!(
+                "GitHub refused the branch protection ({status}: {message}) — the App needs the repository Administration permission"
+            )
+        } else {
+            format!("GitHub refused the branch protection ({status}: {message})")
+        },
+    )
 }
 
 async fn create_repo_in(
@@ -1413,6 +1470,7 @@ async fn create_repo_in(
     name: &str,
     description: &str,
     visibility: RepoVisibility,
+    protect: bool,
 ) -> Result<CreatedRepo, String> {
     if cfg.mode.as_deref() != Some("app") {
         return Err("repo creation requires the GitHub App connection".into());
@@ -1454,17 +1512,26 @@ async fn create_repo_in(
         .json()
         .await
         .map_err(|e| format!("github decode: {e}"))?;
+    let full_name = j
+        .get("full_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    // The repo exists now, whatever the protection answers: a refusal is
+    // carried back to the approver, never turned into a failed approval.
+    let protection = if protect && !full_name.is_empty() {
+        Some(protect_default_branch_with(&token, &full_name).await)
+    } else {
+        None
+    };
     Ok(CreatedRepo {
-        full_name: j
-            .get("full_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
+        full_name,
         url: j
             .get("html_url")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string(),
+        protection,
     })
 }
 
@@ -1472,6 +1539,9 @@ async fn create_repo_in(
 pub struct CreatedRepo {
     pub full_name: String,
     pub url: String,
+    /// None when protection was not asked for; Some(Err) carries why GitHub
+    /// would not protect the default branch.
+    pub protection: Option<Result<(), String>>,
 }
 
 // ── Repo operations (the platform-owned git flow) ────────────────────────────
@@ -1832,6 +1902,76 @@ pub fn review_decision(reviews: &[serde_json::Value]) -> (&'static str, Vec<serd
     };
     let reviews = order.iter().filter_map(|by| latest.remove(by)).collect();
     (decision, reviews)
+}
+
+/// One open pull request, as the list read shows it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenPullRequest {
+    pub number: i64,
+    pub url: String,
+    pub title: String,
+    pub head: String,
+    pub base: String,
+    pub author: String,
+    pub draft: bool,
+}
+
+fn open_pull_of(pr: &serde_json::Value) -> Option<OpenPullRequest> {
+    let s = |path: &[&str]| -> String {
+        let mut cur = pr;
+        for key in path {
+            match cur.get(key) {
+                Some(next) => cur = next,
+                None => return String::new(),
+            }
+        }
+        cur.as_str().unwrap_or_default().to_string()
+    };
+    Some(OpenPullRequest {
+        number: pr.get("number").and_then(|v| v.as_i64())?,
+        url: s(&["html_url"]),
+        title: s(&["title"]),
+        head: s(&["head", "ref"]),
+        base: s(&["base", "ref"]),
+        author: s(&["user", "login"]),
+        draft: pr.get("draft").and_then(|v| v.as_bool()).unwrap_or(false),
+    })
+}
+
+/// The repository's open pull requests, newest first, at most `limit` (one
+/// page). A GET with the same read-only token `pr_status` uses.
+pub async fn open_pull_requests(
+    pg: &PgPool,
+    sb: &SecretBox,
+    repo: &str,
+    limit: u32,
+) -> Result<Vec<OpenPullRequest>, String> {
+    let token = repo_token(pg, sb, Some(repo), PR_STATUS_PERMISSIONS)
+        .await?
+        .ok_or("GitHub is not connected")?;
+    open_pull_requests_with(&token, repo, limit).await
+}
+
+async fn open_pull_requests_with(
+    token: &str,
+    repo: &str,
+    limit: u32,
+) -> Result<Vec<OpenPullRequest>, String> {
+    let reply = gh_json(
+        &format!(
+            "/repos/{repo}/pulls?state=open&sort=created&direction=desc&per_page={}",
+            limit.clamp(1, 100)
+        ),
+        token,
+        "GET",
+        None,
+    )
+    .await?;
+    Ok(reply
+        .as_array()
+        .map(|prs| prs.iter().filter_map(open_pull_of).collect())
+        .unwrap_or_default())
 }
 
 /// A PR's state, its head commit's checks and its review decision — every
@@ -2445,6 +2585,7 @@ mod tests {
                 201,
                 r#"{"full_name":"plugins/talaria-app-notes","html_url":"https://github.com/plugins/talaria-app-notes"}"#.into(),
             ),
+            ("POST", "/repos/plugins/talaria-app-notes/rulesets") => (201, r#"{"id":1}"#.into()),
             _ => (500, "{}".into()),
         })
         .await;
@@ -2457,11 +2598,13 @@ mod tests {
                 "talaria-app-notes",
                 "notes",
                 RepoVisibility::Public,
+                true,
             ),
         )
         .await
         .expect("the repo is created");
         assert_eq!(created.full_name, "plugins/talaria-app-notes");
+        assert_eq!(created.protection, Some(Ok(())));
         let seen = seen.lock().unwrap().clone();
         assert!(
             seen[0].auth.starts_with("Bearer ey"),
@@ -2497,7 +2640,15 @@ mod tests {
         .await;
         let err = with_api_base(
             base,
-            create_repo_in(&sb, &cfg, "elsewhere", "x", "", RepoVisibility::Private),
+            create_repo_in(
+                &sb,
+                &cfg,
+                "elsewhere",
+                "x",
+                "",
+                RepoVisibility::Private,
+                false,
+            ),
         )
         .await
         .expect_err("refused");
@@ -2520,13 +2671,100 @@ mod tests {
         .await;
         let err = with_api_base(
             base,
-            create_repo_in(&sb, &cfg, "side", "x", "", RepoVisibility::Private),
+            create_repo_in(&sb, &cfg, "side", "x", "", RepoVisibility::Private, false),
         )
         .await
         .expect_err("refused");
         assert!(
             err.contains("installation 90099") && err.contains("does not use"),
             "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_default_branch_ruleset_blocks_force_push_and_deletion_and_nothing_else() {
+        let sb = test_box();
+        let cfg = app_cfg(&["90041"], &["acme"], &sb);
+        let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/orgs/acme/installation") => (200, r#"{"id":90041}"#.into()),
+            ("POST", "/app/installations/90041/access_tokens") => {
+                (201, r#"{"token":"inst-90041"}"#.into())
+            }
+            ("POST", "/orgs/acme/repos") => (
+                201,
+                r#"{"full_name":"acme/crm","html_url":"https://github.com/acme/crm"}"#.into(),
+            ),
+            // GitHub's answer for a private repo in a free org.
+            ("POST", "/repos/acme/crm/rulesets") => (
+                403,
+                r#"{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature."}"#.into(),
+            ),
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let created = with_api_base(
+            base,
+            create_repo_in(&sb, &cfg, "acme", "crm", "", RepoVisibility::Private, true),
+        )
+        .await
+        .expect("the repo is created even when protection is refused");
+        assert_eq!(created.full_name, "acme/crm");
+        let why = created
+            .protection
+            .expect("protection was asked for")
+            .expect_err("the plan refused it");
+        assert!(why.contains("make the repo public"), "{why}");
+        let seen = seen.lock().unwrap().clone();
+        let ruleset = seen
+            .iter()
+            .find(|r| r.path == "/repos/acme/crm/rulesets")
+            .expect("the ruleset was asked for");
+        assert_eq!(
+            ruleset.auth, "Bearer inst-90041",
+            "the creating installation's token protects the branch"
+        );
+        let body: serde_json::Value = serde_json::from_str(&ruleset.body).unwrap();
+        assert_eq!(body["enforcement"], "active");
+        assert_eq!(
+            body["conditions"]["ref_name"]["include"],
+            serde_json::json!(["~DEFAULT_BRANCH"])
+        );
+        let rules: Vec<&str> = body["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["type"].as_str())
+            .collect();
+        assert_eq!(
+            rules,
+            ["deletion", "non_fast_forward"],
+            "no required reviews, no required checks"
+        );
+        assert!(body.get("bypass_actors").is_none());
+        // Not asked: no ruleset call at all.
+        let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/orgs/acme/installation") => (200, r#"{"id":90041}"#.into()),
+            ("POST", "/app/installations/90041/access_tokens") => (201, r#"{"token":"t"}"#.into()),
+            ("POST", "/orgs/acme/repos") => (
+                201,
+                r#"{"full_name":"acme/crm","html_url":"https://github.com/acme/crm"}"#.into(),
+            ),
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let created = with_api_base(
+            base,
+            create_repo_in(&sb, &cfg, "acme", "crm", "", RepoVisibility::Private, false),
+        )
+        .await
+        .unwrap();
+        assert!(created.protection.is_none());
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.path.contains("rulesets"))
         );
     }
 
@@ -2545,7 +2783,7 @@ mod tests {
         .await;
         let err = with_api_base(
             base,
-            create_repo_in(&sb, &cfg, "acme", "x", "", RepoVisibility::default()),
+            create_repo_in(&sb, &cfg, "acme", "x", "", RepoVisibility::default(), false),
         )
         .await
         .expect_err("403");
