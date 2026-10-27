@@ -1,4 +1,5 @@
 // The admin console surface.
+pub mod admin_app_harness_models;
 pub mod admin_apps;
 pub mod admin_coding_accounts;
 pub mod admin_decide;

@@ -14,6 +14,7 @@ import { appHasMcp as hasMcpFile, loadAppMcp } from './app-load'
 import { appDataDir } from './app-build/paths'
 import { enabledAppSlugs } from './apps'
 import { resyncAppMcpServers } from './internal-api'
+import { appHarnessRunner } from './app-harness-runner'
 
 export const appHasMcp = (slug: string): boolean => hasMcpFile(slug)
 
@@ -187,5 +188,13 @@ export async function dispatchAppMcp(
   // Only the tools that passed their checks exist for an agent — listed,
   // callable, or not at all.
   const tools = mcp.tools.filter((t) => allowed === null || allowed.includes(t.name))
-  return runAppTools(slug, tools, rpc, { ...facts, store: storeFor(slug) })
+  // `ctx.harness`, bound to THIS caller: an agent pin only for the calling
+  // agent, proven; the allowlist of the person it acts for. Each run follows
+  // the tool's own signal (its deadline and the agent's disconnect), which
+  // runAppTools adds per call.
+  const harness = appHarnessRunner({
+    app: slug,
+    actor: { kind: 'mcp', caller: facts.caller, actingUserId: facts.actingUserId },
+  })
+  return runAppTools(slug, tools, rpc, { ...facts, store: storeFor(slug), harness })
 }

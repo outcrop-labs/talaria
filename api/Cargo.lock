@@ -5486,6 +5486,7 @@ name = "talaria-harness-model"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "serde_json",
  "sqlx",
  "talaria-gateway",
  "talaria-model-access",
@@ -6616,6 +6617,7 @@ dependencies = [
  "talaria-email",
  "talaria-error",
  "talaria-fitness",
+ "talaria-harness-model",
  "talaria-instance",
  "talaria-invites",
  "talaria-judge",

@@ -136,7 +136,11 @@ export interface ToolCall {
 export interface LedgerAttribution {
   /** The agent as the ledger names it: the base persona id, never a tier id. */
   agentModel: string
-  source: 'chat' | 'channel' | 'ticket' | 'research'
+  /** `'app'` is an app's harness run through the bound runner (`ctx.harness`),
+   *  whose caller is `app:<slug>:<harnessId>` — booked as the app's spend on
+   *  either path: the persona turn's row here, the gateway row's `source`
+   *  (`gatewaySourceOf`). */
+  source: 'chat' | 'channel' | 'ticket' | 'research' | 'app'
   /** The conversation, channel or research run this spend belongs to. */
   refId: string | null
   /** The ticket this spend belongs to, so it reaches the ticket's cost. */
@@ -270,6 +274,26 @@ export const toolNamesOf = (calls: readonly ToolCall[]): string[] => calls.map((
  *  with that persona, belonging to no conversation. */
 export const ledgerOf = (req: TransportRequest): LedgerAttribution =>
   req.ledger ?? { agentModel: req.model, source: 'chat', refId: null, taskId: null, tier: null }
+
+/** The `source` a GATEWAY row for this turn is booked under: `'app'` for an
+ *  app's bound run, else the gateway's own `'gateway'`. The gateway row names
+ *  the caller in `agent_model` (`app:<slug>:<harnessId>`); this is what lets a
+ *  ledger query find an app's spend without parsing that string. */
+export const gatewaySourceOf = (req: TransportRequest): 'gateway' | 'app' => (req.ledger?.source === 'app' ? 'app' : 'gateway')
+
+/** What a GATEWAY row for this turn carries of the run's attribution: its
+ *  source, and the record and ticket it also belongs to (until these, a
+ *  gateway row named only its caller, so a harness turn's spend never reached
+ *  the ticket it was run for). */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/** Only a UUID: both columns are `uuid`, and an insert that fails on a bad id
+ *  loses the whole row, spend included. */
+const uuidOrNull = (v: string | null | undefined): string | null => (v && UUID.test(v) ? v : null)
+const gatewayLedgerOf = (req: TransportRequest) => ({
+  source: gatewaySourceOf(req),
+  refId: uuidOrNull(req.ledger?.refId),
+  taskId: uuidOrNull(req.ledger?.taskId),
+})
 
 /** `proxyChat`'s payload shape. Structural rather than imported because
  *  `gateway.ts` keeps `ChatPayload` private and widening its export surface for
@@ -527,6 +551,7 @@ async function gatewayToolTurn(req: TransportRequest, defs: ToolDefinition[]): P
   const promptChars = req.messages.reduce((n, m) => n + m.content.length, 0)
   await recordGatewayUsage({
     caller: req.caller,
+    ...gatewayLedgerOf(req),
     endpoint: route.endpoint,
     upstreamModel: route.upstreamModel,
     promptTokens: usage?.promptTokens ?? estimateTokens(promptChars),
@@ -570,6 +595,7 @@ export const gatewayTransport: Transport = async (req) => {
   const res = await completeViaGateway(req.model, req.messages, {
     ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     caller: req.caller,
+    ...gatewayLedgerOf(req),
     ...(responseFormatOf(req) ? { responseFormat: responseFormatOf(req)! } : {}),
     ...(req.effort ? { effort: req.effort } : {}),
     guard: false,
@@ -846,6 +872,7 @@ export const gatewayStream: StreamingTransport = async (req, emit) => {
   const promptChars = req.messages.reduce((n, m) => n + m.content.length, 0)
   await recordGatewayUsage({
     caller: req.caller,
+    ...gatewayLedgerOf(req),
     endpoint: route.endpoint,
     upstreamModel: route.upstreamModel,
     promptTokens: usage?.promptTokens ?? estimateTokens(promptChars),
@@ -955,18 +982,28 @@ export async function pickStreamingTransport(model: string): Promise<StreamingTr
 
 /** Which side of the house a model lives on. The rule, stated once. */
 async function transportKind(model: string): Promise<'gateway' | 'fleet'> {
-  if ((await gatewayModels()).some((m) => m.id === model)) return 'gateway'
+  // Neither side claiming it lands on the gateway: `completeViaGateway` throws a
+  // precise "model X is not on the gateway", which is a better failure than a
+  // persona stream that looks like an answer.
+  return (await fleetAgentOf(model)) === null ? 'gateway' : 'fleet'
+}
+
+/** THE FLEET AGENT A MODEL ID RUNS ON — the agent's own id for a live persona or
+ *  one of its tier ids (`<agent>-<alias>`), null for anything the gateway serves
+ *  or nobody does. The same rule `transportKind` routes on, exported because
+ *  the bound runner gates an agent pin on WHICH agent it is (`ctx.harness`,
+ *  app-harness-runner.ts), and a second copy of "is this a persona" is how a
+ *  check and the transport come to disagree about the same id. */
+export async function fleetAgentOf(model: string): Promise<string | null> {
+  if ((await gatewayModels()).some((m) => m.id === model)) return null
   // An empty fleet simply matches nothing here — there is no longer a "did the
   // manifest answer at all" flag to consult, because an unrendered manifest and
   // a fleet with no agents are the same fact.
   const fleet = await listAgents()
-  if (fleet.some((a) => a.id === model)) return 'fleet'
+  if (fleet.some((a) => a.id === model)) return model
   const cut = model.lastIndexOf('-')
-  if (cut > 0 && fleet.some((a) => a.id === model.slice(0, cut))) return 'fleet'
-  // Neither: let the gateway say so. `completeViaGateway` throws a precise
-  // "model X is not on the gateway", which is a better failure than a
-  // persona stream that looks like an answer.
-  return 'gateway'
+  if (cut > 0 && fleet.some((a) => a.id === model.slice(0, cut))) return model.slice(0, cut)
+  return null
 }
 
 export const defaultTransport: Transport = async (req) => (await pickTransport(req.model))(req)

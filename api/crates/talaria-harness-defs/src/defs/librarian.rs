@@ -512,6 +512,7 @@ pub fn librarian_harness() -> HarnessDefinition {
         // the note in titler.rs.
         ModelSpec {
             pin: Some("librarian"),
+            slot: None,
             role: None,
             chain: None,
             user_id: None,

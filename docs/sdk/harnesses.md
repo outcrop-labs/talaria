@@ -2,14 +2,15 @@
 
 A harness is a **declared** model call: a prompt, an output contract, a model chain, a
 failure policy. You declare one with `defineHarness(...)` and run it through the one runner,
-`runHarness` — you never touch a transport, a key, or a retry.
+`ctx.harness.run` — you never touch a transport, a key, or a retry.
 
 > **Put one harness in each file under `harnesses/`.** Default-export it from
 > `apps/<slug>/harnesses/<name>.ts`. While the app is enabled, the harness is checked and
-> registered, gets a column in **Admin → Models → Fitness**, and the fitness sweep scores
-> candidate models on its `evals` ([Registration](#registration--a-column-in-the-fitness-matrix)).
-> In production your `server.ts` still runs it:
-> [the bridge pattern](#the-bridge-pattern--running-one-from-your-server) below.
+> registered, gets a column in **Admin → Models → Fitness** and a model setting an admin assigns
+> there, and the fitness sweep scores candidate models on its `evals`
+> ([Registration](#registration--a-column-in-the-fitness-matrix)). In production your
+> `server.ts` or `mcp.ts` runs it with `ctx.harness`
+> ([Running one](#running-one--ctxharness) below).
 
 ```ts
 import { defineHarness, z } from '@talaria/sdk/server'
@@ -59,7 +60,7 @@ the contract breaks the typecheck of the documentation itself.
 | `id` / `label` / `job` | Identity; `id` is the `harness` column of the `harness_runs` row each run writes |
 | `requires` | Capabilities the job leans on — never blocks; the fitness suite scores against it |
 | `floor` | `{ capabilities, refuseBelow, note }` — refuse weak models, or run anyway? A JSON harness gets a derived floor (below) |
-| `model` | A `ModelSpec`: `pin` and/or `role` and a `chain` — never a model id |
+| `model` | A `ModelSpec`: `pin` and/or `role` and a `chain` — never a model id. The host adds `slot`, the harness's own model setting ([below](#its-model-setting)) |
 | `render` | Input → `Message[]`. **The only thing you write by hand** |
 | `output` | `text` (`clean`/`verify`) or `json` (`schema`, `repair`, `verify`) |
 | `onFailure` | `'null'` \| `'throw'` \| `{ fallback }` \| `{ escalate: true }` — what a failure means |
@@ -97,9 +98,26 @@ The api asks the app host to run the case: the real runner, the candidate pinned
   a failure of the model.
 - **Floor.** A floor that refuses the candidate counts as a skip.
 
-To run fixtures before you ship, use `runHarness` with a scripted `deps.transport` and no-op
-recorders, then call the fixture's `check` on the value. `ui/src/sdk/server.test.ts` does exactly
-that with the example above.
+To run fixtures before you ship, use `runHarnessOffline` from `@talaria/sdk/testing`: the real
+runner (render, parse, the repair turn, `verify`, the guard) against replies you script, with no
+gateway and no database. Then call the fixture's `check` on the value:
+
+```ts
+import { runHarnessOffline } from '@talaria/sdk/testing'
+import { NO_TOOLS } from '@talaria/sdk/server'
+import triage from './harnesses/triage'
+
+const fixture = triage.evals![0]!
+const run = await runHarnessOffline(triage, fixture.input, {
+  replies: ['{"severity":"high","reason":"total checkout outage"}'],
+})
+expect(fixture.check(run.value!, NO_TOOLS)).toBeNull()
+```
+
+`replies` are the model's turns in order (a malformed first reply exercises the repair turn), or
+pass `reply(request)` to answer from the prompt. `capabilities` sets what is on record about the
+model, so you can watch your floor refuse. `run.requests` is every request the run made.
+`ui/src/sdk/server.test.ts` does exactly this with the example above.
 
 Two exports exist for the trap every text fixture walks into:
 
@@ -151,30 +169,41 @@ Files under `harnesses/` register while the app is enabled.
   platform agent or a fleet column, whatever its `model` spec names. Your app picks its model.
   The column lives only while the app is enabled.
 
-## The bridge pattern — running one from your server
+## Its model setting
 
-This is how an app harness runs in production: your `server.ts` imports it and invokes it directly —
-run the harness when a model chain is routable, fall back to your own deterministic answer
-when it isn't, and journal which one answered. `@/server/harness/run` does not resolve from
-app code **by design** — the SDK is the only road in:
+Every app harness has a model setting of its own, named `app:<slug>/<harness id>`. An admin sets it
+under the fitness matrix in **Admin → Models → Fitness**, beside the column that scores models on
+your fixtures. When it is set, your harness runs on that model before anything its `model` spec
+declares: the `slot` step resolves ahead of `role` in any chain, `[]` included. When it is unset, or
+names a model that no longer routes, your spec carries on as written. The run records `step: 'slot'`
+when the setting answered.
+
+You don't declare it. The host sets `model.slot` from your slug and the harness id on every run,
+and overwrites anything your spec put there, so a harness can never borrow another app's setting.
+
+## Running one — `ctx.harness`
+
+This is how an app harness runs in production. Your `server.ts` route, or an `mcp.ts` tool,
+imports it and runs it with `ctx.harness`: run the harness when a model chain is routable, fall
+back to your own deterministic answer when it isn't, and record which one answered.
+`@/server/harness/run` does not resolve from app code **by design**; the context is the road in:
 
 ```ts
-import { defineAppServer, json, resolveHarnessModel, runHarness } from '@talaria/sdk/server'
+import { defineAppServer, json, resolveHarnessModel } from '@talaria/sdk/server'
 import triage from './harnesses/triage'
 
 export default defineAppServer({
   async fetch(request, ctx) {
     if (ctx.path !== 'triage' || request.method !== 'POST')
       return json({ error: 'not found' }, { status: 404 })
-    const { id, subject, body } = await request.json()
+    const { ticketId, subject, body } = await request.json()
 
     // Free probe — no model call: nothing routable means answer it yourself.
     if (!(await resolveHarnessModel(triage.model)))
       return json({ severity: null, reason: '', source: 'fallback' })
 
-    const run = await runHarness(triage, { subject, body }, {
-      caller: `app:${ctx.app}`,
-      ledger: { refId: id },
+    const run = await ctx.harness.run(triage, { subject, body }, {
+      ledger: { taskId: ticketId },
     })
     // run: HarnessResult<Triage> — value, model, step, answered, refused, repairs…
     return json({
@@ -186,12 +215,62 @@ export default defineAppServer({
 })
 ```
 
-| export | role in the bridge |
+**The host binds the runner to the caller.** You don't name yourself or choose where the spend goes:
+
+- **Who it is.** Every run is recorded as `app:<slug>:<harness id>`, and its spend is booked to
+  ledger source `app`.
+- **Which model.** The run gets the harness's own model setting first.
+- **Who it acts for.** The run acts for the person the context belongs to: the signed-in member on
+  a request, or the person an agent acts for on a tool call.
+- **The guard and the recorders.** There is no `deps`. Nothing you pass replaces the guard, the
+  transport or the run record.
+- **The rules.** The definition is held to the same rules registration applies, JSON floor
+  included, whether or not you built it with `defineHarness`.
+
+| option | what it does |
 | :--- | :--- |
-| `resolveHarnessModel(spec)` | The free probe: `{ model, step }` or null — labels the run without spending a turn |
-| `runHarness(harness, input, ctx)` | The one runner: resolve, floor, render, call, parse, repair, guard, meter, `harness_runs` row — the same runner and accounting the platform's own TS harnesses get |
-| `RunContext` | `{ caller, userId?, model?, step?, tier?, effort?, ledger?, signal?, deps? }` — annotate a context built apart from the call; `deps` is the test seam (a scripted transport, no-op recorders) |
-| `RunLedger` | `{ source?, refId?, taskId? }` — where the turn's spend belongs |
-| `HarnessResult` | What comes back — `value`, `model`, `step`, `answered`, `refused`, `repairs`, `escalate` |
-| `ModelChainStep` | `'pin' \| 'role' \| 'utility' \| 'env' \| 'preferred' \| 'first-routable'` — which step answered |
-| `ResolvedHarnessModel` | `{ model, step }` — what the probe returns |
+| `model` | Pin the model: a gateway model id, or a fleet agent's id (or one of its tier ids). Checked, below |
+| `tier` | Route an agent pin to one of its alias tiers (`'opus'`), priced as that tier |
+| `effort` | A reasoning effort the person picked, from the model's published levels |
+| `ledger` | `{ refId?, taskId? }` — a record of yours and a ticket the spend also belongs to. Both are UUIDs; anything else is left off the row, with a warning |
+| `signal` | Your own signal, on top of the one the host passes. A run already stops when the caller disconnects, or at a tool's deadline |
+
+**A pin is checked against the caller.** Each refusal makes no model call. It returns
+`value: null` with the reason in `error`, or throws it when your harness declares
+`onFailure: 'throw'`.
+
+- **From a request.** You may pin an agent the signed-in member may use: the same answer
+  `GET /api/agents` gives them. Pinning someone else's personal assistant is refused. You may pin a
+  gateway model only if the member model allowlist opens it to them. An admin may pin any model.
+- **From an MCP tool.** You may pin only the agent calling the tool, and only when it called on its
+  own key (`caller.proven`). A gateway model pin is held to the allowlist of the person the agent
+  acts for. An org agent acts for no one, so its pins are not gated.
+- **From a trigger** (a scheduled or event run, which acts as the app with no user). You may not
+  pin an agent. Any gateway model is allowed.
+
+**Streaming.** `ctx.harness.stream(def, input, { onDelta, ...options })` hands you each piece as it
+lands, then resolves with the same `HarnessResult`. A streamed run makes no repair attempt: the
+first answer is already on the screen. `onDelta` gets the raw reply before the guard pass. If you
+must scrub what you relay, scrub it there.
+
+| export | what it is |
+| :--- | :--- |
+| `ctx.harness.run(harness, input, options?)` | The one runner, bound to the caller: resolve, floor, render, call, parse, repair, guard, meter, `harness_runs` row |
+| `ctx.harness.stream(harness, input, options?)` | The same run, streamed through `onDelta` |
+| `resolveHarnessModel(spec)` | The free probe: `{ model, step }` or null. Labels the run without spending a turn |
+| `HarnessResult` | What comes back: `value`, `model`, `step`, `answered`, `refused`, `repairs`, `escalate` |
+| `ModelChainStep` | `'pin' \| 'slot' \| 'role' \| 'utility' \| 'env' \| 'preferred' \| 'first-routable'`: which step answered |
+| `ResolvedHarnessModel` | `{ model, step }`: what the probe returns |
+
+### The free `runHarness`
+
+`runHarness(harness, input, ctx)` is still exported for apps written before `ctx.harness`. It runs
+what you hand it: the `caller`, the pin and the `ledger` are your word, and nothing is checked.
+Two things changed:
+
+- **`deps` is gone.** It is no longer part of `RunContext`, and if you pass it anyway it is dropped
+  with a warning. Test with `runHarnessOffline` instead.
+- **Pinning an agent logs a warning**, because nothing here checks that the caller may use that
+  agent.
+
+Move to `ctx.harness.run`. It needs no `caller` and no `ledger.source`.

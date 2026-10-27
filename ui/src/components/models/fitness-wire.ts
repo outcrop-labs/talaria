@@ -747,6 +747,11 @@ export interface MatrixView {
     minObservedRuns: number
   }
   registry: { harnesses: number; fixtures: number; provocations: number; unfixtured: string[] }
+  /** THE APP COLUMNS' MODEL SETTINGS — an app slot's key (`app:<slug>/<id>`)
+   *  to the model an admin assigned it, for the app columns on screen. An
+   *  unassigned slot is absent: the harness runs on its own chain. Written by
+   *  `PUT /api/admin/app-harness-models`. */
+  appModels: Record<string, string>
 }
 
 /** A RUN IN FLIGHT, as the drill-down can show it.

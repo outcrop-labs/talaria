@@ -6,6 +6,7 @@ import { appOrigin, appPathSegments, appSecretReader, platformApi } from '@/serv
 import { storeFor } from '@/server/app-store'
 import type { AppServer } from '@/sdk/server'
 import { isolateApp } from '@/server/app-isolate'
+import { appHarnessRunner } from '@/server/app-harness-runner'
 
 // The app-server gateway: /api/apps/<slug>/* dispatches into the app's own
 // server.ts. The host does the trust work FIRST — the session and the grants
@@ -29,6 +30,19 @@ const dispatch = async ({ request, params }: { request: Request; params: { app: 
   const path = appPathSegments(new URL(request.url).pathname)
   if (!path.ok) return json({ error: path.error }, { status: 400 })
   const segments = path.segments
+  const api = platformApi(request)
+  // The bound runner: this caller, this app. An agent pin is checked against
+  // the agents the api lets THEM use (`usable_agent_gate`, asked with their
+  // own cookie through the same client the app gets as `ctx.api`).
+  const harness = appHarnessRunner({
+    app,
+    actor: {
+      kind: 'request',
+      user: { id: caller.user.id, role: caller.user.role },
+      usableAgents: async () => ((await api<{ agents?: Array<{ id: string }> }>('/api/agents'))?.agents ?? []).map((a) => a.id),
+    },
+    signal: request.signal,
+  })
   const ran = await isolateApp(app, 'server', async () => {
     const mod = (await appServerModule(app)) as { default?: AppServer } | null
     if (!mod?.default?.fetch) return json({ error: 'this app has no server' }, { status: 404 })
@@ -44,9 +58,10 @@ const dispatch = async ({ request, params }: { request: Request; params: { app: 
         access: { ...caller.access },
         perms: [...caller.perms],
         can: canFor(caller),
-        api: platformApi(request),
+        api,
         secret: appSecretReader(app, caller.user.id),
         signal: request.signal,
+        harness,
       })
     } catch (e) {
       // The caller left and the app's work was cut with it (ctx.signal):

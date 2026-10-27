@@ -49,6 +49,7 @@ export default defineAppServer({
 | `ctx.api(path, init?)` | The platform API, called as the caller (below) |
 | `ctx.secret(name)` | A workspace secret's value, when an admin gave it to this app (below) |
 | `ctx.signal` | Aborts when the caller disconnects (below) |
+| `ctx.harness` | Runs a harness as this caller: `run(def, input, options)` and `stream(…, { onDelta })` ([harnesses](./harnesses.md#running-one--ctxharness)) |
 
 ## The path
 
@@ -181,10 +182,10 @@ instance.
 ## Cancellation
 
 `ctx.signal` aborts when the caller disconnects before your answer is done, such as a closed tab
-or an aborted fetch. Pass it to long work, `runHarness` and your own `fetch` calls, so that work
-stops instead of spending for nobody. `ctx.api` already follows it on reads, and deliberately
-not on writes ([Platform data](#platform-data)). A handler that throws because the
-caller left isn't logged as a crash.
+or an aborted fetch. Pass it to long work, such as your own `fetch` calls, so that work stops
+instead of spending for nobody. `ctx.harness` already follows it, and `ctx.api` does on reads
+but deliberately not on writes ([Platform data](#platform-data)). A handler that throws because
+the caller left isn't logged as a crash.
 
 ## An app with no UI
 

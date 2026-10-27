@@ -1286,6 +1286,7 @@ fn briefer_harness(
         // fallback to declare.
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,
