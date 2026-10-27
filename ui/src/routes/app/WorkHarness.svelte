@@ -49,7 +49,7 @@
   import StarterCards from '@/components/work/StarterCards.svelte'
   import { sendsSeed, type StarterCard } from '@/components/work/starter-cards'
   import WorkspacePane from '@/components/work/WorkspacePane.svelte'
-  import { useAgents } from '@/lib/agents'
+  import { PINNED_TIER_NOTE, useAgents } from '@/lib/agents'
   import { createArtifact } from '@/lib/artifacts'
   import { streamChat, type ChatFocus } from '@/lib/chat'
   import { toastError } from '@/lib/toast.svelte'
@@ -814,6 +814,12 @@
   // model and the chip's bottom rung — 'main' on the chip, 'main model' in the
   // row it stands on.
   const tierNames = $derived(current?.tiers ?? [])
+  // A pinned agent's sessions run its main model whatever the pick: the chip
+  // stays, off, and says why, and no tier is held for the send.
+  const pinnedAgent = $derived(current?.pinnedSessions ?? false)
+  $effect(() => {
+    if (pinnedAgent && sessionTier) sessionTier = ''
+  })
   const tierOptions = $derived([
     { value: '', label: 'main model' },
     ...tierNames.map((name) => ({ value: name, label: name })),
@@ -988,20 +994,26 @@
     </span>
     {#if tierNames.length > 0}
       <!-- The harness sits beside the view's other model-level controls, not in
-           the composer. -->
-      <ComposerPicker
-        icon="✳"
-        chipVariant="primary"
-        value={sessionTier}
-        label={sessionTier || 'main'}
-        options={tierOptions}
-        meter={tierMeter}
-        searchPlaceholder="Search tiers"
-        menuClass="min-w-44"
-        title="Model tier for this session"
-        menuLabel="Model tier"
-        onChange={(t) => (sessionTier = t)}
-      />
+           the composer. Off for a pinned agent, with the reason on the wrapper
+           as well as the chip: a disabled button's own title does not reliably
+           show. -->
+      <span title={pinnedAgent ? PINNED_TIER_NOTE : undefined} class="contents">
+        <ComposerPicker
+          icon="✳"
+          chipVariant="primary"
+          value={pinnedAgent ? '' : sessionTier}
+          label={pinnedAgent ? 'main' : sessionTier || 'main'}
+          options={tierOptions}
+          meter={tierMeter}
+          searchPlaceholder="Search tiers"
+          menuClass="min-w-44"
+          title={pinnedAgent ? PINNED_TIER_NOTE : 'Model tier for this session'}
+          menuLabel="Model tier"
+          disabled={pinnedAgent}
+          class={pinnedAgent ? 'cursor-not-allowed opacity-50' : undefined}
+          onChange={(t) => (sessionTier = t)}
+        />
+      </span>
     {/if}
     {#if selectedSessionId}
       <!-- WHICH COLUMN THE NARROW SCREEN IS SHOWING. Only below `lg` — above

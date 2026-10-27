@@ -38,6 +38,12 @@ pub struct FleetAgentEntry {
     pub agent: AgentModel,
     /// Model tiers requestable for this agent (alias names; main is implicit).
     pub tiers: Vec<String>,
+    /// The agent keeps its conversations as Hermes sessions. A session runs
+    /// the agent's main model whatever tier a message picks (Hermes fixes a
+    /// session's model at its first turn), so the chat surfaces read this to
+    /// say so instead of offering a tier that would not run.
+    #[serde(rename = "pinnedSessions")]
+    pub pinned_sessions: bool,
 }
 
 /// The agents that EXIST, which is a question only `agent_defs` can answer.
@@ -48,8 +54,8 @@ pub struct FleetAgentEntry {
 /// table means NONE, not "unknown".
 pub async fn list_fleet_agents(pg: &PgPool) -> Result<Vec<FleetAgentEntry>, sqlx::Error> {
     let agents = list_agents().await;
-    let rows: Vec<(String, Option<serde_json::Value>)> = sqlx::query_as(
-        "select d.model, v.config \
+    let rows: Vec<(String, Option<serde_json::Value>, bool)> = sqlx::query_as(
+        "select d.model, v.config, d.pinned_sessions \
          from agent_defs d \
          left join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
          where d.enabled",
@@ -71,19 +77,20 @@ pub async fn list_fleet_agents(pg: &PgPool) -> Result<Vec<FleetAgentEntry>, sqlx
             })
             .unwrap_or_default()
     };
-    let by_model: std::collections::HashMap<String, Vec<String>> = rows
+    let by_model: std::collections::HashMap<String, (Vec<String>, bool)> = rows
         .into_iter()
-        .map(|(model, config)| {
+        .map(|(model, config, pinned)| {
             let t = tiers_of(&config);
-            (model, t)
+            (model, (t, pinned))
         })
         .collect();
     Ok(agents
         .into_iter()
         .filter_map(|a| {
-            by_model.get(&a.id).map(|tiers| FleetAgentEntry {
+            by_model.get(&a.id).map(|(tiers, pinned)| FleetAgentEntry {
                 agent: a,
                 tiers: tiers.clone(),
+                pinned_sessions: *pinned,
             })
         })
         .collect())

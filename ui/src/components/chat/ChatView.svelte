@@ -12,6 +12,7 @@
   import RelayButton from '@/components/chat/RelayButton.svelte'
   import PendingAttachments from '@/components/chat/PendingAttachments.svelte'
   import { useModelEfforts } from '@/lib/model-efforts.svelte'
+  import { PINNED_TIER_NOTE } from '@/lib/agents'
   import { useProfilePrefs } from '@/lib/muse.svelte'
   import UserTurn from './UserTurn.svelte'
   import DayDivider from './DayDivider.svelte'
@@ -54,6 +55,7 @@
     agentModel,
     agentLabel,
     tiers = [],
+    pinned = false,
     conversationId,
     newChatSignal,
     syncSignal = 0,
@@ -72,6 +74,9 @@
     agentLabel: string
     /** Requestable model tiers for this agent (alias names). */
     tiers?: string[]
+    /** The agent keeps pinned sessions, which always run its main model: the
+     *  tier chip stays on the rail, off, saying why (`PINNED_TIER_NOTE`). */
+    pinned?: boolean
     conversationId: string | null
     newChatSignal: number
     /** An inbound nudge to re-read history — the surface knows about turns this
@@ -239,6 +244,12 @@
   // The routed id is what the server validates against, so it is also what the
   // picker lists from — `routedModelFor` builds exactly this string when the
   // tier is one of the agent's aliases.
+  // A pinned agent's session runs its main model whatever the pick, so no
+  // tier is held for it: a stale one would ride the send and validate the
+  // effort against a model that will not run.
+  $effect(() => {
+    if (pinned && tier) tier = ''
+  })
   const routedModel = $derived(tier ? `${agentModel}-${tier}` : agentModel)
   const { efforts, default: agentEffort } = useModelEfforts(() => routedModel)
   // ── The seeded default: the AGENT-CONFIGURED effort for the routed model
@@ -1006,19 +1017,28 @@
                exactly attach, text, and submit. -->
           {#if !minimal}
             {#if tiers.length > 0}
-              <ComposerPicker
-                icon="✳"
-                chipVariant="primary"
-                value={tier}
-                label={tier || 'main'}
-                options={tierOptions}
-                meter={tierMeter}
-                searchPlaceholder="Search tiers"
-                menuClass="min-w-44"
-                title="Model tier for this chat"
-                menuLabel="Model tier"
-                onChange={(t) => (tier = t)}
-              />
+              <!-- A PINNED AGENT'S TIER CHIP IS OFF, not gone: the session runs
+                   the main model whatever a message picks, and a chip that
+                   vanished would say nothing about why. The wrapper carries the
+                   reason too, since a disabled button's own title does not
+                   reliably show. -->
+              <span title={pinned ? PINNED_TIER_NOTE : undefined} class="contents">
+                <ComposerPicker
+                  icon="✳"
+                  chipVariant="primary"
+                  value={pinned ? '' : tier}
+                  label={pinned ? 'main' : tier || 'main'}
+                  options={tierOptions}
+                  meter={tierMeter}
+                  searchPlaceholder="Search tiers"
+                  menuClass="min-w-44"
+                  title={pinned ? PINNED_TIER_NOTE : 'Model tier for this chat'}
+                  menuLabel="Model tier"
+                  disabled={pinned}
+                  class={pinned ? 'cursor-not-allowed opacity-50' : undefined}
+                  onChange={(t) => (tier = t)}
+                />
+              </span>
             {/if}
             <!-- Effort sits immediately left of the send tile, and only when the
                  routed model's metadata vouches for levels — a model with no
