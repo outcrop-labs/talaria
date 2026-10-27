@@ -178,7 +178,7 @@ export async function probeLoad(
   const harnesses = await isolateApp(slug, 'check harnesses', () => checkAppHarnessesOf(slug))
   recordAppHarnessReport(
     slug,
-    harnesses.ok ? harnesses.value : { registered: [], problems: [`harnesses/: the check could not run: ${harnesses.error}`] },
+    harnesses.ok ? harnesses.value : { registered: [], problems: [`harnesses/: the check could not run: ${harnesses.error}`], warnings: [] },
   )
   // What this app now ships can take an id from another enabled app, or give
   // one back: every enabled app's report is rewritten from the same listing.

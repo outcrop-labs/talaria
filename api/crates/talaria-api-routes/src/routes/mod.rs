@@ -999,6 +999,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/internal/apps/{slug}/guard",
+            post(talaria_routes_admin::admin::internal_apps_guard::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/internal/apps/{slug}/llm-key",
             post(talaria_routes_admin::admin::internal_apps_llm_key::post)
                 .fallback(|| async { method_not_allowed("POST") }),

@@ -203,26 +203,29 @@
 
 <!-- The app's triggers and how each last ran. A trigger that fails never
      turns the app off, so this line is where an admin sees it: the failed
-     run's sentence in red, the app's own result line otherwise. -->
+     run's sentence in red, the app's own result line otherwise. The line
+     WRAPS rather than truncating: on a phone the run's sentence is most of
+     what there is to read, and an ellipsis there hid an event trigger's
+     detail entirely (a hover title is no help on a touch screen). -->
 {#snippet triggerLines(a: InstalledApp)}
   {#each a.triggers ?? [] as t (t.id)}
     {@const last = t.runs[0]}
     {@const failed = t.runs.filter((r) => r.state === 'failed').length}
-    <div class="mt-1 flex items-baseline gap-2 font-mono text-[11px] text-muted" data-app-trigger={t.id}>
+    <div class="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-[11px] text-muted" data-app-trigger={t.id}>
       <span class="shrink-0 text-fg">{t.id}</span>
       <span class="shrink-0" title={triggerTitle(t)}>{t.cron ? `${t.cron} UTC` : `on ${t.event}`}</span>
       {#if !last}
-        <span class="truncate">{a.enabled ? 'not run yet' : 'off while the app is disabled'}</span>
+        <span class="min-w-0 wrap-anywhere">{a.enabled ? 'not run yet' : 'off while the app is disabled'}</span>
       {:else}
         <span class={`shrink-0 ${last.state === 'failed' ? 'text-danger' : last.state === 'ok' ? 'text-fg' : ''}`}>
           {last.state === 'ok' ? 'ran' : last.state} {relativeTime(last.finishedAt ?? last.startedAt ?? last.queuedAt)}
         </span>
         {#if last.state === 'failed' && last.error}
-          <span class="truncate text-danger" title={last.error}>{last.error}</span>
+          <span class="min-w-0 wrap-anywhere text-danger" data-app-trigger-detail>{last.error}</span>
         {:else if last.detail}
-          <span class="truncate" title={last.detail}>{last.detail}</span>
+          <span class="min-w-0 wrap-anywhere" data-app-trigger-detail>{last.detail}</span>
         {:else if last.state === 'skipped' && last.error}
-          <span class="truncate" title={last.error}>{last.error}</span>
+          <span class="min-w-0 wrap-anywhere" data-app-trigger-detail>{last.error}</span>
         {/if}
         {#if failed > 0 && last.state !== 'failed'}
           <span class="shrink-0 text-danger" title={t.runs.filter((r) => r.state === 'failed').map((r) => r.error ?? '').join('\n')}>
@@ -350,6 +353,11 @@
           {#if a.build?.status !== 'failed'}
             {#each a.build?.harnesses?.problems ?? [] as problem (problem)}
               <div class="mt-1 break-words font-mono text-[11px] text-warning" data-harness-problem>{problem}</div>
+            {/each}
+            <!-- Registered, and will not run as its author meant: a pin that
+                 names no platform agent resolves to nothing. -->
+            {#each a.build?.harnesses?.warnings ?? [] as warning (warning)}
+              <div class="mt-1 break-words font-mono text-[11px] text-warning" data-harness-warning>{warning}</div>
             {/each}
           {/if}
           {#if !a.broken}{@render triggerLines(a)}{/if}

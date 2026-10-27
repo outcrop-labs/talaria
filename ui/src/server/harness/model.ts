@@ -28,7 +28,7 @@
 import { gatewayModels, resolveRoute, type GatewayModel } from '../llm-gateway'
 import { memberModelAllowlist, modelAllowedFor } from '../model-access'
 import { resolveRoleModel, type ModelRole } from '../model-roles'
-import { platformAgentModel, type PlatformAgentId } from '../platform-agents'
+import { PLATFORM_AGENTS, platformAgentModel, type PlatformAgentId } from '../platform-agents'
 import { appHarnessModel } from '../app-harness-models'
 import { getPreferredModel, getUserRole, type Role } from '../users'
 
@@ -96,6 +96,36 @@ export function chainWithSlot(chain: readonly ModelChainStep[], slot: string | u
   if (role >= 0) return [...chain.slice(0, role), 'slot', ...chain.slice(role)]
   const pin = chain.indexOf('pin')
   return pin >= 0 ? [...chain.slice(0, pin + 1), 'slot', ...chain.slice(pin + 1)] : ['slot', ...chain]
+}
+
+// ── A pin that names no agent ────────────────────────────────────────────────
+//
+// `pin` names a PLATFORM AGENT (Models → Platform), never a model. The two read
+// alike — `pin: 'mockep/mock-1'` looks like "pin this model" — and the chain
+// treats an unknown name as an unassigned agent: the 'pin' step answers
+// nothing, the run falls through to the rest of its chain, and when that
+// routes nothing either the run says only "no model available". So an app
+// harness that pins a model is warned about where it loads (app-harnesses.ts,
+// and the kit's `talaria-app build`, which runs the same check), and a run
+// that finds nothing names the pin. It is a warning, not a refusal: the
+// harness keeps loading and keeps running on whatever else its chain holds.
+
+/** The ids `pin` may name. */
+export const PLATFORM_AGENT_IDS: readonly string[] = PLATFORM_AGENTS.map((a) => a.id)
+
+/** The pin, when it names no platform agent; null when the spec pins nothing
+ *  or pins one. Read off an app's definition, so any value may be here. */
+export function strayPin(spec: { pin?: unknown } | null | undefined): string | null {
+  const pin = spec?.pin
+  return typeof pin === 'string' && !PLATFORM_AGENT_IDS.includes(pin) ? pin : null
+}
+
+/** What to say about a stray pin: what it named, what `pin` takes, and the
+ *  two ways to give an app harness a model. `slot` is the harness's own
+ *  model setting (`app:<slug>/<id>`) when it has one. */
+export function strayPinSentence(harnessId: string, pin: string, slot: string | null | undefined): string {
+  const fix = slot ? `declare model.role, or have an admin assign a model to its slot ${slot} (Admin → Models → Fitness)` : 'declare model.role'
+  return `harness "${harnessId}" pins "${pin}", which names no platform agent — model.pin takes one of ${PLATFORM_AGENT_IDS.join(', ')}, not a model id. To choose a model, ${fix}`
 }
 
 // The reference deployment names its main endpoint model 'pl-main'. Preferring

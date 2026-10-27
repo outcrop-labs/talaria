@@ -21,8 +21,9 @@ commands
   check [dir]     talaria.json against the host's rules, a typecheck against the
                   kit's declarations, and the app's own *.test.ts
                                                    --no-typecheck --no-tests
-  build [dir]     the host's build recipe and load probe, reported per surface
-                  and per harness as Manage → Apps would
+  build [dir]     the host's build recipe and load probe, reported per surface,
+                  per harness and per trigger as Manage → Apps would; a trigger
+                  talaria.json declares with no handler in server.ts fails it
   eval [dir]      every harness fixture, against harnesses/recorded/ replies, or
                   through the Talaria gateway      --gateway --model <id> --record
                                                    --harness <id|file> --case <name>
@@ -140,7 +141,7 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
       io.out(`wrote ${done.written.length} files into ${done.dir}`)
       for (const f of done.written) io.out(`  ${f}`)
       for (const f of done.kept) io.out(`  ${f} (kept the repo's own)`)
-      io.out('\nnext: talaria-app check && talaria-app build')
+      io.out('\nnext: talaria-app check && talaria-app build && talaria-app eval')
     }
     return 0
   }
@@ -194,7 +195,7 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
     return 2
   }
   const ws = enterWorkspace(kitRoot, app, slug, io.env)
-  const built = await captureConsole(() => kitBuild(ws, manifest.manifest.name, kit.version))
+  const built = await captureConsole(() => kitBuild(ws, manifest.manifest.name, kit.version, manifest.manifest.triggers))
   if (p.command === 'build' || !built.value.ok) {
     if (json) io.out(JSON.stringify(built.value, null, 2))
     else io.out(formatBuildReport(built.value, io.cwd))
