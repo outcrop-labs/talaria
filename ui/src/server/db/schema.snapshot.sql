@@ -199,6 +199,16 @@ CREATE TABLE public.agent_versions (
     created_by text,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.app_catalogs (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    name text NOT NULL,
+    url text NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    "position" integer DEFAULT 0 NOT NULL,
+    created_by text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.app_data (
     app text NOT NULL,
     collection text NOT NULL,
@@ -1669,6 +1679,10 @@ ALTER TABLE ONLY public.agent_versions
     ADD CONSTRAINT agent_versions_agent_id_version_key UNIQUE (agent_id, version);
 ALTER TABLE ONLY public.agent_versions
     ADD CONSTRAINT agent_versions_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.app_catalogs
+    ADD CONSTRAINT app_catalogs_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.app_catalogs
+    ADD CONSTRAINT app_catalogs_url_key UNIQUE (url);
 ALTER TABLE ONLY public.app_data
     ADD CONSTRAINT app_data_pkey PRIMARY KEY (app, collection, id);
 ALTER TABLE ONLY public.app_install_requests
