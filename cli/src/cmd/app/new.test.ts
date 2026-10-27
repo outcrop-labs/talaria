@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CliError } from '../../ui'
 import { fakeCtx } from '../../testing'
-import { RESERVED_APP_SLUGS, displayName, skeletonFiles } from './skeleton'
+import { RESERVED_APP_SLUGS, displayName, harnessFamily, harnessStarterFiles, skeletonFiles, standaloneRepoFiles } from './skeleton'
 import { runAppNew } from './new'
 
 const attempt = (fn: () => unknown): string => {
@@ -82,6 +82,34 @@ describe('skeletonFiles', () => {
   })
 })
 
+describe('the starter harness and the repo files', () => {
+  test("names the harness for the app, and records a reply its fixture passes on", () => {
+    expect(harnessFamily('My App')).toBe('my-app')
+    expect(harnessFamily('  Ünïcode & Co! ')).toBe('n-code-co')
+    expect(harnessFamily('!!!')).toBe('app')
+    const files = harnessStarterFiles({ name: 'Field Notes' })
+    expect(Object.keys(files).sort()).toEqual(['harnesses/recorded/tidy-title.json', 'harnesses/tidy-title.ts'])
+    const harness = files['harnesses/tidy-title.ts']!
+    expect(harness).toContain('id: "field-notes:tidy-title"')
+    expect(harness).toContain("from '@talaria/sdk/server'")
+    // zod comes through the SDK: an app has no node_modules of its own.
+    expect(harness).not.toContain("from 'zod'")
+    const recorded = JSON.parse(files['harnesses/recorded/tidy-title.json']!) as { harness: string; cases: Record<string, Array<{ text: string }>> }
+    expect(recorded.harness).toBe('field-notes:tidy-title')
+    const fixture = /name: "([^"]+)"/.exec(harness)?.[1]
+    expect(fixture).toBeDefined()
+    const reply = JSON.parse(recorded.cases[fixture!]![0]!.text) as { title: string; changed: boolean }
+    expect(reply.title.trim().split(/\s+/).length).toBeLessThanOrEqual(8)
+  })
+
+  test('a plugin repo ignores the kit\'s work and says how it is checked', () => {
+    const files = standaloneRepoFiles({ name: 'Field Notes' })
+    expect(files['.gitignore']).toContain('.talaria/')
+    expect(files['README.md']).toContain('# Field Notes')
+    expect(files['README.md']).toContain('talaria-app check')
+  })
+})
+
 describe('runAppNew', () => {
   test('bad slug dies before writing', () => {
     const ctx = ctxAt()
@@ -118,6 +146,15 @@ describe('runAppNew', () => {
     expect(readFileSync(join(dir, 'Work.svelte'), 'utf8')).toContain('useAppQuery')
     expect(readFileSync(join(dir, 'Work.svelte'), 'utf8')).not.toContain('pulse')
     expect(ctx.logLines.some((l) => l.kind === 'say' && l.msg.includes('apps/pulse'))).toBe(true)
+  })
+
+  test('--harness adds the starter harness and its recorded reply', () => {
+    const ctx = ctxAt()
+    expect(runAppNew(ctx, 'notes', { harness: true })).toBe(0)
+    const dir = join(ctx.root, 'apps', 'notes')
+    expect(readFileSync(join(dir, 'harnesses', 'tidy-title.ts'), 'utf8')).toContain('"notes:tidy-title"')
+    expect(existsSync(join(dir, 'harnesses', 'recorded', 'tidy-title.json'))).toBe(true)
+    expect(existsSync(join(ctxAt().root, 'apps', 'notes'))).toBe(false)
   })
 
   test('TALARIA_APPS_DIR relocates the write', () => {

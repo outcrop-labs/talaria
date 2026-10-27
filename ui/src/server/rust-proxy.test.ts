@@ -172,6 +172,16 @@ describe('maybeProxy', () => {
     expect(fetch).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps the SDK kit (/api/sdk/) on TS — the ui build makes it', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    const fetch = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetch as unknown as typeof globalThis.fetch)
+    expect(await maybeProxy(req('/api/sdk/kit.tgz'), '/api/sdk/kit.tgz')).toBeNull()
+    // Anchored on the whole segment.
+    expect(await maybeProxy(req('/api/sdkx'), '/api/sdkx')).not.toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
   it('a caller who hangs up cuts a READ; a WRITE runs on for nobody, as it always has', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const seen: Array<AbortSignal | null | undefined> = []

@@ -41,6 +41,7 @@ use talaria_boards::board_allows_agent;
 use talaria_body::truncate_utf16;
 use talaria_fleet_docker::{docker_exec, managed_container};
 use talaria_fleet_layout::describe_agent;
+use talaria_gateway::usage as gw_usage;
 use talaria_github as gh;
 use talaria_github::github_status;
 use talaria_mcp_jsonrpc::{ListedTool, ToolOutcome, dispatch_jsonrpc};
@@ -321,7 +322,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "prepare_env",
-            "description": "Set up the job's dev environment after you clone: Talaria reads the repo (its mise.toml / .tool-versions, else rust-toolchain.toml, .nvmrc, package.json, go.mod, .python-version, ...) and installs those toolchains through mise, plus any OS packages the repo lists in .talaria/workbench.toml. Idempotent; call it at the start of every job. The first run of a new toolchain can take minutes. Never install toolchains or system packages yourself: declare them in the repo and call this again.",
+            "description": "Set up the job's dev environment after you clone: Talaria reads the repo (its mise.toml / .tool-versions, else rust-toolchain.toml, .nvmrc, package.json, go.mod, .python-version, ...) and installs those toolchains through mise, plus any OS packages the repo lists in .talaria/workbench.toml. A repo with a talaria.json at its root is a Talaria app: this also installs the instance's SDK kit and puts `talaria-app` on your PATH (check, build, eval — appKit in the answer says how). Idempotent; call it at the start of every job. The first run of a new toolchain can take minutes. Never install toolchains or system packages yourself: declare them in the repo and call this again.",
             "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job or job_status. Not a ticket ref." } }, "required": ["jobId"] },
         }),
         json!({
@@ -330,6 +331,52 @@ pub fn workbench_tools() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job or job_status — a job whose PR is open (status pr_open) or was resumed for a revise round. Not a ticket ref." } }, "required": ["jobId"] },
         }),
     ]
+}
+
+/// The subject the relay books the workbench credential's calls under —
+/// `api:<key name>`, its rule for every key that is not an agent's own (the
+/// relay's `caller_of`, whose test pins the same string). A job's eval
+/// session is recorded under it, or the relay's insert never finds it.
+const WORKBENCH_CALLER: &str = "api:workbench-gateway";
+
+/// A job's eval-session key: `wbeval_` and 32 hex digits, random per call.
+/// The workbench key is fleet-wide, so the header alone could name any job's
+/// flow; the key is what keeps the booking to one job — prepare_env writes it
+/// into that job's workdir and nowhere else.
+fn workbench_eval_key(random: [u8; 16]) -> String {
+    let mut s = String::with_capacity(39);
+    s.push_str("wbeval_");
+    for b in random {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// Record a workbench job's eval session — the flow the relay books a
+/// `talaria-app eval --gateway` turn under — and answer the file the kit
+/// reads it from (`devenv::eval_session_json`). The key is random per call
+/// and recorded under the workbench key's caller, the subject the relay
+/// books that key's calls as; the flow is the job's (`ref_id`) and its
+/// ticket's (`task_id`). None when the record failed: eval still runs,
+/// booked to the workbench key with no ticket.
+async fn record_eval_session(pg: &PgPool, job_id: &str, task_id: Option<&str>) -> Option<String> {
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).ok()?;
+    let key = workbench_eval_key(random);
+    let flow = gw_usage::TurnAttribution {
+        pg: pg.clone(),
+        agent_model: WORKBENCH_CALLER.to_string(),
+        source: "workbench".into(),
+        ref_id: Some(job_id.to_string()),
+        task_id: task_id.map(str::to_string),
+    };
+    match gw_usage::record_attribution(&flow, &key).await {
+        Ok(()) => Some(devenv::eval_session_json(&key, job_id)),
+        Err(e) => {
+            tracing::warn!("[workbench] eval session for job {job_id} not recorded: {e}");
+            None
+        }
+    }
 }
 
 /// The agent columns the verbs read — the row `agent_by_model` fetches.
@@ -1386,8 +1433,8 @@ async fn call_tool(
             if let Some(error) = bad_job_id(&job_id) {
                 return CallOutcome::Fail(error);
             }
-            let row: Option<(String, String)> = match sqlx::query_as(
-                "select status, repo from workbench_jobs where id = $1::uuid and agent_id = $2::uuid",
+            let row: Option<(String, String, Option<String>)> = match sqlx::query_as(
+                "select status, repo, task_id::text from workbench_jobs where id = $1::uuid and agent_id = $2::uuid",
             )
             .bind(&job_id)
             .bind(&agent.id)
@@ -1397,10 +1444,10 @@ async fn call_tool(
                 Ok(row) => row,
                 Err(e) => return thrown(format!("job read: {e}")),
             };
-            let repo = match row {
+            let (repo, task_id) = match row {
                 None => return CallOutcome::Fail("unknown job".into()),
-                Some((status, repo)) if status == "started" => repo,
-                Some((other, _)) => return CallOutcome::Fail(format!("job is {other}")),
+                Some((status, repo, task_id)) if status == "started" => (repo, task_id),
+                Some((other, _, _)) => return CallOutcome::Fail(format!("job is {other}")),
             };
             let Some(workdir) = teardown::job_workdir(&job_id) else {
                 return CallOutcome::Fail(format!("not a job id: {job_id:?}"));
@@ -1423,6 +1470,30 @@ async fn call_tool(
             // The harness's own runtime, beside the repo's: a repo that pins
             // rust and no bun must still leave omp startable.
             let runtime = devenv::ensure_harness_runtime(pg, &agent.department).await;
+            // A Talaria app gets the SDK kit, on the runtime just ensured.
+            let app_kit = if result["talariaApp"] == json!(true) {
+                Some(match &runtime {
+                    Ok(_) => {
+                        let session = record_eval_session(pg, &job_id, task_id.as_deref()).await;
+                        match devenv::install_app_kit(
+                            pg,
+                            &agent.department,
+                            &workdir,
+                            session.as_deref(),
+                        )
+                        .await
+                        {
+                            Ok(v) => v,
+                            Err(e) => json!({ "ok": false, "error": e }),
+                        }
+                    }
+                    Err(_) => {
+                        json!({ "ok": false, "error": "the SDK kit runs on the harness's bun, which could not be provisioned (harnessRuntime)" })
+                    }
+                })
+            } else {
+                None
+            };
             if let Some(obj) = result.as_object_mut() {
                 obj.insert(
                     "projectEnv".into(),
@@ -1435,6 +1506,9 @@ async fn call_tool(
                         Err(e) => json!({ "ok": false, "error": e }),
                     },
                 );
+                if let Some(kit) = app_kit {
+                    obj.insert("appKit".into(), kit);
+                }
             }
             CallOutcome::Ok(result)
         }
@@ -2831,6 +2905,20 @@ async fn log_wtool_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_eval_session_key_is_one_the_relay_keeps() {
+        let key = workbench_eval_key([0xab; 16]);
+        assert_eq!(key, format!("wbeval_{}", "ab".repeat(16)));
+        // The relay keeps 1..=128 printable ASCII with no spaces as an
+        // affinity key (talaria-gateway `affinity_key`); anything else books
+        // as no key at all.
+        assert_eq!(
+            talaria_gateway::usage::affinity_key(Some(&key)).as_deref(),
+            Some(key.as_str())
+        );
+        assert_eq!(WORKBENCH_CALLER, "api:workbench-gateway");
+    }
 
     #[test]
     fn the_probe_and_prepare_env_agree_on_the_terminal_home() {

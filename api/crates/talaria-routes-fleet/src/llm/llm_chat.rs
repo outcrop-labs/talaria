@@ -302,7 +302,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         .map(|a| a.iter().any(|v| v.as_str() == Some(id.key_name.as_str())))
         .unwrap_or(false);
     let meter = meter_plan(is_agent_key, listed_unmetered);
-    let affinity = session_header.filter(|_| is_agent_key);
+    let affinity = session_header.filter(|_| honors_affinity(is_agent_key, &id.key_name));
 
     // ANNOTATION — is the caller an agent's own tool loop? Guard caveats are
     // for humans reading a reply; injecting one into an agent's loop would
@@ -537,6 +537,18 @@ impl Meter {
             Meter::Skip => RELAY_SOURCE,
         }
     }
+}
+
+/// Whose `x-talaria-session` header the relay books by. An agent's own key:
+/// the conversation key Hermes stamps. The workbench key: a workbench job's
+/// eval session (`talaria-app eval --gateway`), so a harness fixture replayed
+/// in the sandbox is booked to the job's ticket. The workbench key is
+/// fleet-wide, but the session key it can name is a random one prepare_env
+/// recorded for one job and wrote into that job's workdir alone; a key no
+/// flow recorded books nothing differently. Any other key is an operator's,
+/// and its rows are the operator's.
+fn honors_affinity(is_agent_key: bool, key_name: &str) -> bool {
+    is_agent_key || key_name == WORKBENCH_KEY
 }
 
 /// The metering decision. An agent's call is booked under the agent as
@@ -956,6 +968,21 @@ mod tests {
         assert!(Meter::Skip.skip());
         assert!(!Meter::Book(UNATTENDED_SOURCE).skip());
         assert_eq!(Meter::Book(UNATTENDED_SOURCE).source(), "unattended");
+    }
+
+    #[test]
+    fn the_session_header_books_an_agents_calls_and_a_workbench_jobs_evals_only() {
+        // An agent's own key: the conversation key Hermes stamped.
+        assert!(honors_affinity(true, "agent:xeng"));
+        // The workbench key: a job's eval session, booked to its ticket.
+        assert!(honors_affinity(false, "workbench-gateway"));
+        // prepare_env records a job's eval session under this caller
+        // (talaria-workbench-mcp `WORKBENCH_CALLER`); the relay's insert
+        // finds the flow only if the two agree.
+        assert_eq!(caller_of(WORKBENCH_KEY, None), "api:workbench-gateway");
+        // The personas' key and an operator's: their rows stay theirs.
+        assert!(!honors_affinity(false, "fleet-gateway"));
+        assert!(!honors_affinity(false, "my-key"));
     }
 
     fn scanner_mode(mode: MeterMode) -> MeteredStream {

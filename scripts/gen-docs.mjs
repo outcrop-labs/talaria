@@ -59,6 +59,7 @@ const TS_RESIDENT_FILES = [
   'ui/src/routes/api/app-host.harnesses.ts',
   'ui/src/routes/api/app-host.$app.harnesses.$id.cases.$name.ts',
   'ui/src/routes/api/app-host.$app.lifecycle.ts',
+  'ui/src/routes/api/sdk.kit.tgz.ts',
 ]
 const CHECK = process.argv.includes('--check')
 
@@ -73,7 +74,7 @@ const GROUPS = {
   activity: { segs: ['activity', 'history', 'notifications', 'unreads', 'push', 'alerts', 'home', 'cost', 'host'], blurb: 'What happened, what it cost, what the machine is doing, what needs you.' },
   admin: { segs: ['admin'], blurb: 'Instance administration (admin session required).' },
   agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'runs'], blurb: 'Agent CRUD, skills, runs.' },
-  apps: { segs: ['apps', 'app-host'], blurb: 'The app platform surface, the app-server gateway, and the host\'s own app routes.' },
+  apps: { segs: ['apps', 'app-host', 'sdk'], blurb: 'The app platform surface, the app-server gateway, the host\'s own app routes, and the SDK kit.' },
   boards: { segs: ['boards', 'workchains'], blurb: 'Kanban boards, members, statuses, labels, views, workchains.' },
   brief: { segs: ['brief'], blurb: 'The personal brief: items, replies, delegation.' },
   comms: { segs: ['channels', 'chat', 'conversations', 'dms'], blurb: 'Channels, DMs, threads, chat streaming.' },

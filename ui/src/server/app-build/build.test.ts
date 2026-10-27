@@ -1,13 +1,13 @@
 // A real app build, end to end: the shape the host loads in production.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { clientRuntimePath, clientSpecifiers } from '@/app-runtime/specifiers'
 import { clientArtifactOk, probeLoad } from '../app-health'
 import { checkAppHarnessesOf, listAppHarnesses } from '../app-harnesses'
 import { loadAppHarnesses, setSsrLoader } from '../app-load'
-import { buildApp, setServerShim } from './build'
+import { buildApp, setServerShim, unsharedImport } from './build'
 import { BUILD_RECIPE, sourceKey } from './key'
 import { appBuildKeyDir, appSrc } from './paths'
 import { readCurrent, writeCurrent } from './status'
@@ -287,5 +287,83 @@ export default defineHarness({
     const listing = await listAppHarnesses(only('all-broken'))
     expect(listing.harnesses).toEqual([])
     expect(listing.problems.map((p) => [p.file, p.reason.startsWith('it failed to compile: ')])).toEqual([['broken.ts', true]])
+  }, 180_000)
+})
+
+// An app has no node_modules where it is installed, so only what the host
+// shares resolves. The recipe says so by name — the same sentence on the host
+// and in the SDK kit's sandbox, where a tree CAN sit under a node_modules that
+// holds the package and would otherwise bundle a copy and pass.
+describe('unsharedImport', () => {
+  it('lets paths, schemes and the shared specifiers through, per kind', () => {
+    for (const ok of ['./Work.svelte', '../x', '/abs/path.ts', '\0vite/preload-helper.js', 'node:fs', 'data:text/plain,x']) {
+      expect(unsharedImport(ok, 'client'), ok).toBeNull()
+      expect(unsharedImport(ok, 'server'), ok).toBeNull()
+    }
+    for (const ok of ['svelte', 'svelte/transition', '@talaria/sdk', '@lucide/svelte', '@tanstack/svelte-query']) expect(unsharedImport(ok, 'client'), ok).toBeNull()
+    for (const ok of ['@talaria/sdk/server', 'fs', 'fs/promises', 'crypto']) expect(unsharedImport(ok, 'server'), ok).toBeNull()
+  })
+
+  it('names a package the host does not share', () => {
+    expect(unsharedImport('zod', 'server')).toBe(
+      '"zod" is not shared with apps: an app has no node_modules of its own where it is installed, so a server-side module may import only @talaria/sdk/server (which re-exports zod as z) and node\'s builtins',
+    )
+    expect(unsharedImport('lodash', 'client')).toContain('so a surface may import only svelte, @talaria/sdk')
+    // The client SDK is not the server's, nor the test entry anyone's.
+    expect(unsharedImport('@talaria/sdk', 'server')).toContain('"@talaria/sdk" is not shared')
+    expect(unsharedImport('@talaria/sdk/testing', 'server')).toContain('"@talaria/sdk/testing" is not shared')
+    expect(unsharedImport('fs', 'client')).toContain('"fs" is not shared')
+  })
+})
+
+describe('buildApp (a package the app does not get)', () => {
+  let root = ''
+  const prev = { apps: process.env.TALARIA_APPS_DIR, builds: process.env.TALARIA_APP_BUILDS_DIR }
+  const manifest = JSON.stringify({ name: 'Import Check', icon: '⬡', version: '0.1.0' })
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'app-build-imports-'))
+    process.env.TALARIA_APPS_DIR = join(root, 'apps')
+    process.env.TALARIA_APP_BUILDS_DIR = join(root, 'app-builds')
+    const shim = join(root, 'rt-talaria-sdk-server.js')
+    writeFileSync(shim, 'export const defineHarness = (h) => h\nexport const z = {}\n')
+    setServerShim(shim)
+    // zod IS resolvable from the app's tree: a node_modules above it holds it.
+    mkdirSync(join(root, 'node_modules'), { recursive: true })
+    symlinkSync(resolve('node_modules/zod'), join(root, 'node_modules', 'zod'))
+    const dir = join(root, 'apps', 'imports-zod')
+    mkdirSync(join(dir, 'harnesses'), { recursive: true })
+    writeFileSync(join(dir, 'talaria.json'), manifest)
+    writeFileSync(join(dir, 'mcp.ts'), "import { z } from 'zod'\nexport default { tools: [{ name: 'x', description: String(z), handler: () => 1 }] }\n")
+    const harnessDir = join(root, 'apps', 'harness-zod')
+    mkdirSync(join(harnessDir, 'harnesses'), { recursive: true })
+    writeFileSync(join(harnessDir, 'talaria.json'), manifest)
+    writeFileSync(join(harnessDir, 'server.ts'), 'export default { fetch: async () => new Response("ok") }\n')
+    writeFileSync(join(harnessDir, 'harnesses', 'z.ts'), "import { z } from 'zod'\nexport default { id: String(z) }\n")
+  })
+
+  afterAll(() => {
+    setServerShim(undefined)
+    if (prev.apps === undefined) delete process.env.TALARIA_APPS_DIR
+    else process.env.TALARIA_APPS_DIR = prev.apps
+    if (prev.builds === undefined) delete process.env.TALARIA_APP_BUILDS_DIR
+    else process.env.TALARIA_APP_BUILDS_DIR = prev.builds
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('refuses a server-side import of zod even where zod resolves, saying where z comes from', async () => {
+    const cur = await buildApp('imports-zod')
+    expect(cur.status).toBe('failed')
+    expect(cur.error).toContain('"zod" is not shared with apps')
+    expect(cur.error).toContain('@talaria/sdk/server (which re-exports zod as z)')
+  }, 180_000)
+
+  it('skips a harness file that imports zod, with the same sentence, and still builds the app', async () => {
+    const cur = await buildApp('harness-zod')
+    expect(cur.status).toBe('ready')
+    setSsrLoader(null)
+    const files = await loadAppHarnesses('harness-zod')
+    expect(files.map((f) => f.file)).toEqual(['z.ts'])
+    expect(files[0]!.compileError).toContain('"zod" is not shared with apps')
   }, 180_000)
 })

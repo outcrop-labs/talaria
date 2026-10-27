@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile } from 'svelte/compiler'
 import { afterAll, describe, expect, it } from 'vitest'
-import { skeletonFiles } from '../../../cli/src/cmd/app/skeleton'
+import { harnessStarterFiles, skeletonFiles } from '../../../cli/src/cmd/app/skeleton'
 
 // THE CLIENT DOCS AND THE SCAFFOLD, COMPILED AGAINST THE SDK.
 //
@@ -19,7 +19,8 @@ import { skeletonFiles } from '../../../cli/src/cmd/app/skeleton'
 // So every `svelte` fence in client.md, ui-kit.md, getting-started.md, mcp.md
 // and the quick guide in apps/README.md, every `ts` fence there that imports
 // @talaria/sdk, @talaria/sdk/server or @talaria/sdk/testing, and every file
-// `talaria app new` writes are copied out VERBATIM and run through two passes:
+// `talaria app new --harness` (and the kit's `talaria-app scaffold`) writes
+// are copied out VERBATIM and run through two passes:
 // the Svelte compiler (syntax, runes), then svelte-check against the real SDK
 // under the ui's own tsconfig (types, props, unused imports). A rename in the
 // SDK, or a doc edit that stops compiling, fails here.
@@ -66,7 +67,7 @@ function fences(doc: string): Example[] {
 
 function examples(): Example[] {
   const docs = DOC_FILES.flatMap(fences)
-  const scaffold = Object.entries(skeletonFiles({ name: 'Doc Check', icon: '◇' }))
+  const scaffold = Object.entries({ ...skeletonFiles({ name: 'Doc Check', icon: '◇' }), ...harnessStarterFiles({ name: 'Doc Check' }) })
     .filter(([file]) => /\.(svelte|ts)$/.test(file))
     .map(([file, code]) => ({ origin: `cli/src/cmd/app/skeleton.ts → ${file}`, path: `skeleton/${file}`, code }))
   return [...docs, ...scaffold]
@@ -84,7 +85,7 @@ describe('the client docs and the scaffold', () => {
     // A doc reshuffle that silently drops every fence would otherwise pass.
     for (const doc of DOC_FILES) expect(all.some((e) => e.origin.startsWith(`${doc}:`)), doc).toBe(true)
     expect(all.map((e) => e.path)).toEqual(
-      expect.arrayContaining(['skeleton/Work.svelte', 'skeleton/app.ts', 'docs/sdk/getting-started/Work.svelte', 'apps/README/Work.svelte']),
+      expect.arrayContaining(['skeleton/Work.svelte', 'skeleton/app.ts', 'skeleton/harnesses/tidy-title.ts', 'docs/sdk/getting-started/Work.svelte', 'apps/README/Work.svelte']),
     )
   })
 

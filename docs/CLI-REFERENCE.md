@@ -164,6 +164,7 @@ Positional `<slug>` (required) — lowercase kebab, same rule as install
 | :--- | :--- | :--- | :--- |
 | `--name` | value | — | display name (default: title-cased slug) |
 | `--icon` | value | — | nav icon (default: ⬡) |
+| `--harness` | bool | — | add a starter harness under harnesses/, with a recorded reply for its fixture |
 
 ## `talaria deploy`
 

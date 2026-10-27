@@ -1,9 +1,9 @@
 // `talaria app new` — scaffold a TypeScript app into apps/<slug>.
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
-import { APP_SLUG_RE, RESERVED_APP_SLUGS, displayName, skeletonFiles } from './skeleton'
+import { APP_SLUG_RE, RESERVED_APP_SLUGS, displayName, harnessStarterFiles, skeletonFiles } from './skeleton'
 
 export function appsDir(ctx: Ctx): string {
   return ctx.env.TALARIA_APPS_DIR || join(ctx.root, 'apps')
@@ -12,7 +12,7 @@ export function appsDir(ctx: Ctx): string {
 export function runAppNew(
   ctx: Ctx,
   slug: string,
-  opts: { name?: string; icon?: string } = {},
+  opts: { name?: string; icon?: string; harness?: boolean } = {},
 ): number {
   if (!APP_SLUG_RE.test(slug)) {
     ctx.log.die(`"${slug}" is not a usable app slug (lowercase letters, digits, dashes; ≤64 chars)`)
@@ -27,14 +27,15 @@ export function runAppNew(
   if (existsSync(dest)) ctx.log.die(`${dest} already exists`)
 
   mkdirSync(dest, { recursive: true })
-  const files = skeletonFiles({ name, icon })
+  const files = { ...skeletonFiles({ name, icon }), ...(opts.harness ? harnessStarterFiles({ name }) : {}) }
   for (const [rel, body] of Object.entries(files)) {
+    mkdirSync(dirname(join(dest, rel)), { recursive: true })
     writeFileSync(join(dest, rel), body)
   }
 
   const shown = dest.startsWith(ctx.root + '/') ? dest.slice(ctx.root.length + 1) : dest
   ctx.log.say(`created ${shown}`)
-  ctx.log.ok('work surface, server, MCP starter')
+  ctx.log.ok(opts.harness ? 'work surface, server, MCP starter, a harness with a recorded reply' : 'work surface, server, MCP starter')
   ctx.log.ok('enable it in Manage → Apps')
   return 0
 }
@@ -48,10 +49,12 @@ export const newCommand: Leaf = {
   flags: [
     { name: 'name', kind: 'value', desc: 'display name (default: title-cased slug)' },
     { name: 'icon', kind: 'value', desc: 'nav icon (default: ⬡)' },
+    { name: 'harness', kind: 'bool', desc: 'add a starter harness under harnesses/, with a recorded reply for its fixture' },
   ],
   run: (ctx, args) =>
     runAppNew(ctx, args.positionals[0]!, {
       name: typeof args.flags.name === 'string' ? args.flags.name : undefined,
       icon: typeof args.flags.icon === 'string' ? args.flags.icon : undefined,
+      harness: args.flags.harness === true,
     }),
 }

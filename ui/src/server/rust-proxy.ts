@@ -43,6 +43,10 @@ const PREFIXES = ['/api/'] as const
 //   they never take a path from the app's namespace above.
 //   healthz — the app process's own liveness answer; the Rust api carries
 //   its own at the same path for whoever asks it there.
+//   The SDK kit (/api/sdk/…: kit.tgz) — rule 10's other half. The kit is
+//   the TS build's own output (the SDK's declarations, the app build recipe,
+//   the CLI), and a host running from source builds it on request with that
+//   same toolchain; the runtime that makes it serves it.
 // The one-time resident admin.update (the git-checkout updater that rebuilt
 // ui/dist and restarted this very process) is retired with its updater: the
 // update surface is Rust's now — /api/admin/updates rolls containers — and
@@ -51,6 +55,7 @@ const STAY_TS = [
   /^\/api\/mcp\/gw\/app-/,
   /^\/api\/apps\//,
   /^\/api\/app-host\//,
+  /^\/api\/sdk\//,
   /^\/api\/healthz$/,
 ] as const
 
