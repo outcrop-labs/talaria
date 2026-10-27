@@ -9,9 +9,10 @@
 // · A tool list that changes UNDER a name the agent already holds — a tool
 //   subset widened, a team or user grant, an app's catalog — reaches it
 //   through the gateway: [`bump_tool_lists`] counts the change, and the
-//   gateway answers the agent's next keepalive ping on that server with a
-//   `notifications/tools/list_changed` first (routes-fleet's mcp_gw_server),
-//   which Hermes answers by listing the tools again.
+//   gateway answers the agent's next keepalive on that server (a `ping`, or
+//   the `tools/list` Hermes keeps alive with once an upstream did not answer
+//   ping) with a `notifications/tools/list_changed` first (routes-fleet's
+//   mcp_gw_server), which Hermes answers by listing the tools again.
 // · A `timeout` or an auth mode changed under a name still ROLLS: the
 //   reconcile does not reconnect a server whose entry changed, and a session
 //   minted under the old credentials is the old session.

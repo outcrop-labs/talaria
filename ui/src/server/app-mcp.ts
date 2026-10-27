@@ -146,8 +146,9 @@ export async function clearAppMcpCatalog(slug: string): Promise<void> {
  *
  *  AN APP THAT IS NOT ENABLED SERVES NOTHING, whatever its registry row says.
  *  Turning an app off (an admin, or a failed build) asks the api to turn the
- *  row off (`appOff`, keeping its grants) and roll the agents that carried it,
- *  but an agent's rendered config outlives that until its roll lands — and in
+ *  row off (`appOff`, keeping its grants) and re-render the agents that
+ *  carried it, but a running agent keeps the server until Hermes reconciles
+ *  its rewritten config (about a minute) — and in
  *  dev the module loads from source whatever the build said, so a broken app's
  *  tools kept answering. The app server gateway (apps.$app.$.ts) has always
  *  applied this rule to people; this is the same rule for agents. A row the

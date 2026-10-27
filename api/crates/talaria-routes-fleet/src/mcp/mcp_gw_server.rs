@@ -32,9 +32,10 @@
 //     relayed — two agents sharing an org credential cannot ride each
 //     other's sessions; a session the gateway never saw passes through
 //   · TELLS an agent when its tool list may have changed under a server it
-//     keeps: the keepalive ping of an agent behind the tool-list count is
-//     answered here with `notifications/tools/list_changed` ahead of its
-//     result, and the agent lists again (the tool-list notice, below)
+//     keeps: the keepalive of an agent behind the tool-list count (a ping,
+//     or a tools/list where the upstream did not answer ping) is answered
+//     with `notifications/tools/list_changed` ahead of its result, and the
+//     agent lists again (the tool-list notice, below)
 // so a hand-edited agent config can never exceed what the registry granted.
 
 use axum::Json;
@@ -498,6 +499,14 @@ fn is_initialize(rpc: Option<&Value>) -> bool {
 // lists the tools again, through the gateway's filter, and its next turn has
 // them. A session that replaces an in-house one (see "The in-house session")
 // is told on its first `tools/list` instead, without waiting for a keepalive.
+//
+// A `tools/list` from an agent behind the count carries the notice too, ahead
+// of the list. That is the keepalive of a connection whose upstream did not
+// answer ping: Hermes latches `_ping_unsupported` on the first -32601 or
+// timeout and keeps alive with `list_tools` from then on, discarding the
+// result — so a notice that rode only on ping would never reach it. On the
+// relay, the notice moves the agent's count only on an upstream answer that
+// succeeded, so a failed list does not spend it.
 
 /// How long the remembered count lives. Every keepalive refreshes it, so it
 /// only lapses for an agent that stopped asking.
@@ -507,8 +516,33 @@ fn tools_seen_key(server_name: &str, caller: &str) -> String {
     format!("talaria:mcp-tools-seen:v1:{server_name}:{caller}")
 }
 
-fn is_ping(rpc: &Value) -> bool {
-    rpc.get("method").and_then(Value::as_str) == Some("ping") && rpc.get("id").is_some()
+/// Which request a tool-list notice can ride, from its body and whether its
+/// client reads an event stream (the notice is an SSE event ahead of the
+/// answer, so a client that takes JSON only is never sent one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoticeRide {
+    /// `initialize`: starts the agent's count; carries nothing.
+    Handshake,
+    /// A `ping`: answered here, the notice first.
+    Keepalive,
+    /// A `tools/list`: relayed, the notice ahead of the upstream's list.
+    List,
+    /// Anything else.
+    Neither,
+}
+
+fn notice_ride(rpc: &Value, accepts_sse: bool) -> NoticeRide {
+    if is_initialize(Some(rpc)) {
+        return NoticeRide::Handshake;
+    }
+    if !accepts_sse || rpc.get("id").is_none() {
+        return NoticeRide::Neither;
+    }
+    match rpc.get("method").and_then(Value::as_str) {
+        Some("ping") => NoticeRide::Keepalive,
+        Some("tools/list") => NoticeRide::List,
+        _ => NoticeRide::Neither,
+    }
 }
 
 fn accepts_event_stream(headers: &HeaderMap) -> bool {
@@ -623,24 +657,68 @@ async fn tool_list_notice(
     headers: &HeaderMap,
 ) -> Option<Response> {
     let rpc = rpc?;
-    if is_initialize(Some(rpc)) {
-        if let Some(epoch) = tool_lists_epoch(&state.pg).await {
-            start_tools_seen(state, server_name, caller, epoch).await;
+    match notice_ride(rpc, accepts_event_stream(headers)) {
+        NoticeRide::Handshake => {
+            if let Some(epoch) = tool_lists_epoch(&state.pg).await {
+                start_tools_seen(state, server_name, caller, epoch).await;
+            }
+            None
         }
-        return None;
+        NoticeRide::Keepalive => {
+            if !list_is_behind(state, server_name, caller).await {
+                return None;
+            }
+            tracing::info!(
+                "[mcp/gw:{server_name}] {caller}: its tool list may have changed — the keepalive answer carries tools/list_changed"
+            );
+            Some(list_changed_answer(rpc))
+        }
+        // A tools/list is relayed; the relay decides ([`list_notice_due`]).
+        NoticeRide::List | NoticeRide::Neither => None,
     }
-    if !is_ping(rpc) || !accepts_event_stream(headers) {
-        return None;
+}
+
+/// Whether the agent's count on this server is behind the current one —
+/// and, either way, it now holds the current one. `false` when the count or
+/// Redis is out of reach: no notice, and the request goes on as it always did.
+async fn list_is_behind(state: &AppState, server_name: &str, caller: &str) -> bool {
+    let Some(epoch) = tool_lists_epoch(&state.pg).await else {
+        return false;
+    };
+    swap_tools_seen(state, server_name, caller, epoch)
+        .await
+        .is_some_and(|seen| tool_list_is_stale(seen, epoch))
+}
+
+/// For a `tools/list` the upstream answered: whether its answer carries the
+/// notice ahead of the list — the first list of a session that replaced an
+/// in-house one ([`take_relist`]), or the list of an agent behind the count
+/// (the keepalive of a connection Hermes stopped pinging). Both are spent
+/// here: a notice the agent acts on brings it level.
+async fn list_notice_due(
+    state: &AppState,
+    server_name: &str,
+    caller: &str,
+    rpc: Option<&Value>,
+    headers: &HeaderMap,
+    upstream_ok: bool,
+) -> bool {
+    let Some(rpc) = rpc else {
+        return false;
+    };
+    if rpc.get("method").and_then(Value::as_str) != Some("tools/list") {
+        return false;
     }
-    let epoch = tool_lists_epoch(&state.pg).await?;
-    let seen = swap_tools_seen(state, server_name, caller, epoch).await?;
-    if !tool_list_is_stale(seen, epoch) {
-        return None;
+    let relist = take_relist(state, server_name, caller).await;
+    let behind = upstream_ok
+        && notice_ride(rpc, accepts_event_stream(headers)) == NoticeRide::List
+        && list_is_behind(state, server_name, caller).await;
+    if behind {
+        tracing::info!(
+            "[mcp/gw:{server_name}] {caller}: its tool list may have changed — this tools/list answer carries tools/list_changed"
+        );
     }
-    tracing::info!(
-        "[mcp/gw:{server_name}] {caller}: its tool list may have changed — the keepalive answer carries tools/list_changed"
-    );
-    Some(list_changed_answer(rpc))
+    relist || behind
 }
 
 pub async fn post(
@@ -1115,15 +1193,20 @@ pub async fn post(
     {
         bind_session(&state, &server_name, sid, &name).await;
     }
-    // The new session's first tools/list after the gateway ended an in-house
-    // one carries the list-changed notice too: Hermes keeps the placeholder
-    // it registered from the in-house catalog until it is told to refresh.
-    let relist = rpc
-        .as_ref()
-        .and_then(|r| r.get("method"))
-        .and_then(Value::as_str)
-        == Some("tools/list")
-        && take_relist(&state, &server_name, &name).await;
+    // A tools/list can carry the list-changed notice too: the new session's
+    // first one after the gateway ended an in-house session (Hermes keeps the
+    // placeholder it registered from the in-house catalog until it is told
+    // to refresh), and any from an agent behind the count — the keepalive of
+    // a connection whose upstream did not answer ping.
+    let relist = list_notice_due(
+        &state,
+        &server_name,
+        &name,
+        rpc.as_ref(),
+        &headers,
+        upstream.status().is_success(),
+    )
+    .await;
     Ok(relay(
         upstream,
         rpc.as_ref(),
@@ -1375,7 +1458,7 @@ async fn relay(
         };
         if let Some(out) = with_list_changed_first(&text, &content_type) {
             tracing::info!(
-                "[mcp/gw:{server_name}] the first tools/list of a new session carries tools/list_changed"
+                "[mcp/gw:{server_name}] this tools/list answer carries tools/list_changed ahead of the list"
             );
             let mut builder = Response::builder()
                 .status(StatusCode::from_u16(status).unwrap_or(StatusCode::OK))
@@ -1918,17 +2001,33 @@ mod tests {
     }
 
     #[test]
-    fn only_a_ping_that_takes_an_event_stream_carries_the_notice() {
-        assert!(is_ping(
-            &json!({ "jsonrpc": "2.0", "id": 7, "method": "ping" })
-        ));
-        assert!(
-            !is_ping(&json!({ "jsonrpc": "2.0", "method": "ping" })),
-            "a notification"
+    fn the_notice_rides_a_ping_or_a_tools_list_that_takes_an_event_stream() {
+        let ping = json!({ "jsonrpc": "2.0", "id": 7, "method": "ping" });
+        let list = json!({ "jsonrpc": "2.0", "id": 8, "method": "tools/list" });
+        let init = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} });
+        assert_eq!(notice_ride(&ping, true), NoticeRide::Keepalive);
+        // The keepalive of a connection Hermes stopped pinging (its upstream
+        // answered -32601 or dropped the ping) is a tools/list: it carries
+        // the notice too, or that agent would never hear it.
+        assert_eq!(notice_ride(&list, true), NoticeRide::List);
+        // The handshake starts the count whatever the client reads.
+        assert_eq!(notice_ride(&init, true), NoticeRide::Handshake);
+        assert_eq!(notice_ride(&init, false), NoticeRide::Handshake);
+        // A client that reads JSON only is never sent an SSE notice.
+        assert_eq!(notice_ride(&ping, false), NoticeRide::Neither);
+        assert_eq!(notice_ride(&list, false), NoticeRide::Neither);
+        // A notification (no id) and any other method carry nothing.
+        assert_eq!(
+            notice_ride(&json!({ "jsonrpc": "2.0", "method": "ping" }), true),
+            NoticeRide::Neither
         );
-        assert!(!is_ping(
-            &json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/list" })
-        ));
+        assert_eq!(
+            notice_ride(
+                &json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {} }),
+                true
+            ),
+            NoticeRide::Neither
+        );
 
         let mut h = HeaderMap::new();
         h.insert(

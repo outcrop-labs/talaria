@@ -23,7 +23,7 @@ and which people may use it, down to individual tools.
 | Narrow one agent's tools | In **Manage access**, add that agent and pick a tool subset (**All tools** if untouched) |
 | Gate a person | In **Manage access**, add a person rule — everyone with an assigned agent may use it otherwise |
 | Turn one off | Kebab → **Disable server**; enable reverses it |
-| Remove one | Kebab → **Remove server** — every agent loses it on its next roll |
+| Remove one | Kebab → **Remove server** — every agent that carries it loses it within about a minute, without a restart |
 
 Cards say where a server came from: `built-in`, `app` (published by an app — lifecycle
 belongs to the Apps page), or a domain. **Switch to per-user auth** makes each person

@@ -129,7 +129,7 @@ Hermes' own `hermes tools` offers, minus speech-to-text and the Discord and Yuan
 tools no Talaria agent uses. Hermes' bundles (`safe`, `debugging`, `search`, `coding`) are not
 rows: closing one closed its member tools while their own rows still read open, so a list that
 named one now shows those members closed instead. A box is the toolset being on for this
-agent; clearing one closes it on the next roll, and a new agent starts with the shell, code
+agent; clearing one closes it from the agent's next turn, without a restart, and a new agent starts with the shell, code
 execution, the file tool and self-scheduling closed until a manager opens them.
 Two kinds of row are locked: `todo` and `clarify`, which Talaria's own tools replace for every
 agent, and anything an admin closed org-wide (**Admin → Security → Agent toolsets**, below).
@@ -162,8 +162,9 @@ One more lives under **Admin → Security → Agent toolsets**: the org-wide too
 the same checklist the agent editor shows, over the whole fleet: clearing a box closes that
 Hermes toolset for every agent, whatever its managers opened, and managers then see it locked in
 the agent's own editor with "closed org-wide by an admin". `todo` and `clarify` are locked here
-too, for the same reason as everywhere else. Saving rolls nothing: the floor lands on each agent
-at its next render or roll, which is what the panel says when it saves. Names the api's
+too, for the same reason as everywhere else. Saving restarts nobody: the fleet is re-rendered at
+once and every running agent reads the floor on its next turn, which is what the panel says when
+it saves. Names the api's
 environment pins (`TALARIA_MANDATORY_DISABLED_TOOLSETS`) show locked as well, since unticking
 them here would change nothing.
 
@@ -179,7 +180,7 @@ error instead of falling back. Brave Search and SearXNG only search. Unless you 
 provider under **Read pages**, agents' `web_extract` lands on them and fails, and the panel warns
 about it. The choice applies to every agent. It overrides an agent's own web backend settings, and
 an agent secret with the same name as the vendor key. Research is not affected: it searches with
-the search URL or a registered search MCP server. Like the toolset floor, a change lands on each
-agent at its next roll.
+the search URL or a registered search MCP server. Unlike the toolset floor, a change here lands on
+each agent only at its next roll: the vendor key is in the agent's environment.
 
 Besides these panels, one rule is stamped into every agent's soul at hire and in every role template, so it holds no matter how the soul is later edited: **agents never do dev work in chat**. Code changes — however small — ship through a ticket and a workbench job; a dev-work request in chat produces (or links) a ticket and moves execution to the workbench, and instructions given in chat are posted to the ticket as comments.

@@ -232,7 +232,7 @@
 
 <div class="space-y-4">
   {#if busy}
-    <Generating site="fleet/mcp-apply" label={`Applying MCP change: rolling ${def.displayName} so the new version takes effect`} lines={2} />
+    <Generating site="fleet/mcp-apply" label={`Applying MCP change to ${def.displayName}: it reaches the running agent within a few minutes, without a restart`} lines={2} />
   {/if}
   <QueryState {query} errorTitle="Could not load MCP servers" errorVariant="compact" isEmpty={() => false}>
     {#snippet skeleton()}<SkeletonRows rows={3} class="py-2" />{/snippet}

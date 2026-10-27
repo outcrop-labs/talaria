@@ -214,21 +214,61 @@ pub enum ContainerFit {
     /// Created from exactly the rendered service: everything that changed
     /// reached it in place, and a recreate would only interrupt it.
     Matches,
-    /// Created from something else — or the digest could not be read on
-    /// either side, which is read as a change: a recreate it did not need
-    /// costs a restart, a skipped one strands the change.
+    /// Created from something else — or the container could not be
+    /// inspected, or the digest could not be read on either side, which is
+    /// read as a change: a recreate it did not need costs a restart, a
+    /// skipped one strands the change.
     Differs,
     /// No running container: its next start reads the render.
     NotRunning,
 }
 
-/// The fit, from what `docker inspect` said of the container (`None` when
-/// there is none; else whether it runs and the [`CONFIG_HASH_LABEL`] it
-/// carries) and the digest compose computes for the rendered service.
-pub fn fit_of(container: Option<(bool, Option<&str>)>, rendered: Option<&str>) -> ContainerFit {
+/// What `docker inspect` said of a department's container.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Inspected {
+    /// Docker answered that there is no such container.
+    Absent,
+    /// The inspect itself failed — a timeout, a daemon error — so nothing is
+    /// known about the container, running or not.
+    Unreadable,
+    /// It exists: whether it runs, and the [`CONFIG_HASH_LABEL`] it carries.
+    Seen { running: bool, hash: Option<String> },
+}
+
+/// Read a `docker inspect -f '{{.State.Running}} {{index .Config.Labels …}}'`
+/// result. Only docker's own "no such object" is an absent container; any
+/// other failure is [`Inspected::Unreadable`], never taken for one.
+pub fn parse_inspect(result: &Result<(String, String), String>) -> Inspected {
+    match result {
+        Ok((out, _)) => {
+            let mut parts = out.split_whitespace();
+            Inspected::Seen {
+                running: parts.next() == Some("true"),
+                hash: parts.next().map(str::to_string),
+            }
+        }
+        Err(e) => {
+            let e = e.to_ascii_lowercase();
+            if e.contains("no such object") || e.contains("no such container") {
+                Inspected::Absent
+            } else {
+                Inspected::Unreadable
+            }
+        }
+    }
+}
+
+/// The fit, from what `docker inspect` said of the container and the digest
+/// compose computes for the rendered service. An inspect that failed is read
+/// as a change, like an unreadable digest: the roll the caller used to do.
+pub fn fit_of(container: &Inspected, rendered: Option<&str>) -> ContainerFit {
     match container {
-        None | Some((false, _)) => ContainerFit::NotRunning,
-        Some((true, running)) => match (running, rendered) {
+        Inspected::Absent | Inspected::Seen { running: false, .. } => ContainerFit::NotRunning,
+        Inspected::Unreadable => ContainerFit::Differs,
+        Inspected::Seen {
+            running: true,
+            hash,
+        } => match (hash.as_deref(), rendered) {
             (Some(have), Some(want)) if !have.is_empty() && have == want => ContainerFit::Matches,
             _ => ContainerFit::Differs,
         },
@@ -257,7 +297,7 @@ pub async fn container_fit(pg: &PgPool, department: &str) -> ContainerFit {
     let slot = active_slot(pg, department).await;
     let svc = slot_service(department, slot);
     let container = slot_container(department, slot);
-    let inspected = docker(
+    let answer = docker(
         &[
             "inspect",
             "-f",
@@ -266,15 +306,20 @@ pub async fn container_fit(pg: &PgPool, department: &str) -> ContainerFit {
         ],
         Duration::from_secs(10),
     )
-    .await
-    .ok()
-    .map(|(out, _)| {
-        let mut parts = out.split_whitespace();
-        let running = parts.next() == Some("true");
-        (running, parts.next().map(str::to_string))
-    });
-    if !inspected.as_ref().is_some_and(|(running, _)| *running) {
-        return ContainerFit::NotRunning;
+    .await;
+    let inspected = parse_inspect(&answer);
+    match &inspected {
+        Inspected::Absent | Inspected::Seen { running: false, .. } => {
+            return ContainerFit::NotRunning;
+        }
+        Inspected::Unreadable => {
+            tracing::warn!(
+                "[fleet] {container}: could not inspect the container ({}) — treating it as changed, so the edit rolls it",
+                answer.err().unwrap_or_default()
+            );
+            return ContainerFit::Differs;
+        }
+        Inspected::Seen { running: true, .. } => {}
     }
     let args = compose_args(&["config", "--hash", &svc]);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -287,12 +332,7 @@ pub async fn container_fit(pg: &PgPool, department: &str) -> ContainerFit {
             None
         }
     };
-    fit_of(
-        inspected
-            .as_ref()
-            .map(|(running, hash)| (*running, hash.as_deref())),
-        rendered.as_deref(),
-    )
+    fit_of(&inspected, rendered.as_deref())
 }
 
 /// Stop the agent's gateway THROUGH ITS OWN SUPERVISOR, and wait for it to
@@ -871,35 +911,100 @@ mod tests {
     #[test]
     fn the_hash_comparison_decides_the_recreate() {
         let h = "4392ddf6aaf63585ca9f4f21314a3463990d5a0259266354f5abdc66be12a91d";
+        let running = |hash: Option<&str>| Inspected::Seen {
+            running: true,
+            hash: hash.map(str::to_string),
+        };
         // Created from exactly the rendered service: nothing to recreate.
-        assert_eq!(
-            fit_of(Some((true, Some(h))), Some(h)),
-            ContainerFit::Matches
-        );
+        assert_eq!(fit_of(&running(Some(h)), Some(h)), ContainerFit::Matches);
         // The render moved the service (env, an env_file value, the image, a
         // mount, a limit, the start-config label): recreate.
         assert_eq!(
-            fit_of(Some((true, Some(h))), Some("0353ec3c")),
+            fit_of(&running(Some(h)), Some("0353ec3c")),
             ContainerFit::Differs
         );
         // A container compose did not label, or a digest compose would not
         // print, is read as moved — the roll the caller used to do anyway.
         assert_eq!(
-            fit_of(Some((true, Some("<no value>"))), Some(h)),
+            fit_of(&running(Some("<no value>")), Some(h)),
             ContainerFit::Differs
         );
-        assert_eq!(fit_of(Some((true, None)), Some(h)), ContainerFit::Differs);
+        assert_eq!(fit_of(&running(None), Some(h)), ContainerFit::Differs);
+        assert_eq!(fit_of(&running(Some("")), Some("")), ContainerFit::Differs);
+        assert_eq!(fit_of(&running(Some(h)), None), ContainerFit::Differs);
+        // An inspect that failed says nothing about the container: read as
+        // moved too, never as stopped — a stopped verdict would answer the
+        // edit "applied" and strand a start-only change on a running agent.
         assert_eq!(
-            fit_of(Some((true, Some(""))), Some("")),
+            fit_of(&Inspected::Unreadable, Some(h)),
             ContainerFit::Differs
         );
-        assert_eq!(fit_of(Some((true, Some(h))), None), ContainerFit::Differs);
         // Stopped or absent: the next start reads the render; nothing to do.
         assert_eq!(
-            fit_of(Some((false, Some(h))), Some("x")),
+            fit_of(
+                &Inspected::Seen {
+                    running: false,
+                    hash: Some(h.into())
+                },
+                Some("x")
+            ),
             ContainerFit::NotRunning
         );
-        assert_eq!(fit_of(None, Some(h)), ContainerFit::NotRunning);
+        assert_eq!(
+            fit_of(&Inspected::Absent, Some(h)),
+            ContainerFit::NotRunning
+        );
+    }
+
+    #[test]
+    fn only_docker_saying_no_such_container_reads_as_absent() {
+        let ok = |s: &str| Ok((s.to_string(), String::new()));
+        assert_eq!(
+            parse_inspect(&ok("true 4392ddf6\n")),
+            Inspected::Seen {
+                running: true,
+                hash: Some("4392ddf6".into())
+            }
+        );
+        // A container compose did not label: docker prints `<no value>`,
+        // which can never equal a rendered digest, so it reads as moved.
+        let unlabelled = parse_inspect(&ok("true <no value>\n"));
+        assert!(matches!(unlabelled, Inspected::Seen { running: true, .. }));
+        assert_eq!(fit_of(&unlabelled, Some("4392ddf6")), ContainerFit::Differs);
+        assert_eq!(
+            parse_inspect(&ok("false 4392ddf6\n")),
+            Inspected::Seen {
+                running: false,
+                hash: Some("4392ddf6".into())
+            }
+        );
+        // What docker says of a container that does not exist, as `docker()`
+        // frames it: 29.8.1's own words (captured), an older CLI's
+        // capitalisation, and `docker container inspect`'s daemon answer.
+        for absent in [
+            "docker inspect failed: Error: no such object: talaria-agent-ops",
+            "docker inspect failed: Error: No such object: talaria-agent-ops",
+            "docker inspect failed: Error response from daemon: No such container: talaria-agent-ops",
+        ] {
+            assert_eq!(
+                parse_inspect(&Err(absent.into())),
+                Inspected::Absent,
+                "{absent}"
+            );
+        }
+        // Everything else is not knowing — the timeout `docker()` reports on
+        // an IO-bound host above all.
+        for unknown in [
+            "docker inspect …: timed out after 10s",
+            "docker inspect failed: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+            "docker inspect …: No such file or directory (os error 2)",
+        ] {
+            assert_eq!(
+                parse_inspect(&Err(unknown.into())),
+                Inspected::Unreadable,
+                "{unknown}"
+            );
+        }
     }
 
     #[test]

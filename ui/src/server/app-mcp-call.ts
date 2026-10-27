@@ -125,8 +125,9 @@ export function listEntry(t: AppMcpTool): { name: string; description: string; i
 /** The catalog the registry row holds for an app server: what tools/list
  *  serves, with descriptions clipped to the registry's bound. A change here —
  *  a tool added, renamed or removed, a description or a schema edited — is
- *  what rolls the agents carrying the server (talaria-apps
- *  `sync_app_mcp_servers`), so they see the tools the app now has. */
+ *  what tells the agents carrying the server to list its tools again
+ *  (talaria-apps `sync_app_mcp_servers` → `bump_tool_lists`, and the gateway's
+ *  tools/list_changed notice), so they see the tools the app now has. */
 export const catalogOf = (tools: readonly AppMcpTool[]): Array<ReturnType<typeof listEntry>> =>
   tools.map((t) => ({ ...listEntry(t), description: t.description.slice(0, TOOL_DESCRIPTION_MAX) }))
 

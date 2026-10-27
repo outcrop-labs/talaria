@@ -78,7 +78,7 @@
     <div class="flex items-center gap-2">
       <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Hermes toolsets</span>
       <InfoTip
-        text="The tools the agent's own harness carries, before any MCP server. A box here is the toolset being ON for this agent; clearing one closes it on the next roll. Talaria's own todo and clarify tools replace Hermes' fleet-wide, so those two stay closed."
+        text="The tools the agent's own harness carries, before any MCP server. A box here is the toolset being ON for this agent; clearing one closes it from the agent's next turn, without a restart. Talaria's own todo and clarify tools replace Hermes' fleet-wide, so those two stay closed."
       />
       <span class="flex-1"></span>
       {#if canManage && dirty}
@@ -87,7 +87,7 @@
       {/if}
     </div>
     <div class="mt-1 font-sans text-xs text-muted">
-      Off takes effect on the next roll.
+      A change reaches the running agent on its next turn, without a restart.
       {#if orgClosed.length}
         Closed org-wide by an admin, for every agent: {orgClosed.join(', ')}.
       {/if}

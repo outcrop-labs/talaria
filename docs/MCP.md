@@ -19,12 +19,14 @@ access rules. Four kinds of rows:
   any that fails, so the row carries its tools the moment the app is enabled and **Discover
   tools** answers that catalog. An app that is turned off — by an admin, or by a build that broke
   — keeps its row and every agent, team and person granted it, but the row is marked **app off**
-  with the reason, no agent carries it (the agents that did roll), and the gateway refuses its
-  tools. When the app is enabled and passes its load probe again, the same row serves the same
-  grants and those agents roll back. Only uninstalling the app deletes the row. An admin's own
+  with the reason, no agent carries it (the agents that did drop it, in place, within about a
+  minute), and the gateway refuses its tools. When the app is enabled and passes its load probe
+  again, the same row serves the same grants and those agents pick it back up the same way. Only
+  uninstalling the app deletes the row. An admin's own
   **Disable server** is never undone by the app's lifecycle. When an update or a rebuild changes
-  the catalog — a tool added, renamed or removed, a description or a schema edited — the agents
-  granted the server roll so they list the new tools; a catalog that did not change rolls nobody.
+  the catalog — a tool added, renamed or removed, a description or a schema edited — the gateway
+  tells the agents granted the server to list its tools again (below), without a restart; a
+  catalog that did not change tells nobody.
   A tool runs under the server's **timeout** (120 s by default) and is answered as cut off when it
   passes. App tools are never picked as an org supplier (web search and the like): the platform's
   own caller cannot reach them.
@@ -68,14 +70,30 @@ listener on 5280. The fleet key + agent name identify the caller, and the gatewa
   protocol revision is negotiated down rather than echoed. Such servers stay in the agent's
   rendered config (an org agent carries a per-user server only when granted to it by name), the
   agent's MCP tab shows exactly what that config lists (`withheld` names a grant the config
-  leaves out), and connecting rolls every agent that carries the server — team grants included —
-  onto the live upstream.
+  leaves out), and connecting moves every agent that carries the server — team grants included —
+  onto the live upstream without a restart: the gateway ends the not-connected session (HTTP 404,
+  which the agent's MCP client reads as "session terminated"), the agent reconnects, and the new
+  session's first `tools/list` carries the list-changed notice, so the placeholder catalog is
+  replaced by the real one.
 
-Registry changes that alter what a *running* agent carries re-render its `config.yaml` in place,
-which a running Hermes picks up by itself (it reconciles `mcp_servers` by name about once a
-minute), and also trigger an **in-place roll**: the container is recreated on the new render, the
-agent is offline for the restart, and chats wait for it. Tool-subset changes enforce per-call and
-need no roll.
+Registry changes that alter what a *running* agent carries **apply in place**, without a restart,
+all but one kind:
+
+- A server granted or revoked is a name arriving in or leaving the agent's `mcp_servers`. The
+  render rewrites `config.yaml` in place and a running Hermes reconciles `mcp_servers` by name about
+  once a minute.
+- A tool list that changes under a name the agent already holds — a tool subset widened, a team or
+  user grant, an app's new catalog, an account connected — reaches it through the gateway. Every
+  such change bumps one count (`mcp.tool_lists_epoch`); per agent and server the gateway remembers
+  the count it last saw, and answers the agent's next keepalive with
+  `notifications/tools/list_changed` ahead of the answer, so Hermes lists the tools again. The
+  keepalive is a `ping` every 180 s (Hermes's default), or a `tools/list` on a connection whose
+  upstream did not answer ping, so the change lands within about three minutes. Tool subsets are
+  also enforced per call, so a narrowed subset is refused at once either way.
+- The exception: a server's **timeout** or **auth mode** changed under the same name rolls its carriers:
+  Hermes does not reconnect a server whose entry changed, and a session minted under the old
+  credentials stays the old session. The container is recreated on the new render, the agent is
+  offline for the restart, and chats wait for it.
 
 ## Access rules
 

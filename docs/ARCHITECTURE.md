@@ -276,6 +276,9 @@ multiplexer.
   and server, the count it last saw, and answers the agent's next keepalive `ping` (every 180s
   by default) with `notifications/tools/list_changed` ahead of the result, as SSE, so Hermes
   lists the tools again (the Rust gateway, and the TS app gateway for `app-*` servers). A
+  `tools/list` from an agent behind the count carries it too: Hermes stops pinging an upstream
+  that answered ping with -32601 or let it time out, and keeps that connection alive with
+  `tools/list` instead (the Rust relay only; the TS app gateway answers ping itself). A
   server connected after the agent first saw it not connected: the in-house not-connected
   handshake issues a `talaria-nc-` session id, and once the account is connected a request on
   that session is answered HTTP 404, which the MCP client reads as "Session terminated" and

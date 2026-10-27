@@ -132,7 +132,7 @@
         onSelect: () => {
           void confirm({
             title: 'Remove MCP server',
-            message: `Remove "${s.label}" org-wide? Every agent loses it on its next roll.`,
+            message: `Remove "${s.label}" org-wide? Every agent that carries it loses it within about a minute, without a restart.`,
             confirmLabel: 'Remove',
           }).then(async (ok) => {
             if (!ok) return

@@ -11,7 +11,11 @@
 // starts that count when none is remembered, and a keepalive `ping` from an
 // agent behind it is answered here with the notice ahead of the ping's result —
 // an SSE answer, which the Hermes client reads notifications from — and the
-// agent lists the tools again. Same keys and rules as the Rust side.
+// agent lists the tools again. Same keys and rules as the Rust side, less one:
+// the Rust relay also puts the notice on a `tools/list` from an agent behind
+// the count, because a third-party upstream that does not answer ping makes
+// Hermes keep alive with `list_tools` instead. This gateway answers ping
+// itself (mcp-jsonrpc.ts), so an app server never puts Hermes there.
 
 import { getSetting } from '@/server/audit'
 import { getRedis } from '@/server/db/redis'
