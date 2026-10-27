@@ -1068,9 +1068,9 @@ pub async fn update_agent_meta(
 
 /// Set the delegation cap (fleet.defs.$id PATCH) — how many subagents this
 /// agent may run at once. Returns whether the stored value changed, so the
-/// caller rolls the agent only when there is something to apply: the number
-/// reaches Hermes through the rendered config, and a render it already has is
-/// not worth a restart.
+/// caller applies only when there is something to apply: the number reaches
+/// a running Hermes through the config.yaml the render rewrites in place, on
+/// its next turn, with no restart.
 pub async fn set_max_children(pg: &PgPool, id: &str, n: i32) -> Result<bool, sqlx::Error> {
     let changed = sqlx::query(
         "update agent_defs set max_children = $1, updated_at = now() \
