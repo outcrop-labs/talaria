@@ -67,7 +67,9 @@
 // the real thing and overridable per call. `run.test.ts` exercises the whole
 // runner against recorded replies with no database, no gateway and no fleet,
 // which is also exactly how the model-fitness suite will replay eval fixtures.
-import { extractToolRecord, getGuardConfig, groundingTextOf, needsRedaction, recordFindings, redactSecrets, RULES, runGuardrails, guardText, type Available, type Finding, type GuardConfig, type ToolRecord } from '../guardrails'
+import { extractToolRecord, getGuardConfig, groundingTextOf, needsRedaction, recordFindings, redactSecrets, RULES, runGuardrails, guardText, semanticRulesOn, type Available, type Finding, type GuardConfig, type ToolRecord } from '../guardrails'
+import { judgeAppRun, type SemanticJudging } from '../internal-api'
+import { appInScope } from '../app-scope'
 import { routingFor } from '../llm-gateway'
 import { reachFor, type Reach } from '../capability-reach'
 import { db } from '../db/pg'
@@ -75,7 +77,7 @@ import { capabilityKey, missingCapabilities, getCapabilities, type Capability, t
 import { promptShape, wireSchemaOf, type WireSchema } from './json-schema'
 import { personaCapabilityKeys } from './persona'
 import { parseJson, repairPrompt } from './json'
-import { resolveHarnessModel, type ModelChainStep, type ModelSpec } from './model'
+import { resolveHarnessModel, strayPin, strayPinSentence, type ModelChainStep, type ModelSpec } from './model'
 import { agentSlot, roleSlot, slotEffortForModel } from '../effort-prefs'
 import { defaultTransport, type LedgerAttribution, type StreamingTransport, type Transport, type TransportKind, type TransportRequest } from './transport'
 import type { EvalContext, Grounding, HarnessDefinition, HarnessTool, Message, RenderContext } from './define'
@@ -298,6 +300,14 @@ export interface HarnessDeps {
    *  assignable; the real `guardText` has always taken it. */
   guardText: (text: string, input?: string) => Promise<Finding[]>
   recordFindings: (findings: Finding[], meta: { caller: string; model: string; endpoint: string | null; mode: GuardConfig['mode'] }) => Promise<void>
+  /** THE SEMANTIC HALF OF THE GUARD PASS — the rules the api's decision model
+   *  judges (`implied_completion`), which this process has no model or key to
+   *  run. Handed the run's final reply, the tool record the structural pass
+   *  read and the semantic rules the harness keeps, ONCE PER RUN and never
+   *  awaited: the judgment lands as a finding after the run has answered, so
+   *  it can never change what the run answered. A benchmark replay swaps it
+   *  out, as it swaps `recordFindings`. */
+  judgeSemantic: (judging: SemanticJudging) => void
   recordRun: (row: HarnessRunRow) => Promise<void>
   now: () => number
 }
@@ -317,6 +327,12 @@ const REAL_DEPS: HarnessDeps = {
   guardConfig: getGuardConfig,
   guardText,
   recordFindings,
+  // As the app whose code is running — the same scope the transport signs
+  // its relay calls with. Outside every app there is no run to judge.
+  judgeSemantic: (judging) => {
+    const slug = appInScope()
+    if (slug) void judgeAppRun(slug, judging)
+  },
   recordRun: async (row) => {
     const sql = await db()
     await sql`
@@ -893,7 +909,16 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
       .resolveModel({ ...def.model, ...(ctx.userId ? { userId: ctx.userId } : {}) })
       .catch(() => null)
     if (!resolved) {
-      return fail({ ...empty, error: `no model available for harness "${def.id}" - nothing in its chain routes on this gateway` })
+      // A pin that names no agent is the likelier story than an empty
+      // gateway — `pin: '<endpoint>/<model>'` reads as "pin this model" — so
+      // the run says which, rather than only that nothing routed.
+      const stray = strayPin(def.model)
+      return fail({
+        ...empty,
+        error: stray
+          ? `${strayPinSentence(def.id, stray, def.model.slot)}; nothing else in its chain routes on this gateway`
+          : `no model available for harness "${def.id}" - nothing in its chain routes on this gateway`,
+      })
     }
     model = resolved.model
     step = resolved.step
@@ -1415,12 +1440,21 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
           overflowed,
         }
       : derived
+    const narrowed = narrowGuardConfig(config, def.guard?.rules)
     const hits = runGuardrails(
       { answer: text, toolRecord, userMessage: lastUserMessage(sent), inputText: groundText, policedHosts: config.policedHosts },
-      narrowGuardConfig(config, def.guard?.rules),
+      narrowed,
       available,
     )
     mergeFindings(findings, hits)
+    // THE SEMANTIC RULES, judged where the decision model lives: the run's
+    // final reply, against the SAME tool record the structural rules just
+    // read — the loop's calls, the harness's own grounding, a persona's tool
+    // names — which no single relay call can see. Exactly the rules the
+    // harness keeps and an admin has on; the relay runs none for an app's
+    // key, so each rule is judged once.
+    const judged = semanticRulesOn(narrowed)
+    if (judged.length > 0) deps.judgeSemantic({ answer: text, tools: toolRecord.backingTools, model: routed, caller: ctx.caller, rules: judged })
   }
   if (findings.length && config) {
     await deps.recordFindings(findings, { caller: ctx.caller, model: routed, endpoint: kind === 'fleet' ? 'fleet' : endpoint, mode: config.mode }).catch(() => {})

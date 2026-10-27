@@ -47,7 +47,7 @@ on the first request, and again whenever the sources it is built from change.
 ```
 talaria-app scaffold [dir]   write a new app (--name, --icon, --harness)
 talaria-app check [dir]      talaria.json, a typecheck, the app's own tests
-talaria-app build [dir]      the host's build recipe and load probe
+talaria-app build [dir]      the host's build recipe and load probe, and the triggers
 talaria-app eval [dir]       every harness fixture, recorded or through the gateway
 talaria-app version
 ```
@@ -75,10 +75,14 @@ a usage error.
   either. `z` comes from `@talaria/sdk/server`.
 - **`build`** runs the host's build recipe and the host's load probe, and reports what Manage →
   Apps would: the build (its key, files and size), the surfaces, the server, each MCP tool kept or
-  left out with the reason, each harness registered or skipped with the reason, and the probe. A
-  failed build or probe is what turns an app off on the host, and fails here. A skipped harness or
-  a tool left out does not, on the host or here. The build key is the host's: build the same tree
-  against the same host build and the key matches.
+  left out with the reason, each harness registered or skipped with the reason (and a warning on
+  one that registers but pins a name that is no platform agent), each trigger `talaria.json`
+  declares with when it fires and whether `server.ts` answers it, and the probe. A failed build or
+  probe is what turns an app off on the host, and fails here. A skipped harness, a warning or a
+  tool left out does not, on the host or here. **A declared trigger with no handler fails here**,
+  though the host loads the app: there it is a failed run every time the trigger fires, seen only
+  afterwards on Manage → Apps. A handler no trigger names is listed, and fails nothing. The build
+  key is the host's: build the same tree against the same host build and the key matches.
 - **`eval`** replays every fixture of every harness that registers, through the host's own replay
   (the real runner with the model pinned, graded by the fixture's own `check`):
   - **Recorded** (the default). Replies come from `harnesses/recorded/<file>.json`, by fixture

@@ -65,7 +65,7 @@ the contract breaks the typecheck of the documentation itself.
 | `output` | `text` (`clean`/`verify`) or `json` (`schema`, `repair`, `verify`) |
 | `onFailure` | `'null'` \| `'throw'` \| `{ fallback }` \| `{ escalate: true }` — what a failure means |
 | `widen?` | Capability-gated prompt widening; `render`'s `ctx.widened` says which branch |
-| `guard?` | `{ rules?, redact? }` — which guardrail rules apply |
+| `guard?` | `{ rules?, redact? }` — which guardrail rules apply. `implied_completion` (a reply that claims work no tool in the run did) is judged by the operator's decision model, in the api, once per run, while an admin has it on |
 | `tools?` | A `ToolPolicy` if the model may use its own tools this turn |
 | `toolDefs?` | Tools offered on one turn and executed by nobody: the model's call comes back as a name |
 | `loop?` | `{ tools, maxTurns? }`: a tool loop the runner holds, where each call the model makes is dispatched and answered ([below](#tool-loops)) |
@@ -272,6 +272,12 @@ Files under `harnesses/` register while the app is enabled.
     and `chain` are names and a list of names.
   - The id is not a builtin harness's id, nor one another enabled app registers. Between two
     apps, the slug that sorts first keeps it.
+- **A pin that names no platform agent is a warning, not a skip.** `model.pin` takes a platform
+  agent (`muse`, `judge`, `titler`, …), never a model id. A harness that pins anything else still
+  registers, and runs on the rest of its chain, but its row in **Manage → Apps** (and
+  `talaria-app build`) names the pin. To choose a model, declare `role`, or have an admin assign
+  one to the harness's own model setting ([below](#its-model-setting)). A run that finds no model
+  names the pin in its error.
 - **A file that does not compile, fails a check, or throws on import,** is skipped and logged once.
   The app stays enabled, and its row in **Manage → Apps** says "N harnesses skipped" with the
   reason for each file. The rows follow the enabled set: enable an app whose slug sorts first and

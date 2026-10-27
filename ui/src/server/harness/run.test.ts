@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { RULES, type Finding, type GuardConfig } from '@/server/guardrails'
 import { defineHarness, type HarnessDefinition, type Message } from '@/server/harness/define'
 import { gatewayStream, gatewayTransport, runHarness, runHarnessStreamed, type HarnessDeps, type HarnessRunRow, type TransportReply, type TransportRequest } from '@/server/harness/run'
+import type { SemanticJudging } from '@/server/internal-api'
 import { personaKeysFrom, type PersonaRow } from '@/server/harness/persona'
 import type { Capability, CapabilitySource } from '@/server/harness/capability'
 
@@ -82,6 +83,8 @@ interface World {
    *  floor. */
   facts?: Record<string, Partial<Record<Capability, boolean | { value: boolean; source: CapabilitySource }>>>
   guardMode?: GuardConfig['mode']
+  /** The admin's per-rule toggles (`guardrails_config.checks`). */
+  guardChecks?: Record<string, boolean>
   /** Agent versions the persona resolver reads. Supplying these implies the
    *  model is NOT a gateway catalog model — `routingFor` answers with no
    *  endpoints for a persona — so `endpoints` defaults to none here. */
@@ -94,6 +97,8 @@ interface Recorder {
   requests: TransportRequest[]
   runs: HarnessRunRow[]
   recorded: Finding[]
+  /** What each run handed the api for the semantic rules. */
+  judged: SemanticJudging[]
   deps: Partial<HarnessDeps>
 }
 
@@ -105,7 +110,7 @@ const DEFAULT_CONFIG: GuardConfig = { mode: 'observe', checks: {}, minConfidence
 const gateSafe = (text: string, input?: string): Finding[] => {
   const out: Finding[] = []
   for (const rule of RULES) {
-    if (!rule.gateSafe) continue
+    if (!rule.gateSafe || rule.semantic) continue
     const hit = rule.run({
       answer: text,
       toolRecord: { backingTools: [], resultsText: '', anyError: false, overflowed: false },
@@ -134,6 +139,7 @@ function world(w: World = {}): Recorder {
   const requests: TransportRequest[] = []
   const runs: HarnessRunRow[] = []
   const recorded: Finding[] = []
+  const judged: SemanticJudging[] = []
   const replies = w.replies ?? ['{"verdict":"pass","summary":"looks right"}']
   // A persona is not on the gateway catalog, so `routingFor` finds no endpoints
   // for it — which is precisely the condition that used to leave `keys` empty.
@@ -157,6 +163,7 @@ function world(w: World = {}): Recorder {
     requests,
     runs,
     recorded,
+    judged,
     deps: {
       resolveModel: async () => (w.model === undefined ? { model: 'pl-main', step: 'pin' } : w.model),
       routing: async (model) => ({ endpoints, upstreamModel: model }),
@@ -180,10 +187,13 @@ function world(w: World = {}): Recorder {
         if (typeof reply !== 'string') return reply
         return { kind: 'gateway', text: reply, toolNames: [], usage: null, contractDropped: false }
       },
-      guardConfig: async () => ({ ...DEFAULT_CONFIG, mode: w.guardMode ?? 'observe' }),
+      guardConfig: async () => ({ ...DEFAULT_CONFIG, mode: w.guardMode ?? 'observe', checks: w.guardChecks ?? {} }),
       guardText: async (text, input) => gateSafe(text, input),
       recordFindings: async (findings) => {
         recorded.push(...findings)
+      },
+      judgeSemantic: (j) => {
+        judged.push(j)
       },
       recordRun: async (row) => {
         runs.push(row)
@@ -1148,6 +1158,77 @@ describe('the guard pass', () => {
     expect(res.findings).toEqual([])
     expect(r.recorded).toEqual([])
   })
+})
+
+// ── The semantic rules: judged in the api, once per run ─────────────────────
+//
+// `implied_completion` needs the decision model, which lives in the api; the
+// relay runs no guard pass for an app's key. So the runner hands the run's
+// final reply over once, after its own structural pass, with the tool record
+// that pass read — never per model call.
+describe('the semantic hand-off', () => {
+  const claim = 'Staging is on the new key and the deploy is green.'
+  const IMPLIED = { implied_completion: true }
+
+  it('hands the final reply, its tool record, the model and the caller over once', async () => {
+    const r = world({ replies: [claim], guardChecks: IMPLIED })
+    await run(titler, { transcript: 'x' }, r)
+    expect(r.judged).toEqual([{ answer: claim, tools: [], model: 'pl-main', caller: 'test:harness', rules: ['implied_completion'] }])
+  })
+
+  it('asks once per run even when the run repaired, and judges what it kept', async () => {
+    const r = world({ replies: ['not json', '{"verdict":"pass","summary":"rotated the key"}'], guardChecks: IMPLIED })
+    const res = await run(judge, { ticket: 'x' }, r)
+    expect(res.repairs).toBe(1)
+    expect(r.requests).toHaveLength(2)
+    expect(r.judged).toHaveLength(1)
+    expect(r.judged[0]?.answer).toBe('{"verdict":"pass","summary":"rotated the key"}')
+  })
+
+  it('carries the tool record the harness grounded itself, which no relay call sees', async () => {
+    const grounded = defineHarness<{ notes: string }, string>({
+      id: 'grounded-test',
+      label: 'Grounded',
+      job: 'Writes from what its search found.',
+      requires: [],
+      floor: { capabilities: [], refuseBelow: false, note: 'Runs on anything.' },
+      model: { pin: 'titler' },
+      render: () => [{ role: 'user', content: 'write it up' }],
+      output: { kind: 'text' },
+      onFailure: 'null',
+      ground: (input) => ({ tools: ['research_search'], results: input.notes, errored: false }),
+    })
+    const r = world({ replies: ['Found two vendors.'], guardChecks: IMPLIED })
+    await run(grounded, { notes: 'vendor a, vendor b' }, r)
+    expect(r.judged[0]?.tools).toEqual(['research_search'])
+  })
+
+  it('asks nothing while the admin has the rule off — its default', async () => {
+    const r = world({ replies: [claim] })
+    await run(titler, { transcript: 'x' }, r)
+    expect(r.judged).toEqual([])
+  })
+
+  it('asks nothing when the guard is off', async () => {
+    const r = world({ replies: [claim], guardMode: 'off', guardChecks: IMPLIED })
+    await run(titler, { transcript: 'x' }, r)
+    expect(r.judged).toEqual([])
+  })
+
+  it('asks only for the rules the harness keeps', async () => {
+    const without = world({ replies: [claim], guardChecks: IMPLIED })
+    await run({ ...titler, guard: { rules: ['zero_tool_claim'] } }, { transcript: 'x' }, without)
+    expect(without.judged).toEqual([])
+    const named = world({ replies: [claim], guardChecks: IMPLIED })
+    await run({ ...titler, guard: { rules: ['implied_completion'] } }, { transcript: 'x' }, named)
+    expect(named.judged.map((j) => j.rules)).toEqual([['implied_completion']])
+  })
+
+  it('asks nothing for an empty reply', async () => {
+    const r = world({ replies: [''], guardChecks: IMPLIED })
+    await run(titler, { transcript: 'x' }, r)
+    expect(r.judged).toEqual([])
+  })
 
   it('skips the rules a fleet transport cannot honestly supply', async () => {
     // The persona's tool loop runs inside the agent, so the stream gives tool
@@ -1267,6 +1348,19 @@ describe('when there is no model', () => {
     expect(res.model).toBeNull()
     expect(res.error).toContain('no model available')
     expect(r.runs[0]?.model).toBeNull()
+  })
+
+  it('names a pin that names no agent, rather than saying only that nothing routed', async () => {
+    // `pin` takes a platform agent; `pin: '<endpoint>/<model>'` reads like
+    // "pin this model" and resolves to nothing, which used to surface as the
+    // bare "no model available" on every run.
+    const r = world({ model: null })
+    const pinned = { ...titler, model: { pin: 'mockep/mock-1' as never, slot: 'app:demo/titler' } }
+    const res = await run(pinned, { transcript: 'x' }, r)
+    expect(res.error).toContain('pins "mockep/mock-1", which names no platform agent')
+    expect(res.error).toContain('app:demo/titler')
+    expect(res.error).not.toContain('no model available')
+    expect(r.runs[0]?.error).toContain('names no platform agent')
   })
 
   it('turns a transport failure into a result, not an exception', async () => {

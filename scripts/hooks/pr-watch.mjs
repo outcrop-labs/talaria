@@ -45,10 +45,16 @@
 // (job id, then start time); a CANCELLED run that is itself the latest is
 // still red. Green also needs (1) the PR's head to be the pushed commit — this
 // checkout's HEAD when it is on the PR's branch (and pushed: `origin/<branch>`
-// is what `git push` sent), the branch's head on GitHub from anywhere else.
+// is what `git push` sent), or a PR head that contains it; the branch's head on
+// GitHub from anywhere else. This script never fetches, so a PR head pushed
+// from elsewhere is often not in this clone: git cannot say whether it contains
+// HEAD (`merge-base` exits 128), and GitHub's compare answers instead.
 // For a moment after `git push`, `gh pr view` still returns the previous head
 // and its finished rollup; a head mismatch is pending, ahead of red and
-// conflict, since both describe a head the push replaced. (2) A CI run (ci.yml's
+// conflict, since both describe a head the push replaced. A mismatch that
+// waiting cannot clear — HEAD not pushed, or a PR head that dropped it — exits
+// `pending` at once, as `--once` would, instead of polling to the wall clock.
+// (2) A CI run (ci.yml's
 // `name:`; it has no paths filter, so it always runs) for that head, with
 // every workflow run on the head completed. Right after a push the rollup can
 // hold only the fastest workflow; "nothing pending" is not "everything ran".
@@ -144,7 +150,8 @@ function printHelp() {
 
 exit 0   checks green (the latest run of each) on the pushed head, the CI workflow's
          run for that head finished, and the PR mergeable against rc. Proof line on stdout.
-exit 2   red | conflict | pending (--once) | timeout | closed | base. Reason on stderr.
+exit 2   red | conflict | pending (--once, or a head that waiting cannot fix) | timeout |
+         closed | base. Reason on stderr.
 exit 1   could not run. Not a pass.
 
   node scripts/hooks/pr-watch.mjs [--pr <n|url>] [--once] [--json]
@@ -287,30 +294,57 @@ export function latestRuns(rows, headSha) {
   })
 }
 
-/** Is the PR's head the commit that was pushed? `facts` is what was read:
- *  on the PR's branch, this checkout's HEAD and its `origin/<branch>` ref
- *  (which `git push` sets to the commit it sent); anywhere else, the branch's
- *  head on GitHub. `ok: false` is pending — the PR has not caught up yet, or
- *  this checkout has commits the PR does not. */
+/** Is the PR's head the commit that was pushed? `facts` is readHeadFacts():
+ *  on the PR's branch, this checkout's HEAD, its `origin/<branch>` ref (which
+ *  `git push` sets to the commit it sent), where the PR head stands against
+ *  HEAD (`relation`, in GitHub compare's words from the PR head's side), and —
+ *  when that does not settle it — the branch's head on GitHub; anywhere else,
+ *  just the branch's head on GitHub. `ok: false` is pending: the PR has not
+ *  caught up yet, or (`needsAction`) it cannot without someone acting. */
 export function headCheck(pr, facts) {
   const want = pr.headRefOid
   const branch = pr.headRefName
   if (!facts) return { ok: false, why: 'the pushed head was not read' }
   if (facts.onBranch) {
-    if (facts.local === want) return { ok: true }
-    if (facts.prContainsLocal) {
-      return { ok: true, note: `the PR head is ahead of this checkout (${short(facts.local)})` }
+    const { local, tracking, relation, remote } = facts
+    if (local === want) return { ok: true }
+    if (relation === 'ahead') {
+      return { ok: true, note: `the PR head is ahead of this checkout (${short(local)})` }
     }
-    if (facts.tracking !== facts.local) {
-      const at = facts.tracking ? `origin/${branch} is ${short(facts.tracking)}` : `there is no origin/${branch}`
+    if (tracking !== local) {
+      const at = tracking ? `origin/${branch} is ${short(tracking)}` : `there is no origin/${branch}`
       return {
         ok: false,
-        why: `this checkout's HEAD ${short(facts.local)} is not pushed (${at}) — push it: git push -u origin ${branch}`,
+        needsAction: true,
+        why: `this checkout's HEAD ${short(local)} is not pushed (${at}) — push it: git push -u origin ${branch}`,
       }
+    }
+    // HEAD is pushed, as far as this clone knows, and the PR reads another commit.
+    if (relation === 'behind' || remote === local) {
+      return { ok: false, why: `GitHub has not registered the push of ${short(local)} yet — the PR still reads ${short(want)}` }
+    }
+    if (remote && remote !== want) {
+      return { ok: false, why: `${branch} is at ${short(remote)} and the PR still reads ${short(want)} — GitHub has not registered the push yet` }
+    }
+    if (remote === want && relation === 'diverged') {
+      return {
+        ok: false,
+        needsAction: true,
+        why: `the PR head ${short(want)} does not contain this checkout's HEAD ${short(local)} — ${branch} moved on GitHub without it. Reconcile before claiming done: git fetch origin ${branch} && git log --oneline --left-right HEAD...origin/${branch}`,
+      }
+    }
+    if (remote === want) {
+      return {
+        ok: false,
+        why: `could not tell whether the PR head ${short(want)} contains this checkout's HEAD ${short(local)} (${facts.compareError || 'no answer'}) — git fetch origin ${branch} lets git answer it`,
+      }
+    }
+    if (facts.noHeadRepo) {
+      return { ok: false, needsAction: true, why: `the PR reads ${short(want)}, not this checkout's HEAD ${short(local)}, and its head repository is gone` }
     }
     return {
       ok: false,
-      why: `GitHub has not registered the push of ${short(facts.local)} yet — the PR still reads ${short(want)}`,
+      why: `the PR reads ${short(want)}, not this checkout's pushed HEAD ${short(local)}, and ${branch} on GitHub could not be read: ${facts.remoteError || 'no answer'}`,
     }
   }
   if (facts.noHeadRepo) return { ok: true, note: 'the head repository is gone, so the head was not compared' }
@@ -362,7 +396,18 @@ export function classify(pr, ctx = {}) {
     // So are its checks — a stale head's verdict lists are not reported at all.
     const head = ctx.head ?? { ok: false, why: 'the pushed head was not read' }
     if (!head.ok) {
-      return { kind: 'pending', ...base, failing: [], pending: [], passing: [], checks: 0, superseded: 0, stale: true, waiting: [head.why] }
+      return {
+        kind: 'pending',
+        ...base,
+        failing: [],
+        pending: [],
+        passing: [],
+        checks: 0,
+        superseded: 0,
+        stale: true,
+        needsAction: Boolean(head.needsAction),
+        waiting: [head.why],
+      }
     }
     base.note = head.note || ''
   }
@@ -401,22 +446,64 @@ function git(args) {
   return { ok: run.status === 0, out: (run.stdout || '').trim(), status: run.status }
 }
 
-function readHeadFacts(pr) {
-  const branch = pr.headRefName
-  if (currentBranch() === branch) {
-    const local = git(['rev-parse', 'HEAD']).out
-    const tracking = git(['rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}`])
-    const prContainsLocal =
-      local !== pr.headRefOid && git(['merge-base', '--is-ancestor', local, String(pr.headRefOid)]).status === 0
-    return { onBranch: true, local, tracking: tracking.ok ? tracking.out : null, prContainsLocal }
-  }
+function headRepoPath(pr) {
   const owner = pr.headRepositoryOwner?.login
   const name = pr.headRepository?.name
-  if (!owner || !name) return { onBranch: false, noHeadRepo: true }
-  const ref = String(branch).split('/').map(encodeURIComponent).join('/')
-  const run = gh(['api', `repos/${owner}/${name}/git/ref/heads/${ref}`, '--jq', '.object.sha'], 60_000)
-  if (run.status !== 0) return { onBranch: false, remote: null, remoteError: ghFailure(run).split('\n')[0] }
-  return { onBranch: false, remote: run.stdout.trim() }
+  return owner && name ? `${owner}/${name}` : null
+}
+
+/** The branch's head on GitHub, from the git ref API. */
+function readRemoteHead(pr, io) {
+  const path = headRepoPath(pr)
+  if (!path) return { noHeadRepo: true }
+  const ref = String(pr.headRefName).split('/').map(encodeURIComponent).join('/')
+  const run = io.gh(['api', `repos/${path}/git/ref/heads/${ref}`, '--jq', '.object.sha'], 60_000)
+  if (run.status !== 0) return { remote: null, remoteError: ghFailure(run).split('\n')[0] }
+  return { remote: String(run.stdout).trim() }
+}
+
+const RELATIONS = new Set(['ahead', 'behind', 'diverged'])
+
+/** Where the PR head `want` stands against `local`, in the words of GitHub's
+ *  compare from the PR head's side: 'ahead' (it contains local), 'behind'
+ *  (local contains it), 'diverged', or null with `compareError`. git answers
+ *  when both commits are in this clone. This script never fetches, so a head
+ *  pushed from another checkout often is not, and `merge-base` exits 128 —
+ *  which is not a "no". GitHub's compare answers that case. */
+function relationOf(pr, local, want, io) {
+  const ancestor = (a, b) => io.git(['merge-base', '--is-ancestor', a, b]).status
+  const up = ancestor(local, want)
+  if (up === 0) return { relation: 'ahead' }
+  if (up === 1) {
+    const down = ancestor(want, local)
+    if (down === 0) return { relation: 'behind' }
+    if (down === 1) return { relation: 'diverged' }
+  }
+  const path = headRepoPath(pr)
+  if (!path) return { relation: null, compareError: 'the head repository is gone' }
+  const run = io.gh(['api', `repos/${path}/compare/${local}...${want}?per_page=1`, '--jq', '.status'], 60_000)
+  if (run.status !== 0) return { relation: null, compareError: `compare: ${ghFailure(run).split('\n')[0]}` }
+  const status = String(run.stdout).trim()
+  if (status === 'identical') return { relation: 'ahead' }
+  if (RELATIONS.has(status)) return { relation: status }
+  return { relation: null, compareError: `compare answered ${status || 'nothing'}` }
+}
+
+/** What headCheck() needs, read from this checkout and GitHub. `io` is the
+ *  git and gh runners and the current branch, injected so the test can drive
+ *  the real git reads against a scratch repository. */
+export function readHeadFacts(pr, io = { branch: currentBranch(), git, gh }) {
+  const want = String(pr.headRefOid)
+  if (io.branch !== pr.headRefName) return { onBranch: false, ...readRemoteHead(pr, io) }
+  const local = io.git(['rev-parse', 'HEAD']).out
+  const tracking = io.git(['rev-parse', '--verify', '-q', `refs/remotes/origin/${pr.headRefName}`])
+  const facts = { onBranch: true, local, tracking: tracking.ok ? tracking.out : null }
+  if (local === want) return facts
+  Object.assign(facts, relationOf(pr, local, want, io))
+  // Settled without GitHub's branch: the PR contains HEAD, HEAD is not pushed,
+  // or the PR is an older commit of HEAD's own history (the push not registered).
+  if (facts.relation === 'ahead' || facts.relation === 'behind' || facts.tracking !== local) return facts
+  return { ...facts, ...readRemoteHead(pr, io) }
 }
 
 function readRuns(sha) {
@@ -488,6 +575,7 @@ function payloadOf(pr, result) {
     failing: result.failing.map((c) => ({ name: c.name, conclusion: c.conclusion, url: c.url })),
     pending: result.pending.map((c) => ({ name: c.name, conclusion: c.conclusion, url: c.url })),
     waiting: result.waiting,
+    needsAction: Boolean(result.needsAction),
     passing: result.passing.length,
     skipped: result.passing.filter((c) => c.conclusion === 'SKIPPED').length,
     superseded: result.superseded,
@@ -632,11 +720,15 @@ async function main() {
 
     const elapsed = Date.now() - started
     const left = Math.max(0, Math.ceil((deadlineMs - elapsed) / 1000))
-    if (once) {
+    // Waiting cannot clear a HEAD nobody pushed, so the answer comes now.
+    if (once || result.needsAction) {
+      const next = result.needsAction
+        ? 'Waiting will not change this: do what it says, then run this watcher again.'
+        : 'Re-run without --once to wait, or run this again.'
       emit(
         2,
         'pr-watch: pending',
-        `${branchNote(pr)}#${pr.number} is not done — ${pendingSummary(result)}.\n${pr.url}\n${result.pending.map(checkLine).join('\n')}\nRe-run without --once to wait, or run this again. Do not claim done.`,
+        `${branchNote(pr)}#${pr.number} is not done — ${pendingSummary(result)}.\n${pr.url}\n${result.pending.map(checkLine).join('\n')}\n${next} Do not claim done.`,
         payload,
       )
     }

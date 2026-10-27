@@ -127,7 +127,7 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<Validated, String> {
         Some(_) => Some(talaria_body::url_member(obj, "baseUrl", 300)?),
     };
     let class = talaria_body::enum_member(obj, "class", &["local", "cloud"])?;
-    // Provider-key-shaped names only (see provider-catalog KEY_ENV_RE) — the
+    // Provider-key-shaped names only (see talaria-gateway key_env_allowed) — the
     // catalog fetch sends this var's VALUE to the endpoint's base URL.
     let api_key_env = nullish_key_env(obj, "apiKeyEnv")?;
     // Raw provider API key — sealed (secretbox) server-side, never stored or
