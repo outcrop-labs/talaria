@@ -2,7 +2,8 @@
 // answer only the root-derived service credential (`internalToken`,
 // secretbox.ts; `require_internal` on the Rust side). They exist for the
 // moments the host knows something the api must act on and no person is in
-// the request: an app's build broke, its catalog changed. The proxy never
+// the request: an app's build broke, its catalog changed, a harness run of
+// its came back and the guard's semantic rules want judging. The proxy never
 // forwards the prefix from outside (rust-proxy.ts), so these are the only
 // callers.
 //
@@ -47,7 +48,7 @@ const DEADLINE_MS = 15_000
 
 /** POST one internal route. The parsed JSON answer, or null (logged) when
  *  the api is stood down, unreachable or refuses. */
-export async function postInternal(path: string, what: string): Promise<unknown | null> {
+export async function postInternal(path: string, what: string, body: unknown = {}): Promise<unknown | null> {
   const base = rustApiUrl()
   if (base === undefined) return null // TALARIA_RUST_API_URL=off: no api to ask
   let token: string
@@ -61,7 +62,7 @@ export async function postInternal(path: string, what: string): Promise<unknown 
     const res = await fetch(`${base}${path}`, {
       method: 'POST',
       headers: { [INTERNAL_HEADER]: token, 'content-type': 'application/json' },
-      body: '{}',
+      body: JSON.stringify(body),
       redirect: 'manual',
       signal: AbortSignal.timeout(DEADLINE_MS),
     })
@@ -88,4 +89,25 @@ export async function resyncAppMcpServers(reason: string): Promise<string[] | nu
   } | null
   if (!body || !Array.isArray(body.servers)) return null
   return body.servers.filter((s): s is string => typeof s === 'string')
+}
+
+/** One app harness run's final reply, for the guard's semantic rules. */
+export interface SemanticJudging {
+  answer: string
+  /** The run's tool record — the backing tools its structural pass read. */
+  tools: string[]
+  /** The model that answered. */
+  model: string
+  /** The run's caller stamp; the api keeps it inside `app:<slug>`. */
+  caller: string
+  /** The semantic rules the harness keeps and an admin has on. */
+  rules: string[]
+}
+
+/** Hand `slug`'s run to the api for the semantic rules
+ *  (`POST /api/internal/apps/<slug>/guard`, talaria-decide's guard pass).
+ *  The api judges it detached and files what fires under the run's caller;
+ *  nothing comes back that could change the run. */
+export async function judgeAppRun(slug: string, judging: SemanticJudging): Promise<void> {
+  await postInternal(`/api/internal/apps/${encodeURIComponent(slug)}/guard`, `semantic guard for app "${slug}"`, judging)
 }

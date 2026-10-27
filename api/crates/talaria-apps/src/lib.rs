@@ -11,18 +11,24 @@
 //   lifecycle    install from git with a read-only credential, update with an
 //                atomic swap and rollback, uninstall that keeps data unless
 //                asked (`lifecycle`, `git`, `source`)
-//   catalog      the marketplace feed — JSON, source URL configurable,
-//                always through the SSRF guard
+//   catalogs     the marketplace feeds — a list the operator fills, each a
+//                JSON index, always read through the SSRF guard (`catalog`)
 //   gateway key  the `app:<slug>` key the app host makes every model call
 //                for the app with — minted on the host's ask, sealed,
 //                revoked when the app stops running (`llm_key`)
 
+pub mod catalog;
 pub mod git;
 pub mod host;
 pub mod lifecycle;
 pub mod llm_key;
 pub mod source;
 
+pub use catalog::{
+    Catalog, CatalogError, CatalogFeed, CatalogPatch, CatalogStatus, create_catalog,
+    delete_catalog, fetch_catalogs, fetch_one as fetch_catalog_one, list_catalogs,
+    reorder_catalogs, update_catalog,
+};
 pub use host::AppHost;
 pub use lifecycle::{
     DataLeft, InstallError, InstallRequest, Installed, KeptDataChoice, KeptDataConflict,
@@ -39,14 +45,9 @@ use sqlx::PgPool;
 
 use talaria_gateway::settings::{get_setting, set_setting};
 use talaria_secretbox::SecretBox;
-use talaria_users::{
-    app_build_status, app_data_dir, discovered_apps, enable_block_reason, slug_ok,
-};
+use talaria_users::{app_build_status, app_data_dir, discovered_apps, enable_block_reason};
 
 const ENABLED_KEY: &str = "apps_enabled";
-const CATALOG_URL_KEY: &str = "apps_catalog_url";
-const DEFAULT_CATALOG: &str =
-    "https://raw.githubusercontent.com/outcrop-labs/talaria-apps/main/index.json";
 
 /// The enabled set, sorted —
 /// the setting is always stored sorted.
@@ -547,103 +548,6 @@ pub fn install_slug(url: &str, slug_override: Option<&str>) -> Result<String, St
     let derived = derived.strip_prefix("talaria-app-").unwrap_or(&derived);
     talaria_users::slug_installable(derived)?;
     Ok(derived.to_string())
-}
-
-// ── Marketplace catalog ──────────────────────────────────────────────────────
-
-pub async fn catalog_url(pg: &PgPool) -> String {
-    let stored = get_setting(pg, CATALOG_URL_KEY, Value::String(DEFAULT_CATALOG.into())).await;
-    match stored.as_str() {
-        Some(u) if !u.is_empty() => u.to_string(),
-        _ => DEFAULT_CATALOG.to_string(),
-    }
-}
-
-/// Empty (or blank) resets to the default.
-pub async fn set_catalog_url(pg: &PgPool, url: Option<&str>) -> Result<(), String> {
-    let v = match url.map(str::trim).filter(|u| !u.is_empty()) {
-        Some(u) => Value::String(u.to_string()),
-        None => Value::String(DEFAULT_CATALOG.to_string()),
-    };
-    set_setting(pg, CATALOG_URL_KEY, &v)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// The marketplace feed. Unreachable/invalid → empty list
-/// with the error, so the Discover tab can say why it's blank instead of
-/// pretending it's empty.
-pub async fn fetch_catalog(pg: &PgPool) -> (Vec<Value>, Option<String>) {
-    let url = catalog_url(pg).await;
-    let fetch = talaria_safe_fetch::safe_fetch(
-        &url,
-        talaria_safe_fetch::SafeFetch {
-            headers: vec![("accept", "application/json")],
-            timeout_ms: Some(10_000),
-            max_bytes: Some(2 * 1024 * 1024),
-            ..Default::default()
-        },
-    )
-    .await;
-    let resp = match fetch {
-        Ok(r) => r,
-        Err(e) => return (Vec::new(), Some(e.to_string())),
-    };
-    if !(200..300).contains(&resp.status) {
-        return (
-            Vec::new(),
-            Some(format!("catalog fetch failed ({})", resp.status)),
-        );
-    }
-    let Ok(j) = serde_json::from_slice::<Value>(&resp.body) else {
-        return (Vec::new(), Some("expected a JSON catalog".to_string()));
-    };
-    let mut out = Vec::new();
-    for a in j
-        .get("apps")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default()
-    {
-        let field = |k: &str| a.get(k).and_then(|v| v.as_str()).map(String::from);
-        // Admission: real slug, a name, an https repo. Everything else
-        // coerces to defaults.
-        let Some(slug) = field("slug").filter(|s| slug_ok(s)) else {
-            continue;
-        };
-        let (Some(name), Some(repo)) = (field("name"), field("repo")) else {
-            continue;
-        };
-        if !repo.starts_with("https://") {
-            continue;
-        }
-        let mut obj = serde_json::Map::new();
-        obj.insert("slug".into(), slug.into());
-        obj.insert("name".into(), name.into());
-        obj.insert(
-            "icon".into(),
-            field("icon").unwrap_or_else(|| "⬡".into()).into(),
-        );
-        obj.insert(
-            "description".into(),
-            field("description").unwrap_or_default().into(),
-        );
-        obj.insert("repo".into(), repo.into());
-        obj.insert(
-            "author".into(),
-            field("author").unwrap_or_else(|| "community".into()).into(),
-        );
-        obj.insert(
-            "official".into(),
-            Value::Bool(a.get("official").and_then(Value::as_bool) == Some(true)),
-        );
-        // version is OMITTED unless present and non-empty.
-        if let Some(v) = field("version").filter(|v| !v.is_empty()) {
-            obj.insert("version".into(), v.into());
-        }
-        out.push(Value::Object(obj));
-    }
-    (out, None)
 }
 
 #[cfg(test)]

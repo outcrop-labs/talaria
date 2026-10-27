@@ -8,12 +8,18 @@
 // unmeasured — capping every slot at `workable` and asking an admin to buy
 // probes — for four facts the provider publishes for free.
 //
-// It is a CACHE, not a source of truth. `provider-catalog.ts` does the fetching
-// and stays the only thing that talks to a provider; this module decides how
-// long an answer is good for, where it lives, and what a capability reader may
-// conclude from it. A stale entry is served while a refresh is in flight, and a
-// failed refresh serves the last good answer — the same posture `openrouterUsPool`
-// takes, for the same reason: a catalog blip must not empty the model picker.
+// It is a CACHE, not a source of truth, and THIS PROCESS ONLY READS IT. The
+// api fetches it — talaria-gateway's `catalog_models` asks the provider, with
+// the provider's key, which never leaves the api — and stores it
+// (talaria-model-catalog), when an admin opens an endpoint's model picker
+// (`GET /api/fleet/endpoints/{id}/available`) and when the effort backfill
+// finds a catalog older than the effort field (`GET /api/models/efforts`).
+// That is also where a catalog entry is read for what it proves
+// (`capabilities_from_catalog`). This module used to hold a second copy of
+// the fetch, which opened the endpoint's sealed key here to make it; nothing
+// called that copy once the api owned the picker, and an app host holds no
+// provider key. What stays is the read the harness runner's effort slot
+// needs (model-efforts.ts).
 //
 // ── THE ONE RULE THAT MATTERS ────────────────────────────────────────────────
 // A CATALOG MAY SAY YES. IT MAY NEVER SAY NO.
@@ -31,10 +37,35 @@
 // not fill in an optional array, and REFUSE the judge on it. Absence stays
 // unknown, `capability.ts`'s cardinal rule (UNKNOWN IS NOT FALSE) keeps the
 // model running, and a probe is what turns unknown into a no.
-import { getSetting, setSetting } from './audit'
-import { listEndpoints, type LlmEndpoint } from './agent-defs'
-import { capabilityKey, mergeCapabilities, type Capability, type CapabilityFact } from './harness/capability'
-import { catalogModels, type CatalogModel } from './provider-catalog'
+import { getSetting } from './audit'
+
+/** ONE MODEL AS THE PROVIDER DESCRIBES IT — the fields every OpenAI-compatible
+ *  catalog that publishes them agrees on, normalized: talaria-gateway's
+ *  `CatalogModel`, as the api stores it in `model_catalog` (its `to_json`).
+ *
+ *  EVERY FIELD IS OPTIONAL AND MEANS "THE PROVIDER DID NOT SAY". Never "no":
+ *  see the rule above. */
+export interface CatalogModel {
+  id: string
+  /** Display name where the provider gives one. */
+  name: string | null
+  /** Total window in tokens, as advertised. Null when unpublished. */
+  contextLength: number | null
+  /** e.g. `['text', 'image']`. Null when the provider does not describe
+   *  modalities — which is most non-OpenRouter catalogs. */
+  inputModalities: string[] | null
+  /** The request parameters this model accepts — `tools`, `response_format`,
+   *  `structured_outputs`, `web_search_options`, … Null when unpublished. */
+  supportedParameters: string[] | null
+  /** The reasoning-effort levels this model accepts (`reasoning_effort`),
+   *  exactly as the provider spells them. Null when unpublished: a model with
+   *  no list is a model nobody has vouched for, not a model that was refused.
+   *  The picker only appears for a non-empty list. */
+  efforts: string[] | null
+  /** USD per MILLION tokens, to match how everything else in Talaria quotes a
+   *  price. */
+  pricing: { inPerMTok: number | null; outPerMTok: number | null } | null
+}
 
 /** One endpoint's catalog, as of `at`. Keyed by endpoint NAME because that is
  *  what `capabilityKey` and the gateway's routing both speak. */
@@ -48,31 +79,12 @@ export type CatalogStore = Record<string, EndpointCatalog>
 
 const KEY = 'model_catalog'
 
-/** A CATALOG IS NOT VOLATILE, and a day is the honest number. Providers add
- *  models continuously and change a model's advertised window almost never, so
- *  a shorter TTL buys nothing but request volume against four hundred rows. The
- *  admin-facing refresh button exists for the case where it matters. */
-const CATALOG_TTL_MS = 24 * 60 * 60 * 1000
-
 export interface CatalogDeps {
-  endpoints: () => Promise<LlmEndpoint[]>
-  fetchCatalog: (ep: LlmEndpoint) => Promise<CatalogModel[]>
   read: () => Promise<CatalogStore>
-  write: (store: CatalogStore) => Promise<void>
-  /** Merged into `model_capabilities` in ONE write, respecting source
-   *  precedence. Returns how many facts were actually taken — a catalog claim
-   *  that loses to an existing probe result is not a write. */
-  record: (batch: Array<{ key: string; facts: Partial<Record<Capability, CapabilityFact>> }>) => Promise<number>
-  now: () => number
 }
 
 const REAL: CatalogDeps = {
-  endpoints: listEndpoints,
-  fetchCatalog: catalogModels,
   read: () => getSetting<CatalogStore>(KEY, {}),
-  write: (store) => setSetting(KEY, store),
-  record: mergeCapabilities,
-  now: () => Date.now(),
 }
 
 const withDeps = (over?: Partial<CatalogDeps>): CatalogDeps => ({ ...REAL, ...over })
@@ -175,118 +187,4 @@ export function effortLevelsOf(entries: ReadonlyArray<{ endpoint: string; model:
  *  `model-efforts.ts` — this is the catalog-only half. */
 export async function effortsFor(model: string, deps?: Partial<CatalogDeps>): Promise<string[]> {
   return effortLevelsOf(await catalogEntriesFor(model, deps))
-}
-
-// ── Deriving capabilities ────────────────────────────────────────────────────
-
-/** Which advertised parameter proves which capability. Only entries whose
- *  PRESENCE is a real commitment belong here — see the file header on why
- *  absence proves nothing. */
-const PARAM_PROVES: ReadonlyArray<{ param: string; capability: Capability; detail: string }> = [
-  { param: 'tools', capability: 'tools', detail: 'the provider catalog advertises tool calling' },
-  { param: 'response_format', capability: 'json', detail: 'the provider catalog advertises response_format' },
-  { param: 'structured_outputs', capability: 'json-strict', detail: 'the provider catalog advertises structured outputs' },
-  { param: 'web_search_options', capability: 'search', detail: 'the provider catalog advertises native web search' },
-]
-
-/** WHAT A CATALOG ENTRY PROVES, and nothing more.
- *
- *  Pure, exported, and tested directly, because this function is where the
- *  yes-only rule either holds or quietly stops holding. Every branch below
- *  writes `true` or writes NOTHING. There is no path that writes `false`. */
-export function capabilitiesFromCatalog(m: CatalogModel, at: string): Partial<Record<Capability, CapabilityFact>> {
-  const facts: Partial<Record<Capability, CapabilityFact>> = {}
-  // `source: 'catalog'`, never 'declared'. 'declared' means a HUMAN said so and
-  // outranks a provider's own claim — see `SOURCE_RANK` in capability.ts. Writing
-  // these as 'declared' would let a nightly refresh overrule an admin.
-  const declare = (capability: Capability, detail: string): void => {
-    facts[capability] = { value: true, source: 'catalog', at, detail }
-  }
-
-  const params = m.supportedParameters
-  if (params) {
-    for (const rule of PARAM_PROVES) {
-      if (params.includes(rule.param)) declare(rule.capability, rule.detail)
-    }
-    // `tool_choice` without `tools` is not a thing any catalog publishes, but a
-    // model that accepts it can certainly be handed tools.
-    if (params.includes('tool_choice') && !facts.tools) declare('tools', 'the provider catalog advertises tool_choice')
-  }
-
-  // VISION IS THE ONE PLACE ABSENCE IS ALMOST INFORMATIVE and still is not
-  // recorded as a no: a catalog that lists `input_modalities: ['text']` is
-  // describing the model precisely, but plenty of catalogs list nothing at all,
-  // and one shape must not be read as the other. A probe closes it.
-  if (m.inputModalities?.includes('image')) declare('vision', 'the provider catalog advertises image input')
-
-  // `long-context` IS DELIBERATELY NOT DECLARED HERE, and the temptation to do
-  // it was the whole reason to write this down. `context_length` is the only
-  // catalog field that looks like a capability and is not one: it says what the
-  // model will ACCEPT, and the probe measures whether the model can still find
-  // a fact planted in the middle of that window. Advertising 1M tokens and
-  // retrieving from 1M tokens are different claims, and the gap between them is
-  // exactly what an admin is trying to find out.
-  //
-  // The window is not wasted — `advertisedWindow` serves it to the probe, which
-  // is what decides how big a haystack to build. That is the honest use of a
-  // spec sheet: it sizes the measurement, it does not stand in for it.
-  return facts
-}
-
-// ── Refreshing ───────────────────────────────────────────────────────────────
-
-export interface RefreshResult {
-  endpoint: string
-  models: number
-  /** Capability facts written across all of this endpoint's models. */
-  facts: number
-  error: string | null
-}
-
-/** Re-fetch one endpoint's catalog, store it, and declare what it proves.
- *
- *  A FAILED FETCH KEEPS THE OLD ENTRY. An endpoint that is briefly unreachable
- *  must not empty the picker or un-declare facts an admin is looking at; the
- *  error is reported and the last good catalog stays. */
-export async function refreshEndpointCatalog(ep: LlmEndpoint, deps?: Partial<CatalogDeps>): Promise<RefreshResult> {
-  const d = withDeps(deps)
-  const at = new Date(d.now()).toISOString()
-  let models: CatalogModel[]
-  try {
-    models = await d.fetchCatalog(ep)
-  } catch (err) {
-    return { endpoint: ep.name, models: 0, facts: 0, error: err instanceof Error ? err.message : String(err) }
-  }
-
-  const store = await d.read().catch((): CatalogStore => ({}))
-  await d.write({ ...store, [ep.name]: { endpoint: ep.name, at, models } })
-
-  // Per endpoint:model, exactly as every other capability writer keys it — a
-  // fact learned about one endpoint's build is never credited to another's. The
-  // whole endpoint goes in ONE merge: four hundred separate read-modify-writes
-  // of a row that grows with each one is not a thing to do on a cadence.
-  const batch = models
-    .map((m) => ({ key: capabilityKey(ep.name, m.id), facts: capabilitiesFromCatalog(m, at) }))
-    .filter((e) => Object.keys(e.facts).length > 0)
-  const facts = await d.record(batch).catch(() => 0)
-  return { endpoint: ep.name, models: models.length, facts, error: null }
-}
-
-/** Every endpoint whose catalog is older than the TTL (or absent). Called on a
- *  cadence and by the admin's refresh button; `force` ignores the TTL. */
-export async function refreshCatalogs(opts: { force?: boolean } = {}, deps?: Partial<CatalogDeps>): Promise<RefreshResult[]> {
-  const d = withDeps(deps)
-  const [endpoints, store] = await Promise.all([d.endpoints().catch((): LlmEndpoint[] => []), d.read().catch((): CatalogStore => ({}))])
-  const now = d.now()
-  const stale = endpoints.filter((ep) => {
-    if (opts.force) return true
-    const at = Date.parse(store[ep.name]?.at ?? '')
-    return !Number.isFinite(at) || now - at > CATALOG_TTL_MS
-  })
-  // SEQUENTIAL. Four hundred rows per provider is a big response and several
-  // providers rate-limit the catalog endpoint harder than they rate-limit
-  // completions; a fan-out here buys nothing an admin can perceive.
-  const out: RefreshResult[] = []
-  for (const ep of stale) out.push(await refreshEndpointCatalog(ep, deps))
-  return out
 }

@@ -1,5 +1,6 @@
 // `talaria-app build`: the host's build recipe and load probe, run in the
-// sandbox, reported per surface and per harness the way Manage → Apps would.
+// sandbox, reported per surface, per harness and per trigger the way Manage →
+// Apps would.
 //
 // Not a re-implementation. `buildAppAt` is app-build/build.ts, `probeLoad` is
 // app-health.ts, the harness report is app-harnesses.ts — the same functions
@@ -7,14 +8,21 @@
 // the kit. What differs is only where they read and write (workspace.ts) and
 // that nothing here has a database: the probe runs with `catalog: false`, so
 // it publishes no MCP catalog and refreshes no other app's report.
+//
+// ONE CHECK THE HOST DOES NOT MAKE AT LOAD: every trigger talaria.json
+// declares has a handler in server.ts. The host's probe accepts an app whose
+// trigger has none, and then records a failed run on every tick of its
+// schedule, or every event it waits on, for as long as the app is on — the
+// error is only ever seen after the fact, on Manage → Apps. Here, before the
+// PR, it is a failed build (`ok: false`).
 import { existsSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { buildAppAt } from '@/server/app-build/build'
 import { appBuildKeyDir, declaredSurfacesAt } from '@/server/app-build/paths'
 import { readCurrent, type AppBuildCurrent } from '@/server/app-build/status'
-import type { SurfaceKey } from '@/server/app-build/manifest'
+import type { AppTriggerSpec, SurfaceKey } from '@/server/app-build/manifest'
 import { probeLoad } from '@/server/app-health'
-import { loadAppMcp, type AppTree } from '@/server/app-load'
+import { loadAppMcp, loadAppServer, type AppTree } from '@/server/app-load'
 import { checkAppMcpTools } from '@/server/app-mcp-call'
 import type { KitWorkspace } from './workspace'
 
@@ -35,15 +43,38 @@ export interface BuildReport {
   server: boolean
   /** The tools the probe keeps, and each it leaves out with why. */
   mcp: { tools: string[]; leftOut: string[] } | null
-  /** What the probe made of harnesses/: the ids it registers, and one
-   *  sentence per file it skipped — the report Manage → Apps shows. */
-  harnesses: { registered: string[]; skipped: string[] } | null
+  /** What the probe made of harnesses/: the ids it registers, one sentence
+   *  per file it skipped, and one per registered harness that loads with a
+   *  warning — the report Manage → Apps shows. */
+  harnesses: { registered: string[]; skipped: string[]; warnings: string[] } | null
+  /** The triggers talaria.json declares, each with whether server.ts answers
+   *  it, and the trigger handlers server.ts exports that no trigger names.
+   *  Null when talaria.json declares none and server.ts answers none. */
+  triggers: { declared: TriggerLine[]; unanswered: string[]; undeclared: string[] } | null
   /** The load probe. Null when the build failed, so there was nothing to
    *  load. A failure is what disables the app on the host. */
   probe: { ok: true } | { ok: false; error: string } | null
-  /** The build and the probe passed. A skipped harness or a tool left out
-   *  does not fail an app on the host, and does not fail this. */
+  /** The build and the probe passed, and every declared trigger has a
+   *  handler. A skipped harness or a tool left out does not fail an app on
+   *  the host, and does not fail this. */
   ok: boolean
+}
+
+/** One declared trigger: its id, when it fires, and whether server.ts's
+ *  `defineAppServer({ triggers })` has a handler under that id. */
+export type TriggerLine = { id: string; handler: boolean } & ({ cron: string } | { event: string })
+
+/** The trigger half of the report, from the manifest's triggers and the
+ *  loaded server module. Pure. A handler is what the host's trigger route
+ *  calls (app-trigger.ts): a function under the trigger's id. */
+export function triggerReport(declared: readonly AppTriggerSpec[], serverModule: unknown): BuildReport['triggers'] {
+  const exported = (serverModule as { default?: { triggers?: unknown } } | null)?.default?.triggers
+  const handlers = exported && typeof exported === 'object' && !Array.isArray(exported) ? (exported as Record<string, unknown>) : {}
+  const answers = (id: string) => Object.hasOwn(handlers, id) && typeof handlers[id] === 'function'
+  const lines: TriggerLine[] = declared.map((t) => ({ ...t, handler: answers(t.id) }))
+  const undeclared = Object.keys(handlers).filter((id) => typeof handlers[id] === 'function' && !declared.some((t) => t.id === id))
+  if (lines.length === 0 && undeclared.length === 0) return null
+  return { declared: lines, unanswered: lines.filter((t) => !t.handler).map((t) => t.id), undeclared }
 }
 
 /** What the host's code printed while it ran, kept for `--verbose` rather
@@ -65,8 +96,9 @@ export async function captureConsole<T>(fn: () => Promise<T>): Promise<{ value: 
   }
 }
 
-/** Build and probe the app in `ws`. */
-export async function kitBuild(ws: KitWorkspace, appName: string, kitVersion: string): Promise<BuildReport> {
+/** Build and probe the app in `ws`, and match the triggers its talaria.json
+ *  declares against its server's handlers. */
+export async function kitBuild(ws: KitWorkspace, appName: string, kitVersion: string, triggers: readonly AppTriggerSpec[] = []): Promise<BuildReport> {
   const cur = await buildAppAt(ws.slug, ws.app, { pointer: true })
   const declared = declaredSurfacesAt(ws.app)
   const report: BuildReport = {
@@ -84,6 +116,7 @@ export async function kitBuild(ws: KitWorkspace, appName: string, kitVersion: st
     server: cur.files.includes('server.js'),
     mcp: null,
     harnesses: null,
+    triggers: null,
     probe: null,
     ok: false,
   }
@@ -104,9 +137,14 @@ export async function kitBuild(ws: KitWorkspace, appName: string, kitVersion: st
     }
   }
   const after: AppBuildCurrent | null = readCurrent(ws.slug)
-  if (after?.harnesses) report.harnesses = { registered: after.harnesses.registered, skipped: after.harnesses.problems }
-  else if (existsSync(join(ws.app, 'harnesses')) && cur.files.includes('harnesses.js')) report.harnesses = { registered: [], skipped: [] }
-  report.ok = report.probe.ok
+  if (after?.harnesses) {
+    report.harnesses = { registered: after.harnesses.registered, skipped: after.harnesses.problems, warnings: after.harnesses.warnings ?? [] }
+  } else if (existsSync(join(ws.app, 'harnesses')) && cur.files.includes('harnesses.js')) report.harnesses = { registered: [], skipped: [], warnings: [] }
+  // Read back after the probe, which imported it already. A server that did
+  // not load failed the probe, and its triggers read as unanswered.
+  const server = report.probe.ok && cur.files.includes('server.js') ? await loadAppServer(ws.slug, tree()).catch(() => null) : null
+  report.triggers = triggerReport(triggers, server)
+  report.ok = report.probe.ok && (report.triggers?.unanswered.length ?? 0) === 0
   return report
 }
 
@@ -135,13 +173,27 @@ export function formatBuildReport(r: BuildReport, cwd: string = process.cwd()): 
     for (const p of r.mcp.leftOut) sub(`left out: ${p}`)
   } else row('mcp', 'none')
   if (r.harnesses) {
-    const { registered, skipped } = r.harnesses
+    const { registered, skipped, warnings } = r.harnesses
     row('harnesses', `${registered.length ? `registered: ${registered.join(', ')}` : 'none registered'}${skipped.length ? ` · ${skipped.length} skipped` : ''}`)
     for (const p of skipped) sub(`skipped: ${p}`)
+    for (const w of warnings) sub(`warning: ${w}`)
   } else row('harnesses', 'none')
+  if (r.triggers) {
+    const { declared, unanswered, undeclared } = r.triggers
+    row('triggers', declared.length ? `${plural(declared.length, 'trigger')}${unanswered.length ? ` · ${unanswered.length} with no handler` : ''}` : 'none declared')
+    for (const t of declared) {
+      const when = 'cron' in t ? `cron ${t.cron} (UTC)` : `on ${t.event}`
+      sub(`${t.id} · ${when} · ${t.handler ? 'handler found' : `NO HANDLER — server.ts must answer it in defineAppServer({ triggers: { "${t.id}": … } })`}`)
+    }
+    for (const id of undeclared) sub(`handler "${id}" answers no trigger in talaria.json, so nothing calls it`)
+  } else row('triggers', 'none')
   if (r.probe && !r.probe.ok) {
     row('probe', `FAILED — ${r.probe.error}`)
     out.push('', 'The host runs this probe on every install, update and enable; a failure turns the app off.')
   } else row('probe', 'ok')
+  if (r.triggers?.unanswered.length) {
+    out.push('', 'The host loads an app with an unanswered trigger and records a failed run each time it fires —')
+    out.push('every tick of its schedule, every event it waits on. Answer it in server.ts or drop it from talaria.json.')
+  }
   return out.join('\n')
 }

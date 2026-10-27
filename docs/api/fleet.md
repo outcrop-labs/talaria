@@ -427,7 +427,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_endpoints.rs`](../../a
 | `provider` | `string(2, 40)` |  |
 | `baseUrl` | `url` |  |
 | `class` | `enum(local|cloud)` |  |
-| `apiKeyEnv` | `nullish_key_env` | Provider-key-shaped names only (see provider-catalog KEY_ENV_RE) — the catalog fetch sends this var's VALUE to the endpoint's base URL. |
+| `apiKeyEnv` | `nullish_key_env` | Provider-key-shaped names only (see talaria-gateway key_env_allowed) — the catalog fetch sends this var's VALUE to the endpoint's base URL. |
 | `apiKey` | `string?(400)` | Raw provider API key — sealed (secretbox) server-side, never stored or returned in the clear. |
 | `models` | `string[]?(1, 120, 100)` |  |
 

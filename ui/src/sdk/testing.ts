@@ -104,6 +104,7 @@ export async function runHarnessOffline<I, O>(def: HarnessDefinition<I, O>, inpu
       guardConfig: async () => ({ mode: 'observe', checks: {}, minConfidence: 0.5, policedHosts: [], coach: false }),
       guardText: async () => [],
       recordFindings: async () => {},
+      judgeSemantic: () => {},
       recordRun: async () => {},
     },
   })

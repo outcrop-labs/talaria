@@ -961,6 +961,14 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
         )
         .route(
+            "/api/admin/apps/catalogs",
+            get(talaria_routes_admin::admin::admin_apps_catalogs::get)
+                .post(talaria_routes_admin::admin::admin_apps_catalogs::post)
+                .put(talaria_routes_admin::admin::admin_apps_catalogs::put)
+                .delete(talaria_routes_admin::admin::admin_apps_catalogs::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
+        )
+        .route(
             "/api/admin/apps/install-requests",
             get(talaria_routes_admin::admin::admin_apps_install_requests::get)
                 .put(talaria_routes_admin::admin::admin_apps_install_requests::put)
@@ -988,6 +996,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/internal/apps/agent-turn",
             post(talaria_routes_admin::admin::internal_apps_agent_turn::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/internal/apps/{slug}/guard",
+            post(talaria_routes_admin::admin::internal_apps_guard::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(

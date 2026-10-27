@@ -141,7 +141,11 @@ credentials.
 ## Provider keys specifically
 
 Provider API keys live **encrypted in the DB**, entered on `/models` — never in a
-config file. `resolveEndpointKey(ep)` reads the sealed key first; an env var /
-`fleet/.env` named by the endpoint's `api_key_env` is a fallback for ops
-overrides and pre-migration installs. `migrateEnvKeysToCipher()` seals any
-config-only key into the DB automatically the first time you open `/models`.
+config file. **Only the api opens one** (talaria-gateway `provider.rs`):
+`resolve_endpoint_key` reads the sealed key first; an env var / `fleet/.env`
+named by the endpoint's `api_key_env` is a fallback for ops overrides and
+pre-migration installs. `migrate_env_keys_to_cipher` seals any config-only key
+into the DB automatically the first time you open `/models`. The app host
+never holds one: its model calls go to the relay on the app's own gateway key,
+and a provider's model catalog is fetched by the api
+(`GET /api/fleet/endpoints/{id}/available`) and read from the stored copy.

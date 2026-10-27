@@ -40,6 +40,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { answer } from './pr-body.mjs'
 
 // The repository the judge measures: the one you are standing in (the workflow
 // runs it at the checkout root, and a local run happens in your checkout). Not
@@ -193,7 +194,7 @@ if (productSkills.length) {
 
 // ── 3. generated references must be generated, not edited ──────────────────
 
-const generatedDocs = touched(/^docs\/(api\/|CLI-REFERENCE\.md)/)
+const generatedDocs = touched(/^(docs\/(api\/|CLI-REFERENCE\.md)|scripts\/skills\/talaria-apps\/references\/skeleton\.md)/)
 if (generatedDocs.length) {
   let drift = ''
   try {
@@ -380,14 +381,13 @@ if (odd.length) {
 
 if (prBodyPath && existsSync(prBodyPath)) {
   const body = readFileSync(prBodyPath, 'utf8')
-  const section = (name) => {
-    const m = new RegExp(`^##\\s*${name}\\s*$([\\s\\S]*?)(?=^##\\s|\\s*$)`, 'im').exec(body)
-    if (!m) return null
-    // HTML comments are the template's prompts, not an answer.
-    return m[1].replace(/<!--[\s\S]*?-->/g, '').trim()
-  }
-  const verified = section('Verified')
-  const entry = section('CHANGELOG entry')
+  // An answer is what the author added to a section: the template's own lines
+  // for it (its comments, its `- **Gate:**` labels, its paragraphs) are not one.
+  // scripts/pr-body.mjs says why, and pins it in scripts/judge-pr.test.mjs.
+  const templatePath = join(ROOT, '.github/PULL_REQUEST_TEMPLATE.md')
+  const template = existsSync(templatePath) ? readFileSync(templatePath, 'utf8') : ''
+  const verified = answer(body, 'Verified', template)
+  const entry = answer(body, 'CHANGELOG entry', template)
   if (!body.trim()) {
     finding('ask', 'empty-pr-body', 'the pull request has no body', [], [
       'The body mirrors the changelog entry: what changed, and what was verified.',
@@ -401,7 +401,8 @@ if (prBodyPath && existsSync(prBodyPath)) {
     }
     if (entry !== null && entry.length < 5 && changelogAdditions === null) {
       finding('ask', 'pr-body-no-entry', 'the body names no changelog entry, and none is in the diff', [], [
-        'Every user-visible change appends to CHANGELOG.md; the entry rides with the change.',
+        'Every user-visible change adds changelog/YYYY-MM-DD-<slug>.md; paste that entry here,',
+        'or say why the change is internal-only.',
       ])
     }
   }
