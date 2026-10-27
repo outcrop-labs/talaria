@@ -6,11 +6,17 @@
 // of its surfaces, then hands over with a context: the signed-in user, which
 // surfaces and permissions they hold, the sub-path, a per-app document store
 // (namespaced Postgres, no migrations needed), the platform API as the
-// caller, the secrets the app was given, and the request's abort signal.
+// caller, the secrets the app was given, the request's abort signal, and the
+// fleet agents the caller may drive.
+//
+// The same default export may also answer `triggers`: handlers the host runs
+// on a schedule or a platform event, as the app, with no user (talaria.json
+// `triggers`).
 import { json } from '@/server/http'
 import type { SessionUser } from '@/server/auth/session'
 import type { AppStore } from '@/server/app-store'
 import type { PlatformApi, PlatformApiInit } from '@/server/app-context'
+import type { AppAgents } from '@/server/app-agents'
 import type { TOOL_RESULT } from '@/server/app-mcp-call'
 import type { AppHarnessRunner } from '@/server/app-harness-runner'
 
@@ -30,6 +36,9 @@ export { parseBody } from '@/server/api-guard'
 export { z } from 'zod'
 export type { SessionUser, AppStore }
 export type { AppDoc } from '@/server/app-store'
+// `ctx.agents`: one turn to a fleet agent, on a session it keeps or fresh,
+// watched as it lands or awaited.
+export type { AppAgents, AgentTurnOptions, AgentTurnReply, AgentTurnEvent } from '@/server/app-agents'
 
 export interface AppRequestContext {
   /** The signed-in user this request runs as. */
@@ -80,6 +89,10 @@ export interface AppRequestContext {
    *  long work (`fetch`) so it stops spending for nobody; `ctx.harness`
    *  already follows it. */
   signal: AbortSignal
+  /** Drive a fleet agent: `ctx.agents.turn({ agent, message, session?,
+   *  watch? })`. Only an agent the signed-in person may use; their personal
+   *  assistant is theirs alone. The turn follows `signal`. */
+  agents: AppAgents
   /** Run a harness as this caller — `ctx.harness.run(def, input, opts)` and
    *  `ctx.harness.stream(def, input, { onDelta })`. The host binds it: the run
    *  is booked to this app (`app:<slug>:<harnessId>`, ledger source `app`),
@@ -89,8 +102,65 @@ export interface AppRequestContext {
   harness: AppHarnessRunner
 }
 
+// ── Triggers ───────────────────────────────────────────────────────────────
+// talaria.json declares `triggers: [{ id, cron }]` or `[{ id, event }]`; the
+// server answers each id under `triggers`. The host runs a handler as the
+// APP, with no user behind it: no `ctx.user`, no `ctx.api` (there is no
+// session to call the platform with), and `ctx.agents` refuses — a triggered
+// run drives no agent. What it has is the app's own: the store, the secrets
+// an admin gave the app, and the cause. Every run is recorded on the app's
+// row in Manage → Apps; a handler that throws is a failed run there, and the
+// app keeps running.
+
+/** A platform event, as a trigger receives it: ids, never content. */
+export type AppTriggerEvent =
+  /** A ticket was created, on any board. */
+  | { name: 'ticket.created'; ticketId: string; boardId: string }
+  /** A ticket moved columns, however it moved. `from` and `to` are the
+   *  board's column keys; `closed` says `to` is terminal (done, failed,
+   *  cancelled). */
+  | { name: 'ticket.moved'; ticketId: string; boardId: string; from: string; to: string; closed: boolean }
+
+/** Why this run started: a schedule's minute (ISO, UTC) or an event. */
+export type AppTriggerCause = { kind: 'cron'; dueAt: string } | { kind: 'event'; event: AppTriggerEvent }
+
+export interface AppTriggerContext {
+  /** This app's slug. */
+  app: string
+  /** The trigger's id, as talaria.json names it. */
+  trigger: string
+  /** This run's id — the row Manage → Apps shows. */
+  runId: string
+  cause: AppTriggerCause
+  /** The app's document store — the same one its server and tools use. */
+  store: AppStore
+  /** A workspace secret an admin gave this app (`talaria-app://<slug>` in
+   *  its allowed hosts), or null. The spend is audited with no person. */
+  secret: (name: string) => Promise<string | null>
+  /** `AUTH_PUBLIC_URL`, for absolute links — null when the operator set
+   *  none (a trigger has no request to read the origin from). */
+  origin: string | null
+  /** Refuses every turn: a triggered run acts as the app, with no user, and
+   *  no agent is lent to it. */
+  agents: AppAgents
+  /** Run a harness as the app — booked to this app (`app:<slug>:<harnessId>`,
+   *  ledger source `app`), its own admin-assigned model first. It may pin no
+   *  agent; any gateway model is allowed. */
+  harness: AppHarnessRunner
+  /** Aborts at the run's deadline (10 minutes). Pass it to long work. */
+  signal: AbortSignal
+}
+
+/** A trigger's handler. A string it returns is the run's result line in
+ *  Manage → Apps (`"scored 3 leads"`); a throw is a failed run. */
+export type AppTriggerHandler = (ctx: AppTriggerContext) => void | string | Promise<void | string>
+
 export interface AppServer {
-  fetch: (request: Request, ctx: AppRequestContext) => Response | Promise<Response>
+  /** The handler for `/api/apps/<slug>/*`. Optional for an app whose server
+   *  only answers triggers. */
+  fetch?: (request: Request, ctx: AppRequestContext) => Response | Promise<Response>
+  /** One handler per `triggers` id in talaria.json. */
+  triggers?: Record<string, AppTriggerHandler>
 }
 
 export const defineAppServer = (server: AppServer): AppServer => server
@@ -139,6 +209,10 @@ export interface AppMcpContext {
    *  that moment either way, and nothing the handler returns afterwards
    *  reaches anyone. */
   signal: AbortSignal
+  /** Drive the CALLING agent only (`caller.name`), and only when the gateway
+   *  proved it (`caller.proven`) — say, a turn on a session of its own. Any
+   *  other agent is refused. Each turn follows `signal`. */
+  agents: AppAgents
   /** Run a harness for this call — booked to this app, its own model setting
    *  first. From a tool, a harness may run on an agent only if it is the
    *  agent calling the tool, proven by its own key; a gateway model pin is
@@ -216,13 +290,16 @@ export { toolResult, isUnresolvedHandle } from '@/server/app-mcp-call'
 // (The coding harness an AGENT drives in its sandbox is not an extension point:
 // the workbench runs Oh My Pi, and only Oh My Pi.)
 export type { HarnessDefinition, EvalCase, EvalBand, EvalContext, RoleFloor, RenderContext, Message, Grounding, Verify } from '@/server/harness/define'
+// The runner-held tool loop (`def.loop`): each tool a definition plus exactly
+// one of handler / mcp / org, and an optional `simulate` for dry runs.
+export type { HarnessTool, HarnessLoop, HarnessToolContext, HarnessToolWorld } from '@/server/harness/define'
 export type { CheckResult } from '@/server/harness/define'
 export type { Capability } from '@/server/harness/capability'
 export type { ModelSpec } from '@/server/harness/model'
 // The chain vocabulary and its resolution — referenced by `ModelSpec`/`HarnessResult`;
 // a bridge author labeling WHICH step answered has no word for it otherwise.
 export type { ModelChainStep, ResolvedHarnessModel } from '@/server/harness/model'
-export type { HarnessResult, RunLedger } from '@/server/harness/run'
+export type { HarnessResult, RunLedger, LoopCall } from '@/server/harness/run'
 // `toolDefs` is a field on the definition above, so its element type has to be
 // nameable out here or the field is only usable as an inline literal — an author
 // who factors four tools into a `const TOOLS = [...]` has no type to annotate it
@@ -277,9 +354,10 @@ export { defineHarness } from '@/server/harness/define'
 // files), so the SDK is the only road in and these two are app surface:
 //
 //   runHarness          — the one runner: resolve, floor, widen, render, call,
-//                         parse, repair, guard, redact, meter, `harness_runs`
-//                         row. Same function the platform's own TS harnesses
-//                         use; an app calling it gets the same accounting.
+//                         parse, repair, guard, redact, `harness_runs` row.
+//                         Every call it makes goes to the Talaria gateway on
+//                         the app's own key and is booked there as the app's
+//                         spend (docs/sdk/harnesses.md, "Where the calls go").
 //   resolveHarnessModel — the free probe (no model call): what chain would
 //                         carry a harness with this spec, or null. A bridge
 //                         labels itself honestly without spending a turn.

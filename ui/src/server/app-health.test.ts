@@ -31,17 +31,26 @@ const buildsDir = mkdtempSync(join(tmpdir(), 'app-health-test-'))
 process.env.TALARIA_APP_BUILDS_DIR = buildsDir
 afterAll(() => rmSync(buildsDir, { recursive: true, force: true }))
 
-const { clientArtifactOk, failHealth, moduleHasFetch, moduleHasMcpTools, moduleHasSurfaces } = await import('./app-health')
+const { clientArtifactOk, failHealth, moduleIsAppServer, moduleHasMcpTools, moduleHasSurfaces } = await import('./app-health')
 const { readCurrent } = await import('./app-build/status')
 
-describe('moduleHasFetch', () => {
+describe('moduleIsAppServer', () => {
   it('accepts defineAppServer shape', () => {
-    expect(moduleHasFetch({ default: { fetch: async () => new Response() } })).toBe(true)
+    expect(moduleIsAppServer({ default: { fetch: async () => new Response() } })).toBe(true)
+  })
+  it('accepts a server that answers only triggers, or both', () => {
+    expect(moduleIsAppServer({ default: { triggers: { nightly: async () => {} } } })).toBe(true)
+    expect(moduleIsAppServer({ default: { fetch: async () => new Response(), triggers: { nightly: () => 'ok' } } })).toBe(true)
   })
   it('rejects a missing or non-function fetch', () => {
-    expect(moduleHasFetch(null)).toBe(false)
-    expect(moduleHasFetch({ default: {} })).toBe(false)
-    expect(moduleHasFetch({ default: { fetch: 1 } })).toBe(false)
+    expect(moduleIsAppServer(null)).toBe(false)
+    expect(moduleIsAppServer({ default: {} })).toBe(false)
+    expect(moduleIsAppServer({ default: { fetch: 1 } })).toBe(false)
+  })
+  it('rejects triggers that are not an object of handlers', () => {
+    expect(moduleIsAppServer({ default: { triggers: {} } })).toBe(false)
+    expect(moduleIsAppServer({ default: { triggers: { nightly: 'run' } } })).toBe(false)
+    expect(moduleIsAppServer({ default: { fetch: async () => new Response(), triggers: [() => {}] } })).toBe(false)
   })
 })
 

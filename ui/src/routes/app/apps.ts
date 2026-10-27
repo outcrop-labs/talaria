@@ -29,6 +29,30 @@ export interface InstalledApp {
   build?: AppBuildInfo
   /** talaria.json fails the manifest rules: why. Never enabled; removable. */
   broken?: string
+  /** The app's triggers (talaria.json), each with its newest runs. */
+  triggers?: AppTriggerInfo[]
+}
+/** One run of an app's trigger, as talaria-app-triggers records it. */
+export interface AppTriggerRun {
+  state: 'queued' | 'running' | 'ok' | 'failed' | 'skipped'
+  event: string | null
+  /** The schedule's minute this run was for (cron only). */
+  dueAt: string | null
+  queuedAt: string
+  startedAt: string | null
+  finishedAt: string | null
+  /** The handler's own result line. */
+  detail: string | null
+  error: string | null
+}
+/** A declared trigger: a schedule (UTC) with its next minute, or an event. */
+export interface AppTriggerInfo {
+  id: string
+  cron?: string
+  event?: string
+  nextAt?: string | null
+  /** Newest first. */
+  runs: AppTriggerRun[]
 }
 /** `git ls-remote` against an app's recorded ref (GET ?updates=1, admin). */
 export interface AppUpdateCheck {

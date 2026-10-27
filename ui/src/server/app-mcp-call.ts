@@ -5,11 +5,13 @@
 // filesystem or the api. That is what lets `@talaria/sdk/testing` run an
 // app's tools through exactly this code in a unit test, and the gateway
 // (app-mcp.ts `dispatchAppMcp`) run them through it in production.
+import { withApp } from './app-scope'
 import { z } from 'zod'
 import { dispatchJsonRpc, type Rpc, type ToolAnswer } from './mcp-jsonrpc'
 import type { AppMcpCaller, AppMcpContext, AppMcpTool, AppToolContent, AppToolResult } from '@/sdk/server'
 import type { AppHarnessRunner } from './app-harness-runner'
 import type { AppStore } from './app-store'
+import { NO_AGENTS, agentsFollowing, type AppAgents } from './app-agents'
 
 // ── The checks a tool passes before any agent sees it ──────────────────────
 // Every tool an app declares is checked when its module loads — by the build
@@ -360,6 +362,10 @@ export interface AppToolCallFacts {
   /** The person the agent acts for, when the gateway knows it. */
   actingUserId: string | null
   store: AppStore
+  /** `ctx.agents`, bound to this caller by the host (app-mcp.ts builds it
+   *  with `appServices`). Absent where no host is — a unit test that gave
+   *  none gets one that says so. */
+  agents?: AppAgents
   /** `ctx.harness`, bound to this caller by the host (app-mcp.ts builds it with
    *  `appHarnessRunner`). Absent where no host is — a unit test that gave
    *  none gets a runner that says so. */
@@ -422,12 +428,16 @@ export async function runAppTools(
         actingUserId: facts.actingUserId,
         store: facts.store,
         signal: ctl.signal,
+        // Every turn follows THIS call's signal — the deadline and the
+        // agent's disconnect — on top of any the handler passes.
+        agents: facts.agents ? agentsFollowing(facts.agents, ctl.signal) : NO_AGENTS,
         // The runner follows THIS call's signal — the deadline and the
         // caller's disconnect — on top of any the handler passes.
         harness: facts.harness ? followingSignal(facts.harness, ctl.signal) : NO_HARNESS,
       }
       try {
-        const running = Promise.resolve().then(() => tool.handler(args, ctx))
+        // As the app: a harness the handler runs signs with this app's key.
+        const running = Promise.resolve().then(() => withApp(slug, () => tool.handler(args, ctx)))
         running.catch(() => {}) // a cut call's late rejection is nobody's
         return shapeToolAnswer(tool, await Promise.race([running, cutting]))
       } catch (e) {

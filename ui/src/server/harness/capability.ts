@@ -61,9 +61,28 @@ export interface CapabilityFact {
   detail?: string
   /** 0..1 for probe facts (pass rate over N trials). Absent for learned/declared. */
   score?: number
+  /** The probe revision that recorded this fact — probe facts only, written
+   *  by the api's probe suite. Absent reads as revision 0. */
+  probeRev?: number
 }
 
-/** Keyed 'endpoint:model' — the same key `llm-gateway.ts` uses for its learned
+/** THE REVISION OF THE PROBE that measures `cap` — the instrument's version,
+ *  not the model's. The api's twin is `probe_revision`
+ *  (api/crates/talaria-capability): json-strict's first Rust probe checked the
+ *  harness input instead of the reply and recorded `false` for every model
+ *  that answered, so facts below revision 1 are not facts. This file read
+ *  them anyway, and an app harness's floor refused models the platform's own
+ *  harnesses would run. A probe fact stamped below its capability's revision
+ *  is SUPERSEDED: read as unknown until the next probe run re-measures. */
+const PROBE_REVISIONS: Partial<Record<Capability, number>> = { 'json-strict': 1 }
+
+export const probeRevision = (cap: Capability): number => PROBE_REVISIONS[cap] ?? 0
+
+/** A probe fact an older revision of its probe recorded — see `probeRevision`. */
+export const superseded = (fact: CapabilityFact, cap: Capability): boolean =>
+  fact.source === 'probe' && (fact.probeRev ?? 0) < probeRevision(cap)
+
+/** Keyed 'endpoint:model' — the same key the gateway uses for its learned
  *  parameter sets, and for the same reason: capability is a property of the
  *  ENDPOINT serving the model, not of the model name. One id behind two
  *  providers (a quantized local build vs. the vendor's own API) genuinely
@@ -153,6 +172,7 @@ function readFact(raw: unknown, now: number): CapabilityFact | null {
   const fact: CapabilityFact = { value: f.value, source: f.source, at: f.at }
   if (typeof f.detail === 'string') fact.detail = f.detail
   if (typeof f.score === 'number' && Number.isFinite(f.score)) fact.score = f.score
+  if (typeof f.probeRev === 'number' && Number.isInteger(f.probeRev) && f.probeRev >= 0) fact.probeRev = f.probeRev
   return isExpired(fact, now) ? null : fact
 }
 
@@ -179,14 +199,15 @@ function serialize<T>(op: () => Promise<T>): Promise<T> {
 }
 
 /** Everything currently known about this endpoint:model. Expired learned facts
- *  are filtered out here, so no caller ever has to think about the TTL. */
+ *  and superseded probe facts are filtered out here, so no caller ever has to
+ *  think about the TTL or the probe revision. */
 export async function getCapabilities(key: CapabilityKey): Promise<Partial<Record<Capability, CapabilityFact>>> {
   const now = Date.now()
   const out: Partial<Record<Capability, CapabilityFact>> = {}
   for (const [cap, raw] of Object.entries(entryOf(await readAll(), key))) {
     if (!isCapability(cap)) continue
     const fact = readFact(raw, now)
-    if (fact) out[cap] = fact
+    if (fact && !superseded(fact, cap)) out[cap] = fact
   }
   return out
 }

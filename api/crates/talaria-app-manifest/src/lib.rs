@@ -7,7 +7,12 @@
 // api/tests/it/fixtures/app-manifest.json pins the two, the host's SDK
 // version included, and docs/sdk/talaria.schema.json publishes the shape.
 //
-// A leaf: serde_json only, so talaria-users can depend on it without a cycle.
+// A leaf: serde_json and the platform-event names only, so talaria-users can
+// depend on it without a cycle.
+
+pub mod cron;
+
+pub use cron::{Cron, parse_cron};
 
 use serde_json::{Map, Value};
 
@@ -105,6 +110,24 @@ pub struct Manifest {
     pub settings: Option<String>,
     /// The `@talaria/sdk` range the app was written against.
     pub sdk: Option<String>,
+    /// What runs the app's code with no request behind it, in manifest order.
+    pub triggers: Vec<Trigger>,
+}
+
+/// One entry of `triggers`: an id the app's server answers
+/// (`defineAppServer({ triggers: { <id>: … } })`), and when it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Trigger {
+    pub id: String,
+    pub on: TriggerOn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TriggerOn {
+    /// A schedule, read in UTC: the text as written (trimmed) and its parse.
+    Cron { text: String, schedule: Cron },
+    /// A platform event, by name (`talaria_platform_events::EVENT_NAMES`).
+    Event(String),
 }
 
 fn chars(s: &str) -> usize {
@@ -221,6 +244,7 @@ pub fn validate_manifest(value: &Value, host_sdk: &str) -> Result<Manifest, Stri
             );
         }
     }
+    let mut triggers: Vec<Trigger> = Vec::new();
     match obj.get("triggers") {
         None | Some(Value::Null) => {}
         Some(Value::Array(items)) => {
@@ -228,13 +252,18 @@ pub fn validate_manifest(value: &Value, host_sdk: &str) -> Result<Manifest, Stri
                 let Some(t) = t.as_object() else {
                     return Err(format!("\"triggers[{i}]\" must be an object"));
                 };
-                match t.get("id") {
-                    Some(Value::String(id)) if slug_ok(id) => {}
+                let id = match t.get("id") {
+                    Some(Value::String(id)) if slug_ok(id) => id.clone(),
                     _ => {
                         return Err(format!(
                             "\"triggers[{i}].id\" must be a lowercase id (letters, digits, dashes)"
                         ));
                     }
+                };
+                if triggers.iter().any(|seen| seen.id == id) {
+                    return Err(format!(
+                        "\"triggers[{i}].id\" \"{id}\" is used by an earlier trigger"
+                    ));
                 }
                 // Exactly one of the two keys, whatever its value — as the
                 // schema's oneOf reads it — and that one a non-blank string.
@@ -247,14 +276,29 @@ pub fn validate_manifest(value: &Value, host_sdk: &str) -> Result<Manifest, Stri
                         ));
                     }
                 };
-                match t.get(key) {
-                    Some(Value::String(v)) if !v.trim().is_empty() => {}
+                let text = match t.get(key) {
+                    Some(Value::String(v)) if !v.trim().is_empty() => v.trim().to_string(),
                     _ => {
                         return Err(format!(
                             "\"triggers[{i}].{key}\" must be a string that is not only whitespace"
                         ));
                     }
-                }
+                };
+                let on = if key == "cron" {
+                    let schedule = parse_cron(&text).map_err(|why| {
+                        format!("\"triggers[{i}].cron\" is not a schedule: {why}")
+                    })?;
+                    TriggerOn::Cron { text, schedule }
+                } else {
+                    if !talaria_platform_events::is_event(&text) {
+                        return Err(format!(
+                            "\"triggers[{i}].event\" names no platform event (\"{text}\"); the events are {}",
+                            talaria_platform_events::EVENT_NAMES.join(", ")
+                        ));
+                    }
+                    TriggerOn::Event(text)
+                };
+                triggers.push(Trigger { id, on });
             }
         }
         Some(_) => return Err("\"triggers\" must be an array".into()),
@@ -271,6 +315,7 @@ pub fn validate_manifest(value: &Value, host_sdk: &str) -> Result<Manifest, Stri
         manage,
         settings,
         sdk,
+        triggers,
     })
 }
 
@@ -521,10 +566,35 @@ mod tests {
                             .map(|v| v.as_str().unwrap())
                             .collect();
                         assert_eq!(surfaces, want_surfaces, "{about}");
+                        if let Some(want) = want.get("triggers") {
+                            let got: Vec<Value> = m
+                                .triggers
+                                .iter()
+                                .map(|t| match &t.on {
+                                    TriggerOn::Cron { text, .. } => {
+                                        json!({"id": t.id, "cron": text})
+                                    }
+                                    TriggerOn::Event(name) => json!({"id": t.id, "event": name}),
+                                })
+                                .collect();
+                            assert_eq!(&Value::Array(got), want, "{about}");
+                        }
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_fixtures_events_are_the_platforms() {
+        let f = fixture();
+        let want: Vec<&str> = f["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(want, talaria_platform_events::EVENT_NAMES);
     }
 
     #[test]
@@ -601,6 +671,50 @@ mod tests {
         assert!(err.contains("\"triggers[0].event\""), "{err}");
         assert!(judge(json!({"id": "a", "cron": "0 3 * * *"})).is_ok());
         assert!(judge(json!({"id": "a", "event": " ticket.created "})).is_ok());
+    }
+
+    /// What a passing trigger reads as: the schedule parsed and kept with its
+    /// text, the event trimmed; a schedule that does not parse, an event the
+    /// platform does not emit and a reused id are refused at install.
+    #[test]
+    fn a_trigger_is_read_into_what_the_scheduler_runs() {
+        let m = validate_manifest(
+            &json!({"name": "X", "triggers": [
+                {"id": "nightly", "cron": " 0 3 * * * "},
+                {"id": "moved", "event": " ticket.moved "},
+            ]}),
+            SDK_VERSION,
+        )
+        .unwrap();
+        assert_eq!(m.triggers.len(), 2);
+        assert_eq!(m.triggers[0].id, "nightly");
+        match &m.triggers[0].on {
+            TriggerOn::Cron { text, schedule } => {
+                assert_eq!(text, "0 3 * * *");
+                assert_eq!(schedule, &parse_cron("0 3 * * *").unwrap());
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(m.triggers[1].on, TriggerOn::Event("ticket.moved".into()));
+
+        let judge = |t: Value| validate_manifest(&json!({"name": "X", "triggers": t}), SDK_VERSION);
+        let err = judge(json!([{"id": "a", "cron": "0 25 * * *"}])).unwrap_err();
+        assert!(
+            err.contains("\"triggers[0].cron\" is not a schedule: the hour field's 25"),
+            "{err}"
+        );
+        let err = judge(json!([{"id": "a", "event": "ticket.deleted"}])).unwrap_err();
+        assert!(
+            err.contains("names no platform event (\"ticket.deleted\"); the events are ticket.created, ticket.moved"),
+            "{err}"
+        );
+        let err =
+            judge(json!([{"id": "a", "cron": "@daily"}, {"id": "a", "event": "ticket.created"}]))
+                .unwrap_err();
+        assert!(
+            err.contains("\"triggers[1].id\" \"a\" is used by an earlier trigger"),
+            "{err}"
+        );
     }
 
     #[test]

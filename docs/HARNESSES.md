@@ -46,11 +46,25 @@ loads and checks them, and the api registers them as data and replays their fixt
 host; see [Shipping one from an app](#how-to-add-a-harness) below. A platform harness is written in
 Rust.
 
+**The TS twin runs harnesses; it is not a second gateway.** Its transports
+(`ui/src/server/harness/transport.ts`) make every call — a gateway completion, a streamed one, a
+tool turn, a turn on a fleet agent — as a POST to the Rust relay (`/api/llm/v1/chat/completions`)
+on the gateway key of the app whose code is running (`app:<slug>`; the host knows which app,
+`ui/src/server/app-scope.ts`, and refuses a call made outside every app). The relay routes,
+prices and meters the call as `app` spend under the run's caller stamp, enforces the app's
+budget, and drives a fleet agent's turn through its persona door so the agent's own calls are
+the turn's one meter. It skips its own guard pass for an app's key, because the TS runner has
+already guarded the reply with the harness's narrowed rule set. The TS runner still resolves the
+model chain and reads the capability floor itself, against the same `model_capabilities` facts
+(probe facts below their probe's revision read as unknown, as in Rust); its guard registry
+carries the structural rules, and `implied_completion` — a semantic rule judged by the decision
+model — runs only on the api's side.
+
 **One chokepoint, and the architecture holds it.** The hand-written-harness census this file used
 to cite left with the port — the last entry it carried (`channel-replies`, a live persona
 conversation where the messages are the human's and there is no prompt of Talaria's to declare)
 serves from the api now, so there is nothing left to enumerate: `ui/src` holds no hand-written model
-call at all. In the api the same discipline is the
+call at all, and the one transport it has goes to the relay. In the api the same discipline is the
 architecture itself: `harness/run.rs` is the only module that talks to a model, and everything else
 reaches one through it. A new hand-written call is a regression, not a backlog item.
 
@@ -544,13 +558,19 @@ like this:
   bound to that harness alone and never to a role or platform-agent column.
 - **The sweep replays its fixtures through the host.**
   `POST /api/app-host/<slug>/harnesses/<id>/cases/<name>` runs the case on the host's runner. The
-  candidate is pinned and the `harness_runs` and findings filing is off. The sweep scores the
-  returned contract, repairs and fixture verdict with the same arithmetic as a builtin case.
+  candidate is pinned and the `harness_runs` and findings filing is off. The case's calls go to
+  the relay on the app's gateway key, so they are the app's spend (stamped
+  `app:<slug>:fitness:<harness id>`) and the token counts it returns are the provider's own. The
+  sweep scores the returned contract, repairs and fixture verdict with the same arithmetic as a
+  builtin case.
 - **What a skip costs.** A harness file that does not compile, or fails a check, is skipped and
   named on the app's row in Manage → Apps. The app keeps running. The api decodes the listing one
   entry at a time, so an entry it cannot read costs that harness, never the other apps'.
 - **Its runs count.** The rows its `server.ts` runs write to `harness_runs` count in the value
   view's workload while the app is enabled.
+- **Its spend is the app's.** Every call the host's runner makes for the app goes to the relay
+  on the app's own gateway key: ledger source `app`, the run's caller stamp, the app's budget
+  (`app:<slug>`). A turn on a fleet agent is metered once, by the agent's own calls.
 - **It runs bound to its caller.** The app reaches the runner as `ctx.harness.run` /
   `ctx.harness.stream` on its request and MCP tool contexts, built by one factory
   (`appHarnessRunner`, `ui/src/server/app-harness-runner.ts`) from the identity the host already
@@ -562,6 +582,23 @@ like this:
   the calling agent, proven by its own key; from a trigger, none. A gateway-model pin is held to the
   member model allowlist (`modelAllowedFor`) of the person the run acts for. A refusal makes no
   model call and follows the harness's `onFailure`.
+- **It can hold a tool loop.** `def.loop: { tools, maxTurns? }` is the runner-held loop
+  (`ui/src/server/harness/run.ts`, generalized from research's tool-search transport and the
+  fitness dry run in `talaria-fitness-toolbox`, keeping their rules: three calls a turn, the last
+  turn's calls dispatched, failures as tool results, calls on the tool channel, a closing turn
+  without tools). Each tool is a `ToolDefinition` plus exactly one road:
+  - `handler`, the app's code;
+  - `mcp`, the app's own MCP tool through `callOwnAppTool`;
+  - `org`, an org MCP tool through the MCP gateway as the calling agent, presenting its own key
+    (`ui/src/server/app-org-tools.ts`). Only an MCP-tool context has an agent to lend.
+
+  The result gains `toolCalls`, `calls` and `exhausted`, and the guard is grounded in the tools'
+  results. It lives in TS because the tools are app code.
+- **Its loop can be scored.** The wire carries each loop tool's road and whether it has a
+  `simulate`. The sweep sends a loop harness's fixtures to the host only when every tool simulates
+  and the candidate can be handed tool definitions (`app_loop_skip_reason`). The host replays
+  with every tool answered by `simulate`, and returns the calls into the case's `calls`. A loop
+  with an unsimulated tool keeps #595's skip, naming the tools.
 - **It has its own model setting.** Every app harness has a slot, `app:<slug>/<harness id>`
   (`ModelSpec.slot`, set by the host and never by the app). The `slot` chain step resolves it before
   `role` in any chain, from the `app_harness_models` setting that both resolvers read: TS

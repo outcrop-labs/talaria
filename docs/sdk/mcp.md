@@ -61,6 +61,7 @@ cannot compile (a `$ref`, an unknown draft) are passed through unchecked.
 | `actingUserId` | The person the agent is acting for, when the gateway knows it — else `null` |
 | `store` | Your document store, the same one `server.ts` gets |
 | `signal` | Aborts at the server's deadline, or when the agent disconnects |
+| `agents` | Drive **the calling agent only**, and only when `caller.proven` ([server.md](./server.md#driving-an-agent)) |
 | `harness` | Runs a harness for this call. It may run on an agent only if that agent is the caller, proven ([harnesses](./harnesses.md#running-one--ctxharness)) |
 
 **`caller.proven` is true only when the call came in on that agent's own gateway key.** An agent
@@ -246,7 +247,8 @@ test('an empty store finds nothing', async () => {
 The context defaults to a proven agent (`test-agent`), no acting person, a fresh `memoryStore()`
 and the 120 s deadline. `caller: { proven: false }` is an agent on the org-wide key, with the
 null `id` the gateway gives it. Set any of `caller`, `actingUserId`, `store`, `timeoutSecs`,
-`signal`, or `tools` (the agent's granted subset) to test the case it decides. Run an app's tests
+`signal`, `tools` (the agent's granted subset) or `agents` (how `ctx.agents` answers; by default it
+refuses, as there is no fleet in a test) to test the case it decides. Run an app's tests
 from `ui/`: `TALARIA_APP_TESTS=<slug> bunx vitest run` runs `apps/<slug>/**/*.test.ts` and nothing
 else. `@talaria/sdk/testing` is for tests only: an app build does not resolve it.
 

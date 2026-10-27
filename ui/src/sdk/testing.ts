@@ -30,7 +30,7 @@ import type { HarnessDefinition } from '@/server/harness/define'
 import type { Capability, CapabilitySource } from '@/server/harness/capability'
 import type { ToolCall, TransportReply, TransportRequest } from '@/server/harness/transport'
 import type { AppHarnessRunner } from '@/server/app-harness-runner'
-import type { AppMcp, AppMcpCaller, AppToolContent, AppStore } from './server'
+import type { AppAgents, AppMcp, AppMcpCaller, AppToolContent, AppStore } from './server'
 
 export { memoryStore }
 
@@ -53,6 +53,11 @@ export interface OfflineRunOptions {
    *  admin (`'declared'`) or one upstream 400 (`'learned'`) left it — to see
    *  your floor refuse, or not. Default nothing on record: unknown, which runs. */
   capabilities?: Partial<Record<Capability, { value: boolean; source?: CapabilitySource }>>
+  /** A tool loop's tools (`def.loop`). By default handlers run for real and
+   *  `mcp`/`org` tools answer through their `simulate` (there is no host here
+   *  to dispatch them). `true` answers every tool through `simulate`, as the
+   *  fitness sweep's dry run does. */
+  simulate?: boolean
 }
 
 /** Every request the run made, for assertions on the prompt. */
@@ -87,6 +92,7 @@ export async function runHarnessOffline<I, O>(def: HarnessDefinition<I, O>, inpu
   const result = await runCore(def, input, {
     caller: `test:${def.id}`,
     model,
+    loop: opts.simulate ? { app: null, actingUserId: null, simulate: true } : { app: null, actingUserId: null, simulateExternal: true },
     deps: {
       routing: async (m: string) => ({ endpoints: ['test'], upstreamModel: m }),
       personaKeys: async () => [],
@@ -119,6 +125,9 @@ export interface AppToolCallOptions {
   actingUserId?: string | null
   /** The store (`ctx.store`). Default a fresh `memoryStore()`. */
   store?: AppStore
+  /** `ctx.agents`, as your test wants it to answer. Default one that refuses
+   *  every turn: there is no fleet in a unit test. */
+  agents?: AppAgents
   /** The server's timeout in seconds. Default 120, as on a server an admin
    *  left alone. */
   timeoutSecs?: number
@@ -179,6 +188,7 @@ export async function callAppTool(
     caller,
     actingUserId: ctx.actingUserId ?? null,
     store: ctx.store ?? memoryStore(),
+    ...(ctx.agents ? { agents: ctx.agents } : {}),
     signal: ctx.signal,
     timeoutSecs: ctx.timeoutSecs,
     ...(ctx.harness ? { harness: ctx.harness } : {}),

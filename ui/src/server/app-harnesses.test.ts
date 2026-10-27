@@ -10,6 +10,7 @@ import { z } from 'zod'
 import { defineHarness } from '@/sdk/server'
 import type { HarnessDeps } from '@/server/harness/run'
 import type { TransportReply } from '@/server/harness/transport'
+import { appInScope } from '@/server/app-scope'
 import {
   BUILTIN_HARNESS_IDS,
   checkAppHarness,
@@ -381,6 +382,7 @@ describe('wireOf', () => {
       widen: null,
       temperature: null,
       model: { pin: null, role: null, chain: null, slot: 'app:support/support:triage' },
+      loop: null,
       evals: [
         { name: 'an outage grades high', band: 'easy' },
         { name: 'a typo grades low', band: 'standard' },
@@ -485,7 +487,116 @@ describe('replayAppCase', () => {
     expect(r?.promptTokens).toBeGreaterThan(0)
   })
 
+  it('runs as the app: its calls sign with the app\'s gateway key, under the app\'s fitness stamp', async () => {
+    // The transport finds the key by the app in scope (app-scope.ts), never by
+    // a caller name; the stamp is what the relay books the replay's spend under.
+    const { deps } = scripted('{"severity":"high","reason":"x"}')
+    const seen: Array<{ app: string | null; caller: string }> = []
+    const base = deps.transport!
+    deps.transport = async (req) => {
+      seen.push({ app: appInScope(), caller: req.caller })
+      return base(req)
+    }
+    const h = await registered()
+    await replayAppCase(h, 'an outage grades high', 'm', { deps })
+    expect(seen).toEqual([{ app: h.slug, caller: `app:${h.slug}:fitness:support:triage` }])
+    expect(appInScope()).toBeNull()
+  })
+
   it('answers null for a fixture the harness does not declare', async () => {
     expect(await replayAppCase(await registered(), 'no such fixture', 'm')).toBeNull()
+  })
+})
+
+// ── The tool loop ────────────────────────────────────────────────────────────
+
+const LOOKUP = z.object({ customer: z.string() })
+
+/** A loop harness an app writes: a handler with a simulate, its own MCP tool
+ *  with a simulate, and a fixture that asserts what the model DID. */
+const handlerSpy = vi.fn(async () => ({ id: 'real' }))
+const lookup = defineHarness<{ email: string }, z.infer<typeof LOOKUP>>({
+  id: 'support:lookup',
+  label: 'Support lookup',
+  job: 'Finds the customer, then their orders.',
+  requires: ['json', 'tools'],
+  floor: { capabilities: [], refuseBelow: false, note: 'Any model that calls tools.' },
+  model: {},
+  render: (i) => [{ role: 'user', content: `look up ${i.email}` }],
+  output: { kind: 'json', schema: LOOKUP },
+  onFailure: 'null',
+  loop: {
+    maxTurns: 4,
+    tools: [
+      { name: 'find_customer', description: 'Find a customer.', parameters: { type: 'object' }, handler: handlerSpy, simulate: (args) => ({ id: 'sim', email: args.email }) },
+      { name: 'recent_orders', description: 'Orders.', parameters: { type: 'object' }, mcp: 'orders_recent', simulate: () => ({ count: 2 }) },
+    ],
+  },
+  evals: [
+    {
+      name: 'looks the customer up before the orders',
+      input: { email: 'ada@example.test' },
+      check: (_v, ctx) => (ctx.calledBefore('find_customer', 'recent_orders') ? null : 'read orders before finding the customer'),
+    },
+  ],
+})
+
+describe('a tool loop', () => {
+  it('is checked whole at load: one road per tool, real names, a bounded loop', () => {
+    expect(checkAppHarness(lookup).ok).toBe(true)
+    const tool = { name: 'find', description: 'd', parameters: { type: 'object' }, handler: () => 1 }
+    const cases: Array<[string, unknown, RegExp]> = [
+      ['no tools', { tools: [] }, /loop offers no tools/],
+      ['two roads', { tools: [{ ...tool, mcp: 'x' }] }, /exactly one of handler, mcp or org/],
+      ['no road', { tools: [{ name: 'find', description: 'd', parameters: { type: 'object' } }] }, /exactly one of handler, mcp or org/],
+      ['a bad org', { tools: [{ name: 'find', description: 'd', parameters: {}, org: 'no-slash' }] }, /'<server>\/<tool>'/],
+      ['a bad name', { tools: [{ ...tool, name: 'has space' }] }, /letters, digits, _ and -/],
+      ['a repeated name', { tools: [tool, tool] }, /two loop tools are named "find"/],
+      ['no description', { tools: [{ ...tool, description: '' }] }, /no description/],
+      ['too many turns', { tools: [tool], maxTurns: 40 }, /maxTurns 40/],
+      ['a simulate that is not a function', { tools: [{ ...tool, simulate: 'x' }] }, /simulate is not a function/],
+    ]
+    for (const [label, loop, why] of cases) {
+      const r = checkAppHarness(raw({ loop }))
+      expect(r.ok, label).toBe(false)
+      if (!r.ok) expect(r.problems.join('; '), label).toMatch(why)
+    }
+    const both = checkAppHarness(raw({ loop: { tools: [tool] }, tools: 'own' }))
+    expect(both.ok).toBe(false)
+    const clash = checkAppHarness(raw({ loop: { tools: [tool] }, toolDefs: [{ name: 'find', description: 'd', parameters: {} }] }))
+    expect(!clash.ok && clash.problems.join()).toMatch(/also offered in toolDefs/)
+  })
+
+  it('goes on the wire as data: the turn bound, and per tool its road and whether it can be dry-run', async () => {
+    const { harnesses } = await listAppHarnesses(layerOf({ support: { 'lookup.ts': async () => ({ default: lookup }) } }))
+    expect(wireOf(harnesses[0]!).loop).toEqual({
+      maxTurns: 4,
+      tools: [
+        { name: 'find_customer', via: 'handler', simulate: true },
+        { name: 'recent_orders', via: 'mcp', simulate: true },
+      ],
+    })
+  })
+
+  it('is replayed as a dry run: every tool answers through simulate, and the fixture reads the calls', async () => {
+    handlerSpy.mockClear()
+    const { harnesses } = await listAppHarnesses(layerOf({ support: { 'lookup.ts': async () => ({ default: lookup }) } }))
+    let n = 0
+    const turns: TransportReply[] = [
+      { kind: 'gateway', text: '', toolNames: ['find_customer'], toolCalls: [{ name: 'find_customer', args: '{"email":"ada@example.test"}', id: 'c1' }], usage: null, contractDropped: false },
+      { kind: 'gateway', text: '', toolNames: ['recent_orders'], toolCalls: [{ name: 'recent_orders', args: '{}', id: 'c2' }], usage: null, contractDropped: false },
+      { kind: 'gateway', text: '{"customer":"sim"}', toolNames: [], toolCalls: [], usage: null, contractDropped: false },
+    ]
+    const deps: Partial<HarnessDeps> = {
+      ...scripted('').deps,
+      transport: async () => turns[Math.min(n++, turns.length - 1)]!,
+    }
+    const r = await replayAppCase(harnesses[0]!, 'looks the customer up before the orders', 'mock-small', { deps })
+    expect(handlerSpy).not.toHaveBeenCalled()
+    expect(r).toMatchObject({ verdict: 'pass', schemaValid: true, exhausted: false })
+    expect(r?.calls).toEqual([
+      { tool: 'find_customer', args: { email: 'ada@example.test' }, result: { id: 'sim', email: 'ada@example.test' }, error: null },
+      { tool: 'recent_orders', args: {}, result: { count: 2 }, error: null },
+    ])
   })
 })

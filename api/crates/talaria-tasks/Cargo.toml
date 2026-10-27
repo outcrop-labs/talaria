@@ -24,6 +24,7 @@ talaria-gateway = { workspace = true }
 talaria-judge = { workspace = true }
 talaria-labels = { workspace = true }
 talaria-notify = { workspace = true }
+talaria-platform-events = { workspace = true }
 talaria-realtime = { workspace = true }
 talaria-retrieval = { workspace = true }
 talaria-statuses = { workspace = true }

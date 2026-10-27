@@ -9,52 +9,65 @@
 // the fall-through classified them as gateway models that the gateway does not
 // serve.
 //
+// AND THE ONE DOOR. Both kinds of call now go to the Rust relay
+// (`/api/llm/v1/chat/completions`) on the gateway key of the app whose code is
+// running; the relay is a stubbed `fetch` here, and every assertion about the
+// request reads the body and headers it was sent.
+//
 // This file is separate from run.test.ts on purpose. It is the only place that
-// mocks the two transport modules, so run.test.ts stays a pure dependency-
-// injected exercise of the runner with nothing hoisted underneath it.
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+// mocks the transport's edges, so run.test.ts stays a pure dependency-injected
+// exercise of the runner with nothing hoisted underneath it.
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const gatewayModels = vi.fn()
 const listAgents = vi.fn()
-const completeViaGateway = vi.fn()
-const proxyChat = vi.fn()
-const resolveRoute = vi.fn()
-const fetchUpstream = vi.fn()
-const recordGatewayUsage = vi.fn(async (..._a: unknown[]) => {})
-
-/** One upstream call, as `buildUpstream` builds it — the body is what the test
- *  reads to prove the definitions went out, and `contractDrops` is how the
- *  gateway reports that a parameter never reached the model (audit 1.2). */
-interface FakeCall {
-  url: string
-  headers: Record<string, string>
-  body: Record<string, unknown>
-  contractDrops: Array<{ capability: string }>
-}
-let built: FakeCall[] = []
-let drops: Array<{ capability: string }> = []
+const scope = { slug: 'crm' as string | null }
+const keys = { current: 'tlk_first', asked: 0, forgotten: 0 }
 
 vi.mock('@/server/llm-gateway', () => ({
   gatewayModels: () => gatewayModels(),
   routingFor: async () => ({ endpoints: [], upstreamModel: '' }),
-  completeViaGateway: (...args: unknown[]) => completeViaGateway(...args),
-  resolveRoute: (...args: unknown[]) => resolveRoute(...args),
-  buildUpstream: (_route: unknown, body: Record<string, unknown>) => {
-    const call: FakeCall = { url: 'https://upstream.test/v1/chat/completions', headers: {}, body, contractDrops: drops }
-    built.push(call)
-    return Promise.resolve(call)
+}))
+vi.mock('@/server/gateway', () => ({ listAgents: () => listAgents() }))
+vi.mock('@/server/app-scope', () => ({
+  appInScope: () => scope.slug,
+  withApp: <T,>(_slug: string, fn: () => T): T => fn(),
+}))
+vi.mock('@/server/app-llm-key', () => ({
+  appGatewayKey: async () => {
+    keys.asked++
+    return keys.current
   },
-  fetchUpstream: (...args: unknown[]) => fetchUpstream(...args),
-  recordGatewayUsage: (...args: unknown[]) => recordGatewayUsage(...(args as [])),
-  // The real one, inlined: a caller reads drops off the call it was handed.
-  contractDropsOf: (call: FakeCall) => call.contractDrops ?? [],
+  forgetAppGatewayKey: () => {
+    keys.forgotten++
+  },
 }))
-vi.mock('@/server/gateway', () => ({
-  CANNED_STREAM_HEADER: 'x-talaria-canned',
-  listAgents: () => listAgents(),
-  proxyChat: (...args: unknown[]) => proxyChat(...args),
-}))
-vi.mock('@/server/usage', () => ({ estimateTokens: () => 0, recordUsage: async () => {} }))
+vi.mock('@/server/rust-proxy', () => ({ rustApiUrl: () => 'http://api.test' }))
+
+/** One call the relay received: the url, its headers and the parsed body. */
+interface Sent {
+  url: string
+  headers: Record<string, string>
+  body: Record<string, unknown>
+}
+let sent: Sent[] = []
+/** What the relay answers the next call with; `fresh()` per call because a
+ *  Response body reads once. */
+let answers: Array<() => Response> = []
+let fallback: () => Response = () => json({ choices: [{ message: { content: '' } }] })
+
+const json = (body: unknown, init: { status?: number; headers?: Record<string, string> } = {}): Response =>
+  new Response(JSON.stringify(body), { status: init.status ?? 200, headers: { 'content-type': 'application/json', ...init.headers } })
+
+const relay = vi.fn(async (url: string, init: { headers: Record<string, string>; body: string }) => {
+  sent.push({ url, headers: init.headers, body: JSON.parse(init.body) as Record<string, unknown> })
+  return (answers.shift() ?? fallback)()
+})
+const realFetch = globalThis.fetch
+globalThis.fetch = relay as unknown as typeof fetch
+afterAll(() => {
+  globalThis.fetch = realFetch
+})
 
 const {
   fleetTransport,
@@ -63,7 +76,6 @@ const {
   gatewayStream,
   gatewayTransport,
   offersToolDefinitions,
-  personaProbeTurn,
   pickTransport,
   toolWireMessage,
 } = await import('@/server/harness/run')
@@ -71,27 +83,36 @@ const {
 /** A rendered fleet: base ids only, which is what `listAgents` returns. */
 const rendered = (...ids: string[]) => ids.map((id) => ({ id, label: id, role: '' }))
 
-/** Which transport came back, without calling it: the gateway transport reaches
- *  for `completeViaGateway` and the fleet transport for `proxyChat`, so one
- *  throwing call each identifies it unambiguously. */
+/** Which transport came back, read off the request it sent: a gateway call
+ *  carries an OpenAI body (`stream` set), a persona turn the persona payload
+ *  (no `stream` — the door adds it). */
 async function kindOf(model: string): Promise<'gateway' | 'fleet'> {
-  completeViaGateway.mockRejectedValue(new Error('GATEWAY'))
-  proxyChat.mockRejectedValue(new Error('FLEET'))
+  answers.push(() => json({ error: { message: 'stop' } }, { status: 500 }))
   const transport = await pickTransport(model)
-  const err = await transport({ model, messages: [], jsonMode: false, caller: 't' }).then(
-    () => null,
-    (e: Error) => e.message,
-  )
-  return err === 'FLEET' ? 'fleet' : 'gateway'
+  await transport({ model, messages: [], jsonMode: false, caller: 't' }).catch(() => null)
+  return 'stream' in (sent.at(-1)?.body ?? {}) ? 'gateway' : 'fleet'
 }
+
+/** A persona reply stream, as `pumpPersonaStream` reads it. */
+const sse = (chunks: string[]) =>
+  new ReadableStream<Uint8Array>({
+    start(c) {
+      for (const chunk of chunks) c.enqueue(new TextEncoder().encode(chunk))
+      c.close()
+    },
+  })
+const stream = (chunks: string[], headers: Record<string, string> = {}) => () =>
+  new Response(sse(chunks), { headers: { 'content-type': 'text/event-stream', ...headers } })
 
 beforeEach(() => {
   vi.clearAllMocks()
   gatewayModels.mockResolvedValue([])
   listAgents.mockResolvedValue([])
-  built = []
-  drops = []
-  resolveRoute.mockResolvedValue({ endpoint: { name: 'spark' }, upstreamModel: 'qwen3-14b' })
+  sent = []
+  answers = []
+  fallback = () => json({ choices: [{ message: { content: '' } }] })
+  scope.slug = 'crm'
+  Object.assign(keys, { current: 'tlk_first', asked: 0, forgotten: 0 })
 })
 
 describe('pickTransport', () => {
@@ -108,7 +129,7 @@ describe('pickTransport', () => {
 
   it('sends a TIER of a live persona to the persona gateway', async () => {
     // THE REGRESSION. `listAgents` hides "engineer-engineering-opus", but the manifest
-    // has it and `proxyChat` matches the full id — so this must route as a
+    // has it and the persona door matches the full id — so this must route as a
     // persona, exactly as the hand-written calls did before the port. Reached
     // from the Plan modal's tier dropdown and from `validDelegate`.
     listAgents.mockResolvedValue(rendered('engineer-engineering'))
@@ -124,7 +145,7 @@ describe('pickTransport', () => {
 
   it('never treats an UNRENDERED fleet as a persona', async () => {
     // `listAgents` used to answer with three invented agents when the fleet had
-    // never been rendered, and `proxyChat` answers an unknown model with a
+    // never been rendered, and the persona door answers an unknown model with a
     // canned "this is a mock" stream — which would have handed a harness a
     // chatty English sentence to parse as its verdict. The invented agents are
     // gone; an unrendered fleet is now an empty list, and nothing in it can
@@ -135,9 +156,8 @@ describe('pickTransport', () => {
   })
 
   it('lets the gateway win when a model is somehow both', async () => {
-    // The gateway is the metered, fully-inspectable path: it knows the endpoint,
-    // writes its own ledger row, and hands the runner the whole message history
-    // to guard against.
+    // The gateway is the fully-inspectable path: it knows the endpoint, and it
+    // hands the runner the whole message history to guard against.
     gatewayModels.mockResolvedValue([{ id: 'engineer-engineering' }])
     listAgents.mockResolvedValue(rendered('engineer-engineering'))
     expect(await kindOf('engineer-engineering')).toBe('gateway')
@@ -152,17 +172,11 @@ describe('pickTransport', () => {
 // ── The canned stream, which is an outage wearing a 200 ──────────────────────
 
 describe('the persona transport', () => {
-  /** What `proxyChat` answers with when an agent never came back: a 200 SSE
-   *  stream of ordinary English, in OpenAI chunk format. */
-  const canned = (text: string, kind: string): Response => {
-    const body = new ReadableStream<Uint8Array>({
-      start(c) {
-        c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\ndata: [DONE]\n\n`))
-        c.close()
-      },
-    })
-    return new Response(body, { headers: { 'Content-Type': 'text/event-stream', 'x-talaria-canned': kind } })
-  }
+  /** What the relay's persona door answers with when an agent never came
+   *  back: a 200 SSE stream of ordinary English, in OpenAI chunk format, with
+   *  the canned header saying so. */
+  const canned = (text: string, kind: string) =>
+    stream([`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\ndata: [DONE]\n\n`], { 'x-talaria-canned': kind })
 
   it('fails the run rather than parsing the "agent is restarting" sentence as an answer', async () => {
     // `upstream.ok` was the only check, so this sentence was cleaned by every
@@ -171,13 +185,89 @@ describe('the persona transport', () => {
     // briefing summary, an `outreach_events` note that the next check-in prompt
     // reads back, twelve `task_activity` lines. An outage recorded as a perfect
     // contract rate is the exact number the fitness page is built to read.
-    proxyChat.mockResolvedValue(canned('Penny is restarting (or down) and did not come back.', 'unavailable'))
+    answers.push(canned('Penny is restarting (or down) and did not come back.', 'hold'))
     await expect(fleetTransport({ model: 'assistant-operations', messages: [], jsonMode: false, caller: 't' })).rejects.toThrow(/did not come back/)
   })
 
   it('fails the run on a mock-mode reply too', async () => {
-    proxyChat.mockResolvedValue(canned("Hi — this is Dex (mock mode: the fleet isn't rendered yet).", 'mock'))
+    answers.push(canned("Hi — this is Dex (mock mode: the fleet isn't rendered yet).", 'mock'))
     await expect(fleetTransport({ model: 'engineer-engineering', messages: [], jsonMode: false, caller: 't' })).rejects.toThrow(/not a rendered agent/)
+  })
+
+  it('goes to the relay as the app, with the hold and the run\'s refs, and writes no row of its own', async () => {
+    // THE DOUBLE METER. This side used to drive the agent's container itself
+    // and write a ledger row for the turn, while the agent's own calls reached
+    // the relay on its key with no turn recorded and were booked again as
+    // `unattended`. Now the relay drives the turn through its persona door with
+    // the turn recorded as the app's, and the agent's calls are the one meter.
+    answers.push(stream(['data: {"choices":[{"delta":{"content":"done"}}]}\n\n', 'data: {"usage":{"prompt_tokens":7,"completion_tokens":3}}\n\n', 'data: [DONE]\n\n']))
+    const reply = await fleetTransport({
+      model: 'engineer-engineering',
+      messages: [{ role: 'user', content: 'hi' }],
+      jsonMode: false,
+      caller: 'app:crm:triage',
+      holdMs: 600_000,
+      ledger: { agentModel: 'engineer-engineering', source: 'chat', refId: 'r-1', taskId: 't-1', tier: null },
+    })
+    expect(reply).toMatchObject({ kind: 'fleet', text: 'done', usage: { promptTokens: 7, completionTokens: 3 } })
+    const call = sent[0]!
+    expect(call.url).toBe('http://api.test/api/llm/v1/chat/completions')
+    expect(call.headers.authorization).toBe('Bearer tlk_first')
+    expect(call.headers['x-talaria-caller']).toBe('app:crm:triage')
+    expect(call.headers['x-talaria-hold-ms']).toBe('600000')
+    expect(call.headers['x-talaria-ref-id']).toBe('r-1')
+    expect(call.headers['x-talaria-task-id']).toBe('t-1')
+    expect(call.body.model).toBe('engineer-engineering')
+  })
+})
+
+// ── The one door ─────────────────────────────────────────────────────────────
+
+describe('the relay', () => {
+  it('refuses a call made outside any app, before anything is sent', async () => {
+    // No app in scope means no key to sign with and no budget to charge: a
+    // call on nobody's account is the second gateway this replaced.
+    scope.slug = null
+    await expect(gatewayTransport({ model: 'qwen3-14b', messages: [], jsonMode: false, caller: 'app:other' })).rejects.toThrow(/outside any app's code/)
+    expect(relay).not.toHaveBeenCalled()
+  })
+
+  it('signs with the key of the app in scope, whatever caller the app named', async () => {
+    // The caller stamp rides as a header the relay keeps inside the app's own
+    // namespace; the key — the app's identity — is the host's to choose.
+    await gatewayTransport({ model: 'qwen3-14b', messages: [], jsonMode: false, caller: 'app:billing' })
+    expect(sent[0]!.headers.authorization).toBe('Bearer tlk_first')
+    expect(sent[0]!.headers['x-talaria-caller']).toBe('app:billing')
+  })
+
+  it('asks for the key again once when the relay no longer knows it', async () => {
+    // A disable and re-enable rotates the app's key; the host's copy is stale
+    // until it asks.
+    answers.push(() => json({ error: { message: 'invalid API key' } }, { status: 401 }))
+    fallback = () => json({ choices: [{ message: { content: 'ok' } }] })
+    keys.current = 'tlk_second'
+    const reply = await gatewayTransport({ model: 'qwen3-14b', messages: [], jsonMode: false, caller: 't' })
+    expect(reply.text).toBe('ok')
+    expect(keys.forgotten).toBe(1)
+    expect(sent).toHaveLength(2)
+    // A second refusal is not retried forever.
+    answers.push(() => json({ error: { message: 'invalid API key' } }, { status: 401 }))
+    answers.push(() => json({ error: { message: 'invalid API key' } }, { status: 401 }))
+    await expect(gatewayTransport({ model: 'qwen3-14b', messages: [], jsonMode: false, caller: 't' })).rejects.toThrow(/401: invalid API key/)
+  })
+
+  it("fails with the relay's own sentence — a budget, an unknown model", async () => {
+    answers.push(() => json({ error: { message: '"app:crm" has reached its LLM budget: 1,200 of 1,000 tokens in the last 24h.' } }, { status: 429 }))
+    await expect(gatewayTransport({ model: 'qwen3-14b', messages: [], jsonMode: false, caller: 't' })).rejects.toThrow(/429: "app:crm" has reached its LLM budget/)
+  })
+
+  it("reports the provider's own token counts on a plain completion", async () => {
+    // What a fitness replay scores: the gateway's blocking path used to hand
+    // back `usage: null`, and every case's tokens were a chars/4 guess.
+    answers.push(() => json({ choices: [{ message: { content: 'a title' } }], usage: { prompt_tokens: 120, completion_tokens: 9 } }))
+    const reply = await gatewayTransport({ model: 'qwen3-14b', messages: [{ role: 'user', content: 'name it' }], jsonMode: false, caller: 't' })
+    expect(reply.usage).toEqual({ promptTokens: 120, completionTokens: 9 })
+    expect(sent[0]!.body).toMatchObject({ model: 'qwen3-14b', stream: false, messages: [{ role: 'user', content: 'name it' }] })
   })
 })
 
@@ -207,14 +297,20 @@ const withToolCall = (name: string, args: string): Response =>
     { status: 200, headers: { 'content-type': 'application/json' } },
   )
 
+/** The relay's report that a contract parameter never reached the model. */
+const dropped = (res: Response, caps: string): Response => {
+  res.headers.set('x-talaria-contract-drops', caps)
+  return res
+}
+
 const toolRequest = { model: 'qwen3-14b', messages: [{ role: 'user' as const, content: 'weather in Lisbon?' }], jsonMode: false, caller: 'fitness:probe:tools', toolDefs: [WEATHER] }
 
 describe('offering tool definitions', () => {
   it('puts them on the wire and reports the call back with its arguments', async () => {
-    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{"city":"Lisbon"}'))
+    answers.push(() => withToolCall('get_weather', '{"city":"Lisbon"}'))
     const reply = await gatewayTransport(toolRequest)
 
-    const body = built[0]?.body ?? {}
+    const body = sent[0]?.body ?? {}
     expect(body.tools).toEqual([{ type: 'function', function: { name: 'get_weather', description: WEATHER.description, parameters: WEATHER.parameters } }])
     // `tool_choice: 'auto'`, never the policy's 'none': the POLICY is about the
     // model's own tools and these are ours, so suppressing them here would send
@@ -228,13 +324,10 @@ describe('offering tool definitions', () => {
     // fields cannot report different calls.
     expect(reply.toolNames).toEqual(['get_weather'])
     expect(reply.usage).toEqual({ promptTokens: 40, completionTokens: 12 })
-    expect(recordGatewayUsage).toHaveBeenCalledTimes(1)
   })
 
   it('reports an EMPTY list when the model answered in prose, which is a failed trial and not a missing one', async () => {
-    fetchUpstream.mockResolvedValue(
-      new Response(JSON.stringify({ choices: [{ message: { content: 'It is sunny in Lisbon.' } }] }), { status: 200, headers: { 'content-type': 'application/json' } }),
-    )
+    answers.push(() => json({ choices: [{ message: { content: 'It is sunny in Lisbon.' } }] }))
     const reply = await gatewayTransport(toolRequest)
     expect(reply.toolCalls).toEqual([])
     expect(reply.text).toBe('It is sunny in Lisbon.')
@@ -246,24 +339,22 @@ describe('offering tool definitions', () => {
     // completion — of a question that no longer mentioned any tools. Answering
     // it quietly would write `tools: false`, permanently, about a model that was
     // never asked to call one.
-    drops = [{ capability: 'tools' }]
-    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{}'))
+    answers.push(() => dropped(withToolCall('get_weather', '{}'), 'tools'))
     await expect(gatewayTransport(toolRequest)).rejects.toThrow(/rejects the "tools" parameter/)
   })
 
   it('still reports a dropped response_format, and does not confuse the two', async () => {
-    drops = [{ capability: 'json' }]
-    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{}'))
+    answers.push(() => dropped(withToolCall('get_weather', '{}'), 'json'))
     const reply = await gatewayTransport({ ...toolRequest, jsonMode: true })
     expect(reply.contractDropped).toBe(true)
-    expect(built[0]?.body.response_format).toEqual({ type: 'json_object' })
+    expect(sent[0]?.body.response_format).toEqual({ type: 'json_object' })
   })
 
   it('renders the tool channel on a turn that REPLAYS one but offers no tools', async () => {
     // THE FOURTH REQUEST. `toolSearchTransport` ends with a closing turn — the
     // model has searched, now it writes the answer — which offers no tools and
     // carries the whole tool conversation behind it. With no defs it fell
-    // through to `completeViaGateway`, which flattens every message to
+    // through to the plain completion, which flattened every message to
     // `{role, content}` and drops `tool_call_id`. Anthropic then refused the
     // request it had itself produced two turns earlier:
     //
@@ -271,8 +362,7 @@ describe('offering tool definitions', () => {
     //
     // Three tool turns came back 200 and the fourth 400'd, which is exactly why
     // this read as "the model cannot reach the search tool".
-    drops = []
-    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{}'))
+    answers.push(() => withToolCall('get_weather', '{}'))
     await gatewayTransport({
       model: 'claude-sonnet-5',
       caller: 't',
@@ -284,14 +374,14 @@ describe('offering tool definitions', () => {
         { role: 'user', content: 'now answer' },
       ],
     })
-    const msgs = built[0]?.body.messages as Array<Record<string, unknown>>
+    const msgs = sent[0]?.body.messages as Array<Record<string, unknown>>
     expect(msgs.find((m) => m.role === 'tool')?.tool_call_id).toBe('toolu_1')
     // AND IT OFFERS NOTHING, because nothing was asked for. `tools: []` with
     // `tool_choice: 'auto'` is a request some providers reject and none needs.
-    expect('tools' in (built[0]?.body ?? {})).toBe(false)
-    expect('tool_choice' in (built[0]?.body ?? {})).toBe(false)
+    expect('tools' in (sent[0]?.body ?? {})).toBe(false)
+    expect('tool_choice' in (sent[0]?.body ?? {})).toBe(false)
     // `reasoning_effort` belongs to a turn that OFFERS tools, not to every replay.
-    expect('reasoning_effort' in (built[0]?.body ?? {})).toBe(false)
+    expect('reasoning_effort' in (sent[0]?.body ?? {})).toBe(false)
   })
 
   it('tells the provider to switch reasoning effort off when it offers tools', async () => {
@@ -301,19 +391,17 @@ describe('offering tool definitions', () => {
     // were filed as "could not reach this model". We were not SENDING the
     // parameter — the model's own default effort is what conflicts — so the
     // strip-and-retry ratchet had nothing to remove and bailed.
-    drops = []
-    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{}'))
+    answers.push(() => withToolCall('get_weather', '{}'))
     await gatewayTransport(toolRequest)
-    expect(built[0]?.body.reasoning_effort).toBe('none')
+    expect(sent[0]?.body.reasoning_effort).toBe('none')
   })
 
   it('does not send it on a turn that offers no tools', async () => {
     // The incompatibility is with FUNCTION TOOLS. A plain completion has no
     // reason to touch the model's reasoning, and quietly turning it off
     // everywhere would be a capability change smuggled in as a bug fix.
-    completeViaGateway.mockResolvedValue({ text: 'a title', contractDrops: [] })
     await gatewayTransport({ model: 'qwen3-14b', messages: [], jsonMode: false, caller: 't' })
-    expect(built.some((b) => 'reasoning_effort' in b.body)).toBe(false)
+    expect(sent.some((b) => 'reasoning_effort' in b.body)).toBe(false)
   })
 
   it('does NOT ask for json_object when the contract is rooted at an ARRAY', async () => {
@@ -324,31 +412,28 @@ describe('offering tool definitions', () => {
     // wire format forbade the only answer its contract would accept. Five
     // fixtures in one sweep failed `expected array, got object`, the repair turn
     // failed the same way, and all five were charged to the model.
-    drops = []
-    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{}'))
+    answers.push(() => withToolCall('get_weather', '{}'))
     await gatewayTransport({
       ...toolRequest,
       jsonMode: true,
       jsonSchema: { name: 'channel_plan', strict: false, schema: { type: 'array', items: { type: 'object' } } },
     })
-    expect(built[0]?.body.response_format).toBeUndefined()
+    expect(sent[0]?.body.response_format).toBeUndefined()
   })
 
   it('still asks for json_object when the contract is rooted at an object', async () => {
     // The array rule must not become "stop asking for structured output". An
     // object root is exactly what `json_object` was built for and still gets it.
-    drops = []
-    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{}'))
+    answers.push(() => withToolCall('get_weather', '{}'))
     await gatewayTransport({
       ...toolRequest,
       jsonMode: true,
       jsonSchema: { name: 'titler', strict: false, schema: { type: 'object', properties: { title: { type: 'string' } } } },
     })
-    expect(built[0]?.body.response_format).toEqual({ type: 'json_object' })
+    expect(sent[0]?.body.response_format).toEqual({ type: 'json_object' })
   })
 
   it('leaves toolCalls ABSENT on a plain completion — nobody was in a position to observe one', async () => {
-    completeViaGateway.mockResolvedValue({ text: 'a title', contractDrops: [] })
     const reply = await gatewayTransport({ model: 'qwen3-14b', messages: [], jsonMode: false, caller: 't' })
     expect(reply.toolCalls).toBeUndefined()
     expect(reply.toolNames).toEqual([])
@@ -357,12 +442,12 @@ describe('offering tool definitions', () => {
   it('a FLEET PERSONA refuses them: the tool loop belongs to the agent, and the stream reports bare names', async () => {
     await expect(fleetTransport({ ...toolRequest, model: 'assistant-operations' })).rejects.toThrow(/tool loop runs inside the agent/)
     await expect(fleetStream({ ...toolRequest, model: 'assistant-operations' }, () => {})).rejects.toThrow(/tool loop runs inside the agent/)
-    expect(proxyChat).not.toHaveBeenCalled()
+    expect(relay).not.toHaveBeenCalled()
   })
 
   it('a STREAMING gateway turn refuses them too, rather than half-assembling a call out of deltas', async () => {
     await expect(gatewayStream(toolRequest, () => {})).rejects.toThrow(/STREAMING transport/)
-    expect(fetchUpstream).not.toHaveBeenCalled()
+    expect(relay).not.toHaveBeenCalled()
   })
 })
 
@@ -379,16 +464,10 @@ describe('offering tool definitions', () => {
 
 describe('the reasoning-effort pick', () => {
   /** A persona reply stream, as `pumpPersonaStream` reads it (no canned header). */
-  const fleetBody = () =>
-    new ReadableStream<Uint8Array>({
-      start(c) {
-        c.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
-        c.close()
-      },
-    })
+  const fleetBody = stream(['data: [DONE]\n\n'])
 
   it('travels to a persona gateway in model_options, and temperature does not travel at all', async () => {
-    proxyChat.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: fleetBody() })
+    answers.push(fleetBody)
     const reply = await fleetTransport({
       model: 'engineer-engineering',
       messages: [{ role: 'user', content: 'hi' }],
@@ -397,29 +476,30 @@ describe('the reasoning-effort pick', () => {
       temperature: 0.4,
       effort: 'high',
     })
-    const sent = proxyChat.mock.calls.at(-1)![0] as Record<string, unknown>
-    expect(sent.model_options).toEqual({ reasoning_effort: 'high' })
-    expect('reasoning_effort' in sent).toBe(false)
+    const body = sent.at(-1)!.body
+    expect(body.model_options).toEqual({ reasoning_effort: 'high' })
+    expect('reasoning_effort' in body).toBe(false)
     // Hermes takes no per-request temperature: it is decided, not sent.
-    expect('temperature' in sent).toBe(false)
+    expect('temperature' in body).toBe(false)
     expect(reply.contractDropped).toBe(false)
   })
 
   it('is absent on a persona turn that never picked one', async () => {
-    proxyChat.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: fleetBody() })
+    answers.push(fleetBody)
     await fleetTransport({ model: 'engineer-engineering', messages: [], jsonMode: false, caller: 't' })
-    const sent = proxyChat.mock.calls.at(-1)![0] as Record<string, unknown>
-    expect('reasoning_effort' in sent).toBe(false)
-    expect('model_options' in sent).toBe(false)
+    const body = sent.at(-1)!.body
+    expect('reasoning_effort' in body).toBe(false)
+    expect('model_options' in body).toBe(false)
   })
 
   it('reports a persona JSON request as a dropped contract, never sending response_format', async () => {
-    proxyChat.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: fleetBody() })
+    answers.push(fleetBody)
     const reply = await fleetTransport({ model: 'engineer-engineering', messages: [], jsonMode: true, caller: 't' })
-    const sent = proxyChat.mock.calls.at(-1)![0] as Record<string, unknown>
-    expect('response_format' in sent).toBe(false)
+    const body = sent.at(-1)!.body
+    expect('response_format' in body).toBe(false)
     expect(reply.contractDropped).toBe(true)
     // A schema alone is a JSON contract too — the Rust twin's rule.
+    answers.push(fleetBody)
     const schemaOnly = await fleetTransport({
       model: 'engineer-engineering',
       messages: [],
@@ -431,25 +511,24 @@ describe('the reasoning-effort pick', () => {
   })
 
   it('rides a streamed gateway turn', async () => {
-    fetchUpstream.mockResolvedValue(new Response(fleetBody(), { headers: { 'content-type': 'text/event-stream' } }))
+    answers.push(fleetBody)
     await gatewayStream({ model: 'qwen3-14b', messages: [{ role: 'user', content: 'hi' }], jsonMode: false, caller: 't', effort: 'low' }, () => {})
-    expect(built[0]?.body.reasoning_effort).toBe('low')
-    expect(built[0]?.body.stream).toBe(true)
+    expect(sent[0]?.body.reasoning_effort).toBe('low')
+    expect(sent[0]?.body.stream).toBe(true)
   })
 
-  it('rides a blocking gateway turn through completeViaGateway', async () => {
-    completeViaGateway.mockResolvedValue({ text: 'a reply', contractDrops: [] })
+  it('rides a blocking gateway turn', async () => {
     await gatewayTransport({ model: 'qwen3-14b', messages: [], jsonMode: false, caller: 't', effort: 'medium' })
-    expect(completeViaGateway).toHaveBeenCalledWith('qwen3-14b', [], expect.objectContaining({ effort: 'medium' }))
+    expect(sent[0]?.body.reasoning_effort).toBe('medium')
   })
 
   it('never reaches a turn that OFFERS tools — the provider accepts only none there', async () => {
     // The gpt-5.6-terra refusal names the whole conflict: function tools and a
     // reasoning effort cannot share a request on /v1/chat/completions. The
     // user's pick loses to the value that makes the tool loop work at all.
-    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{}'))
+    answers.push(() => withToolCall('get_weather', '{}'))
     await gatewayTransport({ ...toolRequest, effort: 'high' })
-    expect(built[0]?.body.reasoning_effort).toBe('none')
+    expect(sent[0]?.body.reasoning_effort).toBe('none')
   })
 })
 
@@ -516,20 +595,12 @@ describe('a tool conversation, replayed', () => {
 // it would not error, it would silently return an answer about nothing, and a
 // vision probe would report the model as blind.
 
-/** The wire body the last `buildUpstream` call was given. */
-const lastBody = () => built[built.length - 1]!.body as { messages: Array<{ role: string; content: unknown }> }
-
-const okJson = (text: string) => ({
-  ok: true,
-  status: 200,
-  json: async () => ({ choices: [{ message: { content: text } }], usage: { prompt_tokens: 10, completion_tokens: 2 } }),
-  text: async () => '',
-})
+/** The wire body the relay last received. */
+const lastBody = () => sent[sent.length - 1]!.body as { messages: Array<{ role: string; content: unknown }> }
 
 describe('gatewayImageTurn', () => {
   beforeEach(() => {
-    resolveRoute.mockResolvedValue({ endpoint: { id: 'e1' }, upstreamModel: 'up', capabilities: [] })
-    fetchUpstream.mockResolvedValue(okJson('a cat'))
+    fallback = () => json({ choices: [{ message: { content: 'a cat' } }], usage: { prompt_tokens: 10, completion_tokens: 2 } })
   })
 
   it('puts the image on the last USER turn, not the system prompt', async () => {
@@ -582,79 +653,10 @@ describe('gatewayImageTurn', () => {
     expect((lastBody().messages[0]!.content as unknown[]).length).toBe(3)
   })
 
-  it('refuses a model the gateway does not serve, and reports an upstream failure', async () => {
-    resolveRoute.mockResolvedValueOnce(null)
-    await expect(gatewayImageTurn('nope', [{ role: 'user', content: 'x' }], [], 'probe')).rejects.toThrow(/not on the gateway/)
-
-    fetchUpstream.mockResolvedValueOnce({ ok: false, status: 502, text: async () => 'upstream exploded' })
-    await expect(gatewayImageTurn('gw-model', [{ role: 'user', content: 'x' }], [], 'probe')).rejects.toThrow(/502/)
-  })
-
-  it('meters the turn, falling back to an estimate when the provider sends no usage', async () => {
-    recordGatewayUsage.mockClear()
-    fetchUpstream.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'hi' } }] }), text: async () => '' })
-    await gatewayImageTurn('gw-model', [{ role: 'user', content: 'x' }], [], 'vision')
-    const call = recordGatewayUsage.mock.calls[0]?.[0] as { caller?: string; estimated?: boolean } | undefined
-    expect(call?.caller).toBe('vision')
-    // `estimated` is what tells an operator the number is ours rather than the
-    // provider's — a metered turn that lies about its provenance is worse than
-    // an unmetered one.
-    expect(call?.estimated).toBe(true)
-  })
-})
-
-describe('personaProbeTurn', () => {
-  /** A fleet reply, as `pumpPersonaStream` expects to read it. */
-  const sse = (chunks: string[]) =>
-    new ReadableStream<Uint8Array>({
-      start(c) {
-        for (const chunk of chunks) c.enqueue(new TextEncoder().encode(chunk))
-        c.close()
-      },
-    })
-
-  it('refuses a model that is not a rendered agent, rather than grading mock output', async () => {
-    // THE ONE THAT MATTERS MOST. The fleet answers in mock mode when nothing is
-    // rendered, and a probe that accepted it would report canned text as a
-    // persona's capability — a green result for an agent that does not exist.
-    proxyChat.mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'x-talaria-canned': '1' }),
-      body: sse(['data: [DONE]\n\n']),
-    })
-    await expect(personaProbeTurn('ghost-agent', [{ role: 'user', content: 'hi' }], { caller: 'probe' })).rejects.toThrow(/not a rendered agent/)
-  })
-
-  it('reports a gateway failure instead of returning an empty turn', async () => {
-    proxyChat.mockResolvedValue({ ok: false, status: 503, headers: new Headers(), body: null })
-    await expect(personaProbeTurn('engineer-engineering', [{ role: 'user', content: 'hi' }], { caller: 'probe' })).rejects.toThrow(/persona gateway 503/)
-  })
-
-  it('puts the image on the last USER turn, exactly as the gateway side does', async () => {
-    // The two sides of the `offersToolDefinitions` fork have to agree, or a
-    // vision probe means different things depending on which model answered it.
-    proxyChat.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: sse(['data: [DONE]\n\n']) })
-    await personaProbeTurn(
-      'engineer-engineering',
-      [
-        { role: 'system', content: 'You describe images.' },
-        { role: 'user', content: 'What is this?' },
-      ],
-      { caller: 'probe', images: ['data:image/png;base64,DDDD'] },
-    )
-    const sent = proxyChat.mock.calls.at(-1)![0] as { messages: Array<{ role: string; content: unknown }> }
-    expect(sent.messages[0]!.content).toBe('You describe images.')
-    expect(sent.messages[1]!.content).toEqual([
-      { type: 'text', text: 'What is this?' },
-      { type: 'image_url', image_url: { url: 'data:image/png;base64,DDDD' } },
-    ])
-  })
-
-  it('leaves the messages alone when there is no image', async () => {
-    proxyChat.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: sse(['data: [DONE]\n\n']) })
-    await personaProbeTurn('engineer-engineering', [{ role: 'user', content: 'plain' }], { caller: 'probe' })
-    const sent = proxyChat.mock.calls.at(-1)![0] as { messages: Array<{ content: unknown }> }
-    expect(sent.messages[0]!.content).toBe('plain')
+  it('goes through the relay as the app, and reports what it refused', async () => {
+    answers.push(() => json({ error: { message: 'unknown model "nope" — GET /v1/models' } }, { status: 404 }))
+    await expect(gatewayImageTurn('nope', [{ role: 'user', content: 'x' }], [], 'probe')).rejects.toThrow(/404: unknown model/)
+    expect(sent[0]!.headers['x-talaria-caller']).toBe('probe')
+    expect(sent[0]!.body.stream).toBe(false)
   })
 })

@@ -13,10 +13,14 @@
 //                asked (`lifecycle`, `git`, `source`)
 //   catalog      the marketplace feed — JSON, source URL configurable,
 //                always through the SSRF guard
+//   gateway key  the `app:<slug>` key the app host makes every model call
+//                for the app with — minted on the host's ask, sealed,
+//                revoked when the app stops running (`llm_key`)
 
 pub mod git;
 pub mod host;
 pub mod lifecycle;
+pub mod llm_key;
 pub mod source;
 
 pub use host::AppHost;
@@ -25,6 +29,7 @@ pub use lifecycle::{
     PlatformCredentials, SourceRecord, UpdateCheck, Updated, install_app, source_records,
     uninstall_app, update_app, update_checks,
 };
+pub use llm_key::{AppKeyError, ensure_app_llm_key, reconcile_app_llm_keys, revoke_app_llm_key};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -460,6 +465,11 @@ pub async fn set_app_enabled(
     // a row serves or turns off (keeping its grants), and its carriers roll.
     if let Err(e) = sync_app_mcp_servers(pg, sb).await {
         tracing::warn!("[apps] {slug}: MCP registry sync failed: {e}");
+    }
+    // An app that is off makes no model calls: the host's copy of its
+    // gateway key stops authenticating now, and a re-enable mints a new one.
+    if !enabled && let Err(e) = revoke_app_llm_key(pg, slug).await {
+        tracing::warn!("[apps] {slug}: revoking the app's gateway key failed: {e}");
     }
     Ok(())
 }

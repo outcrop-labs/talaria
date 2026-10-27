@@ -4190,6 +4190,54 @@ alter table tasks drop column if exists conversation_id`,
      updated_at timestamptz not null default now(),
      updated_by text
    )`,
+  // ── App triggers (2026-10-26) ─────────────────────────────────────────────
+  // WHEN EACH SCHEDULED TRIGGER WAS ARMED, AND THE LAST MINUTE IT FIRED FOR.
+  // One row per `cron` trigger of an enabled app with a ready build, written
+  // only by talaria-app-triggers' tick: a trigger seen for the first time is
+  // armed now, so installing a nightly job at noon does not fire the 3am it
+  // "missed"; a changed schedule (an update) re-arms; a row whose app was
+  // disabled, failed or uninstalled is deleted, so turning it back on re-arms
+  // rather than catching up. `last_due_at` is the claim: an instance fires a
+  // minute only by moving it forward, so two api processes never fire one
+  // minute twice.
+  `create table if not exists app_trigger_state (
+     app_slug text not null,
+     trigger_id text not null,
+     cron text not null,
+     armed_at timestamptz not null default now(),
+     last_due_at timestamptz,
+     primary key (app_slug, trigger_id)
+   )`,
+  // EVERY RUN OF AN APP'S TRIGGER: what started it (a schedule's minute, or a
+  // platform event and its ids), how it went, and the app's own sentence or
+  // the error. Manage → Apps shows each trigger's latest runs from here. A
+  // run is queued, then running while the app host runs the handler, then
+  // ok, failed or skipped (the app was turned off before it ran). `due_at`
+  // is the schedule's minute, unique per trigger as a second guard against a
+  // double fire; null for an event's run. Kept two weeks; an uninstalled
+  // app's go with it.
+  `create table if not exists app_trigger_runs (
+     id uuid primary key default gen_random_uuid(),
+     app_slug text not null,
+     trigger_id text not null,
+     kind text not null check (kind in ('cron', 'event')),
+     event text,
+     payload jsonb not null default '{}'::jsonb,
+     due_at timestamptz,
+     state text not null default 'queued' check (state in ('queued', 'running', 'ok', 'failed', 'skipped')),
+     queued_at timestamptz not null default now(),
+     started_at timestamptz,
+     finished_at timestamptz,
+     detail text,
+     error text,
+     attempts integer not null default 0
+   )`,
+  `create unique index if not exists app_trigger_runs_due_idx
+     on app_trigger_runs (app_slug, trigger_id, due_at) where due_at is not null`,
+  `create index if not exists app_trigger_runs_recent_idx
+     on app_trigger_runs (app_slug, trigger_id, queued_at desc)`,
+  `create index if not exists app_trigger_runs_open_idx
+     on app_trigger_runs (queued_at) where state in ('queued', 'running')`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

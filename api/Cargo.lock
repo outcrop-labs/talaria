@@ -4118,6 +4118,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-app-agents"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-apps",
+ "talaria-fleet-agents",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "talaria-users",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-app-harnesses"
 version = "0.1.0"
 dependencies = [
@@ -4137,6 +4154,26 @@ name = "talaria-app-manifest"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "talaria-platform-events",
+]
+
+[[package]]
+name = "talaria-app-triggers"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "reqwest",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-app-manifest",
+ "talaria-apps",
+ "talaria-config",
+ "talaria-platform-events",
+ "talaria-scheduler",
+ "talaria-users",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4175,8 +4212,10 @@ dependencies = [
  "sqlx",
  "talaria-agent-auth",
  "talaria-app-manifest",
+ "talaria-auth",
  "talaria-gateway",
  "talaria-github",
+ "talaria-llm-keys",
  "talaria-mcp-apply",
  "talaria-safe-fetch",
  "talaria-secretbox",
@@ -5064,6 +5103,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-app-manifest",
  "talaria-body",
  "talaria-fleet-layout",
  "talaria-secretbox",
@@ -5661,6 +5701,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-skills",
  "talaria-alerts",
+ "talaria-app-triggers",
  "talaria-approvals",
  "talaria-artifacts",
  "talaria-attribution",
@@ -5694,6 +5735,7 @@ dependencies = [
  "talaria-notify",
  "talaria-outreach",
  "talaria-personal-agent",
+ "talaria-platform-events",
  "talaria-price-oracle",
  "talaria-push",
  "talaria-realtime",
@@ -6300,6 +6342,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-platform-events"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "talaria-price-oracle"
 version = "0.1.0"
 dependencies = [
@@ -6596,6 +6645,7 @@ name = "talaria-routes-admin"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "futures-util",
  "getrandom 0.3.4",
  "serde",
  "serde_json",
@@ -6605,7 +6655,9 @@ dependencies = [
  "talaria-agent-defs",
  "talaria-agent-web-search",
  "talaria-api-facades",
+ "talaria-app-agents",
  "talaria-app-harnesses",
+ "talaria-app-triggers",
  "talaria-apps",
  "talaria-audit",
  "talaria-auth-config",
@@ -7398,6 +7450,7 @@ dependencies = [
  "talaria-judge",
  "talaria-labels",
  "talaria-notify",
+ "talaria-platform-events",
  "talaria-realtime",
  "talaria-retrieval",
  "talaria-statuses",

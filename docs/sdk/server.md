@@ -1,9 +1,10 @@
 # Server — the app API
 
-`apps/<slug>/server.ts` default-exports one fetch handler, mounted at `/api/apps/<slug>/*`.
-Every path under that prefix is yours: the host's own routes about an app (rebuild) live under
-`/api/app-host/<slug>/`. The host authenticates the session, checks the app is enabled, and
-checks the caller holds at least one of the app's surfaces **before** your handler runs. Which
+`apps/<slug>/server.ts` default-exports one fetch handler, mounted at `/api/apps/<slug>/*`, and
+the handlers for its [triggers](#triggers). Every path under that prefix is yours: the host's own
+routes about an app (rebuild, triggers) live under `/api/app-host/<slug>/`. The host
+authenticates the session, checks the app is enabled, and checks the caller holds at least one of
+the app's surfaces **before** your handler runs. Which
 surfaces and permissions they hold arrive on the context; decisions beyond "may reach the app"
 are yours.
 
@@ -49,6 +50,7 @@ export default defineAppServer({
 | `ctx.api(path, init?)` | The platform API, called as the caller (below) |
 | `ctx.secret(name)` | A workspace secret's value, when an admin gave it to this app (below) |
 | `ctx.signal` | Aborts when the caller disconnects (below) |
+| `ctx.agents` | Drive a fleet agent the caller may use ([below](#driving-an-agent)) |
 | `ctx.harness` | Runs a harness as this caller: `run(def, input, options)` and `stream(…, { onDelta })` ([harnesses](./harnesses.md#running-one--ctxharness)) |
 
 ## The path
@@ -186,6 +188,117 @@ or an aborted fetch. Pass it to long work, such as your own `fetch` calls, so th
 instead of spending for nobody. `ctx.harness` already follows it, and `ctx.api` does on reads
 but deliberately not on writes ([Platform data](#platform-data)). A handler that throws because
 the caller left isn't logged as a crash.
+
+## Driving an agent
+
+`ctx.agents.turn({ agent, message, … })` sends one message to a fleet agent and resolves with its
+reply. The agent does the work in its own container, with its own tools, exactly as when a person
+chats with it:
+
+```ts
+const reply = await ctx.agents.turn({
+  agent: 'ada-ops',                       // an id from /api/agents
+  message: `Summarise lead ${id} for a handover note.`,
+  session: `lead-${id}`,                  // optional: continue one conversation
+  watch: (e) => {                         // optional: each event as it lands
+    if (e.type === 'tool') console.log(`ada is running ${e.name}`)
+  },
+  signal: ctx.signal,
+})
+return json({ note: reply.text, tools: reply.tools })
+```
+
+| option | what it is |
+| :--- | :--- |
+| `agent` | The agent's fleet id |
+| `message` | What to say |
+| `system?` | A system prompt for this turn, on top of the agent's own |
+| `session?` | A key of yours for a conversation. Turns with the same key land on one session, whose transcript **the agent keeps**: Talaria stores no copy. Without a key, each turn starts fresh |
+| `effort?` | A reasoning effort the agent's model publishes (`low`, `high`, …) |
+| `watch?` | Called with each event as it lands: `{ type: 'text', text }` for the agent's words, `{ type: 'tool', name, status, label }` for a tool it starts or finishes |
+| `signal?` | Aborts the turn; the agent's run is stopped too |
+
+It resolves to `{ agent, text, tools, session }`: everything the agent said, the tools it used by
+name, and the session's id (null without a key). It throws an `HttpError`: **403** with the
+reason when this caller may not drive that agent or your app is over its LLM budget, **502**
+when the agent failed, was down past
+two minutes, or sent nothing for ten minutes. A turn has no fixed deadline beyond that silence:
+an agent may work for a long time, and every tool call it makes counts as life.
+
+**Who may drive whom.** The api decides, from what started your code, never from anything your
+code says:
+
+- from a request, only an agent **the signed-in person may use**. Someone else's personal
+  assistant is never one of them, and neither is an agent their access list leaves out;
+- from an MCP tool ([mcp.md](./mcp.md)), only **the agent calling the tool**, and only when the
+  gateway proved it by its own key (`ctx.caller.proven`);
+- from a trigger ([below](#triggers)), **no agent**: a triggered run acts as the app, with no
+  user. `ctx.agents.turn` refuses there.
+
+A session key is scoped to your app and to the person (or, from a tool, the calling agent), so
+`session: 'notes'` for one person never reaches another's conversation, or a chat's. The turn's
+spend is booked to the agent under ledger source `app`. The app must be enabled with a ready
+build, and under its budget (`app:<slug>`, the one its harness runs are held to): an app over it
+starts no turn.
+
+## Triggers
+
+A trigger runs your server's code with nobody calling it: on a schedule, or when a platform event
+happens. Declare each one in `talaria.json`, and answer it by id under `triggers`:
+
+```json
+{ "name": "Lead scorer", "triggers": [
+  { "id": "nightly", "cron": "0 3 * * *" },
+  { "id": "on-ticket", "event": "ticket.created" }
+] }
+```
+
+```ts
+export default defineAppServer({
+  async fetch(request, ctx) { /* … */ },
+  triggers: {
+    async nightly(ctx) {
+      const leads = await ctx.store.list('leads')
+      // … score them …
+      return `scored ${leads.length} leads`         // the run's line in Manage → Apps
+    },
+    async 'on-ticket'(ctx) {
+      if (ctx.cause.kind !== 'event' || ctx.cause.event.name !== 'ticket.created') return
+      await ctx.store.insert('seen', { ticketId: ctx.cause.event.ticketId })
+    },
+  },
+})
+```
+
+`cron` is five fields read in **UTC** (minute, hour, day of month, month, day of week), with `*`,
+numbers, ranges, steps and lists, or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`.
+`event` is `ticket.created` or `ticket.moved`. [APPS.md](../APPS.md#triggers) has the grammar,
+both events' payloads, and when a schedule fires. A `server.ts` that answers only triggers may
+leave out `fetch`.
+
+**The handler runs as the app, with no user.** Its context:
+
+| field | what it is |
+| :--- | :--- |
+| `ctx.app` | Your slug |
+| `ctx.trigger` | The trigger's id |
+| `ctx.runId` | This run's id, as Manage → Apps lists it |
+| `ctx.cause` | `{ kind: 'cron', dueAt }` (the minute it was due, ISO) or `{ kind: 'event', event }` |
+| `ctx.store` | Your document store, the one your server and tools use |
+| `ctx.secret(name)` | A workspace secret an admin gave this app; the spend is audited with no person |
+| `ctx.origin` | `AUTH_PUBLIC_URL`, or null when the operator set none |
+| `ctx.agents` | Refuses every turn: a triggered run drives no agent |
+| `ctx.harness` | Runs a harness as the app, on your app's key and budget. It may pin no agent ([harnesses](./harnesses.md#running-one--ctxharness)) |
+| `ctx.signal` | Aborts at the run's 10-minute deadline |
+
+An event is **ids, never content**: `ticket.created` gives `ticketId` and `boardId`;
+`ticket.moved` adds the column keys `from` and `to` and whether `to` is terminal (`closed`).
+There is no `ctx.user` and no `ctx.api`, because there is no session to call the platform with.
+Store the id, and read the ticket when a person opens your app.
+
+Return a string to put a line on the run in Manage → Apps (`"scored 3 leads"`). A throw, a run
+past its deadline, or a trigger with no handler is a **failed run** there, with the sentence; the
+app keeps running and the next run goes ahead. Only an enabled app with a ready build fires.
 
 ## An app with no UI
 

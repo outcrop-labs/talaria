@@ -3,6 +3,7 @@
 // failure the UI can show, not an unhandled rejection that takes the
 // process with it. process.exit / infinite loops are still same-process
 // (apps run fully trusted); this is the exception boundary.
+import { withApp } from './app-scope'
 
 export type Isolated<T> = { ok: true; value: T } | { ok: false; error: string }
 
@@ -23,9 +24,12 @@ export function crashText(e: unknown): { message: string; stack: string } {
   return { message: errorMessageOf(e), stack: '' }
 }
 
+/** Run app code — and the scope boundary with it: everything `fn` starts runs
+ *  as app `slug` (app-scope.ts), so a model call it makes, however deep,
+ *  signs with that app's gateway key and no other. */
 export async function isolateApp<T>(slug: string, label: string, fn: () => Promise<T>): Promise<Isolated<T>> {
   try {
-    return { ok: true, value: await fn() }
+    return { ok: true, value: await withApp(slug, fn) }
   } catch (e) {
     console.error(`[apps:${slug}] ${label}`, e)
     return { ok: false, error: errorMessageOf(e) }

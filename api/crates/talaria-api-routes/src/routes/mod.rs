@@ -969,6 +969,16 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/internal/apps/agent-turn",
+            post(talaria_routes_admin::admin::internal_apps_agent_turn::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/internal/apps/{slug}/llm-key",
+            post(talaria_routes_admin::admin::internal_apps_llm_key::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/admin/domains",
             get(talaria_routes_admin::admin::admin_domains::get)
                 .post(talaria_routes_admin::admin::admin_domains::post)

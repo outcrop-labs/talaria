@@ -2,11 +2,9 @@ import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { appServerModule } from '@/server/apps'
 import { authorizeApp, canFor } from '@/server/app-access'
-import { appOrigin, appPathSegments, appSecretReader, platformApi } from '@/server/app-context'
-import { storeFor } from '@/server/app-store'
+import { appOrigin, appPathSegments, appSecretReader, appServices, platformApi } from '@/server/app-context'
 import type { AppServer } from '@/sdk/server'
 import { isolateApp } from '@/server/app-isolate'
-import { appHarnessRunner } from '@/server/app-harness-runner'
 
 // The app-server gateway: /api/apps/<slug>/* dispatches into the app's own
 // server.ts. The host does the trust work FIRST — the session and the grants
@@ -31,17 +29,13 @@ const dispatch = async ({ request, params }: { request: Request; params: { app: 
   if (!path.ok) return json({ error: path.error }, { status: 400 })
   const segments = path.segments
   const api = platformApi(request)
-  // The bound runner: this caller, this app. An agent pin is checked against
-  // the agents the api lets THEM use (`usable_agent_gate`, asked with their
-  // own cookie through the same client the app gets as `ctx.api`).
-  const harness = appHarnessRunner({
-    app,
-    actor: {
-      kind: 'request',
-      user: { id: caller.user.id, role: caller.user.role },
-      usableAgents: async () => ((await api<{ agents?: Array<{ id: string }> }>('/api/agents'))?.agents ?? []).map((a) => a.id),
-    },
-    signal: request.signal,
+  // Everything bound to this caller — the store, the agents they may drive,
+  // the harness runner — from the one factory every context is built
+  // through. An agent pin is checked against the agents the api lets THEM
+  // use (`usable_agent_gate`, asked with their own cookie through the same
+  // client the app gets as `ctx.api`).
+  const services = appServices(app, { kind: 'request', user: { id: caller.user.id, role: caller.user.role } }, request.signal, {
+    usableAgents: async () => ((await api<{ agents?: Array<{ id: string }> }>('/api/agents'))?.agents ?? []).map((a) => a.id),
   })
   const ran = await isolateApp(app, 'server', async () => {
     const mod = (await appServerModule(app)) as { default?: AppServer } | null
@@ -54,14 +48,15 @@ const dispatch = async ({ request, params }: { request: Request; params: { app: 
         segments: [...segments],
         url: new URL(request.url),
         origin: appOrigin(request),
-        store: storeFor(app),
+        store: services.store,
         access: { ...caller.access },
         perms: [...caller.perms],
         can: canFor(caller),
         api,
         secret: appSecretReader(app, caller.user.id),
         signal: request.signal,
-        harness,
+        agents: services.agents,
+        harness: services.harness,
       })
     } catch (e) {
       // The caller left and the app's work was cut with it (ctx.signal):
