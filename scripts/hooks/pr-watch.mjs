@@ -61,9 +61,11 @@
 // A workflow run that failed with no failing check in the rollup (a startup
 // failure has no jobs) is red.
 //
-// WHOSE ci.yml. The CI workflow's name is the target repository's — `--repo`,
-// else the one the PR's URL names — read from GitHub at the PR's head, the
-// copy a pull_request run uses. Not this checkout's: run from a clone of
+// WHOSE ci.yml. The CI workflow's name is the target repository's — the one
+// the PR's URL names (gh hands that back, so it is where the PR lives), else
+// `--repo` — read from GitHub at the PR's head. (A pull_request run reads the
+// merge commit's copy, which carries the head's name unless the base renamed
+// the workflow after the branch point.) Not this checkout's: run from a clone of
 // another repository (or a stale branch), the cwd's ci.yml names a workflow
 // the PR never runs, or none at all. When GitHub cannot answer, this
 // checkout's copy stands in only if one of its remotes is the target, and
@@ -470,10 +472,11 @@ export function parseRepo(text) {
   return { host: (m[1] || 'github.com').toLowerCase(), slug: `${m[2]}/${name}`.toLowerCase() }
 }
 
-/** The repository the PR lives in: `--repo` when given, else the one its URL
- *  names. That is where its workflows run, and whose ci.yml names them. */
+/** The repository the PR lives in: the one its URL names, else `--repo`.
+ *  The URL is gh's answer for the PR it found, so it wins over a flag that
+ *  disagrees. That is where its workflows run, and whose ci.yml names them. */
 export function targetRepoOf(pr, repoFlag) {
-  return parseRepo(repoFlag) || parseRepo(pr?.url)
+  return parseRepo(pr?.url) || parseRepo(repoFlag)
 }
 
 /** gh's `--repo` spelling of a parsed repository. */

@@ -39,8 +39,8 @@ Three entry points:
   mergeable state. Exit 0 only when checks are green (the latest run of each; a superseded
   cancelled one does not count), the PR's head is the pushed commit, a CI workflow run for
   that head has finished, and the PR is mergeable against `rc`. The CI workflow's name comes
-  from the PR's own repository (`--repo`, or the one a PR URL names): its `ci.yml` at the PR
-  head, read from GitHub. Only when GitHub cannot answer does this checkout's copy (if it is
+  from the PR's own repository (the one gh's PR URL names, else `--repo`): its `ci.yml` at
+  the PR head, read from GitHub. Only when GitHub cannot answer does this checkout's copy (if it is
   that repository) or `CI` stand in, and the verdict says so;
   exit 2 names `red`, `conflict`, `pending`, `timeout`, `closed`, or `base` on stderr
   (`pending` comes at once, not at the wall clock, when only a push or a reconcile can

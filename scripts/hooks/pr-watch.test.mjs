@@ -289,10 +289,13 @@ check('parseRepo reads every spelling gh and git use for a repository', () => {
   eq(repoFlagOf({ host: 'ghe.example.com', slug: 'team/app' }), 'ghe.example.com/team/app')
 })
 
-check('the target repository is --repo when given, else the one the PR URL names', () => {
+check('the target repository is the one the PR URL names, else --repo', () => {
   const pr = { url: 'https://github.com/other-org/other-repo/pull/9' }
   eq(targetRepoOf(pr, undefined), { host: 'github.com', slug: 'other-org/other-repo' })
-  eq(targetRepoOf(pr, 'outcrop-labs/talaria'), { host: 'github.com', slug: 'outcrop-labs/talaria' })
+  // gh's URL is the PR it found; a --repo that disagrees does not move the reads off it.
+  eq(targetRepoOf(pr, 'outcrop-labs/talaria'), { host: 'github.com', slug: 'other-org/other-repo' })
+  eq(targetRepoOf({}, 'outcrop-labs/talaria'), { host: 'github.com', slug: 'outcrop-labs/talaria' })
+  eq(targetRepoOf({ url: 'not a url' }, 'ghe.example.com/team/app'), { host: 'ghe.example.com', slug: 'team/app' })
   eq(targetRepoOf({}, undefined), null)
 })
 
@@ -530,8 +533,11 @@ check('end to end: --repo, or a PR URL, sends the CI name read and gh run list t
     }
 
     // The target's ci.yml names Pipeline, and Pipeline ran: green, from --repo or the PR URL alike.
+    // A --repo that disagrees with the URL is the third case: gh answers with the URL's PR (real gh
+    // does), so the URL it hands back is where the reads go, and wrong-org's 404 is never asked.
     writeFileSync(join(bin, 'ci.yml'), 'name: Pipeline\non: pull_request\n')
-    for (const args of [['--repo', 'other-org/other-repo', '--pr', '1'], ['--pr', 'https://github.com/other-org/other-repo/pull/1']]) {
+    const url = 'https://github.com/other-org/other-repo/pull/1'
+    for (const args of [['--repo', 'other-org/other-repo', '--pr', '1'], ['--pr', url], ['--repo', 'wrong-org/wrong-repo', '--pr', url]]) {
       const run = watch(...args, '--json')
       eq([run.status, run.stderr], [0, ''])
       const out = JSON.parse(run.stdout)
