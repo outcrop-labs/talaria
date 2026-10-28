@@ -2768,6 +2768,99 @@ const UNSET_SEAM_CENSUS = [
   }
 }
 
+// ── The image builds the ui from a context .dockerignore trims ──────────────
+// The Dockerfile's build stage runs `bun run build` in ui/ over `COPY . .` —
+// the repo minus .dockerignore. A ui build input outside ui/ that the ignore
+// file leaves out compiles everywhere else (dev, the gate, every PR job: none
+// of them builds the image) and fails only in rc-deploy, after the merge.
+// That shipped once: #604's SDK kit read cli/src/cmd/app/skeleton.ts and
+// docs/sdk/talaria.schema.json, both ignored, and every rc deploy failed from
+// that merge until the ignore file named them.
+//
+// The inputs are what the ui build can reach: relative imports out of ui/ in
+// its non-test sources and in the scripts its `build` runs, plus the
+// `join(UI|ui, '..', '<path>')` reads those scripts make.
+{
+  /** .dockerignore's own matching: patterns are relative to the context
+   *  root, `*` stays within a segment, `**` crosses them, a pattern that
+   *  matches a directory takes everything under it, and the LAST matching
+   *  line wins, so a `!` line re-admits a file its directory's line left out. */
+  const ignoreRules = existsSync(join(ROOT, '.dockerignore'))
+    ? readFileSync(join(ROOT, '.dockerignore'), 'utf8')
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith('#'))
+        .map((l) => {
+          const keep = l.startsWith('!')
+          const pat = (keep ? l.slice(1) : l).replace(/^\/+/, '').replace(/\/+$/, '')
+          const re = pat
+            .split(/(\*\*\/|\*\*|\*|\?)/)
+            .map((t) => (t === '**/' ? '(?:.*/)?' : t === '**' ? '.*' : t === '*' ? '[^/]*' : t === '?' ? '[^/]' : t.replace(/[.+^${}()|[\]\\]/g, '\\$&')))
+            .join('')
+          return { keep, re: new RegExp(`^${re}$`) }
+        })
+    : []
+  const ignored = (path) => {
+    const parts = path.split('/')
+    const prefixes = parts.map((_, i) => parts.slice(0, i + 1).join('/'))
+    let out = false
+    for (const r of ignoreRules) if (prefixes.some((p) => r.re.test(p))) out = !r.keep
+    return out
+  }
+
+  const uiPkg = JSON.parse(readFileSync(join(ROOT, 'ui/package.json'), 'utf8'))
+  const buildScripts = [...(uiPkg.scripts?.build ?? '').matchAll(/\bbun\s+(scripts\/[\w./-]+\.(?:ts|mjs|js))/g)].map((m) => `ui/${m[1]}`)
+  const inputs = new Map()
+  for (const [rel, text] of sources) {
+    if (rel.startsWith('ui/src/') && !/\.test\.[a-z]+$/.test(rel)) inputs.set(rel, text)
+  }
+  for (const rel of buildScripts) {
+    const abs = join(ROOT, rel)
+    if (existsSync(abs)) inputs.set(rel, stripComments(readFileSync(abs, 'utf8')))
+  }
+
+  const IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)['"](\.\.?\/[^'"]+)['"]/g
+  const UP_READ = /\bjoin\(\s*(?:UI|ui|uiRoot\(\))\s*,\s*['"]\.\.['"]\s*,\s*['"]([^'"]+)['"]/g
+  const norm = (p) => {
+    const out = []
+    for (const s of p.split('/')) {
+      if (s === '..') out.pop()
+      else if (s && s !== '.') out.push(s)
+    }
+    return out.join('/')
+  }
+  const left = []
+  for (const [rel, text] of inputs) {
+    const dir = rel.split('/').slice(0, -1).join('/')
+    const hits = [
+      ...[...text.matchAll(IMPORT)].map((m) => ({ index: m.index, target: norm(`${dir}/${m[1]}`) })),
+      ...[...text.matchAll(UP_READ)].map((m) => ({ index: m.index, target: norm(m[1]) })),
+    ]
+    for (const { index, target } of hits) {
+      if (target.startsWith('ui/')) continue
+      // An extensionless import names a module; the file it resolves to is
+      // what the context has to hold.
+      const file = ['', '.ts', '.js', '.mjs', '/index.ts'].map((x) => target + x).find((p) => existsSync(join(ROOT, p))) ?? target
+      if (!ignored(file)) continue
+      left.push({ path: rel, line: lineOf(text, index), text: `reads ${file}, which .dockerignore leaves out of the image's build context` })
+    }
+  }
+  if (left.length) {
+    failures.push({
+      id: 'image-build-input-ignored',
+      what: 'the ui build reads a file outside ui/ that .dockerignore leaves out, so the image build fails in rc-deploy',
+      fix: [
+        'Re-admit exactly that file in .dockerignore with a `!` line under the line that',
+        'leaves its directory out (see the "Not part of any build" block), with a note',
+        'saying what reads it. Do not un-ignore the whole directory: the context stays a',
+        'build of the source, not the machine.',
+        'Or move the file under ui/ and import it from there.',
+      ],
+      found: left,
+    })
+  }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 
 const BAR = '─'.repeat(78)

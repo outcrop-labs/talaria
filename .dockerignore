@@ -40,11 +40,18 @@ docker/searxng/settings.local.yml
 **/.env
 !**/.env.example
 
-# Not part of any build.
+# Not part of any build — except the two files the ui build reads from them:
+# the SDK kit (ui/scripts/build-sdk-kit.ts) ships talaria.json's schema, and
+# its scaffold shares the app skeleton with the CLI's `talaria app new`. Leave
+# either out and `bun run build` fails in the image, nowhere else: no PR job
+# builds the image. scripts/check-invariants.mjs (image-build-input-ignored)
+# fails a ui build input that this file leaves out.
 docs
+!docs/sdk/talaria.schema.json
 playground
 .claude
 .inspect
 cli
+!cli/src/cmd/app/skeleton.ts
 *.md
 LICENSE
