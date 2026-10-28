@@ -885,6 +885,23 @@ impl SharedDepartment {
     }
 }
 
+/// The 409 a lifecycle act on `name` meets when its department's container is
+/// `runner`'s: starting, stopping or rolling it would act on the other agent.
+pub fn shared_department_refusal(
+    action: &str,
+    name: &str,
+    department: &str,
+    runner: &str,
+) -> String {
+    let verb = match action {
+        "up" | "unretire" => "start",
+        other => other,
+    };
+    format!(
+        "{name} has no container of its own to {verb}: its department \"{department}\" is also {runner}'s, and {runner} runs in that department's container. Retire and delete one of the two (Talaria never merges two agents into one)"
+    )
+}
+
 /// Rows in (department, oldest first) order, grouped; a department with one
 /// member is not shared and is dropped.
 fn group_shared(rows: Vec<(String, DepartmentMember)>) -> Vec<SharedDepartment> {
@@ -1903,6 +1920,21 @@ mod tests {
         };
         assert_eq!(idle.runner(), None);
         assert_eq!(idle.runs_instead_of("a"), None);
+    }
+
+    #[test]
+    fn the_shared_department_refusal_names_both_agents_and_the_way_out() {
+        assert_eq!(
+            shared_department_refusal("roll", "Zed", "research", "Ava"),
+            "Zed has no container of its own to roll: its department \"research\" is also Ava's, and Ava runs in that department's container. Retire and delete one of the two (Talaria never merges two agents into one)"
+        );
+        // Bringing it up or back would start the other agent's container.
+        for action in ["up", "unretire"] {
+            assert!(
+                shared_department_refusal(action, "Zed", "research", "Ava")
+                    .contains("of its own to start:")
+            );
+        }
     }
 
     #[test]

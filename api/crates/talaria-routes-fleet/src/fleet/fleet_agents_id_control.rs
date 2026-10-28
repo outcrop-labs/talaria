@@ -254,11 +254,6 @@ pub async fn post(
     })
 }
 
-/// The catch arm's sentence — the em dash is part of the wire contract.
-fn could_not(action: &str) -> String {
-    format!("could not {action} the agent — see server logs")
-}
-
 /// ONE CONTAINER PER DEPARTMENT. Every verb on this route addresses the
 /// container by department (`agent-<department>`). Where an older agent holds
 /// this one's department too — a pair that predates the one-agent rule
@@ -287,7 +282,7 @@ async fn department_guard(
     if action != "retire" {
         return Some(house_error(
             StatusCode::CONFLICT,
-            &shared_refusal(
+            &talaria_agent_defs::shared_department_refusal(
                 action,
                 &def.display_name,
                 &def.department,
@@ -351,31 +346,7 @@ async fn department_guard(
     })
 }
 
-/// The 409 for an act on an agent whose department's container is another's.
-fn shared_refusal(action: &str, name: &str, department: &str, runner: &str) -> String {
-    let verb = match action {
-        "up" | "unretire" => "start",
-        other => other,
-    };
-    format!(
-        "{name} has no container of its own to {verb}: its department \"{department}\" is also {runner}'s, and {runner} runs in that department's container. Retire and delete one of the two (Talaria never merges two agents into one)"
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_shared_department_refusal_names_both_agents_and_the_way_out() {
-        assert_eq!(
-            shared_refusal("roll", "Zed", "research", "Ava"),
-            "Zed has no container of its own to roll: its department \"research\" is also Ava's, and Ava runs in that department's container. Retire and delete one of the two (Talaria never merges two agents into one)"
-        );
-        // Bringing it up or back would start the other agent's container.
-        assert!(shared_refusal("up", "Zed", "research", "Ava").contains("of its own to start:"));
-        assert!(
-            shared_refusal("unretire", "Zed", "research", "Ava").contains("of its own to start:")
-        );
-    }
+/// The catch arm's sentence — the em dash is part of the wire contract.
+fn could_not(action: &str) -> String {
+    format!("could not {action} the agent — see server logs")
 }
