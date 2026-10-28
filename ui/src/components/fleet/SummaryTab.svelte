@@ -20,6 +20,7 @@
   const cfg = $derived(def.latest?.config)
   const share = $derived(def.departmentShare ?? null)
   const sharedWith = $derived((share?.others ?? []).map((o) => o.displayName).join(', '))
+  const sharedOr = $derived((share?.others ?? []).map((o) => o.displayName).join(' or '))
   const fleetQuery = useFleet()
   const stat = $derived(fleetQuery.data?.agents.find((a) => a.id === def.model))
   // svelte-ignore state_referenced_locally -- reason: seed-once meta drafts; the refetch after save must not clobber in-progress edits
@@ -131,9 +132,11 @@
         {#if share.runs}
           This agent runs in the department’s container and keeps its memory.
           {sharedWith} {share.others.length === 1 ? 'holds' : 'hold'} the same department and {share.others.length === 1 ? 'is' : 'are'} left out of the fleet.
+          If the container still runs {sharedOr} (an install upgraded with the pair in place), Roll this agent to put it back in its container.
         {:else if share.runner}
           {share.runner.displayName} runs in this department’s container, so this agent has none of its own and is left out of the fleet:
-          starting, stopping or rolling it is refused.
+          starting, stopping or rolling it is refused, its memory is not read or written from here, and a saved config is not applied.
+          If the container still runs this agent (an install upgraded with the pair in place), Roll {share.runner.displayName} to put {share.runner.displayName} back in it.
         {:else}
           {sharedWith} {share.others.length === 1 ? 'holds' : 'hold'} the same department, and none of them is running.
         {/if}

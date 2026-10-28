@@ -99,11 +99,17 @@ fn shared_department_alert(share: &talaria_agent_defs::SharedDepartment) -> Aler
                 .filter(|m| m.id != runner.id)
                 .map(|m| m.display_name.as_str())
                 .collect();
+            // The render's rule (the older agent runs) is not the one the
+            // render kept before it (the slug that sorted last): on an
+            // install upgraded with the pair in place, the container can
+            // still hold the other agent until something recreates it. A
+            // deploy's fleet roll does; on a checkout, the admin's Roll does.
             format!(
-                "{} runs in its container (agent-{d}) and keeps its memory; {} {} left out of the fleet. Retire and delete one of them — Talaria never merges two agents into one.",
-                runner.display_name,
+                "{runner} runs in its container (agent-{d}) and keeps its memory; {} {} left out of the fleet. Retire and delete one of them — Talaria never merges two agents into one. If agent-{d} still runs {} (an install upgraded with the pair in place), Roll {runner} to put it back in its container.",
                 others.join(", "),
-                if others.len() == 1 { "is" } else { "are" }
+                if others.len() == 1 { "is" } else { "are" },
+                others.join(" or "),
+                runner = runner.display_name,
             )
         }
         None => format!(
@@ -835,7 +841,7 @@ mod tests {
         assert_eq!(alert.title, "2 agents share the department \"research\"");
         assert_eq!(
             alert.detail,
-            "Ava runs in its container (agent-research) and keeps its memory; Zed is left out of the fleet. Retire and delete one of them — Talaria never merges two agents into one."
+            "Ava runs in its container (agent-research) and keeps its memory; Zed is left out of the fleet. Retire and delete one of them — Talaria never merges two agents into one. If agent-research still runs Zed (an install upgraded with the pair in place), Roll Ava to put it back in its container."
         );
         assert_eq!(alert.href, "/agents");
 

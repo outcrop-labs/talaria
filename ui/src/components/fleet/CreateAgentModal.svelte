@@ -54,11 +54,16 @@
     open,
     onClose,
     templates,
+    roster,
     templateId: preselect,
   }: {
     open: boolean
     onClose: () => void
     templates: AgentDef[]
+    /** Every agent, retired ones included — who holds which department. A
+     *  retired agent keeps its volume, so it keeps its department too.
+     *  Defaults to `templates`. */
+    roster?: AgentDef[]
     /** Preselect a template (e.g. "Duplicate" from a specific agent) — skips the describe step. */
     templateId?: string
   } = $props()
@@ -97,10 +102,10 @@
   const department = $derived(design?.department ?? '')
   // A department is ONE agent's: it names the container and the memory
   // volume, so the hire door refuses one another agent holds (409). Said the
-  // moment it is typed, from the roster this modal already holds — a hirer
-  // reads the whole fleet. A role template or a Muse design can propose a
-  // department somebody already has.
-  const departmentHolder = $derived(templates.find((t) => t.department === department.trim()) ?? null)
+  // moment it is typed, from the whole roster — a hirer reads the whole
+  // fleet, and a retired agent still holds its department. A role template or
+  // a Muse design can propose a department somebody already has.
+  const departmentHolder = $derived((roster ?? templates).find((t) => t.department === department.trim()) ?? null)
   const role = $derived(design?.role ?? '')
   const soul = $derived(design?.soul ?? '')
   const soulRev = $derived(design?.soulRev ?? 0)
