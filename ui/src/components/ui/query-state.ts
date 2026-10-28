@@ -122,5 +122,34 @@ export function listQuery<T>(
   }
 }
 
+/** Is any of these queries still on its first load (`isLoading`)? The way to
+ *  gate one surface on several reads.
+ *
+ *  It reads EVERY query's flag before it combines them, and that is the whole
+ *  point. `a.isLoading || b.isLoading` stops at `a` while `a` loads, so `b`'s
+ *  flag is never read. svelte-query tells a component about a change only
+ *  when it touches a prop the component has read (TanStack's tracked
+ *  results), and a prop first read later comes from the last result the
+ *  component was sent. So when `b` answered first, and nothing changed in
+ *  what had been read from `b`, the component was not told. When `a` answered
+ *  and the `||` finally read `b.isLoading`, it got `true` from before `b`
+ *  answered. Nothing else would change after that, so the surface stayed on
+ *  its skeletons for good. That was the agent roster whenever
+ *  /api/fleet/containers answered before /api/fleet/defs. (A query nothing
+ *  has read from yet is told about every change; it bit where something else
+ *  read `b`, as the roster's banner reads the containers' `isError`. The
+ *  reactive proof is query-state.svelte.test.ts.) */
+export function anyLoading(...queries: ReadonlyArray<{ readonly isLoading: boolean }>): boolean {
+  const flags = queries.map((q) => q.isLoading)
+  return flags.includes(true)
+}
+
+/** `anyLoading` for `isPending` (a disabled query is pending too): read
+ *  every flag, then combine, for the same reason. */
+export function anyPending(...queries: ReadonlyArray<{ readonly isPending: boolean }>): boolean {
+  const flags = queries.map((q) => q.isPending)
+  return flags.includes(true)
+}
+
 /** Default emptiness test for QueryState: "empty array or null". */
 export const isEmptyValue = (d: unknown): boolean => (Array.isArray(d) ? d.length === 0 : d === null)

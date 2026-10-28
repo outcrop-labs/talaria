@@ -3,6 +3,7 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
   import { getJson, putJson } from '@/lib/fetch-json'
+  import { anyPending } from '@/components/ui/query-state'
   import { toastError } from '@/lib/toast.svelte'
   import CategoryDetail from '@/components/models/CategoryDetail.svelte'
   import { slotState, type ModelRoleRow, type PlatformAgentRow, type RoleIssue, type Slot } from '@/components/models/slot'
@@ -162,7 +163,7 @@
     labelOf={(c: (typeof categories)[number]) => c.label}
     selectedId={selected?.id ?? null}
     onSelect={(c: (typeof categories)[number]) => (selectedId = c.id)}
-    pending={rolesQuery.isPending || agentsQuery.isPending}
+    pending={anyPending(rolesQuery, agentsQuery)}
     notice={loadFailed
       ? {
           error: rolesQuery.error ?? agentsQuery.error,

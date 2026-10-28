@@ -38,6 +38,7 @@
   import { listStagger } from '@/lib/motion'
   import { useBoards, useArchivedBoards, moveBoardWithPreview } from '@/lib/boards.svelte'
   import { useTeams } from '@/lib/teams'
+  import { anyLoading } from '@/components/ui/query-state'
   import { navigate, p } from '@/router'
 
   let { activePath, onNew, onTeams }: { activePath: string; onNew: () => void; onTeams: () => void } = $props()
@@ -135,9 +136,11 @@
   </a>
 {/snippet}
 
-{#if boardsQuery.isLoading || teamsQuery.isLoading}
+{#if anyLoading(boardsQuery, teamsQuery)}
   <!-- While boards/teams load, hold the sublist's shape (group headers + rows) so
-       the footer buttons don't render alone and get pushed down when data lands. -->
+       the footer buttons don't render alone and get pushed down when data lands.
+       anyLoading, not `||`: a `||` read teams' flag only once boards had
+       loaded, and could read it stale (query-state.ts says why). -->
   <div class="ml-3 mt-0.5 border-l border-line-subtle pl-2">
     <div class="space-y-1.5 px-1.5 py-1">
       <Skeleton class="h-2.5 w-16 rounded-full" />

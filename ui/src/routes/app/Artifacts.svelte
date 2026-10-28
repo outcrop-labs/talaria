@@ -41,6 +41,7 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import ArtifactsBrowser from './ArtifactsBrowser.svelte'
   import SecretsVault from './SecretsVault.svelte'
   import ArtifactsProperties from './ArtifactsProperties.svelte'
+  import { anyLoading } from '@/components/ui/query-state'
   import {
     AGENTS_ROOT,
     ancestry,
@@ -146,7 +147,8 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
     }
     // Each roster is passed only once loaded; validating against a list that
     // has not arrived would drop a good part of the memory for no reason.
-    if (foldersQuery.isLoading || artifactsQuery.isLoading) return
+    // Both flags, every run (anyLoading, query-state.ts says why).
+    if (anyLoading(foldersQuery, artifactsQuery)) return
     restored = true
     const saved = restorableArtifactsSelection(readArtifactsSelection(), {
       folderIds: foldersQuery.isSuccess ? folders.map((f) => f.id) : null,
@@ -709,7 +711,7 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
       {/if}
       <ArtifactsBrowser
         {rows}
-        loading={place === 'drive' ? driveQuery.isLoading : artifactsQuery.isLoading || foldersQuery.isLoading}
+        loading={place === 'drive' ? driveQuery.isLoading : anyLoading(artifactsQuery, foldersQuery)}
         {failure}
         {view}
         {sortKey}
