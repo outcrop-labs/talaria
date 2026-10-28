@@ -428,9 +428,23 @@ export async function rotateAgentKey(id: string): Promise<{ ok?: boolean; rollin
   }
 }
 
-export async function controlAgent(id: string, action: FleetAction): Promise<{ ok?: boolean; healthy?: boolean; error?: string }> {
+/** What the control route answers. `pending` (a 202) means the verb was still
+ *  running when the route stopped waiting (210 s): it goes on, and `state` is
+ *  the container as docker described it then (running, stopped, gone or
+ *  unknown). The roster's polled container state shows the rest. */
+export interface ControlAnswer {
+  ok?: boolean
+  healthy?: boolean
+  warming?: boolean
+  rolling?: boolean
+  pending?: boolean
+  state?: 'running' | 'stopped' | 'gone' | 'unknown'
+  error?: string
+}
+
+export async function controlAgent(id: string, action: FleetAction): Promise<ControlAnswer> {
   try {
-    return await postJson<{ ok?: boolean; healthy?: boolean; warming?: boolean }>(`/api/fleet/agents/${id}/control`, { action })
+    return await postJson<ControlAnswer>(`/api/fleet/agents/${id}/control`, { action })
   } catch (e) {
     return { error: errorMessage(e) }
   }

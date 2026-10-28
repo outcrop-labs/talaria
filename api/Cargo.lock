@@ -6271,6 +6271,7 @@ dependencies = [
  "talaria-fleet-create",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
+ "talaria-fleet-reconcile",
  "talaria-retrieval-collections",
  "talaria-retrieval-embed",
  "talaria-retrieval-qdrant",

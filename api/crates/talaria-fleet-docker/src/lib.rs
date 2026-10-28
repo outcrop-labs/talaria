@@ -106,8 +106,9 @@ pub async fn active_slot(pg: &PgPool, department: &str) -> Slot {
 // hop, whose fetch gives up on a response with no headers after 300 s and
 // answers 502. Measured live: a compose recreate killed that way between its
 // create and its rename stranded a container and left the agent stopped. So a
-// control verb, a hire's bring-up and a personal assistant's up or restart
-// run on a task of their own ([`run_detached`]); the caller only waits on it.
+// control verb, a hire's bring-up, and a personal assistant's bring-up and
+// its owner's edits' apply run on a task of their own ([`run_detached`]); the
+// caller only waits on it.
 // The compose verbs take the service's lock inside that task, so the lock is
 // held for exactly the verb, whoever is still listening.
 
@@ -1126,6 +1127,36 @@ pub async fn retire_container(name: &str) -> Result<(), String> {
     docker(&["rm", name], Duration::from_secs(60))
         .await
         .map(|_| ())
+}
+
+/// What [`retire_running`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Retired {
+    /// It was running, and is retired.
+    Done,
+    /// It was not running — what docker said of it — and nothing was done.
+    LeftAlone(Observed),
+}
+
+/// [`retire_container`] for a roll that must never start an agent a person
+/// stopped — the legacy `-b` slot a roll is moving home, where the retire is
+/// what lets the home container start. The container is read once more under
+/// `svc`'s lock (the `-b` service, which a stop of the agent addressed while
+/// the def still pointed at it), after the render and the pull, and retired
+/// only if it still runs. One that is stopped, gone, or that docker will not
+/// describe is left as it is ([`Retired::LeftAlone`]).
+pub async fn retire_running(svc: &str, name: &str) -> Result<Retired, String> {
+    let _held = lock_service(svc).await;
+    match observe_container(name).await {
+        Observed::Running { .. } => retire_container(name).await.map(|()| Retired::Done),
+        seen => {
+            tracing::info!(
+                "[fleet] {name}: not retired — the container is {}, and a roll never starts an agent",
+                seen.describe()
+            );
+            Ok(Retired::LeftAlone(seen))
+        }
+    }
 }
 
 /// `docker exec` into a container. Args never touch a shell (argv only —

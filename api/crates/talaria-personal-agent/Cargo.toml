@@ -17,6 +17,7 @@ talaria-agent-defs = { workspace = true }
 talaria-fleet-create = { workspace = true }
 talaria-fleet-docker = { workspace = true }
 talaria-fleet-layout = { workspace = true }
+talaria-fleet-reconcile = { workspace = true }
 talaria-retrieval-collections = { workspace = true }
 talaria-retrieval-embed = { workspace = true }
 talaria-retrieval-qdrant = { workspace = true }

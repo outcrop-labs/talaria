@@ -246,8 +246,8 @@ multiplexer.
   verb outlives its caller.** The control route runs each verb but `roll` whole on a task of
   its own (`run_detached` in `talaria-fleet-docker`) — the render ahead of an `up`, the compose
   verb, which takes the service's lock inside that task, and the re-read after a failure — and
-  so do the hire's `up`, a personal assistant's bring-up and restart, and the def and MCP
-  edits' applies. A client that goes away (a curl that gave up, a closed tab, or the app
+  so do the hire's `up`, a personal assistant's bring-up, and the applies of the def and MCP
+  edits and of an assistant owner's edit. A client that goes away (a curl that gave up, a closed tab, or the app
   proxy's own fetch, which gives up on a response with no headers after 300 s) drops only the
   wait: the compose CLI used to die with the request's future, halfway through a recreate. The
   route answers with the verb's own result when it settles within 210 s

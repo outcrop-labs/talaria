@@ -597,9 +597,10 @@ async fn roll_agent_locked(
     // to roll it, and the move is what takes it from -b to its home.
     let legacy = active.as_deref() == Some("b");
     // The move home starts the home container whatever `-b` was doing, so a
-    // roll that must not start an agent checks `-b` first: one that is not
-    // running (or that docker will not describe) stays where it is, and its
-    // next start brings it up there on the render.
+    // roll that must not start an agent checks `-b` first (and again before
+    // the retire, below): one that is not running (or that docker will not
+    // describe) stays where it is, and its next start brings it up there on
+    // the render.
     if legacy
         && mode == RollMode::IfRunning
         && !talaria_fleet_docker::container_running(&talaria_fleet_docker::slot_container(
@@ -620,23 +621,58 @@ async fn roll_agent_locked(
             Ok(_) => talaria_fleet_docker::pull_agent_image(pg, department).await,
             Err(e) => Err(e),
         };
+        // The read above came before the render and the pull — minutes, for a
+        // new pin — so a roll that must not start an agent reads `-b` again,
+        // under its service's lock, just before the retire that lets the home
+        // container start: one stopped meanwhile stays where it is
+        // (`retire_running`). A stop that lands after the def points home
+        // addresses the home service instead, and is not seen here.
         let moved = match ready {
-            Ok(()) => match talaria_fleet_docker::retire_container(&legacy).await {
-                Ok(()) => Ok(()),
-                Err(e) if talaria_fleet_docker::container_running(&legacy).await => Err(e),
-                Err(e) => {
-                    tracing::warn!(
-                        "[fleet] {legacy} stopped but was not removed ({e}) — moving {department} home anyway; remove it by hand"
-                    );
-                    Ok(())
+            Ok(()) => {
+                let retired = if mode == RollMode::IfRunning {
+                    talaria_fleet_docker::retire_running(
+                        &talaria_fleet_docker::slot_service(department, Slot::B),
+                        &legacy,
+                    )
+                    .await
+                } else {
+                    talaria_fleet_docker::retire_container(&legacy)
+                        .await
+                        .map(|()| talaria_fleet_docker::Retired::Done)
+                };
+                match retired {
+                    Ok(talaria_fleet_docker::Retired::Done) => Ok(None),
+                    Ok(talaria_fleet_docker::Retired::LeftAlone(seen)) => Ok(Some(seen)),
+                    Err(e) if talaria_fleet_docker::container_running(&legacy).await => Err(e),
+                    Err(e) => {
+                        tracing::warn!(
+                            "[fleet] {legacy} stopped but was not removed ({e}) — moving {department} home anyway; remove it by hand"
+                        );
+                        Ok(None)
+                    }
                 }
-            },
+            }
             Err(e) => Err(e),
         };
-        if let Err(e) = moved {
-            let _ = set_active_slot(pg, &slug, "b").await;
-            let _ = render(pg, sb).await;
-            return Err(e);
+        match moved {
+            Ok(None) => {}
+            Ok(Some(seen)) => {
+                let _ = set_active_slot(pg, &slug, "b").await;
+                let _ = render(pg, sb).await;
+                if seen == talaria_fleet_docker::Observed::Unreadable {
+                    return Ok(Rolled::Soft(unconfirmed_apply(department)));
+                }
+                tracing::info!(
+                    "[fleet] {display_name} ({department}): its legacy -b container was {} by the time its roll would retire it — left as it is; its next start reads the render",
+                    seen.describe()
+                );
+                return Ok(Rolled::LeftStopped);
+            }
+            Err(e) => {
+                let _ = set_active_slot(pg, &slug, "b").await;
+                let _ = render(pg, sb).await;
+                return Err(e);
+            }
         }
     } else {
         render(pg, sb).await?;

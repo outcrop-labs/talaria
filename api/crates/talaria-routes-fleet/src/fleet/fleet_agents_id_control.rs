@@ -2,6 +2,8 @@
 // this agent's managers, and admins (docs/PERMISSIONS.md, "Agent managers").
 //   up | stop | restart   the managed service (renders first on `up`)
 //   roll                  recreate the container in place — detached
+// A `restart` or a `roll` of an agent that is not running is refused (409):
+// each would start it, and starting is `up`'s.
 // `up`/`unretire`/`roll` return IMMEDIATELY; the roster's polled container
 // health shows the warm-up ('starting') phase instead of blocking the call.
 //
@@ -151,10 +153,7 @@ async fn start_roll(state: &AppState, actor: &str, def: &AgentDefRow) -> Respons
             "this agent is already rolling — wait for it to finish",
         );
     }
-    if matches!(
-        observe(&state.pg, &def.department).await,
-        Observed::Stopped { .. } | Observed::Absent
-    ) {
+    if not_running(&observe(&state.pg, &def.department).await) {
         return house_error(StatusCode::CONFLICT, NOT_RUNNING);
     }
     // The roll records itself in the fleet-wide registry (start and
@@ -200,8 +199,16 @@ async fn start_roll(state: &AppState, actor: &str, def: &AgentDefRow) -> Respons
     Json(json!({ "ok": true, "rolling": true })).into_response()
 }
 
-/// The refusal of a roll of an agent that is not running — the em dash is
-/// part of the wire contract.
+/// Whether a `roll` or a `restart` is refused ([`NOT_RUNNING`]): docker says
+/// the agent is stopped or gone. A container docker will not describe is not
+/// refused here — the roll reads it again under the service's lock, and a
+/// restart's failure is answered by the state it left.
+fn not_running(seen: &Observed) -> bool {
+    matches!(seen, Observed::Stopped { .. } | Observed::Absent)
+}
+
+/// The refusal of a roll or a restart of an agent that is not running — the
+/// em dash is part of the wire contract.
 const NOT_RUNNING: &str =
     "this agent is not running — start it instead; its start reads the current render";
 
@@ -283,6 +290,15 @@ async fn run_verb(state: AppState, def: AgentDefRow, action: String) -> Response
             // The start stamp before, so a restart that did happen can be
             // told from one that did not when compose reports a failure.
             let before = observe(&state.pg, &def.department).await;
+            // A restart is a bounce of a RUNNING agent. `compose restart`
+            // starts a stopped container as readily, and on its old
+            // container: after a key rotation that is the revoked key, after
+            // a rename the moved mounts. Starting is `up`, which recreates a
+            // container whose service moved — so a stopped agent is refused,
+            // like a roll of one.
+            if not_running(&before) {
+                return house_error(StatusCode::CONFLICT, NOT_RUNNING);
+            }
             match fleet_restart(&state.pg, &def.department).await {
                 Ok(_) => Json(json!({ "ok": true, "warming": true })).into_response(),
                 Err(e) => {
@@ -473,8 +489,6 @@ fn reached(action: &str, before: Option<&Observed>, now: &Observed) -> bool {
                 }),
                 Observed::Running { started_at, .. },
             ) => started_at != was,
-            // It was not running, and now it is: that start is the restart.
-            (Some(Observed::Stopped { .. } | Observed::Absent), Observed::Running { .. }) => true,
             _ => false,
         },
         _ => false,
@@ -576,8 +590,10 @@ mod tests {
         assert!(reached("restart", Some(&running("t1")), &running("t2")));
         assert!(!reached("restart", Some(&running("t1")), &running("t1")));
         assert!(!reached("restart", Some(&running("t1")), &stopped));
-        assert!(reached("restart", Some(&stopped), &running("t2")));
-        assert!(reached("restart", Some(&Observed::Absent), &running("t2")));
+        // A restart of a stopped agent is refused before it runs (409), so a
+        // stopped-then-running reading is no restart this route asked for.
+        assert!(!reached("restart", Some(&stopped), &running("t2")));
+        assert!(!reached("restart", Some(&Observed::Absent), &running("t2")));
         // Nothing known before or now is never read as done.
         assert!(!reached(
             "restart",
@@ -633,6 +649,25 @@ mod tests {
             None
         );
         assert_eq!(unconfirmed_why(bind, &running("t1")), None);
+    }
+
+    #[test]
+    fn a_roll_or_restart_of_a_stopped_agent_is_refused() {
+        // Either verb would start it: `compose restart` starts a stopped
+        // container (on its old env — a revoked key after a rotation), and a
+        // recreate starts the container it makes.
+        assert!(not_running(&Observed::Stopped {
+            id: "c0ffee".into()
+        }));
+        assert!(not_running(&Observed::Absent));
+        assert!(!not_running(&running("t1")));
+        // Unknown is not refused: the roll re-reads under the lock, and a
+        // failed restart is answered by what it left.
+        assert!(!not_running(&Observed::Unreadable));
+        assert_eq!(
+            NOT_RUNNING,
+            "this agent is not running — start it instead; its start reads the current render"
+        );
     }
 
     #[test]
