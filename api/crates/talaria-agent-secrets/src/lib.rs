@@ -322,26 +322,31 @@ pub async fn materialize_agent_secrets(
     Ok(true)
 }
 
+/// Truncate and rewrite, owner-only. One blocking task, the close included:
+/// a tokio `File` dropped on the async side closes its descriptor on the
+/// runtime's worker, and the last close of a file truncated and rewritten
+/// can start its writeback (XFS does), which waits on a saturated disk.
 async fn write_0600(path: &Path, content: &str) -> Result<(), String> {
-    use tokio::io::AsyncWriteExt;
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .await
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    file.write_all(content.as_bytes())
-        .await
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    use std::os::unix::fs::PermissionsExt;
-    if let Ok(meta) = tokio::fs::metadata(path).await {
-        let mut p = meta.permissions();
-        p.set_mode(0o600);
-        let _ = tokio::fs::set_permissions(path, p).await;
-    }
-    Ok(())
+    let (owned, bytes) = (path.to_path_buf(), content.as_bytes().to_vec());
+    tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let at = |e: std::io::Error| format!("{}: {e}", owned.display());
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&owned)
+            .map_err(at)?;
+        file.write_all(&bytes).map_err(at)?;
+        // An install whose file predates the 0600 rule is fixed here.
+        // Best-effort, as before.
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("{}: {e}", path.display()))?
 }
 
 #[cfg(test)]
