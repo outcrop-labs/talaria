@@ -5,11 +5,12 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // THE QUESTION THIS FILE PINS DOWN: what the app MCP gateway route
 // (/api/mcp/gw/app-<slug>, routes/api/mcp.gw.$server.ts) does for an app that
-// is not serving. Turning an app off takes its server off every agent by a
-// roll, but an agent's rendered config outlives that until the roll lands, so
-// the route itself refuses: a 403 with the reason, recorded like any refused
-// call, and the app's module is never loaded. The route lives under routes/,
-// which vitest does not collect, so it is driven from here.
+// is not serving. Turning an app off takes its server off every agent's
+// rendered config, but a running agent keeps the server until its next
+// reconcile of that config, so the route itself refuses: a 403 with the
+// reason, recorded like any refused call, and the app's module is never
+// loaded. The route lives under routes/, which vitest does not collect, so it
+// is driven from here.
 
 const st = vi.hoisted(() => ({
   enabled: [] as string[],

@@ -30,44 +30,71 @@ pub(crate) async fn reader_gate(
     }
 }
 
-/// Who a membership write re-renders and rolls: the agents named (a
+/// Who a membership write re-renders and applies to: the agents named (a
 /// `team_agents` change — a team's MCP grants ride on that table, so the
 /// agent's rendered server set changed), or one person's personal assistant
 /// (a `team_members` change — a PA's rendered set skips the servers its
 /// owner's teams deny, `servers_for_agent`).
-pub(crate) enum Rolls {
+pub(crate) enum Applies {
     Models(Vec<String>),
     User(String),
 }
 
-/// Config truth first (the render), then the live cutover (the roll) — the
-/// same two strokes `me/mcp` makes when a person's connection changes. A
-/// running Hermes wires its MCP servers at start, so without the roll the
-/// container keeps the old server set while the registry says otherwise.
+/// Config truth first (the render), then the change applied to the running
+/// agents it touches — the same strokes `me/mcp` makes when a person's
+/// connection changes. A server a team grant adds or removes is a name in
+/// the agent's config, which a running Hermes reconciles within a minute of
+/// the rewrite; a tool subset that changes under a server it keeps reaches
+/// it as the gateway's list-changed notice on its next keepalive
+/// (`bump_tool_lists`, for `servers` — the team's granted servers, the only
+/// ones a membership can move a list on). Neither restarts the agent unless
+/// the render moved its container for some other reason (talaria-mcp-apply).
 /// Detached, never the caller's problem: the membership row is already
-/// written, and a roll that fails lands in the audit trail.
-pub(crate) fn render_and_roll(state: &AppState, rolls: Rolls) {
+/// written, and an apply that fails lands in the audit trail.
+pub(crate) fn render_and_apply(state: &AppState, servers: Vec<String>, applies: Applies) {
     let (pg, state) = (state.pg.clone(), state.clone());
     tokio::spawn(async move {
+        talaria_api_facades::mcp::apply::bump_tool_lists(&pg, &servers).await;
         let sb = match state.secretbox().await {
             Ok(sb) => sb,
             Err(e) => {
-                tracing::warn!("[teams] membership stored but the roll could not start: {e}");
+                tracing::warn!("[teams] membership stored but it could not be applied: {e}");
                 return;
             }
         };
         let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb).await;
-        match rolls {
-            Rolls::Models(models) => {
+        match applies {
+            Applies::Models(models) => {
                 for model in &models {
-                    talaria_api_facades::mcp::apply::roll_agent_for_model(&pg, &sb, model).await;
+                    talaria_api_facades::mcp::apply::apply_agent_for_model(&pg, &sb, model).await;
                 }
             }
-            Rolls::User(user_id) => {
-                talaria_api_facades::mcp::apply::roll_agent_for_user(&pg, &sb, &user_id).await;
+            Applies::User(user_id) => {
+                talaria_api_facades::mcp::apply::apply_agent_for_user(&pg, &sb, &user_id).await;
             }
         }
     });
+}
+
+/// The servers a team carries a grant row for (allowed or denied) — the
+/// servers a change to the team's members or agents can move a tool list on.
+/// Read before a write that cascades the rows away (a team delete). A read
+/// that fails is logged and counts nothing: the agents keep their lists until
+/// they reconnect.
+pub(crate) async fn team_servers(state: &AppState, team_id: &str) -> Vec<String> {
+    sqlx::query_scalar::<_, String>(
+        "select s.name from mcp_team_access t join mcp_servers s on s.id = t.server_id \
+         where t.team_id = $1::uuid order by s.name",
+    )
+    .bind(team_id)
+    .fetch_all(&state.pg)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(
+            "[teams] the team's MCP servers could not be read ({e}) — no tool-list notice"
+        );
+        Vec::new()
+    })
 }
 
 /// Owner-only. Same three-line read as reader_gate above, same refusal.

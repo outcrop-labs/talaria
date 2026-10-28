@@ -6,7 +6,7 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-349 routes across 24 groups.
+352 routes across 24 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
@@ -25,7 +25,7 @@
 | [`internal`](./internal.md) | Service-to-service calls from the app host — never a user's or an agent's. | 4 |
 | [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, blueprints, search. | 20 |
 | [`llm`](./llm.md) | The OpenAI-compatible wire (llm.v1.*). | 2 |
-| [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 16 |
+| [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 17 |
 | [`models`](./models.md) | Model providers, gateway API keys, local backends. | 5 |
 | [`plans`](./plans.md) | Living plans: draft doc, members. | 4 |
 | [`research`](./research.md) | Cited research reports and their conversations. | 6 |
@@ -33,7 +33,7 @@
 | [`system`](./system.md) | Health and instance discovery endpoints. | 2 |
 | [`tasks`](./tasks.md) | Tickets, comments, dependencies, watchers, workflows. | 12 |
 | [`teams`](./teams.md) | Teams and their members. | 6 |
-| [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 18 |
+| [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 20 |
 
 **Auth vocabulary** (the route's guard class — resource-level ACLs like board
 membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTIONS.md)):

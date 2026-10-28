@@ -86,9 +86,9 @@ async fn agent_row(pg: &PgPool, slug: &str) -> String {
 async fn queued_job(pg: &PgPool, agent_id: &str, repo: &str, minutes_ago: i64) -> String {
     let (id,): (String,) = sqlx::query_as(
         "insert into workbench_jobs \
-           (agent_id, agent_model, task_id, repo, branch, effort, plan, status, \
+           (agent_id, agent_model, task_id, host_id, repo, branch, effort, plan, status, \
             queued_at, queued_reason) \
-         values ($1::uuid, 'wb-queue-test', null, $2, 'test/branch', 'standard', '', \
+         values ($1::uuid, 'wb-queue-test', null, 'github', $2, 'test/branch', 'standard', '', \
                  'queued', now() - make_interval(mins => $3::int), 'host has 1.0 GiB RAM free') \
          returning id::text",
     )

@@ -73,6 +73,8 @@ export interface AppInstallRequest {
   agentId: string
   agentModel: string
   agentName: string | null
+  /** The registered git host the repo is on (Admin → Git hosts). */
+  hostId: string
   repo: string
   url: string
   ref: string | null

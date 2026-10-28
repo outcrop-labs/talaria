@@ -5,7 +5,15 @@
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import { patchAgentMeta, useFleetDefs, type AgentDef } from '@/lib/fleet-defs'
   import { toastError } from '@/lib/toast.svelte'
-  import { builtinFloor, normalizeToolsets, sameToolsets, toggleToolset, toolsetRows } from './toolsets'
+  import {
+    authoredBrowser,
+    browserNote,
+    builtinFloor,
+    normalizeToolsets,
+    sameToolsets,
+    toggleToolset,
+    toolsetRows,
+  } from './toolsets'
 
   /** THE HERMES TOOLSETS THIS AGENT DOES NOT GET. The stored list is the
    *  absence (`disabledToolsets`); a checked box is the toolset being ON, and
@@ -24,8 +32,9 @@
    *  `terminal` here needs to know it is an admin's call and not a bug.
    *
    *  This is the one control on the MCP tab that does NOT autosave: a change
-   *  rolls the container, so per UI-CONVENTIONS it waits for an explicit
-   *  Apply. */
+   *  opens or closes a whole family of tools on a working agent (in place,
+   *  from its next turn — no restart), so per UI-CONVENTIONS it waits for an
+   *  explicit Apply. */
   let { def, canManage }: { def: AgentDef; canManage: boolean } = $props()
 
   const qc = useQueryClient()
@@ -42,14 +51,18 @@
     toolsets ? toolsetRows(toolsets.governed, toolsets.mandatoryDisabled, shown, toolsets.orgDisabled ?? []) : [],
   )
   const orgClosed = $derived(rows.filter((r) => r.orgClosed).map((r) => r.name))
+  // Follows the pending edit, so ticking `terminal` shows the browser it
+  // brings before Apply (with the terminal closed there is none, and the
+  // line says why); a browser the def's own config chose is named.
+  const browser = $derived(browserNote(rows, authoredBrowser(def.latest?.config)))
   // Only Talaria's own pair is stripped from what gets stored. An org-closed
   // name stays in the def's list if its managers put it there, so lifting the
   // floor later gives this agent back exactly what they chose.
   const builtin = $derived(builtinFloor(toolsets))
   // Compared against the def's list in its STORABLE spelling, because Apply
-  // must not offer to roll a container for a list that already means what is
-  // stored: order is not a change, and neither is a legacy def carrying one of
-  // the two names the renderer closes anyway.
+  // must not offer to apply a list that already means what is stored: order
+  // is not a change, and neither is a legacy def carrying one of the two
+  // names the renderer closes anyway.
   const stored = $derived(normalizeToolsets(def.disabledToolsets, builtin))
   const dirty = $derived(pending !== null && !sameToolsets(pending, stored))
 
@@ -78,7 +91,7 @@
     <div class="flex items-center gap-2">
       <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Hermes toolsets</span>
       <InfoTip
-        text="The tools the agent's own harness carries, before any MCP server. A box here is the toolset being ON for this agent; clearing one closes it on the next roll. Talaria's own todo and clarify tools replace Hermes' fleet-wide, so those two stay closed."
+        text="The tools the agent's own harness carries, before any MCP server. A box here is the toolset being ON for this agent; clearing one closes it from the agent's next turn, without a restart. Talaria's own todo and clarify tools replace Hermes' fleet-wide, so those two stay closed."
       />
       <span class="flex-1"></span>
       {#if canManage && dirty}
@@ -87,11 +100,14 @@
       {/if}
     </div>
     <div class="mt-1 font-sans text-xs text-muted">
-      Off takes effect on the next roll.
+      A change reaches the running agent on its next turn, without a restart.
       {#if orgClosed.length}
         Closed org-wide by an admin, for every agent: {orgClosed.join(', ')}.
       {/if}
     </div>
+    {#if browser}
+      <div class="mt-1 font-sans text-xs text-muted">{browser}</div>
+    {/if}
     <div class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3">
       {#each rows as r (r.name)}
         <Checkbox

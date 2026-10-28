@@ -149,6 +149,12 @@ export const Route = defineApi('/api/mcp/gw/$server', {
     const rpc = body as Rpc
     const method = rpc.method ?? ''
     const isCall = method === 'tools/call'
+    // A keepalive from an agent whose tool list may be stale is answered here
+    // with the list-changed notice; a handshake starts the agent's count
+    // (mcp-tool-list-notice.ts, the Rust gateway's twin).
+    const { toolListNotice } = await import('@/server/mcp-tool-list-notice')
+    const notice = await toolListNotice(params.server, name, rpc, request)
+    if (notice) return notice
     // The agent's own argument strings, taken before the spend boundary
     // rewrites them — the list a stored sentence is scrubbed of.
     const argStrings = isCall ? argumentStrings(rpc) : []

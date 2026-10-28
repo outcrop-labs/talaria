@@ -1,10 +1,15 @@
 # Admin: Agents
 
 The Agents page is the roster: hire agents, set their identity and brains, bind their tools,
-and retire them. Changes to a running agent deploy like software — a fresh container rolls up
-beside the old one, a health check runs, then traffic cuts over — so nobody's conversation
-dies to an edit. The policy panels in **Admin → Agents** govern how all agents behave; this
-page governs each one.
+and retire them. Most changes reach a running agent in place, from its next turn, without a
+restart: its tools and toolsets, its delegation cap, its soul (from its next new
+conversation), and its MCP servers and tools (within a few minutes). A change the agent can only take
+at start — its Developer switch, a rotated key, a model or tier, most config edits — restarts
+its container: the agent is offline for about a minute, and a turn in flight waits for it.
+None of these starts an agent someone stopped: a stopped agent stays stopped, and takes the
+change when it next starts.
+The policy panels in **Admin → Agents** govern how all agents behave; this page governs each
+one.
 
 Open: **Manage → Agents**. Members need the view granted (and the **Manage agents**
 permission to edit anything).
@@ -94,8 +99,9 @@ The confirm says what happens, and it is exact: the old key stops working the mo
 confirm; the fleet is re-rendered and a running container is rolled onto the new key (it stops,
 a fresh one starts in its place, and the roll waits for it to report healthy); until then the
 agent is locked out, so a toolkit call or a workbench session in flight on the old key fails and
-has to be retried, while conversations wait for the new container and carry on there. An agent Talaria does not run
-gets the new key the next time it starts. The new value is never shown; the audit trail records
+has to be retried, while conversations wait for the new container and carry on there. A
+stopped agent stays stopped and takes the new key when it next starts, and so does an agent
+Talaria does not run. The new value is never shown; the audit trail records
 who rotated which key. If the roll fails, roll the agent again from the roster, or stop and
 start it.
 
@@ -127,8 +133,10 @@ Once that clears, **Roll** the agent from the roster to put version N on it.
 - **Soul** — the SOUL.md workspace: *who the agent is*. Saving it publishes a soul-only
   version on top of the last saved config.
 
-Applying config rolls out safely: *new container rolling up beside the old one, health
-check, then traffic cuts over*. Add a version note if the change deserves one.
+Applying config writes it to the running agent in place. If the edit touches something the
+agent reads only at start (a model, a tier, most config keys), its container restarts — offline
+for about a minute, with a turn in flight waiting for it; a soul-only edit restarts nothing and
+reaches the agent's next new conversation. Add a version note if the change deserves one.
 
 ### Versions
 
@@ -186,12 +194,30 @@ Hermes' own `hermes tools` offers, minus speech-to-text and the Discord and Yuan
 tools no Talaria agent uses. Hermes' bundles (`safe`, `debugging`, `search`, `coding`) are not
 rows: closing one closed its member tools while their own rows still read open, so a list that
 named one now shows those members closed instead. A box is the toolset being on for this
-agent; clearing one closes it on the next roll, and a new agent starts with the shell, code
+agent; clearing one closes it from the agent's next turn, without a restart, and a new agent starts with the shell, code
 execution, the file tool and self-scheduling closed until a manager opens them.
 Two kinds of row are locked: `todo` and `clarify`, which Talaria's own tools replace for every
 agent (Hermes' own todo list would also forget its plan every turn of an ordinary chat), and
 anything an admin closed org-wide (**Admin → Security → Agent toolsets**, below).
 The row's tooltip says which.
+
+The `browser` row is Hermes' own browser, driving the Chromium in the agent's image, and it
+works only with `terminal` on. With both on (the Developer Agent switch opens `terminal`), the
+agent gets Hermes' `browser_exec`, which runs Python against the browser. With the terminal
+closed (a new agent's default), the agent has no browser even with `browser` ticked, and the
+line under the grid says why: on this image, Hermes' browser does not refuse private addresses
+(the machine Talaria runs on, other agents' containers, your LAN), on the grounds that the
+terminal reaches them anyway. That holds only for an agent that has a terminal, so only that
+agent gets the browser. The agent's `web_extract` refuses those addresses either way. A browser
+an agent's own config sets is named on that line too: with the terminal closed, Talaria closes
+the `browser` toolset for one that Hermes runs locally, and leaves a CDP endpoint or a hosted
+browser (which keep the check) alone.
+
+The browser's engine is installed from npm onto the agent's volume before the agent starts
+(once per Hermes version), so an agent whose host cannot reach the npm registry starts without
+browser tools, and the app's log says why. A start waits at most 90 seconds for the install.
+If it runs out of time, starts skip the install for the next 5 minutes. Turn `browser` and
+`terminal` off for an agent that must not reach your network.
 
 ## Retire an agent
 
@@ -220,8 +246,9 @@ One more lives under **Admin → Security → Agent toolsets**: the org-wide too
 the same checklist the agent editor shows, over the whole fleet: clearing a box closes that
 Hermes toolset for every agent, whatever its managers opened, and managers then see it locked in
 the agent's own editor with "closed org-wide by an admin". `todo` and `clarify` are locked here
-too, for the same reason as everywhere else. Saving rolls nothing: the floor lands on each agent
-at its next render or roll, which is what the panel says when it saves. Names the api's
+too, for the same reason as everywhere else. Saving restarts nobody: the fleet is re-rendered at
+once and every running agent reads the floor on its next turn, which is what the panel says when
+it saves. Names the api's
 environment pins (`TALARIA_MANDATORY_DISABLED_TOOLSETS`) show locked as well, since unticking
 them here would change nothing.
 
@@ -231,13 +258,20 @@ Search, or SearXNG at the workspace search URL, each with its key (stored encryp
 again), plus an optional separate provider for reading pages. Left on Hermes's default, Talaria
 sets nothing. Once you pick a provider, or set a search URL (every agent gets it as
 `SEARXNG_URL`), agents stop falling back to the anonymous free tiers of Exa, Parallel, Firecrawl
-and Keenable unless you tick **Allow Hermes's keyless public tiers**. Talaria does not check that
-the agents can connect to that URL: if they cannot, their searches fail with SearXNG's connection
-error instead of falling back. Brave Search and SearXNG only search. Unless you also pick a
+and Keenable unless you tick **Allow Hermes's keyless public tiers**. If the agents cannot connect
+to that URL, their searches fail with SearXNG's connection error instead of falling back, so the
+**Search URL** panel tests it twice: **from app** and **from agents**. The second runs the same
+test inside a running agent, against the address the agents actually dial (a `127.0.0.1` URL
+becomes `host.docker.internal`), and reads **not probed** when no agent is running, or when a
+containerized install (`TALARIA_AGENT_DIAL=container`) has a loopback URL: there a `127.0.0.1`
+address is the app's own container, so it is not handed to the agents at all and the panel says
+so. A SearXNG listening only on the host's loopback shows up from the app and down from the
+agents. A `SEARXNG_URL` in the api's environment wins over the field, which then shows it and
+cannot be edited; set but empty counts as not set. Brave Search and SearXNG only search. Unless you also pick a
 provider under **Read pages**, agents' `web_extract` lands on them and fails, and the panel warns
 about it. The choice applies to every agent. It overrides an agent's own web backend settings, and
 an agent secret with the same name as the vendor key. Research is not affected: it searches with
-the search URL or a registered search MCP server. Like the toolset floor, a change lands on each
-agent at its next roll.
+the search URL or a registered search MCP server. Unlike the toolset floor, a change here lands on
+each agent only at its next roll: the vendor key is in the agent's environment.
 
 Besides these panels, one rule is stamped into every agent's soul at hire and in every role template, so it holds no matter how the soul is later edited: **agents never do dev work in chat**. Code changes — however small — ship through a ticket and a workbench job; a dev-work request in chat produces (or links) a ticket and moves execution to the workbench, and instructions given in chat are posted to the ticket as comments.

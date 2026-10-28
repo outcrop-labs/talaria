@@ -76,7 +76,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs`]
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcontrol-body) | `{ok}` | 200, 400, 404, 409, 500 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcontrol-body) | `…` | 200, 202, 400, 404, 409, 500, … | audit |
 
 ### POST `/api/fleet/agents/{id}/control` body
 
@@ -242,7 +242,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs`](../../api/cr
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{defs, endpoints, brains, canHire, toolsets}` | 200 | — |
 
-**GET** — The roster also carries `toolsets`, the agent editor's vocabulary: `governed`, every Hermes toolset an operator may disable on an agent (22 names, alphabetical); `mandatoryDisabled`, the whole floor the renderer closes on every agent whatever its def says — `todo` and `clarify`, because Talaria's own MCP versions are the ones a person sees, plus the org-wide floor an admin sets on `PUT /api/admin/settings` (`mandatoryDisabledToolsets`) or pins with `TALARIA_MANDATORY_DISABLED_TOOLSETS`; and `orgDisabled`, that org part alone, so the editor can say an admin closed a row rather than Talaria. `governed` is the constant the `PATCH /api/fleet/defs/{id}` validator reads, so the picker cannot offer a name the write door would refuse.
+**GET** — The roster also carries `toolsets`, the agent editor's vocabulary: `governed`, every Hermes toolset an operator may disable on an agent (21 names, alphabetical); `mandatoryDisabled`, the whole floor the renderer closes on every agent whatever its def says — `todo` and `clarify`, because Talaria's own MCP versions are the ones a person sees, plus the org-wide floor an admin sets on `PUT /api/admin/settings` (`mandatoryDisabledToolsets`) or pins with `TALARIA_MANDATORY_DISABLED_TOOLSETS`; and `orgDisabled`, that org part alone, so the editor can say an admin closed a row rather than Talaria. `governed` is the constant the `PATCH /api/fleet/defs/{id}` validator reads, so the picker cannot offer a name the write door would refuse.
 
 ## `/api/fleet/defs/{id}`
 
@@ -265,9 +265,9 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api
 | `ticketTemplateId` | `uuid? nullable` | Template overrides: uuid binds, null clears, omitted leaves unchanged. |
 | `planTemplateId` | `uuid? nullable` |  |
 | `developer` | `bool?` | The Developer Agent switch: on sets the agent up end to end (sandbox, Oh My Pi, Workbench tools); the roll below applies it. |
-| `maxChildren` | `number?(0, 16)` | How many subagents this agent may run at once; 0 means it delegates to nobody. The ceiling is the box's, not the agent's — the roll applies it. |
+| `maxChildren` | `number?(0, 16)` | How many subagents this agent may run at once; 0 means it delegates to nobody. The ceiling is the box's, not the agent's. Applied in place: a running agent reads it on its next delegate call. |
 | `pinnedSessions` | `bool?` | Pinned sessions: one Hermes session per conversation, Hermes holding the history, so its compaction and session search see the whole thread. Talaria-side only — no roll. |
-| `disabledToolsets` | `string[]?(1, 40, 40)` | The Hermes toolsets this agent does NOT get — the whole list, or absent. Only governed names pass: a stranger reaches the rendered config, is ignored in silence, and the toolset stays open. It rolls. |
+| `disabledToolsets` | `string[]?(1, 40, 40)` | The Hermes toolsets this agent does NOT get — the whole list, or absent. Only governed names pass (a stranger is ignored in silence and the toolset stays open). Applied in place: a running agent reads it on its next turn. |
 
 ## `/api/fleet/defs/{id}/edit`
 
@@ -291,7 +291,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_edit.rs`](../.
 | `aliases` | `target_array` |  |
 | `fallbacks` | `target_array` |  |
 | `note` | `string?(300)` |  |
-| `apply` | `bool?` | Re-render + restart the managed container so the edit takes effect now. |
+| `apply` | `bool?` | Apply the edit to the running agent now: re-render (config and soul land in place) and restart the managed container only if the edit changed something it reads only at start. |
 | `compression` | `parse_compression` | The compaction knobs, and what the answer owes the caller about them. note: `compression` — `{ threshold?: number|null (0.1..1), thresholdTokens?: number|null (1000..10000000) }`; null clears a knob, absent leaves it; a threshold under 0.75 saves and the answer's `notes` says Hermes raises it for models under 512K context |
 
 ## `/api/fleet/defs/{id}/google`
@@ -525,7 +525,8 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_reconcile.rs`](../../a
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_render.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_render.rs)
 
 > POST /api/fleet/render. Render every managed agent's config + the fleet
-> compose + the gateway manifest (the bridge hot-reloads the manifest).
+> compose + the gateway manifest (the persona door re-reads the manifest on
+> each attempt).
 > Admin.
 
 | Method | Auth | Body | Returns | Status | Flags |

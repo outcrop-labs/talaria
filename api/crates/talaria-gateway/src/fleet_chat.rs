@@ -2474,6 +2474,7 @@ mod tests {
             source: "chat".into(),
             ref_id: Some(conversation.clone()),
             task_id: None,
+            attended: false,
         });
         let body = move_it.send().await.expect("the fresh thread answers");
 

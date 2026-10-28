@@ -11,8 +11,19 @@ export interface SearchEndpoint {
   stored: string
   /** SEARXNG_URL is set in the api's environment, and it wins. */
   fromEnv: boolean
+  /** The canary from the app process — what Research dials. */
   reachable: boolean
   error: string | null
+  /** The same canary from inside a running agent, against the URL the
+   *  render hands the agents. null: nothing was probed — no URL handed to
+   *  the agents, or no agent running — and `agentError` says which. */
+  agentReachable: boolean | null
+  agentError: string | null
+  /** The agent the probe ran in. */
+  probedFrom: string | null
+  /** The URL as the agents dial it (a host loopback becomes
+   *  host.docker.internal). */
+  agentUrl: string | null
 }
 
 /** One Hermes web backend this build offers (talaria-agent-web-search). */
@@ -36,7 +47,8 @@ export interface RenderedWeb {
   /** The Hermes env names that carry a vendor key. Never the value. */
   env: string[]
   /** The workspace search URL reaches the agents' env as SEARXNG_URL.
-   *  Rendered, not probed: the agents may still fail to connect to it. */
+   *  Rendered is not reachable: the Search URL panel's "from agents" probe
+   *  is what says whether they can connect to it. */
   searxngUrl: boolean
   /** What the render would warn about, e.g. web_extract landing on a
    *  search-only backend. */
@@ -90,4 +102,19 @@ export function renderSummary(cfg: AgentWebSearch): string {
   if (web.keyless_fallback === false) parts.push('keyless tiers off')
   else if (parts.length && cfg.allowKeylessPublicTiers) parts.push('keyless tiers allowed')
   return parts.length ? parts.join(' · ') : "nothing rendered: Hermes resolves its own default"
+}
+
+/** The line under the Search URL dots for the agents' probe, or null when
+ *  the dot says it all (up, or no URL to probe). A failure names where the
+ *  probe ran and what it dialled, because "down from the agents but up from
+ *  the app" is exactly the case where the address is the question. */
+export function agentProbeNote(s: SearchEndpoint): { tone: 'danger' | 'muted'; text: string } | null {
+  if (!s.url || s.agentReachable === true) return null
+  if (s.agentReachable === false) {
+    const where = [s.probedFrom && `probed in ${s.probedFrom}`, s.agentUrl && `dialling ${s.agentUrl}`]
+      .filter(Boolean)
+      .join(', ')
+    return { tone: 'danger', text: `From the agents${where ? ` (${where})` : ''}: ${s.agentError ?? 'the probe failed'}` }
+  }
+  return s.agentError ? { tone: 'muted', text: `From the agents: ${s.agentError}` } : null
 }

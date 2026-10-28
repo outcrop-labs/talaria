@@ -61,7 +61,7 @@
     if (r.needsForce && r.affected) {
       const go = await confirm({
         title: 'Still in use',
-        message: `Still used by:\n${describeAffected(r.affected)}\n\nRemove it from those agents too? Each gets a new config version (revertible); running managed agents restart.`,
+        message: `Still used by:\n${describeAffected(r.affected)}\n\nRemove it from those agents too? Each gets a new config version (revertible); running managed agents restart, and a stopped one picks it up when it next starts.`,
         confirmLabel: 'Remove everywhere',
         danger: true,
       })
@@ -221,7 +221,7 @@
     {#if ep.class === 'cloud'}<ModelsPrivacyRow {ep} {run} />{/if}
 
     {#if cascading}
-      <Generating site="models/endpoint-remove" label="Removing from every agent: new agent versions, re-render, restarting the affected agents" lines={2} />
+      <Generating site="models/endpoint-remove" label="Removing from every agent: new agent versions, a re-render, and a restart for each one that is running" lines={2} />
     {/if}
     {#if err}<div class="text-xs text-danger">{err}</div>{/if}
 

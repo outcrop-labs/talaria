@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-18 routes.
+20 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -34,9 +34,12 @@
 | [`/api/workbench/env/{*repo}`](#apiworkbenchenvrepo) | PATCH | `session` + `perm:agents.manage` |
 | [`/api/workbench/flow`](#apiworkbenchflow) | GET | `session` + `perm:agents.manage` |
 | [`/api/workbench/flow`](#apiworkbenchflow) | PUT | `session` + `perm:agents.manage` |
-| [`/api/workbench/github`](#apiworkbenchgithub) | GET | `admin` |
-| [`/api/workbench/github`](#apiworkbenchgithub) | PUT | `admin` |
-| [`/api/workbench/github`](#apiworkbenchgithub) | DELETE | `admin` |
+| [`/api/workbench/git-hosts`](#apiworkbenchgit-hosts) | GET | `admin` |
+| [`/api/workbench/git-hosts`](#apiworkbenchgit-hosts) | POST | `admin` |
+| [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | GET | `admin` |
+| [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | PUT | `admin` |
+| [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | DELETE | `admin` |
+| [`/api/workbench/git-hosts/{id}/test`](#apiworkbenchgit-hostsidtest) | POST | `admin` |
 | [`/api/workbench/jobs`](#apiworkbenchjobs) | GET | `session` |
 | [`/api/workbench/jobs`](#apiworkbenchjobs) | PUT | `session` |
 | [`/api/workbench/repo-requests`](#apiworkbenchrepo-requests) | GET | `admin` |
@@ -333,43 +336,89 @@ source.
 
 Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_flow.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_flow.rs)
 
-> /api/workbench/flow. Per-repo git flow (the branch PRs target). GET →
-> configured flows + the reachable pool; PUT → set one repo's flow.
-> agents.manage.
+> /api/workbench/flow. Per-repo git flow (the branch PRs target), across
+> every registered git host. GET → configured flows + each host's reachable
+> pool (a host that cannot list says why); PUT → set one repo's flow, on one
+> host. agents.manage.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | — | `{flows, repos}` | 200 | — |
+| GET | `session` + `perm:agents.manage` | — | `{flows, repos, hosts}` | 200 | — |
 | PUT | `session` + `perm:agents.manage` | [body](#put-apiworkbenchflow-body) | `{flows}` | 200, 400 | — |
 
 ### PUT `/api/workbench/flow` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
+| `host` | `string(1, 40)` |  |
 | `repo` | `string(3, 200)` |  |
 
-## `/api/workbench/github`
+## `/api/workbench/git-hosts`
 
-Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_github.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_github.rs)
+Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts.rs)
 
-> /api/workbench/github. The Workbench's GitHub connection. Deliberately
-> requireAdmin (not agents.manage): this holds ORG CREDENTIALS (PAT / App
-> private key) — a grantable permission shouldn't reach them. GET →
-> live-verified redacted status (+ ?installations=… lists where the App is
+> /api/workbench/git-hosts. The git hosts the operator chose
+> (talaria-git-hosts): GET → every registered host (redacted — whether a
+> secret is set, never its value) with what still uses it, and the kinds an
+> operator can add; POST → add one. Deliberately requireAdmin (not
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{status}` | 200 | — |
-| PUT | `admin` | [body](#put-apiworkbenchgithub-body) | `{status}` | 200, 400 | audit |
-| DELETE | `admin` | — | `{ok}` | 200 | audit |
+| GET | `admin` | — | `{hosts, kinds}` | 200 | — |
+| POST | `admin` | [body](#post-apiworkbenchgit-hosts-body) | `{host}` | 200, 201, 400 | audit |
 
-### PUT `/api/workbench/github` body
+### POST `/api/workbench/git-hosts` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
+| `id` | `string(1, 40)` |  |
+| `kind` | `enum(github|forgejo)` |  |
+| `name` | `string(1, 80)` |  |
+| `baseUrl` | `string(1, 300)` |  |
+| `apiUrl` | `string?(300)` |  |
+| `repoCreationOrgs` | `string[]?(1, 100, 20)` |  |
+| `secret` | `string?(200)` |  |
 | `mode` | `enum(app|pat)? nullable` |  |
-| `repoCreationOrgs` | `string[]?(1, 100, 10)` |  |
+
+## `/api/workbench/git-hosts/{id}`
+
+Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id.rs)
+
+> /api/workbench/git-hosts/{id}. One git host. GET → the redacted row with a
+> live status (who the connection acts as, or why it cannot connect);
+> `?installations=1` on a GitHub host lists where its App is installed (the
+> easy-setup picker). PUT → change it (secrets sealed; a Forgejo host's
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{host}` | 200, 404 | — |
+| PUT | `admin` | [body](#put-apiworkbenchgit-hostsid-body) | `{host}` | 200, 400, 404 | — |
+| DELETE | `admin` | — | `{ok}` | 200, 404, 409 | — |
+
+### PUT `/api/workbench/git-hosts/{id}` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string(1, 80)` |  |
+| `baseUrl` | `string(1, 300)` |  |
+| `apiUrl` | `string?(300)` |  |
+| `repoCreationOrgs` | `string[]?(0, 100, 20)` |  |
+| `secret` | `string?(200)` |  |
+
+## `/api/workbench/git-hosts/{id}/test`
+
+Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id_test.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id_test.rs)
+
+> /api/workbench/git-hosts/{id}/test. "Test connection": POST asks the host,
+> live, who its connection acts as and which repositories it can reach — the
+> two things a workbench job needs from it. Every call underneath is a read.
+> requireAdmin, like the rest of the host plane.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | — | `{ok, status, repoCount, repos, reposError}` | 200, 404 | — |
 
 ## `/api/workbench/jobs`
 
@@ -399,15 +448,15 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_jobs.rs`](
 Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_repo_requests.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_repo_requests.rs)
 
 > /api/workbench/repo-requests. Agent repo-creation requests. GET → pending
-> queue; PUT → approve (creates the repo via the App at the requested or
-> overridden visibility, protects its default branch against force-push and
-> deletion unless the approver says not to, grants it to the requester) or
+> queue; PUT → approve (creates the repo on the git host the request names,
+> through that host's connection, at the requested or overridden
+> visibility, protects its default branch against force-push and deletion
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `admin` | — | `{requests}` | 200 | — |
-| PUT | `admin` | [body](#put-apiworkbenchrepo-requests-body) | `{ok, repo, url, protected, protection}` | 200, 400, 404 | audit |
+| PUT | `admin` | [body](#put-apiworkbenchrepo-requests-body) | `{ok, host, repo, url, protected, protection}` | 200, 400, 404 | audit |
 
 ### PUT `/api/workbench/repo-requests` body
 
@@ -424,18 +473,19 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_repo_reque
 Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_repos_agent_id.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_repos_agent_id.rs)
 
 > /api/workbench/repos/{agentId}. Per-agent workbench repo grants —
-> explicit, like MCP assignment. GET → the connection's reachable pool +
-> this agent's grants; PUT → replace the grant set (validated against the
-> pool). agents.manage.
+> explicit, like MCP assignment, and per HOST: the same owner/name on two
+> git hosts is two repositories. GET → every registered host's reachable
+> pool + this agent's grants (and each grant's branch rules and live branch
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `agent-reader` | — | `{available, granted, rules, branches}` | 200, 404 | — |
+| GET | `session` + `agent-reader` | — | `{hosts, available, granted, rules, branches}` | 200, 404 | — |
 | PUT | `session` + `agent-manager` | [body](#put-apiworkbenchreposagentid-body) | `{granted}` | 200, 400, 404 | — |
 
 ### PUT `/api/workbench/repos/{agentId}` body
 
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `repos` | `string[](0, 200, 0, 100)` |  |
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
 

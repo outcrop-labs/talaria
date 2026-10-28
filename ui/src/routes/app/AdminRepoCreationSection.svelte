@@ -9,26 +9,18 @@
   import { errorMessage, getList, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
 
-  /** Agent repo creation: which orgs allow it, and the pending request queue
+  /** Agent repo creation: the pending request queue across every git host
    *  (agents propose, THIS is where humans ratify — approval creates the repo
-   *  at the visibility chosen here, protects its default branch against
-   *  force-push and deletion unless unticked, and grants it to the requester;
-   *  a rejection posts its reason on the requesting ticket). */
-  let {
-    status,
-    save,
-  }: {
-    status: { mode?: 'app' | 'pat' | null; repoCreationOrgs?: string[] }
-    save: (body: unknown) => Promise<void>
-  } = $props()
-
+   *  on the host the request names, at the visibility chosen here, protects
+   *  its default branch against force-push and deletion unless unticked, and
+   *  grants it to the requester; a rejection posts its reason on the
+   *  requesting ticket). Which orgs a host takes requests for is set on the
+   *  host's own card. */
   const qc = useQueryClient()
-  const cfgOrgs = $derived(status.repoCreationOrgs ?? [])
-  // svelte-ignore state_referenced_locally -- reason: seed-once form draft; the parent gates this section on the loaded status
-  let orgs = $state((status.repoCreationOrgs ?? []).join(', '))
   type Visibility = 'private' | 'public'
   interface RepoReq {
     id: string
+    host: string
     agentModel: string
     org: string
     name: string
@@ -56,8 +48,9 @@
   let rejecting = $state<string | null>(null)
   let rejectNote = $state('')
   let decideError = $state<string | null>(null)
-  /** The last approval's word on the default branch: GitHub may refuse to
-   *  protect a private repo on a free plan, and the repo exists anyway. */
+  /** The last approval's word on the default branch: a host may refuse to
+   *  protect it (GitHub does for a private repo on a free plan), and the repo
+   *  exists anyway. */
   let decided = $state<string | null>(null)
   const decide = async (r: RepoReq, action: 'approve' | 'reject') => {
     decideError = null
@@ -88,28 +81,13 @@
   }
 </script>
 
-<div class="space-y-2 border-t border-line-subtle pt-3">
-  <div class="flex items-baseline gap-2">
-    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agent repo creation</span>
-    <span class="text-xs text-muted">agents may REQUEST new repos in these orgs; you approve each one</span>
+<div class="space-y-2">
+  <div class="flex flex-wrap items-baseline gap-x-2">
+    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agent repo requests</span>
+    <span class="text-xs text-muted">agents REQUEST new repos in a host's approved orgs; you approve each one</span>
   </div>
-  <div class="flex items-center gap-2">
-    <Input
-      size="sm"
-      bind:value={orgs}
-      onblur={() => {
-        const list = orgs.split(',').map((o) => o.trim()).filter(Boolean)
-        if (list.join(',') !== cfgOrgs.join(',')) void save({ repoCreationOrgs: list })
-      }}
-      placeholder="approved orgs, comma-separated (empty = off)"
-      class="max-w-md"
-    />
-    <span class="text-xs text-muted">needs the App installed on each org, with the org Administration permission</span>
-  </div>
-  {#if status.mode !== 'app'}
-    <div class="text-xs text-warning" data-testid="repo-creation-mode">
-      Repo creation needs the GitHub App connection. While GitHub is connected with an access token, agents' requests are refused.
-    </div>
+  {#if requests.length === 0 && !requestsFailed}
+    <p class="text-xs text-muted">Nothing waiting on you.</p>
   {/if}
   {#if requestsFailed}
     <QueryError
@@ -124,6 +102,7 @@
       <div class="flex flex-wrap items-center gap-2">
         <span class="w-full min-w-0 truncate sm:w-auto sm:flex-1">
           <span class="font-mono text-[13px] text-fg">{r.org}/{r.name}</span>
+          <span class="font-mono text-[11px] text-muted"> on {r.host}</span>
           <span class="text-muted"> · {r.agentModel}: {r.why}</span>
         </span>
         {#if r.appSlug}<Chip title="the Talaria app this repo will hold">app {r.appSlug}</Chip>{/if}
@@ -141,7 +120,7 @@
           checked={!unprotected[r.id]}
           onChange={(on) => (unprotected[r.id] = !on)}
           label="protect default branch"
-          title="Block force-push and deletion on the new repo's default branch (a GitHub ruleset; no required reviews or checks)"
+          title="Block force-push and deletion on the new repo's default branch (no required reviews or checks)"
         />
         <Button size="sm" onclick={() => void decide(r, 'approve')}>Create + grant</Button>
         <Button

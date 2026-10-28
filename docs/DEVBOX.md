@@ -27,6 +27,12 @@ branch on the host.
 
 1. Ensures the primary dev stack is up (its Postgres is the seed source; the
    shared embeddings are started non-fatally, the `talaria dev` posture).
+   Main's containers are the dev-compose names, or the shell's
+   `TALARIA_*_CONTAINER` override. An override that names a worktree's or a box's
+   container is refused before anything is created, for `box seed` too. A
+   worktree's `talaria dev` exports its own `TALARIA_PG_CONTAINER` to everything it
+   starts, so a box made from a shell under it would otherwise be seeded from that
+   worktree ([`WORKTREES.md`](./WORKTREES.md), "Rules of the road").
 2. Builds `talaria-devbox:latest` if missing (`docker/devbox.Dockerfile` —
    node 22 + bun + git + the docker CLI/compose + Claude Code + opencode).
 3. Clones the repo **locally** (hardlinked objects, near-free on btrfs) into

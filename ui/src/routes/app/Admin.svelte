@@ -32,7 +32,9 @@
   import AdminCompanyNamePanel from './AdminCompanyNamePanel.svelte'
   import AdminEmailPanel from './AdminEmailPanel.svelte'
   import AdminEncryptionPanel from './AdminEncryptionPanel.svelte'
-  import AdminGithubPanel from './AdminGithubPanel.svelte'
+  import AdminGitHostsPanel from './AdminGitHostsPanel.svelte'
+  import AdminRepoCreationSection from './AdminRepoCreationSection.svelte'
+  import AdminRepoFlowSection from './AdminRepoFlowSection.svelte'
   import AdminGoogleClientPanel from './AdminGoogleClientPanel.svelte'
   import AdminGuardrailsPanel from './AdminGuardrailsPanel.svelte'
   import AdminInstanceDomainPanel from './AdminInstanceDomainPanel.svelte'
@@ -125,7 +127,6 @@
         <AdminInstanceDomainPanel />
         <AdminSignupDomainsPanel />
         <AdminEmailPanel />
-        <AdminGithubPanel />
         <AdminGoogleClientPanel />
         <AdminOrgGooglePanel />
       {/if}
@@ -139,6 +140,14 @@
         <AdminCodingAccountsPanel />
         <AdminGuardrailsPanel />
         <AdminOutreachPanel />
+      {/if}
+      {#if tab === 'git'}
+        <!-- The hosts first: requests and PR bases are about repos on them. -->
+        <AdminGitHostsPanel />
+        <Panel class="mt-4 space-y-5 p-3 sm:p-4">
+          <AdminRepoCreationSection />
+          <AdminRepoFlowSection />
+        </Panel>
       {/if}
       {#if tab === 'search'}
         <!-- The workspace search URL first: research reads it, and the agent

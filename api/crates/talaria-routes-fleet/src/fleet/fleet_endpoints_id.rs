@@ -54,8 +54,9 @@ pub async fn put(
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
-    // One batched cascade: one new version per agent, one render, one restart
-    // wave — decided by the CATALOG delta before anything is written.
+    // One batched cascade: one new version per agent, one render, one apply
+    // wave (a running agent rolls, a stopped one stays stopped) — decided by
+    // the CATALOG delta before anything is written.
     let mut cascade: (Vec<String>, Option<String>) = (Vec::new(), None);
     if let Some(models) = &patch.models {
         let eps = match list_endpoints(&state.pg).await {

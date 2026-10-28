@@ -5,10 +5,10 @@
 // process behavior is planted.
 
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { boxUiEnv, overrideYaml, parseEnvFlags, composeEnvTpl } from './new'
+import { boxUiEnv, overrideYaml, parseEnvFlags, composeEnvTpl, runNew } from './new'
 import { repointChassis, seedFleetEnv, runSeed } from './seed'
 import { runEnter } from './enter'
 import { runInstall } from './install'
@@ -255,6 +255,92 @@ describe('box seed — run', () => {
     const msg = await attempt(() => runSeed(ctx, 'demo'))
     expect(msg).toContain("primary postgres (talaria-postgres-dev) isn't running")
     expect(ctx.calls.some((c) => c.args.includes('pg_dump'))).toBe(false)
+  })
+
+  // A worktree's `talaria dev` sets these for its own compose call, in its
+  // own process, so a shell under it (its app, a harness run) inherits them.
+  // The seed used to read TALARIA_PG_CONTAINER as main's and copy the
+  // worktree into the box.
+  const INHERITED = {
+    TALARIA_PG_CONTAINER: 'talaria-pg-wt1',
+    TALARIA_PG_PORT: '5605',
+    TALARIA_REDIS_CONTAINER: 'talaria-redis-wt1',
+    TALARIA_REDIS_PORT: '6505',
+  }
+
+  test("a worktree's inherited TALARIA_PG_CONTAINER is refused before any docker call, nothing seeded", async () => {
+    const root = makeSeedTree()
+    const home = join(root, 'boxes')
+    const ctx = fakeCtx({ env: { ...INHERITED, TALARIA_DEVBOX_HOME: home } })
+    ctx.root = root
+    const msg = await attempt(() => runSeed(ctx, 'demo'))
+    expect(msg).toContain('TALARIA_PG_CONTAINER=talaria-pg-wt1   (worktree "wt1"\'s postgres)')
+    expect(msg).toContain('env -u TALARIA_PG_CONTAINER -u TALARIA_PG_PORT -u TALARIA_REDIS_CONTAINER -u TALARIA_REDIS_PORT bun talaria box seed demo')
+    expect(ctx.calls).toHaveLength(0)
+    expect(existsSync(join(home, 'demo'))).toBe(false)
+  })
+
+  test("an override docker places in a worktree's or a box's project is refused: no dump, no copy", async () => {
+    for (const [key, value, project] of [
+      ['TALARIA_PG_CONTAINER', 'renamed-pg', 'talaria-wt-wt1'],
+      ['TALARIA_STORAGE_CONTAINER', 'renamed-store', 'devbox-other'],
+      ['TALARIA_MINIO_CONTAINER', 'old-minio', 'talaria-wt-wt1'],
+    ] as const) {
+      const ctx = fakeCtx({ env: { [key]: value } })
+      ctx.root = makeSeedTree()
+      ctx.plant(['docker', ['inspect', value]], JSON.stringify([{ Config: { Labels: { 'com.docker.compose.project': project } } }]))
+      const msg = await attempt(() => runSeed(ctx, 'demo'))
+      expect(msg).toContain(`${key}=${value}   (a container of compose project ${project})`)
+      expect(ctx.calls.map((c) => c.args.join(' '))).toEqual([`inspect ${value}`])
+    }
+  })
+
+  test("main's own renamed postgres is still the override point: the dump reads it", async () => {
+    const ctx = fakeCtx({ env: { TALARIA_PG_CONTAINER: 'my-main-pg' } })
+    ctx.root = makeSeedTree()
+    ctx.plant(['docker', ['inspect', 'my-main-pg']], JSON.stringify([{ Config: { Labels: { 'com.docker.compose.project': 'talaria-dev' } } }]))
+    await runSeed(ctx, 'demo')
+    const dump = ctx.calls.find((c) => c.args.includes('pg_dump'))
+    expect(dump?.args.slice(0, 2)).toEqual(['exec', 'my-main-pg'])
+  })
+
+  test('an empty TALARIA_PG_CONTAINER is the default, as compose reads it', async () => {
+    const ctx = fakeCtx({ env: { TALARIA_PG_CONTAINER: '' } })
+    ctx.root = makeSeedTree()
+    await runSeed(ctx, 'demo')
+    expect(ctx.calls.find((c) => c.args.includes('pg_dump'))?.args.slice(0, 2)).toEqual(['exec', 'talaria-postgres-dev'])
+  })
+
+  test("the qdrant source is judged only when --qdrant reads it", async () => {
+    const env = { TALARIA_QDRANT_CONTAINER: 'devbox-other-qdrant' }
+    const without = fakeCtx({ env })
+    without.root = makeSeedTree()
+    await runSeed(without, 'demo')
+    expect(without.calls.some((c) => c.args.includes('pg_dump'))).toBe(true)
+    const withQ = fakeCtx({ env })
+    withQ.root = makeSeedTree()
+    expect(await attempt(() => runSeed(withQ, 'demo', { qdrant: true }))).toContain('TALARIA_QDRANT_CONTAINER=devbox-other-qdrant')
+    expect(withQ.calls).toHaveLength(0)
+  })
+})
+
+describe('box new — the seed source is main', () => {
+  test("a worktree's inherited container names are refused before the primary compose up, and nothing is created", async () => {
+    // The `up -d postgres` against dev-compose.yml would interpolate the
+    // inherited name into main's project: compose recreates main's postgres
+    // under it, or removes it on the name conflict.
+    const root = mkdtempSync(join(tmpdir(), 'talaria-new-'))
+    mkdirSync(join(root, 'ui'), { recursive: true })
+    writeFileSync(join(root, 'ui/.env'), 'TALARIA_SECRET_KEY=k\n')
+    const ctx = fakeCtx({
+      env: { TALARIA_PG_CONTAINER: 'talaria-pg-wt1', TALARIA_PG_PORT: '5605', TALARIA_DEVBOX_HOME: join(root, 'boxes') },
+    })
+    ctx.root = root
+    const msg = await attempt(() => runNew(ctx, 'b1'))
+    expect(msg).toContain('TALARIA_PG_CONTAINER=talaria-pg-wt1')
+    expect(msg).toContain('env -u TALARIA_PG_CONTAINER -u TALARIA_PG_PORT bun talaria box new b1')
+    expect(ctx.calls.map((c) => c.args.join(' '))).toEqual(['--version'])
+    expect(existsSync(join(root, 'boxes'))).toBe(false)
   })
 })
 

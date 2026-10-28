@@ -20,9 +20,11 @@
 // Hermes's one-shot "rescue" through it are both switched off, unless the
 // operator explicitly allowed the public tiers. A query the operator routed
 // to their own provider must not fall through to a third party they never
-// chose. Rendered is not reachable: nothing probes the URL from an agent, so
-// a URL the agents cannot connect to still switches the ring off, and their
-// searches then fail with SearXNG's connection error.
+// chose. Rendered is not reachable: a URL the agents cannot connect to still
+// switches the ring off, and their searches then fail with SearXNG's
+// connection error. The render cannot know which it is, so Admin → Search
+// asks: `probe` runs the search canary from inside a running agent and shows
+// it as the "from agents" status beside the app's own.
 //
 // SEARCH-ONLY BACKENDS. Brave Search and SearXNG cannot read pages. With
 // `web.extract_backend` unset, Hermes's web_extract takes the first
@@ -39,6 +41,10 @@
 // provider reads. Hermes keeps every one of those names out of its terminal
 // and execute_code children: they are `tool` entries in its
 // OPTIONAL_ENV_VARS, so its provider env blocklist strips them.
+
+pub mod probe;
+
+pub use probe::{AgentReach, agent_search_reachable};
 
 use std::collections::BTreeMap;
 

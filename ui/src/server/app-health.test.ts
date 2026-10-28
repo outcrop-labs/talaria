@@ -105,7 +105,8 @@ describe('failHealth', () => {
   })
 
   // The api's resync is what takes the app's MCP server off its agents: it
-  // turns the row off and rolls the carriers, and keeps every grant
+  // turns the row off and applies to the carriers (the name leaves their
+  // rendered config; nobody restarts), and keeps every grant
   // (talaria-apps `sync_app_mcp_servers`; its live test proves the rows).
   // failHealth itself writes no registry row at all — it used to be the
   // trigger of a delete that cascaded them.

@@ -137,7 +137,7 @@ must survive its own death:
    forever, and no landing is lost to a wrong close.
 
 8. **The fleet** — once that landing is real, every *running* agent rolls,
-   one at a time, the same in-place roll a config edit uses: its image is
+   one at a time, the same in-place roll an edit that needs a restart gets: its image is
    pulled first if the host lacks it (a failed pull leaves the agent
    running), then the container is recreated and health is waited for. This
    is how a new Hermes pin reaches an image install's running agents. Stopped

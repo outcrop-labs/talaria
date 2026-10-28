@@ -89,8 +89,8 @@ Source: [`api/crates/talaria-routes-integrations/src/teams/teams_id_agents.rs`](
 
 > /api/teams/{id}/agents. GET → agent members (any team member).
 > POST { model } → add (owner). DELETE { model } → remove (owner). Both
-> writes re-render and ROLL the agent: a team's MCP grants ride on
-> `team_agents` (`servers_for_agent`), and a running Hermes wires its MCP
+> writes re-render and APPLY to the agent: a team's MCP grants ride on
+> `team_agents` (`servers_for_agent`), and a running Hermes reconciles its
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

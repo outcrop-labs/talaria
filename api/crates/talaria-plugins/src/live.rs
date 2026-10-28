@@ -181,11 +181,14 @@ pub(crate) async fn mock_host() -> (AppHost, Arc<Mutex<Vec<String>>>) {
     (AppHost::at(base, "internal-test".into()), seen)
 }
 
-/// No GitHub: every fetch here is a file:// repository.
+/// No git host: every fetch here is a file:// repository.
 pub(crate) struct NoCreds;
 
 impl Credentials for NoCreds {
-    async fn github_read_token(&self, _repo: &str) -> Result<Option<String>, String> {
+    async fn host_read_login(
+        &self,
+        _src: &talaria_apps::source::GitSource,
+    ) -> Result<Option<(String, String)>, String> {
         Ok(None)
     }
     async fn secret_login(&self, _name: &str, _host: &str) -> Result<(String, String), String> {
@@ -249,11 +252,14 @@ impl World {
         }
     }
 
-    pub fn ask<'a>(&'a self, repo: &'a str) -> InstallAsk<'a> {
+    /// A request for `repo` on the `github` host, filed at `url`.
+    pub fn ask<'a>(&'a self, repo: &'a str, url: &'a str) -> InstallAsk<'a> {
         InstallAsk {
             agent_id: &self.agent_id,
             agent_model: &self.agent_model,
+            host_id: "github",
             repo,
+            url,
             git_ref: None,
             why: "the notes app the owner asked for",
             task_id: &self.task_id,
@@ -288,8 +294,8 @@ pub(crate) fn app_repo(slug: &str) -> (Repo, String) {
     (repo, sha)
 }
 
-/// Point a filed request at a local repository: the tool files GitHub URLs,
-/// and a test has no GitHub.
+/// Point a filed request at a local repository: the tool files the repo's
+/// page on its host, and a test has no host to fetch from.
 async fn point_at(pg: &PgPool, id: &str, url: &str) {
     sqlx::query("update app_install_requests set url = $2 where id = $1::uuid")
         .bind(id)
@@ -307,6 +313,7 @@ async fn an_approved_request_installs_records_the_plugin_and_says_so_on_the_tick
     let slug = format!("pl-{}", w.tag);
     let (repo, sha) = app_repo(&slug);
     let gh_repo = format!("acme/{slug}");
+    let gh_url = format!("https://github.com/{gh_repo}");
 
     // The ticket's person: its first human assignee.
     assert_eq!(
@@ -316,10 +323,16 @@ async fn an_approved_request_installs_records_the_plugin_and_says_so_on_the_tick
         Some(w.user_id.as_str())
     );
     // The agent's request, then the refusals a second one meets.
-    let id = file_request(&pg, &w.ask(&gh_repo)).await.expect("filed");
-    let again = file_request(&pg, &w.ask(&gh_repo)).await.unwrap_err();
+    let id = file_request(&pg, &w.ask(&gh_repo, &gh_url))
+        .await
+        .expect("filed");
+    let again = file_request(&pg, &w.ask(&gh_repo, &gh_url))
+        .await
+        .unwrap_err();
     assert!(again.contains("already have a pending"), "{again}");
-    let bad = file_request(&pg, &w.ask("not-a-repo")).await.unwrap_err();
+    let bad = file_request(&pg, &w.ask("not-a-repo", "https://github.com/not-a-repo"))
+        .await
+        .unwrap_err();
     assert!(bad.contains("owner/name"), "{bad}");
     point_at(&pg, &id, &repo.url).await;
 
@@ -357,7 +370,11 @@ async fn an_approved_request_installs_records_the_plugin_and_says_so_on_the_tick
     assert_eq!(p.installed_commit.as_deref(), Some(sha.as_str()));
     assert_eq!(p.url, repo.url);
     assert_eq!(p.update_policy, "approve");
-    assert_eq!(p.git_host_id, None, "a file:// source names no git host");
+    assert_eq!(
+        p.git_host_id.as_deref(),
+        Some("github"),
+        "the plugin is on the host its request named"
+    );
     let mine = crate::plugins_maintained_by(&pg, &w.agent_id)
         .await
         .unwrap();
@@ -387,7 +404,9 @@ async fn an_approved_request_installs_records_the_plugin_and_says_so_on_the_tick
         .execute(&pg)
         .await
         .unwrap();
-    let installed = file_request(&pg, &w.ask(&gh_repo)).await.unwrap_err();
+    let installed = file_request(&pg, &w.ask(&gh_repo, &gh_url))
+        .await
+        .unwrap_err();
     assert!(installed.contains("already installed"), "{installed}");
 
     // The admin's update policy.
@@ -430,7 +449,12 @@ async fn a_failed_install_and_a_rejection_each_leave_their_own_line() {
     // Not an app: no talaria.json.
     let repo = Repo::new("not-an-app");
     repo.commit(&[("README.md", "hello".to_string())], "readme");
-    let id = file_request(&pg, &w.ask("acme/not-an-app")).await.unwrap();
+    let id = file_request(
+        &pg,
+        &w.ask("acme/not-an-app", "https://github.com/acme/not-an-app"),
+    )
+    .await
+    .unwrap();
     point_at(&pg, &id, &repo.url).await;
     let (host, steps) = mock_host().await;
     let decided = decide(
@@ -451,7 +475,9 @@ async fn a_failed_install_and_a_rejection_each_leave_their_own_line() {
         "approved installing acme/not-an-app, but the install failed: that repository is not a Talaria app (no talaria.json at its root) — trying it"
     );
 
-    let id = file_request(&pg, &w.ask("acme/other")).await.unwrap();
+    let id = file_request(&pg, &w.ask("acme/other", "https://github.com/acme/other"))
+        .await
+        .unwrap();
     let decided = decide(
         &pg,
         &NoCreds,
@@ -556,10 +582,11 @@ async fn the_upkeep_pass_reads_prs_raises_the_update_and_files_tickets_once() {
     let slug = format!("pu-{}", w.tag);
     let (repo, sha1) = app_repo(&slug);
     let gh_repo = format!("acme/{slug}");
+    let gh_url = format!("https://github.com/{gh_repo}");
 
     // Installed through the decision, then read as a GitHub plugin: PRs come
     // from the stub under `acme/<slug>`, commits from the file:// remote.
-    let id = file_request(&pg, &w.ask(&gh_repo)).await.unwrap();
+    let id = file_request(&pg, &w.ask(&gh_repo, &gh_url)).await.unwrap();
     point_at(&pg, &id, &repo.url).await;
     let (host, steps) = mock_host().await;
     decide(
@@ -573,11 +600,6 @@ async fn the_upkeep_pass_reads_prs_raises_the_update_and_files_tickets_once() {
     )
     .await
     .unwrap();
-    sqlx::query("update plugins set git_host_id = 'github' where app_slug = $1")
-        .bind(&slug)
-        .execute(&pg)
-        .await
-        .unwrap();
     sqlx::query("update app_sources set repo = $2 where slug = $1")
         .bind(&slug)
         .bind(&gh_repo)
@@ -597,8 +619,8 @@ async fn the_upkeep_pass_reads_prs_raises_the_update_and_files_tickets_once() {
         .await
         .unwrap();
     sqlx::query(
-        "insert into workbench_jobs (agent_id, agent_model, task_id, repo, branch, status, pr_number, pr_url) \
-         values ($1::uuid, $2, $3::uuid, $4, 'talaria/plg-1-tags', 'pr_open', 7, $5)",
+        "insert into workbench_jobs (agent_id, agent_model, task_id, host_id, repo, branch, status, pr_number, pr_url) \
+         values ($1::uuid, $2, $3::uuid, 'github', $4, 'talaria/plg-1-tags', 'pr_open', 7, $5)",
     )
     .bind(&w.agent_id)
     .bind(&w.agent_model)
@@ -615,22 +637,19 @@ async fn the_upkeep_pass_reads_prs_raises_the_update_and_files_tickets_once() {
         std::collections::HashMap::from([(1u32, talaria_secretbox::new_dek().unwrap())]),
         Some(1),
     );
-    let prior: Option<Value> =
-        sqlx::query_scalar("select value from app_settings where key = 'github_config'")
-            .fetch_optional(&pg)
-            .await
-            .unwrap();
+    let prior: Value = sqlx::query_scalar("select auth from git_hosts where id = 'github'")
+        .fetch_one(&pg)
+        .await
+        .unwrap();
     let set_config = |v: Value| {
         let pg = pg.clone();
         async move {
-            sqlx::query(
-                "insert into app_settings (key, value) values ('github_config', $1) \
-                 on conflict (key) do update set value = excluded.value",
-            )
-            .bind(v)
-            .execute(&pg)
-            .await
-            .unwrap();
+            sqlx::query("update git_hosts set auth = $1 where id = 'github'")
+                .bind(v)
+                .execute(&pg)
+                .await
+                .unwrap();
+            talaria_git_hosts::forget("github");
         }
     };
     set_config(json!({ "mode": "pat", "pat": { "tokenEnc": sb.seal("pat-test").unwrap() } })).await;
@@ -910,13 +929,5 @@ async fn the_upkeep_pass_reads_prs_raises_the_update_and_files_tickets_once() {
                 .unwrap();
         }
     }
-    match prior {
-        Some(v) => set_config(v).await,
-        None => {
-            sqlx::query("delete from app_settings where key = 'github_config'")
-                .execute(&pg)
-                .await
-                .unwrap();
-        }
-    }
+    set_config(prior).await;
 }
