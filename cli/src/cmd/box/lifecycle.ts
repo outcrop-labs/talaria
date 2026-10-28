@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
 import { compose, stackComposeFiles } from '../../compose'
-import { boxComposeSpec, boxDir, boxFleetNetwork, boxNetwork, IMAGE, requireBox } from './shared'
+import { boxComposeSpec, boxDir, boxFleetNetwork, boxNetwork, boxState, IMAGE, requireBox } from './shared'
 import { runBuild } from './new'
 
 export function runStop(ctx: Ctx, name: string): Promise<number> {
@@ -77,6 +77,7 @@ push them (or --force to discard)`)
   // while fleet containers hold endpoints on it, and the fleet compose declares
   // it EXTERNAL (the renderer's shape) so its own `down` never touches it.
   await ctx.exec('docker', ['network', 'rm', boxFleetNetwork(name)]).catch(() => {})
+  await clearState(ctx, name)
   rmSync(box, { recursive: true, force: true })
   ctx.log.ok('gone')
   return 0
@@ -100,6 +101,25 @@ export async function boxAppDbs(ctx: Ctx, name: string): Promise<string[]> {
   } catch {
     return []
   }
+}
+
+/** Empty the box's state directory from a root container on the box's own
+ *  image (always here while the box is). What a container wrote there is that
+ *  container's user's: an app database's cluster is the postgres image's uid
+ *  70 at mode 0700, so this user can neither list nor delete it: the
+ *  directory removal threw EACCES and left the box's directory, its stack
+ *  already down, for every later `rm` to fail on the same way. No network,
+ *  and best effort like the rest. */
+export async function clearState(ctx: Ctx, name: string): Promise<void> {
+  const state = boxState(ctx, name)
+  if (!existsSync(state)) return
+  await ctx
+    .exec(
+      'docker',
+      ['run', '--rm', '--network', 'none', '--user', '0:0', '-v', `${state}:/state`, '--entrypoint', 'find', IMAGE, '/state', '-mindepth', '1', '-delete'],
+      { timeoutMs: 300_000 },
+    )
+    .catch(() => {})
 }
 
 export const stopCommand: Leaf = {

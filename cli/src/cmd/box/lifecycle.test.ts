@@ -1,14 +1,15 @@
 // A box's app databases (ui/src/server/app-db.ts): the box compose puts them
 // on the box's own network, and `box rm` takes them down with the box. The
 // template is read as text, because the network name it interpolates and the
-// one `box rm` filters on must stay the same string.
+// one `box rm` filters on must stay the same string. `box rm` also empties the
+// state from a root container, since an app database owns its own files.
 
 import { describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { boxAppDbs, runRm } from './lifecycle'
-import { boxNetwork, COMPOSE_FILE } from './shared'
+import { boxNetwork, COMPOSE_FILE, IMAGE } from './shared'
 import { fakeCtx } from '../../testing'
 
 const makeBox = (name: string): { root: string; box: string } => {
@@ -68,6 +69,34 @@ describe('box rm takes the app databases with it', () => {
     await runRm(ctx, 'demo', true)
     expect(ctx.calls.some((c) => c.args[0] === 'rm')).toBe(false)
     expect(ctx.calls.some((c) => c.args.includes('down'))).toBe(true)
+  })
+
+  // An app database's cluster is the postgres image's uid 70, mode 0700: this
+  // user cannot delete it, so a root container empties the state first.
+  test('empties the state from a root container before the directory goes', async () => {
+    const { root, box } = makeBox('demo')
+    mkdirSync(join(box, 'state/app-data/notes'), { recursive: true })
+    const ctx = fakeCtx()
+    ctx.root = root
+    await runRm(ctx, 'demo', true)
+    const run = ctx.calls.find((c) => c.args[0] === 'run')
+    expect(run?.args).toEqual([
+      'run', '--rm', '--network', 'none', '--user', '0:0',
+      '-v', `${join(box, 'state')}:/state`,
+      '--entrypoint', 'find', IMAGE, '/state', '-mindepth', '1', '-delete',
+    ])
+    // After everything that could still be writing there is down.
+    const lastDown = ctx.calls.map((c) => c.args.includes('down')).lastIndexOf(true)
+    expect(ctx.calls.indexOf(run!)).toBeGreaterThan(lastDown)
+    expect(await Bun.file(join(box, 'box.env')).exists()).toBe(false)
+  })
+
+  test('a box with no state runs no container', async () => {
+    const { root } = makeBox('demo')
+    const ctx = fakeCtx()
+    ctx.root = root
+    await runRm(ctx, 'demo', true)
+    expect(ctx.calls.some((c) => c.args[0] === 'run')).toBe(false)
   })
 
   test('a docker that cannot list them does not stop the teardown', async () => {
