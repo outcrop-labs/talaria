@@ -127,9 +127,9 @@ toolkit, and the internet", and each failure names its own fix.
 Docker pins a network's DNS upstream when the network is created, and a host
 resolver mix that refuses docker subnets leaves every container green and
 offline — the built-in browser shipped dead exactly this way once: its engine
-comes from npm (today it is installed before each agent starts, in a one-shot
-run of the agent's own service, so with these same resolvers), and with no
-external DNS it never installed, silently. The chassis pins external resolvers per service (`AGENT_DNS_1` /
+comes from npm (today it is installed before an agent with the browser and the
+terminal on starts, in a one-shot run of the agent's own service, so with these
+same resolvers), and with no external DNS it never installed, silently. The chassis pins external resolvers per service (`AGENT_DNS_1` /
 `AGENT_DNS_2` in `fleet/.env`, defaults 1.1.1.1 / 1.0.0.1), and the
 preflight's DNS probe turns a dead resolver into an alert.
 
@@ -141,26 +141,26 @@ the other containers on the fleet network, and the LAN. Hermes refuses private a
 addresses to its web tools (`web_extract` resolves every host and refuses a private one).
 It does not refuse them to its own browser when that browser runs locally: Hermes v0.22.4
 skips the check whenever the terminal backend is local, on the grounds that the terminal
-reaches the same networks anyway. That holds for an agent with a terminal. It does not hold
-for an agent whose terminal is closed, which is a new agent's default and the agent Talaria
-gives the built-in `browser_navigate` tools (docs/ARCHITECTURE.md, "The fleet"). That browser
-opens addresses the same agent's `web_extract` refuses. Only cloud metadata endpoints stay
-refused, for every backend.
+reaches the same networks anyway. It judges that by the terminal backend, not by whether
+the agent has a terminal at all.
 
-Talaria closes the part Hermes lets the render close. For a terminal-less agent with the
-browser on, the render writes a `security.website_blocklist` naming the hosts that can only
-be private: `internal` (ICANN's private-use name, which covers `host.docker.internal`, the
-name each agent's own config gives it for the app), `localhost`, mDNS's `local`, `home.arpa`,
-and the loopback and unspecified literals. Hermes matches that list on host names, and only
-on the URL a tool is asked to open. An IP address (the fleet gateway's, a LAN address), a
-docker service name, a public name that resolves to a private address, a redirect, or a link
-clicked on a loaded page still gets through. It is a speed bump against the obvious move,
-not a boundary. The boundaries are:
+So Talaria gives the browser only to an agent whose `terminal` toolset is on, and for that
+agent the premise holds: its shell already reaches everything its browser can. An agent
+with `browser` ticked and the terminal closed, which is a new agent's default, gets no
+browser engine and no browser tool, and the toolset grid says why. Its rendered config is
+the one it had before Talaria installed engines at all, so an upgrade changes nothing for
+it. Opening its terminal gives it Hermes' `browser_exec` and the shell together; closing it
+again takes both away on the next roll.
 
-- the `browser` toolset off, for an agent that must not reach your network;
+A def's own `browser:` block is its owner's call, and the render passes it through. Hermes
+reads any `browser.backend` other than `browser-use` as its built-in tools, which need the
+same engine. Talaria does not install that engine for a terminal-less agent, but one that an
+earlier start with the terminal open left on the agent's volume stays there. A def that
+authors such a backend and then closes the terminal therefore keeps a browser that opens
+private addresses; the grid says so on that agent. Hermes's other browsers (a CDP endpoint,
+Camofox, a cloud provider) are configured outside the toolset grid, and Talaria sets none of
+them. The boundaries for what any agent may reach are:
+
+- the `browser` and `terminal` toolsets off, for an agent that must not reach your network;
 - host services bound to loopback only (the chassis note on `host.docker.internal`); and
 - the host's own firewall, for what the fleet subnet may reach on the LAN.
-
-An agent with a terminal gets no list: its shell already reaches all of this, and its browser
-is how it drives the dev server it started on `localhost`. A def that authored
-`allow_private_urls` gets no list either, because it asked for private reach.

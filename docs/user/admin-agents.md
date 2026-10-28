@@ -130,22 +130,20 @@ Two kinds of row are locked: `todo` and `clarify`, which Talaria's own tools rep
 agent, and anything an admin closed org-wide (**Admin → Security → Agent toolsets**, below).
 The row's tooltip says which.
 
-The `browser` row is Hermes' own browser, driving the Chromium in the agent's image, and which
-tools it brings depends on `terminal`. With the terminal closed (a new agent's default), the
-agent gets the built-in browser tools: `browser_navigate`, `browser_click`, `browser_vision` and
-the rest. With it open, it gets Hermes' `browser_exec` instead, which runs Python against the
-browser and so comes only with a shell. The line under the grid says which one this agent has.
+The `browser` row is Hermes' own browser, driving the Chromium in the agent's image, and it
+works only with `terminal` on. With both on (the Developer Agent switch opens `terminal`), the
+agent gets Hermes' `browser_exec`, which runs Python against the browser. With the terminal closed (a new
+agent's default), the agent has no browser even with `browser` ticked, and the line under the
+grid says why: on this image, Hermes' browser does not refuse private addresses (the machine
+Talaria runs on, other agents' containers, your LAN), on the grounds that the terminal reaches
+them anyway. That holds only for an agent that has a terminal, so only that agent gets the
+browser. The agent's `web_extract` refuses those addresses either way.
+
 The browser's engine is installed from npm onto the agent's volume before the agent starts
 (once per Hermes version), so an agent whose host cannot reach the npm registry starts without
 browser tools, and the app's log says why. A start waits at most 90 seconds for the install.
-If it runs out of time, starts skip the install for the next 5 minutes.
-
-The built-in browser can open addresses on your own network: the machine Talaria runs on,
-other agents' containers, and your LAN. The agent's `web_extract` refuses those addresses,
-but Hermes does not hold its own browser to that rule. Talaria blocks the browser from the
-names that can only be private, such as `host.docker.internal`, `localhost` and `*.local`,
-but an IP address still gets through. Turn `browser` off for an agent that must not reach
-your network.
+If it runs out of time, starts skip the install for the next 5 minutes. Turn `browser` and
+`terminal` off for an agent that must not reach your network.
 
 ## Retire an agent
 
