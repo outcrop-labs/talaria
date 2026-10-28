@@ -232,10 +232,52 @@ describe('foldToolVerdicts', () => {
     expect(next[0]).toBe(local[0])
   })
 
-  it('pairs the live row (no id yet) with the newest assistant row', () => {
+  it('pairs the live row (no id yet) with the server row in its place', () => {
     const local: DisplayMessage[] = [user('u1'), { role: 'assistant', content: 'stre', tools: [rm], status: 'streaming' }]
     const remote = [stored({ id: 'u1', role: 'user' }), stored({ id: 'a-live', status: 'streaming', tools: [failed] })]
     expect(foldToolVerdicts(local, remote)[1]!.tools![0]!.status).toBe('error')
+    // A row sent mid-turn sits beneath the live row on both sides; the pair holds.
+    const steered = [...local, user('u-steer')]
+    const remoteSteered = [...remote, stored({ id: 'u-steer', role: 'user' })]
+    expect(foldToolVerdicts(steered, remoteSteered)[1]!.tools![0]!.status).toBe('error')
+  })
+
+  // Hermes mints the same call id for the same call on a later turn, so a row
+  // that pairs with the wrong turn's row takes that turn's verdict.
+  it('never takes the verdict of a turn other than its own when ids repeat', () => {
+    const done = (content: string): DisplayMessage => ({ role: 'assistant', content, tools: [rm], status: 'complete' })
+    const live: DisplayMessage = { role: 'assistant', content: 'two', tools: [rm], status: 'streaming' }
+
+    // The earlier reply ended a moment ago and is not stamped yet; the next
+    // turn (a held or queued send) is already streaming, and the server has
+    // not written its row. The earlier reply's row failed the call.
+    const local = [user('u1'), done('one'), user('u2'), live]
+    const remote = [stored({ id: 'u1', role: 'user' }), stored({ id: 'a1', tools: [failed] }), stored({ id: 'u2', role: 'user' })]
+    const next = foldToolVerdicts(local, remote)
+    expect(next[1]!.tools![0]!.status).toBe('error')
+    expect(next[3]!.tools![0]!.status).toBe('completed')
+
+    // A reply chained after a steered row: the server holds a newer reply
+    // that failed the same call id; the live row is the earlier one.
+    const steering = [user('u1'), live, user('u-steer')]
+    const chained = [
+      stored({ id: 'u1', role: 'user' }),
+      stored({ id: 'a1', tools: [rm] }),
+      stored({ id: 'u-steer', role: 'user' }),
+      stored({ id: 'a2', status: 'streaming', tools: [failed] }),
+    ]
+    expect(foldToolVerdicts(steering, chained)).toBe(steering)
+
+    // The ring re-read holds a newer reply this tab has not drawn; the last
+    // row on screen (not stamped yet) is the earlier reply, which worked.
+    const behind = [user('u1'), done('one')]
+    const ahead = [
+      stored({ id: 'u1', role: 'user' }),
+      stored({ id: 'a1', tools: [rm] }),
+      stored({ id: 'u2', role: 'user' }),
+      stored({ id: 'a2', tools: [failed] }),
+    ]
+    expect(foldToolVerdicts(behind, ahead)).toBe(behind)
   })
 
   it('never pairs the live row with a row already on screen, nor a call by name', () => {
