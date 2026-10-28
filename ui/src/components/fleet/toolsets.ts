@@ -129,25 +129,63 @@ export function sameToolsets(a: readonly string[], b: readonly string[]): boolea
   return true
 }
 
+/** Hermes' reading of a config value as `str(v or "")`. */
+function pyText(v: unknown): string {
+  if (v === null || v === undefined || v === false || v === 0 || v === '') return ''
+  if (v === true) return 'True'
+  if (typeof v === 'number' || typeof v === 'string') return String(v)
+  if (Array.isArray(v)) return v.length ? JSON.stringify(v) : ''
+  if (typeof v === 'object') return Object.keys(v).length ? JSON.stringify(v) : ''
+  return String(v)
+}
+
 /**
- * The `browser.backend` a def authored in its raw Hermes config
- * (`latest.config.raw.browser.backend`), when it is a choice Hermes reads as
- * one: `false` (YAML 1.1's bare `off`), a non-blank string, or a non-zero
- * number. Anything else Hermes reads as unset, which is its default
- * (`browser_exec`), so it is null here too (v0.22.4's `get_browser_backend`:
- * `true`, null, zero and an empty or blank value are all unset). A `browser:`
- * block that is not a map reads as null. The renderer passes all of it
- * through as written.
+ * The browser a def's own `browser:` block gives it on Hermes v0.22.4
+ * (`latest.config.raw.browser`), or null when the block leaves Hermes'
+ * default, Browser Use mode (`browser_exec`), in place.
+ *
+ * - `exec`: `browser.backend: browser-use`, the default spelled out.
+ * - `local`: the built-in `browser_*` tools on a browser Hermes calls local,
+ *   for which it skips its private-address check (`_is_local_backend`): any
+ *   other backend on this machine's Chromium, or Camofox
+ *   (`browser.cloud_provider: camofox`).
+ * - `cdp` / `hosted`: the built-in tools on a CDP endpoint
+ *   (`browser.cdp_url`) or a hosted provider (`browser.cloud_provider`),
+ *   which keep that check.
+ *
+ * It mirrors talaria-fleet-render's `hermes_browser` over the config alone
+ * (the renderer also reads a `CAMOFOX_URL` secret, which this cannot see).
+ * `via` is the setting that decided it, as the grid's line names it.
  */
-export function authoredBrowserBackend(config: unknown): string | null {
+export type AuthoredBrowser = { kind: 'exec' | 'local' | 'cdp' | 'hosted'; via: string }
+
+export function authoredBrowser(config: unknown): AuthoredBrowser | null {
   const raw = (config as { raw?: unknown } | null | undefined)?.raw
   const browser = (raw as { browser?: unknown } | null | undefined)?.browser
   if (!browser || typeof browser !== 'object' || Array.isArray(browser)) return null
-  const backend = (browser as { backend?: unknown }).backend
-  if (backend === false) return 'off'
-  if (typeof backend === 'string' && backend.trim()) return backend.trim().toLowerCase()
-  if (typeof backend === 'number' && backend !== 0) return String(backend)
-  return null
+  const cfg = browser as Record<string, unknown>
+  // get_browser_backend: YAML 1.1's bare `off` is `false`, a choice; `true` is unset.
+  const backend =
+    cfg.backend === false ? 'off' : cfg.backend === true ? '' : pyText(cfg.backend).trim().toLowerCase()
+  const cdp = pyText(cfg.cdp_url).trim() !== ''
+  const provider = cfg.cloud_provider
+  const selection =
+    provider === null || provider === undefined
+      ? ''
+      : typeof provider === 'boolean'
+        ? String(provider)
+        : pyText(provider).trim().toLowerCase()
+  const camofox = !cdp && selection === 'camofox'
+  if (!camofox && (backend === '' || backend === 'browser-use')) {
+    return backend ? { kind: 'exec', via: 'browser.backend: browser-use' } : null
+  }
+  if (cdp) return { kind: 'cdp', via: 'browser.cdp_url' }
+  if (camofox) return { kind: 'local', via: 'browser.cloud_provider: camofox' }
+  const hosted = pyText(provider).trim().toLowerCase()
+  if (hosted && hosted !== 'local' && hosted !== 'camofox') {
+    return { kind: 'hosted', via: `browser.cloud_provider: ${hosted}` }
+  }
+  return { kind: 'local', via: `browser.backend: ${backend}` }
 }
 
 /**
@@ -163,35 +201,41 @@ export function authoredBrowserBackend(config: unknown): string | null {
  * `fleet_browser_engine`). With the terminal closed, the box stays ticked and
  * the agent has no browser, and this line says why; without it, a ticked box
  * reads as a working browser. Opening `terminal` brings Hermes' default
- * `browser_exec`. A backend the def authored (`authored`, from
- * [`authoredBrowserBackend`]) is the def's call and the renderer keeps it:
- * `browser-use` is `browser_exec`, and any other choice is the built-in
- * `browser_navigate` tools. The engine is installed from npm onto the agent's
- * volume once per Hermes pin, which is why the line says a start needs the
- * registry.
+ * `browser_exec`.
+ *
+ * A browser the def's own config chose (`authored`, from
+ * [`authoredBrowser`]) stands with the terminal open. With it closed, a
+ * local one has the toolset closed by the renderer
+ * (`fleet_browser_local_close`), so an engine an earlier start left on the
+ * volume runs nothing; a CDP endpoint or a hosted provider keeps Hermes'
+ * check and is left alone. The engine is installed from npm onto the
+ * agent's volume once per Hermes pin, which is why the line says a start
+ * needs the registry.
  */
-export function browserNote(rows: readonly ToolsetRow[], authored: string | null = null): string | null {
+export function browserNote(rows: readonly ToolsetRow[], authored: AuthoredBrowser | null = null): string | null {
   const browser = rows.find((r) => r.name === 'browser')
   if (!browser?.on) return null
   const terminal = rows.find((r) => r.name === 'terminal')?.on ?? false
   if (!terminal) {
+    if (authored?.kind === 'cdp') {
+      return `Browser: the built-in browser tools on the CDP endpoint this agent’s config sets (${authored.via}). Hermes keeps its private-address check for a remote browser, so it does not need the terminal.`
+    }
+    if (authored?.kind === 'hosted') {
+      return `Browser: the built-in browser tools on the hosted browser this agent’s config sets (${authored.via}), which keeps Hermes’ private-address check. They need the browser engine, which Talaria installs only while the terminal is open.`
+    }
     const why =
       'On this image, Hermes’ own browser skips its private-address check, on the grounds that the terminal already reaches this machine, other agents and your LAN. That holds only with a terminal, so Talaria gives an agent the browser only with the terminal open.'
-    // A non-default backend is the built-in tools, which need the same
-    // engine. Talaria does not install it here, but one a start with the
-    // terminal open left on the volume still runs them, so the line must not
-    // promise "none" over that.
-    return authored && authored !== 'browser-use'
-      ? `Browser: Talaria installs no engine while the terminal is closed. ${why} This agent’s config sets browser.backend: ${authored}, so an engine an earlier start left on its volume still runs the built-in browser tools, without that check.`
+    return authored?.kind === 'local'
+      ? `Browser: none while the terminal is closed. ${why} This agent’s config picks a browser Hermes runs locally (${authored.via}), so Talaria closes the browser toolset for it until the terminal opens.`
       : `Browser: none while the terminal is closed. ${why}`
   }
   const engine =
     ' Its engine is installed from npm onto the agent’s volume before the agent starts; with no route to the registry, the agent starts without browser tools.'
-  if (authored === 'browser-use') {
-    return `Browser: Hermes’ browser_exec, which comes with the terminal (this agent’s config sets browser.backend: browser-use).${engine}`
+  if (authored?.kind === 'exec') {
+    return `Browser: Hermes’ browser_exec, which comes with the terminal (this agent’s config sets ${authored.via}).${engine}`
   }
   if (authored) {
-    return `Browser: the built-in browser tools (browser_navigate and the rest), as this agent’s config sets browser.backend: ${authored}.${engine}`
+    return `Browser: the built-in browser tools (browser_navigate and the rest), as this agent’s config sets ${authored.via}.${engine}`
   }
   return `Browser: Hermes’ browser_exec, which comes with the terminal.${engine}`
 }

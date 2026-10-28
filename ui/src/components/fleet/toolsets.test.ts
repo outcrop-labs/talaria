@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   MANDATORY_DISABLED,
-  authoredBrowserBackend,
+  authoredBrowser,
   browserNote,
   builtinFloor,
   normalizeToolsets,
@@ -198,8 +198,13 @@ describe('browserNote: the terminal decides whether this agent has a browser', (
     expect(browserNote(toolsetRows(GOVERNED, FLOOR, []))).toMatch(NONE)
   })
 
+  const LOCAL = { kind: 'local', via: 'browser.backend: off' } as const
+  const EXEC = { kind: 'exec', via: 'browser.backend: browser-use' } as const
+  const CDP = { kind: 'cdp', via: 'browser.cdp_url' } as const
+  const HOSTED = { kind: 'hosted', via: 'browser.cloud_provider: browserbase' } as const
+
   it('says nothing when the browser is off, closed org-wide, or absent', () => {
-    for (const authored of [null, 'off', 'browser-use']) {
+    for (const authored of [null, LOCAL, EXEC, CDP, HOSTED]) {
       expect(browserNote(toolsetRows(WITH_TERMINAL, FLOOR, ['browser']), authored)).toBeNull()
       expect(browserNote(toolsetRows(WITH_TERMINAL, FLOOR, ['browser', 'terminal']), authored)).toBeNull()
       expect(browserNote(toolsetRows(WITH_TERMINAL, [...FLOOR, 'browser'], [], ['browser']), authored)).toBeNull()
@@ -207,53 +212,88 @@ describe('browserNote: the terminal decides whether this agent has a browser', (
     expect(browserNote(toolsetRows(['memory', 'web'], FLOOR, []))).toBeNull()
   })
 
-  it('names what a backend the def authored gives with the terminal open', () => {
-    // Any choice but browser-use is the built-in tools.
-    for (const backend of ['off', 'camofox']) {
-      const note = browserNote(open, backend)
+  it('names what a browser the def authored gives with the terminal open', () => {
+    // Anything but browser-use is the built-in tools, wherever they run.
+    for (const authored of [LOCAL, { kind: 'local', via: 'browser.cloud_provider: camofox' } as const, CDP, HOSTED]) {
+      const note = browserNote(open, authored)
       expect(note).toContain('the built-in browser tools (browser_navigate and the rest)')
-      expect(note).toContain(`as this agent’s config sets browser.backend: ${backend}.`)
+      expect(note).toContain(`as this agent’s config sets ${authored.via}.`)
       expect(note).toContain('installed from npm')
     }
-    const exec = browserNote(open, 'browser-use')
+    const exec = browserNote(open, EXEC)
     expect(exec).toContain('Browser: Hermes’ browser_exec, which comes with the terminal')
     expect(exec).toContain('(this agent’s config sets browser.backend: browser-use)')
     expect(exec).toContain('installed from npm')
   })
 
-  it('says what an authored backend still runs on with the terminal closed', () => {
+  it('says a local browser the def authored is closed with the terminal', () => {
     // browser-use is browser_exec, which needs the terminal anyway: plain none.
-    expect(browserNote(closed, 'browser-use')).toBe(browserNote(closed))
-    // Any other backend is the built-in tools, which need the engine Talaria
-    // does not install here; one a start with the terminal open left on the
-    // volume still runs them, so the line does not say "none".
-    const off = browserNote(closed, 'off')
-    expect(off).not.toMatch(NONE)
-    expect(off).toMatch(/^Browser: Talaria installs no engine while the terminal is closed\. /)
+    expect(browserNote(closed, EXEC)).toBe(browserNote(closed))
+    // A local browser skips the check, so the renderer closes the toolset
+    // (fleet_browser_local_close): still none, and the line says so.
+    const off = browserNote(closed, LOCAL)
+    expect(off).toMatch(NONE)
     expect(off).toContain('skips its private-address check')
     expect(off).toContain(
-      'This agent’s config sets browser.backend: off, so an engine an earlier start left on its volume still runs the built-in browser tools, without that check.',
+      'This agent’s config picks a browser Hermes runs locally (browser.backend: off), so Talaria closes the browser toolset for it until the terminal opens.',
     )
     expect(off).not.toContain('npm')
   })
+
+  it('names a remote browser that needs no terminal', () => {
+    const cdp = browserNote(closed, CDP)
+    expect(cdp).not.toMatch(NONE)
+    expect(cdp).toBe(
+      'Browser: the built-in browser tools on the CDP endpoint this agent’s config sets (browser.cdp_url). Hermes keeps its private-address check for a remote browser, so it does not need the terminal.',
+    )
+    const hosted = browserNote(closed, HOSTED)
+    expect(hosted).not.toMatch(NONE)
+    expect(hosted).toContain('(browser.cloud_provider: browserbase), which keeps Hermes’ private-address check')
+    expect(hosted).toContain('installs only while the terminal is open')
+  })
 })
 
-describe('authoredBrowserBackend: the def’s own choice, as Hermes reads it', () => {
-  const cfg = (backend: unknown) => ({ raw: { browser: { backend } } })
+describe('authoredBrowser: the def’s own browser, as Hermes reads it', () => {
+  const cfg = (browser: unknown) => ({ raw: { browser } })
 
-  it('reads a choice', () => {
-    expect(authoredBrowserBackend(cfg('off'))).toBe('off')
-    expect(authoredBrowserBackend(cfg(false))).toBe('off')
-    expect(authoredBrowserBackend(cfg(' Browser-Use '))).toBe('browser-use')
-    expect(authoredBrowserBackend(cfg('camofox'))).toBe('camofox')
+  it('reads a local browser', () => {
+    expect(authoredBrowser(cfg({ backend: 'off' }))).toEqual({ kind: 'local', via: 'browser.backend: off' })
+    expect(authoredBrowser(cfg({ backend: false }))).toEqual({ kind: 'local', via: 'browser.backend: off' })
+    expect(authoredBrowser(cfg({ backend: ' Camofox ' }))).toEqual({ kind: 'local', via: 'browser.backend: camofox' })
+    expect(authoredBrowser(cfg({ backend: 'off', cloud_provider: 'local', cdp_url: ' ' }))).toEqual({
+      kind: 'local',
+      via: 'browser.backend: off',
+    })
+    // Camofox overrides Browser Use mode, and Hermes calls it local.
+    for (const backend of [undefined, 'browser-use']) {
+      expect(authoredBrowser(cfg({ backend, cloud_provider: 'CAMOFOX' }))).toEqual({
+        kind: 'local',
+        via: 'browser.cloud_provider: camofox',
+      })
+    }
   })
 
-  it('reads what Hermes treats as unset, and every missing level, as no choice', () => {
-    for (const unset of [null, undefined, '', '   ', true, 0, [], {}]) {
-      expect(authoredBrowserBackend(cfg(unset))).toBeNull()
+  it('reads a remote browser, and the default spelled out', () => {
+    expect(authoredBrowser(cfg({ backend: 'off', cdp_url: 'http://chrome:9222' }))).toEqual({ kind: 'cdp', via: 'browser.cdp_url' })
+    expect(authoredBrowser(cfg({ backend: 'off', cloud_provider: 'Browserbase' }))).toEqual({
+      kind: 'hosted',
+      via: 'browser.cloud_provider: browserbase',
+    })
+    expect(authoredBrowser(cfg({ backend: ' Browser-Use ' }))).toEqual({
+      kind: 'exec',
+      via: 'browser.backend: browser-use',
+    })
+  })
+
+  it('reads what leaves Hermes on its default, and every missing level, as null', () => {
+    for (const backend of [null, undefined, '', '   ', true, 0, [], {}]) {
+      expect(authoredBrowser(cfg({ backend }))).toBeNull()
     }
-    for (const config of [null, undefined, {}, { raw: null }, { raw: {} }, { raw: { browser: false } }, { raw: { browser: 'x' } }]) {
-      expect(authoredBrowserBackend(config)).toBeNull()
+    // A CDP endpoint turns Camofox off, and with no backend that is Browser Use mode.
+    expect(authoredBrowser(cfg({ cloud_provider: 'camofox', cdp_url: 'ws://chrome:9222' }))).toBeNull()
+    expect(authoredBrowser(cfg({ cloud_provider: 'browserbase' }))).toBeNull()
+    for (const config of [null, undefined, {}, { raw: null }, { raw: {} }, cfg(false), cfg('x'), cfg(['off'])]) {
+      expect(authoredBrowser(config)).toBeNull()
     }
   })
 })

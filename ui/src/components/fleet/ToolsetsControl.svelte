@@ -6,7 +6,7 @@
   import { patchAgentMeta, useFleetDefs, type AgentDef } from '@/lib/fleet-defs'
   import { toastError } from '@/lib/toast.svelte'
   import {
-    authoredBrowserBackend,
+    authoredBrowser,
     browserNote,
     builtinFloor,
     normalizeToolsets,
@@ -52,8 +52,8 @@
   const orgClosed = $derived(rows.filter((r) => r.orgClosed).map((r) => r.name))
   // Follows the pending edit, so ticking `terminal` shows the browser it
   // brings before Apply (with the terminal closed there is none, and the
-  // line says why); a backend the def's own config chose wins.
-  const browser = $derived(browserNote(rows, authoredBrowserBackend(def.latest?.config)))
+  // line says why); a browser the def's own config chose is named.
+  const browser = $derived(browserNote(rows, authoredBrowser(def.latest?.config)))
   // Only Talaria's own pair is stripped from what gets stored. An org-closed
   // name stays in the def's list if its managers put it there, so lifting the
   // floor later gives this agent back exactly what they chose.
