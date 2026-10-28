@@ -13,6 +13,7 @@ import { compose, stackComposeFiles, waitFor } from '../compose'
 import { envValue } from '../envfile'
 import { PG_CONTAINER } from '../containers'
 import { NAME_RE, portTaken } from '../paths'
+import { worktreeStackNames } from '../stack'
 
 /** The shared port slot: first c in 1..89 with app/api/pg/redis
  *  (53xx/54xx/56xx/65xx) all free, so any number of worktrees run at once
@@ -166,9 +167,9 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   const slot = await worktreeSlot()
   if (!slot) ctx.log.die('no free port slot — tear down some worktrees (docker compose -p talaria-wt-<n> down -v)')
   const wt = join(root, '..', `talaria-${name}`)
-  const project = `talaria-wt-${name}`
-  const pgc = `talaria-pg-${name}`
-  const redisc = `talaria-redis-${name}`
+  // One definition of the stack's docker names, shared with every command
+  // that acts on this stack later (stack.ts: reset, dev).
+  const { infra: project, pg: pgc, redis: redisc, fleet: fleetProject } = worktreeStackNames(name)
 
   try {
     await ctx.exec('docker', ['--version'])
@@ -322,7 +323,7 @@ TALARIA_RUST_API_URL=http://127.0.0.1:${slot.api}
 # main fleet nor the cleanup sweep reads them as something else's. dev.ts
 # lifts both into the api (the renderer reads them; nothing else does).
 TALARIA_GATEWAY_SELF_URL=http://host.docker.internal:${slot.app}/api/llm/v1
-TALARIA_FLEET_PROJECT=${project}-fleet
+TALARIA_FLEET_PROJECT=${fleetProject}
 # The api's loopback children, on this stack's own ports. Both probe their port
 # first and ADOPT whatever answers there, so on the shared :5280 a second
 # stack's agents had their tool calls served by the first stack's toolkit,

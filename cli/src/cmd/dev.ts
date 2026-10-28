@@ -12,6 +12,7 @@ import { PG_CONTAINER, REDIS_CONTAINER } from '../containers'
 import { envValue } from '../envfile'
 import { anyNewer } from '../paths'
 import { API_PORT } from '../ports'
+import { devStack, refuseForeignCheckout } from '../stack'
 
 const DEV_COMPOSE = 'docker/dev-compose.yml'
 
@@ -292,6 +293,9 @@ async function warnDiskPressure(ctx: Ctx): Promise<void> {
 }
 
 export async function runDev(ctx: Ctx): Promise<number> {
+  // The shim always runs the primary's CLI: from inside a worktree this would
+  // bring up the PRIMARY's stack, so a run from another checkout stops here.
+  refuseForeignCheckout(ctx, 'dev')
   const uiEnvPath = join(ctx.root, 'ui/.env')
   if (!existsSync(uiEnvPath)) ctx.log.die('ui/.env missing — run `bun talaria setup` first')
   const uiEnv = readFileSync(uiEnvPath, 'utf8')
@@ -338,8 +342,11 @@ export async function runDev(ctx: Ctx): Promise<number> {
   // the marker, ports from the URLs `talaria worktree` wrote.
   const worktree = envValue(uiEnv, 'TALARIA_WORKTREE')
   if (worktree) {
-    ctx.env.TALARIA_PG_CONTAINER ??= `talaria-pg-${worktree}`
-    ctx.env.TALARIA_REDIS_CONTAINER ??= `talaria-redis-${worktree}`
+    // stack.ts names them, and refuses a shell var that names another
+    // stack's container instead of letting it win.
+    const own = devStack(ctx, uiEnv)
+    ctx.env.TALARIA_PG_CONTAINER = own.pgContainer
+    ctx.env.TALARIA_REDIS_CONTAINER = own.redisContainer
     const pgPort = portOf(envValue(uiEnv, 'DATABASE_URL'))
     const redisPort = portOf(envValue(uiEnv, 'REDIS_URL'))
     if (pgPort) ctx.env.TALARIA_PG_PORT ??= pgPort

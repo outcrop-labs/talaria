@@ -274,6 +274,37 @@ describe('talaria dev — gates', () => {
     expect(dev.args).toEqual(['run', 'dev'])
   })
 
+  test("a shell TALARIA_PG_CONTAINER naming main's container is refused in a worktree, not obeyed", async () => {
+    // It used to win (`??=`): the worktree's `up` would then try to create
+    // main's container name, and the readiness probes would answer for main.
+    const root = makeTree({ uiEnv: 'TALARIA_WORKTREE=demo\nDATABASE_URL=x\nREDIS_URL=y\n' })
+    writeFileSync(join(root, '.git'), 'gitdir: /elsewhere\n')
+    const ctx = fakeCtx({ env: { TALARIA_PG_CONTAINER: 'talaria-postgres-dev' } })
+    ctx.root = root
+    const msg = await attempt(ctx)
+    expect(msg).toContain('TALARIA_PG_CONTAINER=talaria-postgres-dev')
+    expect(ctx.calls.filter((c) => c.cmd === 'docker')).toHaveLength(0)
+  })
+
+  test("the shim run from inside another checkout refuses: it would start the shim's own stack", async () => {
+    // The installed `talaria` shim always runs the primary's CLI, so its
+    // root is the primary; standing in a worktree, `talaria dev` brought up
+    // the PRIMARY's stack.
+    const primary = makeTree()
+    mkdirSync(join(primary, '.git'))
+    mkdirSync(join(primary, 'cli/bin'), { recursive: true })
+    writeFileSync(join(primary, 'cli/bin/talaria.ts'), '')
+    const wt = makeTree({ uiEnv: 'TALARIA_WORKTREE=demo\nDATABASE_URL=x\nREDIS_URL=y\n' })
+    writeFileSync(join(wt, '.git'), 'gitdir: /elsewhere\n')
+    mkdirSync(join(wt, 'cli/bin'), { recursive: true })
+    writeFileSync(join(wt, 'cli/bin/talaria.ts'), '')
+    const ctx = fakeCtx({ cwd: wt })
+    ctx.root = primary
+    const msg = await attempt(ctx)
+    expect(msg).toContain(`cd ${wt} && bun talaria dev`)
+    expect(ctx.calls).toHaveLength(0)
+  })
+
   test('missing ui/.env dies pointing at setup', async () => {
     const ctx = fakeCtx()
     ctx.root = mkdtempSync(join(tmpdir(), 'talaria-empty-'))

@@ -14,6 +14,10 @@ import { repoRoot } from './paths'
 export type Ctx = {
   /** Canonical (realpath'd) repo root. */
   root: string
+  /** Where the operator is standing (realpath'd process.cwd()), when known.
+   *  It can be another checkout than `root`: the installed shim always runs
+   *  the primary's CLI (stack.ts, refuseForeignCheckout). */
+  cwd?: string
   /** Capture-output exec (never a shell). Rejects on failure. */
   exec: (cmd: string, args: string[], opts?: ExecOpts) => Promise<ExecResult>
   /** Inherit-stdio run; resolves the exit code. */
@@ -28,12 +32,23 @@ export type Ctx = {
   log: Log
 }
 
+/** process.cwd(), physical spelling, or undefined if it cannot be read (a
+ *  deleted directory). */
+function standingDir(): string | undefined {
+  try {
+    return realpathSync(process.cwd())
+  } catch {
+    return undefined
+  }
+}
+
 export function realCtx(): Ctx {
   // This module's own location, physical spelling — see paths.ts for why a
   // symlinked invocation path must not survive into anything a box resolves.
   const here = realpathSync(dirname(fileURLToPath(import.meta.url)))
   return {
     root: repoRoot(here),
+    cwd: standingDir(),
     exec,
     run,
     pipe,

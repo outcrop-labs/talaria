@@ -26,7 +26,7 @@ export type FakeCtx = Ctx & {
   plant: (cmdArgs: [string, string[]], out: string | Error, cwd?: string) => void
 }
 
-export function fakeCtx(init: { env?: Record<string, string>; isTTY?: boolean; reply?: string } = {}): FakeCtx {
+export function fakeCtx(init: { env?: Record<string, string>; isTTY?: boolean; reply?: string; cwd?: string } = {}): FakeCtx {
   const calls: ExecCall[] = []
   const logLines: FakeCtx['logLines'] = []
   const answers = new Map<string, string | Error>()
@@ -50,6 +50,7 @@ export function fakeCtx(init: { env?: Record<string, string>; isTTY?: boolean; r
 
   return {
     root: '/repo',
+    cwd: init.cwd,
     exec: async (cmd, args, opts) => {
       calls.push({ cmd, args, opts })
       const a = answer(cmd, args, opts?.cwd)
