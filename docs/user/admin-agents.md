@@ -132,12 +132,15 @@ The row's tooltip says which.
 
 The `browser` row is Hermes' own browser, driving the Chromium in the agent's image, and it
 works only with `terminal` on. With both on (the Developer Agent switch opens `terminal`), the
-agent gets Hermes' `browser_exec`, which runs Python against the browser. With the terminal closed (a new
-agent's default), the agent has no browser even with `browser` ticked, and the line under the
-grid says why: on this image, Hermes' browser does not refuse private addresses (the machine
-Talaria runs on, other agents' containers, your LAN), on the grounds that the terminal reaches
-them anyway. That holds only for an agent that has a terminal, so only that agent gets the
-browser. The agent's `web_extract` refuses those addresses either way.
+agent gets Hermes' `browser_exec`, which runs Python against the browser. With the terminal
+closed (a new agent's default), the agent has no browser even with `browser` ticked, and the
+line under the grid says why: on this image, Hermes' browser does not refuse private addresses
+(the machine Talaria runs on, other agents' containers, your LAN), on the grounds that the
+terminal reaches them anyway. That holds only for an agent that has a terminal, so only that
+agent gets the browser. The agent's `web_extract` refuses those addresses either way. A browser
+an agent's own config sets is named on that line too: with the terminal closed, Talaria closes
+the `browser` toolset for one that Hermes runs locally, and leaves a CDP endpoint or a hosted
+browser (which keep the check) alone.
 
 The browser's engine is installed from npm onto the agent's volume before the agent starts
 (once per Hermes version), so an agent whose host cannot reach the npm registry starts without

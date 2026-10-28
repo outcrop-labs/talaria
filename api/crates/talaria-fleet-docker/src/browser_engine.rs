@@ -28,7 +28,8 @@
 // So before an agent whose rendered config keeps the browser and terminal
 // toolsets on starts, Talaria asks the image's own pm to install that pinned
 // CLI onto the agent's own state volume (it would otherwise arrive on the
-// first `browser_exec` call, inside a turn, with any failure lost there): a one-shot container of the agent's own service
+// first `browser_exec` call, inside a turn, with any failure lost there): a
+// one-shot container of the agent's own service
 // (`compose run --rm --no-deps`, so the image, volume, network and resolvers
 // are exactly the agent's), as the image's `hermes` user, running
 // `hermes pm install agent-browser`, the command Hermes's own install hint

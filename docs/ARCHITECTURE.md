@@ -231,8 +231,12 @@ multiplexer.
   start waits at most 90 s for it (a host whose egress drops packets would otherwise hold it
   for minutes in pm's own retries); a one-shot past that is removed, and the timeout makes
   every start skip the install for the next 5 minutes. The render writes no `browser:` block
-  of its own: Hermes's default stands, and a def that authored its own backend keeps it
-  (docs/AGENT-NETWORKING.md, "What an agent's browser can reach"). A Developer Agent's
+  of its own: Hermes's default stands, and a def that authored its own backend keeps it.
+  With the terminal closed, a backend Hermes would run as a local browser (the built-in
+  tools on this Chromium, or Camofox) has the `browser` toolset closed by the render
+  instead, so an engine left on the volume runs nothing; a CDP endpoint or a hosted provider
+  keeps Hermes's check and is left alone (docs/AGENT-NETWORKING.md, "What an agent's browser
+  can reach"). A Developer Agent's
   `PLAYWRIGHT_BROWSERS_PATH` (where a repo's own e2e suite installs its browsers, on the
   agent's state volume) changes neither: Hermes hands `agent-browser` the image's Chromium by
   path itself.
