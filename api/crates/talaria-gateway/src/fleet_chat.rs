@@ -457,7 +457,13 @@ impl AgentRequest {
                             attribution: attribution.cloned(),
                             abandoned: stream.hermes_session.clone(),
                         };
-                        Opened::Stream(heal_lost_completion(stream, retry.into_retry()))
+                        // Outermost, so it reads the moved turn's chunks too
+                        // (fleet_abandoned.rs: a reader that lets go stops the
+                        // turn in the agent).
+                        Opened::Stream(crate::fleet_abandoned::stop_when_abandoned(
+                            heal_lost_completion(stream, retry.into_retry()),
+                            entry,
+                        ))
                     }
                     Some(stream) => Opened::Stream(stream),
                     None => Opened::NotYet,

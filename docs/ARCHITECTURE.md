@@ -337,13 +337,24 @@ multiplexer.
   session, but Hermes files each header-less turn under one it derives from the turn's opening
   (`api-` plus a digest of the system rows and the first user message), so it wedges the same
   way after a non-graceful restart: every later turn with that opening is refused with
-  `unknown_execution` and queued. There is no run id to withdraw on this arm, so a discard would
-  run every queued refusal, unobserved. The repair (`fleet_chat::Thread`) sends the refused turn
+  `unknown_execution` and queued. A refused turn cannot be withdrawn on this arm (Hermes drops
+  its run id before it writes the refusal), so a discard would run every queued refusal,
+  unobserved. The repair (`fleet_chat::Thread`) sends the refused turn
   again, once, with one more system row in its opening (`SESSION THREAD: n`), which lands it on a
   fresh derived session and leaves the old one parked with nothing in it ever run. A chat keeps
   its thread on `conversations.hermes_epoch`, so its later turns open on the fresh session; a
   one-shot takes a random thread. The log names the abandoned `api-…` session at warn: do not
   `hermes sessions discard` it.
+
+  A completions turn Talaria lets go of before it ends (a harness run past its deadline, an
+  app turn whose caller hung up) is **stopped in the agent** (`fleet_abandoned.rs`). Hermes keeps
+  an admitted turn alive past its request, so closing the stream alone left a queued turn to
+  run later for nobody, or parked for good behind a lost one, and a running turn going until
+  Hermes next failed a write. While the request is open, the completion id every chunk names
+  (`chatcmpl-…`) is also the turn's run id, so the door posts `/v1/runs/{id}/stop` (a queued
+  turn is cancelled, a started one interrupted) and closes the stream after the answer. The
+  inbox brief, which runs detached with nobody waiting, gets the time a reply does (90 s) for
+  a slow agent, and a brief past it is stopped this way instead of parked.
 
   Pinned sessions stay a per-agent switch, off by default. One thing blocks making them the
   default: on a session, a per-message tier is not honoured, and the session runs its main
