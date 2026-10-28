@@ -297,9 +297,12 @@ multiplexer.
   `/api/agents/cron-output` at the turn's end, which is fire-and-forget, and a five-minute pull of
   the agent's own `GET /api/sessions?source=cron` that lands a settled run whose report never
   arrived. The Hermes session id is stamped on the row and is what the two roads dedupe on, under
-  one advisory lock per thread and session. The listing does not name the job, so the pull matches
-  a session to a listened job by its title (Hermes titles a run with the job's name) and, when two
-  listened jobs share a name, by the prompt the run was sent.
+  one advisory lock per thread and session. The pull lands only a run Hermes booked
+  `cron_complete`, and only its last assistant row when that row asks for no tools, so a run that
+  died mid-loop never lands its narration as a report. The listing does not name the job, so the
+  pull matches a session to a job by its title (Hermes titles a run with the job's name) against
+  every job the agent has, listened or not, and checks the run was sent that job's prompt; when two
+  of the agent's jobs share a name, the prompt decides.
 - **Agent spend is metered at the relay, one row per upstream call.** Every agent's
   config.yaml carries a `providers.talaria` entry on the same gateway URL its model specs use,
   with `session_affinity_header: x-talaria-session`; Hermes matches it by base URL and stamps

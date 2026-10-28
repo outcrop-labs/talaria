@@ -91,8 +91,8 @@ pub struct CronReport<'a> {
 pub struct Landed {
     pub message_id: String,
     /// False when the run was already in the thread (the same marker, or the
-    /// same session landed by the other road): nothing was written and
-    /// nobody was rung.
+    /// same session landed by the other road): no row was inserted and
+    /// nobody was rung (an empty responsible-user slot is still filled).
     pub fresh: bool,
 }
 
@@ -242,16 +242,15 @@ pub async fn land(
         }
     }
     let landed = landed?;
-    if !landed.fresh {
-        return Ok(landed);
-    }
     let message_id = landed.message_id.clone();
 
     // THE RESPONSIBLE USER. A cron turn arrives with no person behind it —
     // nobody is chatting — so the turn is attributed to the person who set
     // the schedule up: `author_user_id` is the one slot a turn carries for a
     // human, and the UI labels only user turns from it, so an assistant row
-    // gains an accountable person without gaining a byline.
+    // gains an accountable person without gaining a byline. Stamped on a
+    // repeat too: it only fills an empty slot, so a delivery that wrote the
+    // row and died before this line is mended by the next one.
     if let Some(creator) = listener.created_by.as_deref()
         && let Err(e) = sqlx::query(
             "update messages set author_user_id = $2::uuid \
@@ -263,6 +262,15 @@ pub async fn land(
         .await
     {
         tracing::error!("{LOG} responsible-user stamp failed: {e}");
+    }
+    // The rest rings people, so it happens once, for the row this call
+    // wrote. A repeat does not re-ring: a run seen twice (a re-delivered
+    // push, the pull after a late push) is one report, and a second
+    // notification for it would be noise. The cost is the rare delivery that
+    // wrote its row and died before the fan-out: that report sits in the
+    // thread without a notification, and the next reader still sees it.
+    if !landed.fresh {
+        return Ok(landed);
     }
     if !findings.is_empty() && matches!(mode, GuardMode::Annotate | GuardMode::Strict) {
         let _ =
@@ -588,6 +596,27 @@ mod live_db {
         assert_eq!(all[0].2.as_deref(), Some("push"));
         assert_eq!(all[1].2.as_deref(), Some("pull"));
         assert_eq!(all[4].1, None);
+        // A delivery that wrote its row and died before the stamp: the next
+        // delivery of that run writes nothing and mends the stamp.
+        sqlx::query("update messages set author_user_id = null where id = $1::uuid")
+            .bind(&c1.message_id)
+            .execute(&pg)
+            .await
+            .unwrap();
+        let c4 = land(
+            &pg,
+            None,
+            &listener,
+            report(
+                &format!("cron:{job}:e3:t1"),
+                Some("local-s3"),
+                Via::Push,
+                "turn one",
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(!c4.fresh && c4.message_id == c1.message_id);
         // The responsible user is the schedule's creator.
         let stamped: i64 = sqlx::query_scalar(
             "select count(*) from messages where conversation_id = $1::uuid and author_user_id = $2::uuid",

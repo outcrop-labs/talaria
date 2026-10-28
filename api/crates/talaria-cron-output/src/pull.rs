@@ -7,12 +7,25 @@
 //   GET /api/jobs?include_disabled=true   the jobs' current names and prompts
 //   GET /api/sessions?source=cron&limit=… its recent cron sessions, newest first
 //   GET /api/sessions/{id}/messages       only for a session that needs landing
+//                                         (and its oldest rows, when the run
+//                                         is longer than one page)
 //
-// A session is the pull's to land when it has ENDED (and settled: a push is
-// sent at the turn's end, before Hermes closes the session, so two minutes is
-// past any push that is going to arrive), it began after the thread started
-// listening and within the look-back, it belongs to a listened job, and no
-// row in the thread already carries it.
+// A session is the pull's to land when Hermes booked it COMPLETE, it has
+// settled (a push is sent at the turn's end, before Hermes closes the
+// session, so two minutes is past any push that is going to arrive), it began
+// after the thread started listening and within the look-back, it belongs to
+// a listened job, and no row in the thread already carries it.
+//
+// COMPLETE is Hermes's own verdict, `end_reason: cron_complete`, which
+// `_finalize_cron_session` (`cron/scheduler.py`) books only when the run's
+// last row is a real assistant reply. A run that died after a tool call,
+// mid-API-wait or with no assistant text is `cron_incomplete_no_output`, and
+// one a restart cut off is reaped as `startup_orphan_reap`: their last
+// assistant text is narration from inside the loop ("Let me check the inbox
+// first."), not a report, and the push had none to send. The report itself
+// is then the last visible assistant row, and only when it carries no tool
+// calls — the same shape, checked again, because Hermes books complete when
+// its own check fails to run.
 //
 // WHICH JOB. Hermes's session listing does not name the job: the session id is
 // a digest (`local-` + sha256 of the profile, the cron principal and
@@ -25,7 +38,13 @@
 // the name, the run's first user message (the scheduler's preamble, then the
 // job's prompt verbatim) decides — the longest prompt it contains — and a run
 // still ambiguous after that is left alone rather than guessed into a thread.
-// The run is landed only when the job it belongs to is a listened one.
+// A name only one job has is checked against that job's prompt too, whenever
+// Hermes lists it: a same-named job deleted since ran under the same title,
+// and is no longer listed to tell the two apart, so a run that was not sent
+// the job's prompt is not that job's run (nor is one sent a prompt edited
+// since: the check errs toward leaving a report out, never toward landing
+// another job's). The run is landed only when the job it belongs to is a
+// listened one.
 //
 // ALREADY LANDED means either a row carrying the session id (a push since this
 // shipped, or an earlier pull), or a row of the same job that landed while
@@ -35,7 +54,8 @@
 // holds one fire claim per job), so a row of that job inside that window is
 // that run's.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -69,6 +89,16 @@ const READ_WINDOW: Duration = Duration::from_secs(20);
 /// Slack on the time comparisons: the thread's listener row is written just
 /// after Hermes creates the job, and the push lands just after its turn.
 const SLACK_MS: i64 = 30_000;
+/// The one end reason that means a run has a report (see the header).
+pub const COMPLETE: &str = "cron_complete";
+/// Hermes's default messages page is the LATEST this many rows: a page that
+/// full may have cut off the run's opening message.
+const MESSAGES_PAGE: usize = 500;
+/// An agent that answers but refuses the pull's reads (a key that no longer
+/// matches, a route that moved) is logged at warn once it has refused this
+/// many passes in a row (fifteen minutes), and then once an hour.
+const WARN_AFTER: u32 = 3;
+const WARN_EVERY: u32 = 12;
 
 /// One of the agent's jobs, as the pull matches a session against it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,8 +150,10 @@ fn session_id_ok(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
-/// The ended cron sessions in a `/api/sessions` page. A row without an id,
-/// a start or an end is not one the pull can land.
+/// The finished cron sessions in a `/api/sessions` page: ended, and booked
+/// `cron_complete`. A row without an id, a start or an end is not one the
+/// pull can land, and neither is a run Hermes booked any other way (or not
+/// at all): it has no report (see the header).
 pub fn ended_sessions(page: &Value) -> Vec<CronSession> {
     let Some(rows) = page.get("data").and_then(Value::as_array) else {
         return Vec::new();
@@ -129,7 +161,8 @@ pub fn ended_sessions(page: &Value) -> Vec<CronSession> {
     rows.iter()
         .filter_map(|row| {
             let id = row.get("id").and_then(Value::as_str)?;
-            if !session_id_ok(id) {
+            if !session_id_ok(id) || row.get("end_reason").and_then(Value::as_str) != Some(COMPLETE)
+            {
                 return None;
             }
             Some(CronSession {
@@ -226,10 +259,24 @@ fn content_text(row: &Value) -> String {
     }
 }
 
+/// Does this assistant row ask for tools? Hermes answers `tool_calls` as a
+/// list (or null); a non-empty one is a step inside the loop, not an answer.
+fn asks_for_tools(row: &Value) -> bool {
+    match row.get("tool_calls") {
+        None | Some(Value::Null) => false,
+        Some(Value::Array(calls)) => !calls.is_empty(),
+        Some(Value::String(s)) => !matches!(s.trim(), "" | "[]" | "null"),
+        Some(_) => true,
+    }
+}
+
 /// From a `/api/sessions/{id}/messages` page: the first user message (what
-/// the scheduler sent, prompt included) and the last non-blank assistant
-/// text (the run's report — what `post_llm_call` hands the push). Rows come
-/// oldest first.
+/// the scheduler sent, prompt included) and the run's report — what
+/// `post_llm_call` hands the push. The report is the LAST visible assistant
+/// row, and only when it has text and asks for no tools: an earlier row's
+/// text, or narration riding on a tool call, is the model thinking aloud
+/// inside the loop, and landing it would post a run's first step as its
+/// result. Rows come oldest first.
 pub fn session_texts(page: &Value) -> (Option<String>, Option<String>) {
     let Some(rows) = page.get("data").and_then(Value::as_array) else {
         return (None, None);
@@ -241,13 +288,31 @@ pub fn session_texts(page: &Value) -> (Option<String>, Option<String>) {
         .filter(visible)
         .find(|row| role(row, "user"))
         .map(content_text);
-    let last_answer = rows
+    let report = rows
         .iter()
         .filter(visible)
-        .filter(|row| role(row, "assistant"))
+        .rfind(|row| role(row, "assistant"))
+        .filter(|row| !asks_for_tools(row))
         .map(content_text)
-        .rfind(|text| !text.trim().is_empty());
-    (first_user, last_answer)
+        .filter(|text| !text.trim().is_empty());
+    (first_user, report)
+}
+
+/// Was this run sent the job's prompt? The scheduler sends it verbatim after
+/// its preamble. A job whose prompt is not known (a listened job Hermes no
+/// longer lists) or is empty (a script-only job) cannot be checked, and
+/// passes.
+pub fn sent_prompt(job: &AgentJob, first_user: Option<&str>) -> bool {
+    match job.prompt.as_deref().map(str::trim) {
+        None | Some("") => true,
+        Some(prompt) => first_user.is_some_and(|sent| sent.contains(prompt)),
+    }
+}
+
+/// Should this many refused passes in a row be logged at warn?
+fn warn_now(streak: u32) -> bool {
+    streak == WARN_AFTER
+        || (streak > WARN_AFTER && (streak - WARN_AFTER).is_multiple_of(WARN_EVERY))
 }
 
 /// The tiebreak for jobs that share a name: the job whose prompt the run was
@@ -317,20 +382,45 @@ pub(crate) async fn landed_in_any(
     Ok(hit.is_some())
 }
 
+/// Why one agent's share of a pass did not finish.
+#[derive(Debug)]
+enum Failure {
+    /// The agent did not answer: stopped, restarting, or silent past the
+    /// window. Its sessions are still there next pass.
+    NoAnswer(String),
+    /// It answered and refused (or failed): a key that no longer matches, a
+    /// route that moved. That does not clear by itself, so it is counted.
+    Refused(String),
+    /// The platform's own database. It ends the pass.
+    Db(sqlx::Error),
+}
+
+impl From<sqlx::Error> for Failure {
+    fn from(e: sqlx::Error) -> Self {
+        Failure::Db(e)
+    }
+}
+
 /// An agent-side read that must answer 2xx with json.
-async fn read(model: &str, path: &str) -> Result<Value, String> {
-    let answer = agent_request(model, Method::GET, path, None, READ_WINDOW).await?;
+async fn read(model: &str, path: &str) -> Result<Value, Failure> {
+    let answer = agent_request(model, Method::GET, path, None, READ_WINDOW)
+        .await
+        .map_err(Failure::NoAnswer)?;
     if (200..300).contains(&answer.status) {
         Ok(answer.body)
     } else {
-        Err(format!("{path} answered {}", answer.status))
+        Err(Failure::Refused(format!(
+            "{} answered {}",
+            path.split('?').next().unwrap_or(path),
+            answer.status
+        )))
     }
 }
 
 /// This agent's listeners, and every job it has: Hermes's own list, plus any
 /// listened job it no longer lists (under the listener row's name), so a
 /// stale row still claims its own runs and nothing else.
-async fn agent_jobs(pg: &PgPool, model: &str) -> Result<(Vec<Listener>, Vec<AgentJob>), String> {
+async fn agent_jobs(pg: &PgPool, model: &str) -> Result<(Vec<Listener>, Vec<AgentJob>), Failure> {
     type Row = (String, String, Option<String>, String, i64);
     let rows: Vec<Row> = sqlx::query_as(
         "select job_id, conversation_id::text, created_by::text, name, \
@@ -339,8 +429,7 @@ async fn agent_jobs(pg: &PgPool, model: &str) -> Result<(Vec<Listener>, Vec<Agen
     )
     .bind(model)
     .fetch_all(pg)
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
     if rows.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -390,8 +479,33 @@ pub struct PullReport {
     pub landed: usize,
     /// Agents whose API server did not answer (stopped, or restarting).
     pub unreachable: Vec<String>,
+    /// Agents whose API server answered and refused the reads.
+    pub refused: Vec<String>,
     /// Sessions more than one same-named job could own, left alone.
     pub ambiguous: usize,
+}
+
+/// A run's messages, read once, and its opening message (what the scheduler
+/// sent). The default page is the latest rows, so for a run longer than a
+/// page the opening is read from the oldest end instead.
+struct Messages {
+    first_user: Option<String>,
+    report: Option<String>,
+}
+
+async fn messages(model: &str, session_id: &str) -> Result<Messages, Failure> {
+    let path = messages_path(session_id);
+    let page = read(model, &path).await?;
+    let (mut first_user, report) = session_texts(&page);
+    let rows = page
+        .get("data")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    if rows >= MESSAGES_PAGE {
+        let opening = read(model, &format!("{path}?order=oldest&limit=10")).await?;
+        first_user = session_texts(&opening).0;
+    }
+    Ok(Messages { first_user, report })
 }
 
 /// Pull one agent's lost reports into `report`.
@@ -400,7 +514,7 @@ async fn pull_agent(
     redis: Option<redis::aio::ConnectionManager>,
     model: &str,
     report: &mut PullReport,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     let (listeners, jobs) = agent_jobs(pg, model).await?;
     if listeners.is_empty() {
         return Ok(());
@@ -413,7 +527,7 @@ async fn pull_agent(
     let now = now_ms();
     for session in ended_sessions(&page) {
         // The job, and the run's messages when the tiebreak already read them.
-        let (job, mut messages) = match match_session(&session, &jobs, now) {
+        let (job, mut read_already) = match match_session(&session, &jobs, now) {
             Match::None => continue,
             Match::One(job) => (job, None),
             Match::Ambiguous(hits) => {
@@ -427,16 +541,11 @@ async fn pull_agent(
                     .filter_map(|j| listener_for(j, &session, &listeners))
                     .map(|l| l.conversation_id.as_str())
                     .collect();
-                if threads.is_empty()
-                    || landed_in_any(pg, &threads, &session.id)
-                        .await
-                        .map_err(|e| e.to_string())?
-                {
+                if threads.is_empty() || landed_in_any(pg, &threads, &session.id).await? {
                     continue;
                 }
-                let page = read(model, &messages_path(&session.id)).await?;
-                let (first_user, _) = session_texts(&page);
-                let Some(job) = by_prompt(&hits, first_user.as_deref().unwrap_or("")) else {
+                let run = messages(model, &session.id).await?;
+                let Some(job) = by_prompt(&hits, run.first_user.as_deref().unwrap_or("")) else {
                     tracing::debug!(
                         "{LOG} {model}: session {} could belong to {} jobs named alike; leaving it",
                         session.id,
@@ -445,7 +554,7 @@ async fn pull_agent(
                     report.ambiguous += 1;
                     continue;
                 };
-                (job, Some(page))
+                (job, Some(run))
             }
         };
         // Another job's run (a fleet-wide one), or this thread's job before
@@ -453,21 +562,26 @@ async fn pull_agent(
         let Some(listener) = listener_for(job, &session, &listeners) else {
             continue;
         };
-        if delivered(pg, listener, &session)
-            .await
-            .map_err(|e| e.to_string())?
-        {
+        if delivered(pg, listener, &session).await? {
             continue;
         }
-        let page = match messages.take() {
-            Some(page) => page,
-            None => read(model, &messages_path(&session.id)).await?,
+        let run = match read_already.take() {
+            Some(run) => run,
+            None => messages(model, &session.id).await?,
         };
-        let (_, answer) = session_texts(&page);
-        // A run that ended with no answer (it died after a tool call, or
-        // never reached the model) has no report to land; the push had
-        // nothing to send either.
-        let Some(text) = answer else {
+        // The name matched one job; the prompt says whether this is its run
+        // or a same-named job's deleted since (see the header).
+        if !sent_prompt(job, run.first_user.as_deref()) {
+            tracing::debug!(
+                "{LOG} {model}: session {} carries job {}'s name but was not sent its prompt; leaving it",
+                session.id,
+                job.id
+            );
+            continue;
+        }
+        // A last assistant row with no text, or one still asking for tools,
+        // is no report; the push had nothing to send either.
+        let Some(text) = run.report else {
             continue;
         };
         let landed = land(
@@ -485,8 +599,7 @@ async fn pull_agent(
                 text: &text,
             },
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
         if landed.fresh {
             tracing::warn!(
                 "{LOG} {model}: job {} session {} ended without its report reaching thread {} — \
@@ -508,9 +621,32 @@ fn messages_path(session_id: &str) -> String {
     format!("/api/sessions/{session_id}/messages")
 }
 
+/// Refused passes in a row, per agent, on this instance (the job is leased,
+/// so another instance may hold the count for a while; the warn is a nudge,
+/// not an alarm).
+static REFUSALS: LazyLock<Mutex<HashMap<String, u32>>> = LazyLock::new(Default::default);
+
+/// Count one agent's pass: a refusal adds one to its streak and returns it;
+/// anything else ends the streak and returns how long it was.
+fn tally(model: &str, refused: bool) -> u32 {
+    let mut streaks = REFUSALS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if refused {
+        let n = streaks.entry(model.to_string()).or_insert(0);
+        *n += 1;
+        *n
+    } else {
+        streaks.remove(model).unwrap_or(0)
+    }
+}
+
 /// One pass over every agent with a listening thread. An agent that does not
-/// answer is skipped (it is stopped, or restarting; its sessions are still
-/// there next pass); a database failure ends the pass.
+/// answer is skipped at debug (it is stopped, or restarting; its sessions are
+/// still there next pass). One that answers and refuses is skipped too, and
+/// logged at warn once it has refused `WARN_AFTER` passes in a row, then
+/// hourly: its threads' lost reports cannot be pulled until someone fixes
+/// it. A database failure ends the pass, and the scheduler records it.
 pub async fn pull_pass(state: &AppState) -> Result<PullReport, String> {
     let models: Vec<String> = sqlx::query_scalar(
         "select distinct cs.agent_model from conversation_schedules cs \
@@ -526,9 +662,33 @@ pub async fn pull_pass(state: &AppState) -> Result<PullReport, String> {
     }
     let redis = state.redis().await.ok();
     for model in models {
-        if let Err(e) = pull_agent(&state.pg, redis.clone(), &model, &mut report).await {
-            tracing::debug!("{LOG} {model}: pull skipped: {e}");
-            report.unreachable.push(model);
+        match pull_agent(&state.pg, redis.clone(), &model, &mut report).await {
+            Ok(()) => {
+                let streak = tally(&model, false);
+                if streak >= WARN_AFTER {
+                    tracing::info!(
+                        "{LOG} {model}: the pull's reads answer again after {streak} refused pass(es)"
+                    );
+                }
+            }
+            Err(Failure::Db(e)) => return Err(format!("{model}: {e}")),
+            Err(Failure::NoAnswer(e)) => {
+                tally(&model, false);
+                tracing::debug!("{LOG} {model}: pull skipped, no answer: {e}");
+                report.unreachable.push(model);
+            }
+            Err(Failure::Refused(e)) => {
+                let streak = tally(&model, true);
+                if warn_now(streak) {
+                    tracing::warn!(
+                        "{LOG} {model}: the agent has refused the cron-output pull {streak} pass(es) \
+                         in a row ({e}) — a thread schedule's lost report cannot be pulled in"
+                    );
+                } else {
+                    tracing::debug!("{LOG} {model}: pull skipped, refused: {e}");
+                }
+                report.refused.push(model);
+            }
         }
     }
     Ok(report)
@@ -673,7 +833,18 @@ mod tests {
             {"id": "local-bb", "title": "Morning digest · Oct 28 00:20", "started_at": 1793146800.0, "ended_at": null},
             {"id": "../etc", "title": "Morning digest", "started_at": 1.0, "ended_at": 2.0},
             {"title": "no id", "started_at": 1.0, "ended_at": 2.0},
-            {"id": "local-cc", "title": "Morning digest", "started_at": "1793146900", "ended_at": "1793146960.5"},
+            {"id": "local-cc", "title": "Morning digest", "started_at": "1793146900", "ended_at": "1793146960.5", "end_reason": "cron_complete"},
+            // Ended, but Hermes did not book it complete. The first is the
+            // row a live v0.22.4 agent listed for a run that died after a
+            // tool call (the model's next call was refused); then one a
+            // restart reaped, and one with no reason at all. None has a
+            // report.
+            {"id": "local-d605a284f7dc0961e7e9b7e46b63a5129948a3a4e66839329f8c61388eb6ffaf",
+             "source": "cron", "user_id": "cron-owner", "model": "mock-model",
+             "title": "Morning digest · Oct 28 01:49 #2", "started_at": 1793152195.841784,
+             "ended_at": 1793152199.4897304, "end_reason": "cron_incomplete_no_output", "message_count": 3},
+            {"id": "local-ee", "title": "Morning digest · Oct 28 00:30", "started_at": 1793147400.0, "ended_at": 1793147460.0, "end_reason": "startup_orphan_reap"},
+            {"id": "local-ff", "title": "Morning digest · Oct 28 00:35", "started_at": 1793147700.0, "ended_at": 1793147760.0},
         ]});
         let s = ended_sessions(&page);
         assert_eq!(s.len(), 2);
@@ -798,6 +969,25 @@ mod tests {
         ];
         let refs: Vec<&AgentJob> = twins.iter().collect();
         assert_eq!(by_prompt(&refs, "Do A. Do B."), None);
+        // One job by name must still have been sent the run: a same-named
+        // job deleted since ran under the same title with its own prompt.
+        let digest = job("aaaaaaaaaaaa", "Digest", Some("Summarise the inbox."));
+        assert!(sent_prompt(
+            &digest,
+            Some("[IMPORTANT: cron preamble]\n\nSummarise the inbox.")
+        ));
+        assert!(!sent_prompt(
+            &digest,
+            Some("[IMPORTANT: cron preamble]\n\nSummarise the board.")
+        ));
+        assert!(!sent_prompt(&digest, None));
+        // A prompt that cannot be checked (not listed, or a script-only job's
+        // empty one) passes: the name is all there is.
+        assert!(sent_prompt(&job("aaaaaaaaaaaa", "Digest", None), None));
+        assert!(sent_prompt(
+            &job("aaaaaaaaaaaa", "Digest", Some("  ")),
+            Some("x")
+        ));
         // A job with no prompt known (Hermes no longer lists it) never wins.
         let gone = [
             job("aaaaaaaaaaaa", "Digest", None),
@@ -805,6 +995,21 @@ mod tests {
         ];
         let refs: Vec<&AgentJob> = gone.iter().collect();
         assert_eq!(by_prompt(&refs, "anything"), None);
+    }
+
+    #[test]
+    fn a_refusing_agent_is_warned_about_after_three_passes_then_hourly() {
+        let warned: Vec<u32> = (1..=40).filter(|n| warn_now(*n)).collect();
+        assert_eq!(warned, vec![3, 15, 27, 39]);
+        // The streak is per agent, and anything but a refusal ends it.
+        let model = "streak-test-agent";
+        assert_eq!(tally(model, true), 1);
+        assert_eq!(tally(model, true), 2);
+        assert_eq!(tally("streak-test-other", true), 1);
+        assert_eq!(tally(model, false), 2);
+        assert_eq!(tally(model, true), 1);
+        assert_eq!(tally(model, false), 1);
+        assert_eq!(tally(model, false), 0);
     }
 
     // The messages page a live v0.22.4 agent answered for that run
@@ -843,6 +1048,34 @@ mod tests {
             session_texts(&looped).1.as_deref(),
             Some("You have 3 unread threads.")
         );
+        // The messages page of that run that died after a tool call (the
+        // listing row above, booked `cron_incomplete_no_output`), as the
+        // live agent answered it, the preamble and the tool result cut
+        // short: its only assistant text rides on the tool call. Narration
+        // from inside the loop is not a report.
+        let narrated = json!({"object": "list",
+        "session_id": "local-d605a284f7dc0961e7e9b7e46b63a5129948a3a4e66839329f8c61388eb6ffaf",
+        "pagination": {"limit": 500, "offset": 0, "order": "latest", "returned": 3},
+        "data": [
+            {"role": "user", "content": "[IMPORTANT: You are running as a scheduled cron job. …]\n\nNARRATE-THEN-FAIL Summarise the overnight tickets for the fu-crons proof.", "tool_call_id": null, "tool_calls": null, "tool_name": null, "finish_reason": null, "display_kind": null},
+            {"role": "assistant", "content": "Let me check the inbox first.", "tool_call_id": null, "tool_calls": [{"id": "call_b3108fe0", "call_id": "call_b3108fe0", "response_item_id": "fc_b3108fe0", "type": "function", "function": {"name": "web_search", "arguments": "{\"query\": \"inbox\"}"}}], "tool_name": null, "finish_reason": "tool_calls", "display_kind": null},
+            {"role": "tool", "content": "<untrusted_tool_result source=\"web_search\">\n…\n</untrusted_tool_result>", "tool_call_id": "call_b3108fe0", "tool_calls": null, "tool_name": "web_search", "finish_reason": null, "display_kind": null},
+        ]});
+        assert_eq!(session_texts(&narrated).1, None);
+        // Narration, a tool result, then an empty final row: still none,
+        // and the narration is not reached back for.
+        let blank_end = json!({"data": [
+            {"role": "user", "content": "[cron] Summarise the inbox."},
+            {"role": "assistant", "content": "Let me check the inbox first.", "tool_calls": [{"id": "c1"}]},
+            {"role": "tool", "content": "3 unread"},
+            {"role": "assistant", "content": "  ", "tool_calls": null},
+        ]});
+        assert_eq!(session_texts(&blank_end).1, None);
+        // An empty tool_calls list is no request for tools.
+        let empty_calls = json!({"data": [
+            {"role": "assistant", "content": "All quiet.", "tool_calls": []},
+        ]});
+        assert_eq!(session_texts(&empty_calls).1.as_deref(), Some("All quiet."));
         // Text parts read as text.
         let parts = json!({"data": [
             {"role": "user", "content": [{"type": "text", "text": "go"}]},
