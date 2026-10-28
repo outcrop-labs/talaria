@@ -8,8 +8,11 @@
 // wait, the 5s-cached `docker ps` status the roster and Home poll, and the
 // shared `docker exec` wrapper the cron and memory surfaces use to reach an
 // agent's own filesystem. Nothing here execs into an agent after it comes up:
-// Hermes keeps replaced bundled skills off by itself (talaria-hermes-skills),
-// and its image already carries the browser the toolset drives.
+// Hermes keeps replaced bundled skills off by itself (talaria-hermes-skills).
+// Its image carries the Chromium the browser toolset drives but not the
+// `agent-browser` CLI that drives it, so a start installs that pinned CLI
+// onto the agent's volume first, in a one-shot container of its own service
+// (browser_engine.rs).
 //
 // ONE CONTAINER PER AGENT. Each agent runs as `agent-<dept>`, and a roll
 // recreates that container in place (`fleet_recreate`). There is no second
@@ -23,7 +26,11 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+mod browser_engine;
 mod lost_turns;
+pub use browser_engine::{
+    MANIFEST_FILE as BROWSER_ENGINE_FILE, manifest_text as browser_engine_manifest,
+};
 pub use lost_turns::discard_lost_turns;
 
 /// Set from the api binary so `fleet_up` can run preflight without this crate
@@ -257,6 +264,10 @@ async fn compose_up(
     let slot = active_slot(pg, department).await;
     let svc = slot_service(department, slot);
     pull_missing(&svc).await?;
+    // The browser engine, onto the volume, before anything stops: a roll's
+    // agent keeps serving while it installs, and a failed install leaves the
+    // start to go ahead without browser tools (browser_engine.rs).
+    browser_engine::ensure(department, &svc).await;
     // A recreate stops the running container: drain it first. A plain `up`
     // starts one and leaves a running one alone, so it has nothing to drain.
     let drained = verb

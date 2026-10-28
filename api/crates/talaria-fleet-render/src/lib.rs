@@ -1250,6 +1250,10 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         .join("talaria-events");
 
     let mut services: Map<String, Value> = Map::new();
+    // The departments whose agent keeps the browser toolset on: each start
+    // installs the image's pinned browser engine onto their volume first
+    // (talaria-fleet-docker's browser_engine.rs).
+    let mut browser_departments: Vec<String> = Vec::new();
     let mut secrets: Map<String, Value> = Map::new();
     let mut volumes: Map<String, Value> = chassis.volumes.clone();
 
@@ -1436,6 +1440,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         fleet_nous_off(&mut routed);
         fleet_delegation(&mut routed, def.max_children);
         fleet_disabled_toolsets(&mut routed, &toolset_floor, &def.disabled_toolsets);
+        let browser_on = fleet_browser_backend(&mut routed);
         fleet_tool_loop_guardrails(&mut routed);
         fleet_title_generation(&mut routed);
         fleet_model_routes(&mut routed, &def.model);
@@ -1942,6 +1947,9 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         }
         services.insert(service_name.clone(), svc);
         result.agents.push(def.model.clone());
+        if browser_on {
+            browser_departments.push(def.department.clone());
+        }
     }
 
     for m in &remapped {
@@ -2012,6 +2020,17 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     .await
     .map_err(|e| format!("{}: {e}", compose_path.display()))?;
     result.files.push(compose_path.display().to_string());
+
+    let engine_path =
+        talaria_fleet_layout::fleet_dir().join(talaria_fleet_docker::BROWSER_ENGINE_FILE);
+    talaria_fleet_brain::write_atomic(
+        &engine_path,
+        talaria_fleet_docker::browser_engine_manifest(&browser_departments).as_bytes(),
+        0o644,
+    )
+    .await
+    .map_err(|e| format!("{}: {e}", engine_path.display()))?;
+    result.files.push(engine_path.display().to_string());
 
     write_fleet_manifest(pg, &mut result).await?;
     Ok(result)
@@ -2510,6 +2529,63 @@ fn fleet_disabled_toolsets(
     }
     agent.insert("disabled_toolsets".into(), json!(disabled));
     routed.insert("agent".into(), Value::Object(agent));
+}
+
+/// Which browser Hermes offers, and whether the agent has one at all.
+/// Returns whether the browser toolset is on, from the merged
+/// `agent.disabled_toolsets` (so [`fleet_disabled_toolsets`] runs first).
+///
+/// Hermes v0.22.4 has two browser surfaces and picks one with
+/// `browser.backend`. Unset is Browser Use mode, its default: one
+/// `browser_exec` tool, Python with browser helpers, which Hermes offers ONLY
+/// to a session that also has the `terminal` toolset (it is host execution;
+/// `model_tools._rewrite_browser_exec`), and in that mode the built-in
+/// `browser_navigate` / `browser_click` / … tools are withheld
+/// (`check_browser_requirements` answers no whenever Browser Use mode is on).
+/// `off` is the built-in tools. So an agent with the browser on and the
+/// terminal closed, which is every new agent (`DEFAULT_DISABLED_FOR_NEW`),
+/// was offered no browser tool of either kind. With the terminal closed the
+/// render says `off`, and the agent gets the built-in tools. With the
+/// terminal open it says nothing and Hermes's own default stands:
+/// `browser_exec`, which the workbench skills teach. A def that authored its
+/// own `browser.backend` keeps it (an operator's explicit call; YAML 1.1's
+/// bare `off`, which parses as false, counts as authored), as does a def
+/// whose `browser:` block is not a map. Both surfaces drive the image's
+/// Chromium through the `agent-browser` CLI that each start installs onto the
+/// volume (talaria-fleet-docker's browser_engine.rs).
+fn fleet_browser_backend(routed: &mut Map<String, Value>) -> bool {
+    let closed = |name: &str| {
+        routed
+            .get("agent")
+            .and_then(|a| a.get("disabled_toolsets"))
+            .and_then(Value::as_array)
+            .is_some_and(|d| d.iter().any(|n| n.as_str() == Some(name)))
+    };
+    if closed("browser") {
+        return false;
+    }
+    if !closed("terminal") {
+        return true;
+    }
+    let browser = routed
+        .entry("browser")
+        .and_modify(|v| {
+            if v.is_null() {
+                *v = json!({});
+            }
+        })
+        .or_insert_with(|| json!({}));
+    if let Some(browser) = browser.as_object_mut() {
+        browser
+            .entry("backend")
+            .and_modify(|v| {
+                if v.is_null() {
+                    *v = json!("off");
+                }
+            })
+            .or_insert_with(|| json!("off"));
+    }
+    true
 }
 
 /// Hermes's progressive tool disclosure, pinned on. Every agent carries the
@@ -4200,6 +4276,110 @@ service:
         let yaml = yaml11_emit(&Value::Object(routed.clone()));
         assert!(
             yaml.contains("agent:\n  disabled_toolsets:\n    - todo\n    - clarify\n"),
+            "the block Hermes reads is missing from:\n{yaml}"
+        );
+        let back: Value = serde_yaml_ng::from_str(&yaml).expect("emitted yaml parses");
+        assert_eq!(back, Value::Object(routed), "round-trip must be lossless");
+    }
+
+    /// A routed config after the toolset merge: the floor plus `def`.
+    fn merged(def_disabled: &[&str]) -> Map<String, Value> {
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!("x"));
+        let def: Vec<String> = def_disabled.iter().map(|s| s.to_string()).collect();
+        fleet_disabled_toolsets(&mut routed, &mandatory(), &def);
+        routed
+    }
+
+    #[test]
+    fn a_browser_without_a_terminal_gets_the_built_in_tools() {
+        // The new-agent default: browser on, terminal closed. Browser Use
+        // mode would offer nothing here (browser_exec needs the terminal and
+        // hides the built-ins), so the render picks the built-in tools.
+        let mut routed = merged(talaria_agent_defs::DEFAULT_DISABLED_FOR_NEW);
+        assert!(fleet_browser_backend(&mut routed));
+        assert_eq!(routed.get("browser"), Some(&json!({ "backend": "off" })));
+        // Twice is once.
+        assert!(fleet_browser_backend(&mut routed));
+        assert_eq!(routed.get("browser"), Some(&json!({ "backend": "off" })));
+        // The terminal closed by the org floor or the authored list counts
+        // the same as one the def closed.
+        let mut floored = Map::new();
+        fleet_disabled_toolsets(&mut floored, &["todo".into(), "terminal".into()], &[]);
+        assert!(fleet_browser_backend(&mut floored));
+        assert_eq!(floored.get("browser"), Some(&json!({ "backend": "off" })));
+        let mut authored = Map::new();
+        authored.insert("agent".into(), json!({ "disabled_toolsets": ["terminal"] }));
+        fleet_disabled_toolsets(&mut authored, &mandatory(), &[]);
+        assert!(fleet_browser_backend(&mut authored));
+        assert_eq!(authored.get("browser"), Some(&json!({ "backend": "off" })));
+    }
+
+    #[test]
+    fn a_browser_with_a_terminal_keeps_hermes_default() {
+        // A Developer Agent: terminal open, so Hermes's own browser_exec is
+        // offered, and the render leaves the choice to Hermes.
+        let mut routed = merged(&["cronjob"]);
+        assert!(fleet_browser_backend(&mut routed));
+        assert!(!routed.contains_key("browser"), "{routed:?}");
+    }
+
+    #[test]
+    fn a_closed_browser_renders_nothing_and_is_not_on() {
+        let mut routed = merged(&["browser", "terminal"]);
+        assert!(!fleet_browser_backend(&mut routed));
+        assert!(!routed.contains_key("browser"), "{routed:?}");
+        // Closed by the authored list is closed too.
+        let mut authored = Map::new();
+        authored.insert("agent".into(), json!({ "disabled_toolsets": ["browser"] }));
+        fleet_disabled_toolsets(&mut authored, &mandatory(), &["terminal".into()]);
+        assert!(!fleet_browser_backend(&mut authored));
+        assert!(!authored.contains_key("browser"), "{authored:?}");
+    }
+
+    #[test]
+    fn an_authored_backend_is_the_defs_call() {
+        for backend in [json!("browser-use"), json!("off"), json!(false), json!("")] {
+            let mut routed = merged(&["terminal"]);
+            routed.insert(
+                "browser".into(),
+                json!({ "backend": backend.clone(), "headed": false }),
+            );
+            assert!(fleet_browser_backend(&mut routed));
+            assert_eq!(
+                routed.get("browser"),
+                Some(&json!({ "backend": backend, "headed": false })),
+                "an authored backend must stand"
+            );
+        }
+        // Other keys in an authored block stay; only a missing or null
+        // backend is filled.
+        let mut routed = merged(&["terminal"]);
+        routed.insert(
+            "browser".into(),
+            json!({ "backend": null, "command_timeout": 60 }),
+        );
+        assert!(fleet_browser_backend(&mut routed));
+        assert_eq!(
+            routed.get("browser"),
+            Some(&json!({ "backend": "off", "command_timeout": 60 }))
+        );
+        // A block that is not a map is left as written.
+        let mut odd = merged(&["terminal"]);
+        odd.insert("browser".into(), json!(false));
+        assert!(fleet_browser_backend(&mut odd));
+        assert_eq!(odd.get("browser"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn the_built_in_backend_survives_the_one_point_one_emitter() {
+        // YAML 1.1 reads a bare off as false. Hermes maps false to off too,
+        // but the render writes what it means: a quoted 'off'.
+        let mut routed = merged(&["terminal"]);
+        assert!(fleet_browser_backend(&mut routed));
+        let yaml = yaml11_emit(&Value::Object(routed.clone()));
+        assert!(
+            yaml.contains("browser:\n  backend: 'off'\n"),
             "the block Hermes reads is missing from:\n{yaml}"
         );
         let back: Value = serde_yaml_ng::from_str(&yaml).expect("emitted yaml parses");
