@@ -116,9 +116,16 @@ const DEADLINE_MS: u64 = 10_000;
 /// landed, or been stopped — before its card can claim another, and two
 /// briefs for one card never queue behind each other in one derived session.
 /// A brief past it is let go of, and the gateway stops it in the agent
-/// (fleet_abandoned.rs), so it is not left queued there.
+/// (fleet_abandoned.rs), so it is not left queued there. Once Hermes can
+/// place that stop it lands within the gateway's control window, so the
+/// window is counted in. (An agent store too starved to bind the turn's id
+/// yet is sent the stop until it can; a brief claimed meanwhile queues behind
+/// that one, which is stopped once it is placed.)
 const BRIEF_DEADLINE_MS: u64 = REPLY_DEADLINE_MS;
-const _: () = assert!(BRIEF_DEADLINE_MS < BRIEF_RETRY_MS as u64);
+const _: () = assert!(
+    BRIEF_DEADLINE_MS + (talaria_gateway::fleet_chat::CONTROL_WINDOW.as_millis() as u64)
+        < (BRIEF_RETRY_MS as u64)
+);
 
 /// The cap on a turn SOMEBODY IS WAITING FOR — a question they typed into the
 /// assistant panel. Nine times the brief's, and the asymmetry is the entire

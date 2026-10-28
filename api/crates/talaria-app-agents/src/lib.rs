@@ -355,7 +355,10 @@ async fn drive_opened(
     tx: mpsc::Sender<String>,
 ) {
     // The opening holds for an agent that is restarting (`HOLD_MS`). A caller
-    // that leaves meanwhile has nobody for the turn to be sent to.
+    // that leaves meanwhile has nobody for the turn to be sent to. An opening
+    // dropped once the agent's stream is open (its key still being recorded)
+    // drops that stream unread, and the gateway reads it on just far enough
+    // to stop the turn it names (talaria-gateway fleet_abandoned.rs).
     let opened = tokio::select! {
         biased;
         () = tx.closed() => {

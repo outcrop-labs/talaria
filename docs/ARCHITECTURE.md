@@ -352,7 +352,14 @@ multiplexer.
   run later for nobody, or parked for good behind a lost one, and a running turn going until
   Hermes next failed a write. While the request is open, the completion id every chunk names
   (`chatcmpl-…`) is also the turn's run id, so the door posts `/v1/runs/{id}/stop` (a queued
-  turn is cancelled, a started one interrupted) and closes the stream after the answer. The
+  turn is cancelled, a started one interrupted) and holds the request open until Hermes has
+  ended the turn. It reads the dropped stream on for that: to name a turn whose reader never read
+  a frame, to follow a move to a fresh session, and, after the stop lands, until the stream ends
+  (each for at most the 10 s control window). While Hermes has not yet bound the id (it writes the
+  role chunk before the turn's admission commits, and on a starved agent store that commit has
+  taken minutes) it sends the stop again, backing off, for up to the five minutes Talaria gives an
+  agent's headers. A turn let go of is never moved. A turn let go of before the agent's response
+  headers came has nothing naming it, and stays Hermes' to handle. The
   inbox brief, which runs detached with nobody waiting, gets the time a reply does (90 s) for
   a slow agent, and a brief past it is stopped this way instead of parked.
 

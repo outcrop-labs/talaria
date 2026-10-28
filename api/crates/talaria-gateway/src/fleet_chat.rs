@@ -57,15 +57,19 @@ pub type ByteStream = Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<By
 /// response's headers) before the retry/deadline loop takes over. Generous on
 /// purpose: the agent's first frame rides its provider's time-to-first-token,
 /// and a long context — or a mid-task compaction — can hold that for minutes.
-/// Only silence past this reads as "not serving yet".
-const HEADERS_WINDOW: Duration = Duration::from_secs(300);
+/// Only silence past this reads as "not serving yet". It is also how long a
+/// let-go completions turn keeps being sent its stop while Hermes cannot
+/// place it yet (fleet_abandoned.rs): the same patience, for the same agent.
+pub(crate) const HEADERS_WINDOW: Duration = Duration::from_secs(300);
 /// The bound on a steer or a stop. A control call names a run that is live
 /// at this instant and the container answers it in milliseconds or not at
 /// all; the drain loop fires these from inside a stream it must keep
 /// reading, and a route answers a person who just pressed the button.
 /// Neither can wait the turn's five minutes on a container that accepted
-/// TCP and went quiet.
-pub(crate) const CONTROL_WINDOW: Duration = Duration::from_secs(10);
+/// TCP and went quiet. It also bounds how long a completions turn its reader
+/// let go of is read on once its stop can be placed (fleet_abandoned.rs),
+/// which a caller with its own deadline counts in.
+pub const CONTROL_WINDOW: Duration = Duration::from_secs(10);
 
 /// One OpenAI-style streamed reply, or a canned one. `status` is the upstream
 /// (or canned = 200) status; the body is raw SSE bytes the caller parses with
@@ -445,6 +449,7 @@ impl AgentRequest {
                 match open_stream(agent_post(entry, "/v1/chat/completions"), &request).await {
                     Some(stream) if stream.ok() => {
                         let remember = remember.lock().ok().and_then(|mut r| r.take());
+                        let let_go = crate::fleet_abandoned::LetGo::default();
                         let retry = FreshThread {
                             entry: ManifestEntry {
                                 model: entry.model.clone(),
@@ -456,13 +461,15 @@ impl AgentRequest {
                             remember,
                             attribution: attribution.cloned(),
                             abandoned: stream.hermes_session.clone(),
+                            let_go: let_go.clone(),
                         };
                         // Outermost, so it reads the moved turn's chunks too
                         // (fleet_abandoned.rs: a reader that lets go stops the
-                        // turn in the agent).
+                        // turn in the agent, and the move then sends nothing).
                         Opened::Stream(crate::fleet_abandoned::stop_when_abandoned(
                             heal_lost_completion(stream, retry.into_retry()),
                             entry,
+                            let_go,
                         ))
                     }
                     Some(stream) => Opened::Stream(stream),
@@ -531,6 +538,10 @@ struct FreshThread {
     attribution: Option<TurnAttribution>,
     /// The derived session Hermes refused the turn on, for the log line.
     abandoned: Option<String>,
+    /// Marked when the turn's reader let go of it (fleet_abandoned.rs). The
+    /// guard reads a let-go stream on to stop it, so a refusal can still be
+    /// read after the reader left; the move sends nothing then.
+    let_go: crate::fleet_abandoned::LetGo,
 }
 
 impl FreshThread {
@@ -551,6 +562,9 @@ impl FreshThread {
     /// runs them. The fresh session's key is recorded for the turn's flow
     /// the moment its headers name it, the same as a first attempt.
     async fn send(self) -> Result<ByteStream, String> {
+        if self.let_go.happened() {
+            return Err("its reader had let go of the turn, so it was not sent again".into());
+        }
         let thread = match self.remember {
             Some(_) => self.next_epoch.to_string(),
             None => uuid::Uuid::new_v4().simple().to_string()[..8].to_string(),
@@ -2104,6 +2118,7 @@ mod tests {
             remember,
             attribution: None,
             abandoned: Some("api-0123456789abcdef".into()),
+            let_go: crate::fleet_abandoned::LetGo::default(),
         }
     }
 
@@ -2154,6 +2169,24 @@ mod tests {
             seen.authorizations(),
             [Some("Bearer agent-door-key".to_string())]
         );
+    }
+
+    /// A turn whose reader let go of it is not moved: the guard reads the
+    /// refusal only to stop the turn, and a fresh one would run for nobody.
+    /// Nothing is sent and no thread is kept.
+    #[tokio::test]
+    async fn a_turn_its_reader_let_go_of_is_not_moved() {
+        let (entry, seen) = agent_gateway(200).await;
+        let (remember, kept) = remembering();
+        let thread = fresh(&entry, 3, Some(remember));
+        thread.let_go.mark();
+        let why = match thread.send().await {
+            Ok(_) => panic!("a let-go turn was moved"),
+            Err(why) => why,
+        };
+        assert!(why.contains("let go"), "{why}");
+        assert!(seen.bodies().is_empty(), "nothing was sent");
+        assert!(kept.lock().unwrap().is_empty(), "no thread was kept");
     }
 
     /// A one-shot has nothing to keep a thread on: its repair takes a random
