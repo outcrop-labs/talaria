@@ -225,6 +225,33 @@ fn routes(channel: &str) -> Vec<(&'static str, String, Option<Value>)> {
             "/api/gaps/{bad}".into(),
             Some(json!({ "status": "open" })),
         ),
+        ("GET", "/api/fleet/defs/{bad}/mcp".into(), None),
+        (
+            "POST",
+            "/api/fleet/defs/{bad}/mcp".into(),
+            Some(json!({ "assign": [], "apply": false })),
+        ),
+        (
+            "PATCH",
+            "/api/fleet/defs/{bad}".into(),
+            Some(json!({ "role": "probe" })),
+        ),
+        (
+            "POST",
+            "/api/fleet/defs/{bad}/edit".into(),
+            Some(json!({
+                "soul": "probe",
+                "main": { "endpoint": "probe", "model": "probe" },
+                "aliases": [],
+                "fallbacks": [],
+            })),
+        ),
+        ("POST", "/api/fleet/defs/{bad}/rotate-key".into(), None),
+        (
+            "POST",
+            "/api/fleet/agents/{bad}/control".into(),
+            Some(json!({ "action": "stop" })),
+        ),
         // integrations
         (
             "POST",

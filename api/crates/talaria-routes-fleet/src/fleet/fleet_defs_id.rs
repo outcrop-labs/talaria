@@ -129,6 +129,9 @@ pub async fn patch(
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     // The def read: the columns this route touches. The body parses BEFORE
     // the lookup, so a bad body on an unknown id is the 400, not the 404.
     let def: Option<(String, String, String, i32, Value)> = match sqlx::query_as(

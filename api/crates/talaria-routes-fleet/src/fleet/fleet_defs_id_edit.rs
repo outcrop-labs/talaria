@@ -222,6 +222,9 @@ pub async fn post(
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let def: Option<(String, String, bool, String)> = match sqlx::query_as(
         "select id::text, department, managed, display_name from agent_defs where id = $1::uuid",
     )
