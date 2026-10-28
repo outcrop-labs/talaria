@@ -8,6 +8,9 @@ import {
   POLICY,
   classify,
   formatReport,
+  orphanNetworks,
+  parseDockerTime,
+  parseLabels,
   removalAllowed,
   selectRemoval,
   verdict,
@@ -219,6 +222,100 @@ check('a stack acts on a compose project, never on a path', () => {
   eq(removalAllowed({ kind: 'stack', id: 'shipped', path: '' }, roots), true)
   eq(removalAllowed({ kind: 'stack', id: 'shipped', path: '/work/talaria-shipped' }, roots), false)
   eq(removalAllowed({ kind: 'stack', id: '../evil', path: '' }, roots), false)
+})
+
+// ── Orphan networks (follow-up A8) ──────────────────────────────────────────
+// Every compose project network holds a subnet from the daemon's ~30 address
+// pools; interrupted and half-torn-down stacks left theirs behind until
+// `compose up` failed with "all predefined address pools have been fully
+// subnetted". These pin what may be removed, and the much longer list of what
+// may not.
+
+const NOW = Date.parse('2026-10-27T20:00:00Z')
+const old = NOW - POLICY.orphanNetworkMinAgeMs - 1
+const net = (name, project, over = {}) => ({
+  id: 'a1b2c3d4e5f6',
+  name,
+  labels: project === null ? {} : { 'com.docker.compose.project': project, 'com.docker.compose.network': 'default' },
+  createdMs: old,
+  ...over,
+})
+const scanNets = (networks, containers = [], live = []) =>
+  orphanNetworks({ networks, containers, liveWorktree: (o) => live.includes(o), now: NOW }).map((r) => r.id)
+
+check('a talaria-* project network with nothing on it and nobody owning it is an orphan', () => {
+  eq(scanNets([net('talaria-wt-gone_default', 'talaria-wt-gone')]).join(), 'talaria-wt-gone_default')
+  eq(scanNets([net('talaria-appdb-x-probe_default', 'talaria-appdb-x-probe')]).join(), 'talaria-appdb-x-probe_default')
+  const [row] = orphanNetworks({
+    networks: [net('talaria-wt-gone_default', 'talaria-wt-gone')],
+    containers: [],
+    liveWorktree: () => false,
+    now: NOW,
+  })
+  eq(row.kind, 'orphan-network')
+  eq(row.networkId, 'a1b2c3d4e5f6')
+  eq(classify(row), 'remove')
+})
+
+check('the shared talaria network is never an orphan, whatever its labels say', () => {
+  eq(scanNets([net('talaria', 'talaria-dev'), net('talaria', null)]).length, 0)
+})
+
+check('a network outside a talaria-* project is not ours', () => {
+  eq(scanNets([net('devbox-mobile_default', 'devbox-mobile'), net('supabase_network_x', 'x'), net('mine', null)]).length, 0)
+})
+
+check('a network a container names — even a stopped one — stays', () => {
+  const n = net('talaria-wt-gone_default', 'talaria-wt-gone')
+  eq(scanNets([n], [{ project: 'someone-else', networks: ['bridge', 'talaria-wt-gone_default'] }]).length, 0)
+})
+
+check('a network whose project still has any container stays (a stack, running or stopped)', () => {
+  const n = net('talaria-dogfood_internal', 'talaria-dogfood')
+  eq(scanNets([n], [{ project: 'talaria-dogfood', networks: ['talaria-dogfood'] }]).length, 0)
+})
+
+check("a live worktree's project network stays, its fleet's too", () => {
+  eq(scanNets([net('talaria-wt-live_default', 'talaria-wt-live')], [], ['live']).length, 0)
+  eq(scanNets([net('talaria-wt-live-fleet_default', 'talaria-wt-live-fleet')], [], ['live']).length, 0)
+})
+
+check('a network younger than the min age is mid-`up`, not an orphan; an unreadable age is young', () => {
+  eq(scanNets([net('talaria-wt-new_default', 'talaria-wt-new', { createdMs: NOW - 1000 })]).length, 0)
+  eq(scanNets([net('talaria-wt-odd_default', 'talaria-wt-odd', { createdMs: 0 })]).length, 0)
+})
+
+check('a pool probe the CLI could not remove is swept like an orphan', () => {
+  const probe = net('talaria-pool-probe-4242', null, { labels: { 'talaria.pool-probe': '1' } })
+  eq(scanNets([probe]).join(), 'talaria-pool-probe-4242')
+  eq(scanNets([probe], [{ project: '', networks: ['talaria-pool-probe-4242'] }]).length, 0)
+})
+
+check('orphan networks go on --apply only, never from the stop gate', () => {
+  const rows = [{ ...stale({ kind: 'orphan-network', id: 'talaria-wt-gone_default', path: '', networkId: 'a1b2c3d4e5f6' }), action: 'remove' }]
+  eq(selectRemoval(rows, 'gate').length, 0)
+  eq(selectRemoval(rows, 'apply').length, 1)
+  eq(selectRemoval(rows, 'report').length, 0)
+})
+
+check('the executor removes a network only by a talaria- name and a docker id', () => {
+  const r = (over) => removalAllowed({ kind: 'orphan-network', id: 'talaria-wt-gone_default', networkId: 'a1b2c3d4e5f6', path: '', ...over }, roots)
+  eq(r({}), true)
+  eq(r({ id: 'talaria' }), false)
+  eq(r({ id: 'devbox-x_default' }), false)
+  eq(r({ id: 'bridge' }), false)
+  eq(r({ networkId: 'talaria; rm -rf /' }), false)
+  eq(r({ networkId: undefined }), false)
+  eq(r({ path: '/work/talaria-gone' }), false)
+})
+
+check("docker's network fields parse", () => {
+  const l = parseLabels('com.docker.compose.network=default,com.docker.compose.project=talaria-wt-x,com.docker.compose.version=5.5.1')
+  eq(l['com.docker.compose.project'], 'talaria-wt-x')
+  eq(Object.keys(parseLabels('')).length, 0)
+  eq(parseDockerTime('2026-10-08 20:59:58.97940353 -0600 MDT'), Date.parse('2026-10-09T02:59:58.979Z'))
+  eq(parseDockerTime('2026-10-27 13:24:12 +0000 UTC'), Date.parse('2026-10-27T13:24:12Z'))
+  eq(parseDockerTime('yesterday'), 0)
 })
 
 check('build caches are reported at any disk reading', () => {

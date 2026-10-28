@@ -44,7 +44,15 @@ data so you still have realistic agents/boards/tickets to work against.
 
 1. `git worktree add ../talaria-<name> -b wt/<name>` off your current `HEAD`.
 2. Brings up an isolated Postgres + Redis under compose project `talaria-wt-<name>`
-   on **deterministic per-slot ports** (app `53xx`, api `54xx`, Postgres `56xx`,
+   — on docker's default `bridge` network, so the project **creates no network of
+   its own** ([`docker/worktree.compose.yml`](../docker/worktree.compose.yml)): each
+   project network took a subnet from the daemon's ~30 predefined address pools,
+   and with parallel worktrees, boxes and other projects on one host `compose up`
+   failed with `all predefined address pools have been fully subnetted`. The two
+   containers never talk to each other and are reached only through their loopback
+   ports, so they need none — and they wait, before anything reads them, until the
+   real server answers a query against the `talaria` database over TCP (step 3
+   says why) — on **deterministic per-slot ports** (app `53xx`, api `54xx`, Postgres `56xx`,
    Redis `65xx`), and reserves the slot's ports for what its api spawns and
    renders: the toolkit MCP (`57xx`), the omp auth bridge (`58xx`), and a
    hundred agent gateway ports from `20000 + slot·100`. Those three used to be
@@ -54,12 +62,20 @@ data so you still have realistic agents/boards/tickets to work against.
    agent could not publish `:8770` (`port is already allocated`).
 3. Seeds the new DB with `pg_dump` of your main DB (a snapshot — later changes on
    main don't propagate), then clears the copied agents' gateway ports so this
-   stack's first render assigns its own rather than publishing onto main's. It waits for main's `talaria` database to answer
-   `pg_isready` first: the container existing is not the same as the database
-   existing, and a worktree created moments after `talaria dev` used to die
-   mid-way with `FATAL: database "talaria" does not exist` — after both
-   containers were up and before `ui/.env` was written, which is the step that
-   makes the checkout usable.
+   stack's first render assigns its own rather than publishing onto main's. Both
+   ends of the copy are waited for with **a real query over TCP**
+   (`psql -h 127.0.0.1 … -c 'select 1'` in the container), not `pg_isready`:
+   the container existing is not the same as the database existing, and a
+   worktree created moments after `talaria dev` used to die mid-way with
+   `FATAL: database "talaria" does not exist`. The worktree's own Postgres is
+   the sharper case, because its volume is always fresh: the image's entrypoint
+   first runs a **temporary, socket-only server** to create the database, then
+   shuts it down and starts the real one. A socket `pg_isready` passed against
+   that temporary server — and `pg_isready -d` says "accepting connections" for a
+   database that does not exist at all — so the seed met `the database system is
+   shutting down`. The temporary server has no TCP listener, so the query cannot
+   pass until the real one serves the real database. A wait that runs out stops
+   the command there, before the seed, and prints the teardown.
 4. Writes the worktree's `ui/.env`: its own `DATABASE_URL`/`REDIS_URL`/`PORT`,
    its own api port **and the url the app's proxy dials**
    (`TALARIA_API_PORT`, `TALARIA_RUST_API_URL` — `talaria dev` only derives the
@@ -85,7 +101,13 @@ data so you still have realistic agents/boards/tickets to work against.
    template is the base ref's, so the chassis matches the renderer the worktree
    runs; a base ref without one falls back to the invoking checkout's. An
    existing chassis is kept; it is your config.
-6. Symlinks `node_modules` from main (fast; no reinstall).
+6. Symlinks `ui/node_modules` from main (fast; no reinstall), and **installs**
+   `cli/` and `mcp/` with `bun install --frozen-lockfile` from the branch's own
+   lockfiles. Those two used to be missing in every fresh worktree, so its first
+   `bun run gate` failed on a missing `tsc` before it read a line of the change;
+   they are small, bun hardlinks from its cache, and a link would tie the branch
+   to main's lockfile. (`bun run gate` installs any missing `node_modules` of a
+   package it typechecks itself, too — never through a symlink.)
 
 It prints the exact `talaria dev` command and the teardown steps.
 
@@ -119,6 +141,14 @@ recut, or check the new `ui/.env` against step 4.
   that is what [`bun talaria cleanup`](../.claude/skills/cleanup/SKILL.md) flags, and
   what the stop gate blocks on once it is stale. A `.talaria-keep` file in the
   worktree root opts it out.
+- **Networks left behind are swept too.** A worktree cut before its stack moved to the
+  default bridge, an interrupted `up`, or a stack whose containers were removed by
+  hand can leave a `talaria-*` compose network with nothing on it, still holding its
+  subnet. `bun talaria cleanup` lists each one whose project has no container left and
+  no live worktree (and is at least ten minutes old, so it never races an `up` in
+  flight); `--apply` removes them. The shared `talaria` network and anything outside a
+  `talaria-*` project are never touched. When `compose up` does fail on the pool
+  error, the CLI says what it means and points here.
 - **Once the pull request merges, the stack stops itself.** The work is finished, so
   the sweep does not wait out the seven-day idle clock: the next stop gate in any
   checkout runs `docker compose down -v` on that worktree's stack, and the checkout

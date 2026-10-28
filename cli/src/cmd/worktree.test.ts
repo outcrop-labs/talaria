@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CLEAR_SEEDED_GATEWAY_PORTS, WORKTREE_ENV_KEYS, runWorktree, seedFleetPlane, setupDiffers, slotPorts, stripOwnKeys, worktreeSlot } from './worktree'
+import { WORKTREE_COMPOSE, pgReadyArgs } from '../compose'
 import { fakeCtx, type FakeCtx } from '../testing'
 import { CliError } from '../ui'
 
@@ -131,6 +132,10 @@ describe('runWorktree — happy path', () => {
     expect(up.args).toContain('-p')
     expect(up.args).toContain('talaria-wt-demo')
     expect(up.args.slice(-2)).toEqual(['postgres', 'redis'])
+    // ...with the worktree file LAST: both on the default bridge, so the
+    // project creates no network and takes no subnet from docker's pools.
+    const files = up.args.flatMap((a, i) => (up.args[i - 1] === '-f' ? [a] : []))
+    expect(files.at(-1)).toBe(join(root, WORKTREE_COMPOSE))
     expect(ctx.env.TALARIA_PG_CONTAINER).toBe('talaria-pg-demo')
     expect(ctx.env.TALARIA_PG_PORT).toMatch(/^56\d\d$/)
     expect(ctx.env.TALARIA_REDIS_PORT).toMatch(/^65\d\d$/)
@@ -145,12 +150,21 @@ describe('runWorktree — happy path', () => {
     // `FATAL: database "talaria" does not exist` after the worktree and both
     // containers existed and before ui/.env was written, which is the step that
     // makes the checkout usable at all.
-    const mainReady = ctx.calls.findIndex(
-      (c) => c.args.includes('pg_isready') && c.args.includes('talaria-postgres-dev'),
-    )
+    //
+    // Both waits are a real query over TCP (pgReadyArgs), and the worktree's
+    // comes after its `up` and before the restore: the socket pg_isready they
+    // were passed against the entrypoint's temporary init server, and the
+    // seed then died with "the database system is shutting down".
+    const at = (args: string[]) => ctx.calls.findIndex((c) => JSON.stringify(c.args) === JSON.stringify(args))
+    const mainReady = at(pgReadyArgs('talaria-postgres-dev'))
+    const ownReady = at(pgReadyArgs('talaria-pg-demo'))
+    const upAt = ctx.calls.indexOf(up)
     const dump = ctx.calls.findIndex((c) => c.args.includes('pg_dump'))
     expect(mainReady).toBeGreaterThanOrEqual(0)
     expect(mainReady).toBeLessThan(dump)
+    expect(ownReady).toBeGreaterThan(upAt)
+    expect(ownReady).toBeLessThan(dump)
+    expect(ctx.calls.some((c) => c.args.includes('pg_isready'))).toBe(false)
 
     const env = readFileSync(join(wt, 'ui/.env'), 'utf8')
     const lines = env.split('\n')
@@ -314,6 +328,101 @@ describe('runWorktree — happy path', () => {
       expect(lines).toContain('TALARIA_SECRET_KEY=rootkey')
     } finally {
       rmSync(wt, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('runWorktree — readiness, and what a timed-out wait stops', () => {
+  const fixture = (name: string) => {
+    const root = mkdtempSync(join(tmpdir(), 'talaria-wt-'))
+    mkdirSync(join(root, 'ui/node_modules'), { recursive: true })
+    writeFileSync(join(root, 'ui/.env'), 'DATABASE_URL=postgres://t:t@127.0.0.1:5544/talaria\nTALARIA_SECRET_KEY=rootkey\n')
+    const wt = join(root, '..', `talaria-${name}`)
+    rmSync(wt, { recursive: true, force: true })
+    const ctx = fakeCtx()
+    ctx.root = root
+    return { root, wt, ctx }
+  }
+
+  test("a worktree postgres that never serves its database stops the command before the seed", async () => {
+    const { root, wt, ctx } = fixture('neverready')
+    ctx.plant(['docker', pgReadyArgs('talaria-pg-neverready')], new Error('the database system is shutting down'))
+    try {
+      const msg = await attempt(() => runWorktree(ctx, 'neverready'))
+      expect(msg).toContain("never served its 'talaria' database")
+      // ...and says how to clear the half-made stack it leaves.
+      expect(msg).toContain('docker compose -p talaria-wt-neverready down -v')
+      // The wait's answer is READ now: it used to be discarded, and the seed
+      // ran straight into the temp server's shutdown.
+      expect(ctx.calls.some((c) => c.args.includes('pg_dump'))).toBe(false)
+      expect(existsSync(join(wt, 'ui/.env'))).toBe(false)
+    } finally {
+      rmSync(wt, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("main's database never answering stops it before anything is created", async () => {
+    const { root, wt, ctx } = fixture('mainasleep')
+    ctx.plant(['docker', pgReadyArgs('talaria-postgres-dev')], new Error('database "talaria" does not exist'))
+    try {
+      const msg = await attempt(() => runWorktree(ctx, 'mainasleep'))
+      expect(msg).toContain("'talaria' database never became ready")
+      expect(ctx.calls.some((c) => c.args[0] === 'worktree')).toBe(false)
+    } finally {
+      rmSync(wt, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('cli/ and mcp/ are installed from their own lockfiles; ui/ is linked', async () => {
+    const { root, wt, ctx } = fixture('deps')
+    const exec = ctx.exec
+    ctx.exec = async (cmd, args, opts) => {
+      // What a real checkout of the base ref carries: the two packages, and
+      // no node_modules in either (they are gitignored).
+      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'add') {
+        for (const pkg of ['cli', 'mcp']) {
+          mkdirSync(join(wt, pkg), { recursive: true })
+          writeFileSync(join(wt, pkg, 'package.json'), '{}\n')
+        }
+      }
+      return exec(cmd, args, opts)
+    }
+    try {
+      await runWorktree(ctx, 'deps')
+      const installs = ctx.calls.filter((c) => c.cmd === 'bun' && c.args[0] === 'install')
+      // The gate typechecks both when the diff touches them, and a fresh
+      // worktree had neither, so its first gate failed on a missing tsc.
+      expect(installs.map((c) => [c.args, c.opts?.cwd])).toEqual([
+        [['install', '--frozen-lockfile'], join(wt, 'cli')],
+        [['install', '--frozen-lockfile'], join(wt, 'mcp')],
+      ])
+      expect(lstatSync(join(wt, 'ui/node_modules')).isSymbolicLink()).toBe(true)
+    } finally {
+      rmSync(wt, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('a failed install warns and the stack is still made — the gate installs it later', async () => {
+    const { root, wt, ctx } = fixture('nodeps')
+    const exec = ctx.exec
+    ctx.exec = async (cmd, args, opts) => {
+      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(join(wt, 'cli'), { recursive: true })
+        writeFileSync(join(wt, 'cli/package.json'), '{}\n')
+      }
+      return exec(cmd, args, opts)
+    }
+    ctx.plant(['bun', ['install', '--frozen-lockfile']], new Error('offline'), join(wt, 'cli'))
+    try {
+      expect(await runWorktree(ctx, 'nodeps')).toBe(0)
+      expect(ctx.logLines.some((l) => l.kind === 'warn' && l.msg.includes('bun install in cli/ failed'))).toBe(true)
+      expect(existsSync(join(wt, 'ui/.env'))).toBe(true)
+    } finally {
+      rmSync(wt, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
     }
   })
 })

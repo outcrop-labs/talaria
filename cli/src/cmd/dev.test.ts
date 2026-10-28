@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { apiEnv, runDev, rustApi } from './dev'
+import { WORKTREE_COMPOSE, pgReadyArgs } from '../compose'
 import { fakeCtx, type FakeCtx } from '../testing'
 import { CliError } from '../ui'
 
@@ -54,7 +55,7 @@ const devCompose = (root: string, ...op: string[]) => [
 ]
 
 const plantInfra = (ctx: FakeCtx) => {
-  ctx.plant(['docker', ['exec', 'talaria-postgres-dev', 'pg_isready', '-U', 'talaria', '-d', 'talaria']], '')
+  ctx.plant(['docker', pgReadyArgs('talaria-postgres-dev')], '')
   ctx.plant(['docker', ['exec', 'talaria-redis-dev', 'redis-cli', 'ping']], '')
 }
 
@@ -235,7 +236,7 @@ describe('talaria dev — gates', () => {
     writeFileSync(join(root, '.git'), 'gitdir: /elsewhere\n')
     const ctx = fakeCtx()
     ctx.root = root
-    ctx.plant(['docker', ['exec', 'talaria-pg-demo', 'pg_isready', '-U', 'talaria', '-d', 'talaria']], '')
+    ctx.plant(['docker', pgReadyArgs('talaria-pg-demo')], '')
     ctx.plant(['docker', ['exec', 'talaria-redis-demo', 'redis-cli', 'ping']], '')
     await runDev(ctx)
     // exactly one compose up — the worktree project, scoped to its two services
@@ -243,6 +244,9 @@ describe('talaria dev — gates', () => {
     expect(ups).toHaveLength(1)
     expect(ups[0].args).toContain('talaria-wt-demo')
     expect(ups[0].args.slice(-2)).toEqual(['postgres', 'redis'])
+    // the same three files `talaria worktree` brought the stack up with —
+    // without the last one, compose would recreate both on a project network
+    expect(ups[0].args).toContain(join(root, WORKTREE_COMPOSE))
     // ports lifted from the URLs `talaria worktree` wrote
     expect(ctx.env.TALARIA_PG_PORT).toBe('5601')
     expect(ctx.env.TALARIA_REDIS_PORT).toBe('6501')

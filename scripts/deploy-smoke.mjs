@@ -135,7 +135,9 @@ services:
       POSTGRES_PASSWORD: talaria
       POSTGRES_DB: talaria
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U talaria -d talaria']
+      # TCP, as docker/sidecars.compose.yml says why: the socket answers for
+      # the entrypoint's temporary init server too.
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U talaria -d talaria']
       interval: 3s
       timeout: 3s
       retries: 20

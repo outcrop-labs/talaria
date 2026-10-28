@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
-import { compose, stackComposeFiles, waitFor } from '../compose'
+import { compose, waitForPostgres, worktreeComposeFiles } from '../compose'
 import { envValue } from '../envfile'
 import { PG_CONTAINER } from '../containers'
 import { NAME_RE, portTaken } from '../paths'
@@ -155,6 +155,10 @@ export function setupDiffers(running: string, wt: string): boolean {
   return readFileSync(own, 'utf8') !== readFileSync(running, 'utf8')
 }
 
+/** The packages a worktree installs from its own lockfiles (the install step
+ *  says why these and not ui/). */
+export const WORKTREE_INSTALLED_PACKAGES = ['cli', 'mcp'] as const
+
 /** Clears the gateway ports a seed copied from main (see the seed step). */
 export const CLEAR_SEEDED_GATEWAY_PORTS =
   "do $$ begin if to_regclass('public.agent_defs') is not null then " +
@@ -191,23 +195,11 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   //   psql: FATAL: database "talaria" does not exist
   // half way through — after the git worktree and both containers existed, and
   // before ui/.env was written, which is the one step that makes the checkout
-  // usable. `pg_isready -d` is the honest precondition: it answers for the
-  // database this is about to read, not just the process.
-  if (
-    !(await waitFor(
-      ctx,
-      'main postgres',
-      async () => {
-        try {
-          await ctx.exec('docker', ['exec', mainPgc, 'pg_isready', '-U', 'talaria', '-d', 'talaria'])
-          return true
-        } catch {
-          return false
-        }
-      },
-      30,
-    ))
-  ) {
+  // usable. The precondition is a real query against that database over TCP
+  // (waitForPostgres): `pg_isready -d`, the probe this used to be, says
+  // "accepting connections" for a database that does not exist, and over the
+  // socket it also passes against the entrypoint's temporary init server.
+  if (!(await waitForPostgres(ctx, mainPgc, 30))) {
     ctx.log.die(
       `main Postgres (${mainPgc}) is up but its 'talaria' database never became ready — is the main stack mid-boot, or did setup not finish?`,
     )
@@ -236,23 +228,26 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   // on the name conflict whenever main is running (the bash script's latent
   // bug; its own header says the worktree owns "its own Postgres + Redis").
   // The worktree app reaches main's sidecars via the TALARIA_*_URL lines that
-  // ride in ui/.env below.
-  if ((await compose(ctx, { files: stackComposeFiles(root, 'docker/dev-compose.yml'), project }, ['up', '-d', 'postgres', 'redis'])) !== 0) {
+  // ride in ui/.env below. The third file puts both on the default bridge, so
+  // this project creates no network: each one took a subnet from the
+  // daemon's ~30 address pools, and parallel stacks ran them dry
+  // (docker/worktree.compose.yml).
+  if ((await compose(ctx, { files: worktreeComposeFiles(root), project }, ['up', '-d', 'postgres', 'redis'])) !== 0) {
     ctx.log.die('worktree infra failed to start')
   }
-  await waitFor(
-    ctx,
-    'worktree postgres',
-    async () => {
-      try {
-        await ctx.exec('docker', ['exec', pgc, 'pg_isready', '-U', 'talaria', '-d', 'talaria'])
-        return true
-      } catch {
-        return false
-      }
-    },
-    40,
-  )
+  // The volume is always fresh, so this postgres ALWAYS runs the entrypoint's
+  // temporary init server first — socket only, before the `talaria` database
+  // exists, and shut down moments later. The socket probe this used to be
+  // passed against it, and its answer was not even read: the seed then died
+  // with "the database system is shutting down" or "database talaria does not
+  // exist". waitForPostgres cannot pass until the real server serves the real
+  // database, and a wait that runs out stops here, before the seed.
+  if (!(await waitForPostgres(ctx, pgc, 60))) {
+    ctx.log.die(
+      `worktree postgres (${pgc}) never served its 'talaria' database — see \`docker logs ${pgc}\`. ` +
+        `Tear the half-made stack down with: docker compose -p ${project} down -v && git worktree remove --force ${wt} && git branch -D wt/${name}`,
+    )
+  }
   ctx.log.ok('infra up')
 
   ctx.log.say('Seeding the DB from your main environment')
@@ -353,7 +348,24 @@ TALARIA_GATEWAY_PORT_BASE=${slot.gatewayBase}
   if (!existsSync(join(wt, 'ui/node_modules'))) {
     symlinkSync(join(root, 'ui/node_modules'), join(wt, 'ui/node_modules'))
   }
-  ctx.log.ok('linked')
+  ctx.log.ok('ui linked')
+  // cli/ and mcp/ are INSTALLED, from the branch's own lockfiles, rather than
+  // linked: a fresh worktree had neither, and `bun run gate` typechecks both
+  // when the diff touches them — so the first gate in every new worktree
+  // failed on a missing `tsc` until someone ran `bun install` by hand. Both
+  // are small and bun hardlinks from its cache; a link would tie the branch
+  // to main's lockfile. ui/ stays linked: it is the large one, and the speed
+  // is the point. A failed install is not fatal — the gate installs a
+  // missing node_modules itself.
+  for (const pkg of WORKTREE_INSTALLED_PACKAGES) {
+    const dir = join(wt, pkg)
+    if (!existsSync(join(dir, 'package.json')) || existsSync(join(dir, 'node_modules'))) continue
+    if ((await ctx.run('bun', ['install', '--frozen-lockfile'], { cwd: dir })) === 0) {
+      ctx.log.ok(`${pkg} installed`)
+    } else {
+      ctx.log.warn(`bun install in ${pkg}/ failed — \`bun run gate\` retries it; or run \`bun install --frozen-lockfile\` in ${dir}`)
+    }
+  }
 
   ctx.log.raw(`
 Worktree "${name}" ready — fully isolated from main.

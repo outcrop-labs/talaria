@@ -29,7 +29,7 @@
 // Unknown arguments are a usage error. There is no flag that widens this gate.
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const ROOT = process.cwd()
@@ -148,6 +148,47 @@ function classify(files, readPkg) {
   return plan
 }
 
+/** The packages this plan runs bun scripts in (typecheck, test), in order. */
+function bunPackages(plan) {
+  const pkgs = []
+  if (plan.ui) pkgs.push('ui')
+  if (plan.mcp) pkgs.push('mcp')
+  if (plan.cli) pkgs.push('cli')
+  if (plan.desktopTypecheck) pkgs.push('desktop')
+  return pkgs
+}
+
+/**
+ * The ones with NO node_modules at all, which the gate installs before it
+ * typechecks them. A fresh `talaria worktree` had no cli/node_modules (and
+ * often no mcp/), so the gate's first `tsc` in every new worktree failed on a
+ * missing binary — a red gate that said nothing about the change. `bun
+ * install --frozen-lockfile` is the branch's own lockfile and bun's hardlink
+ * cache: seconds, and no drift. A SYMLINK counts as present, dangling or not:
+ * a worktree's ui/node_modules links the primary's, and an install through it
+ * would write into another checkout.
+ *
+ * @param {string[]} pkgs
+ * @param {(rel: string) => boolean} lexists
+ */
+function missingInstalls(pkgs, lexists) {
+  return pkgs.filter((pkg) => !lexists(`${pkg}/node_modules`))
+}
+
+function lexistsInRoot(rel) {
+  try {
+    lstatSync(join(ROOT, rel))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** @param {string[]} installs */
+function installLines(installs) {
+  return installs.map((pkg) => `gate: run bun install --frozen-lockfile in ${pkg}/ (no ${pkg}/node_modules)`)
+}
+
 function selfTest() {
   const failures = []
   const assert = (cond, msg) => {
@@ -212,6 +253,24 @@ function selfTest() {
 
   const mobileBuild = classify(['mobile/gradle/libs.versions.toml'], stub)
   assert(mobileBuild.mobile, 'the version catalog selects the mobile surface')
+
+  // A fresh worktree: ui/ linked to the primary's, cli/ and mcp/ not
+  // installed. The install lands in the plan for exactly the packages the
+  // diff typechecks, and never through the ui symlink.
+  const fresh = (rel) => rel === 'ui/node_modules'
+  const cliPlan = classify(['cli/src/ports.ts'], stub)
+  const cliInstalls = missingInstalls(bunPackages(cliPlan), fresh)
+  assert(cliInstalls.join() === 'cli', 'a missing cli/node_modules is installed before the cli typecheck')
+  assert(
+    installLines(cliInstalls).join('\n') === 'gate: run bun install --frozen-lockfile in cli/ (no cli/node_modules)',
+    'the dry-run plan names the install',
+  )
+  assert(
+    missingInstalls(bunPackages(classify(['ui/src/a.ts', 'mcp/src/index.ts'], stub)), fresh).join() === 'mcp',
+    'a linked ui/node_modules is present; mcp/ is installed',
+  )
+  assert(missingInstalls(bunPackages(docs), fresh).length === 0, 'a docs-only diff installs nothing')
+  assert(missingInstalls(['cli'], () => true).length === 0, 'an installed package is left alone')
 
   const real = classify(['api/crates/talaria-error/src/lib.rs'], readPackageName)
   assert(real.apiPackages[0] === 'talaria-error', 'the real talaria-error manifest names talaria-error')
@@ -288,6 +347,8 @@ if (plan.apiUnmapped.length) {
 say(plan.desktopCargo, 'desktop cargo (talaria-desktop only)')
 say(plan.desktopTypecheck, 'desktop typecheck')
 say(plan.mobile, 'mobile (shared tests + android assemble)')
+const installs = missingInstalls(bunPackages(plan), lexistsInRoot)
+for (const line of installLines(installs)) console.log(line)
 
 if (dry) process.exit(0)
 
@@ -301,6 +362,8 @@ function run(cmd, args, cwd = ROOT) {
 }
 
 run('bun', ['run', 'check'])
+
+for (const pkg of installs) run('bun', ['install', '--frozen-lockfile'], join(ROOT, pkg))
 
 if (plan.ui) {
   run('bun', ['run', 'typecheck'], join(ROOT, 'ui'))

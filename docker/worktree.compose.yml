@@ -1,0 +1,30 @@
+# A `talaria worktree` stack — the third file of its compose project, after
+# docker/sidecars.compose.yml and docker/dev-compose.yml (cli/src/compose.ts,
+# WORKTREE_COMPOSE). The project is `talaria-wt-<name>`, and it runs exactly
+# two services: its own Postgres and Redis.
+#
+# THEY GET NO NETWORK OF THEIR OWN. Without this file each worktree project
+# created a `talaria-wt-<name>_default` network for those two containers —
+# which never talk to each other, and are reached only through the loopback
+# ports dev-compose.yml publishes. Every such network takes a subnet from the
+# daemon's predefined address pools, and those hold about thirty (15 × /16 in
+# 172.17–31, 16 × /20 in 192.168). With parallel worktrees, devboxes and
+# other projects on one host, `docker compose up` failed with
+#
+#   failed to create network talaria-wt-fu-crons_default: … all predefined
+#   address pools have been fully subnetted
+#
+# (follow-up A8, 2026-10-27). On the default `bridge` network the containers
+# publish the same ports and use no pool at all. Agents are unaffected: a
+# worktree's fleet joins the shared external `talaria` network, and reaches
+# this stack's app over the host, never these containers.
+#
+# Only postgres and redis are listed: they are the only services a worktree
+# brings up (`up -d postgres redis`), and compose creates a network only for
+# the services it starts.
+
+services:
+  postgres:
+    network_mode: bridge
+  redis:
+    network_mode: bridge

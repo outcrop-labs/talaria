@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
-import { compose, stackComposeFiles, waitFor } from '../compose'
+import { compose, stackComposeFiles, waitFor, waitForPostgres, worktreeComposeFiles } from '../compose'
 import { PG_CONTAINER, REDIS_CONTAINER } from '../containers'
 import { envValue } from '../envfile'
 import { anyNewer } from '../paths'
@@ -345,7 +345,11 @@ export async function runDev(ctx: Ctx): Promise<number> {
     if (pgPort) ctx.env.TALARIA_PG_PORT ??= pgPort
     if (redisPort) ctx.env.TALARIA_REDIS_PORT ??= redisPort
     ctx.log.say(`infra (this worktree's postgres + redis — sidecars are the main stack's)`)
-    const code = await compose(ctx, { files: stackComposeFiles(ctx.root, DEV_COMPOSE), project: `talaria-wt-${worktree}` }, ['up', '-d', 'postgres', 'redis'])
+    // worktreeComposeFiles, not the dev pair: the stack `talaria worktree`
+    // made runs on the default bridge (docker/worktree.compose.yml), and an
+    // `up` without that file would recreate both containers on a project
+    // network — the address-pool drain the file exists to stop.
+    const code = await compose(ctx, { files: worktreeComposeFiles(ctx.root), project: `talaria-wt-${worktree}` }, ['up', '-d', 'postgres', 'redis'])
     if (code !== 0) ctx.log.die('worktree infra failed to start (run `bun talaria worktree` again? it was torn down?)')
     return await waitThenRunApp(ctx, uiEnv)
   }
@@ -407,20 +411,11 @@ export async function runDev(ctx: Ctx): Promise<number> {
 async function waitThenRunApp(ctx: Ctx, uiEnv: string): Promise<number> {
   ctx.log.say('waiting for postgres…')
   const pg = ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER
-  const pgReady = await waitFor(
-    ctx,
-    'postgres',
-    async () => {
-      try {
-        await ctx.exec('docker', ['exec', pg, 'pg_isready', '-U', 'talaria', '-d', 'talaria'])
-        return true
-      } catch {
-        return false
-      }
-    },
-    40,
-  )
-  if (!pgReady) ctx.log.die('postgres never became ready')
+  // A real query over TCP, not the socket pg_isready this was: on a fresh
+  // volume that passed against the entrypoint's temporary init server, and
+  // the app's migration pass then met "the database system is shutting down"
+  // (compose.ts, pgReadyArgs).
+  if (!(await waitForPostgres(ctx, pg, 40))) ctx.log.die('postgres never became ready')
 
   ctx.log.say('waiting for redis…')
   const redis = ctx.env.TALARIA_REDIS_CONTAINER ?? REDIS_CONTAINER
