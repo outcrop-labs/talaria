@@ -51,7 +51,8 @@
   )
   const orgClosed = $derived(rows.filter((r) => r.orgClosed).map((r) => r.name))
   // Follows the pending edit, so ticking `terminal` shows the browser it
-  // brings before Apply; a backend the def's own config chose wins.
+  // brings before Apply (with the terminal closed there is none, and the
+  // line says why); a backend the def's own config chose wins.
   const browser = $derived(browserNote(rows, authoredBrowserBackend(def.latest?.config)))
   // Only Talaria's own pair is stripped from what gets stored. An org-closed
   // name stays in the def's list if its managers put it there, so lifting the

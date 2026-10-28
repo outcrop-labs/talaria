@@ -164,50 +164,77 @@ describe('normalizeToolsets: the storable spelling', () => {
   })
 })
 
-describe('browserNote: which browser the terminal gives this agent', () => {
+describe('browserNote: the terminal decides whether this agent has a browser', () => {
   const WITH_TERMINAL = [...GOVERNED, 'terminal'].sort()
+  const closed = toolsetRows(WITH_TERMINAL, FLOOR, ['terminal'])
+  const open = toolsetRows(WITH_TERMINAL, FLOOR, [])
+  const NONE = /^Browser: none while the terminal is closed\. /
 
-  it('names the built-in tools while the terminal is closed', () => {
-    const note = browserNote(toolsetRows(WITH_TERMINAL, FLOOR, ['terminal']))
-    expect(note).toContain('the built-in browser tools (browser_navigate and the rest)')
-    expect(note).toContain('browser_exec comes only with the terminal')
-    expect(note).toContain('installed from npm onto the agent’s volume before the agent starts')
+  it('says none, and why, while the terminal is closed', () => {
+    const note = browserNote(closed)
+    expect(note).toMatch(NONE)
+    expect(note).toContain('skips its private-address check')
+    expect(note).toContain('this machine, other agents and your LAN')
+    expect(note).toContain('only with the terminal open')
+    // No browser to name, and no engine to install.
+    expect(note).not.toContain('browser_navigate')
+    expect(note).not.toContain('browser_exec')
+    expect(note).not.toContain('npm')
   })
 
-  it('names browser_exec while the terminal is open', () => {
-    const note = browserNote(toolsetRows(WITH_TERMINAL, FLOOR, []))
-    expect(note).toContain('browser_exec, which comes with the terminal')
-    expect(note).not.toContain('browser_navigate')
+  it('says none for a terminal closed by the org floor too', () => {
+    const floored = toolsetRows(WITH_TERMINAL, [...FLOOR, 'terminal'], [], ['terminal'])
+    expect(browserNote(floored)).toMatch(NONE)
+  })
+
+  it('names browser_exec and its engine while the terminal is open', () => {
+    const note = browserNote(open)
+    expect(note).toBe(
+      'Browser: Hermes’ browser_exec, which comes with the terminal. Its engine is installed from npm onto the agent’s volume before the agent starts; with no route to the registry, the agent starts without browser tools.',
+    )
   })
 
   it('reads a vocabulary with no terminal row as a closed terminal', () => {
-    expect(browserNote(toolsetRows(GOVERNED, FLOOR, []))).toContain('the built-in browser tools')
+    expect(browserNote(toolsetRows(GOVERNED, FLOOR, []))).toMatch(NONE)
   })
 
   it('says nothing when the browser is off, closed org-wide, or absent', () => {
-    expect(browserNote(toolsetRows(WITH_TERMINAL, FLOOR, ['browser']))).toBeNull()
-    expect(browserNote(toolsetRows(WITH_TERMINAL, [...FLOOR, 'browser'], [], ['browser']))).toBeNull()
+    for (const authored of [null, 'off', 'browser-use']) {
+      expect(browserNote(toolsetRows(WITH_TERMINAL, FLOOR, ['browser']), authored)).toBeNull()
+      expect(browserNote(toolsetRows(WITH_TERMINAL, FLOOR, ['browser', 'terminal']), authored)).toBeNull()
+      expect(browserNote(toolsetRows(WITH_TERMINAL, [...FLOOR, 'browser'], [], ['browser']), authored)).toBeNull()
+    }
     expect(browserNote(toolsetRows(['memory', 'web'], FLOOR, []))).toBeNull()
   })
 
-  it('names what a backend the def authored gives, whatever the terminal', () => {
-    const closed = toolsetRows(WITH_TERMINAL, FLOOR, ['terminal'])
-    const open = toolsetRows(WITH_TERMINAL, FLOOR, [])
-    // Any choice but browser-use is the built-in tools, terminal or not.
-    for (const rows of [closed, open]) {
-      const note = browserNote(rows, 'off')
+  it('names what a backend the def authored gives with the terminal open', () => {
+    // Any choice but browser-use is the built-in tools.
+    for (const backend of ['off', 'camofox']) {
+      const note = browserNote(open, backend)
       expect(note).toContain('the built-in browser tools (browser_navigate and the rest)')
-      expect(note).toContain('as this agent’s config sets browser.backend: off')
+      expect(note).toContain(`as this agent’s config sets browser.backend: ${backend}.`)
       expect(note).toContain('installed from npm')
     }
-    // browser-use is browser_exec, which needs the terminal: with it closed
-    // the agent has no browser, and the line says so.
-    expect(browserNote(open, 'browser-use')).toContain('Browser: Hermes’ browser_exec, which comes with the terminal')
-    const none = browserNote(closed, 'browser-use')
-    expect(none).toMatch(/^Browser: none\./)
-    expect(none).not.toContain('browser_navigate')
-    // Still nothing to say when the browser row is off.
-    expect(browserNote(toolsetRows(WITH_TERMINAL, FLOOR, ['browser']), 'off')).toBeNull()
+    const exec = browserNote(open, 'browser-use')
+    expect(exec).toContain('Browser: Hermes’ browser_exec, which comes with the terminal')
+    expect(exec).toContain('(this agent’s config sets browser.backend: browser-use)')
+    expect(exec).toContain('installed from npm')
+  })
+
+  it('says what an authored backend still runs on with the terminal closed', () => {
+    // browser-use is browser_exec, which needs the terminal anyway: plain none.
+    expect(browserNote(closed, 'browser-use')).toBe(browserNote(closed))
+    // Any other backend is the built-in tools, which need the engine Talaria
+    // does not install here; one a start with the terminal open left on the
+    // volume still runs them, so the line does not say "none".
+    const off = browserNote(closed, 'off')
+    expect(off).not.toMatch(NONE)
+    expect(off).toMatch(/^Browser: Talaria installs no engine while the terminal is closed\. /)
+    expect(off).toContain('skips its private-address check')
+    expect(off).toContain(
+      'This agent’s config sets browser.backend: off, so an engine an earlier start left on its volume still runs the built-in browser tools, without that check.',
+    )
+    expect(off).not.toContain('npm')
   })
 })
 
