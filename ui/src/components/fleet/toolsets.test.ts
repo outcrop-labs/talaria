@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { MANDATORY_DISABLED, builtinFloor, normalizeToolsets, sameToolsets, toggleToolset, toolsetRows } from './toolsets'
+import {
+  MANDATORY_DISABLED,
+  browserNote,
+  builtinFloor,
+  normalizeToolsets,
+  sameToolsets,
+  toggleToolset,
+  toolsetRows,
+} from './toolsets'
 
 // The governed list as the server publishes it, trimmed to the names these
 // cases need. Alphabetical, because that is the contract the grid relies on
@@ -152,5 +160,32 @@ describe('normalizeToolsets: the storable spelling', () => {
     const before = ['web', 'browser']
     normalizeToolsets(before, FLOOR)
     expect(before).toEqual(['web', 'browser'])
+  })
+})
+
+describe('browserNote: which browser the terminal gives this agent', () => {
+  const WITH_TERMINAL = [...GOVERNED, 'terminal'].sort()
+
+  it('names the built-in tools while the terminal is closed', () => {
+    const note = browserNote(toolsetRows(WITH_TERMINAL, FLOOR, ['terminal']))
+    expect(note).toContain('the built-in browser tools (browser_navigate and the rest)')
+    expect(note).toContain('browser_exec comes only with the terminal')
+    expect(note).toContain('installed from npm onto the agent’s volume before the agent starts')
+  })
+
+  it('names browser_exec while the terminal is open', () => {
+    const note = browserNote(toolsetRows(WITH_TERMINAL, FLOOR, []))
+    expect(note).toContain('browser_exec, which comes with the terminal')
+    expect(note).not.toContain('browser_navigate')
+  })
+
+  it('reads a vocabulary with no terminal row as a closed terminal', () => {
+    expect(browserNote(toolsetRows(GOVERNED, FLOOR, []))).toContain('the built-in browser tools')
+  })
+
+  it('says nothing when the browser is off, closed org-wide, or absent', () => {
+    expect(browserNote(toolsetRows(WITH_TERMINAL, FLOOR, ['browser']))).toBeNull()
+    expect(browserNote(toolsetRows(WITH_TERMINAL, [...FLOOR, 'browser'], [], ['browser']))).toBeNull()
+    expect(browserNote(toolsetRows(['memory', 'web'], FLOOR, []))).toBeNull()
   })
 })

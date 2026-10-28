@@ -5,7 +5,7 @@
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import { patchAgentMeta, useFleetDefs, type AgentDef } from '@/lib/fleet-defs'
   import { toastError } from '@/lib/toast.svelte'
-  import { builtinFloor, normalizeToolsets, sameToolsets, toggleToolset, toolsetRows } from './toolsets'
+  import { browserNote, builtinFloor, normalizeToolsets, sameToolsets, toggleToolset, toolsetRows } from './toolsets'
 
   /** THE HERMES TOOLSETS THIS AGENT DOES NOT GET. The stored list is the
    *  absence (`disabledToolsets`); a checked box is the toolset being ON, and
@@ -42,6 +42,9 @@
     toolsets ? toolsetRows(toolsets.governed, toolsets.mandatoryDisabled, shown, toolsets.orgDisabled ?? []) : [],
   )
   const orgClosed = $derived(rows.filter((r) => r.orgClosed).map((r) => r.name))
+  // Follows the pending edit, so ticking `terminal` shows the browser it
+  // brings before Apply.
+  const browser = $derived(browserNote(rows))
   // Only Talaria's own pair is stripped from what gets stored. An org-closed
   // name stays in the def's list if its managers put it there, so lifting the
   // floor later gives this agent back exactly what they chose.
@@ -92,6 +95,9 @@
         Closed org-wide by an admin, for every agent: {orgClosed.join(', ')}.
       {/if}
     </div>
+    {#if browser}
+      <div class="mt-1 font-sans text-xs text-muted">{browser}</div>
+    {/if}
     <div class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3">
       {#each rows as r (r.name)}
         <Checkbox

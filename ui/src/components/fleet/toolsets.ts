@@ -128,3 +128,26 @@ export function sameToolsets(a: readonly string[], b: readonly string[]): boolea
   for (const n of left) if (!right.has(n)) return false
   return true
 }
+
+/**
+ * What the `browser` row gives this agent, or null when there is nothing to
+ * say (the row is off, or there is no browser row at all).
+ *
+ * Hermes has two browsers and the terminal decides which one an agent gets:
+ * its default `browser_exec` is offered only alongside the terminal, and the
+ * renderer (talaria-fleet-render's `fleet_browser_backend`) picks the
+ * built-in tools for an agent whose terminal is closed. Without this line,
+ * opening or closing `terminal` silently swaps the browser too. Both drive
+ * the image's own Chromium through an engine (agent-browser) that a start
+ * installs from npm onto the agent's volume, once per Hermes pin, which is
+ * why the line says the start needs the registry.
+ */
+export function browserNote(rows: readonly ToolsetRow[]): string | null {
+  const browser = rows.find((r) => r.name === 'browser')
+  if (!browser?.on) return null
+  const terminal = rows.find((r) => r.name === 'terminal')
+  const kind = terminal?.on
+    ? 'Browser: Hermes’ browser_exec, which comes with the terminal.'
+    : 'Browser: the built-in browser tools (browser_navigate and the rest); browser_exec comes only with the terminal.'
+  return `${kind} Its engine is installed from npm onto the agent’s volume before the agent starts; with no route to the registry, the agent starts without browser tools.`
+}
