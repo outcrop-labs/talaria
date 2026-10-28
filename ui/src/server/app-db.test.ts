@@ -60,6 +60,17 @@ describe('composeYaml', () => {
     expect(y).not.toContain('network_mode')
   })
 
+  // Compose aliases a service by its name on every network it joins. On a
+  // named network the platform's database is `postgres`, so an app DB named
+  // that answered for it too.
+  it('names the service for its container, so no network gets a second `postgres`', () => {
+    for (const network of [null, 'devbox-demo_default', 'foo_internal']) {
+      const y = composeYaml({ image: 'postgres:16-alpine', container: 'talaria-appdb-x-contacts', network })
+      expect(y).toMatch(/^services:\n {2}talaria-appdb-x-contacts:\n/m)
+      expect(y).not.toMatch(/^ {2}postgres:/m)
+    }
+  })
+
   it('names the network compose used to make for an app DB', () => {
     expect(legacyAppDbNetwork('talaria-appdb-x-contacts')).toBe('talaria-appdb-x-contacts_default')
   })
