@@ -264,10 +264,13 @@
   // when this model publishes the level. `effortPristine` is what keeps an
   // explicit pick authoritative: choosing auto or a level is a decision about
   // THIS conversation, and re-applying a default after it would override the
-  // one person whose opinion matters. It re-arms exactly when the pick stops
-  // being valid — a tier switch to a model that cannot honor it — so the seed
-  // follows the owner across models instead of stranding them on a level the
-  // new model would 400 on.
+  // one person whose opinion matters. It re-arms whenever the pick is not one
+  // of the routed model's levels as this view holds them: a tier switch to a
+  // model that cannot honor it, and also any switch while the new model's
+  // levels are still loading (they read as none until the answer lands, so an
+  // unconfirmed level never rides the send). Either way the seed follows the
+  // owner across models instead of stranding them on a level the new model
+  // would 400 on.
   const prefs = useProfilePrefs()
   const preferredEffort = $derived(prefs.data?.preferredEffort ?? null)
   // The viewer's zone decides what "a day" is for the dividers and the turn

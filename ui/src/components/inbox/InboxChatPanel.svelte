@@ -206,7 +206,9 @@
   // The seeded default is the assistant persona's CONFIGURED effort (the agent
   // editor's pick beside the assistant's model) when there is one, else the
   // owner's platform default (Settings) — and an explicit pick, including
-  // auto, stays authoritative for the conversation. Same rule as ChatView.
+  // auto, stays authoritative for the conversation. Same rule as ChatView,
+  // re-arming the same way: when the pick is not one of the levels the panel
+  // holds, which includes while a newly chosen assistant model's levels load.
   let effort = $state('')
   let effortPristine = $state(true)
   // Kept whole and read through its getters, as in ChatView: destructured,
