@@ -412,7 +412,24 @@ pub async fn post(
                 }))
                 .into_response());
             }
-            Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
+            // A step that threw (the render, the image pull, the recreate)
+            // is an apply that did not land too, and the version above is
+            // already written: the same answer as a soft failure, the reason
+            // in `warning`. A bare 400 here said nothing of the saved
+            // version, and a second Save & apply of the same draft is a
+            // no-op (nothing new to create), so the form closed on it.
+            Err(e) => {
+                tracing::warn!("[fleet/defs/edit] roll of {department} failed: {e}");
+                return Ok(Json(json!({
+                    "ok": true,
+                    "version": version,
+                    "created": created,
+                    "applied": false,
+                    "warning": format!("the roll failed — {e}"),
+                    "notes": notes,
+                }))
+                .into_response());
+            }
         }
     }
     // `notes` is always present and usually empty — one shape for the client,
