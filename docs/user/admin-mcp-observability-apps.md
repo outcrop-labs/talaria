@@ -18,6 +18,7 @@ and which people may use it, down to individual tools.
 | See its tools | **{n} tools** on the card, or **Discover tools** to ask the server for its catalog — the card then says *ready*, *needs credentials*, *unreachable* or the server's own error |
 | Give it an API key | **Set credentials** on the card (or kebab → **Edit credentials…**): the publisher's declared fields, or free header rows; saving re-tests |
 | Connect an OAuth server | **Connect** on the card — signs in the *org* account so agents can use it. A provider that needs a registered app shows **Set up**: the provider's developer portal, the exact callback URL to register, client id/secret, scopes |
+| Disconnect the org's OAuth account | Kebab → **Disconnect org account** (admins): within a few minutes, without a restart, agents that carry the server can no longer use its tools (each call answers that the account isn't connected) until someone connects it again |
 | Re-check how it authenticates | Kebab → **Re-detect auth** (a server that was down at install, or that started speaking OAuth later) |
 | Carry it on every agent | In **Manage access**, check **all agents** — rows below become per-agent tool overrides |
 | Narrow one agent's tools | In **Manage access**, add that agent and pick a tool subset (**All tools** if untouched) |

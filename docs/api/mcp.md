@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-16 routes.
+17 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -31,6 +31,7 @@
 | [`/api/mcp/servers`](#apimcpservers) | POST | `session` + `perm:agents.manage` |
 | [`/api/mcp/servers/{id}`](#apimcpserversid) | PUT | `session` + `perm:agents.manage` |
 | [`/api/mcp/servers/{id}`](#apimcpserversid) | DELETE | `session` + `perm:agents.manage` |
+| [`/api/mcp/servers/{id}/oauth`](#apimcpserversidoauth) | DELETE | `admin` |
 | [`/api/mcp/test`](#apimcptest) | POST | `admin` |
 
 ## `/api/mcp`
@@ -281,6 +282,20 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_servers_id.rs`](../../api/
 | `userAccess` | `user_access` |  |
 | `teamAccess` | `team_access` |  |
 | `oauthClient` | `oauth_client` |  |
+
+## `/api/mcp/servers/{id}/oauth`
+
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_servers_id_oauth.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_servers_id_oauth.rs)
+
+> DELETE /api/mcp/servers/{id}/oauth. Disconnect the org's OAuth account
+> from one MCP server — admin only. The sealed org tokens are dropped, the
+> gateway answers for the server in-house again (its not-connected handshake
+> and the cached catalog, every call answered with the sentence that says an
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| DELETE | `admin` | — | `{ok, disconnected}` | 200, 404, 409 | audit |
 
 ## `/api/mcp/test`
 
