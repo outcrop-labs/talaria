@@ -306,7 +306,9 @@ multiplexer.
   sentinel (`[SILENT]`, matched with Hermes's own `is_autonomous_silence_response` rule, ported in
   `talaria-cron-output`'s `silence`) lands nothing by either road, as Hermes delivers nothing for
   it: the run is recorded in `cron_silent_runs` as delivered silent under the same run key, and
-  the pull reads that record as delivered.
+  the pull reads that record as delivered. Each road judges the text it received, and the push
+  carries only the plugin's first 20,000 characters, so a longer run whose only marker is its own
+  last line lands by the push though Hermes suppresses it (the prompt asks for `[SILENT]` alone).
 - **Agent spend is metered at the relay, one row per upstream call.** Every agent's
   config.yaml carries a `providers.talaria` entry on the same gateway URL its model specs use,
   with `session_affinity_header: x-talaria-session`; Hermes matches it by base URL and stamps

@@ -10,11 +10,11 @@
 // session's stored rows. Both used to land the sentinel itself, so a thread
 // listening to a quiet daily check filled up with messages reading "[SILENT]".
 //
-// The rule is Hermes v0.22.4's own, ported exactly, so a run Hermes would not
-// have delivered is never delivered here and a run it would have delivered
-// always is (`gateway/response_filters.py`,
+// The rule is Hermes v0.22.4's own, ported exactly, so on the same text a run
+// Hermes would not have delivered is never delivered here and a run it would
+// have delivered always is (`gateway/response_filters.py`,
 // `is_autonomous_silence_response`, which the cron lane shares with the
-// webhook lane):
+// webhook lane; the one place the texts differ is the push's clamp, below):
 //
 // - a marker is `[SILENT]`, `SILENT`, `NO_REPLY` or `NO REPLY`, or the zh-Hans
 //   `[静默]`, `静默`, `[沉默]`, `沉默` (a lane that does not think in English
@@ -29,6 +29,14 @@
 //   stripped, so a malformed `[SILENT` stays content;
 // - a marker buried mid-sentence ("the job no longer prints [SILENT] when…")
 //   is content and is delivered, and so is a bare `Silent retry succeeded`.
+//
+// One limit, by the push's clamp: each road judges the text it received. The
+// pull reads the stored row whole, but the push carries only the
+// talaria-events plugin's first 20,000 characters (`_MAX_TEXT`), so a longer
+// response whose only marker is its own last line is judged on its head here
+// and lands as a report, while Hermes, judging the whole text, suppresses it.
+// The prompt asks for `[SILENT]` alone, so a quiet run is short; within the
+// plugin's clamp the two judgments are the same.
 //
 // Python's `str.strip`/`split`/`splitlines` and `str.upper` are mirrored
 // below where Rust's built-ins differ (the information-separator controls
