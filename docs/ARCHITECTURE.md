@@ -208,6 +208,24 @@ multiplexer.
   too and does not read an attached image; that model still has `vision_analyze`. Talaria
   serves fleet agents no image tool of its own (the Apps SDK keeps its in-process
   describer).
+- **The browser is the image's own.** The Hermes image ships Chromium (`/opt/hermes/tools`),
+  and its package manager's lock pins the `agent-browser` CLI that drives it, but the image
+  does not stage that CLI, and Hermes offers no browser tool until the CLI is already there.
+  So before an agent whose render keeps the `browser` toolset on starts (hire, start, roll,
+  reconcile), the start runs `hermes pm install agent-browser` in a one-shot
+  `compose run --rm --no-deps` of the agent's own service, as the image's `hermes` user,
+  onto its state volume, where Hermes's own lazy install would put it (talaria-fleet-docker's
+  `browser_engine.rs`; the render lists those departments in `fleet/browser-engine.json`). It
+  never execs into a running agent, runs before a roll's drain, and installs no browser. An
+  installed CLI answers at once; a failed install is logged and the agent starts without
+  browser tools. Which tools: Hermes's default `browser_exec` is offered only alongside the
+  `terminal` toolset, and its Browser Use mode withholds the built-in tools, so the render
+  writes `browser.backend: 'off'` (the built-in `browser_navigate`, `browser_click`, …) for an
+  agent whose terminal is closed and leaves Hermes's default for one whose terminal is open
+  (`fleet_browser_backend`); a def that authored its own backend keeps it. A Developer Agent's
+  `PLAYWRIGHT_BROWSERS_PATH` (where a repo's own e2e suite installs its browsers, on the
+  department volume) changes neither: Hermes hands `agent-browser` the image's Chromium by
+  path itself.
 - Each agent presents its own `tak_` key; the renderer rewrites `fleet/.env` from the DB
   every render (0600 in a 0700 dir).
 - **Rolls recreate in place** (`talaria-fleet-reconcile`): re-render, pull the agent's image

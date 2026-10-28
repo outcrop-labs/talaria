@@ -34,8 +34,9 @@ COPY workbench-harness-update.sh /usr/local/bin/talaria-harness-update
 RUN chmod +x /usr/local/bin/talaria-harness-update
 
 # No Playwright layer. UI checks go through the agent's own browser tools:
-# Hermes ships a pinned Chromium at /opt/hermes/tools and finds it through
-# AGENT_BROWSER_EXECUTABLE_PATH, in this same container. A baked Playwright
+# Hermes ships a pinned Chromium at /opt/hermes/tools and hands it to the
+# agent-browser CLI (which Talaria installs onto the volume before each
+# start) through AGENT_BROWSER_EXECUTABLE_PATH, in this same container. A baked Playwright
 # browser was never seen anyway: this image inherits
 # PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/tools, so it installed there, and the
 # render points PLAYWRIGHT_BROWSERS_PATH at the department volume

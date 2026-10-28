@@ -130,6 +130,15 @@ Two kinds of row are locked: `todo` and `clarify`, which Talaria's own tools rep
 agent, and anything an admin closed org-wide (**Admin → Security → Agent toolsets**, below).
 The row's tooltip says which.
 
+The `browser` row is Hermes' own browser, driving the Chromium in the agent's image, and which
+tools it brings depends on `terminal`. With the terminal closed (a new agent's default), the
+agent gets the built-in browser tools: `browser_navigate`, `browser_click`, `browser_vision` and
+the rest. With it open, it gets Hermes' `browser_exec` instead, which runs Python against the
+browser and so comes only with a shell. The line under the grid says which one this agent has.
+The browser's engine is installed from npm onto the agent's volume before the agent starts
+(once per Hermes version), so an agent whose host cannot reach the npm registry starts without
+browser tools, and the app's log says why.
+
 ## Retire an agent
 
 The delete action asks in plain terms: it removes the definition, version history, secrets,

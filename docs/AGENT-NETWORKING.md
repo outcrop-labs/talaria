@@ -126,8 +126,9 @@ toolkit, and the internet", and each failure names its own fix.
 
 Docker pins a network's DNS upstream when the network is created, and a host
 resolver mix that refuses docker subnets leaves every container green and
-offline — the built-in browser shipped dead exactly this way once: it fetches
-its engine from npm on first use, so with no external DNS it never installed,
-silently. The chassis pins external resolvers per service (`AGENT_DNS_1` /
+offline — the built-in browser shipped dead exactly this way once: its engine
+comes from npm (today it is installed before each agent starts, in a one-shot
+run of the agent's own service, so with these same resolvers), and with no
+external DNS it never installed, silently. The chassis pins external resolvers per service (`AGENT_DNS_1` /
 `AGENT_DNS_2` in `fleet/.env`, defaults 1.1.1.1 / 1.0.0.1), and the
 preflight's DNS probe turns a dead resolver into an alert.

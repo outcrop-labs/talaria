@@ -81,9 +81,10 @@ service:
   extra_hosts:
     - 'host.docker.internal:host-gateway'
   # ── External DNS ───────────────────────────────────────────────────────────
-  # Agents need real internet name resolution: the browser toolset fetches its
-  # agent-browser engine from npm on first use, and the web tools resolve
-  # remote hosts. Docker's default upstream is whatever the HOST's
+  # Agents need real internet name resolution: the browser toolset's
+  # agent-browser engine is installed from npm before the agent starts (in a
+  # one-shot run of this same service, so with these resolvers), and the web
+  # tools resolve remote hosts. Docker's default upstream is whatever the HOST's
   # /etc/resolv.conf pointed at when the network was created, which breaks
   # silently in two common ways: a loopback stub resolver on the host (docker
   # rewires containers to the bridge IP, where nothing listens) and a LAN/router
