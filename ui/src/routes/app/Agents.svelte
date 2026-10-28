@@ -25,7 +25,7 @@
   import { useFleet } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { fly, slide, staggerIn } from '@/lib/motion'
-  import { rollFleet, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
+  import { containersOf, rollFleet, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import AgentListRow from './AgentListRow.svelte'
@@ -128,7 +128,7 @@
   const batchDone = $derived(batchRows.filter((r) => r.state === 'done').length)
   const batchFailed = $derived(batchRows.filter((r) => r.state === 'failed'))
   const runningCount = $derived(
-    (defsQuery.data?.defs ?? []).filter((d) => d.enabled && d.managed && (byDept.get(d.department)?.managed?.state === 'running')).length,
+    (defsQuery.data?.defs ?? []).filter((d) => d.enabled && d.managed && (containersOf(d, byDept)?.managed?.state === 'running')).length,
   )
   // The roster itself renders through QueryState below (a 500 must never read as
   // "no agents"). This copy is only for the create/duplicate modals' template
@@ -476,9 +476,9 @@
               {@const brainByAgent = new Map((data.brains ?? []).map((b) => [b.agent, b]))}
               {#each data.defs as d (d.id)}
                 {#if view === 'grid'}
-                  <AgentTile def={d} containers={byDept.get(d.department) ?? null} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
+                  <AgentTile def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
                 {:else}
-                  <AgentListRow def={d} containers={byDept.get(d.department) ?? null} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
+                  <AgentListRow def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
                 {/if}
               {/each}
             {/snippet}

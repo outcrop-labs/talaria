@@ -98,7 +98,40 @@ export interface AgentDef {
    *  derived view of one block inside it. Null (or absent, on an older api)
    *  means the def says nothing and Hermes' own defaults are in force. */
   compression?: AgentCompression | null
+  /** Null unless another agent holds this one's department too — only ever a
+   *  pair from before a department became one agent's (absent on an older
+   *  api). */
+  departmentShare?: DepartmentShare | null
   latest: AgentVersion | null
+}
+
+/** A department two agents hold. A department names one container and one
+ *  memory volume, so the render runs the OLDER agent there and leaves the
+ *  other out; nothing is merged. */
+export interface DepartmentShare {
+  /** Whether this agent is the one running in the department's container. */
+  runs: boolean
+  /** The one that is — null when the render runs none of them. */
+  runner: DepartmentPeer | null
+  /** Every other agent holding the department. */
+  others: DepartmentPeer[]
+}
+
+export interface DepartmentPeer {
+  id: string
+  slug: string
+  displayName: string
+}
+
+/** The agent's OWN containers. They are found by department, and where two
+ *  agents share one the container is the runner's: the other agent has none,
+ *  and must not read the runner's state as its own. */
+export function containersOf(
+  def: Pick<AgentDef, 'department' | 'departmentShare'>,
+  byDept: Map<string, AgentContainers>,
+): AgentContainers | null {
+  if (def.departmentShare && !def.departmentShare.runs) return null
+  return byDept.get(def.department) ?? null
 }
 
 /** One of an agent's managers. `role` is their org role, so the roster can

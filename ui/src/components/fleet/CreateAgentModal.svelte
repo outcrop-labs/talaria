@@ -95,6 +95,12 @@
   const displayName = $derived(design?.name ?? '')
   const slug = $derived(design?.handle ?? '')
   const department = $derived(design?.department ?? '')
+  // A department is ONE agent's: it names the container and the memory
+  // volume, so the hire door refuses one another agent holds (409). Said the
+  // moment it is typed, from the roster this modal already holds — a hirer
+  // reads the whole fleet. A role template or a Muse design can propose a
+  // department somebody already has.
+  const departmentHolder = $derived(templates.find((t) => t.department === department.trim()) ?? null)
   const role = $derived(design?.role ?? '')
   const soul = $derived(design?.soul ?? '')
   const soulRev = $derived(design?.soulRev ?? 0)
@@ -300,11 +306,17 @@
         </div>
         <div>
           <label for="cam-department" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Department</label>
-          <Input id="cam-department" value={department} oninput={(e) => set({ department: e.currentTarget.value })} placeholder="research" />
+          <Input id="cam-department" value={department} oninput={(e) => set({ department: e.currentTarget.value })} placeholder="research" aria-invalid={departmentHolder ? 'true' : undefined} />
+          {#if departmentHolder}
+            <p transition:slide={{ duration: 150 }} class="mt-1 text-xs text-danger" data-testid="department-taken">
+              Taken by {departmentHolder.displayName} — pick another.
+            </p>
+          {/if}
         </div>
       </div>
       <p class="-mt-2 font-sans text-xs text-muted">
-        Role is the roster title; department is the routing/mount key. The fleet model id becomes
+        Role is the roster title; department is the agent's own key — it names its container and its memory, so no two
+        agents share one. The fleet model id becomes
         <span class="font-mono text-fg">{slug || 'handle'}-{department || 'department'}</span>.
       </p>
 
@@ -391,7 +403,7 @@
         <Button variant="ghost" size="sm" onclick={onClose}>
           Cancel
         </Button>
-        <Button onclick={() => void create()} disabled={busy || generating || !slug || !department || !displayName}>
+        <Button onclick={() => void create()} disabled={busy || generating || !slug || !department || !displayName || !!departmentHolder}>
           {busy ? 'Hiring' : 'Create agent'}
         </Button>
       </div>
