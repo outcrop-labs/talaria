@@ -12,6 +12,7 @@
   import RelayButton from '@/components/chat/RelayButton.svelte'
   import PendingAttachments from '@/components/chat/PendingAttachments.svelte'
   import { useModelEfforts } from '@/lib/model-efforts.svelte'
+  import { PINNED_TIER_NOTE } from '@/lib/agents'
   import { useProfilePrefs } from '@/lib/muse.svelte'
   import UserTurn from './UserTurn.svelte'
   import DayDivider from './DayDivider.svelte'
@@ -27,6 +28,7 @@
   import { queueChatMessage, steerChat, stopChat, streamChat, type ChatFocus, type ChatKind } from '@/lib/chat'
   import { HttpError } from '@/lib/fetch-json'
   import { mergeTool } from '@/lib/sse-parse'
+  import { onUserEvent } from '@/lib/user-events.svelte'
   import {
     loadConversation,
     loadSessionOverview,
@@ -36,6 +38,7 @@
   } from '@/lib/conversations.svelte'
   import { uploadFile, splitAttachments, type Attachment } from '@/lib/attachments'
   import {
+    foldToolVerdicts,
     reactionChips,
     sendRoute,
     stampFromServer,
@@ -54,6 +57,7 @@
     agentModel,
     agentLabel,
     tiers = [],
+    pinned = false,
     conversationId,
     newChatSignal,
     syncSignal = 0,
@@ -72,6 +76,9 @@
     agentLabel: string
     /** Requestable model tiers for this agent (alias names). */
     tiers?: string[]
+    /** The agent keeps pinned sessions, which always run its main model: the
+     *  tier chip stays on the rail, off, saying why (`PINNED_TIER_NOTE`). */
+    pinned?: boolean
     conversationId: string | null
     newChatSignal: number
     /** An inbound nudge to re-read history — the surface knows about turns this
@@ -239,18 +246,31 @@
   // The routed id is what the server validates against, so it is also what the
   // picker lists from — `routedModelFor` builds exactly this string when the
   // tier is one of the agent's aliases.
+  // A pinned agent's session runs its main model whatever the pick, so no
+  // tier is held for it: a stale one would ride the send and validate the
+  // effort against a model that will not run.
+  $effect(() => {
+    if (pinned && tier) tier = ''
+  })
   const routedModel = $derived(tier ? `${agentModel}-${tier}` : agentModel)
-  const { efforts, default: agentEffort } = useModelEfforts(() => routedModel)
+  // Kept whole and read through its getters: a destructured `efforts` is the
+  // query's answer at mount (`[]` on a fresh page) and never moves after.
+  const modelEfforts = useModelEfforts(() => routedModel)
+  const efforts = $derived(modelEfforts.efforts)
+  const agentEffort = $derived(modelEfforts.default)
   // ── The seeded default: the AGENT-CONFIGURED effort for the routed model
   // (the pick saved beside the model in the agent editor) when there is one,
   // else the owner's platform default (Settings). Both are only ever offered
   // when this model publishes the level. `effortPristine` is what keeps an
   // explicit pick authoritative: choosing auto or a level is a decision about
   // THIS conversation, and re-applying a default after it would override the
-  // one person whose opinion matters. It re-arms exactly when the pick stops
-  // being valid — a tier switch to a model that cannot honor it — so the seed
-  // follows the owner across models instead of stranding them on a level the
-  // new model would 400 on.
+  // one person whose opinion matters. It re-arms whenever the pick is not one
+  // of the routed model's levels as this view holds them: a tier switch to a
+  // model that cannot honor it, and also any switch while the new model's
+  // levels are still loading (they read as none until the answer lands, so an
+  // unconfirmed level never rides the send). Either way the seed follows the
+  // owner across models instead of stranding them on a level the new model
+  // would 400 on.
   const prefs = useProfilePrefs()
   const preferredEffort = $derived(prefs.data?.preferredEffort ?? null)
   // The viewer's zone decides what "a day" is for the dividers and the turn
@@ -477,7 +497,8 @@
   // Chips land on the streaming row from a different request (the agent's
   // tool call), so the SSE the speaker is watching never carries them.
   // Merge chips onto the live turn without replacing the prose the stream
-  // is still writing.
+  // is still writing. The agent's verdict on a call comes the same way (the
+  // stream says `completed` for a call that failed), and rides the same read.
   $effect(() => {
     if (!streaming) return
     const id = convId
@@ -486,17 +507,41 @@
     const iv = setInterval(async () => {
       if (stop) return
       const res = await loadConversation(id)
-      const remote = res?.messages.filter((m) => m.role === 'assistant').at(-1)
-      if (stop || !remote?.chips?.length) return
-      messages = messages.map((m, i) =>
-        i === messages.length - 1 && m.role === 'assistant' ? { ...m, chips: remote.chips, seq: remote.seq } : m,
-      )
+      if (stop || !res) return
+      const remote = res.messages.filter((m) => m.role === 'assistant').at(-1)
+      const chipped = remote?.chips?.length
+        ? messages.map((m, i) =>
+            i === messages.length - 1 && m.role === 'assistant' ? { ...m, chips: remote.chips, seq: remote.seq } : m,
+          )
+        : messages
+      const next = foldToolVerdicts(chipped, res.messages)
+      if (next !== messages) messages = next
     }, 1000)
     return () => {
       stop = true
       clearInterval(iv)
     }
   })
+
+  // THE RING FOR THIS CONVERSATION. The server fans an id-shaped
+  // `conversation` event when something lands on it, and that includes the
+  // agent's verdict on a call the stream called `completed`: the tool-events
+  // door marks the stored row `error` and rings. A verdict that lands after
+  // the turn did has no poll to ride, so this is how the open tab learns it.
+  // Only the calls' verdicts are taken from the re-read: prose, chips and
+  // the live row's own state stay this view's (the post-turn sync and the
+  // pollers above own those).
+  $effect(() =>
+    onUserEvent((event) => {
+      const id = convId
+      if (event.type !== 'conversation' || !id || event.conversationId !== id) return
+      void loadConversation(id).then((res) => {
+        if (!res || convId !== id) return
+        const next = foldToolVerdicts(messages, res.messages)
+        if (next !== messages) messages = next
+      })
+    }),
+  )
 
   // The surface's nudge — see the prop. Same last-signal guard the doc panes
   // use, so the effect only fires on a real bump.
@@ -1006,19 +1051,27 @@
                exactly attach, text, and submit. -->
           {#if !minimal}
             {#if tiers.length > 0}
-              <ComposerPicker
-                icon="✳"
-                chipVariant="primary"
-                value={tier}
-                label={tier || 'main'}
-                options={tierOptions}
-                meter={tierMeter}
-                searchPlaceholder="Search tiers"
-                menuClass="min-w-44"
-                title="Model tier for this chat"
-                menuLabel="Model tier"
-                onChange={(t) => (tier = t)}
-              />
+              <!-- A PINNED AGENT'S TIER CHIP IS OFF, not gone: the session runs
+                   the main model whatever a message picks, and a chip that
+                   vanished would say nothing about why. The wrapper carries the
+                   reason too, since a disabled button's own title does not
+                   reliably show. -->
+              <span title={pinned ? PINNED_TIER_NOTE : undefined} class="contents">
+                <ComposerPicker
+                  icon="✳"
+                  chipVariant="primary"
+                  value={pinned ? '' : tier}
+                  label={pinned ? 'main' : tier || 'main'}
+                  options={tierOptions}
+                  meter={tierMeter}
+                  searchPlaceholder="Search tiers"
+                  menuClass="min-w-44"
+                  title={pinned ? PINNED_TIER_NOTE : 'Model tier for this chat'}
+                  menuLabel="Model tier"
+                  disabled={pinned}
+                  onChange={(t) => (tier = t)}
+                />
+              </span>
             {/if}
             <!-- Effort sits immediately left of the send tile, and only when the
                  routed model's metadata vouches for levels — a model with no

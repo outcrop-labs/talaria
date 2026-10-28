@@ -29,7 +29,18 @@
 // LIVENESS, not a fixed deadline: an agent may work for a long time on one
 // turn, so the turn is abandoned only after `IDLE` with no frame at all from
 // the agent — and stopped in the container when the caller leaves.
+//
+// THE CALLER IS WATCHED, NOT ONLY NOTICED AT THE NEXT WRITE. The host hangs
+// up when its own request goes (the person's tab, a tool's deadline), which
+// closes the answer channel. The drive waits on that close beside the agent's
+// next frame, so it lets go of the turn the moment the caller does. Reading
+// on until the agent next said something was not harmless: a one-shot that
+// Hermes refuses because its derived session lost a turn is moved to a fresh
+// session inside that read (talaria-gateway's lost-turn watch), so a caller
+// that gave up during the refusal's wait still had its turn moved, and run,
+// for nobody.
 
+use std::future::Future;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -329,10 +340,38 @@ async fn open(pg: &PgPool, req: &TurnRequest) -> Result<(ChatStream, Option<Stri
 
 /// Run the turn, sending each event to `tx` as one JSON line and ending with
 /// `{type:"done", text, tools, session}` or `{type:"error", error}`. A
-/// closed `tx` is the caller gone: the agent's run is stopped and nothing
-/// more is sent.
+/// closed `tx` is the caller gone, watched for the whole turn (see the
+/// header): the turn is let go of at once, the agent's run is stopped, and
+/// nothing more is sent.
 pub async fn drive(pg: &PgPool, req: &TurnRequest, tx: mpsc::Sender<String>) {
-    let (upstream, session) = match open(pg, req).await {
+    drive_opened(open(pg, req), req, tx).await
+}
+
+/// [`drive`] with the turn's opening handed in, so the tests can stand in for
+/// the agent.
+async fn drive_opened(
+    opening: impl Future<Output = Result<(ChatStream, Option<String>), String>>,
+    req: &TurnRequest,
+    tx: mpsc::Sender<String>,
+) {
+    // The opening holds for an agent that is restarting (`HOLD_MS`). A caller
+    // that leaves meanwhile has nobody for the turn to be sent to. An opening
+    // dropped once the agent's stream is open (its key still being recorded)
+    // drops that stream unread, and the gateway reads it on just far enough
+    // to stop the turn it names (talaria-gateway fleet_abandoned.rs).
+    let opened = tokio::select! {
+        biased;
+        () = tx.closed() => {
+            tracing::info!(
+                "[app-agents] {}: the caller left while agent \"{}\"'s turn was opening; it is let go of (a turn the agent already took is stopped by the gateway)",
+                req.app,
+                req.agent
+            );
+            return;
+        }
+        opened = opening => opened,
+    };
+    let (upstream, session) = match opened {
         Ok(opened) => opened,
         Err(e) => {
             let _ = tx.send(line(json!({ "type": "error", "error": e }))).await;
@@ -366,7 +405,15 @@ pub async fn drive(pg: &PgPool, req: &TurnRequest, tx: mpsc::Sender<String>) {
     let mut reply = Reply::default();
     let mut gone = false;
     loop {
-        let chunk = match tokio::time::timeout(IDLE, body.next()).await {
+        let next = tokio::select! {
+            biased;
+            () = tx.closed() => {
+                gone = true;
+                break;
+            }
+            next = tokio::time::timeout(IDLE, body.next()) => next,
+        };
+        let chunk = match next {
             Err(_) => {
                 reply.error = Some(format!(
                     "agent \"{}\" sent nothing for {} minutes; the turn was abandoned",
@@ -400,7 +447,12 @@ pub async fn drive(pg: &PgPool, req: &TurnRequest, tx: mpsc::Sender<String>) {
     }
     if gone || reply.error.is_some() {
         // Nobody is reading (or the turn was abandoned): stop the agent's run
-        // rather than let it work on for nobody.
+        // rather than let it work on for nobody. The stream goes first. On
+        // the completions arm, letting go of it is the stop: the gateway's
+        // door stops a completion its reader let go of (fleet_abandoned.rs),
+        // and that arm names no `run.started` here. On the session arm the
+        // run id below is the stop.
+        drop(body);
         if let Some(run) = &reply.run_id
             && let Err(e) = stop_run(&req.agent, run).await
         {
@@ -564,6 +616,155 @@ mod tests {
         assert_eq!(a.len(), 36);
         assert_eq!(&a[14..15], "8", "version 8");
         assert!(matches!(&a[19..20], "8" | "9" | "a" | "b"), "variant");
+    }
+
+    // ── The drive and a caller who leaves ───────────────────────────────
+
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use talaria_gateway::fleet_chat::ByteStream;
+
+    type Item = <ByteStream as futures_util::Stream>::Item;
+
+    fn frame(s: &'static str) -> Item {
+        Ok(s.as_bytes().into())
+    }
+
+    const ROLE: &str = "data: {\"id\": \"chatcmpl-1\", \"choices\": [{\"index\": 0, \"delta\": {\"role\": \"assistant\"}, \"finish_reason\": null}]}\n\n";
+    const WORDS: &str = "data: {\"id\": \"chatcmpl-1\", \"choices\": [{\"index\": 0, \"delta\": {\"content\": \"on it\"}, \"finish_reason\": null}]}\n\n";
+    const FINISH: &str = "data: {\"id\": \"chatcmpl-1\", \"choices\": [{\"index\": 0, \"delta\": {}, \"finish_reason\": \"stop\"}]}\n\ndata: [DONE]\n\n";
+
+    fn opened(body: ByteStream) -> Result<(ChatStream, Option<String>), String> {
+        Ok((
+            ChatStream {
+                status: 200,
+                content_type: "text/event-stream".into(),
+                body,
+                canned: None,
+                hermes_session: None,
+            },
+            None,
+        ))
+    }
+
+    /// The agent's stream as the lost-turn watch makes it for a refused
+    /// one-shot: the role chunk, then a long wait for Hermes' answer, and the
+    /// move to a fresh session made INSIDE the read that answer ends (the
+    /// watch sends the turn again from within its poll). `moved` counts the
+    /// moves that ran.
+    fn refused_after(wait: Duration, moved: Arc<AtomicUsize>) -> ByteStream {
+        Box::pin(futures_util::stream::unfold(0u8, move |step| {
+            let moved = moved.clone();
+            async move {
+                match step {
+                    0 => Some((frame(ROLE), 1)),
+                    1 => {
+                        tokio::time::sleep(wait).await;
+                        moved.fetch_add(1, Ordering::SeqCst);
+                        Some((frame(WORDS), 2))
+                    }
+                    _ => None,
+                }
+            }
+        }))
+    }
+
+    async fn drained(mut rx: mpsc::Receiver<String>) -> Vec<Value> {
+        let mut lines = Vec::new();
+        while let Some(l) = rx.recv().await {
+            lines.push(serde_json::from_str(l.trim()).unwrap());
+        }
+        lines
+    }
+
+    /// A caller that gives up while Hermes holds a refused turn is seen at
+    /// once: the drive ends without reading on, so the move the refusal would
+    /// set off never runs. On the old drive (a read, then a check on the next
+    /// write) the move ran: that was R12's two app resends whose `curl` had
+    /// timed out.
+    #[tokio::test]
+    async fn a_caller_that_leaves_mid_turn_is_let_go_before_the_turn_moves() {
+        let moved = Arc::new(AtomicUsize::new(0));
+        let body = refused_after(Duration::from_millis(400), moved.clone());
+        let (tx, rx) = mpsc::channel::<String>(64);
+        let turn = req(
+            Actor::Request {
+                user_id: "u".into(),
+            },
+            "ada-ops",
+        );
+        let drive =
+            tokio::spawn(async move { drive_opened(async { opened(body) }, &turn, tx).await });
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        drop(rx);
+        tokio::time::timeout(Duration::from_millis(200), drive)
+            .await
+            .expect("the drive lets go as soon as the caller does")
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(
+            moved.load(Ordering::SeqCst),
+            0,
+            "nothing read on, nothing moved"
+        );
+    }
+
+    /// A caller that leaves while the opening still holds for the agent (a
+    /// container restarting under a roll) is seen too: the turn is never
+    /// sent.
+    #[tokio::test]
+    async fn a_caller_that_leaves_during_the_hold_sends_nothing() {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let counted = sent.clone();
+        let opening = async move {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            counted.fetch_add(1, Ordering::SeqCst);
+            opened(Box::pin(futures_util::stream::empty()))
+        };
+        let (tx, rx) = mpsc::channel::<String>(64);
+        let turn = req(
+            Actor::Request {
+                user_id: "u".into(),
+            },
+            "ada-ops",
+        );
+        let drive = tokio::spawn(async move { drive_opened(opening, &turn, tx).await });
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        drop(rx);
+        tokio::time::timeout(Duration::from_millis(200), drive)
+            .await
+            .expect("the drive lets go during the hold")
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(sent.load(Ordering::SeqCst), 0);
+    }
+
+    /// The control: a caller that stays reads the turn through to its answer,
+    /// a slow one included.
+    #[tokio::test]
+    async fn a_caller_that_stays_gets_the_answer() {
+        let moved = Arc::new(AtomicUsize::new(0));
+        let slow = refused_after(Duration::from_millis(100), moved.clone());
+        let body: ByteStream = Box::pin(slow.chain(futures_util::stream::iter([frame(FINISH)])));
+        let (tx, rx) = mpsc::channel::<String>(64);
+        let turn = req(
+            Actor::Request {
+                user_id: "u".into(),
+            },
+            "ada-ops",
+        );
+        let drive =
+            tokio::spawn(async move { drive_opened(async { opened(body) }, &turn, tx).await });
+        let lines = drained(rx).await;
+        drive.await.unwrap();
+        assert_eq!(moved.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            lines,
+            vec![
+                json!({"type": "text", "text": "on it"}),
+                json!({"type": "done", "text": "on it", "tools": [], "session": null}),
+            ]
+        );
     }
 
     #[test]

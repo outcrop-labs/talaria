@@ -36,10 +36,11 @@ use axum::body::Bytes;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 
-use crate::fleet_lost_turns::{LostTurnRetry, heal_lost_turn};
+use crate::fleet_lost_turns::{LostTurnRetry, heal_lost_completion, heal_lost_turn};
 use crate::provider::http;
 use crate::usage::{TurnAttribution, affinity_key, backfill_attribution, record_attribution};
 use crate::vault::{SecretVault, seal_content};
+use futures_util::future::BoxFuture;
 use talaria_fleet_layout::{ManifestEntry, describe_agent, read_manifest};
 
 /// The verb of an `agent_request`, re-exported so a caller names one without
@@ -56,15 +57,19 @@ pub type ByteStream = Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<By
 /// response's headers) before the retry/deadline loop takes over. Generous on
 /// purpose: the agent's first frame rides its provider's time-to-first-token,
 /// and a long context — or a mid-task compaction — can hold that for minutes.
-/// Only silence past this reads as "not serving yet".
-const HEADERS_WINDOW: Duration = Duration::from_secs(300);
+/// Only silence past this reads as "not serving yet". It is also how long a
+/// let-go completions turn keeps being sent its stop while Hermes cannot
+/// place it yet (fleet_abandoned.rs): the same patience, for the same agent.
+pub(crate) const HEADERS_WINDOW: Duration = Duration::from_secs(300);
 /// The bound on a steer or a stop. A control call names a run that is live
 /// at this instant and the container answers it in milliseconds or not at
 /// all; the drain loop fires these from inside a stream it must keep
 /// reading, and a route answers a person who just pressed the button.
 /// Neither can wait the turn's five minutes on a container that accepted
-/// TCP and went quiet.
-pub(crate) const CONTROL_WINDOW: Duration = Duration::from_secs(10);
+/// TCP and went quiet. It also bounds how long a completions turn its reader
+/// let go of is read on once its stop can be placed (fleet_abandoned.rs),
+/// which a caller with its own deadline counts in.
+pub const CONTROL_WINDOW: Duration = Duration::from_secs(10);
 
 /// One OpenAI-style streamed reply, or a canned one. `status` is the upstream
 /// (or canned = 200) status; the body is raw SSE bytes the caller parses with
@@ -120,6 +125,89 @@ pub fn persona_model_options(effort: Option<&str>) -> Option<Value> {
     effort.map(|e| json!({ "reasoning_effort": e }))
 }
 
+/// Remember that a conversation moved to Hermes thread `n`, so its next turn
+/// opens there too. Called once, after the turn sent on the fresh thread has
+/// opened its stream.
+pub type RememberThread = Box<dyn FnOnce(i32) -> BoxFuture<'static, ()> + Send>;
+
+/// WHICH HERMES SESSION A COMPLETIONS TURN LANDS IN. Talaria names none on
+/// this arm: Hermes derives it from the turn's opening, as `api-` plus a
+/// digest of the system rows and the first user message
+/// (`_derive_chat_session_id`, v0.22). A conversation keeps its opening, so it
+/// keeps one derived session for life.
+///
+/// That session can be wedged. When the container dies mid-turn, v0.22 fences
+/// the running turn as `unknown` at the next boot, and refuses every later
+/// turn on the session with `unknown_execution`. Each refused admission stays
+/// queued behind the lost one, and all of them run the moment someone
+/// discards it. So the repair here never discards anything. It sends the
+/// refused turn again, once, with one more system row in its opening
+/// ([`thread_line`]). That moves the turn to a fresh derived session, and the
+/// wedged one is left parked, with nothing in it ever run.
+///
+/// The thread is the number in that row. A conversation's thread is stored
+/// (`conversations.hermes_epoch`), so its later turns open on the session the
+/// repair moved it to rather than being refused once more each. Epoch 0 is the
+/// opening as Talaria sends it, with no extra row, so a conversation that never
+/// lost a turn keeps the session it always had. A one-shot (a harness turn, an
+/// app turn, a channel reply) has nothing to store a thread on: its repair
+/// takes a random one and nothing remembers it.
+pub struct Thread {
+    epoch: i32,
+    remember: Option<RememberThread>,
+}
+
+impl Thread {
+    /// A turn with no conversation to keep a thread on.
+    pub fn one_shot() -> Self {
+        Thread {
+            epoch: 0,
+            remember: None,
+        }
+    }
+
+    /// A conversation on thread `epoch`, whose move to a fresh one is kept by
+    /// `remember`.
+    pub fn conversation(epoch: i32, remember: RememberThread) -> Self {
+        Thread {
+            epoch: epoch.max(0),
+            remember: Some(remember),
+        }
+    }
+}
+
+/// The system row that moves a completions turn onto Hermes thread `thread`.
+/// It is part of the opening Hermes digests, so a different thread is a
+/// different derived session. The words say what it is, so a model that reads
+/// it has nothing to act on.
+pub fn thread_line(thread: &str) -> Value {
+    json!({
+        "role": "system",
+        "content": format!(
+            "SESSION THREAD: {thread}. (Bookkeeping: this agent restarted during an earlier turn \
+             of this conversation, and the conversation continues on a fresh agent session. \
+             Nothing to act on.)"
+        ),
+    })
+}
+
+/// The payload with `thread`'s row after its leading system rows, or as it
+/// is when there is no thread to name.
+fn on_thread(payload: &Value, thread: Option<&str>) -> Value {
+    let mut payload = payload.clone();
+    if let (Some(thread), Some(list)) = (
+        thread,
+        payload.get_mut("messages").and_then(Value::as_array_mut),
+    ) {
+        let at = list
+            .iter()
+            .position(|m| m["role"] != "system")
+            .unwrap_or(list.len());
+        list.insert(at, thread_line(thread));
+    }
+    payload
+}
+
 /// Send one chat turn to the agent's container. Seals every
 /// message's content through a per-call vault (an image turn's text part is as
 /// credential-prone as any prose turn), retries while the agent's gateway is
@@ -139,10 +227,26 @@ pub fn persona_model_options(effort: Option<&str>) -> Option<Value> {
 /// Hermes answers is recorded under it, so every call the agent makes for
 /// the turn is metered as that flow's. None leaves the turn's calls
 /// `unattended` at the relay — still booked, under the agent.
+///
+/// A turn Hermes refuses because its derived session lost an earlier turn in
+/// a restart is sent again on a fresh session, once ([`Thread`]). This is the
+/// one-shot form; a conversation that keeps its thread calls
+/// [`proxy_chat_on`].
 pub async fn proxy_chat(
     payload: &Value,
     wait_ms: Option<u64>,
     attribution: Option<TurnAttribution>,
+) -> ChatStream {
+    proxy_chat_on(payload, wait_ms, attribution, Thread::one_shot()).await
+}
+
+/// [`proxy_chat`] for a turn that belongs to a conversation's [`Thread`]: it
+/// opens on that thread, and a repair that moves it remembers where to.
+pub async fn proxy_chat_on(
+    payload: &Value,
+    wait_ms: Option<u64>,
+    attribution: Option<TurnAttribution>,
+    thread: Thread,
 ) -> ChatStream {
     let model = payload
         .get("model")
@@ -165,16 +269,21 @@ pub async fn proxy_chat(
 
     match hold_for_agent(
         &model,
-        AgentRequest::ChatCompletions { payload },
+        AgentRequest::ChatCompletions {
+            payload,
+            epoch: thread.epoch,
+            remember: std::sync::Mutex::new(thread.remember),
+        },
         wait_ms,
         attribution,
     )
     .await
     {
         Ok(stream) => stream,
-        // The completions arm names no session, so it has none to lose; the
-        // canned sentence is the honest answer if the type ever says
-        // otherwise.
+        // The completions arm names no session of its own, so there is no
+        // room for it to find gone: its sessions are derived, and a wedged one
+        // is left for a fresh one (`Thread`). The canned sentence is the honest
+        // answer if the type ever says otherwise.
         Err(SessionLost) => canned_chat_stream(&unavailable_reply(&model), "hold"),
     }
 }
@@ -287,7 +396,14 @@ fn report_sealed(vault: &SecretVault, model: &str) {
 /// copy of the loop that drifts from this one.
 enum AgentRequest {
     ChatCompletions {
+        /// The sealed turn, before its thread row: the repair re-opens it on
+        /// a fresh thread from here.
         payload: Value,
+        /// The [`Thread`] it opens on.
+        epoch: i32,
+        /// Taken once, by the repair of the attempt that opened a stream —
+        /// which is the last attempt the hold makes.
+        remember: std::sync::Mutex<Option<RememberThread>>,
     },
     SessionTurn {
         conversation_id: String,
@@ -319,16 +435,43 @@ enum Opened {
 impl AgentRequest {
     /// One attempt against this agent's own gateway. `NotYet` means "not
     /// serving yet" — the hold loop backs off and tries again until its
-    /// deadline.
-    async fn open(&self, entry: &ManifestEntry) -> Opened {
+    /// deadline. `attribution` rides into the completions arm's repair: a
+    /// turn moved to a fresh session is metered under that session's key.
+    async fn open(&self, entry: &ManifestEntry, attribution: Option<&TurnAttribution>) -> Opened {
         match self {
-            AgentRequest::ChatCompletions { payload } => {
-                let mut request = payload.clone();
-                // include_usage: the final chunk reports token counts for the
-                // ledger (gateways that don't support it just ignore the option).
-                request["stream"] = json!(true);
-                request["stream_options"] = json!({ "include_usage": true });
+            AgentRequest::ChatCompletions {
+                payload,
+                epoch,
+                remember,
+            } => {
+                let thread = (*epoch > 0).then(|| epoch.to_string());
+                let request = completions_request(payload, thread.as_deref());
                 match open_stream(agent_post(entry, "/v1/chat/completions"), &request).await {
+                    Some(stream) if stream.ok() => {
+                        let remember = remember.lock().ok().and_then(|mut r| r.take());
+                        let let_go = crate::fleet_abandoned::LetGo::default();
+                        let retry = FreshThread {
+                            entry: ManifestEntry {
+                                model: entry.model.clone(),
+                                url: entry.url.clone(),
+                                key: entry.key.clone(),
+                            },
+                            payload: payload.clone(),
+                            next_epoch: *epoch + 1,
+                            remember,
+                            attribution: attribution.cloned(),
+                            abandoned: stream.hermes_session.clone(),
+                            let_go: let_go.clone(),
+                        };
+                        // Outermost, so it reads the moved turn's chunks too
+                        // (fleet_abandoned.rs: a reader that lets go stops the
+                        // turn in the agent, and the move then sends nothing).
+                        Opened::Stream(crate::fleet_abandoned::stop_when_abandoned(
+                            heal_lost_completion(stream, retry.into_retry()),
+                            entry,
+                            let_go,
+                        ))
+                    }
                     Some(stream) => Opened::Stream(stream),
                     None => Opened::NotYet,
                 }
@@ -371,6 +514,109 @@ impl AgentRequest {
                 }
             }
         }
+    }
+}
+
+/// The completions body the agent's gateway is sent: the turn on its thread,
+/// streamed. include_usage: the final chunk reports token counts for the
+/// ledger (gateways that don't support it just ignore the option).
+fn completions_request(payload: &Value, thread: Option<&str>) -> Value {
+    let mut request = on_thread(payload, thread);
+    request["stream"] = json!(true);
+    request["stream_options"] = json!({ "include_usage": true });
+    request
+}
+
+/// What the completions arm's repair needs to send a refused turn again on a
+/// fresh thread ([`Thread`]).
+struct FreshThread {
+    entry: ManifestEntry,
+    payload: Value,
+    /// The conversation's next thread, when it has one to keep.
+    next_epoch: i32,
+    remember: Option<RememberThread>,
+    attribution: Option<TurnAttribution>,
+    /// The derived session Hermes refused the turn on, for the log line.
+    abandoned: Option<String>,
+    /// Marked when the turn's reader let go of it (fleet_abandoned.rs). The
+    /// guard reads a let-go stream on to stop it, so a refusal can still be
+    /// read after the reader left; the move sends nothing then.
+    let_go: crate::fleet_abandoned::LetGo,
+}
+
+impl FreshThread {
+    fn into_retry(self) -> LostTurnRetry {
+        let label = self
+            .abandoned
+            .clone()
+            .unwrap_or_else(|| "a derived session".into());
+        LostTurnRetry::new(
+            label,
+            Box::new(move |_refused_run| Box::pin(async move { self.send().await })),
+        )
+    }
+
+    /// Open the turn on the fresh thread. Nothing is withdrawn or discarded
+    /// first: the refused admission and every one queued before it stay
+    /// parked behind the lost turn in the abandoned session, where nothing
+    /// runs them. The fresh session's key is recorded for the turn's flow
+    /// the moment its headers name it, the same as a first attempt.
+    async fn send(self) -> Result<ByteStream, String> {
+        if self.let_go.happened() {
+            return Err("its reader had let go of the turn, so it was not sent again".into());
+        }
+        let thread = match self.remember {
+            Some(_) => self.next_epoch.to_string(),
+            None => uuid::Uuid::new_v4().simple().to_string()[..8].to_string(),
+        };
+        let request = completions_request(&self.payload, Some(&thread));
+        let stream = match open_stream(agent_post(&self.entry, "/v1/chat/completions"), &request)
+            .await
+        {
+            Some(stream) if stream.ok() => stream,
+            Some(stream) => {
+                return Err(format!(
+                    "the agent answered the turn sent on a fresh session with HTTP {}",
+                    stream.status
+                ));
+            }
+            None => {
+                return Err(
+                    "the agent went away before the turn could be sent on a fresh session".into(),
+                );
+            }
+        };
+        let fresh = stream.hermes_session.clone();
+        // Said at warn on purpose: the abandoned session still holds the lost
+        // turn and every refusal queued behind it, and `hermes sessions
+        // discard` on it would run them all, unobserved.
+        tracing::warn!(
+            "[fleet] {}: {} lost a turn in a restart; this turn moved to thread {thread} ({}). Do \
+             not discard the abandoned session: its queued turns would run",
+            self.entry.model,
+            self.abandoned.as_deref().unwrap_or("the derived session"),
+            fresh.as_deref().unwrap_or("no session id answered"),
+        );
+        if let Some(remember) = self.remember {
+            remember(self.next_epoch).await;
+        }
+        let body = match (
+            self.attribution,
+            affinity_key(stream.hermes_session.as_deref()),
+        ) {
+            (Some(a), Some(key)) => {
+                record(&a, &key).await;
+                spawn_backfill(&a.pg, &a.agent_model, &key);
+                Box::pin(Attributed {
+                    inner: stream.body,
+                    pg: a.pg,
+                    agent_model: a.agent_model,
+                    key,
+                }) as ByteStream
+            }
+            _ => stream.body,
+        };
+        Ok(body)
     }
 }
 
@@ -428,7 +674,7 @@ async fn hold_for_agent(
         }
 
         if let Some(entry) = entry {
-            match request.open(entry).await {
+            match request.open(entry, attribution.as_ref()).await {
                 Opened::Stream(stream) => {
                     // Hermes' approval requests on this turn are refused
                     // here, and recorded (fleet_approvals.rs).
@@ -1600,10 +1846,19 @@ fn parse_session_frame(
 /// counts or a character estimate" on whether a usage event arrived at all,
 /// so a frame without counts must stay silent here — a reported 0/0 would
 /// be billed as the truth.
+///
+/// THE SESSION STREAM SPELLS THEM THE RESPONSES WAY: Hermes v0.22 puts
+/// `usage: {input_tokens, output_tokens, total_tokens}` on `run.completed`
+/// (and the other `run.*` verdicts) and none on `assistant.completed`
+/// (`gateway/platforms/api_server.py`, `_finish_turn_result`). The
+/// chat-completions spelling is still read, the way talaria-decide's wire
+/// reader reads both.
 fn session_usage(json: &Value) -> Vec<AgentStreamEvent> {
     let usage = json.get("usage");
     let count = |k: &str| usage.and_then(|u| u.get(k)).and_then(Value::as_i64);
-    match (count("prompt_tokens"), count("completion_tokens")) {
+    let input = count("input_tokens").or_else(|| count("prompt_tokens"));
+    let output = count("output_tokens").or_else(|| count("completion_tokens"));
+    match (input, output) {
         (Some(prompt_tokens), Some(completion_tokens)) => vec![AgentStreamEvent::Usage {
             prompt_tokens,
             completion_tokens,
@@ -1689,6 +1944,463 @@ fn session_error_message(json: &Value) -> String {
 mod tests {
     use super::*;
 
+    /// Thread 0 is the opening as sent, so a conversation that never lost a
+    /// turn keeps the derived session it always had; any other thread is one
+    /// more system row after the leading ones, and nothing else changes.
+    #[test]
+    fn a_thread_is_one_system_row_in_the_opening_and_nothing_else() {
+        let payload = json!({
+            "model": "ada-eng",
+            "messages": [
+                { "role": "system", "content": "mode" },
+                { "role": "system", "content": "THIS CONVERSATION'S ID: c1." },
+                { "role": "user", "content": "hi" },
+                { "role": "assistant", "content": "hello" },
+                { "role": "user", "content": "again" },
+            ],
+            "model_options": { "reasoning_effort": "low" },
+        });
+        let plain = completions_request(&payload, None);
+        assert_eq!(plain["messages"], payload["messages"]);
+        assert_eq!(plain["stream"], true);
+        assert_eq!(plain["stream_options"]["include_usage"], true);
+        assert_eq!(plain["model_options"], payload["model_options"]);
+
+        let moved = completions_request(&payload, Some("2"));
+        let mut list = moved["messages"].as_array().unwrap().clone();
+        assert_eq!(list.len(), 6);
+        assert_eq!(list[2], thread_line("2"));
+        assert!(
+            list[2]["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("SESSION THREAD: 2.")
+        );
+        list.remove(2);
+        assert_eq!(Value::Array(list), payload["messages"]);
+        assert_eq!(moved["model"], payload["model"]);
+        // Different threads are different openings, so different sessions.
+        assert_ne!(thread_line("2"), thread_line("3"));
+
+        // A one-shot with no system rows takes its thread row first.
+        let bare = json!({ "model": "m", "messages": [{ "role": "user", "content": "q" }] });
+        assert_eq!(
+            completions_request(&bare, Some("ab12cd34"))["messages"][0]["role"],
+            "system"
+        );
+    }
+
+    #[test]
+    fn a_conversation_thread_never_starts_below_zero() {
+        let t = Thread::conversation(-3, Box::new(|_| Box::pin(async {})));
+        assert_eq!(t.epoch, 0);
+        assert!(t.remember.is_some());
+        let one = Thread::one_shot();
+        assert_eq!(one.epoch, 0);
+        assert!(one.remember.is_none());
+    }
+
+    // ── The fresh-thread move itself (`FreshThread::send`) ───────────────────
+    //
+    // Against a stand-in for the agent's own gateway on loopback: it answers
+    // a completions POST the way Hermes does, a short stream with the derived
+    // session in `X-Hermes-Session-Id`, one session per thread row, and it
+    // keeps every body it was sent.
+
+    /// The derived session the stand-in names for a body: `api-` and the
+    /// body's thread, the way a different opening is a different session.
+    fn session_for(body: &Value) -> String {
+        format!("api-fresh{}", thread_in(body).unwrap_or_default())
+    }
+
+    /// The thread a body's `SESSION THREAD` row names, if it has one.
+    fn thread_in(body: &Value) -> Option<String> {
+        body["messages"].as_array()?.iter().find_map(|m| {
+            let text = m["content"].as_str()?;
+            let rest = text.strip_prefix("SESSION THREAD: ")?;
+            Some(rest.split('.').next()?.to_string())
+        })
+    }
+
+    /// What the stand-in was sent: each body, with the `Authorization`
+    /// header it came under.
+    #[derive(Clone, Default)]
+    struct Seen(std::sync::Arc<std::sync::Mutex<Vec<(Value, Option<String>)>>>);
+
+    impl Seen {
+        fn bodies(&self) -> Vec<Value> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(b, _)| b.clone())
+                .collect()
+        }
+
+        fn authorizations(&self) -> Vec<Option<String>> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, a)| a.clone())
+                .collect()
+        }
+    }
+
+    /// Bind the stand-in; `status` is what every POST answers.
+    async fn agent_gateway(status: u16) -> (ManifestEntry, Seen) {
+        let seen = Seen::default();
+        let kept = seen.clone();
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(
+                move |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>| {
+                    let kept = kept.clone();
+                    async move {
+                        let session = session_for(&body);
+                        let authorization = headers
+                            .get(axum::http::header::AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_string);
+                        kept.0.lock().unwrap().push((body, authorization));
+                        (
+                            axum::http::StatusCode::from_u16(status).unwrap(),
+                            [
+                                ("content-type", "text/event-stream".to_string()),
+                                ("x-hermes-session-id", session),
+                            ],
+                            "data: {\"choices\": [{\"index\": 0, \"delta\": {\"content\": \"on the \
+                         fresh thread\"}, \"finish_reason\": null}]}\n\ndata: [DONE]\n\n",
+                        )
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let entry = ManifestEntry {
+            model: "ada-ops".into(),
+            url,
+            key: Some("agent-door-key".into()),
+        };
+        (entry, seen)
+    }
+
+    /// A refused turn as the repair holds it: the sealed payload, before any
+    /// thread row.
+    fn refused_turn() -> Value {
+        json!({
+            "model": "ada-ops",
+            "messages": [
+                { "role": "system", "content": "mode" },
+                { "role": "system", "content": "THIS CONVERSATION'S ID: c1." },
+                { "role": "user", "content": "alpha one" },
+                { "role": "assistant", "content": "SEEN 1" },
+                { "role": "user", "content": "alpha two" },
+            ],
+        })
+    }
+
+    fn fresh(
+        entry: &ManifestEntry,
+        next_epoch: i32,
+        remember: Option<RememberThread>,
+    ) -> FreshThread {
+        FreshThread {
+            entry: ManifestEntry {
+                model: entry.model.clone(),
+                url: entry.url.clone(),
+                key: entry.key.clone(),
+            },
+            payload: refused_turn(),
+            next_epoch,
+            remember,
+            attribution: None,
+            abandoned: Some("api-0123456789abcdef".into()),
+            let_go: crate::fleet_abandoned::LetGo::default(),
+        }
+    }
+
+    /// What a `RememberThread` was called with, in order.
+    type Kept = std::sync::Arc<std::sync::Mutex<Vec<i32>>>;
+
+    fn remembering() -> (RememberThread, Kept) {
+        let kept: Kept = Default::default();
+        let k = kept.clone();
+        (
+            Box::new(move |n| {
+                k.lock().unwrap().push(n);
+                Box::pin(async {})
+            }),
+            kept,
+        )
+    }
+
+    async fn read_all(body: ByteStream) -> String {
+        let parts: Vec<Bytes> = body.map(|c| c.expect("a chunk")).collect().await;
+        String::from_utf8(parts.concat()).unwrap()
+    }
+
+    /// A conversation's repair opens the turn on the conversation's next
+    /// thread, not a random one, and keeps it, once, after the fresh stream
+    /// opened: the conversation's next turn opens there too. The body is the
+    /// refused turn plus that thread's row and nothing else, sent once, with
+    /// the agent's own bearer.
+    #[tokio::test]
+    async fn a_conversations_fresh_thread_is_its_next_one_and_is_kept() {
+        let (entry, seen) = agent_gateway(200).await;
+        let (remember, kept) = remembering();
+        let body = fresh(&entry, 3, Some(remember))
+            .send()
+            .await
+            .expect("the fresh thread answers");
+        assert_eq!(*kept.lock().unwrap(), [3]);
+        let text = read_all(body).await;
+        assert!(text.contains("on the fresh thread"), "{text}");
+        assert!(text.ends_with("data: [DONE]\n\n"), "{text}");
+
+        let sent = seen.bodies();
+        assert_eq!(sent.len(), 1, "sent once");
+        assert_eq!(thread_in(&sent[0]).as_deref(), Some("3"));
+        assert_eq!(sent[0], completions_request(&refused_turn(), Some("3")));
+        assert_eq!(sent[0]["stream"], true);
+        assert_eq!(
+            seen.authorizations(),
+            [Some("Bearer agent-door-key".to_string())]
+        );
+    }
+
+    /// A turn whose reader let go of it is not moved: the guard reads the
+    /// refusal only to stop the turn, and a fresh one would run for nobody.
+    /// Nothing is sent and no thread is kept.
+    #[tokio::test]
+    async fn a_turn_its_reader_let_go_of_is_not_moved() {
+        let (entry, seen) = agent_gateway(200).await;
+        let (remember, kept) = remembering();
+        let thread = fresh(&entry, 3, Some(remember));
+        thread.let_go.mark();
+        let why = match thread.send().await {
+            Ok(_) => panic!("a let-go turn was moved"),
+            Err(why) => why,
+        };
+        assert!(why.contains("let go"), "{why}");
+        assert!(seen.bodies().is_empty(), "nothing was sent");
+        assert!(kept.lock().unwrap().is_empty(), "no thread was kept");
+    }
+
+    /// A one-shot has nothing to keep a thread on: its repair takes a random
+    /// eight-hex thread, a different one each time, so two one-shots wedged
+    /// on one opening do not land on one fresh session. Nothing is kept.
+    #[tokio::test]
+    async fn a_one_shot_takes_a_random_thread_and_keeps_none() {
+        let (entry, seen) = agent_gateway(200).await;
+        for _ in 0..2 {
+            let body = fresh(&entry, 1, None).send().await.expect("answers");
+            assert!(read_all(body).await.contains("on the fresh thread"));
+        }
+        let sent = seen.bodies();
+        assert_eq!(sent.len(), 2);
+        let threads: Vec<String> = sent.iter().map(|b| thread_in(b).unwrap()).collect();
+        for t in &threads {
+            assert_eq!(t.len(), 8, "{t}");
+            assert!(
+                t.bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                "{t}"
+            );
+            // Not the epoch a conversation would have taken.
+            assert_ne!(t, "1");
+        }
+        assert_ne!(threads[0], threads[1], "a fresh random thread each time");
+        // Apart from its row, the body is the refused turn.
+        for (body, thread) in sent.iter().zip(&threads) {
+            assert_eq!(*body, completions_request(&refused_turn(), Some(thread)));
+        }
+    }
+
+    /// A move the agent refuses, or one it is not there to take, says why
+    /// and keeps nothing: the conversation stays on the thread it had, and
+    /// its next turn is refused once more and moves again.
+    #[tokio::test]
+    async fn a_failed_move_keeps_no_thread() {
+        let (entry, seen) = agent_gateway(503).await;
+        let (remember, kept) = remembering();
+        let why = match fresh(&entry, 2, Some(remember)).send().await {
+            Err(why) => why,
+            Ok(_) => panic!("a 503 is no stream to carry on with"),
+        };
+        assert_eq!(
+            why,
+            "the agent answered the turn sent on a fresh session with HTTP 503"
+        );
+        assert!(kept.lock().unwrap().is_empty());
+        assert_eq!(seen.bodies().len(), 1);
+
+        // Nothing listening: the turn never left.
+        let gone = ManifestEntry {
+            model: "ada-ops".into(),
+            url: "http://127.0.0.1:9".into(),
+            key: None,
+        };
+        let (remember, kept) = remembering();
+        let why = match fresh(&gone, 2, Some(remember)).send().await {
+            Err(why) => why,
+            Ok(_) => panic!("nothing answered"),
+        };
+        assert_eq!(
+            why,
+            "the agent went away before the turn could be sent on a fresh session"
+        );
+        assert!(kept.lock().unwrap().is_empty());
+    }
+
+    /// The fresh session's key is recorded for the turn's flow the moment
+    /// its headers name it, and what the relay booked under that key before
+    /// the record (the agent's first call racing it) is claimed: once when
+    /// the stream opens, and once more when its reader lets go. The live
+    /// half of `usage.rs`'s ledger proof, run the same way:
+    ///
+    ///   DATABASE_URL=postgres://… cargo test -p talaria-gateway --lib -- \
+    ///     --ignored fleet_chat::tests::a_fresh_thread_records
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn a_fresh_thread_records_and_backfills_its_new_key() {
+        use crate::usage::{StatedFlow, TokenCounts, UNATTENDED_SOURCE, record_relay_usage};
+        let url = std::env::var("DATABASE_URL")
+            .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
+        let pg = sqlx::PgPool::connect(&url).await.expect("connect");
+        // A name no other test, and no real agent, books under.
+        let agent = format!("live-fresh-{}", uuid::Uuid::new_v4());
+        let conversation = uuid::Uuid::new_v4().to_string();
+        let cleanup = || async {
+            for sql in [
+                "delete from usage_events where agent_model = $1",
+                "delete from usage_attributions where agent_model = $1",
+            ] {
+                sqlx::query(sql).bind(&agent).execute(&pg).await.unwrap();
+            }
+        };
+        let book = |prompt: i64| {
+            let (pg, agent) = (pg.clone(), agent.clone());
+            async move {
+                let counts = TokenCounts {
+                    prompt_tokens: prompt,
+                    completion_tokens: 1,
+                    ..TokenCounts::default()
+                };
+                record_relay_usage(
+                    &pg,
+                    UNATTENDED_SOURCE,
+                    &agent,
+                    Some("api-fresh4"),
+                    &StatedFlow::default(),
+                    "live-test-endpoint",
+                    "local",
+                    "live-test-model",
+                    &counts,
+                    false,
+                    None,
+                )
+                .await
+                .expect("the relay's insert");
+            }
+        };
+        let row = |prompt: i64| {
+            let (pg, agent) = (pg.clone(), agent.clone());
+            async move {
+                sqlx::query_as::<_, (String, Option<String>)>(
+                    "select source, ref_id::text from usage_events \
+                      where agent_model = $1 and prompt_tokens = $2",
+                )
+                .bind(&agent)
+                .bind(prompt)
+                .fetch_one(&pg)
+                .await
+                .expect("the row")
+            }
+        };
+        // The backfills are detached; give each a moment to land.
+        let claimed = |prompt: i64| {
+            let row = &row;
+            async move {
+                for _ in 0..50 {
+                    if row(prompt).await.0 == "chat" {
+                        return true;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                false
+            }
+        };
+        cleanup().await;
+
+        let (entry, _seen) = agent_gateway(200).await;
+        // The turn's first call, booked before the fresh key was recorded.
+        book(101).await;
+        let (remember, _kept) = remembering();
+        let mut move_it = fresh(&entry, 4, Some(remember));
+        move_it.attribution = Some(TurnAttribution {
+            pg: pg.clone(),
+            agent_model: agent.clone(),
+            source: "chat".into(),
+            ref_id: Some(conversation.clone()),
+            task_id: None,
+        });
+        let body = move_it.send().await.expect("the fresh thread answers");
+
+        // Recorded before `send` handed the stream back.
+        let recorded: (String, Option<String>) = sqlx::query_as(
+            "select source, ref_id::text from usage_attributions \
+              where agent_model = $1 and affinity_key = 'api-fresh4'",
+        )
+        .bind(&agent)
+        .fetch_one(&pg)
+        .await
+        .expect("the fresh key is recorded");
+        assert_eq!(recorded, ("chat".into(), Some(conversation.clone())));
+        // Nothing was recorded under the abandoned session.
+        let abandoned: i64 = sqlx::query_scalar(
+            "select count(*) from usage_attributions \
+              where agent_model = $1 and affinity_key = 'api-0123456789abcdef'",
+        )
+        .bind(&agent)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert_eq!(abandoned, 0);
+
+        assert!(
+            claimed(101).await,
+            "the open's backfill claims the early call"
+        );
+        assert_eq!(row(101).await, ("chat".into(), Some(conversation.clone())));
+
+        // A call booked while the stream was still being read, whose insert
+        // missed the record (it read the attributions before the record
+        // committed) and landed after the open's backfill ran: the reader
+        // letting go claims it.
+        book(202).await;
+        sqlx::query(
+            "update usage_events set source = $2, ref_id = null \
+              where agent_model = $1 and prompt_tokens = 202",
+        )
+        .bind(&agent)
+        .bind(UNATTENDED_SOURCE)
+        .execute(&pg)
+        .await
+        .unwrap();
+        assert_eq!(row(202).await, (UNATTENDED_SOURCE.into(), None));
+        assert!(read_all(body).await.contains("on the fresh thread"));
+        assert!(
+            claimed(202).await,
+            "the end-of-read backfill claims the late call"
+        );
+        assert_eq!(row(202).await, ("chat".into(), Some(conversation.clone())));
+
+        cleanup().await;
+    }
+
     #[test]
     fn a_turn_is_metered_under_the_session_we_made_or_the_id_hermes_answered() {
         let stream = |hermes_session: Option<&str>| ChatStream {
@@ -1713,7 +2425,11 @@ mod tests {
             Some("4f7c2a1e-9d3b-4c8a-b1f2-0e6d5a4c3b2a")
         );
         // The completions arm's key is the one Hermes named for it.
-        let completions = AgentRequest::ChatCompletions { payload: json!({}) };
+        let completions = AgentRequest::ChatCompletions {
+            payload: json!({}),
+            epoch: 0,
+            remember: std::sync::Mutex::new(None),
+        };
         assert_eq!(
             turn_key(&completions, &stream(Some("api-0123456789abcdef"))).as_deref(),
             Some("api-0123456789abcdef")
@@ -2092,7 +2808,10 @@ mod tests {
                     r#"data: {"message_id":"msg_1","text":"Checking the box first.","already_streamed":false}"#,
                     "\n\n",
                     "event: assistant.completed\n",
-                    r#"data: {"message":{"role":"assistant","content":"Hello"},"usage":{"prompt_tokens":12,"completion_tokens":3},"runtime":{}}"#,
+                    r#"data: {"message":{"role":"assistant","content":"Hello"},"runtime":{}}"#,
+                    "\n\n",
+                    "event: run.completed\n",
+                    r#"data: {"messages":[],"usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15},"runtime":{}}"#,
                     "\n\n",
                 )
                 .as_bytes(),
@@ -2159,7 +2878,10 @@ mod tests {
         let events = p.feed(
             concat!(
                 "event: assistant.completed\n",
-                r#"data: {"message":{"role":"assistant","content":"Done — the box is checked."},"usage":{"prompt_tokens":7,"completion_tokens":2}}"#,
+                r#"data: {"message":{"role":"assistant","content":"Done — the box is checked."}}"#,
+                "\n\n",
+                "event: run.completed\n",
+                r#"data: {"usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9}}"#,
                 "\n\n",
             )
             .as_bytes(),
@@ -2205,13 +2927,78 @@ mod tests {
         let mut p = AgentStreamParser::new();
         let events = p.feed(
             concat!(
-                "event: assistant.completed\n",
-                r#"data: {"message":{"role":"assistant","content":""},"usage":{"total_tokens":4}}"#,
+                "event: run.completed\n",
+                r#"data: {"messages":[],"usage":{"total_tokens":4}}"#,
                 "\n\n",
             )
             .as_bytes(),
         );
         assert_eq!(events, vec![]);
+    }
+
+    /// A whole session turn exactly as v0.22.4 streams it (captured from a
+    /// worktree agent on the pinned image, a scripted model behind the
+    /// gateway): the counts ride `run.completed`, spelled `input_tokens` /
+    /// `output_tokens`, and `assistant.completed` carries none.
+    #[test]
+    fn a_real_session_turn_reports_its_counts() {
+        const CAPTURED: &str = r##"event: run.started
+data: {"user_message": {"role": "user", "content": "usage probe"}, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "session_id": "fu-c2-probe", "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 1, "ts": 1793136731.461202}
+
+event: message.started
+data: {"message": {"id": "msg_ab733fc19b2f4862bc7de63d69315bc4", "role": "assistant"}, "session_id": "fu-c2-probe", "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 2, "ts": 1793136731.4612339}
+
+event: assistant.delta
+data: {"message_id": "msg_ab733fc19b2f4862bc7de63d69315bc4", "delta": "SEEN 1 user turns: usage probe || thread=None", "session_id": "fu-c2-probe", "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 3, "ts": 1793136731.6096802}
+
+event: assistant.completed
+data: {"session_id": "fu-c2-probe", "message_id": "msg_ab733fc19b2f4862bc7de63d69315bc4", "content": "SEEN 1 user turns: usage probe || thread=None", "completed": true, "partial": false, "interrupted": false, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 4, "ts": 1793136731.7383509}
+
+event: run.completed
+data: {"session_id": "fu-c2-probe", "message_id": "msg_ab733fc19b2f4862bc7de63d69315bc4", "completed": true, "partial": false, "interrupted": false, "messages": [{"role": "assistant", "content": "SEEN 1 user turns: usage probe || thread=None", "timestamp": 1793136731.6565225, "finish_reason": "stop", "reasoning": null}], "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 5, "ts": 1793136731.7383711}
+
+event: done
+data: {"session_id": "fu-c2-probe", "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 6, "ts": 1793136731.738406}
+
+"##;
+        let mut p = AgentStreamParser::new();
+        let mut events = p.feed(CAPTURED.as_bytes());
+        events.extend(p.finish());
+        assert_eq!(
+            events,
+            vec![
+                AgentStreamEvent::RunStarted {
+                    run_id: "run_caafc7a88e35432ca627e870623b4f1c".into()
+                },
+                AgentStreamEvent::Content {
+                    text: "SEEN 1 user turns: usage probe || thread=None".into()
+                },
+                AgentStreamEvent::Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5
+                },
+            ]
+        );
+    }
+
+    /// The chat-completions spelling of the counts is still read on a
+    /// session frame, beside the Responses spelling Hermes sends there.
+    #[test]
+    fn session_usage_reads_either_spelling() {
+        for usage in [
+            r#"{"input_tokens":11,"output_tokens":3,"total_tokens":14}"#,
+            r#"{"prompt_tokens":11,"completion_tokens":3}"#,
+        ] {
+            let frame = format!("event: run.completed\ndata: {{\"usage\":{usage}}}\n\n");
+            assert_eq!(
+                AgentStreamParser::new().feed(frame.as_bytes()),
+                vec![AgentStreamEvent::Usage {
+                    prompt_tokens: 11,
+                    completion_tokens: 3
+                }],
+                "{usage}"
+            );
+        }
     }
 
     /// A completions stream that NAMES its failure frame still reads through
@@ -2261,7 +3048,7 @@ mod tests {
                 r#"data: {"session_id":"c1","message_id":"m1","content":"OK","completed":true,"runtime":{}}"#,
                 "\n\n",
                 "event: run.completed\n",
-                r#"data: {"session_id":"c1","message_id":"m1","messages":[],"usage":{"prompt_tokens":11,"completion_tokens":3},"runtime":{}}"#,
+                r#"data: {"session_id":"c1","message_id":"m1","messages":[],"usage":{"input_tokens":11,"output_tokens":3,"total_tokens":14},"runtime":{}}"#,
                 "\n\n",
                 "event: done\n",
                 "data: {}\n\n",

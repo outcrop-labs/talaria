@@ -73,7 +73,9 @@ tally and every failure sentence until you dismiss it.
 
 - **Main model** — its brain.
 - **Model tiers (aliases)** — named slots (like `opus`) you can address per-message with a
-  tier mention.
+  tier mention. An agent with **pinned sessions** on always answers its chats from its main
+  model (Hermes fixes a session's model at its first turn), so its chats show the tier chip
+  switched off, with that reason on hover.
 - **Fallbacks (when the model above is down)** — the chain it falls through instead of
   failing.
 - **Soul** — the SOUL.md workspace: *who the agent is*. Saving it publishes a soul-only
@@ -127,7 +129,8 @@ named one now shows those members closed instead. A box is the toolset being on 
 agent; clearing one closes it on the next roll, and a new agent starts with the shell, code
 execution, the file tool and self-scheduling closed until a manager opens them.
 Two kinds of row are locked: `todo` and `clarify`, which Talaria's own tools replace for every
-agent, and anything an admin closed org-wide (**Admin → Security → Agent toolsets**, below).
+agent (Hermes' own todo list would also forget its plan every turn of an ordinary chat), and
+anything an admin closed org-wide (**Admin → Security → Agent toolsets**, below).
 The row's tooltip says which.
 
 ## Retire an agent

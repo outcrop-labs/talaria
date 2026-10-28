@@ -22,9 +22,9 @@
 // be one.
 //
 // THE TOOL LOOP IS THE POINT, and the harness DECLARES it (`tools: Own`
-// below). The runner's gateway transport sends `tools: []` / `tool_choice:
-// 'none'` by default, which is right for every other harness — a harness turn
-// is a single-shot structured call. This one is not: the reply line is a
+// below). The default policy is 'none', which is right for every other
+// harness — a harness turn is a single-shot structured call. This one is not:
+// the reply line is a
 // REPORT on actions the agent took through its own governed MCP tools during
 // the turn. Suppressing them would leave the feature running and silently
 // doing nothing. Declaring it once also means a model served by the ORG

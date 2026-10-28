@@ -78,20 +78,25 @@ export type TransportKind = 'gateway' | 'fleet'
  *
  *  'none' is the default and is right for every single-shot structured harness:
  *  the runner asks one question and parses one answer, so a tool call can only
- *  be the model wandering off. It is sent as an OpenAI-level `tools: []` /
- *  `tool_choice: 'none'` rather than left to the prompt, which is what the
- *  old inbox-focus assistant did by hand for exactly that reason.
+ *  be the model wandering off. On a persona it has no wire form, and nothing
+ *  on the completions arm enforces it: Hermes' API server reads neither
+ *  `tools` nor `tool_choice` off a chat-completions body, and its own loop runs
+ *  its own tools whatever the turn asks, so `personaPayload` sends neither.
+ *  What the runner does is read the persona's tool names off the stream into
+ *  the guard pass's tool record, so a harness that keeps `zero_tool_claim`
+ *  judges a claimed action against the calls that really ran (the Rust twin's
+ *  `ToolPolicy` says the same).
  *
  *  'own' is for the three turns whose whole FEATURE is the tool loop — an agent
  *  working a ticket, an outreach check-in that acts through `message_user`, a
  *  briefing follow-up the owner expects to answer "what's blocking t-41?" from
- *  live data. On those, 'none' does not merely weaken the answer: it disarms the
- *  agent and then trips `zero_tool_claim` for having called no tool.
+ *  live data. On those, 'none' is the wrong ask: a Hermes session turn refuses
+ *  it, and an agent that called no tool trips `zero_tool_claim`.
  *
  *  IT IS NOT THE SAME QUESTION AS `TransportRequest.toolDefs`, and conflating
  *  the two would have been the easy mistake. This policy is about tools WE DO
  *  NOT HOLD — a persona's loop runs inside the agent container, so all we can do
- *  is suppress it at the protocol level and read the names the stream reports.
+ *  is ask, and read the names the stream reports.
  *  `toolDefs` is about tools we hand over ourselves and watch being called. A
  *  turn may legitimately offer definitions while still refusing the model its
  *  own loop; that is two sentences about two different sets of tools. */
@@ -330,14 +335,11 @@ export function personaPayload(req: TransportRequest): PersonaPayload {
     model: req.model,
     messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
   }
-  // `tools: []` / `tool_choice: 'none'` do NOT reach the persona: Hermes' API
-  // server reads neither off the body, and its own loop keeps its own tools.
-  // The real enforcement is the guard pass, which runs `zero_tool_claim` over
-  // the tool names the stream reported. Removing these two fields is a follow-up.
-  if (toolPolicyOf(req) === 'none') {
-    payload.tools = []
-    payload.tool_choice = 'none'
-  }
+  // NO `tools` / `tool_choice`, for either policy: Hermes' API server reads
+  // neither off a chat-completions body, and its own loop runs its own tools.
+  // Sending `tools: []` / `tool_choice: 'none'` for 'none' only made the policy
+  // look honored. Nothing on this arm stops the loop; the guard pass reads the
+  // tool names the stream reports, and judges a claim against them.
   // The effort pick rides in `model_options`, forwarded to the persona's own
   // gateway, which hands it to the provider it fronts. Talaria already refused
   // an unvouched level on the way IN (the routes validate against

@@ -68,21 +68,31 @@ impl TransportKind {
 /// `None` (the request default, spelled `None` rather than a `None` variant) is
 /// right for every single-shot structured harness: the runner asks one
 /// question and parses one answer, so a tool call can only be the model
-/// wandering off. It is sent as an OpenAI-level `tools: []` /
-/// `tool_choice: 'none'` rather than left to the prompt.
+/// wandering off. On a persona it has no wire form, and nothing on the
+/// completions arm enforces it: Hermes' API server reads neither `tools` nor
+/// `tool_choice` off a chat-completions body, and its own loop runs its own
+/// tools whatever the turn asks, so the arm sends neither. What the runner
+/// does with the persona's calls is read their names off the stream into the
+/// guard pass's tool record, so a harness that keeps `zero_tool_claim`
+/// (inbox-brief, briefer:reply) still judges a claimed action against the
+/// calls that really ran: a call to a non-backing tool like `memory` leaves
+/// the claim standing, and the rule trips. A session turn refuses `None`
+/// outright (`session_turn_refusal`). The gateway arm has no tools of its own
+/// to withhold.
 ///
 /// `Own` is for the three turns whose whole FEATURE is the tool loop — an
 /// agent working a ticket, an outreach check-in that acts through
 /// `message_user`, a briefing follow-up the owner expects to answer "what's
-/// blocking t-41?" from live data. On those, suppressing tools does not merely
-/// weaken the answer: it disarms the agent and then trips `zero_tool_claim`
-/// for having called no tool.
+/// blocking t-41?" from live data. On those, `None` is the wrong ask: a
+/// Hermes session turn refuses it, a fitness sweep would run the harness as a
+/// single answer with no tool loop, and an agent that called no tool trips
+/// `zero_tool_claim`.
 ///
 /// IT IS NOT THE SAME QUESTION AS `TransportRequest.tool_defs`, and conflating
 /// the two would have been the easy mistake. This policy is about tools WE DO
 /// NOT HOLD — a persona's loop runs inside the agent container, so all we can
-/// do is suppress it at the protocol level and read the names the stream
-/// reports. `tool_defs` is about tools we hand over ourselves and watch being
+/// do is ask, and read the names the stream reports. `tool_defs` is about
+/// tools we hand over ourselves and watch being
 /// called. A turn may legitimately offer definitions while still refusing the
 /// model its own loop; that is two sentences about two different sets of
 /// tools.
@@ -372,15 +382,12 @@ pub fn persona_payload(req: &TransportRequest) -> Value {
                 .collect(),
         ),
     );
-    // `tools: []` / `tool_choice: none` do NOT reach the persona: Hermes' API
-    // server reads neither off the body (see the module header), and its own
-    // loop keeps its own tools. The real enforcement is the guard pass, which
-    // runs `zero_tool_claim` over the tool names the stream reported.
-    // Removing these two fields is a follow-up.
-    if tool_policy_of(req) == ToolPolicy::None {
-        payload.insert("tools".into(), Value::Array(Vec::new()));
-        payload.insert("tool_choice".into(), Value::String("none".into()));
-    }
+    // NO `tools` / `tool_choice`, for either policy: Hermes' API server reads
+    // neither off a chat-completions body (see the module header), and its
+    // own loop runs its own tools. Sending `tools: []` / `tool_choice:
+    // "none"` for `ToolPolicy::None` only made the policy look honored.
+    // Nothing on this arm stops the loop; the guard pass reads the tool
+    // names the stream reports, and judges a claim against them.
     // The effort pick rides in `model_options`, the one place Hermes reads a
     // per-request effort from; the container hands it to the provider it
     // fronts. Talaria already refused an unvouched level on the way IN (the
@@ -1988,15 +1995,16 @@ mod tests {
         assert!(p.get("response_format").is_none());
         assert!(persona_contract_dropped(&r));
         assert!(!persona_contract_dropped(&req(false)));
-        // Still sent, though Hermes ignores both: the guard pass's
-        // `zero_tool_claim` is what enforces 'none' on a persona.
-        assert_eq!(p["tools"], serde_json::json!([]));
-        assert_eq!(p["tool_choice"], "none");
+        // Neither tool field is sent: Hermes reads neither off the body,
+        // so a 'none' turn is the guard pass's to stand behind, not the
+        // wire's.
+        assert!(p.get("tools").is_none());
+        assert!(p.get("tool_choice").is_none());
         // The effort rides where Hermes reads it, never top-level.
         assert_eq!(p["model_options"]["reasoning_effort"], "low");
         assert!(p.get("reasoning_effort").is_none());
-        // An own-tools turn does not get the suppression — the persona's own
-        // loop is the point of the turn.
+        // An own-tools turn sends the same body: the persona's own loop is
+        // the point of the turn, and the wire never said otherwise.
         let mut own = req(false);
         own.tools = Some(ToolPolicy::Own);
         let p = persona_payload(&own);
