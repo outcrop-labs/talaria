@@ -251,6 +251,17 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   ctx.log.ok('infra up')
 
   ctx.log.say('Seeding the DB from your main environment')
+  // Main again, right before the dump reads it: the first wait ran before the
+  // git checkout and this stack's `up`, which take a minute on a busy host,
+  // and a main postgres restarted in between failed the dump with "the
+  // database system is starting up" (a `talaria dev` recreating it, seen
+  // while proving this change). Answered at once when main is up.
+  if (!(await waitForPostgres(ctx, mainPgc, 30))) {
+    ctx.log.die(
+      `main Postgres (${mainPgc}) stopped answering before the seed. ` +
+        `Tear the half-made stack down with: docker compose -p ${project} down -v && git worktree remove --force ${wt} && git branch -D wt/${name}`,
+    )
+  }
   try {
     await ctx.pipe(
       ['docker', ['exec', mainPgc, 'pg_dump', '-U', 'talaria', '-d', 'talaria', '--clean', '--if-exists']],

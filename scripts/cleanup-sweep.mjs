@@ -625,7 +625,7 @@ function stackRow(name, ageMs, merged, current) {
  * make a live worktree look abandoned. Sizes are filled in by the caller for
  * the rows that can actually be removed or flagged.
  */
-export function inventory(root, now = Date.now()) {
+export function inventory(root, now = Date.now(), { scanNetworks = true } = {}) {
   const notes = []
   const current = real(root)
   const listed = parseWorktrees(root)
@@ -756,7 +756,10 @@ export function inventory(root, now = Date.now()) {
     }
   }
 
-  if (projects) {
+  // Not from the stop gate: orphan networks are --apply's alone and weigh
+  // nothing on disk, so the gate would only pay three more docker reads —
+  // and a daemon busy with other stacks can hold a network read for a minute.
+  if (projects && scanNetworks) {
     const sibling = dirname(primary)
     const scan = networkFacts()
     if (scan) {
@@ -778,11 +781,26 @@ export function inventory(root, now = Date.now()) {
 /** One docker read, or null — never '' for a failure. The network scan must
  *  fail CLOSED: an empty container list read as "nothing attached" would make
  *  every network look orphaned. */
-function dockerOut(args) {
+function dockerOut(args, timeoutMs = 30_000) {
   try {
-    return execFileSync('docker', args, { encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'] })
+    return execFileSync('docker', args, { encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] })
   } catch {
     return null
+  }
+}
+
+/** True only when docker says the network does not exist — a timeout or a
+ *  daemon that did not answer is not "gone". */
+function networkGone(id) {
+  try {
+    execFileSync('docker', ['network', 'inspect', '--format', '{{.Id}}', id], {
+      encoding: 'utf8',
+      timeout: 30_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    return false
+  } catch (e) {
+    return /not found|no such network/i.test(String(e?.stderr ?? ''))
   }
 }
 
@@ -909,7 +927,10 @@ export function removeArtifact(artifact, roots) {
     if (attached === null || attached.trim() !== '') {
       throw new Error(`network ${artifact.id} is in use again (or docker did not answer) — left in place`)
     }
-    if (dockerOut(['network', 'rm', artifact.networkId]) === null) {
+    // A daemon busy with other projects can hold a network operation past
+    // the client's timeout and still carry it out, so a failed rm asks
+    // whether the network is still there before it reports a failure.
+    if (dockerOut(['network', 'rm', artifact.networkId], 120_000) === null && !networkGone(artifact.networkId)) {
       throw new Error(`docker network rm ${artifact.id} failed`)
     }
     return
@@ -1027,7 +1048,7 @@ function main() {
 
   let inventoried
   try {
-    inventoried = inventory(root)
+    inventoried = inventory(root, Date.now(), { scanNetworks: mode !== 'gate' })
   } catch (e) {
     console.error(`cleanup sweep could not scan — not a pass: ${e instanceof Error ? e.message : e}`)
     process.exit(1)

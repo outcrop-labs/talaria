@@ -164,6 +164,12 @@ describe('runWorktree — happy path', () => {
     expect(mainReady).toBeLessThan(dump)
     expect(ownReady).toBeGreaterThan(upAt)
     expect(ownReady).toBeLessThan(dump)
+    // ...and main is asked once more right before the dump, after this
+    // stack's own wait: a main restarted mid-creation failed the dump.
+    const mainProbe = JSON.stringify(pgReadyArgs('talaria-postgres-dev'))
+    const mainAgain = ctx.calls.map((c) => JSON.stringify(c.args)).lastIndexOf(mainProbe)
+    expect(mainAgain).toBeGreaterThan(ownReady)
+    expect(mainAgain).toBeLessThan(dump)
     expect(ctx.calls.some((c) => c.args.includes('pg_isready'))).toBe(false)
 
     const env = readFileSync(join(wt, 'ui/.env'), 'utf8')
