@@ -363,7 +363,7 @@ async fn drive_opened(
         biased;
         () = tx.closed() => {
             tracing::info!(
-                "[app-agents] {}: the caller left before agent \"{}\" took the turn; it was not sent",
+                "[app-agents] {}: the caller left while agent \"{}\"'s turn was opening; it is let go of (a turn the agent already took is stopped by the gateway)",
                 req.app,
                 req.agent
             );
