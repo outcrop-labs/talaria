@@ -47,9 +47,9 @@
 //                          whole feature IS the tool loop
 //   - `def.holdMs`         how long to hold for a persona that is restarting
 //   - `ctx.ledger`         refId / taskId, so a turn's spend reaches the
-//                          ticket, the channel or the research run. Its
-//                          `source` stays in this process: the relay books
-//                          every call on an app's key as `app`
+//                          ticket, the channel or the research run. A
+//                          `source` given there is read by nothing: the relay
+//                          books every call on an app's key as `app`
 //   - `ctx.tier`           an alias tier: the turn calls `<model>-<tier>`. The
 //                          relay prices the call it routed and books a tier's
 //                          turn under its base agent, from that id alone
@@ -99,7 +99,6 @@ export {
   gatewayImageTurn,
   gatewayStream,
   gatewayTransport,
-  ledgerOf,
   personaPayload,
   offersToolDefinitions,
   pickTransport,
@@ -369,13 +368,16 @@ export async function capabilityKeysFor(model: string): Promise<string[]> {
   return keys.length > 0 ? keys : await REAL_DEPS.personaKeys(model).catch(() => [])
 }
 
-/** What the CALLER knows about where this turn's spend belongs. The runner
- *  fills in the rest of `LedgerAttribution` — `agentModel` is the resolved base
- *  model and `tier` is `RunContext.tier`, neither of which a caller should have
- *  to restate. Omitted entirely means the default a harness turn on a persona
- *  has always had: `source: 'chat'`, belonging to no conversation. */
+/** What the CALLER knows about where this turn's spend belongs: the refs the
+ *  runner hands the transport as `LedgerAttribution`. Omitted entirely, the
+ *  turn belongs to no conversation, run or ticket. */
 export interface RunLedger {
-  source?: LedgerAttribution['source']
+  /** @deprecated Read by nothing. The relay books every call on an app's key
+   *  under source `app`, and every call this process makes is an app's, so a
+   *  source named here never reached a row. Kept so a free-runner call written
+   *  before `ctx.harness` (`ledger: { source: 'chat', refId: null }`) still
+   *  type-checks; `ctx.harness.run` takes no source. */
+  source?: 'chat' | 'channel' | 'ticket' | 'research' | 'app'
   /** The conversation, channel or research run. */
   refId?: string | null
   /** The ticket, so the turn reaches the ticket's cost and not just the ledger. */
@@ -930,8 +932,8 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
     step = resolved.step
   }
 
-  // THE ID ACTUALLY CALLED. `model` stays the BASE persona, the one
-  // `LedgerAttribution.agentModel` names. `routed` is what goes on the wire,
+  // THE ID ACTUALLY CALLED. `model` stays the BASE persona, the agent the
+  // turn is for. `routed` is what goes on the wire,
   // and so all the relay prices and books by (a tier's turn lands under its
   // base agent, talaria-gateway `persona_base`). It is also what the
   // capability lookup asks about (a tier is a different, usually larger model
@@ -1255,16 +1257,12 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
     return { kind, text, toolNames: toolCalls.map((c) => c.name), toolCalls, usage: null, contractDropped }
   }
 
-  /** Where this turn's spend belongs, resolved ONCE. `agentModel` is the base
-   *  persona and `tier` the alias name; `RunContext` carries the rest. Of these,
-   *  only `refId` and `taskId` leave this process, as relay headers (transport.ts
-   *  `relay`); the relay prices and books the call from the routed id. */
+  /** Where this turn's spend also belongs, resolved ONCE: the refs that
+   *  leave this process as relay headers (transport.ts `relay`). The relay
+   *  prices and books the call from the routed id, under the app's key. */
   const ledger: LedgerAttribution = {
-    agentModel: model,
-    source: ctx.ledger?.source ?? 'chat',
     refId: ctx.ledger?.refId ?? null,
     taskId: ctx.ledger?.taskId ?? null,
-    tier: ctx.tier ?? null,
   }
 
   try {

@@ -207,7 +207,7 @@ describe('the persona transport', () => {
       jsonMode: false,
       caller: 'app:crm:triage',
       holdMs: 600_000,
-      ledger: { agentModel: 'engineer-engineering', source: 'chat', refId: 'r-1', taskId: 't-1', tier: null },
+      ledger: { refId: 'r-1', taskId: 't-1' },
     })
     expect(reply).toMatchObject({ kind: 'fleet', text: 'done', usage: { promptTokens: 7, completionTokens: 3 } })
     const call = sent[0]!

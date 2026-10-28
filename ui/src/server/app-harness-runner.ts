@@ -9,7 +9,8 @@
 // So the HOST builds the runner, bound to the caller it already authenticated:
 //
 //   - every run is stamped `app:<slug>:<harnessId>` and booked to ledger source
-//     `app` — the app cannot name itself, and its spend is findable as its own;
+//     `app` (the relay books every call on the app's key so) — the app cannot
+//     name itself, and its spend is findable as its own;
 //   - the harness gets its own admin-assignable model setting, the slot
 //     `app:<slug>/<harnessId>` (`ModelSpec.slot`, resolved before `role`);
 //   - an agent may be pinned only as the caller may: from a request, an agent
@@ -250,7 +251,8 @@ export function appHarnessRunner(binding: AppHarnessBinding): AppHarnessRunner {
       const refusal = await pinRefusal(edges, id, opts.model)
       if (refusal) return { ok: false, model: opts.model, error: refusal }
     }
-    const ledger: RunLedger = { source: 'app' }
+    // Refs only: the source is the relay's word (the app's key books `app`).
+    const ledger: RunLedger = {}
     for (const key of ['refId', 'taskId'] as const) {
       const v = opts.ledger?.[key]
       if (v == null) continue

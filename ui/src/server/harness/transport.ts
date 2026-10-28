@@ -135,7 +135,7 @@ export interface ToolCall {
   args: string
 }
 
-/** Where this turn's spend lands in `usage_events`.
+/** Where this turn's spend ALSO belongs: the two refs the relay cannot know.
  *
  *  THE RELAY WRITES THE ROW NOW, not this process: an app's call is booked
  *  under the run's caller stamp with source `app`, and `refId` / `taskId`
@@ -158,26 +158,20 @@ export interface ToolCall {
  *             the row went to an agent that does not exist, with no endpoint
  *             class and so no price. A tier draft was free.
  *
- *  That writer is gone. The relay prices the call it routed, and books a tier's
- *  turn under its base agent from the routed id itself (talaria-gateway
- *  `persona_base`, `turn_subject`). `agentModel` is still the BASE persona id
- *  and `tier` the alias NAME, never the routed id — `TransportRequest.model` is
- *  the id actually called — but neither leaves this process: of the
- *  attribution, `relay` sends only `refId` and `taskId`. */
+ *  That writer is gone, and so are the three slots only it read. The relay
+ *  prices the call it routed and books a tier's turn under its base agent from
+ *  the routed id itself (talaria-gateway `persona_base`, `turn_subject`), so
+ *  the base persona id (`agentModel`) and the alias name (`tier`) have no
+ *  reader. Nor has `source`: every call this process makes is an app's
+ *  (`relay` refuses one with no app in scope), and the relay files every row
+ *  on an app's key under source `app` (talaria-gateway app_keys.rs). All three
+ *  rode on every request and never left the process, so they are gone.
+ *  `TransportRequest.model` is the id actually called. */
 export interface LedgerAttribution {
-  /** The agent as the ledger names it: the base persona id, never a tier id. */
-  agentModel: string
-  /** `'app'` is an app's harness run through the bound runner (`ctx.harness`),
-   *  whose caller is `app:<slug>:<harnessId>` — booked as the app's spend on
-   *  either path: the relay files every row on an app's key under source
-   *  `app`, gateway model and fleet agent alike (talaria-gateway app_keys.rs). */
-  source: 'chat' | 'channel' | 'ticket' | 'research' | 'app'
   /** The conversation, channel or research run this spend belongs to. */
   refId: string | null
   /** The ticket this spend belongs to, so it reaches the ticket's cost. */
   taskId: string | null
-  /** The alias NAME (`opus`), never the routed id. Not sent to the relay. */
-  tier: string | null
 }
 
 export interface TransportRequest {
@@ -223,7 +217,8 @@ export interface TransportRequest {
    *
    *  Read it through `toolDefsOf`, never by hand. */
   toolDefs?: ToolDefinition[]
-  /** Absent means the default persona attribution. Read it through `ledgerOf`. */
+  /** Absent means the turn belongs to no conversation, run or ticket. `relay`
+   *  sends what is here as headers. */
   ledger?: LedgerAttribution
   /** THE REASONING EFFORT THIS TURN RUNS AT — a human's pick from the levels
    *  the model's metadata vouches for (see `model-efforts.ts`). Sent as
@@ -299,12 +294,6 @@ export const toolDefsOf = (req: TransportRequest): ToolDefinition[] => req.toolD
 /** `toolNames` from `toolCalls`, in one place, so a reply cannot report a call
  *  under one field and not the other. */
 export const toolNamesOf = (calls: readonly ToolCall[]): string[] => calls.map((c) => c.name)
-
-/** The default attribution, which is exactly what the shared fleet transport
- *  metered before this slot existed: a harness turn on a persona IS a chat turn
- *  with that persona, belonging to no conversation. */
-export const ledgerOf = (req: TransportRequest): LedgerAttribution =>
-  req.ledger ?? { agentModel: req.model, source: 'chat', refId: null, taskId: null, tier: null }
 
 /** The persona door's payload shape — what the relay hands the agent for a
  *  persona turn (talaria-gateway `proxy_chat`). */
