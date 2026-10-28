@@ -238,14 +238,28 @@ multiplexer.
   `created`, and the next recreate of the service then stops the running agent and fails on the
   name. So every `up` and stop-shaped verb first removes such a stranded container (this fleet's
   compose project and service by label, never started, that exact name; one compose operation
-  per service at a time in the process, so nothing in flight is taken), and a failed `up` that
+  per service at a time in the process, so nothing in flight is taken). The removal is
+  confirmed before compose runs: a `docker rm` that ran out its time goes on in the daemon,
+  and a `compose up` beside the half-removed container removed the agent's own container and
+  created nothing, with exit 0 — so it is waited out, an `up` or `restart` does not run beside
+  one that will not go, and an `up` that reports success with no container is a failure. The
+  control route and the def and MCP edits' applies run their verb on a task of its own: a
+  client that goes away drops the request's future, and the compose CLI used to die with it,
+  halfway through a recreate. A failed `up` that
   was replacing a running container waits out a stop it may have started, then answers by what
   is there: the old container still serving (the change did not land), a new one running (it
   did), or nothing — and then it starts the service on the current render. The control route
   and the hire answer a failed verb the same way: compose's error is logged, the container is
   re-read (`settle`, `up_landed`), and an agent that reached what was asked answers as the
-  success it is. `TALARIA_FLEET_COMPOSE_TIMEOUT_SECS` replaces every agent compose verb's
-  deadline — longer for a slow disk, or tiny to drive these paths on purpose.
+  success it is. One that did not is answered by why compose failed: docker's own error (a
+  port already bound) with the container in the wrong state is the route's 500; a CLI killed
+  at its deadline, or a re-read docker will not answer, is a 503 "could not confirm", because
+  the daemon may still be carrying the request out (a stop landed two minutes after its
+  answer, well past the settle window). A retire whose `rm -sf` ran out its time after the
+  stop issues the remove for the stopped container it left (an unforced `docker rm`, waited
+  out when it is slow).
+  `TALARIA_FLEET_COMPOSE_TIMEOUT_SECS` replaces every agent compose verb's deadline — longer
+  for a slow disk, or tiny to drive these paths on purpose.
 - **Config edits reach running agents without a roll.** A render rewrites each agent's
   `config.yaml` *in place* (same inode, under an `flock`, unchanged bytes skipped), because
   the container sees it through a single-file `:ro` bind that pins whichever inode existed
@@ -275,7 +289,15 @@ multiplexer.
   `com.docker.compose.config-hash` label the container was created with — compose's own
   digest of image, environment (with every `${VAR}` interpolated and every `env_file` read
   in), mounts, limits and labels. Only a container that no longer matches is rolled; a stopped
-  agent stays stopped and reads the render when it starts. Most of `config.yaml` is read only
+  agent stays stopped and reads the render when it starts. **An apply never starts an agent**:
+  a recreate starts the container it makes, so only a container *seen* running is rolled. A
+  fit docker does not answer within 10 s is asked again with 30 s of patience
+  (`ContainerFit::Unknown`), and one it still will not describe is left alone, with a sentence
+  for the caller that the change is rendered but not applied. The roll then reads the
+  container once more under the service's lock (`fleet_recreate_running`), so a person who
+  stops the agent while the roll renders and pulls is not overruled. A roll asked for as a
+  roll — the operator's, the fleet's, an MCP timeout or auth-mode edit's — is not an apply and
+  recreates what it is pointed at. Most of `config.yaml` is read only
   at start (`model_routes` is parsed once, in the API server adapter's constructor; plugins
   load at boot), so each service carries a `talaria.config-start-hash` label: a digest of the
   rendered config minus the paths a running Hermes v0.22.4 picks up from the rewrite —
