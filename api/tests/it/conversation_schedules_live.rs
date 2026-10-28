@@ -445,6 +445,77 @@ async fn a_cron_turn_lands_in_the_thread_exactly_once() {
     );
 }
 
+/// A QUIET RUN. The cron prompt tells the agent to answer exactly `[SILENT]`
+/// when there is nothing new, and Hermes skips its own delivery for it; the
+/// plugin's hook sees the text first, so the door reads the sentinel and lands
+/// nothing — no row, no bell — records the run as delivered silent, and
+/// answers `silent: true`. A replay is the same record, and a report that only
+/// mentions the sentinel still lands.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn a_silent_cron_turn_lands_nothing() {
+    let state = live_app_state().await;
+    sweep(&state.pg, "quiet").await;
+    wire_boot_seams();
+    let (owner, _) = signed_in(&state, "quiet", "member").await;
+    let (def, model) = agent_def(&state.pg, "quiet", Some(&owner.id)).await;
+    let key = agent_key(&state, &def).await;
+    let conv = chat(&state.pg, &owner.id, &model).await;
+    let job = job_id();
+    schedule_row(&state.pg, &model, &job, &conv, &owner.id).await;
+
+    let quiet = json!({
+        "sessionId": format!("sess-{job}"),
+        "taskId": format!("cron:{job}:abc123"),
+        "turnId": "turn-1",
+        "text": "[SILENT]",
+    });
+    for _ in 0..2 {
+        let (status, body) = call_as_agent(&state, &key, quiet.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], json!(true));
+        assert_eq!(body["silent"], json!(true));
+        assert_eq!(body["messageId"], Value::Null);
+    }
+    let turns: i64 = sqlx::query_scalar(
+        "select count(*) from messages where conversation_id = $1::uuid and role = 'assistant'",
+    )
+    .bind(&conv)
+    .fetch_one(&state.pg)
+    .await
+    .unwrap();
+    assert_eq!(turns, 0, "a quiet run writes no message");
+    let recorded: Vec<(String, String, String)> = sqlx::query_as(
+        "select run_key, job_id, via from cron_silent_runs where conversation_id = $1::uuid",
+    )
+    .bind(&conv)
+    .fetch_all(&state.pg)
+    .await
+    .unwrap();
+    assert_eq!(
+        recorded,
+        vec![(format!("sess-{job}"), job.clone(), "push".to_string())],
+        "recorded once, under the session the roads dedupe on"
+    );
+
+    let (status, body) = call_as_agent(
+        &state,
+        &key,
+        json!({
+            "sessionId": format!("sess2-{job}"),
+            "taskId": format!("cron:{job}:abc124"),
+            "turnId": "turn-1",
+            "text": "Yesterday was [SILENT]; today two tickets moved.",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["silent"], json!(false));
+    let (id, _, content, _, _) = last_turn(&state.pg, &conv).await;
+    assert_eq!(body["messageId"], json!(id));
+    assert_eq!(content, "Yesterday was [SILENT]; today two tickets moved.");
+}
+
 /// The platform does not trust the plugin's clamps: a credential-shaped span
 /// in a cron's own output is redacted HERE, at the boundary, before it becomes
 /// a message anyone can read.

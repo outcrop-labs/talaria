@@ -1572,6 +1572,20 @@ pub async fn post_agent_turn(
     marker: &str,
     body: &str,
 ) -> Result<String, sqlx::Error> {
+    post_agent_turn_with(pg, conversation_id, marker, &serde_json::Map::new(), body).await
+}
+
+/// `post_agent_turn`, with more stamps in the row's `metadata` beside the
+/// marker — written by the same insert, so a reader that finds the row finds
+/// them too (the cron door's Hermes session id is what a later pull dedupes
+/// on). A stamp named `marker` is ignored: the marker argument is the key.
+pub async fn post_agent_turn_with(
+    pg: &PgPool,
+    conversation_id: &str,
+    marker: &str,
+    stamps: &serde_json::Map<String, Value>,
+    body: &str,
+) -> Result<String, sqlx::Error> {
     // Already said: hand back the same id so the caller's idea of "the turn I
     // posted" stays stable across re-entries.
     let said: Option<(String,)> = sqlx::query_as(
@@ -1586,14 +1600,10 @@ pub async fn post_agent_turn(
     if let Some((id,)) = said {
         return Ok(id);
     }
+    let mut metadata = stamps.clone();
+    metadata.insert("marker".into(), Value::String(marker.to_string()));
     let seq = next_seq(pg, conversation_id).await?;
-    let id = insert_streaming_assistant(
-        pg,
-        conversation_id,
-        seq,
-        &serde_json::json!({ "marker": marker }),
-    )
-    .await?;
+    let id = insert_streaming_assistant(pg, conversation_id, seq, &Value::Object(metadata)).await?;
     update_assistant(pg, &id, body, "", &[], "complete").await?;
     touch_conversation(pg, conversation_id, None).await?;
     Ok(id)

@@ -582,6 +582,14 @@ CREATE TABLE public.conversations (
     pinned_files jsonb DEFAULT '[]'::jsonb NOT NULL,
     hermes_epoch integer DEFAULT 0 NOT NULL
 );
+CREATE TABLE public.cron_silent_runs (
+    conversation_id uuid NOT NULL,
+    run_key text NOT NULL,
+    job_id text NOT NULL,
+    agent_model text NOT NULL,
+    via text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.daily_brief_entries (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     brief_id uuid NOT NULL,
@@ -1768,6 +1776,8 @@ ALTER TABLE ONLY public.conversation_todos
     ADD CONSTRAINT conversation_todos_pkey PRIMARY KEY (conversation_id);
 ALTER TABLE ONLY public.conversations
     ADD CONSTRAINT conversations_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.cron_silent_runs
+    ADD CONSTRAINT cron_silent_runs_pkey PRIMARY KEY (conversation_id, run_key);
 ALTER TABLE ONLY public.daily_brief_entries
     ADD CONSTRAINT daily_brief_entries_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.daily_briefs
@@ -2031,6 +2041,7 @@ CREATE UNIQUE INDEX chat_approvals_external_idx ON public.chat_approvals USING b
 CREATE INDEX chat_approvals_pending_idx ON public.chat_approvals USING btree (status, created_at DESC);
 CREATE INDEX conversation_schedules_conversation_idx ON public.conversation_schedules USING btree (conversation_id);
 CREATE INDEX conversations_user_agent_idx ON public.conversations USING btree (user_id, agent_model, updated_at DESC);
+CREATE INDEX cron_silent_runs_created_idx ON public.cron_silent_runs USING btree (created_at);
 CREATE INDEX daily_brief_entries_batch_idx ON public.daily_brief_entries USING btree (brief_id, batch);
 CREATE INDEX daily_brief_entries_key_idx ON public.daily_brief_entries USING btree (brief_id, source_key);
 CREATE UNIQUE INDEX daily_brief_entries_seq_idx ON public.daily_brief_entries USING btree (brief_id, seq);
@@ -2255,6 +2266,8 @@ ALTER TABLE ONLY public.conversations
     ADD CONSTRAINT conversations_plan_template_id_fkey FOREIGN KEY (plan_template_id) REFERENCES public.templates(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.conversations
     ADD CONSTRAINT conversations_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.cron_silent_runs
+    ADD CONSTRAINT cron_silent_runs_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.daily_brief_entries
     ADD CONSTRAINT daily_brief_entries_brief_id_fkey FOREIGN KEY (brief_id) REFERENCES public.daily_briefs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.daily_brief_entries

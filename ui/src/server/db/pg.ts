@@ -4397,6 +4397,32 @@ alter table tasks drop column if exists conversation_id`,
   // AT THE END, not beside the conversations table: MIGRATIONS is append-only
   // and keyed by INDEX.
   `alter table conversations add column if not exists hermes_epoch integer not null default 0`,
+  // A THREAD SCHEDULE'S QUIET RUNS. The cron prompt tells an agent to answer
+  // exactly [SILENT] when there is nothing new, and Hermes then skips its own
+  // delivery; Talaria's two roads for a thread schedule's report (the
+  // talaria-events push and the cron-output pull) see the text before or
+  // without that decision, so they read the sentinel themselves, land no
+  // message, and record the run here as delivered silent. The pull reads
+  // these rows as "already delivered", exactly like a message row, so a quiet
+  // run is never taken for a report the push lost.
+  //
+  // KEYED (conversation_id, run_key): run_key is what the two roads dedupe
+  // on, the Hermes session id, or the push's own marker when the plugin sent
+  // no session. job_id serves the pull's window check for those. Rows older
+  // than the pull's look-back can never be consulted again; the pull drops
+  // them each pass (created_at index). Cascade-deleted with the thread.
+  //
+  // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
+  `create table if not exists cron_silent_runs (
+     conversation_id uuid not null references conversations(id) on delete cascade,
+     run_key text not null,
+     job_id text not null,
+     agent_model text not null,
+     via text not null,
+     created_at timestamptz not null default now(),
+     primary key (conversation_id, run_key)
+   )`,
+  `create index if not exists cron_silent_runs_created_idx on cron_silent_runs (created_at)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

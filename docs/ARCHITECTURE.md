@@ -68,8 +68,10 @@ render writes `web.search_backend` / `web.extract_backend` into every agent's co
 vendor key from its sealed row through `fleet/.env` (`TALARIA_WEB_<VAR>`, interpolated as the
 variable the Hermes provider reads), and switches Hermes's keyless public tiers and their one-shot
 rescue off (`web.keyless_fallback` / `web.keyless_rescue: false`) once a provider is picked or the
-search URL is rendered to the agents as `SEARXNG_URL` (rendered, not probed), unless the operator
-allowed them. Unset, nothing is rendered. A search-only backend (Brave, SearXNG) left to read pages
+search URL is rendered to the agents as `SEARXNG_URL`, unless the operator allowed them. Rendered is
+not reachable, so Admin → Search probes the URL twice: from the app, and from inside a running
+agent against the URL as the agents dial it (`talaria-agent-web-search`'s `probe`), shown as the
+"from agents" dot. Unset, nothing is rendered. A search-only backend (Brave, SearXNG) left to read pages
 is a render warning, not a refusal. Research does not read it.
 
 ## Request lifecycle
@@ -354,6 +356,24 @@ multiplexer.
   cron, an unreadable field).
   Their spend is metered at the relay like every agent call — see **Agent spend** below; a
   fire's calls carry `cron_<job id>` and land as `unattended`, per job.
+  A schedule made from a thread reports into it by two roads, both ending in
+  [`talaria-cron-output`](../api/crates/talaria-cron-output/src/lib.rs)'s `land` (clamp, scrub,
+  reply guard, responsible-user stamp): the talaria-events plugin's push to
+  `/api/agents/cron-output` at the turn's end, which is fire-and-forget, and a five-minute pull of
+  the agent's own `GET /api/sessions?source=cron` that lands a settled run whose report never
+  arrived. The Hermes session id is stamped on the row and is what the two roads dedupe on, under
+  one advisory lock per thread and session. The pull lands only a run Hermes booked
+  `cron_complete`, and only its last assistant row when that row asks for no tools, so a run that
+  died mid-loop never lands its narration as a report. The listing does not name the job, so the
+  pull matches a session to a job by its title (Hermes titles a run with the job's name) against
+  every job the agent has, listened or not, and checks the run was sent that job's prompt; when two
+  of the agent's jobs share a name, the prompt decides. A run that answered Hermes's silence
+  sentinel (`[SILENT]`, matched with Hermes's own `is_autonomous_silence_response` rule, ported in
+  `talaria-cron-output`'s `silence`) lands nothing by either road, as Hermes delivers nothing for
+  it: the run is recorded in `cron_silent_runs` as delivered silent under the same run key, and
+  the pull reads that record as delivered. Each road judges the text it received, and the push
+  carries only the plugin's first 20,000 characters, so a longer run whose only marker is its own
+  last line lands by the push though Hermes suppresses it (the prompt asks for `[SILENT]` alone).
 - **Agent spend is metered at the relay, one row per upstream call.** Every agent's
   config.yaml carries a `providers.talaria` entry on the same gateway URL its model specs use,
   with `session_affinity_header: x-talaria-session`; Hermes matches it by base URL and stamps
@@ -600,6 +620,7 @@ api before reporting the app ready, so jobs run only on an instance that can ser
 
 The scheduled family: comms decay (distill idle threads), the daily digest and approval
 escalation, the daily brief (opens per person, per timezone), notification mail, outreach
-sweeps, run reclaim (re-enters a run whose driver died), price refresh, update checks.
+sweeps, run reclaim (re-enters a run whose driver died), price refresh, update checks, the
+cron-output pull (lands a thread schedule's report the push lost).
 Research/plan runs are durable on the same plane: derived run ids + per-step leases, so two
 instances cannot double-run and a restart resumes at the last persisted turn.
