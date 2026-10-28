@@ -78,20 +78,25 @@ export type TransportKind = 'gateway' | 'fleet'
  *
  *  'none' is the default and is right for every single-shot structured harness:
  *  the runner asks one question and parses one answer, so a tool call can only
- *  be the model wandering off. It is sent as an OpenAI-level `tools: []` /
- *  `tool_choice: 'none'` rather than left to the prompt, which is what the
- *  old inbox-focus assistant did by hand for exactly that reason.
+ *  be the model wandering off. On a persona it has no wire form, and nothing
+ *  on the completions arm enforces it: Hermes' API server reads neither
+ *  `tools` nor `tool_choice` off a chat-completions body, and its own loop runs
+ *  its own tools whatever the turn asks, so `personaPayload` sends neither.
+ *  What the runner does is read the persona's tool names off the stream into
+ *  the guard pass's tool record, so a harness that keeps `zero_tool_claim`
+ *  judges a claimed action against the calls that really ran (the Rust twin's
+ *  `ToolPolicy` says the same).
  *
  *  'own' is for the three turns whose whole FEATURE is the tool loop — an agent
  *  working a ticket, an outreach check-in that acts through `message_user`, a
  *  briefing follow-up the owner expects to answer "what's blocking t-41?" from
- *  live data. On those, 'none' does not merely weaken the answer: it disarms the
- *  agent and then trips `zero_tool_claim` for having called no tool.
+ *  live data. On those, 'none' is the wrong ask: a Hermes session turn refuses
+ *  it, and an agent that called no tool trips `zero_tool_claim`.
  *
  *  IT IS NOT THE SAME QUESTION AS `TransportRequest.toolDefs`, and conflating
  *  the two would have been the easy mistake. This policy is about tools WE DO
  *  NOT HOLD — a persona's loop runs inside the agent container, so all we can do
- *  is suppress it at the protocol level and read the names the stream reports.
+ *  is ask, and read the names the stream reports.
  *  `toolDefs` is about tools we hand over ourselves and watch being called. A
  *  turn may legitimately offer definitions while still refusing the model its
  *  own loop; that is two sentences about two different sets of tools. */
@@ -135,7 +140,7 @@ export interface ToolCall {
   args: string
 }
 
-/** Where this turn's spend lands in `usage_events`.
+/** Where this turn's spend ALSO belongs: the two refs the relay cannot know.
  *
  *  THE RELAY WRITES THE ROW NOW, not this process: an app's call is booked
  *  under the run's caller stamp with source `app`, and `refId` / `taskId`
@@ -151,28 +156,27 @@ export interface ToolCall {
  *             TICKET'S cost, which is the number a ticket owner reads.
  *    refId +  research's persona stages metered as `source: 'chat'` with no run
  *    source   id, so a run's cost stopped being answerable at all.
- *    tier     `recordUsage` prices a row by looking up `agent_defs.model =
- *             agentModel` and then the alias named by `tier`. Hand it the routed
- *             id "engineer-engineering-opus" with a null tier and BOTH lookups miss:
- *             the row is attributed to an agent that does not exist, with no
- *             endpoint class, which means no price. A tier draft becomes free.
+ *    tier     the TS ledger writer (ui/src/server/usage.ts, since deleted)
+ *             priced a row by looking up `agent_defs.model = agentModel` and
+ *             then the alias named by `tier`. Handed the routed id
+ *             "engineer-engineering-opus" with a null tier, BOTH lookups missed:
+ *             the row went to an agent that does not exist, with no endpoint
+ *             class and so no price. A tier draft was free.
  *
- *  Hence `agentModel` is the BASE persona id and `tier` is the alias NAME, never
- *  the routed id — `TransportRequest.model` is the id actually called. */
+ *  That writer is gone, and so are the three slots only it read. The relay
+ *  prices the call it routed and books a tier's turn under its base agent from
+ *  the routed id itself (talaria-gateway `persona_base`, `turn_subject`), so
+ *  the base persona id (`agentModel`) and the alias name (`tier`) have no
+ *  reader. Nor has `source`: every call this process makes is an app's
+ *  (`relay` refuses one with no app in scope), and the relay files every row
+ *  on an app's key under source `app` (talaria-gateway app_keys.rs). All three
+ *  rode on every request and never left the process, so they are gone.
+ *  `TransportRequest.model` is the id actually called. */
 export interface LedgerAttribution {
-  /** The agent as the ledger names it: the base persona id, never a tier id. */
-  agentModel: string
-  /** `'app'` is an app's harness run through the bound runner (`ctx.harness`),
-   *  whose caller is `app:<slug>:<harnessId>` — booked as the app's spend on
-   *  either path: the relay files every row on an app's key under source
-   *  `app`, gateway model and fleet agent alike (talaria-gateway app_keys.rs). */
-  source: 'chat' | 'channel' | 'ticket' | 'research' | 'app'
   /** The conversation, channel or research run this spend belongs to. */
   refId: string | null
   /** The ticket this spend belongs to, so it reaches the ticket's cost. */
   taskId: string | null
-  /** The alias NAME (`opus`), as `classifyAgent` wants it. */
-  tier: string | null
 }
 
 export interface TransportRequest {
@@ -218,7 +222,8 @@ export interface TransportRequest {
    *
    *  Read it through `toolDefsOf`, never by hand. */
   toolDefs?: ToolDefinition[]
-  /** Absent means the default persona attribution. Read it through `ledgerOf`. */
+  /** Absent means the turn belongs to no conversation, run or ticket. `relay`
+   *  sends what is here as headers. */
   ledger?: LedgerAttribution
   /** THE REASONING EFFORT THIS TURN RUNS AT — a human's pick from the levels
    *  the model's metadata vouches for (see `model-efforts.ts`). Sent as
@@ -295,12 +300,6 @@ export const toolDefsOf = (req: TransportRequest): ToolDefinition[] => req.toolD
  *  under one field and not the other. */
 export const toolNamesOf = (calls: readonly ToolCall[]): string[] => calls.map((c) => c.name)
 
-/** The default attribution, which is exactly what the shared fleet transport
- *  metered before this slot existed: a harness turn on a persona IS a chat turn
- *  with that persona, belonging to no conversation. */
-export const ledgerOf = (req: TransportRequest): LedgerAttribution =>
-  req.ledger ?? { agentModel: req.model, source: 'chat', refId: null, taskId: null, tier: null }
-
 /** The persona door's payload shape — what the relay hands the agent for a
  *  persona turn (talaria-gateway `proxy_chat`). */
 export interface PersonaPayload {
@@ -330,14 +329,11 @@ export function personaPayload(req: TransportRequest): PersonaPayload {
     model: req.model,
     messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
   }
-  // `tools: []` / `tool_choice: 'none'` do NOT reach the persona: Hermes' API
-  // server reads neither off the body, and its own loop keeps its own tools.
-  // The real enforcement is the guard pass, which runs `zero_tool_claim` over
-  // the tool names the stream reported. Removing these two fields is a follow-up.
-  if (toolPolicyOf(req) === 'none') {
-    payload.tools = []
-    payload.tool_choice = 'none'
-  }
+  // NO `tools` / `tool_choice`, for either policy: Hermes' API server reads
+  // neither off a chat-completions body, and its own loop runs its own tools.
+  // Sending `tools: []` / `tool_choice: 'none'` for 'none' only made the policy
+  // look honored. Nothing on this arm stops the loop; the guard pass reads the
+  // tool names the stream reports, and judges a claim against them.
   // The effort pick rides in `model_options`, forwarded to the persona's own
   // gateway, which hands it to the provider it fronts. Talaria already refused
   // an unvouched level on the way IN (the routes validate against
@@ -972,9 +968,10 @@ export const fleetStream: StreamingTransport = (req, emit) => personaTurn(req, e
  *  same rule `gateway.ts` uses to hide them in the first place. That inference
  *  stays, because a caller may still arrive with a routed id it built itself —
  *  but a caller that KNOWS it is routing a tier should say so with
- *  `RunContext.tier`, which needs no inference and is the only way the ledger can
- *  price the turn (see `LedgerAttribution.tier`). `persona.ts` resolves the same
- *  ids for capability keys, and does it from the database. */
+ *  `RunContext.tier`, which needs no inference. The price does not hang on it:
+ *  the relay books a tier's turn under its base agent from the id it is sent
+ *  (see `LedgerAttribution`). `persona.ts` resolves the same ids for capability
+ *  keys, and does it from the database. */
 export async function pickTransport(model: string): Promise<Transport> {
   return (await transportKind(model)) === 'fleet' ? fleetTransport : gatewayTransport
 }

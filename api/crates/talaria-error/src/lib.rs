@@ -90,6 +90,11 @@ pub struct OpenAiBudgetBody {
     pub code: String,
     pub param: serde_json::Value,
     pub budget: BudgetFacts,
+    /// When the window's spend falls back under the cap, in epoch seconds —
+    /// on the error object itself, where an OpenAI-style client (Hermes
+    /// among them) looks for a 429's reset. Absent when it is unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
 }
 
 #[derive(serde::Serialize)]
@@ -103,6 +108,7 @@ pub fn openai_budget_error(
     kind: &str,
     code: &str,
     budget: BudgetFacts,
+    resets_at: Option<i64>,
 ) -> Response {
     (
         status,
@@ -113,6 +119,7 @@ pub fn openai_budget_error(
                 code: code.to_string(),
                 param: serde_json::Value::Null,
                 budget,
+                resets_at,
             },
         }),
     )
@@ -920,6 +927,7 @@ mod tests {
                     window_hours: 24,
                     via: "key".into(),
                 },
+                resets_at: None,
             },
         })
         .unwrap();
@@ -927,6 +935,30 @@ mod tests {
         assert_eq!(
             b,
             r#"{"error":{"message":"…","type":"budget_exceeded","code":"budget_exceeded","param":null,"budget":{"scope":"caller","subject":"api:my-key","unit":"usd","limit":2,"used":2.5,"windowHours":24,"via":"key"}}}"#
+        );
+        // A known resume time rides last, on the error object itself.
+        let b = serde_json::to_string(&OpenAiBudget {
+            error: OpenAiBudgetBody {
+                message: "…".into(),
+                kind: "budget_exceeded".into(),
+                code: "budget_exceeded".into(),
+                param: serde_json::Value::Null,
+                budget: BudgetFacts {
+                    scope: "org".into(),
+                    subject: None,
+                    unit: "tokens".into(),
+                    limit: js_num(1000.0),
+                    used: js_num(1200.0),
+                    window_hours: 24,
+                    via: "admin".into(),
+                },
+                resets_at: Some(1_793_197_259),
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            b,
+            r#"{"error":{"message":"…","type":"budget_exceeded","code":"budget_exceeded","param":null,"budget":{"scope":"org","subject":null,"unit":"tokens","limit":1000,"used":1200,"windowHours":24,"via":"admin"},"resets_at":1793197259}}"#
         );
     }
 

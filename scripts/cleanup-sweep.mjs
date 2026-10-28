@@ -17,6 +17,13 @@
 //   - a devbox the same way (../devboxes/<name>, not the shared tools layer)
 //   - /tmp/talaria-* (or $TMPDIR) older than POLICY.tmpStaleMs
 //   - a compose project named talaria-wt-* or devbox-* whose directory is gone
+//   - (--apply only) a network a `talaria-*` or `devbox-*` compose project
+//     left behind: nothing attached, running or stopped; no container left in
+//     its project; no live worktree or box owning it; and older than
+//     POLICY.orphanNetworkMinAgeMs. Each one holds a subnet from the daemon's
+//     ~30 address pools, and with parallel stacks they ran out (follow-ups A8,
+//     R20). Also a pool probe network the CLI failed to remove (label
+//     talaria.pool-probe)
 //
 // WHAT IT WILL NOT:
 //   - the primary checkout, the checkout this process is running in
@@ -29,6 +36,9 @@
 //     its size, flagged when oversized, never deleted on a timer
 //   - a docker image, volume or exited container outside a swept project.
 //     The reclaimable total is reported; pruning it is a human's call
+//   - the shared external `talaria` network, or any network compose did not
+//     make for a `talaria-*` or `devbox-*` project (supabase_*, a person's
+//     own), or a box project's network named outside `devbox-*`
 //
 // "MERGED" MEANS THE PULL REQUEST MERGED, and nothing else. Ancestry is not
 // the test: a worktree cut an hour ago from main also has a HEAD that is an
@@ -81,6 +91,10 @@ export const POLICY = {
   // the sweep refuses to delete is a gate with no way through, and a gate
   // with no way through gets silenced.
   nagBytes: 20 * 1024 * 1024 * 1024,
+  // A network younger than this is never an orphan: `compose up` creates the
+  // project network first and its containers a moment later, and a sweep
+  // that ran in between would pull the network out from under it.
+  orphanNetworkMinAgeMs: 10 * 60 * 1000,
 }
 
 const SKIP_WALK = new Set(['node_modules', 'target', '.git', 'dist', 'fleet', '.output', '.vinxi'])
@@ -127,6 +141,101 @@ export function worktreeProjectOwner(projectName) {
   return wt[1].endsWith('-fleet') ? wt[1].slice(0, -'-fleet'.length) : wt[1]
 }
 
+/** The boxes a `devbox-*` compose project may belong to, or null for a
+ *  project that is not a box's. `talaria box new <name>` runs `devbox-<name>`,
+ *  and the agents that box renders live in `devbox-<name>-fleet` — but a box
+ *  may itself be named `<x>-fleet`, so both readings are candidates, and the
+ *  project is a live box's while EITHER checkout exists. `shared` is the
+ *  tools layer, never a box; an empty list means nothing can vouch for it. */
+export function boxProjectOwners(projectName) {
+  const box = /^devbox-([a-z0-9][a-z0-9-]*)$/.exec(projectName)
+  if (!box) return null
+  const raw = box[1]
+  const stripped = raw.endsWith('-fleet') ? raw.slice(0, -'-fleet'.length) : null
+  return [raw, stripped].filter((n) => n && n !== 'shared')
+}
+
+/** `k=v,k=v` — how `docker network ls --format '{{json .}}'` spells Labels. */
+export function parseLabels(text) {
+  const out = {}
+  for (const pair of String(text ?? '').split(',')) {
+    const i = pair.indexOf('=')
+    if (i > 0) out[pair.slice(0, i)] = pair.slice(i + 1)
+  }
+  return out
+}
+
+/** docker's CreatedAt (`2026-10-08 20:59:58.979 -0600 MDT`) in epoch ms, or
+ *  0 when it does not parse — and 0 is "too young to remove", never "old". */
+export function parseDockerTime(text) {
+  const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d+)? ([+-]\d{2})(\d{2})/.exec(String(text ?? ''))
+  if (!m) return 0
+  const ms = Date.parse(`${m[1]}T${m[2]}${(m[3] ?? '').slice(0, 4)}${m[4]}:${m[5]}`)
+  return Number.isFinite(ms) ? ms : 0
+}
+
+/**
+ * Networks a `talaria-*` compose project left behind, as sweep rows. Pure:
+ * the inventory hands it what docker said.
+ *
+ *   networks    [{ id, name, labels, createdMs }] — compose-made networks
+ *               (and pool probes)
+ *   containers  [{ project, networks: [name] }] — EVERY container, running
+ *               or stopped: a stopped one still names its network, and
+ *               removing that network would leave it unable to start
+ *   liveWorktree(owner) — does that worktree's checkout exist
+ *   liveBox(name)       — does that box's checkout (its box.env) exist.
+ *               Defaults to yes, so a caller that cannot say never
+ *               removes a box's network
+ *
+ * A network is an orphan only when nothing at all is attached, its project
+ * has no container left (so no stack, running or stopped, owns it), no live
+ * worktree or box owns the project, and it is older than the min age. The
+ * shared `talaria` network is never one, whatever its labels say; neither is
+ * any network outside a `talaria-*` or `devbox-*` project, nor a box
+ * project's network whose own name is outside `devbox-*`.
+ */
+export function orphanNetworks({ networks, containers, liveWorktree, liveBox = () => true, now = Date.now(), policy = POLICY }) {
+  const rows = []
+  for (const net of networks) {
+    if (!net?.name || net.name === 'talaria') continue
+    const probe = net.labels?.['talaria.pool-probe'] === '1'
+    const project = net.labels?.['com.docker.compose.project'] ?? ''
+    const boxes = probe ? null : boxProjectOwners(project)
+    if (!probe && !project.startsWith('talaria-') && !boxes) continue
+    if (boxes) {
+      // A box's network goes only by the box's own prefix, and only once no
+      // box it could belong to has a checkout left (`talaria box rm` takes
+      // the directory; a stopped box keeps it, and its containers too).
+      if (!net.name.startsWith('devbox-')) continue
+      if (boxes.length === 0 || boxes.some((n) => liveBox(n))) continue
+    } else if (!probe) {
+      const owner = worktreeProjectOwner(project)
+      if (owner && liveWorktree(owner)) continue
+    }
+    const used = containers.some(
+      (c) => (c.networks ?? []).includes(net.name) || (project !== '' && c.project === project),
+    )
+    if (used) continue
+    if (!(net.createdMs > 0) || now - net.createdMs < policy.orphanNetworkMinAgeMs) continue
+    rows.push({
+      kind: 'orphan-network',
+      id: net.name,
+      networkId: net.id,
+      path: '',
+      bytes: 0,
+      ageMs: now - net.createdMs,
+      running: false,
+      dirty: false,
+      unpushed: false,
+      kept: false,
+      current: false,
+      primary: false,
+    })
+  }
+  return rows
+}
+
 export function classify(artifact, policy = POLICY) {
   if (artifact.kind === 'target') {
     // The primary's build dir is a warm cache: named when oversized, never
@@ -137,7 +246,7 @@ export function classify(artifact, policy = POLICY) {
     if (artifact.ageMs >= policy.staleTargetMs) return 'remove'
     return artifact.bytes >= policy.oversizedTargetBytes ? 'flag' : 'keep'
   }
-  if (artifact.kind === 'orphan-compose') return 'remove'
+  if (artifact.kind === 'orphan-compose' || artifact.kind === 'orphan-network') return 'remove'
   // A stack row exists only for a worktree whose work is finished (its branch
   // reached the base) or which has gone stale. Stopping it frees RAM and CPU
   // and is reversible by `talaria dev`; the checkout itself is never touched.
@@ -189,6 +298,15 @@ export function verdict(remaining, pressure, policy = POLICY) {
 export function removalAllowed(artifact, roots) {
   if (artifact.kind === 'orphan-compose') {
     return /^(talaria-wt-|devbox-)[a-z0-9][a-z0-9-]*$/.test(artifact.id) && !artifact.path
+  }
+  // A network: a `talaria-` or `devbox-` name (so never the shared
+  // `talaria` network), and a docker id to remove it by — never a path.
+  if (artifact.kind === 'orphan-network') {
+    return (
+      /^(talaria|devbox)-[a-z0-9][a-z0-9_.-]*$/.test(artifact.id) &&
+      /^[0-9a-f]{12,64}$/.test(artifact.networkId ?? '') &&
+      !artifact.path
+    )
   }
   // A stack removes containers, never a directory — so it carries no path,
   // and the compose project name is the whole of what may be acted on.
@@ -288,10 +406,14 @@ export function formatReport({ pressure, remaining, removed, notes, policy = POL
   return lines.join('\n') + '\n'
 }
 
-function ageDays(ms) {
+/** An artifact's age as the report prints it: days, then hours, then — for
+ *  the orphan networks, which qualify at ten minutes — minutes. */
+export function ageDays(ms) {
   if (!Number.isFinite(ms) || ms < 0) return '?'
-  const d = ms / (24 * 60 * 60 * 1000)
-  return d >= 1 ? `${d.toFixed(0)}d` : `${Math.max(1, Math.round(d * 24))}h`
+  const h = ms / (60 * 60 * 1000)
+  if (h >= 24) return `${(h / 24).toFixed(0)}d`
+  if (h >= 1) return `${Math.round(h)}h`
+  return `${Math.max(1, Math.round(ms / 60_000))}m`
 }
 
 function real(p) {
@@ -534,7 +656,7 @@ function stackRow(name, ageMs, merged, current) {
  * make a live worktree look abandoned. Sizes are filled in by the caller for
  * the rows that can actually be removed or flagged.
  */
-export function inventory(root, now = Date.now()) {
+export function inventory(root, now = Date.now(), { scanNetworks = true } = {}) {
   const notes = []
   const current = real(root)
   const listed = parseWorktrees(root)
@@ -653,19 +775,97 @@ export function inventory(root, now = Date.now()) {
         }
         continue
       }
-      const box = /^devbox-([a-z0-9][a-z0-9-]*)$/.exec(name)
-      if (!box) continue
       // A project ending in -fleet is that box's fleet network, or a box whose
       // own name ends in -fleet. Orphan only when neither checkout exists.
-      const raw = box[1]
-      const stripped = raw.endsWith('-fleet') ? raw.slice(0, -'-fleet'.length) : null
-      const candidates = [raw, stripped].filter((n) => n && n !== 'shared')
-      if (candidates.length === 0) continue
+      const candidates = boxProjectOwners(name)
+      if (!candidates || candidates.length === 0) continue
       if (candidates.every((n) => !existsSync(join(home, n, 'box.env')))) artifacts.push(orphan(name))
     }
   }
 
+  // Not from the stop gate: orphan networks are --apply's alone and weigh
+  // nothing on disk, so the gate would only pay three more docker reads —
+  // and a daemon busy with other stacks can hold a network read for a minute.
+  if (projects && scanNetworks) {
+    const sibling = dirname(primary)
+    const scan = networkFacts()
+    if (scan) {
+      artifacts.push(
+        ...orphanNetworks({
+          ...scan,
+          liveWorktree: (owner) => seenWorktree.has(owner) || existsSync(join(sibling, `talaria-${owner}`)),
+          liveBox: (name) => existsSync(join(home, name, 'box.env')),
+          now,
+        }),
+      )
+    } else {
+      notes.push('docker network scan failed — orphan networks not scanned')
+    }
+  }
+
   return { artifacts, notes, roots: { primary, current, siblingParent: dirname(primary), devboxHome: home, tmp: process.env.TALARIA_CLEANUP_TMP || tmpdir() } }
+}
+
+/** One docker read, or null — never '' for a failure. The network scan must
+ *  fail CLOSED: an empty container list read as "nothing attached" would make
+ *  every network look orphaned. */
+function dockerOut(args, timeoutMs = 30_000) {
+  try {
+    return execFileSync('docker', args, { encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch {
+    return null
+  }
+}
+
+/** True only when docker says the network does not exist — a timeout or a
+ *  daemon that did not answer is not "gone". */
+function networkGone(id) {
+  try {
+    execFileSync('docker', ['network', 'inspect', '--format', '{{.Id}}', id], {
+      encoding: 'utf8',
+      timeout: 30_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    return false
+  } catch (e) {
+    return /not found|no such network/i.test(String(e?.stderr ?? ''))
+  }
+}
+
+function jsonLines(text) {
+  return text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => JSON.parse(l))
+}
+
+/** What orphanNetworks needs, in three docker reads — compose-made networks,
+ *  pool probes, and every container's project and networks — or null when
+ *  any read fails. */
+function networkFacts() {
+  const composed = dockerOut(['network', 'ls', '--filter', 'label=com.docker.compose.project', '--format', '{{json .}}'])
+  const probes = dockerOut(['network', 'ls', '--filter', 'label=talaria.pool-probe', '--format', '{{json .}}'])
+  const ps = dockerOut(['ps', '-a', '--format', '{{.Label "com.docker.compose.project"}}\t{{.Networks}}'])
+  if (composed === null || probes === null || ps === null) return null
+  try {
+    const networks = [...jsonLines(composed), ...jsonLines(probes)].map((n) => ({
+      id: String(n.ID ?? ''),
+      name: String(n.Name ?? ''),
+      labels: parseLabels(n.Labels),
+      createdMs: parseDockerTime(n.CreatedAt),
+    }))
+    const containers = ps
+      .split('\n')
+      .filter((l) => l.trim())
+      .map((l) => {
+        const [project, nets] = l.split('\t')
+        return { project: (project ?? '').trim(), networks: (nets ?? '').split(',').map((n) => n.trim()).filter(Boolean) }
+      })
+    return { networks, containers }
+  } catch {
+    return null
+  }
 }
 
 function statMs(path) {
@@ -746,6 +946,21 @@ export function removeArtifact(artifact, roots) {
   }
   if (artifact.kind === 'orphan-compose') {
     dockerByLabel(artifact.id)
+    return
+  }
+  if (artifact.kind === 'orphan-network') {
+    // Asked again at the moment of removal: a stack may have come up on it
+    // since the scan. Anything attached, running or stopped, and it stays.
+    const attached = dockerOut(['ps', '-aq', '--filter', `network=${artifact.networkId}`])
+    if (attached === null || attached.trim() !== '') {
+      throw new Error(`network ${artifact.id} is in use again (or docker did not answer) — left in place`)
+    }
+    // A daemon busy with other projects can hold a network operation past
+    // the client's timeout and still carry it out, so a failed rm asks
+    // whether the network is still there before it reports a failure.
+    if (dockerOut(['network', 'rm', artifact.networkId], 120_000) === null && !networkGone(artifact.networkId)) {
+      throw new Error(`docker network rm ${artifact.id} failed`)
+    }
     return
   }
   if (artifact.kind === 'tmp') {
@@ -861,7 +1076,7 @@ function main() {
 
   let inventoried
   try {
-    inventoried = inventory(root)
+    inventoried = inventory(root, Date.now(), { scanNetworks: mode !== 'gate' })
   } catch (e) {
     console.error(`cleanup sweep could not scan — not a pass: ${e instanceof Error ? e.message : e}`)
     process.exit(1)

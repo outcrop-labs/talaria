@@ -1,7 +1,9 @@
 // /api/fleet/defs/{id}/versions. GET → an agent definition's full version
 // history (admin). POST { revertTo } → re-publish an old version's payload
 // as a NEW version (history is append-only; a revert is itself a tracked
-// change).
+// change). A setting the old version read from a sealed credential
+// (`${CONFIG_…}`) the agent no longer holds is left out of the new version,
+// and the note says where.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -10,6 +12,9 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_agent_defs::{
     AgentVersionRow, NewVersion, add_version_if_changed, get_agent_def_wire, list_versions,
+};
+use talaria_agent_secrets::{
+    config_secret_handles, held_config_secrets, withhold_unheld_config_secrets,
 };
 use talaria_body::{NumKind, number_member, parse};
 use talaria_error::{house_error, internal, object_or_400};
@@ -103,14 +108,29 @@ pub async fn post(
         .clone()
         .or_else(|| user.name.clone())
         .unwrap_or_else(|| "admin".into());
-    let note = format!("revert to v{}", target.version);
+    // A handle whose secret is gone would be read as its own text — the
+    // hazard a secret delete refuses — so the setting is left out instead.
+    let (config, missing) = match without_missing_secrets(&state.pg, &def_id, &target.config).await
+    {
+        Ok(v) => v,
+        Err(e) => return Ok(internal("[fleet/defs/versions] secrets read failed", e)),
+    };
+    let note = if missing.is_empty() {
+        format!("revert to v{}", target.version)
+    } else {
+        format!(
+            "revert to v{} (left out, its sealed credential no longer exists: {})",
+            target.version,
+            missing.join(", ")
+        )
+    };
     Ok(
         match add_version_if_changed(
             &state.pg,
             &def_id,
             &NewVersion {
                 soul: &target.soul,
-                config: &target.config,
+                config: &config,
                 note: Some(&note),
                 created_by: Some(&created_by),
             },
@@ -123,4 +143,21 @@ pub async fn post(
             Err(e) => internal("[fleet/defs/versions] revert write failed", e),
         },
     )
+}
+
+/// `config` without the settings that name a sealed credential (`${CONFIG_…}`)
+/// this agent does not hold, and the paths they sat at. The render leaves
+/// them out too; leaving them out of the version as well keeps the stored
+/// config honest about what the agent runs.
+async fn without_missing_secrets(
+    pg: &sqlx::PgPool,
+    agent_id: &str,
+    config: &Value,
+) -> Result<(Value, Vec<String>), sqlx::Error> {
+    if config_secret_handles(config).is_empty() {
+        return Ok((config.clone(), Vec::new()));
+    }
+    let held = held_config_secrets(pg, agent_id).await?;
+    let (out, missing, _) = withhold_unheld_config_secrets(config, &held);
+    Ok((out, missing))
 }

@@ -6,6 +6,7 @@ import {
   readCommsSelection,
   resetCommsSelection,
   restorableSelection,
+  threadAwaitingVerdict,
   writeCommsSelection,
   type CommsSelection,
 } from './comms-selection'
@@ -111,6 +112,33 @@ test('a thread list that has not loaded is trusted, not used to reject', () => {
     restorableSelection({ t: 'agent', model: 'hermes', conversationId: 'conv-4' }, rosters({ conversationIds: null })),
     { t: 'agent', model: 'hermes', conversationId: 'conv-4' },
   )
+})
+
+test('a readable thread outside your chat list is asked about, then kept or dropped on the answer', () => {
+  // A plan shared with you (or your own plan or work session) opens under
+  // /comms/agent/<model>/<thread> and is in no chat list. The list alone must
+  // not decide it: the server does.
+  const shared: CommsSelection = { t: 'agent', model: 'hermes', conversationId: 'plan-7' }
+  assert.equal(threadAwaitingVerdict(shared, ['conv-4', 'conv-9'], {}), 'plan-7')
+  // Readable: the thread comes back, not a fresh pane.
+  assert.deepEqual(restorableSelection(shared, rosters({ verdicts: { 'plan-7': true } })), shared)
+  assert.equal(threadAwaitingVerdict(shared, ['conv-4', 'conv-9'], { 'plan-7': true }), null)
+  // Not readable (removed from the plan, or gone): the agent, with a fresh thread.
+  assert.deepEqual(restorableSelection(shared, rosters({ verdicts: { 'plan-7': false } })), {
+    t: 'agent',
+    model: 'hermes',
+    conversationId: null,
+  })
+  assert.equal(threadAwaitingVerdict(shared, ['conv-4', 'conv-9'], { 'plan-7': false }), null)
+})
+
+test('nothing is asked about a thread the list already has, a list still loading, or no thread', () => {
+  const mine: CommsSelection = { t: 'agent', model: 'hermes', conversationId: 'conv-4' }
+  assert.equal(threadAwaitingVerdict(mine, ['conv-4', 'conv-9'], {}), null)
+  assert.equal(threadAwaitingVerdict({ t: 'agent', model: 'hermes', conversationId: 'plan-7' }, null, {}), null)
+  assert.equal(threadAwaitingVerdict({ t: 'agent', model: 'hermes', conversationId: null }, ['conv-4'], {}), null)
+  assert.equal(threadAwaitingVerdict({ t: 'channel', id: 'chan-1' }, ['conv-4'], {}), null)
+  assert.equal(threadAwaitingVerdict(null, ['conv-4'], {}), null)
 })
 
 test('no memory restores nothing', () => {

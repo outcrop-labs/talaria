@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
-import { compose, stackComposeFiles, waitFor } from '../compose'
+import { compose, stackComposeFiles, waitFor, waitForPostgres, worktreeComposeFiles } from '../compose'
 import { envValue } from '../envfile'
 import { anyNewer } from '../paths'
 import { API_PORT } from '../ports'
@@ -293,6 +293,83 @@ async function warnDiskPressure(ctx: Ctx): Promise<void> {
   }
 }
 
+/** The port vite's own dev script binds (ui/package.json). */
+export const VITE_SCRIPT_PORT = '5273'
+
+/** vite's argv. `--strictPort` always: without it a port already taken made
+ *  vite bind the NEXT one and carry on, while everything that names this
+ *  stack's app port kept naming the old one — a worktree's ui/.env URLs and
+ *  its agents' TALARIA_GATEWAY_SELF_URL, main's agents on :5273, a box's
+ *  published port. The stack looked up and its agents could not reach it
+ *  (follow-up R23). A worktree passes its own PORT; vite's script hardcodes
+ *  5273 for everyone else. */
+export function viteArgs(port: string | undefined): string[] {
+  return port ? ['run', 'dev', '--', '--port', port, '--strictPort'] : ['run', 'dev', '--', '--strictPort']
+}
+
+/** Who is listening on a TCP port: `pid N (command)`, a container that
+ *  publishes it, or a plain "something" when this user cannot see the
+ *  process. null when nothing is listening — or when neither `ss` nor `lsof`
+ *  can say, which leaves the verdict to vite's own --strictPort. */
+export async function portHolder(ctx: Ctx, port: string): Promise<string | null> {
+  const quick = { timeoutMs: 5_000 }
+  let listening = false
+  let pid: string | null = null
+  let command: string | null = null
+  try {
+    const out = (await ctx.exec('ss', ['-Hltnp', 'sport', '=', `:${port}`], quick)).stdout.trim()
+    listening = out !== ''
+    const m = /users:\(\("([^"]*)",pid=(\d+)/.exec(out)
+    if (m) [command, pid] = [m[1]!, m[2]!]
+  } catch {
+    // No ss (macOS): lsof answers the same question. It exits 1 when nothing
+    // matches, which is the same answer as no lsof at all.
+    try {
+      const out = (await ctx.exec('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpc'], quick)).stdout
+      listening = out.trim() !== ''
+      pid = /^p(\d+)$/m.exec(out)?.[1] ?? null
+      command = /^c(.+)$/m.exec(out)?.[1] ?? null
+    } catch {
+      return null
+    }
+  }
+  if (!listening) return null
+  if (pid) {
+    try {
+      const args = (await ctx.exec('ps', ['-o', 'args=', '-p', pid], quick)).stdout.trim()
+      if (args) command = args.length > 120 ? `${args.slice(0, 117)}...` : args
+    } catch {
+      // gone already, or ps refused: the name ss gave is still worth printing
+    }
+    return `pid ${pid}${command ? ` (${command})` : ''}`
+  }
+  // A process this user cannot see: docker's port proxy is the usual one.
+  try {
+    const names = (await ctx.exec('docker', ['ps', '--filter', `publish=${port}`, '--format', '{{.Names}}'], quick)).stdout
+      .split('\n')
+      .map((n) => n.trim())
+      .filter(Boolean)
+    if (names.length) return `container ${names.join(', ')} (published by docker)`
+  } catch {
+    // no docker answer: say what is known
+  }
+  return 'a process this user cannot see (another user\'s, or root\'s)'
+}
+
+/** Refuse to start when the app's port is already taken, naming who holds
+ *  it — before a minute of infra and builds, and instead of vite's bare
+ *  "Port N is already in use" (or, before --strictPort, a silent move to the
+ *  next port). */
+async function assertAppPortFree(ctx: Ctx, port: string, whence: string): Promise<void> {
+  const holder = await portHolder(ctx, port)
+  if (!holder) return
+  ctx.log.die(
+    `port ${port} (${whence}) is already taken by ${holder}. vite binds it strictly — moving to another ` +
+      `port would leave this stack's URLs and its agents' gateway url on ${port}. Stop that process ` +
+      '(another `talaria dev` for this checkout?) and run again.',
+  )
+}
+
 export async function runDev(ctx: Ctx): Promise<number> {
   // The shim always runs the primary's CLI: from inside a worktree this would
   // bring up the PRIMARY's stack, so a run from another checkout stops here.
@@ -313,6 +390,14 @@ export async function runDev(ctx: Ctx): Promise<number> {
     )
   }
 
+  // The port vite will bind, checked before anything else starts.
+  const wtPort = envValue(uiEnv, 'TALARIA_WORKTREE') ? envValue(uiEnv, 'PORT') : undefined
+  await assertAppPortFree(
+    ctx,
+    wtPort ?? VITE_SCRIPT_PORT,
+    wtPort ? "this worktree's PORT in ui/.env" : "the dev script's port",
+  )
+
   await warnDiskPressure(ctx)
 
   // Inside a devbox (docs/DEVBOX.md): the box compose owns the infra —
@@ -329,8 +414,10 @@ export async function runDev(ctx: Ctx): Promise<number> {
     await mcpToolkit(ctx, { quietWhenFresh: true })
     await ompAuthBridge(ctx, { quietWhenFresh: true })
     await rustApi(ctx, uiEnv)
-    ctx.log.say(`app → http://127.0.0.1:${ctx.env.PORT ?? '5273'} (published to the host by the box compose)`)
-    return ctx.run('bun', ['run', 'dev'], { cwd: join(ctx.root, 'ui') })
+    ctx.log.say(`app → http://127.0.0.1:${ctx.env.PORT ?? VITE_SCRIPT_PORT} (published to the host by the box compose)`)
+    // Strict here too: the box compose publishes the container's 5273, so a
+    // vite that moved to 5274 would serve nothing the host can reach.
+    return ctx.run('bun', viteArgs(undefined), { cwd: join(ctx.root, 'ui') })
   }
 
   // A worktree (docs/WORKTREES.md) owns exactly two infra services — its own
@@ -379,8 +466,13 @@ export async function runDev(ctx: Ctx): Promise<number> {
       if (port) ctx.env[key] = port
     }
     ctx.log.say(`infra (this worktree's postgres + redis — sidecars are the main stack's)`)
-    const code = await compose(ctx, { files: stackComposeFiles(ctx.root, DEV_COMPOSE), project: `talaria-wt-${worktree}` }, ['up', '-d', 'postgres', 'redis'])
+    // worktreeComposeFiles, not the dev pair: the stack `talaria worktree`
+    // made runs on the default bridge (docker/worktree.compose.yml), and an
+    // `up` without that file would recreate both containers on a project
+    // network — the address-pool drain the file exists to stop.
+    const code = await compose(ctx, { files: worktreeComposeFiles(ctx.root), project: `talaria-wt-${worktree}` }, ['up', '-d', 'postgres', 'redis'])
     if (code !== 0) ctx.log.die('worktree infra failed to start (run `bun talaria worktree` again? it was torn down?)')
+    await releaseLegacyNetwork(ctx, worktree)
     return await waitThenRunApp(ctx, uiEnv, stack)
   }
 
@@ -444,6 +536,41 @@ export async function runDev(ctx: Ctx): Promise<number> {
   return await waitThenRunApp(ctx, uiEnv, stack)
 }
 
+/** The network a worktree's postgres + redis sat on before
+ *  docker/worktree.compose.yml moved them to the default bridge. */
+export function legacyWorktreeNetwork(worktree: string): string {
+  return `talaria-wt-${worktree}_default`
+}
+
+/** Give back the subnet of a worktree's old project network, now that the
+ *  `up` before this has moved both its containers to the default bridge. The
+ *  cleanup sweep leaves that network alone for as long as the worktree lives
+ *  (its project still has containers), so on a host of live worktrees — the
+ *  host whose address pools ran out — no subnet came back until each one was
+ *  torn down. Best effort, and quiet unless it frees one: no such network is
+ *  the usual case (every worktree cut since); one any container still names is
+ *  kept, a stopped container too, since it could not start again without it;
+ *  and a daemon too busy to answer changes nothing. */
+async function releaseLegacyNetwork(ctx: Ctx, worktree: string): Promise<void> {
+  const name = legacyWorktreeNetwork(worktree)
+  const quick = { timeoutMs: 15_000 }
+  try {
+    await ctx.exec('docker', ['network', 'inspect', '--format', '{{.Id}}', name], quick)
+  } catch {
+    return
+  }
+  try {
+    const ps = await ctx.exec('docker', ['ps', '-a', '--format', '{{.Networks}}'], quick)
+    const named = ps.stdout.split('\n').some((line) => line.split(',').some((n) => n.trim() === name))
+    if (named) return
+    await ctx.exec('docker', ['network', 'rm', name], quick)
+    ctx.log.ok(`removed ${name} — this worktree's postgres + redis run on the default bridge now`)
+  } catch {
+    // Still in use, or the daemon did not answer in time: the sweep takes it
+    // once the worktree is torn down.
+  }
+}
+
 /** The shared boot tail: infra readiness, deps, the fleet toolkit, then the
  *  vite process (this function's return IS dev's exit code). The probes exec
  *  into the containers devStack named: a worktree's own, or main's as
@@ -452,20 +579,11 @@ export async function runDev(ctx: Ctx): Promise<number> {
 async function waitThenRunApp(ctx: Ctx, uiEnv: string, stack: DevStack): Promise<number> {
   ctx.log.say('waiting for postgres…')
   const pg = stack.pgContainer
-  const pgReady = await waitFor(
-    ctx,
-    'postgres',
-    async () => {
-      try {
-        await ctx.exec('docker', ['exec', pg, 'pg_isready', '-U', 'talaria', '-d', 'talaria'])
-        return true
-      } catch {
-        return false
-      }
-    },
-    40,
-  )
-  if (!pgReady) ctx.log.die('postgres never became ready')
+  // A real query over TCP, not the socket pg_isready this was: on a fresh
+  // volume that passed against the entrypoint's temporary init server, and
+  // the app's migration pass then met "the database system is shutting down"
+  // (compose.ts, pgReadyArgs).
+  if (!(await waitForPostgres(ctx, pg, 40))) ctx.log.die('postgres never became ready')
 
   ctx.log.say('waiting for redis…')
   const redis = stack.redisContainer
@@ -493,15 +611,13 @@ async function waitThenRunApp(ctx: Ctx, uiEnv: string, stack: DevStack): Promise
   await ompAuthBridge(ctx)
   await rustApi(ctx, uiEnv)
 
-  // A worktree's ui/.env carries its own PORT (the allocated slot). vite's
-  // dev script hardcodes 5273, and a busy port makes vite silently bind the
-  // NEXT one — while the worktree's .env URLs keep claiming its own slot —
-  // so forward the flag explicitly and keep the two honest with each other.
+  // A worktree's ui/.env carries its own PORT (the allocated slot), and
+  // vite's dev script hardcodes 5273, so the worktree's is forwarded — and
+  // bound strictly (viteArgs says why).
   const wtPort = envValue(uiEnv, 'TALARIA_WORKTREE') ? envValue(uiEnv, 'PORT') : undefined
-  const devArgs = wtPort ? ['run', 'dev', '--', '--port', wtPort] : ['run', 'dev']
 
-  ctx.log.say(`app → http://localhost:${wtPort ?? '5273'}`)
-  return ctx.run('bun', devArgs, { cwd: join(ctx.root, 'ui') })
+  ctx.log.say(`app → http://localhost:${wtPort ?? VITE_SCRIPT_PORT}`)
+  return ctx.run('bun', viteArgs(wtPort), { cwd: join(ctx.root, 'ui') })
 }
 
 /** Host port of a postgres:// or redis:// URL, or null when unparseable. */

@@ -280,6 +280,14 @@ rather than failing to build it.
   the container publishes. `TALARIA_APP_DB_NETWORK` names the network outright: the DB joins it
   with no published port, and the host dials it by container name, so set it only on a host
   that is on that network.
+- An app DB reached on its loopback port runs on docker's default `bridge`, so it takes no
+  network of its own: a compose file that names none got a `<project>_default` network made for
+  it, one subnet per app from the daemon's ~30 address pools. Nothing dials an app DB over a
+  docker network there (the host uses the published port; backup and uninstall use `docker
+  exec`). A container started without `--network` can reach it by IP, and still needs its
+  password. A DB made before this keeps its network while it runs (docker's restart policy
+  brings it back on that network); the next time Talaria itself starts it, after it was stopped,
+  it moves to the bridge and its old network is removed once no container names it.
 
 - A throw in an app's UI, server, or MCP is isolated — when it is awaited: the pane shows the
   crash, the rest of Talaria keeps running. The boundary is the exception boundary, not a process

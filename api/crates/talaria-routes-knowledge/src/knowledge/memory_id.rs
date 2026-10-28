@@ -13,7 +13,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_agent_memory::{MemoryFile, read_memory, write_memory};
+use talaria_agent_memory::{MemoryFile, is_shared_department_refusal, read_memory, write_memory};
 use talaria_body::{parse, string_member};
 use talaria_error::{house_error, object_or_400};
 use talaria_session::require_agent_manager;
@@ -55,6 +55,9 @@ pub async fn get(
         Ok((content, container)) => {
             Json(json!({ "content": content, "container": container })).into_response()
         }
+        // Another agent shares this one's department and runs in its
+        // container: the memory there is not this agent's.
+        Err(e) if is_shared_department_refusal(&e) => house_error(StatusCode::CONFLICT, &e),
         Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
     })
 }
@@ -93,6 +96,7 @@ pub async fn put(
     Ok(
         match write_memory(&state.pg, &id, &content, Some(author), file).await {
             Ok(()) => Json(json!({ "ok": true })).into_response(),
+            Err(e) if is_shared_department_refusal(&e) => house_error(StatusCode::CONFLICT, &e),
             Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
         },
     )

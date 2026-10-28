@@ -229,7 +229,12 @@ commits no remote has (`--force` overrides) — those are the only things in a
 box that can't be recreated. A box left behind is the sweep's business too:
 [`bun talaria cleanup`](../.claude/skills/cleanup/SKILL.md) flags a stopped box
 untouched for a week, and `--apply` removes it only when the clone is clean and
-pushed. The shared tools layer (`../devboxes/shared`) is a cache — it stays.
+pushed. A box whose containers went without `box rm` (or an interrupted `box new`)
+can leave its two networks, `devbox-<name>_default` and `devbox-<name>-fleet`, each
+holding a subnet from docker's address pools: `--apply` removes such a network once
+nothing names it, its project has no container left, `../devboxes/<name>/box.env` is
+gone, and it is at least ten minutes old. The shared tools layer
+(`../devboxes/shared`) is a cache — it stays.
 
 ## Troubleshooting
 

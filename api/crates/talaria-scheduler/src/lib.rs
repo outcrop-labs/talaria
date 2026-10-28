@@ -114,6 +114,7 @@ pub enum JobName {
     WorkbenchQueueSweep,
     SkillsIndexRefresh,
     AppTriggers,
+    CronOutputPull,
 }
 
 impl JobName {
@@ -141,6 +142,7 @@ impl JobName {
             JobName::WorkbenchQueueSweep => "workbench-queue-sweep",
             JobName::SkillsIndexRefresh => "skills-index-refresh",
             JobName::AppTriggers => "app-triggers",
+            JobName::CronOutputPull => "cron-output-pull",
         }
     }
 }

@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf, ParsedArgs } from '../../cli'
 import { EMBED_CONTAINER } from '../../containers'
-import { compose, stackComposeFiles, waitFor } from '../../compose'
+import { compose, stackComposeFiles, waitFor, waitForPostgres } from '../../compose'
 import { envValue, writeSecret } from '../../envfile'
 import { portSlot } from '../../paths'
 import { runSeed } from './seed'
@@ -310,20 +310,10 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
   if ((await compose(ctx, { files: stackComposeFiles(root, COMPOSE_FILE), project: boxProject(name), envFile: join(box, 'compose.env') }, ['up', '-d', '--quiet-pull'])) !== 0) {
     ctx.log.die('box stack failed to start')
   }
-  const pgReady = await waitFor(
-    ctx,
-    'box postgres',
-    async () => {
-      try {
-        await ctx.exec('docker', ['exec', boxSvc(name, 'postgres'), 'pg_isready', '-U', 'talaria', '-d', 'talaria'])
-        return true
-      } catch {
-        return false
-      }
-    },
-    60,
-  )
-  if (!pgReady) ctx.log.die('box postgres never became ready')
+  // A real query over TCP (compose.ts, pgReadyArgs): the socket pg_isready
+  // this was passed against the entrypoint's temporary init server, before
+  // the box's database existed, and the seed below then raced its shutdown.
+  if (!(await waitForPostgres(ctx, boxSvc(name, 'postgres'), 60))) ctx.log.die('box postgres never became ready')
   await waitFor(
     ctx,
     'box redis',

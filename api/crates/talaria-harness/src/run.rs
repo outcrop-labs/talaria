@@ -3621,8 +3621,8 @@ mod tests {
     #[tokio::test]
     async fn tells_the_transport_when_the_model_may_use_its_own_tools() {
         // The work session, the outreach check-in and the briefing follow-up
-        // are tool loops. `tools: []` does not weaken them — it disarms the
-        // agent and then trips `zero_tool_claim` for calling no tool.
+        // are tool loops, and say so: a 'none' policy is the wrong ask for
+        // them, and a Hermes session refuses it outright.
         let r = world(World {
             replies: replies(&["picked it up, running the tests now"]),
             ..Default::default()

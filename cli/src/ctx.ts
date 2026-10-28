@@ -29,6 +29,9 @@ export type Ctx = {
   env: Record<string, string | undefined>
   isTTY: boolean
   now: () => Date
+  /** Wait `ms` — the readiness polls' interval. Injected so a test can drive
+   *  a wait that runs out without spending its real minute. */
+  sleep: (ms: number) => Promise<void>
   log: Log
 }
 
@@ -63,6 +66,7 @@ export function realCtx(): Ctx {
     env: process.env,
     isTTY: process.stdin.isTTY === true,
     now: () => new Date(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     log: makeLog(process.stdout.isTTY === true),
   }
 }

@@ -88,7 +88,8 @@ describe('every run is the app’s, whatever the app says', () => {
     await requestRunner(spy).run(triage, { text: 'checkout is down' })
     const { def, ctx } = spy.calls[0]!
     expect(ctx.caller).toBe('app:helpdesk:helpdesk:triage')
-    expect(ctx.ledger).toEqual({ source: 'app' })
+    // No source rides along: the relay books every call on the app's key as `app`.
+    expect(ctx.ledger).toEqual({})
     expect(ctx.userId).toBe('u-1')
     expect(def.model).toEqual({ role: 'utility', slot: 'app:helpdesk/helpdesk:triage' })
     // No deps reach the runner.
@@ -124,7 +125,7 @@ describe('every run is the app’s, whatever the app says', () => {
     const spy = spyOf()
     const task = '9b2f6a0e-3c1d-4e5f-8a7b-0c1d2e3f4a5b'
     await requestRunner(spy).run(triage, { text: 'x' }, { ledger: { refId: 'order-42', taskId: task } })
-    expect(spy.calls[0]!.ctx.ledger).toEqual({ source: 'app', taskId: task })
+    expect(spy.calls[0]!.ctx.ledger).toEqual({ taskId: task })
     expect(spy.warnings.join('\n')).toMatch(/ledger\.refId "order-42" is not a UUID/)
   })
 
