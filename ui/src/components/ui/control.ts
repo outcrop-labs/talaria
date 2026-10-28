@@ -14,6 +14,15 @@ export const controlSizes: Record<ControlSize, string> = {
 export const focusRing =
   'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
 
+// The one disabled reading for a control that is not a gold fill: dim the
+// whole control. Text on a transparent or raised ground stays legible at half
+// opacity in both themes. Button's non-fill variants and the chat chrome's
+// rail chips (`chat-chrome`) both draw it from here, so a disabled chip reads
+// the way a disabled button does. The primary gold fill must NOT use it:
+// dimming the fill and its surface-toned label together leaves a ~1.5:1
+// washed-gold/near-white pair in light mode.
+export const dimDisabled = 'disabled:opacity-50'
+
 // The one key-affordance vocabulary (#49). Every single-line control pairs
 // with one of these instead of hand-rolling `e.key === …` at the call site.
 

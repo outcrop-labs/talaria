@@ -1010,7 +1010,6 @@
           title={pinnedAgent ? PINNED_TIER_NOTE : 'Model tier for this session'}
           menuLabel="Model tier"
           disabled={pinnedAgent}
-          class={pinnedAgent ? 'cursor-not-allowed opacity-50' : undefined}
           onChange={(t) => (sessionTier = t)}
         />
       </span>

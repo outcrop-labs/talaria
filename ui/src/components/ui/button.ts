@@ -1,5 +1,5 @@
 import { cn } from '@/lib/cn'
-import { controlSizes, focusRing, type ControlSize } from './control'
+import { controlSizes, dimDisabled, focusRing, type ControlSize } from './control'
 
 /**
  * Button sizes: the shared control scale, plus one of its own.
@@ -32,11 +32,9 @@ const base = cn(
   focusRing,
 )
 
-// Disabled reading for the non-fill variants: dim the whole control. Text-on-
-// transparent/raised stays legible at half opacity in both themes. The primary
-// gold fill must NOT use this — dimming the fill and its surface-toned label
-// together leaves a ~1.5:1 washed-gold/near-white pair in light mode.
-const dimDisabled = 'disabled:opacity-50'
+// Disabled reading for the non-fill variants is `dimDisabled` (control.ts):
+// dim the whole control. The primary gold fill does not use it; its own
+// treatment is on the variant below.
 
 const variants: Record<ButtonVariant, string> = {
   // Primary: warm gold fill, ground-dark label (spec §8 `NEW MESSAGE +`).
