@@ -24,6 +24,7 @@
 // such an agent keeps working until its next roll moves it back.
 
 use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 mod lost_turns;
@@ -180,7 +181,7 @@ async fn ensure_fleet_network() -> Result<(), String> {
 /// (trimmed), which on success carries its progress/warnings — the run logs
 /// nothing of it.
 pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
-    compose_up(pg, department, &["up", "-d"], Duration::from_secs(120)).await
+    compose_up(pg, department, &["up", "-d"], verb_timeout(120)).await
 }
 
 /// Recreate a department's managed agent IN PLACE — the roll. Compose stops
@@ -188,15 +189,39 @@ pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
 /// then creates and starts a fresh one from the current render on the same
 /// state volume. `--no-deps`: an agent has none, and a roll must never touch
 /// another service. The image is pulled first when the host lacks it, so a
-/// pull that fails leaves the running container exactly as it was.
+/// pull that fails leaves the running container exactly as it was. A
+/// recreate that fails or runs out its time cleans up after itself
+/// (`recover_failed_recreate`).
 pub async fn fleet_recreate(pg: &PgPool, department: &str) -> Result<String, String> {
     compose_up(
         pg,
         department,
         &["up", "-d", "--force-recreate", "--no-deps"],
-        Duration::from_secs(AGENT_STOP_GRACE_SECS + 120),
+        verb_timeout(AGENT_STOP_GRACE_SECS + 120),
     )
     .await
+}
+
+/// How long an agent's compose verb (up, recreate, stop, restart, remove)
+/// may run before its CLI is killed: `default_secs`, unless
+/// `TALARIA_FLEET_COMPOSE_TIMEOUT_SECS` names another deadline for all of
+/// them — longer, for a host whose disk is slow enough that healthy verbs
+/// need it; shorter, to drive the timeout paths on purpose (a killed
+/// recreate's cleanup, a failed verb answered by the container's state).
+/// The image pull and the cleanup's own steps keep their deadlines.
+fn verb_timeout(default_secs: u64) -> Duration {
+    Duration::from_secs(verb_timeout_secs(
+        std::env::var("TALARIA_FLEET_COMPOSE_TIMEOUT_SECS")
+            .ok()
+            .as_deref(),
+        default_secs,
+    ))
+}
+
+fn verb_timeout_secs(env: Option<&str>, default_secs: u64) -> u64 {
+    env.and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(default_secs)
 }
 
 /// The label compose stamps on every container it creates: a digest of the
@@ -335,6 +360,297 @@ pub async fn container_fit(pg: &PgPool, department: &str) -> ContainerFit {
     fit_of(&inspected, rendered.as_deref())
 }
 
+// ── What a container really did ─────────────────────────────────────────────
+//
+// A compose verb's exit is not the container's state. A CLI killed at its
+// deadline leaves the daemon finishing what it had asked for — a stop runs
+// out its grace period and lands, minutes after the caller was told it
+// failed — and a compose that exits on one error can leave another of its
+// requests running. Measured on docker 29.8.1 / compose v5.5.1: a
+// `--force-recreate` killed mid-stop answered 137, and the old container
+// exited at the end of its grace period all the same. So a caller with a
+// failed verb in hand re-reads the container and answers by what it is.
+
+/// What docker says one container is doing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Observed {
+    /// Running: its id and docker's own `StartedAt` stamp, which moves on
+    /// every start — how a restart that did happen is told from one that
+    /// did not.
+    Running { id: String, started_at: String },
+    /// It exists and is not running: created, exited, dead.
+    Stopped { id: String },
+    /// Docker says there is no such container.
+    Absent,
+    /// The inspect itself failed — a timeout, a daemon error — so nothing is
+    /// known.
+    Unreadable,
+}
+
+impl Observed {
+    /// The sentence a log line carries.
+    pub fn describe(&self) -> &'static str {
+        match self {
+            Observed::Running { .. } => "running",
+            Observed::Stopped { .. } => "stopped",
+            Observed::Absent => "gone",
+            Observed::Unreadable => "unreadable (docker did not answer)",
+        }
+    }
+}
+
+/// The `docker inspect` format [`parse_observed`] reads.
+const OBSERVE_FORMAT: &str = "{{.Id}} {{.State.Running}} {{.State.StartedAt}}";
+
+/// Read a `docker inspect -f OBSERVE_FORMAT` result. Like [`parse_inspect`],
+/// only docker's own "no such object" is an absent container.
+pub fn parse_observed(result: &Result<(String, String), String>) -> Observed {
+    match result {
+        Ok((out, _)) => {
+            let mut parts = out.split_whitespace();
+            match (parts.next(), parts.next()) {
+                (Some(id), Some("true")) => Observed::Running {
+                    id: id.to_string(),
+                    started_at: parts.next().unwrap_or_default().to_string(),
+                },
+                (Some(id), Some(_)) => Observed::Stopped { id: id.to_string() },
+                _ => Observed::Unreadable,
+            }
+        }
+        Err(_) => match parse_inspect(result) {
+            Inspected::Absent => Observed::Absent,
+            _ => Observed::Unreadable,
+        },
+    }
+}
+
+/// Patient on purpose: this read follows a verb that failed, very often
+/// because the daemon is slow — an inspect took 35 s on this host while
+/// another session's build saturated the disk, and a 10 s read would only
+/// have said "unknown" for the whole window.
+async fn observe_container(container: &str) -> Observed {
+    parse_observed(
+        &docker(
+            &["inspect", "-f", OBSERVE_FORMAT, container],
+            Duration::from_secs(30),
+        )
+        .await,
+    )
+}
+
+/// What a department's managed container is doing right now.
+pub async fn observe(pg: &PgPool, department: &str) -> Observed {
+    observe_container(&managed_container(pg, department).await).await
+}
+
+/// How long to keep re-reading a container after a compose verb failed. A
+/// verb that ran out its deadline was killed with the daemon still at work —
+/// a stop can need its whole grace period after that — so it gets the grace
+/// period and a margin; any other failure gets a few reads, for the request
+/// compose may have left running when it exited.
+pub fn settle_window(error: &str) -> Duration {
+    if error.contains("timed out after") {
+        Duration::from_secs(AGENT_STOP_GRACE_SECS + 5)
+    } else {
+        Duration::from_secs(6)
+    }
+}
+
+/// After a compose verb on a department failed with `error`: re-read its
+/// container every two seconds, for [`settle_window`], until `reached` says
+/// it is what the verb asked for. Answers the last reading.
+pub async fn settle(
+    pg: &PgPool,
+    department: &str,
+    error: &str,
+    reached: impl Fn(&Observed) -> bool,
+) -> Observed {
+    let deadline = tokio::time::Instant::now() + settle_window(error);
+    loop {
+        let seen = observe(pg, department).await;
+        if reached(&seen) || tokio::time::Instant::now() >= deadline {
+            return seen;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// After an `up` failed with `error`: whether the department's agent is
+/// running the current render all the same — its container
+/// [`ContainerFit::Matches`] within [`settle_window`]: a create and start
+/// the daemon finished for a CLI that did not wait.
+pub async fn up_landed(pg: &PgPool, department: &str, error: &str) -> bool {
+    let deadline = tokio::time::Instant::now() + settle_window(error);
+    loop {
+        if container_fit(pg, department).await == ContainerFit::Matches {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+// ── A recreate a killed CLI left half done ──────────────────────────────────
+//
+// Compose recreates a container by creating the new one as
+// `<first 12 of the old id>_<name>`, then stopping and removing the old one,
+// then renaming the new one and starting it. A CLI killed between the create
+// and the rename — a roll that ran out its time — leaves that new container
+// `created`, never started. It is not harmless: the next recreate of the
+// service treats it as the container to replace, creates yet another, asks
+// the daemon to stop the RUNNING agent, and then fails on the name
+// (measured on compose v5.5.1: "Conflict. The container name … is already
+// in use"), leaving the agent stopped and one more stranded container.
+
+/// Whether `name` is the temporary name compose gives a recreate's new
+/// container for `container`.
+pub fn is_stranded_name(name: &str, container: &str) -> bool {
+    name.strip_suffix(container)
+        .and_then(|prefix| prefix.strip_suffix('_'))
+        .is_some_and(|id| id.len() == 12 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Remove the containers a half-done recreate stranded for this service:
+/// this fleet's compose project and this service by label, never started
+/// (`status=created`), under the temporary name [`is_stranded_name`] reads.
+/// Nothing that ever ran is touched, and `docker rm` without `-f` refuses a
+/// running container anyway. Answers the names it removed.
+async fn clear_stranded(svc: &str, container: &str) -> Vec<String> {
+    let project = talaria_fleet_layout::fleet_project();
+    let listed = docker(
+        &[
+            "ps",
+            "-a",
+            "--filter",
+            &format!("label=com.docker.compose.project={project}"),
+            "--filter",
+            &format!("label=com.docker.compose.service={svc}"),
+            "--filter",
+            "status=created",
+            "--format",
+            "{{.ID}}\t{{.Names}}",
+        ],
+        Duration::from_secs(20),
+    )
+    .await;
+    let Ok((out, _)) = listed else {
+        return Vec::new();
+    };
+    let mut removed = Vec::new();
+    for (id, name) in out.lines().filter_map(|l| l.split_once('\t')) {
+        if !is_stranded_name(name.trim(), container) {
+            continue;
+        }
+        match docker(&["rm", id.trim()], Duration::from_secs(20)).await {
+            Ok(_) => {
+                tracing::warn!(
+                    "[fleet] {svc}: removed {} — a recreate that did not finish left it created and never started",
+                    name.trim()
+                );
+                removed.push(name.trim().to_string());
+            }
+            Err(e) => tracing::warn!(
+                "[fleet] {svc}: could not remove the stranded {} ({e})",
+                name.trim()
+            ),
+        }
+    }
+    removed
+}
+
+/// One compose operation per service at a time, in this process: a cleanup
+/// of stranded containers must never take the temporary container of a
+/// recreate that is still running, and two verbs on one agent at once (a
+/// stop during a roll) only race each other. The roll's own lock
+/// (fleet-reconcile) covers rolls across api instances.
+static SERVICE_LOCKS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+async fn lock_service(svc: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = SERVICE_LOCKS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(svc.to_string())
+        .or_default()
+        .clone();
+    lock.lock_owned().await
+}
+
+/// An `up` that would replace a running container failed — compose's error,
+/// or its deadline. What it leaves depends on how far it got. A stranded
+/// replacement (`stranded`) means compose had created the new container, so
+/// it may have asked the daemon to stop the old one, and that stop lands
+/// whether or not anyone waits for it: wait it out (the grace period and a
+/// margin). Then answer by what is there:
+/// - the old container still running: it serves on its old render, and the
+///   change did not land (`Err`; the next apply rolls it again);
+/// - another container running under the name: compose got as far as the
+///   start, so the render landed (`Ok`);
+/// - nothing running: the stop went through — start the service on the
+///   current render, which completes what was asked (`Ok`), or say that
+///   failed too.
+async fn recover_failed_recreate(
+    svc: &str,
+    container: &str,
+    old_id: &str,
+    stranded: bool,
+    error: String,
+) -> Result<String, String> {
+    let wait = if stranded {
+        Duration::from_secs(AGENT_STOP_GRACE_SECS + 10)
+    } else {
+        Duration::ZERO
+    };
+    let deadline = tokio::time::Instant::now() + wait;
+    let settled = loop {
+        let seen = observe_container(container).await;
+        let still_old = match &seen {
+            Observed::Running { id, .. } => id == old_id,
+            Observed::Unreadable => true,
+            Observed::Stopped { .. } | Observed::Absent => false,
+        };
+        if !still_old || tokio::time::Instant::now() >= deadline {
+            break seen;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    };
+    match settled {
+        Observed::Running { id, .. } if id != old_id => {
+            tracing::warn!(
+                "[fleet] {svc}: the recreate reported a failure ({error}), but its new container is running — the render landed"
+            );
+            Ok(String::new())
+        }
+        Observed::Running { .. } => Err(format!(
+            "{error} — the agent kept running on its previous container"
+        )),
+        Observed::Unreadable => Err(format!(
+            "{error} — and docker could not say whether the agent is still running"
+        )),
+        Observed::Stopped { .. } | Observed::Absent => {
+            clear_stranded(svc, container).await;
+            let args = compose_args(&["up", "-d", "--no-deps", svc]);
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            match docker(&refs, Duration::from_secs(120)).await {
+                Ok((_, stderr)) => {
+                    tracing::warn!(
+                        "[fleet] {svc}: the recreate failed ({error}) after its stop went through — started the agent again on the current render"
+                    );
+                    Ok(stderr.trim().to_string())
+                }
+                Err(e) => {
+                    clear_stranded(svc, container).await;
+                    Err(format!(
+                        "{error} — the agent stopped, and starting it again failed too: {e}"
+                    ))
+                }
+            }
+        }
+    }
+}
+
 /// Stop the agent's gateway THROUGH ITS OWN SUPERVISOR, and wait for it to
 /// finish, before anything stops its container. A plain `docker stop` cannot
 /// drain a Hermes agent, whatever `stop_grace_period` says: the gateway is a
@@ -395,25 +711,47 @@ async fn compose_up(
     ensure_fleet_network().await?;
     let slot = active_slot(pg, department).await;
     let svc = slot_service(department, slot);
+    let container = slot_container(department, slot);
     pull_missing(&svc).await?;
+    let _held = lock_service(&svc).await;
+    // A container an earlier recreate stranded would make this one stop the
+    // agent and then fail on the name: clear it first, so the next apply
+    // after a timed-out roll recovers instead of repeating it.
+    clear_stranded(&svc, &container).await;
+    // The container serving now, if any — what a failed `up` that got as
+    // far as replacing it is measured against ([`recover_failed_recreate`]).
+    let replaced = match observe_container(&container).await {
+        Observed::Running { id, .. } => Some(id),
+        _ => None,
+    };
     // A recreate stops the running container: drain it first. A plain `up`
     // starts one and leaves a running one alone, so it has nothing to drain.
-    let drained = verb
-        .contains(&"--force-recreate")
-        .then(|| slot_container(department, slot));
-    if let Some(container) = &drained {
-        drain_gateway(container).await;
+    let recreate = verb.contains(&"--force-recreate");
+    if recreate {
+        drain_gateway(&container).await;
     }
     let mut args: Vec<String> = compose_args(verb);
-    args.push(svc);
+    args.push(svc.clone());
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let (_, stderr) = match docker(&refs, timeout).await {
         Ok(out) => out,
         Err(e) => {
-            if let Some(container) = &drained {
-                undrain_gateway(container).await;
+            tracing::warn!("[fleet] {svc}: compose {} failed: {e}", verb.join(" "));
+            let stranded = !clear_stranded(&svc, &container).await.is_empty();
+            if recreate {
+                undrain_gateway(&container).await;
             }
-            return Err(e);
+            // Only a container that was serving is brought back: an `up` or
+            // a roll of a stopped agent that failed leaves it stopped. (A
+            // plain `up` replaces a running container too, when the render
+            // moved its service.)
+            match &replaced {
+                Some(old_id) => {
+                    recover_failed_recreate(&svc, &container, old_id, stranded, e).await?;
+                }
+                None => return Err(e),
+            }
+            (String::new(), String::new())
         }
     };
     // Bringing an agent up is the moment to ask whether it can reach us — from
@@ -671,18 +1009,23 @@ async fn compose_verb(
     timeout: Duration,
 ) -> Result<String, String> {
     let slot = active_slot(pg, department).await;
+    let container = slot_container(department, slot);
+    let svc = slot_service(department, slot);
+    let _held = lock_service(&svc).await;
+    // A stranded recreate container is part of the service to compose: a
+    // `restart` would START it beside the agent. Clear it first.
+    clear_stranded(&svc, &container).await;
     // Every verb through here stops the container (stop, restart, rm -s):
     // let the gateway drain first — and bring it back if the verb failed
     // before it got that far.
-    let container = slot_container(department, slot);
     drain_gateway(&container).await;
-    let svc = slot_service(department, slot);
     let mut full: Vec<String> = compose_args(verb_args);
-    full.push(svc);
+    full.push(svc.clone());
     let refs: Vec<&str> = full.iter().map(String::as_str).collect();
     match docker(&refs, timeout).await {
         Ok((_, stderr)) => Ok(stderr.trim().to_string()),
         Err(e) => {
+            tracing::warn!("[fleet] {svc}: compose {} failed: {e}", verb_args.join(" "));
             undrain_gateway(&container).await;
             Err(e)
         }
@@ -704,7 +1047,7 @@ pub async fn fleet_stop(pg: &PgPool, department: &str) -> Result<String, String>
         pg,
         department,
         &["stop"],
-        Duration::from_secs(AGENT_STOP_GRACE_SECS + 30),
+        verb_timeout(AGENT_STOP_GRACE_SECS + 30),
     )
     .await
 }
@@ -720,7 +1063,7 @@ pub async fn fleet_restart(pg: &PgPool, department: &str) -> Result<String, Stri
         pg,
         department,
         &["restart"],
-        Duration::from_secs(AGENT_STOP_GRACE_SECS + 90),
+        verb_timeout(AGENT_STOP_GRACE_SECS + 90),
     )
     .await
 }
@@ -730,7 +1073,7 @@ pub async fn fleet_remove(pg: &PgPool, department: &str) -> Result<String, Strin
         pg,
         department,
         &["rm", "-sf"],
-        Duration::from_secs(AGENT_STOP_GRACE_SECS + 30),
+        verb_timeout(AGENT_STOP_GRACE_SECS + 30),
     )
     .await
 }
@@ -953,6 +1296,80 @@ mod tests {
         assert_eq!(
             fit_of(&Inspected::Absent, Some(h)),
             ContainerFit::NotRunning
+        );
+    }
+
+    #[test]
+    fn a_container_is_read_back_as_running_stopped_gone_or_unknown() {
+        let ok = |s: &str| Ok((s.to_string(), String::new()));
+        // `docker inspect -f OBSERVE_FORMAT`, as 29.8.1 prints it.
+        assert_eq!(
+            parse_observed(&ok(
+                "6d3b3d0e4b73c0de true 2026-10-27T21:04:11.123456789Z\n"
+            )),
+            Observed::Running {
+                id: "6d3b3d0e4b73c0de".into(),
+                started_at: "2026-10-27T21:04:11.123456789Z".into()
+            }
+        );
+        // An exited container keeps its last StartedAt; it is still stopped.
+        assert_eq!(
+            parse_observed(&ok("6d3b3d0e4b73c0de false 2026-10-27T21:04:11Z\n")),
+            Observed::Stopped {
+                id: "6d3b3d0e4b73c0de".into()
+            }
+        );
+        assert_eq!(
+            parse_observed(&Err(
+                "docker inspect failed: Error: no such object: talaria-agent-ops".into()
+            )),
+            Observed::Absent
+        );
+        assert_eq!(
+            parse_observed(&Err("docker inspect …: timed out after 10s".into())),
+            Observed::Unreadable
+        );
+        assert_eq!(parse_observed(&ok("")), Observed::Unreadable);
+    }
+
+    #[test]
+    fn only_compose_s_temporary_recreate_name_is_stranded() {
+        let c = "talaria-wt-fu-rolls-fleet-agent-ops-1";
+        // What a killed `up --force-recreate` left on this host (compose
+        // v5.5.1): the old container's first 12 id characters, then `_`.
+        assert!(is_stranded_name(&format!("6d3b3d0e4b73_{c}"), c));
+        // The agent itself, another agent, and lookalikes are never touched.
+        assert!(!is_stranded_name(c, c));
+        assert!(!is_stranded_name(
+            "6d3b3d0e4b73_talaria-wt-fu-rolls-fleet-agent-ops-b-1",
+            c
+        ));
+        assert!(!is_stranded_name(&format!("6d3b3d0e4b7_{c}"), c));
+        assert!(!is_stranded_name(&format!("6d3b3d0e4b73x_{c}"), c));
+        assert!(!is_stranded_name(&format!("zzzzzzzzzzzz_{c}"), c));
+        assert!(!is_stranded_name(&format!("x_6d3b3d0e4b73_{c}"), c));
+        assert!(!is_stranded_name(&format!("{c}_6d3b3d0e4b73"), c));
+    }
+
+    #[test]
+    fn the_compose_deadline_override_takes_a_positive_number_only() {
+        assert_eq!(verb_timeout_secs(None, 120), 120);
+        assert_eq!(verb_timeout_secs(Some("4"), 120), 4);
+        assert_eq!(verb_timeout_secs(Some(" 600 "), 120), 600);
+        for ignored in ["", "0", "-3", "soon", "1.5"] {
+            assert_eq!(verb_timeout_secs(Some(ignored), 120), 120, "{ignored:?}");
+        }
+    }
+
+    #[test]
+    fn a_timed_out_verb_is_given_the_grace_period_to_land() {
+        assert_eq!(
+            settle_window("docker compose …: timed out after 75s"),
+            Duration::from_secs(AGENT_STOP_GRACE_SECS + 5)
+        );
+        assert_eq!(
+            settle_window("docker compose failed: Error response from daemon: conflict"),
+            Duration::from_secs(6)
         );
     }
 

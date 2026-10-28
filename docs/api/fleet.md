@@ -75,7 +75,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs`]
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcontrol-body) | `{ok}` | 200, 400, 404, 409, 500 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcontrol-body) | `{ok}` | 200, 400, 404, 409, 500, 503 | audit |
 
 ### POST `/api/fleet/agents/{id}/control` body
 

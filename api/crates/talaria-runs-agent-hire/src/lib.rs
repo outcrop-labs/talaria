@@ -407,9 +407,24 @@ pub fn real_agent_hire_deps(state: talaria_state::AppState) -> AgentHireDeps {
                 Box::pin(async move {
                     // fleetUp answers with the compose service it brought up;
                     // the run doesn't read it — the promise IS the effect.
-                    talaria_fleet_docker::fleet_up(&pg, &department)
-                        .await
-                        .map(|_| ())
+                    // A failure is answered by the container, not by compose:
+                    // an `up` that ran out its deadline under heavy IO can
+                    // leave the daemon finishing the create and the start, and
+                    // a step that errors here is retried from the top — a
+                    // second hire of an agent that is already up.
+                    match talaria_fleet_docker::fleet_up(&pg, &department).await {
+                        Ok(_) => Ok(()),
+                        Err(e) if talaria_fleet_docker::up_landed(&pg, &department, &e).await => {
+                            tracing::warn!(
+                                "[fleet] hire of {department}: compose reported a failure ({e}), but the container runs the current render — going on"
+                            );
+                            Ok(())
+                        }
+                        Err(e) => {
+                            tracing::warn!("[fleet] hire of {department}: up failed: {e}");
+                            Err(e)
+                        }
+                    }
                 })
             })
         },

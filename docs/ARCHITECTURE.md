@@ -230,6 +230,22 @@ multiplexer.
   agent back on `-b`), and only then is `-b` drained and removed. A stop, restart or recreate
   that fails before it reaches the container brings the drained gateway back up
   (`s6-svc -u`), so a failed step never leaves an agent running without one.
+- **A compose verb's exit is not the container's state** (`talaria-fleet-docker`). A CLI
+  killed at its deadline leaves the daemon finishing what it asked for — a stop lands at the
+  end of its grace period whether anyone waits or not — and compose recreates by creating the
+  new container as `<first 12 of the old id>_<name>`, stopping and removing the old one, then
+  renaming. A recreate cut off between the create and the rename strands that container
+  `created`, and the next recreate of the service then stops the running agent and fails on the
+  name. So every `up` and stop-shaped verb first removes such a stranded container (this fleet's
+  compose project and service by label, never started, that exact name; one compose operation
+  per service at a time in the process, so nothing in flight is taken), and a failed `up` that
+  was replacing a running container waits out a stop it may have started, then answers by what
+  is there: the old container still serving (the change did not land), a new one running (it
+  did), or nothing — and then it starts the service on the current render. The control route
+  and the hire answer a failed verb the same way: compose's error is logged, the container is
+  re-read (`settle`, `up_landed`), and an agent that reached what was asked answers as the
+  success it is. `TALARIA_FLEET_COMPOSE_TIMEOUT_SECS` replaces every agent compose verb's
+  deadline — longer for a slow disk, or tiny to drive these paths on purpose.
 - **Config edits reach running agents without a roll.** A render rewrites each agent's
   `config.yaml` *in place* (same inode, under an `flock`, unchanged bytes skipped), because
   the container sees it through a single-file `:ro` bind that pins whichever inode existed
@@ -251,7 +267,9 @@ multiplexer.
 - **Applying a change** (`apply_agent_change` in `talaria-fleet-reconcile`) is how every edit
   reaches a running agent: a toolset or delegation-cap switch, a def edit's apply, an MCP
   grant, assignment, team or user access, a connected account, a server or app enabled,
-  disabled, removed or re-cataloged, and the org profile. It renders, then asks whether the
+  disabled, removed or re-cataloged, the org profile, and a model or endpoint removed in Models
+  (`talaria-fleet-cascade`: the stripped tiers are start-time config, so a running agent rolls;
+  a stopped one is never started by it). It renders, then asks whether the
   running container still matches the render (`container_fit` in `talaria-fleet-docker`):
   `docker compose config --hash` for the agent's service against the
   `com.docker.compose.config-hash` label the container was created with — compose's own
