@@ -72,7 +72,17 @@ data so you still have realistic agents/boards/tickets to work against.
    container, running or stopped, still names it.
 3. Seeds the new DB with `pg_dump` of your main DB (a snapshot — later changes on
    main don't propagate), then clears the copied agents' gateway ports so this
-   stack's first render assigns its own rather than publishing onto main's. Both
+   stack's first render assigns its own rather than publishing onto main's. It
+   counts main's tables first and says what the copy carried: `seeded (… N
+   tables)`, or, when main's database has no tables at all, that there was nothing
+   to copy and the worktree starts empty and migrates on its first `talaria dev`.
+   The restore runs with `ON_ERROR_STOP`, so one failed statement fails the seed
+   (psql otherwise prints it and exits 0), and a restore that comes up with fewer
+   tables than main dies too, with the teardown. Main's container is
+   `talaria-postgres-dev`, or what `TALARIA_PG_CONTAINER` names — but one that
+   belongs to a worktree's or a box's compose project is refused: `talaria dev` in
+   a worktree sets that variable to the worktree's own Postgres, every process it
+   starts inherits it, and a worktree cut from there copied the wrong stack. Both
    ends of the copy are waited for with **a real query over TCP**
    (`psql -h 127.0.0.1 … -c 'select 1'` in the container), not `pg_isready`:
    the container existing is not the same as the database existing, and a
@@ -111,7 +121,14 @@ data so you still have realistic agents/boards/tickets to work against.
    template is the base ref's, so the chassis matches the renderer the worktree
    runs; a base ref without one falls back to the invoking checkout's. An
    existing chassis is kept; it is your config.
-6. Symlinks `ui/node_modules` from main (fast; no reinstall), and **installs**
+6. Symlinks `ui/node_modules` to the **primary checkout's**, by its physical path
+   (fast; no reinstall). The primary is found from git's common dir, which every
+   linked worktree shares; when git cannot say, the invoking checkout's own
+   `ui/node_modules`, resolved through every link, stands in. It used to link the
+   invoking checkout's spelling, so a worktree cut from another worktree linked
+   *that* worktree's link, and lost its toolchain the moment that worktree was
+   removed. With nothing to link anywhere it warns, and `talaria dev` installs one.
+   It also **installs**
    `cli/` and `mcp/` with `bun install --frozen-lockfile` from the branch's own
    lockfiles. Those two used to be missing in every fresh worktree, so its first
    `bun run gate` failed on a missing `tsc` before it read a line of the change;
@@ -154,11 +171,20 @@ recut, or check the new `ui/.env` against step 4.
 - **Networks left behind are swept too.** A worktree cut before its stack moved to the
   default bridge, an interrupted `up`, or a stack whose containers were removed by
   hand can leave a `talaria-*` compose network with nothing on it, still holding its
-  subnet. `bun talaria cleanup` lists each one whose project has no container left and
-  no live worktree (and is at least ten minutes old, so it never races an `up` in
-  flight); `--apply` removes them. The shared `talaria` network and anything outside a
-  `talaria-*` project are never touched. When `compose up` does fail on the pool
-  error, the CLI says what it means and points here.
+  subnet; a box can leave its `devbox-*` ones the same way. `bun talaria cleanup` lists
+  each one whose project has no container left and no live worktree or box (and is at
+  least ten minutes old, so it never races an `up` in flight); `--apply` removes them.
+  The shared `talaria` network and anything outside a `talaria-*` or `devbox-*` project
+  are never touched. When `compose up` does fail on the pool error, the CLI says what
+  it means and points here. An app's own database takes no network either: in dev it
+  runs on the default bridge and publishes a loopback port
+  ([`APPS.md`](./APPS.md)).
+- **The app's port is strict.** `talaria dev` hands vite this worktree's `PORT` with
+  `--strictPort` (the primary's `5273` too), and checks the port before anything
+  starts: a port already taken stops it with the holder's pid and command (or the
+  container that publishes it). vite used to move to the next port and carry on, while
+  `TALARIA_GATEWAY_SELF_URL` and every other URL in `ui/.env` kept naming the old one,
+  so the stack's agents could not reach the app they belonged to.
 - **Once the pull request merges, the stack stops itself.** The work is finished, so
   the sweep does not wait out the seven-day idle clock: the next stop gate in any
   checkout runs `docker compose down -v` on that worktree's stack, and the checkout

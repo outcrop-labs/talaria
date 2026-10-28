@@ -4,8 +4,8 @@
 // so you can hack in it without any risk of breaking your primary dev stack.
 // Port of scripts/worktree.sh.
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
@@ -155,9 +155,72 @@ export function setupDiffers(running: string, wt: string): boolean {
   return readFileSync(own, 'utf8') !== readFileSync(running, 'utf8')
 }
 
+/** The `ui/node_modules` a new worktree links: the PRIMARY checkout's, by
+ *  its physical path. It used to be the invoking checkout's own spelling,
+ *  `<root>/ui/node_modules` — and when that checkout was itself a worktree,
+ *  its node_modules was a link to the primary's, so the new link went
+ *  through it and dangled the moment that worktree was removed, taking the
+ *  new worktree's ui toolchain with it (follow-up R21).
+ *  The primary is the one checkout that outlives worktrees, and git names it:
+ *  every linked worktree shares its common dir, `<primary>/.git`. When git
+ *  cannot say (no git, a bare repository) or the primary has no install, the
+ *  invoking checkout's resolved through every link stands in. null: there is
+ *  nothing to link, and the caller says so rather than leave a dangling link
+ *  the gate would read as an install. */
+export async function sharedUiNodeModules(ctx: Ctx, root: string): Promise<string | null> {
+  try {
+    const out = (await ctx.exec('git', ['rev-parse', '--git-common-dir'], { cwd: root })).stdout.trim()
+    // Relative in the primary (`.git`), absolute in a linked worktree.
+    const common = out ? resolve(root, out) : ''
+    if (common && basename(common) === '.git') {
+      const primary = join(dirname(common), 'ui/node_modules')
+      if (existsSync(primary)) return realpathSync(primary)
+    }
+  } catch {
+    // no answer from git: fall through to the invoking checkout's own
+  }
+  const own = join(root, 'ui/node_modules')
+  return existsSync(own) ? realpathSync(own) : null
+}
+
 /** The packages a worktree installs from its own lockfiles (the install step
  *  says why these and not ui/). */
 export const WORKTREE_INSTALLED_PACKAGES = ['cli', 'mcp'] as const
+
+/** Every table a database holds outside the system catalogs. Read on both
+ *  ends of the seed, so the command reports what the copy really carried. */
+export const COUNT_TABLES =
+  "select count(*) from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema')"
+
+/** How many tables `pgc`'s talaria database holds, or null when it cannot
+ *  say (the query failed, or answered something that is not a count). */
+export async function tableCount(ctx: Ctx, pgc: string): Promise<number | null> {
+  try {
+    const out = (await ctx.exec('docker', ['exec', pgc, 'psql', '-U', 'talaria', '-d', 'talaria', '-tAc', COUNT_TABLES])).stdout.trim()
+    return /^\d+$/.test(out) ? Number(out) : null
+  } catch {
+    return null
+  }
+}
+
+/** The compose project a container was started under: '' for none, null when
+ *  docker does not know the container. */
+export async function composeProjectOf(ctx: Ctx, container: string): Promise<string | null> {
+  try {
+    const out = (
+      await ctx.exec('docker', ['inspect', '-f', '{{index .Config.Labels "com.docker.compose.project"}}', container])
+    ).stdout.trim()
+    return out === '<no value>' ? '' : out
+  } catch {
+    return null
+  }
+}
+
+/** A compose project that is some other stack's, never main's: a worktree's
+ *  (`talaria-wt-*`, its fleet too) or a box's (`devbox-*`). */
+export function isSideStack(project: string): boolean {
+  return project.startsWith('talaria-wt-') || project.startsWith('devbox-')
+}
 
 /** Clears the gateway ports a seed copied from main (see the seed step). */
 export const CLEAR_SEEDED_GATEWAY_PORTS =
@@ -173,6 +236,7 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   const project = `talaria-wt-${name}`
   const pgc = `talaria-pg-${name}`
   const redisc = `talaria-redis-${name}`
+  const teardown = `docker compose -p ${project} down -v && git worktree remove --force ${wt} && git branch -D wt/${name}`
 
   try {
     await ctx.exec('docker', ['--version'])
@@ -183,10 +247,21 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
     ctx.log.die('run `bun talaria setup` in the main checkout first (need ui/.env)')
   }
   const mainPgc = ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER
-  try {
-    await ctx.exec('docker', ['inspect', mainPgc])
-  } catch {
-    ctx.log.die(`main Postgres (${mainPgc}) isn't running — start the main stack first`)
+  const mainProject = await composeProjectOf(ctx, mainPgc)
+  if (mainProject === null) ctx.log.die(`main Postgres (${mainPgc}) isn't running — start the main stack first`)
+  // The seed reads whatever TALARIA_PG_CONTAINER names, and `talaria dev` in
+  // a worktree sets exactly that variable to the worktree's own Postgres — in
+  // its own process, which every child inherits: the app, its harness runs,
+  // and any shell they open. A `talaria worktree` run from there copied that
+  // worktree's database and called it "a point-in-time copy of main". The
+  // variable stays an operator's override for main's container; one that
+  // names another stack's is refused, before anything exists (R22).
+  if (isSideStack(mainProject)) {
+    ctx.log.die(
+      `TALARIA_PG_CONTAINER=${mainPgc} is the Postgres of compose project ${mainProject}, not main's, ` +
+        `so the seed would copy that stack instead of main. This shell most likely inherited it from that ` +
+        `stack's \`talaria dev\`. Run it without: env -u TALARIA_PG_CONTAINER bun talaria worktree ${name}`,
+    )
   }
   // `inspect` only proves the CONTAINER exists. The seed below runs pg_dump
   // against the `talaria` DATABASE, and a just-started postgres has not created
@@ -245,7 +320,7 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   if (!(await waitForPostgres(ctx, pgc, 60))) {
     ctx.log.die(
       `worktree postgres (${pgc}) never served its 'talaria' database — see \`docker logs ${pgc}\`. ` +
-        `Tear the half-made stack down with: docker compose -p ${project} down -v && git worktree remove --force ${wt} && git branch -D wt/${name}`,
+        `Tear the half-made stack down with: ${teardown}`,
     )
   }
   ctx.log.ok('infra up')
@@ -259,19 +334,48 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   if (!(await waitForPostgres(ctx, mainPgc, 30))) {
     ctx.log.die(
       `main Postgres (${mainPgc}) stopped answering before the seed. ` +
-        `Tear the half-made stack down with: docker compose -p ${project} down -v && git worktree remove --force ${wt} && git branch -D wt/${name}`,
+        `Tear the half-made stack down with: ${teardown}`,
     )
   }
+  // What the seed should carry, counted before the dump reads it. Main's dev
+  // database can be empty — on this host on 2026-10-27 it held no tables at
+  // all, and every worktree cut from it said "seeded (a point-in-time copy of
+  // main)" while it copied nothing, which read as a broken seed. So the
+  // count decides what this step says, and the restore is checked against it.
+  const mainTables = await tableCount(ctx, mainPgc)
   try {
+    // ON_ERROR_STOP: without it psql reports a statement that failed on
+    // stderr and still exits 0, so a restore that broke half way was
+    // "seeded" too. Now the first failed statement fails the pipe, and the
+    // command dies here.
     await ctx.pipe(
       ['docker', ['exec', mainPgc, 'pg_dump', '-U', 'talaria', '-d', 'talaria', '--clean', '--if-exists']],
-      ['docker', ['exec', '-i', pgc, 'psql', '-U', 'talaria', '-d', 'talaria', '-q']],
+      ['docker', ['exec', '-i', pgc, 'psql', '-U', 'talaria', '-d', 'talaria', '-q', '-v', 'ON_ERROR_STOP=1']],
       { quietDst: true },
     )
   } catch (e) {
-    ctx.log.die(`seed dump/restore failed: ${e instanceof Error ? e.message : String(e)}`)
+    ctx.log.die(
+      `seed dump/restore failed: ${e instanceof Error ? e.message : String(e)}. ` +
+        `Tear the half-made stack down with: ${teardown}`,
+    )
   }
-  ctx.log.ok('seeded (a point-in-time copy of main)')
+  if (mainTables === 0) {
+    ctx.log.warn(
+      `main's database (${mainPgc}) has no tables, so there was nothing to copy: this worktree starts ` +
+        'empty, and the app migrates it on its first `talaria dev`',
+    )
+  } else if (mainTables === null) {
+    ctx.log.ok("seeded (a point-in-time copy of main; main's table count could not be read)")
+  } else {
+    const ownTables = await tableCount(ctx, pgc)
+    if (ownTables !== null && ownTables < mainTables) {
+      ctx.log.die(
+        `seed incomplete: main has ${mainTables} tables, this worktree's database ${ownTables}. ` +
+          `Tear the half-made stack down with: ${teardown}`,
+      )
+    }
+    ctx.log.ok(`seeded (a point-in-time copy of main: ${mainTables} tables)`)
+  }
   // The copied agent rows carry MAIN's gateway ports. This stack renders its
   // own fleet from its own base (TALARIA_GATEWAY_PORT_BASE below), so a copied
   // port would publish onto one of main's live agents. Clear them: the first
@@ -357,9 +461,19 @@ TALARIA_GATEWAY_PORT_BASE=${slot.gatewayBase}
 
   ctx.log.say('Sharing node_modules')
   if (!existsSync(join(wt, 'ui/node_modules'))) {
-    symlinkSync(join(root, 'ui/node_modules'), join(wt, 'ui/node_modules'))
+    const shared = await sharedUiNodeModules(ctx, root)
+    if (shared) {
+      symlinkSync(shared, join(wt, 'ui/node_modules'))
+      ctx.log.ok(`ui linked → ${shared}`)
+    } else {
+      ctx.log.warn(
+        `no ui/node_modules in the primary checkout or in ${root} to link — ` +
+          '`bun talaria dev` installs one into this worktree on its first run',
+      )
+    }
+  } else {
+    ctx.log.ok('ui linked')
   }
-  ctx.log.ok('ui linked')
   // cli/ and mcp/ are INSTALLED, from the branch's own lockfiles, rather than
   // linked: a fresh worktree had neither, and `bun run gate` typechecks both
   // when the diff touches them — so the first gate in every new worktree

@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { apiEnv, runDev, rustApi } from './dev'
+import { apiEnv, portHolder, runDev, rustApi, viteArgs } from './dev'
 import { WORKTREE_COMPOSE, pgReadyArgs } from '../compose'
 import { fakeCtx, type FakeCtx } from '../testing'
 import { CliError } from '../ui'
@@ -257,7 +257,7 @@ describe('talaria dev — gates', () => {
     expect(ctx.calls.some((c) => c.args.includes('searxng'))).toBe(false)
   })
 
-  test('a worktree\'s own PORT reaches vite (vite\'s script hardcodes 5273)', async () => {
+  test('a worktree\'s own PORT reaches vite (vite\'s script hardcodes 5273), bound strictly', async () => {
     const root = makeTree({ uiEnv: 'TALARIA_WORKTREE=wt\nDATABASE_URL=x\nREDIS_URL=y\nPORT=5310\n' })
     writeFileSync(join(root, '.git'), 'gitdir: /elsewhere\n')
     const ctx = fakeCtx()
@@ -265,17 +265,24 @@ describe('talaria dev — gates', () => {
     plantInfra(ctx)
     await runDev(ctx)
     const dev = ctx.calls.find((c) => c.cmd === 'bun' && c.args[0] === 'run' && c.args[1] === 'dev')!
-    expect(dev.args).toEqual(['run', 'dev', '--', '--port', '5310'])
+    // --strictPort: a busy port used to move vite to the NEXT one while
+    // TALARIA_GATEWAY_SELF_URL and the rest of ui/.env kept naming 5310.
+    expect(dev.args).toEqual(['run', 'dev', '--', '--port', '5310', '--strictPort'])
+    // ...and the port was asked about before anything started
+    const probe = ctx.calls.findIndex((c) => c.cmd === 'ss')
+    expect(ctx.calls[probe]!.args).toEqual(['-Hltnp', 'sport', '=', ':5310'])
+    expect(probe).toBeLessThan(ctx.calls.findIndex((c) => c.args.includes('up')))
   })
 
-  test('the primary checkout does NOT get a port flag', async () => {
+  test('the primary checkout keeps the script\'s 5273, strictly', async () => {
     const root = makeTree({ uiEnv: 'DATABASE_URL=x\nREDIS_URL=y\nPORT=5273\n' })
     const ctx = fakeCtx()
     ctx.root = root
     plantInfra(ctx)
     await runDev(ctx)
     const dev = ctx.calls.find((c) => c.cmd === 'bun' && c.args[0] === 'run' && c.args[1] === 'dev')!
-    expect(dev.args).toEqual(['run', 'dev'])
+    expect(dev.args).toEqual(['run', 'dev', '--', '--strictPort'])
+    expect(ctx.calls.find((c) => c.cmd === 'ss')!.args).toEqual(['-Hltnp', 'sport', '=', ':5273'])
   })
 
   test('missing ui/.env dies pointing at setup', async () => {
@@ -552,5 +559,72 @@ describe('talaria dev — a worktree gives back its old project network', () => 
     plantInfra(ctx)
     await runDev(ctx)
     expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args[0] === 'network')).toBe(false)
+  })
+})
+
+// ── The app's port is strict, and a taken one names its holder (R23) ───────
+describe('talaria dev — a taken app port', () => {
+  const SS = (port: string) => ['-Hltnp', 'sport', '=', `:${port}`]
+  const wtTree = () => {
+    const root = makeTree({ uiEnv: 'TALARIA_WORKTREE=wt\nDATABASE_URL=x\nREDIS_URL=y\nPORT=5310\n' })
+    writeFileSync(join(root, '.git'), 'gitdir: /elsewhere\n')
+    return root
+  }
+
+  test('a listener with a visible pid stops dev before any infra, naming the pid and its command', async () => {
+    const ctx = fakeCtx()
+    ctx.root = wtTree()
+    plantInfra(ctx)
+    ctx.plant(['ss', SS('5310')], 'LISTEN 0      511          0.0.0.0:5310       0.0.0.0:*    users:(("node",pid=4242,fd=23))\n')
+    ctx.plant(['ps', ['-o', 'args=', '-p', '4242']], 'node /work/ui/node_modules/.bin/vite dev --port 5310\n')
+    const msg = await attempt(ctx)
+    expect(msg).toContain("port 5310 (this worktree's PORT in ui/.env) is already taken by pid 4242 (node /work/ui/node_modules/.bin/vite dev --port 5310)")
+    expect(ctx.calls.some((c) => c.args.includes('up'))).toBe(false)
+    expect(ctx.calls.some((c) => c.cmd === 'bun' && c.args[1] === 'dev')).toBe(false)
+  })
+
+  test("the primary's 5273 is checked the same way", async () => {
+    const root = makeTree({ uiEnv: 'DATABASE_URL=x\nREDIS_URL=y\n' })
+    const ctx = fakeCtx()
+    ctx.root = root
+    plantInfra(ctx)
+    ctx.plant(['ss', SS('5273')], 'LISTEN 0 511 *:5273 *:* users:(("bun",pid=77,fd=9))\n')
+    const msg = await attempt(ctx)
+    expect(msg).toContain("port 5273 (the dev script's port) is already taken by pid 77")
+  })
+
+  test('a port docker publishes names the container', async () => {
+    const ctx = fakeCtx()
+    ctx.plant(['ss', SS('5310')], 'LISTEN 0 4096 127.0.0.1:5310 0.0.0.0:*\n')
+    ctx.plant(['docker', ['ps', '--filter', 'publish=5310', '--format', '{{.Names}}']], 'talaria-pg-other\n')
+    expect(await portHolder(ctx, '5310')).toBe('container talaria-pg-other (published by docker)')
+  })
+
+  test("a holder this user cannot see is still named as taken", async () => {
+    const ctx = fakeCtx()
+    ctx.plant(['ss', SS('5310')], 'LISTEN 0 4096 127.0.0.1:5310 0.0.0.0:*\n')
+    expect(await portHolder(ctx, '5310')).toContain('a process this user cannot see')
+  })
+
+  test('no ss: lsof answers (macOS)', async () => {
+    const ctx = fakeCtx()
+    ctx.plant(['ss', SS('5310')], new Error('spawn ss ENOENT'))
+    ctx.plant(['lsof', ['-nP', '-iTCP:5310', '-sTCP:LISTEN', '-Fpc']], 'p912\ncnode\nf23\n')
+    ctx.plant(['ps', ['-o', 'args=', '-p', '912']], new Error('gone'))
+    expect(await portHolder(ctx, '5310')).toBe('pid 912 (node)')
+  })
+
+  test('nothing listening, or nothing that can say: null — vite --strictPort is the backstop', async () => {
+    const free = fakeCtx()
+    expect(await portHolder(free, '5310')).toBeNull()
+    const blind = fakeCtx()
+    blind.plant(['ss', SS('5310')], new Error('spawn ss ENOENT'))
+    blind.plant(['lsof', ['-nP', '-iTCP:5310', '-sTCP:LISTEN', '-Fpc']], new Error('exit 1'))
+    expect(await portHolder(blind, '5310')).toBeNull()
+  })
+
+  test('vite is always strict', () => {
+    expect(viteArgs('5310')).toEqual(['run', 'dev', '--', '--port', '5310', '--strictPort'])
+    expect(viteArgs(undefined)).toEqual(['run', 'dev', '--', '--strictPort'])
   })
 })
