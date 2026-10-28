@@ -242,10 +242,17 @@ multiplexer.
   confirmed before compose runs: a `docker rm` that ran out its time goes on in the daemon,
   and a `compose up` beside the half-removed container removed the agent's own container and
   created nothing, with exit 0 — so it is waited out, an `up` or `restart` does not run beside
-  one that will not go, and an `up` that reports success with no container is a failure. The
-  control route and the def and MCP edits' applies run their verb on a task of its own: a
-  client that goes away drops the request's future, and the compose CLI used to die with it,
-  halfway through a recreate. A failed `up` that
+  one that will not go, and an `up` that reports success with no container is a failure. **A
+  verb outlives its caller.** The control route runs each verb but `roll` whole on a task of
+  its own (`run_detached` in `talaria-fleet-docker`) — the render ahead of an `up`, the compose
+  verb, which takes the service's lock inside that task, and the re-read after a failure — and
+  so do the hire's `up`, a personal assistant's bring-up and restart, and the def and MCP
+  edits' applies. A client that goes away (a curl that gave up, a closed tab, or the app
+  proxy's own fetch, which gives up on a response with no headers after 300 s) drops only the
+  wait: the compose CLI used to die with the request's future, halfway through a recreate. The
+  route answers with the verb's own result when it settles within 210 s
+  (`ANSWER_WITHIN`), and past that with 202 `{ok, pending, state}` — the container as it is so
+  far; the roster shows the rest. A failed `up` that
   was replacing a running container waits out a stop it may have started, then answers by what
   is there: the old container still serving (the change did not land), a new one running (it
   did), or nothing — and then it starts the service on the current render. The control route
@@ -295,9 +302,15 @@ multiplexer.
   (`ContainerFit::Unknown`), and one it still will not describe is left alone, with a sentence
   for the caller that the change is rendered but not applied. The roll then reads the
   container once more under the service's lock (`fleet_recreate_running`), so a person who
-  stops the agent while the roll renders and pulls is not overruled. A roll asked for as a
-  roll — the operator's, the fleet's, an MCP timeout or auth-mode edit's — is not an apply and
-  recreates what it is pointed at. Most of `config.yaml` is read only
+  stops the agent while the roll renders and pulls is not overruled. **No roll starts a
+  stopped agent either** (`roll_running_agent`): a roll asked for as a roll — the operator's,
+  the update job's, an MCP timeout or auth-mode edit's, the Developer switch's, a key
+  rotation's — recreates a running agent whatever its fit, and leaves one that is not running
+  when the recreate holds the service's lock as it is; its next start reads the render
+  (compose recreates a container whose service moved, and a plain start boots Hermes on the
+  rewritten `config.yaml`). The control route refuses `roll` for an agent that is not running
+  (409: start it instead). The one exception is the fleet roll a person asks to include stopped
+  agents in (`POST /api/fleet/roll` with `all`). Most of `config.yaml` is read only
   at start (`model_routes` is parsed once, in the API server adapter's constructor; plugins
   load at boot), so each service carries a `talaria.config-start-hash` label: a digest of the
   rendered config minus the paths a running Hermes v0.22.4 picks up from the rewrite —
@@ -311,9 +324,11 @@ multiplexer.
 
   Two MCP changes keep a name an agent already holds, and reach it through the gateway rather
   than a restart. A tool list that changes under the name — a subset widened or narrowed, a
-  team or user grant, an app's new catalog, a connected account — is counted
-  (`bump_tool_lists`, the `mcp.tool_lists_epoch` setting); the gateway remembers, per agent
-  and server, the count it last saw, and answers the agent's next keepalive `ping` (every 180s
+  team or user grant, an app's new catalog, a connected account — is counted for each server
+  it touches (`bump_tool_lists`, one `mcp.tool_list_count:<server>` setting per server, so a
+  change to one server re-lists that server alone, for the agents that hold it); the gateway
+  remembers, per agent and server, the count it last saw, and answers the agent's next
+  keepalive `ping` (every 180s
   by default) with `notifications/tools/list_changed` ahead of the result, as SSE, so Hermes
   lists the tools again (the Rust gateway, and the TS app gateway for `app-*` servers). A
   `tools/list` from an agent behind the count carries it too: Hermes stops pinging an upstream
@@ -325,7 +340,8 @@ multiplexer.
   Hermes reconnects on. What still rolls: the Developer switch (env, image, mounts), a key
   rotation (env), an MCP server's timeout or auth-mode edit (Hermes does not reconnect a server
   whose entry changed under the same name, and a session minted under the old credentials is
-  the old session), the operator's own roll and restart, and the update job's fleet roll.
+  the old session), the operator's own roll and restart, and the update job's fleet roll — each
+  a running agent only; a stopped one takes the change when it next starts.
 
   **Hermes's managed scope (`HERMES_MANAGED_DIR`) is not used, by decision (2026-10-27).** It
   deep-merges a managed `config.yaml` over the user file leaf by leaf, which cannot close a
@@ -360,11 +376,12 @@ multiplexer.
      still records the gateway as running). If Hermes ever records that stop as deliberate,
      every roll and restart yields a container whose gateway never starts.
 - **Rolling the whole fleet** (`POST /api/fleet/roll`, admin): every running managed agent
-  is queued through the same in-place roll, `TALARIA_FLEET_ROLL_CONCURRENCY` (default 2)
+  (every managed enabled one with `all`, which is the one roll that starts a stopped agent) is
+  queued through the same in-place roll, `TALARIA_FLEET_ROLL_CONCURRENCY` (default 2)
   departments at a time so twenty agents never double the host's load at once; departments
   already mid-roll are skipped and named. The request answers at once; the live picture
   (`GET /api/fleet/roll`: rolling / idle / failed / done per agent, with each failure's
-  sentence) comes from the roll registry `roll_agent` writes at start and verdict — in
+  sentence) comes from the roll registry each roll writes at start and verdict — in
   process, mirrored into the Redis hash `talaria:fleet-roll:v1` so every api instance
   answers the same, outcomes kept an hour. A single agent's roll lands on the same page.
 - **Preflight probes from where the agent stands**: a throwaway container on the fleet

@@ -84,16 +84,18 @@ all but one kind:
   once a minute.
 - A tool list that changes under a name the agent already holds — a tool subset widened, a team or
   user grant, an app's new catalog, an account connected — reaches it through the gateway. Every
-  such change bumps one count (`mcp.tool_lists_epoch`); per agent and server the gateway remembers
-  the count it last saw, and answers the agent's next keepalive with
+  such change bumps the count of each server it touches (`mcp.tool_list_count:<server>`), so only
+  that server is listed again, and only by the agents that hold it; per agent and server the
+  gateway remembers the count it last saw, and answers the agent's next keepalive with
   `notifications/tools/list_changed` ahead of the answer, so Hermes lists the tools again. The
   keepalive is a `ping` every 180 s (Hermes's default), or a `tools/list` on a connection whose
   upstream did not answer ping, so the change lands within about three minutes. Tool subsets are
   also enforced per call, so a narrowed subset is refused at once either way.
-- The exception: a server's **timeout** or **auth mode** changed under the same name rolls its carriers:
-  Hermes does not reconnect a server whose entry changed, and a session minted under the old
-  credentials stays the old session. The container is recreated on the new render, the agent is
-  offline for the restart, and chats wait for it.
+- The exception: a server's **timeout** or **auth mode** changed under the same name rolls its
+  running carriers: Hermes does not reconnect a server whose entry changed, and a session minted
+  under the old credentials stays the old session. The container is recreated on the new render,
+  the agent is offline for the restart, and chats wait for it. A carrier someone stopped stays
+  stopped, and its next start boots on the new entry.
 
 ## Access rules
 
@@ -134,7 +136,13 @@ Per server:
   which is how a stub on the same machine registers.
   Discovery re-runs on demand (**Re-detect auth**) and automatically when a header server starts
   answering 401 with OAuth metadata. Tokens are sealed per subject (`org` or a user), refreshed
-  silently, and a revocation forces a visible reconnect.
+  silently, and a revocation forces a visible reconnect. An admin disconnects the org's account
+  (`DELETE /api/mcp/servers/{id}/oauth`, audited `mcp.oauth_disconnect`; card kebab →
+  **Disconnect org account**): the org tokens are dropped, the gateway answers for the server
+  in-house again (the cached catalog, every call answered with the not-connected sentence), and
+  its carriers re-list on the list-changed notice, without a restart — the connect's path in
+  reverse. A person disconnects their own
+  account under Settings → Connections.
 - **Per-user servers** — each person connects their own account under Settings → Connections
   (OAuth or credential form driven by the server's declared headers). An assistant carries the
   server either way; until its owner connects, every call answers with the sentence that says
