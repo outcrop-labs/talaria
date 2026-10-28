@@ -104,7 +104,10 @@ the symlink spelling never leaks into config the box must resolve.
 - **default** — the box's own project network. The app reaches its sidecars
   by service DNS (`postgres:5432`, `redis:6379`, …). Nothing is published:
   several of these services are unauthenticated, the box network is the
-  boundary.
+  boundary. The app databases the box's app starts join it too
+  (`TALARIA_APP_DB_NETWORK`), dialled by container name,
+  `talaria-appdb-<box>-<slug>` ([`APPS.md`](./APPS.md)): a port they published
+  would be on the host's loopback, which the box cannot reach.
 - **talaradev** — the primary dev stack's network, joined read-only in
   spirit. Boxes only dial the one stateless service on it
   (`TALARIA_EMBED_URL` by container name).
@@ -226,7 +229,9 @@ with no prompt, run it from a TTY.
 
 `bun talaria box rm demo` refuses while the clone has uncommitted changes or
 commits no remote has (`--force` overrides) — those are the only things in a
-box that can't be recreated. A box left behind is the sweep's business too:
+box that can't be recreated. It removes the box's app databases with the box, and
+empties the box's state from a root container first: an app database's files
+belong to the postgres image's user, which yours cannot delete. A box left behind is the sweep's business too:
 [`bun talaria cleanup`](../.claude/skills/cleanup/SKILL.md) flags a stopped box
 untouched for a week, and `--apply` removes it only when the clone is clean and
 pushed. A box whose containers went without `box rm` (or an interrupted `box new`)
