@@ -71,7 +71,6 @@ pub const GOVERNED_TOOLSETS: &[&str] = &[
     "clarify",
     "code_execution",
     "computer_use",
-    "connections",
     "context_engine",
     "cronjob",
     "delegation",
@@ -99,12 +98,17 @@ pub const GOVERNED_TOOLSETS: &[&str] = &[
 /// it, the stricter reading, because a list that said "closed" must not come
 /// back open. `coding` (a posture), `project` and `desktop_ui` (GUI client
 /// surfaces) closed nothing on an API-server agent, so they map to nothing.
+/// `connections` is Hermes's own switch for its Nous connectors
+/// (`manage_connections`), which the render pins off on every agent
+/// (`tools.connectors.enabled: false`) — closed whatever a list says, so a
+/// list that named it expands to nothing and loses nothing.
 ///
 /// A stored def, an org floor, the floor's env twin, or an older editor tab
 /// can still spell one of these; [`toolset_names`] expands it rather than
 /// refusing what used to be a valid list or, worse, dropping a closed name.
 pub const RETIRED_TOOLSETS: &[(&str, &[&str])] = &[
     ("coding", &[]),
+    ("connections", &[]),
     ("debugging", &["terminal", "web", "file"]),
     ("desktop_ui", &[]),
     ("project", &[]),
@@ -652,7 +656,7 @@ pub async fn set_pinned_sessions(pg: &PgPool, id: &str, on: bool) -> Result<bool
 /// through [`validate_toolsets`] first — this writes what it is given. Whole
 /// list, not a delta: the UI edits a set of checkboxes and the column is what
 /// they show. Returns whether the stored value changed, for the audit row and
-/// for the roll (a re-save of the same set must not bounce a container).
+/// for the apply (a re-save of the same set must not even re-render).
 pub async fn set_disabled_toolsets(
     pg: &PgPool,
     id: &str,
@@ -1363,9 +1367,9 @@ pub async fn update_agent_meta(
 
 /// Set the delegation cap (fleet.defs.$id PATCH) — how many subagents this
 /// agent may run at once. Returns whether the stored value changed, so the
-/// caller rolls the agent only when there is something to apply: the number
-/// reaches Hermes through the rendered config, and a render it already has is
-/// not worth a restart.
+/// caller applies only when there is something to apply: the number reaches
+/// a running Hermes through the config.yaml the render rewrites in place, on
+/// its next turn, with no restart.
 pub async fn set_max_children(pg: &PgPool, id: &str, n: i32) -> Result<bool, sqlx::Error> {
     let changed = sqlx::query(
         "update agent_defs set max_children = $1, updated_at = now() \
@@ -1569,6 +1573,14 @@ mod tests {
                 "image_gen".to_string()
             ],
             "an org floor that closed a composite must not reopen its members"
+        );
+        // `connections` was a governed switch over a tool the render pins off
+        // (`tools.connectors.enabled: false`): a stored list that names it
+        // still validates, and it closes nothing it did not already close.
+        assert_eq!(toolset_names("connections"), Some(vec![]));
+        assert_eq!(
+            validate_toolsets(&["connections".into(), "terminal".into()]).unwrap(),
+            vec!["terminal".to_string()]
         );
         // Every expansion lands on governed names only, and no retired name
         // is still governed — the two tables never overlap.

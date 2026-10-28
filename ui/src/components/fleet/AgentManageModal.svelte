@@ -63,15 +63,17 @@
   // trigger is a quiet danger link; the deliberate step is an in-place
   // confirm that says what the route does (fleet_defs_id_rotate_key.rs):
   // the old secret is dead the moment the row is replaced, the fleet is
-  // re-rendered, and a managed agent's container is rolled onto the new one.
+  // re-rendered, and a running managed agent's container is rolled onto the
+  // new one (a stopped one stays stopped and takes it when it next starts).
   // The result lands in the same place, because a toast would be gone a
   // frame after the modal moved on.
   let rotateOpen = $state(false)
   let rotating = $state(false)
   let rotated = $state<{ rolling: boolean } | { error: string } | null>(null)
-  // The route answers `rolling` for any managed def, but the roll itself
-  // only touches a managed AND enabled agent (roll_agent_for_model's query);
-  // a retired one has nothing running, so its sentence is the next-start one.
+  // The route answers `rolling` only for a managed agent it found running,
+  // and the roll itself only touches a managed AND enabled one that is still
+  // running when it recreates; a retired or stopped one gets the next-start
+  // sentence.
   const willRoll = $derived(def.managed && def.enabled)
   const rotate = async () => {
     rotating = true
@@ -130,10 +132,11 @@
                       <li>The current key stops working the moment you confirm. There is no undo and no grace period.</li>
                       {#if willRoll}
                         <li>
-                          The fleet is re-rendered on the new key and the running container is rolled: it stops (finishing
-                          what it can), a fresh one starts in its place, and the roll waits for it to report healthy. Until
-                          then the agent is locked out, so a toolkit call or a workbench session in flight on the old key
-                          fails and has to be retried; conversations wait for the new container and carry on there.
+                          The fleet is re-rendered on the new key and, if the agent is running, its container is rolled: it
+                          stops (finishing what it can), a fresh one starts in its place, and the roll waits for it to report
+                          healthy. Until then the agent is locked out, so a toolkit call or a workbench session in flight on
+                          the old key fails and has to be retried; conversations wait for the new container and carry on
+                          there. A stopped agent stays stopped and takes the new key when it next starts.
                         </li>
                         <li>If the roll fails, the agent is left on a dead key: roll it again from the roster, or stop and start it.</li>
                       {:else}

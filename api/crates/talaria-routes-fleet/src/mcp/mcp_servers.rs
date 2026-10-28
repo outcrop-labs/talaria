@@ -1,8 +1,10 @@
 // /api/mcp/servers.
 // The org MCP registry. GET → servers + their assignments + user/team access
 // (admin/agents.manage view). POST → register a server. Every mutation
-// re-renders the fleet so configs pick the change up (Hermes re-reads on
-// mtime — no restarts).
+// re-renders the fleet so configs pick the change up: Hermes re-reads its
+// config on mtime and reconciles server names from it, so a grant or a
+// revoke needs no restart. The edits that do roll their carriers — a timeout
+// or an auth mode — are `{id}`'s (mcp_servers_id.rs, talaria-mcp-apply).
 //
 // Two things `agents.manage` does NOT buy on the POST: a `package` (third-
 // party code run as a container on this deployment — an admin installs it,

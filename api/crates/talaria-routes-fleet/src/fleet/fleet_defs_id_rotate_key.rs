@@ -4,8 +4,11 @@
 // the door (`agent_keys` is keyed by agent, so the old secret stops
 // authenticating the moment the row is replaced); the running container
 // still holds the old one until the roll this route queues recreates it,
-// which is the window the response's `rolling` names. The secret is never
-// echoed: the render stamps it into fleet/.env and the roll carries it in.
+// which is the window the response's `rolling` names. A stopped agent is not
+// started for it — no roll starts a stopped agent — and takes the new key
+// when it next starts (its service moved, so that start recreates it).
+// `rolling` is false then. The secret is never echoed: the render stamps it
+// into fleet/.env and the roll carries it in.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -14,6 +17,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::rotate_agent_api_key;
 use talaria_agent_defs::agent_def_by_id;
+use talaria_api_facades::fleet::docker::{Observed, observe};
 use talaria_api_facades::fleet::render::render_fleet;
 use talaria_api_facades::mcp::apply::roll_agent_for_model;
 use talaria_audit::{AuditEntry, log_audit};
@@ -61,10 +65,15 @@ pub async fn post(
     if let Err(e) = render_fleet(&state.pg, &sb).await {
         return Ok(internal("[fleet/defs/rotate-key] render failed", e));
     }
-    // `roll_agent_for_model` itself rolls only a managed+enabled agent; a
-    // retired one gets its new key on the render and picks it up on unretire.
-    let rolling = def.managed;
-    if rolling {
+    // `roll_agent_for_model` itself rolls only a managed+enabled agent that
+    // is running; a retired or stopped one gets its new key on the render
+    // and picks it up when it next starts.
+    let rolling = def.managed
+        && matches!(
+            observe(&state.pg, &def.department).await,
+            Observed::Running { .. }
+        );
+    if def.managed {
         let (pg, model) = (state.pg.clone(), def.model.clone());
         tokio::spawn(async move {
             roll_agent_for_model(&pg, &sb, &model).await;

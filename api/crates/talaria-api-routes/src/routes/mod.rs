@@ -1614,6 +1614,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("PUT, DELETE") }),
         )
         .route(
+            "/api/mcp/servers/{id}/oauth",
+            delete(talaria_routes_fleet::mcp::mcp_servers_id_oauth::delete)
+                .fallback(|| async { method_not_allowed("DELETE") }),
+        )
+        .route(
             "/api/me/mcp",
             get(talaria_routes_integrations::account::me_mcp::get)
                 .put(talaria_routes_integrations::account::me_mcp::put)

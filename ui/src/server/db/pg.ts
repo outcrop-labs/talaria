@@ -94,9 +94,12 @@ const MIGRATIONS: string[] = [
    )`,
   `create index if not exists messages_conv_idx on messages(conversation_id, seq)`,
   // Fleet agent registry — the retired mission-control heartbeat's table.
-  // Nothing registers or heartbeats any more (those routes are gone); it stays,
-  // with the personal-agent / fleet-create cleanup that touches it, until a
-  // contract migration drops it.
+  // Nothing reads or writes it any more: the heartbeat routes went in #566
+  // and the last writers (the fleet-create delete and the personal-agent
+  // rename) in the 2026-10-27 roll follow-up. It stays until the contract
+  // migration that drops it, which by the expand-contract rule
+  // (docs/UPDATES.md) ships at least one release after a release carrying
+  // both: an app from before #566 still heartbeats into it during a drain.
   `create table if not exists fleet_agents (
      id uuid primary key default gen_random_uuid(),
      name text unique not null,
@@ -3680,7 +3683,8 @@ alter table tasks drop column if exists conversation_id`,
   //
   // Per agent, off by default: for a pinned agent Talaria no longer sends the
   // transcript, so a message deleted or relayed on the Talaria side is not
-  // mirrored into Hermes' copy until that is built. The switch is a roll.
+  // mirrored into Hermes' copy until that is built. The switch is Talaria-side
+  // only (which Hermes endpoint the next turn goes to), so it restarts nothing.
   `alter table agent_defs add column if not exists pinned_sessions boolean not null default false`,
   // The Hermes run that produced an assistant row, kept so a running turn can
   // be steered or stopped by the id Hermes knows it by — a stop today only

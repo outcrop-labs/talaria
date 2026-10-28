@@ -86,8 +86,9 @@ pub async fn put(
         Ok(u) => u,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    // Empty means "use the environment / the bundled instance" — an admin
-    // clearing the field is a real instruction, not a validation failure.
+    // Empty means "use the environment (SEARXNG_URL), or none" — nothing is
+    // bundled any more — and an admin clearing the field is a real
+    // instruction, not a validation failure.
     // strip ONE trailing slash.
     let url = raw.trim().strip_suffix('/').unwrap_or(raw.trim());
     if !url.is_empty() && !(url.starts_with("http://") || url.starts_with("https://")) {

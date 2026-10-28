@@ -100,6 +100,25 @@
   const stale = $derived(staleAssignments(s.assignments, s.tools))
   const showOauthSetup = $derived(!!s.oauthMeta && (status.kind === 'needs-oauth-app' || oauthEditing))
 
+  // Drops the org's OAuth tokens; the gateway answers for the server
+  // in-house again and the carriers re-list on its notice, without a restart.
+  const disconnectOrg = async () => {
+    const ok = await confirm({
+      title: 'Disconnect org account',
+      message: `Disconnect the org's ${s.label} account? Within a few minutes, without a restart, agents that carry "${s.label}" can no longer use its tools: each call answers that the account isn't connected, until someone connects it again.`,
+      confirmLabel: 'Disconnect',
+      danger: true,
+    })
+    if (!ok) return
+    error = null
+    try {
+      await delJson<{ ok: true; disconnected: boolean }>(`/api/mcp/servers/${s.id}/oauth`)
+    } catch (e) {
+      error = errorMessage(e)
+    }
+    await refresh()
+  }
+
   const cardMenu = (e: MouseEvent) =>
     menu.openMenu(e, [
       ...(external && !s.package && s.authMode === 'org'
@@ -125,6 +144,11 @@
       ...(s.oauthEnabled && s.authMode === 'org' && s.orgConnected
         ? [{ label: 'Reconnect org account', onSelect: () => void connectPopup(s.id, 'org') }]
         : []),
+      // The org's connection is the workspace's credential: admins only, and
+      // the route refuses anyone else whatever this menu shows.
+      ...(s.oauthEnabled && s.orgConnected && session.data?.role === 'admin'
+        ? [{ label: 'Disconnect org account', danger: true, onSelect: () => void disconnectOrg() }]
+        : []),
       'sep' as const,
       {
         label: 'Remove server',
@@ -132,7 +156,7 @@
         onSelect: () => {
           void confirm({
             title: 'Remove MCP server',
-            message: `Remove "${s.label}" org-wide? Every agent loses it on its next roll.`,
+            message: `Remove "${s.label}" org-wide? Every agent that carries it loses it within about a minute, without a restart.`,
             confirmLabel: 'Remove',
           }).then(async (ok) => {
             if (!ok) return

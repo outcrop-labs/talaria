@@ -6,7 +6,7 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-351 routes across 24 groups.
+352 routes across 24 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
@@ -25,7 +25,7 @@
 | [`internal`](./internal.md) | Service-to-service calls from the app host — never a user's or an agent's. | 4 |
 | [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, blueprints, search. | 20 |
 | [`llm`](./llm.md) | The OpenAI-compatible wire (llm.v1.*). | 2 |
-| [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 16 |
+| [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 17 |
 | [`models`](./models.md) | Model providers, gateway API keys, local backends. | 5 |
 | [`plans`](./plans.md) | Living plans: draft doc, members. | 4 |
 | [`research`](./research.md) | Cited research reports and their conversations. | 6 |

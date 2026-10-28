@@ -12,9 +12,11 @@
 // managers' call. `assignedToolsMissing` names the subset entries the
 // server no longer offers (the tab's "Drop missing tools"). POST → `assign`
 // / `unassign` registry servers on this agent (a tool subset per
-// assignment), `removeLegacy` raw entries; the agent rolls
-// so a running Hermes picks the change up. Raw URL `add` is refused: an
-// agent reaches servers through the gateway or not at all.
+// assignment), `removeLegacy` raw entries; the change is applied in place —
+// a running Hermes reconciles server names from its config and re-lists a
+// changed subset on the gateway's notice — and the agent restarts only if
+// the render moved its container. Raw URL `add` is refused: an agent
+// reaches servers through the gateway or not at all.
 
 use std::collections::{HashMap, HashSet};
 
@@ -25,7 +27,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use talaria_agent_defs::{add_version_if_changed, list_versions};
 use talaria_agent_mcp::apply_mcp_edits;
-use talaria_api_facades::fleet::reconcile::roll_agent;
+use talaria_api_facades::fleet::reconcile::apply_agent_change;
+use talaria_api_facades::mcp::apply::bump_tool_lists;
 use talaria_api_facades::mcp::health::{missing_tools, tool_names};
 use talaria_api_facades::mcp::oauth::has_oauth_tokens;
 use talaria_api_facades::mcp::registry::{
@@ -393,6 +396,9 @@ pub async fn post(
 
     // ── registry assignments ──
     let mut touched_registry = false;
+    // The servers whose tool lists this edit can move for the agent — each
+    // counts its own change (`bump_tool_lists`).
+    let mut touched_servers: Vec<String> = Vec::new();
     for a in &assign {
         let server = match get_mcp_server(&state.pg, &a.server_id).await {
             Ok(Some(s)) => s,
@@ -437,6 +443,7 @@ pub async fn post(
         )
         .await;
         touched_registry = true;
+        touched_servers.push(server.name.clone());
     }
     for server_id in &unassign {
         let server = match get_mcp_server(&state.pg, server_id).await {
@@ -461,6 +468,7 @@ pub async fn post(
         )
         .await;
         touched_registry = true;
+        touched_servers.push(server.name.clone());
     }
 
     // ── legacy raw entries: a new config version without them ──
@@ -519,7 +527,14 @@ pub async fn post(
         }
     }
 
-    // ── make it so: render, then roll the agent ──
+    // ── make it so: render, and restart only a container that moved ──
+    // A server assigned or unassigned is a name in the agent's
+    // `mcp_servers`, which a running Hermes reconciles by name within a
+    // minute of the in-place rewrite; a tool subset changed under a server
+    // it keeps reaches it through the gateway's list-changed notice on its
+    // next keepalive (`bump_tool_lists`). Neither moves the container, so
+    // the apply recreates nothing unless something else did.
+    bump_tool_lists(&state.pg, &touched_servers).await;
     let mut applied = false;
     let mut warning: Option<String> = None;
     // ONE CONTAINER PER DEPARTMENT: where an older agent holds this one's
@@ -546,14 +561,21 @@ pub async fn post(
         ));
     } else if (touched_registry || created) && apply && def.managed {
         let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
-        let _ = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb).await;
-        match roll_agent(&state.pg, &sb, &def.department).await {
+        // On its own task, like the def edit's apply: a client that goes
+        // away must not kill a recreate halfway.
+        let verdict = {
+            let (pg, department) = (state.pg.clone(), def.department.clone());
+            tokio::spawn(async move { apply_agent_change(&pg, &sb, &department).await })
+                .await
+                .unwrap_or_else(|e| Err(format!("the apply's task failed: {e}")))
+        };
+        match verdict {
             Ok(None) => applied = true,
             Ok(Some(w)) => warning = Some(w),
             Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
         }
     } else if touched_registry || created {
-        // Not rolling: still re-render so the next start carries the change.
+        // Not applying: still re-render so the next start carries the change.
         let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
         let _ = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb).await;
     }

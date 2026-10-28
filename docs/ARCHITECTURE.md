@@ -297,6 +297,43 @@ multiplexer.
   agent back on `-b`), and only then is `-b` drained and removed. A stop, restart or recreate
   that fails before it reaches the container brings the drained gateway back up
   (`s6-svc -u`), so a failed step never leaves an agent running without one.
+- **A compose verb's exit is not the container's state** (`talaria-fleet-docker`). A CLI
+  killed at its deadline leaves the daemon finishing what it asked for — a stop lands at the
+  end of its grace period whether anyone waits or not — and compose recreates by creating the
+  new container as `<first 12 of the old id>_<name>`, stopping and removing the old one, then
+  renaming. A recreate cut off between the create and the rename strands that container
+  `created`, and the next recreate of the service then stops the running agent and fails on the
+  name. So every `up` and stop-shaped verb first removes such a stranded container (this fleet's
+  compose project and service by label, never started, that exact name; one compose operation
+  per service at a time in the process, so nothing in flight is taken). The removal is
+  confirmed before compose runs: a `docker rm` that ran out its time goes on in the daemon,
+  and a `compose up` beside the half-removed container removed the agent's own container and
+  created nothing, with exit 0 — so it is waited out, an `up` or `restart` does not run beside
+  one that will not go, and an `up` that reports success with no container is a failure. **A
+  verb outlives its caller.** The control route runs each verb but `roll` whole on a task of
+  its own (`run_detached` in `talaria-fleet-docker`) — the render ahead of an `up`, the compose
+  verb, which takes the service's lock inside that task, and the re-read after a failure — and
+  so do the hire's `up`, a personal assistant's bring-up, and the applies of the def and MCP
+  edits and of an assistant owner's edit. A client that goes away (a curl that gave up, a closed tab, or the app
+  proxy's own fetch, which gives up on a response with no headers after 300 s) drops only the
+  wait: the compose CLI used to die with the request's future, halfway through a recreate. The
+  route answers with the verb's own result when it settles within 210 s
+  (`ANSWER_WITHIN`), and past that with 202 `{ok, pending, state}` — the container as it is so
+  far; the roster shows the rest. A failed `up` that
+  was replacing a running container waits out a stop it may have started, then answers by what
+  is there: the old container still serving (the change did not land), a new one running (it
+  did), or nothing — and then it starts the service on the current render. The control route
+  and the hire answer a failed verb the same way: compose's error is logged, the container is
+  re-read (`settle`, `up_landed`), and an agent that reached what was asked answers as the
+  success it is. One that did not is answered by why compose failed: docker's own error (a
+  port already bound) with the container in the wrong state is the route's 500; a CLI killed
+  at its deadline, or a re-read docker will not answer, is a 503 "could not confirm", because
+  the daemon may still be carrying the request out (a stop landed two minutes after its
+  answer, well past the settle window). A retire whose `rm -sf` ran out its time after the
+  stop issues the remove for the stopped container it left (an unforced `docker rm`, waited
+  out when it is slow).
+  `TALARIA_FLEET_COMPOSE_TIMEOUT_SECS` replaces every agent compose verb's deadline — longer
+  for a slow disk, or tiny to drive these paths on purpose.
 - **Config edits reach running agents without a roll.** A render rewrites each agent's
   `config.yaml` *in place* (same inode, under an `flock`, unchanged bytes skipped), because
   the container sees it through a single-file `:ro` bind that pins whichever inode existed
@@ -308,12 +345,78 @@ multiplexer.
   for one load. SOUL.md goes through the same writer. Because a written config is live at
   once, the render widens each agent's gateway scope to its old models plus its new ones
   before it writes any `config.yaml`, and narrows it to the new set after the last one, so a
-  model change never meets a relay that refuses the id Hermes just switched to. Environment,
-  image, limits and plugin changes still need a roll: rotate-key, the Developer switch and
-  MCP timeout or URL edits roll as before. Agents created before in-place writes still hold
+  model change never meets a relay that refuses the id Hermes just switched to. Re-reading the
+  file is not acting on every key in it, though: see **Applying a change** below for what a
+  running agent takes from the rewrite and what still restarts it. Agents created before
+  in-place writes still hold
   the inode of an orphaned `config.yaml` and need one roll: image installs get it from the
   post-deploy fleet roll; checkout and dev installs never roll the fleet on upgrade, so run
   **Roll all** (`POST /api/fleet/roll`) once.
+- **Applying a change** (`apply_agent_change` in `talaria-fleet-reconcile`) is how every edit
+  reaches a running agent: a toolset or delegation-cap switch, a def edit's apply, an MCP
+  grant, assignment, team or user access, a connected account, a server or app enabled,
+  disabled, removed or re-cataloged, the org profile, and a model or endpoint removed in Models
+  (`talaria-fleet-cascade`: the stripped tiers are start-time config, so a running agent rolls;
+  a stopped one is never started by it). It renders, then asks whether the
+  running container still matches the render (`container_fit` in `talaria-fleet-docker`):
+  `docker compose config --hash` for the agent's service against the
+  `com.docker.compose.config-hash` label the container was created with — compose's own
+  digest of image, environment (with every `${VAR}` interpolated and every `env_file` read
+  in), mounts, limits and labels. Only a container that no longer matches is rolled; a stopped
+  agent stays stopped and reads the render when it starts. **An apply never starts an agent**:
+  a recreate starts the container it makes, so only a container *seen* running is rolled. A
+  fit docker does not answer within 10 s is asked again with 30 s of patience
+  (`ContainerFit::Unknown`), and one it still will not describe is left alone, with a sentence
+  for the caller that the change is rendered but not applied. The roll then reads the
+  container once more under the service's lock (`fleet_recreate_running`), so a person who
+  stops the agent while the roll renders and pulls is not overruled. **No roll starts a
+  stopped agent either** (`roll_running_agent`): a roll asked for as a roll — the operator's,
+  the update job's, an MCP timeout or auth-mode edit's, the Developer switch's, a key
+  rotation's — recreates a running agent whatever its fit, and leaves one that is not running
+  when the recreate holds the service's lock as it is; its next start reads the render
+  (compose recreates a container whose service moved, and a plain start boots Hermes on the
+  rewritten `config.yaml`). The control route refuses `roll` for an agent that is not running
+  (409: start it instead). The one exception is the fleet roll a person asks to include stopped
+  agents in (`POST /api/fleet/roll` with `all`). Most of `config.yaml` is read only
+  at start (`model_routes` is parsed once, in the API server adapter's constructor; plugins
+  load at boot), so each service carries a `talaria.config-start-hash` label: a digest of the
+  rendered config minus the paths a running Hermes v0.22.4 picks up from the rewrite —
+  `agent.disabled_toolsets` (read on every API turn), `delegation.max_concurrent_children`
+  (read on every delegate call) and `mcp_servers`, whose names the housekeeping tick
+  reconciles (`LIVE_CONFIG_PATHS`, `talaria-fleet-render`). A change to the rest moves the
+  label, so it moves compose's hash, so it rolls. SOUL.md is read when a session's prompt is
+  built: an identity or soul edit reaches new sessions without a restart, and a session with
+  history keeps the prompt it stored either way. A change lands on the agent's next turn,
+  never the one in flight.
+
+  Two MCP changes keep a name an agent already holds, and reach it through the gateway rather
+  than a restart. A tool list that changes under the name — a subset widened or narrowed, a
+  team or user grant, an app's new catalog, a connected account — is counted for each server
+  it touches (`bump_tool_lists`, one `mcp.tool_list_count:<server>` setting per server, so a
+  change to one server re-lists that server alone, for the agents that hold it); the gateway
+  remembers, per agent and server, the count it last saw, and answers the agent's next
+  keepalive `ping` (every 180s
+  by default) with `notifications/tools/list_changed` ahead of the result, as SSE, so Hermes
+  lists the tools again (the Rust gateway, and the TS app gateway for `app-*` servers). A
+  `tools/list` from an agent behind the count carries it too: Hermes stops pinging an upstream
+  that answered ping with -32601 or let it time out, and keeps that connection alive with
+  `tools/list` instead (the Rust relay only; the TS app gateway answers ping itself). A
+  server connected after the agent first saw it not connected: the in-house not-connected
+  handshake issues a `talaria-nc-` session id, and once the account is connected a request on
+  that session is answered HTTP 404, which the MCP client reads as "Session terminated" and
+  Hermes reconnects on. What still rolls: the Developer switch (env, image, mounts), a key
+  rotation (env), an MCP server's timeout or auth-mode edit (Hermes does not reconnect a server
+  whose entry changed under the same name, and a session minted under the old credentials is
+  the old session), the operator's own roll and restart, and the update job's fleet roll — each
+  a running agent only; a stopped one takes the change when it next starts.
+
+  **Hermes's managed scope (`HERMES_MANAGED_DIR`) is not used, by decision (2026-10-27).** It
+  deep-merges a managed `config.yaml` over the user file leaf by leaf, which cannot close a
+  map: an `mcp_servers.<x>` or `providers.<x>` sibling the agent or its terminal wrote into the
+  user layer — on its own state volume — would survive the overlay and reach a raw endpoint,
+  the invariant the whole-file `:ro` render exists to hold. It would add no liveness (the
+  managed file reloads on the same stat signature as the user one, and its `.env` is read at
+  launch) and remove no roll. Revisit only if Hermes grows a closed-map managed semantic.
 - **The Hermes image is pinned** to a tag and digest (`scripts/chassis.template.yml`, and the
   last entry of `HERMES_IMAGE_DEFAULTS` in `talaria-fleet-render`, which is
   `HERMES_IMAGE_PIN`). A host's `fleet/chassis.yml` is copied from the template once and never
@@ -329,22 +432,27 @@ multiplexer.
   2. Set the same string as the template default and as the `FROM` default in
      `scripts/workbench.Dockerfile` and `scripts/build-workbench-image.sh`. Tests fail if they
      disagree.
-  3. Check the new version's config keys against the render.
+  3. Check the new version's config keys against the render, and set `HERMES_CONFIG_VERSION`
+     (beside the pin) to the new image's `DEFAULT_CONFIG["_config_version"]`: every render
+     stamps it as `_config_version`, so Hermes reads the config as current and never tries to
+     migrate the read-only file. A test pairs the two. Re-check `LIVE_CONFIG_PATHS` against the
+     new version too: a path stays there only while Hermes still re-reads it live.
   4. Check what the drain relies on in the new image: the gateway's s6 service is still
      `/run/service/gateway-default`, `s6-svc` and `s6-svwait` are still under `/command`, and a
      container drained with `s6-svc -d` and then recreated starts its gateway on its own (Hermes
      still records the gateway as running). If Hermes ever records that stop as deliberate,
      every roll and restart yields a container whose gateway never starts.
 - **Rolling the whole fleet** (`POST /api/fleet/roll`, admin): every running managed agent
-  is queued through the same in-place roll, `TALARIA_FLEET_ROLL_CONCURRENCY` (default 2)
+  (every managed enabled one with `all`, which is the one roll that starts a stopped agent) is
+  queued through the same in-place roll, `TALARIA_FLEET_ROLL_CONCURRENCY` (default 2)
   departments at a time so twenty agents never double the host's load at once; departments
   already mid-roll are skipped and named. The request answers at once; the live picture
   (`GET /api/fleet/roll`: rolling / idle / failed / done per agent, with each failure's
-  sentence) comes from the roll registry `roll_agent` writes at start and verdict — in
+  sentence) comes from the roll registry each roll writes at start and verdict — in
   process, mirrored into the Redis hash `talaria:fleet-roll:v1` so every api instance
   answers the same, outcomes kept an hour. A single agent's roll lands on the same page.
 - **Preflight probes from where the agent stands**: a throwaway container on the fleet
-  network probes the gateway/MCP base URLs (api/src/fleet/preflight.rs) — the host's view proves
+  network probes the gateway/MCP base URLs (`talaria-fleet-preflight`) — the host's view proves
   nothing.
 - **Crons live in the agent**, not in Talaria: Hermes' own scheduler ticks inside the
   container; Talaria reads and changes the jobs through Hermes's cron REST on the agent's own

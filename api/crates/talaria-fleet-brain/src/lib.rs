@@ -671,9 +671,24 @@ pub async fn widen_agent_gateway_models(
 /// `tokio::fs::write` cannot promise. Lives here because every fleet file
 /// writer can reach this crate (fleet-render depends on it, not the other
 /// way round).
+///
+/// The whole sequence runs as ONE blocking task, close included. Each step
+/// can wait on the disk for seconds when the host's IO is saturated — an
+/// fsync on XFS waits out a log force (in `__flush_workqueue`), and the last
+/// close of a file just written can start work of its own — and a tokio
+/// `File` dropped on the async side closes its descriptor on the runtime's
+/// worker. On the blocking pool none of it can hold a worker that other
+/// requests are queued on.
 pub async fn write_atomic(path: &std::path::Path, bytes: &[u8], mode: u32) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    use tokio::io::AsyncWriteExt;
+    let (target, data) = (path.to_path_buf(), bytes.to_vec());
+    tokio::task::spawn_blocking(move || write_atomic_blocking(&target, &data, mode))
+        .await
+        .map_err(|e| format!("{}: {e}", path.display()))?
+}
+
+fn write_atomic_blocking(path: &std::path::Path, bytes: &[u8], mode: u32) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let dir = path
         .parent()
         .ok_or_else(|| format!("{}: no parent directory", path.display()))?;
@@ -686,33 +701,25 @@ pub async fn write_atomic(path: &std::path::Path, bytes: &[u8], mode: u32) -> Re
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = dir.join(format!(".{name}.{}.{seq}.tmp", std::process::id()));
-    let result: Result<(), String> = async {
-        let mut file = tokio::fs::OpenOptions::new()
+    let result = (|| -> Result<(), String> {
+        let at = |e: std::io::Error| format!("{}: {e}", tmp.display());
+        let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(mode)
             .open(&tmp)
-            .await
-            .map_err(|e| format!("{}: {e}", tmp.display()))?;
-        file.write_all(bytes)
-            .await
-            .map_err(|e| format!("{}: {e}", tmp.display()))?;
-        file.sync_all()
-            .await
-            .map_err(|e| format!("{}: {e}", tmp.display()))?;
+            .map_err(at)?;
+        file.write_all(bytes).map_err(at)?;
+        file.sync_all().map_err(at)?;
         drop(file);
         // create_new's mode is masked by the umask; the target's mode is a
         // promise, so set it explicitly before the rename exposes the file.
-        tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))
-            .await
-            .map_err(|e| format!("{}: {e}", tmp.display()))?;
-        tokio::fs::rename(&tmp, path)
-            .await
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).map_err(at)?;
+        std::fs::rename(&tmp, path)
             .map_err(|e| format!("{} -> {}: {e}", tmp.display(), path.display()))
-    }
-    .await;
+    })();
     if result.is_err() {
-        let _ = tokio::fs::remove_file(&tmp).await;
+        let _ = std::fs::remove_file(&tmp);
     }
     result
 }

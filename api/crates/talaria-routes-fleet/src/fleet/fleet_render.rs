@@ -1,5 +1,6 @@
 // POST /api/fleet/render. Render every managed agent's config + the fleet
-// compose + the gateway manifest (the bridge hot-reloads the manifest).
+// compose + the gateway manifest (the persona door re-reads the manifest on
+// each attempt).
 // Admin.
 
 use axum::Json;

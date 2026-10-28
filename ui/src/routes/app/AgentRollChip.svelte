@@ -18,7 +18,7 @@
   {#if state === 'rolling'}
     <span
       class="inline-flex shrink-0 items-center gap-1 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted"
-      title={queued ? 'Queued: rolls when a slot frees up' : 'Rolling: a fresh container is coming up beside this one'}
+      title={queued ? 'Queued: rolls when a slot frees up' : 'Rolling: the container is restarting on the current render, offline for about a minute'}
     >
       <WaitingMark site="fleet/agent-controls" size={9} class="text-accent" />
       {queued ? 'queued' : 'rolling'}

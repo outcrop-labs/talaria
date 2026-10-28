@@ -34,7 +34,7 @@ for you rather than the other way around.
 | **Name** / **Handle** | Chats, memory, and access move with a renamed handle; mentions pick up the new one |
 | **Model** | Tier chips — which brain it runs on |
 | **Your DMs** | How far it reaches into your direct messages with other people: **None**, **Read**, or **Read & post** (the default, your own view); channels follow your membership either way |
-| **Personality** | How it comes across: tone, priorities, pet peeves. Every save is versioned and applies right away — your assistant restarts with it |
+| **Personality** | How it comes across: tone, priorities, pet peeves. Every save is versioned and applies right away, without a restart: your assistant takes it from its next new conversation. A stopped assistant stays stopped and takes it when you start it |
 | **Start / Stop** | The container beneath it |
 | **Open chat →** | A straight line to it |
 

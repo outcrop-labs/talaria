@@ -34,8 +34,9 @@ Self-hosted hardware and cloud keys sit in separate sections.
   they were fetched. Spend uses the provider's reported charge when they send one; a published
   price is a labeled fallback, never an editable number. OpenRouter shows each endpoint's price,
   because the same model can cost a different amount depending on which endpoint served the call.
-- **Remove provider** — cascades: every agent on it gets new versions, a re-render, and a
-  restart.
+- **Remove provider** — cascades: every agent on it gets new versions and a re-render, and each
+  running one restarts onto them (offline for about a minute). An agent someone stopped stays
+  stopped and picks the change up when it next starts.
 
 ## Roles: which model runs what
 

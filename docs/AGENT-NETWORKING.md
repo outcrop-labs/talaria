@@ -45,7 +45,7 @@ and it answers perfectly — because **the app can always reach itself**.
 > Reachability is not a property of a service. It is a property of a path.
 
 Testing the agent's path requires standing where the agent stands.
-`api/src/fleet/preflight.rs` does that: it runs a throwaway container on the
+`talaria-fleet-preflight` does that: it runs a throwaway container on the
 fleet network and asks *it*. That verdict is what the "Agents cannot reach
 Talaria" alert reports, and it runs when an agent is brought up.
 

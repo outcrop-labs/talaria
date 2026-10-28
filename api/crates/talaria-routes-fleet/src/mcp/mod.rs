@@ -37,4 +37,5 @@ pub mod mcp_oauth_callback;
 pub mod mcp_oauth_start;
 pub mod mcp_servers;
 pub mod mcp_servers_id;
+pub mod mcp_servers_id_oauth;
 pub mod mcp_test;
