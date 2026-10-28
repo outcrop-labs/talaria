@@ -19,6 +19,18 @@
 # worktree's fleet joins the shared external `talaria` network, and reaches
 # this stack's app over the host, never these containers.
 #
+# The trade-off: the default bridge is shared by every container on the host
+# started without `--network`, and such a container reaches this Postgres (a
+# pg_dump of main's dev DB, password `talaria`) and this Redis (no auth) by
+# container IP, where a project network admitted only the project's own.
+# Talaria's own containers all name a network; a hand-run `docker run` does
+# not. That is acceptable for dev data on a dev host, and only there: never
+# use this file for a stack that holds anything else.
+#
+# A stack cut before this file keeps its `talaria-wt-<name>_default` network
+# until its next `talaria dev` moves the containers here and removes it
+# (cli/src/cmd/dev.ts, releaseLegacyNetwork).
+#
 # Only postgres and redis are listed: they are the only services a worktree
 # brings up (`up -d postgres redis`), and compose creates a network only for
 # the services it starts.

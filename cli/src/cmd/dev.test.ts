@@ -475,3 +475,82 @@ describe('talaria dev — the env the rust api gets', () => {
     expect('TALARIA_APPS_LOCAL_SOURCES' in apiEnv({}, uiEnv)).toBe(false)
   })
 })
+
+describe('talaria dev — a worktree gives back its old project network', () => {
+  // A worktree cut before docker/worktree.compose.yml had its two containers
+  // on `talaria-wt-<name>_default`. The `up` moves them to the default bridge;
+  // the network stays behind holding a subnet, and the sweep will not take it
+  // while the worktree lives.
+  const NET = 'talaria-wt-demo_default'
+  const inspect = ['network', 'inspect', '--format', '{{.Id}}', NET]
+  const ps = ['ps', '-a', '--format', '{{.Networks}}']
+  const rm = ['network', 'rm', NET]
+  const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(b)
+  const called = (ctx: FakeCtx, args: string[]) => ctx.calls.some((c) => c.cmd === 'docker' && same(c.args, args))
+  const reachedApp = (ctx: FakeCtx) => ctx.calls.some((c) => c.cmd === 'bun' && c.args[0] === 'run' && c.args[1] === 'dev')
+  const worktreeCtx = () => {
+    const root = makeTree({
+      uiEnv: 'TALARIA_WORKTREE=demo\nDATABASE_URL=postgres://talaria:talaria@127.0.0.1:5601/talaria\nREDIS_URL=redis://127.0.0.1:6501\n',
+    })
+    writeFileSync(join(root, '.git'), 'gitdir: /elsewhere\n')
+    const ctx = fakeCtx()
+    ctx.root = root
+    ctx.plant(['docker', pgReadyArgs('talaria-pg-demo')], '')
+    ctx.plant(['docker', ['exec', 'talaria-redis-demo', 'redis-cli', 'ping']], '')
+    return ctx
+  }
+
+  test('one nothing names any more is removed — after the up that moved its containers off it', async () => {
+    const ctx = worktreeCtx()
+    ctx.plant(['docker', inspect], 'f00d\n')
+    // every container on the host: the bridge, the shared fleet network, main's
+    ctx.plant(['docker', ps], 'bridge\nbridge\ntalaria\ntalaria-dev_default,talaria\ntalaria-wt-demo_default2\n')
+    await runDev(ctx)
+    const up = ctx.calls.findIndex((c) => c.args.includes('up'))
+    const removed = ctx.calls.findIndex((c) => c.cmd === 'docker' && same(c.args, rm))
+    expect(up).toBeGreaterThanOrEqual(0)
+    expect(removed).toBeGreaterThan(up)
+    expect(ctx.logLines.some((l) => l.kind === 'ok' && l.msg.includes(NET))).toBe(true)
+    expect(reachedApp(ctx)).toBe(true)
+  })
+
+  test('no such network — every worktree cut since — asks nothing more', async () => {
+    const ctx = worktreeCtx()
+    ctx.plant(['docker', inspect], new Error(`Error response from daemon: network ${NET} not found`))
+    await runDev(ctx)
+    expect(called(ctx, ps)).toBe(false)
+    expect(called(ctx, rm)).toBe(false)
+    expect(reachedApp(ctx)).toBe(true)
+  })
+
+  test('one a container still names is kept — a stopped one too, which could not start without it', async () => {
+    for (const listing of [`bridge\n${NET}\n`, `talaria,${NET}\n`]) {
+      const ctx = worktreeCtx()
+      ctx.plant(['docker', inspect], 'f00d\n')
+      ctx.plant(['docker', ps], listing)
+      await runDev(ctx)
+      expect(called(ctx, rm)).toBe(false)
+      expect(reachedApp(ctx)).toBe(true)
+    }
+  })
+
+  test('a refused or timed-out removal never stops the boot', async () => {
+    for (const fail of [ps, rm]) {
+      const ctx = worktreeCtx()
+      ctx.plant(['docker', inspect], 'f00d\n')
+      ctx.plant(['docker', fail], new Error('has active endpoints / timed out'))
+      await runDev(ctx)
+      expect(ctx.logLines.some((l) => l.kind === 'ok' && l.msg.includes(NET))).toBe(false)
+      expect(reachedApp(ctx)).toBe(true)
+    }
+  })
+
+  test('the main checkout touches no network', async () => {
+    const root = makeTree()
+    const ctx = fakeCtx()
+    ctx.root = root
+    plantInfra(ctx)
+    await runDev(ctx)
+    expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args[0] === 'network')).toBe(false)
+  })
+})

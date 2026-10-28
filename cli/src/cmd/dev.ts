@@ -351,6 +351,7 @@ export async function runDev(ctx: Ctx): Promise<number> {
     // network — the address-pool drain the file exists to stop.
     const code = await compose(ctx, { files: worktreeComposeFiles(ctx.root), project: `talaria-wt-${worktree}` }, ['up', '-d', 'postgres', 'redis'])
     if (code !== 0) ctx.log.die('worktree infra failed to start (run `bun talaria worktree` again? it was torn down?)')
+    await releaseLegacyNetwork(ctx, worktree)
     return await waitThenRunApp(ctx, uiEnv)
   }
 
@@ -404,6 +405,41 @@ export async function runDev(ctx: Ctx): Promise<number> {
   }
 
   return await waitThenRunApp(ctx, uiEnv)
+}
+
+/** The network a worktree's postgres + redis sat on before
+ *  docker/worktree.compose.yml moved them to the default bridge. */
+export function legacyWorktreeNetwork(worktree: string): string {
+  return `talaria-wt-${worktree}_default`
+}
+
+/** Give back the subnet of a worktree's old project network, now that the
+ *  `up` before this has moved both its containers to the default bridge. The
+ *  cleanup sweep leaves that network alone for as long as the worktree lives
+ *  (its project still has containers), so on a host of live worktrees — the
+ *  host whose address pools ran out — no subnet came back until each one was
+ *  torn down. Best effort, and quiet unless it frees one: no such network is
+ *  the usual case (every worktree cut since); one any container still names is
+ *  kept, a stopped container too, since it could not start again without it;
+ *  and a daemon too busy to answer changes nothing. */
+async function releaseLegacyNetwork(ctx: Ctx, worktree: string): Promise<void> {
+  const name = legacyWorktreeNetwork(worktree)
+  const quick = { timeoutMs: 15_000 }
+  try {
+    await ctx.exec('docker', ['network', 'inspect', '--format', '{{.Id}}', name], quick)
+  } catch {
+    return
+  }
+  try {
+    const ps = await ctx.exec('docker', ['ps', '-a', '--format', '{{.Networks}}'], quick)
+    const named = ps.stdout.split('\n').some((line) => line.split(',').some((n) => n.trim() === name))
+    if (named) return
+    await ctx.exec('docker', ['network', 'rm', name], quick)
+    ctx.log.ok(`removed ${name} — this worktree's postgres + redis run on the default bridge now`)
+  } catch {
+    // Still in use, or the daemon did not answer in time: the sweep takes it
+    // once the worktree is torn down.
+  }
 }
 
 /** The shared boot tail: infra readiness, deps, the fleet toolkit, then the

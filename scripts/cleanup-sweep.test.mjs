@@ -6,6 +6,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   POLICY,
+  ageDays,
   classify,
   formatReport,
   orphanNetworks,
@@ -316,6 +317,17 @@ check("docker's network fields parse", () => {
   eq(parseDockerTime('2026-10-08 20:59:58.97940353 -0600 MDT'), Date.parse('2026-10-09T02:59:58.979Z'))
   eq(parseDockerTime('2026-10-27 13:24:12 +0000 UTC'), Date.parse('2026-10-27T13:24:12Z'))
   eq(parseDockerTime('yesterday'), 0)
+})
+
+check('an age prints in minutes under an hour — an orphan network qualifies at ten', () => {
+  const MIN = 60 * 1000
+  eq(ageDays(13 * MIN), '13m')
+  eq(ageDays(10 * 1000), '1m')
+  eq(ageDays(90 * MIN), '2h')
+  eq(ageDays(23 * 60 * MIN), '23h')
+  eq(ageDays(3 * DAY), '3d')
+  eq(ageDays(-1), '?')
+  eq(ageDays(Number.NaN), '?')
 })
 
 check('build caches are reported at any disk reading', () => {

@@ -379,10 +379,14 @@ export function formatReport({ pressure, remaining, removed, notes, policy = POL
   return lines.join('\n') + '\n'
 }
 
-function ageDays(ms) {
+/** An artifact's age as the report prints it: days, then hours, then — for
+ *  the orphan networks, which qualify at ten minutes — minutes. */
+export function ageDays(ms) {
   if (!Number.isFinite(ms) || ms < 0) return '?'
-  const d = ms / (24 * 60 * 60 * 1000)
-  return d >= 1 ? `${d.toFixed(0)}d` : `${Math.max(1, Math.round(d * 24))}h`
+  const h = ms / (60 * 60 * 1000)
+  if (h >= 24) return `${(h / 24).toFixed(0)}d`
+  if (h >= 1) return `${Math.round(h)}h`
+  return `${Math.max(1, Math.round(ms / 60_000))}m`
 }
 
 function real(p) {

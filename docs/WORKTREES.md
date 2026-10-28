@@ -44,15 +44,7 @@ data so you still have realistic agents/boards/tickets to work against.
 
 1. `git worktree add ../talaria-<name> -b wt/<name>` off your current `HEAD`.
 2. Brings up an isolated Postgres + Redis under compose project `talaria-wt-<name>`
-   — on docker's default `bridge` network, so the project **creates no network of
-   its own** ([`docker/worktree.compose.yml`](../docker/worktree.compose.yml)): each
-   project network took a subnet from the daemon's ~30 predefined address pools,
-   and with parallel worktrees, boxes and other projects on one host `compose up`
-   failed with `all predefined address pools have been fully subnetted`. The two
-   containers never talk to each other and are reached only through their loopback
-   ports, so they need none — and they wait, before anything reads them, until the
-   real server answers a query against the `talaria` database over TCP (step 3
-   says why) — on **deterministic per-slot ports** (app `53xx`, api `54xx`, Postgres `56xx`,
+   on **deterministic per-slot ports** (app `53xx`, api `54xx`, Postgres `56xx`,
    Redis `65xx`), and reserves the slot's ports for what its api spawns and
    renders: the toolkit MCP (`57xx`), the omp auth bridge (`58xx`), and a
    hundred agent gateway ports from `20000 + slot·100`. Those three used to be
@@ -60,6 +52,24 @@ data so you still have realistic agents/boards/tickets to work against.
    the moment two stacks ran agents, the second api adopted the first stack's
    toolkit (its agents' tool calls answered `401`) and the second stack's first
    agent could not publish `:8770` (`port is already allocated`).
+   Both containers wait, before anything reads them, until the real server
+   answers a query against the `talaria` database over TCP (step 3 says why).
+
+   They run on docker's default `bridge` network, so the project **creates no
+   network of its own** ([`docker/worktree.compose.yml`](../docker/worktree.compose.yml)):
+   each project network took a subnet from the daemon's ~30 predefined address
+   pools, and with parallel worktrees, boxes and other projects on one host
+   `compose up` failed with `all predefined address pools have been fully
+   subnetted`. The two containers never talk to each other and are reached only
+   through their loopback ports, so they need none. **The trade-off:** the default
+   bridge is shared by every container on the host started without `--network`,
+   and such a container can reach this Postgres (a copy of your main DB, password
+   `talaria`) and this Redis (no auth) by container IP — on a project network only
+   that project's containers could. Talaria's own containers all name a network;
+   a hand-run `docker run` does not. A worktree cut before this keeps its old
+   `talaria-wt-<name>_default` network until its next `talaria dev`, which moves
+   both containers to the bridge and then removes that network once no
+   container, running or stopped, still names it.
 3. Seeds the new DB with `pg_dump` of your main DB (a snapshot — later changes on
    main don't propagate), then clears the copied agents' gateway ports so this
    stack's first render assigns its own rather than publishing onto main's. Both
