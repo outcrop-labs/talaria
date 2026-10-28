@@ -52,19 +52,16 @@ use talaria_agent_auth::epoch_ms_to_iso;
 /// as soon as it is seen (`auto`).
 pub const UPDATE_POLICIES: [&str; 2] = ["approve", "auto"];
 
-/// The git host a source host is, as the git-host registry will name it.
-/// Only GitHub has a connection today; any other host is unnamed (None).
-pub fn git_host_of(host: &str) -> Option<&'static str> {
-    (host == "github.com").then_some("github")
-}
-
 /// One plugin, with its source read through `app_sources`.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Plugin {
     pub app_slug: String,
+    /// The registered git host the repo lives on (`git_hosts.id`); None for
+    /// a source no host is registered at (a local repository, or an install
+    /// from a URL the operator never added a host for).
     pub git_host_id: Option<String>,
-    /// `owner/name` on GitHub.
+    /// `owner/name` on that host.
     pub repo: String,
     pub url: String,
     pub host: String,
@@ -257,13 +254,6 @@ pub fn short_sha(sha: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_github_is_a_named_git_host_today() {
-        assert_eq!(git_host_of("github.com"), Some("github"));
-        assert_eq!(git_host_of("gitlab.example.com"), None);
-        assert_eq!(git_host_of(""), None);
-    }
 
     #[test]
     fn a_short_sha_is_seven_characters_or_a_dash() {

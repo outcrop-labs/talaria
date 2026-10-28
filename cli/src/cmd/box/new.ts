@@ -12,6 +12,7 @@ import { compose, stackComposeFiles, waitFor, waitForPostgres } from '../../comp
 import { envValue, writeSecret } from '../../envfile'
 import { portSlot } from '../../paths'
 import { runSeed } from './seed'
+import { ALL_PRIMARY_CONTAINER_VARS, refuseSideStackContainers } from '../../stack'
 import { boxDir, boxFleetNetwork, boxHost, boxProject, boxState, boxSvc, checkName, COMPOSE_FILE, IMAGE, sharedTools, toolsExec } from './shared'
 
 /** The per-box compose interpolation env (written 0600). Pure so the mount
@@ -154,6 +155,13 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
   } catch {
     ctx.log.die('docker is required')
   }
+  // The primary's compose `up` below and the seed both name main's containers
+  // by the shell's TALARIA_*_CONTAINER, and a shell under a worktree's
+  // `talaria dev` inherits that worktree's. The `up` would then recreate
+  // main's postgres under the worktree's name and port (or remove it, when
+  // the worktree's container holds the name), and the seed would copy the
+  // worktree. Refused before anything exists (stack.ts).
+  await refuseSideStackContainers(ctx, ALL_PRIMARY_CONTAINER_VARS, `box new ${name}`)
   if (!existsSync(join(root, 'ui/.env'))) {
     ctx.log.die('run `bun talaria setup` in the primary checkout first (need ui/.env)')
   }

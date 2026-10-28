@@ -93,7 +93,12 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         })
     }));
     let _ = talaria_mcp_apply::ROLL_AGENT.set(std::sync::Arc::new(|pg, sb, dept| {
-        Box::pin(async move { talaria_fleet_reconcile::roll_agent(&pg, &sb, &dept).await })
+        Box::pin(async move { talaria_fleet_reconcile::roll_running_agent(&pg, &sb, &dept).await })
+    }));
+    let _ = talaria_mcp_apply::APPLY_AGENTS.set(std::sync::Arc::new(|pg, sb, depts| {
+        Box::pin(
+            async move { talaria_fleet_reconcile::apply_agent_changes(&pg, &sb, &depts).await },
+        )
     }));
     let _ = talaria_update_job::ROLL_FLEET.set(std::sync::Arc::new(|pg, sb| {
         Box::pin(async move { talaria_fleet_reconcile::roll_running_agents(&pg, &sb).await })
@@ -121,7 +126,7 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
                 talaria_approvals::announce_approval(&deps, &key).await;
             })
         }));
-    // THE ROLL'S OWN EDGE. `roll_agent` reaches the renderer through it — a
+    // THE ROLL'S OWN EDGE. `roll_running_agent` reaches the renderer through it — a
     // roll renders, then recreates the container on that render — and an
     // edge nothing sets is a roll that returns "… not wired" into callers
     // that discard it: the roster never changes, the logs stay silent, and
@@ -709,6 +714,10 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_digest::register_approval_escalation_job(real_digest_deps(state, rt.clone()));
     talaria_notify::register_notification_mail_job(real_drain_deps(state.pg.clone(), sb.clone()));
     talaria_work_dispatch::register_redispatch_job(state.pg.clone(), run.clone());
+    // The cron-output pull: a thread schedule's report the plugin's
+    // fire-and-forget push lost, read back from the agent's own session
+    // store and landed through the same door code.
+    talaria_cron_output::register_cron_pull_job(state.clone());
     talaria_runs_reclaim::register_reclaim_job(Arc::new(ReclaimDeps {
         due: due_fn(run.store.clone()),
         definition_for: run.definition_for.clone(),
@@ -960,6 +969,10 @@ mod tests {
             "skills-index-refresh fell out of the job table"
         );
         assert!(
+            names.contains(&JobName::CronOutputPull),
+            "cron-output-pull fell out of the job table — a thread's lost cron report would never land"
+        );
+        assert!(
             names.contains(&JobName::AppTriggers),
             "app-triggers fell out of the job table — every app's schedule would silently stop"
         );
@@ -996,7 +1009,7 @@ mod tests {
 
         // THE ROLL'S EDGE, the same completeness rule one layer down. This
         // OnceLock is how the reconcile crate reaches the renderer, and an
-        // unwired one makes `roll_agent` return "… not wired" — a sentence
+        // unwired one makes `roll_running_agent` return "… not wired" — a sentence
         // the control route discards while answering `{"rolling": true}`.
         // Nothing else in the crate graph runs boot, so this is the only
         // place the absence can be caught before an operator notices that
@@ -1008,6 +1021,16 @@ mod tests {
         assert!(
             talaria_update_job::ROLL_FLEET.get().is_some(),
             "the post-deploy fleet roll fell out of the boot wiring — an update would land and leave every agent on the old container"
+        );
+        // The MCP queue's two edges: an unwired apply would leave every
+        // registry edit unrendered for running agents, in silence.
+        assert!(
+            talaria_mcp_apply::APPLY_AGENTS.get().is_some(),
+            "the MCP apply edge fell out of the boot wiring — registry edits would never reach a running agent"
+        );
+        assert!(
+            talaria_mcp_apply::ROLL_AGENT.get().is_some(),
+            "the MCP roll edge fell out of the boot wiring — a timeout or auth-mode edit would never reach a running agent"
         );
         // The announce edge a queued Google write calls. This assertion is the
         // one that was missing, and its absence is the whole story: the edge

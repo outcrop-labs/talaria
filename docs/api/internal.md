@@ -100,12 +100,13 @@ Source: [`api/crates/talaria-routes-admin/src/admin/internal_apps_mcp_sync.rs`](
 > MCP servers with the apps: an enabled app with an mcp.ts gets a serving
 > row, its catalog copied from the build's load probe, and the row of an app
 > that is turned off, failed its build or lost its mcp.ts is turned off with
-> the reason. A row that changes between serving and off rolls the agents
-> that carry it, so a broken app's tools leave them and come back when it
-> serves again; every agent, team and user grant on the row is kept. An
-> admin's own enable/disable of the server is never changed. The host calls
-> it after a probe writes a catalog and after a failed build turns an app
-> off. The same pass revokes the gateway key of every app that is not
+> the reason. A row that changes between serving and off is applied to the
+> agents that carry it, in place and without a restart, so a broken app's
+> tools leave them and come back when it serves again; a row whose catalog
+> changed tells its carriers to list the tools again. Every agent, team and
+> user grant on the row is kept. An admin's own enable/disable of the
+> server is never changed. The host calls it after a probe writes a catalog
+> and after a failed build turns an app off. The same pass revokes the gateway key of every app that is not
 > enabled — the host turns a broken app off by writing the enabled set
 > itself. Callable only with the root-derived service credential
 > (`x-talaria-internal`); the host's proxy never forwards `/api/internal/*`.

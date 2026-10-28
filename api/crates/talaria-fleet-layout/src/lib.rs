@@ -93,10 +93,11 @@ pub fn dial_is_container() -> bool {
 /// the app container itself and reaches nothing from an agent, so it is
 /// withheld rather than rendered wrong. Any other host passes through as-is.
 ///
-/// One rule for two readers: the fleet render hands the result to every agent
-/// as SEARXNG_URL, and Admin → Search reads it back so the panel says what the
-/// render does. It rewrites; it never probes — a URL it passes may still be
-/// one the agents cannot connect to.
+/// One rule for three readers: the fleet render hands the result to every
+/// agent as SEARXNG_URL, Admin → Search reads it back so the panel says what
+/// the render does, and the panel's "from agents" probe dials exactly it from
+/// inside a running agent. It rewrites; it never probes — a URL it passes may
+/// still be one the agents cannot connect to, which is what the probe is for.
 pub fn agent_search_url(app_url: &str, container_dial: bool) -> Option<String> {
     let url = app_url.trim();
     if url.is_empty() {

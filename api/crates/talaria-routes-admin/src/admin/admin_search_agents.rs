@@ -11,9 +11,10 @@
 // changes nothing there, and the panel says so.
 //
 // THE WRITE ROLLS NOTHING. The renderer reads this key on every render, so
-// the choice lands on each agent at its next render or roll — the same rule
-// as the org toolset floor. A vendor key reaches a container only through
-// its environment, so a running agent needs the roll.
+// the choice lands on each agent at its next roll. (Unlike the org toolset
+// floor, it is not rendered on write: a vendor key reaches a container only
+// through its environment, and the backend is start-time config, so a
+// running agent needs the roll either way.)
 
 use axum::Json;
 use axum::extract::State;

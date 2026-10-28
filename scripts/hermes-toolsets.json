@@ -31,6 +31,7 @@
   ],
   "notGoverned": {
     "stt": "Config-only: a provider setting with its own stt.enabled switch, never a model toolset (Hermes' _CONFIG_ONLY_TOOLSETS).",
+    "connections": "Talaria pins Nous connectors off (tools.connectors.enabled: false), so manage_connections never registers; SaaS reaches agents through the MCP gateway.",
     "discord": "Platform tools for a Discord adapter no Talaria agent runs.",
     "discord_admin": "Platform tools for a Discord adapter no Talaria agent runs.",
     "yuanbao": "Platform tools for a Yuanbao adapter no Talaria agent runs."

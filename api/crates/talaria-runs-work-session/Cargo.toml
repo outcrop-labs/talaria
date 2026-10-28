@@ -22,7 +22,7 @@ talaria-artifacts = { workspace = true }
 talaria-body = { workspace = true }
 talaria-config = { workspace = true }
 talaria-gateway = { workspace = true }
-talaria-github = { workspace = true }
+talaria-git-hosts = { workspace = true }
 talaria-harness = { workspace = true }
 talaria-harness-defs = { workspace = true }
 talaria-runs-define = { workspace = true }

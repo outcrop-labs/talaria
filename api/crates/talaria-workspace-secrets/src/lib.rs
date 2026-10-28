@@ -1734,6 +1734,20 @@ pub async fn credential_from_secret(
     host: &str,
     actor: &str,
 ) -> Result<HostCredential, String> {
+    credential_from_secret_via(pg, sb, name, host, actor, "app-source").await
+}
+
+/// [`credential_from_secret`], with the audit row's `via` naming the reader:
+/// `app-source` for an app install or update, `git-host` for a git host
+/// connection (talaria-git-hosts) reading the token an admin named for it.
+pub async fn credential_from_secret_via(
+    pg: &PgPool,
+    sb: &SecretBox,
+    name: &str,
+    host: &str,
+    actor: &str,
+    via: &str,
+) -> Result<HostCredential, String> {
     let host = host.trim().to_lowercase();
     let wanted = name.trim().to_lowercase();
     let row = sqlx::query(
@@ -1818,7 +1832,7 @@ pub async fn credential_from_secret(
             "destination": host,
             "hosts": [host],
             "kind": cell_str(&doc, "kind"),
-            "via": "app-source",
+            "via": via,
             "exhausted": exhausted,
             "restricted": true,
         }),

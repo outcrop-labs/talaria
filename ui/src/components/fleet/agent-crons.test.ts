@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { editPatch, parseSchedule, schedToString } from './agent-crons'
+import { describeSchedule, editPatch, parseSchedule, schedToString } from './agent-crons'
 
 // A job as the api serves it: the schedule is Hermes's own display string,
 // which is what the edit form is seeded from.
@@ -47,5 +47,37 @@ describe('editPatch: an edit sends only what changed', () => {
       const j = { ...job, schedule }
       expect(editPatch(j, untouched(j))).toEqual({})
     }
+  })
+})
+
+describe('describeSchedule: an interval reads in the largest whole unit', () => {
+  // Hermes stores every interval in minutes (`every 6h` is saved as
+  // `{"minutes": 360, "display": "every 360m"}`), and the api serves that
+  // display string back. The row folds it into hours or days.
+  it('folds whole hours and whole days out of Hermes minutes', () => {
+    expect(describeSchedule('every 360m')).toBe('Every 6 hours')
+    expect(describeSchedule('every 60m')).toBe('Every hour')
+    expect(describeSchedule('every 120m')).toBe('Every 2 hours')
+    expect(describeSchedule('every 1440m')).toBe('Every day')
+    expect(describeSchedule('every 2880m')).toBe('Every 2 days')
+    expect(describeSchedule('every 2160m')).toBe('Every 36 hours')
+  })
+
+  it('keeps minutes that are not a whole hour', () => {
+    expect(describeSchedule('every 90m')).toBe('Every 90 minutes')
+    expect(describeSchedule('every 30m')).toBe('Every 30 minutes')
+    expect(describeSchedule('every 1m')).toBe('Every minute')
+  })
+
+  it('reads what the builder writes the same way', () => {
+    expect(describeSchedule('every 6h')).toBe('Every 6 hours')
+    expect(describeSchedule('every 1h')).toBe('Every hour')
+    expect(describeSchedule('every 24h')).toBe('Every day')
+    expect(describeSchedule('every 48h')).toBe('Every 2 days')
+  })
+
+  it('leaves the stored string alone: the edit form still opens on the minutes', () => {
+    expect(parseSchedule('every 360m')).toMatchObject({ mode: 'interval', every: 360, unit: 'm' })
+    expect(schedToString(parseSchedule('every 360m'))).toBe('every 360m')
   })
 })

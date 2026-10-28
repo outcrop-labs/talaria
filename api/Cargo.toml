@@ -268,6 +268,8 @@ talaria-conversation-layout = { path = "crates/talaria-conversation-layout" }
 
 talaria-conversations = { path = "crates/talaria-conversations" }
 
+talaria-cron-output = { path = "crates/talaria-cron-output" }
+
 talaria-daily-brief = { path = "crates/talaria-daily-brief" }
 
 talaria-daily-brief-comms = { path = "crates/talaria-daily-brief-comms" }
@@ -330,6 +332,12 @@ talaria-fleet-seal = { path = "crates/talaria-fleet-seal" }
 talaria-gaps = { path = "crates/talaria-gaps" }
 
 talaria-gateway = { path = "crates/talaria-gateway" }
+
+talaria-git-host-types = { path = "crates/talaria-git-host-types" }
+
+talaria-git-hosts = { path = "crates/talaria-git-hosts" }
+
+talaria-forgejo = { path = "crates/talaria-forgejo" }
 
 talaria-github = { path = "crates/talaria-github" }
 

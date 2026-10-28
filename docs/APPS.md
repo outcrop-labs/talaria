@@ -143,13 +143,15 @@ credential, and the host runs the handler. The api never loads app code.
    `keptData: "adopt"` gives the data to the new app, `keptData: "wipe"` deletes it first.
    Manage → Apps offers both as buttons.
 
-   **Private repositories.** A github.com repository the GitHub connection
-   ([WORKBENCH.md](./WORKBENCH.md)) can see is fetched with a token scoped to that one
-   repository and to reading its contents — including the private repos `request_repo` creates.
-   Another host's private repository needs a **workspace secret** holding an https token whose
-   *Spendable at* list names that host; name it in the install (`secret`). The token reaches git
-   through `GIT_ASKPASS` for that host only — never in the URL, a command line or `.git/config`
-   — and a missing credential is an error, never a prompt.
+   **Private repositories.** A repository on one of the instance's registered git hosts
+   (Admin → Git hosts, [WORKBENCH.md](./WORKBENCH.md#git-hosts-the-operators-choice)) is
+   fetched with that host's read login — on a GitHub App host a token scoped to that one
+   repository and to reading its contents, including the private repos `request_repo` creates;
+   on a Forgejo host the host's own token. A private repository on a host nobody registered
+   needs a **workspace secret** holding an https token whose *Spendable at* list names that
+   host; name it in the install (`secret`), which wins over any registered host. The token
+   reaches git through `GIT_ASKPASS` for that host only — never in the URL, a command line or
+   `.git/config` — and a missing credential is an error, never a prompt.
 2. **Build** — this instance compiles the app against the host runtime (`/runtime/rt-*.js`)
    and starts a dedicated Postgres container for its data. Dev loads sources through Vite
    (HMR); production serves the compiled chunk. A failed build stays on that app.

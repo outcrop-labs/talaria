@@ -9,8 +9,17 @@
 // IN PLACE (`talaria_fleet_brain::write_in_place` — same inode, flock'd,
 // unchanged bytes skipped, mtime bumped last). Hermes re-reads config.yaml
 // whenever its stat signature changes. A rename-over-the-target write would
-// land on the host and never reach the container. Env, image and limit
-// changes are the container's own and need a roll (fleet-reconcile).
+// land on the host and never reach the container. SOUL.md is read when a
+// session's system prompt is built, so an edit reaches new sessions; a
+// session with history keeps the prompt it stored, restart or not.
+//
+// Re-reading the file is not the same as acting on every key in it: most of
+// config.yaml is read once, at start (`model_routes`, plugins, providers).
+// So each service carries a digest of the part a running agent would NOT
+// see (`START_CONFIG_LABEL`, `start_config_fingerprint`), beside the env,
+// image and limits that are the container's own. A change to any of those
+// moves compose's config hash for the service, and fleet-reconcile's
+// `apply_agent_change` recreates a running container exactly when it moved.
 //
 // THIS MODULE carries the whole render: the DATA PLANE (the managed-agent
 // roster, the stable loopback port assignment, the chassis parse), the KEY
@@ -1011,6 +1020,9 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "# owner/repo from an https or ssh remote URL.\n",
     "repo=$(printf %s \"$remote_url\" | sed -nE -e 's#^[a-z+]+://[^/]+/([^/]+/[^/]+)/?$#\\1#p' -e 's#^([^@]+@)?[^:]+:([^/]+/[^/]+)/?$#\\2#p' | sed 's#\\.git$##')\n",
     "[ -n \"$repo\" ] || exit 0\n",
+    "# And the host (with any port) the remote is on: the same owner/repo on\n",
+    "# two git hosts is two repositories with two sets of rules.\n",
+    "host=$(printf %s \"$remote_url\" | sed -nE -e 's#^[a-z+]+://([^@/]+@)?([^/]+)/.*$#\\2#p' -e 's#^([^@]+@)?([^:/]+):.*$#\\2#p')\n",
     "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>.\n",
     "refs=\"\"; n=0\n",
     "while read -r _ _ remote_ref _; do\n",
@@ -1021,7 +1033,7 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "[ \"$n\" -gt 0 ] || exit 0\n",
     "refs=\"${refs%,}\"\n",
     "url=\"$TALARIA_API_URL/api/secrets/git-push-check\"\n",
-    "body=\"{\\\"repo\\\":\\\"$repo\\\",\\\"refs\\\":[$refs]}\"\n",
+    "body=\"{\\\"repo\\\":\\\"$repo\\\",\\\"host\\\":\\\"$host\\\",\\\"refs\\\":[$refs]}\"\n",
     "if command -v curl >/dev/null 2>&1; then\n",
     "  resp=$(curl -sS -X POST \"$url\" \\\n",
     "    -H \"X-Agent-Name: $API_SERVER_MODEL_NAME\" -H \"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
@@ -1097,6 +1109,21 @@ const HERMES_IMAGE_DEFAULTS: &[&str] = &[
 /// the same string as its `${HERMES_IMAGE:-…}` default (a test holds the two
 /// together).
 pub const HERMES_IMAGE_PIN: &str = HERMES_IMAGE_DEFAULTS[HERMES_IMAGE_DEFAULTS.len() - 1];
+
+/// The config schema version every rendered config.yaml declares as
+/// `_config_version`: the pinned image's own `DEFAULT_CONFIG["_config_version"]`
+/// (`hermes_cli/config_defaults.py`), read from the image with
+/// `python -c 'from hermes_cli.config_defaults import DEFAULT_CONFIG;
+/// print(DEFAULT_CONFIG["_config_version"])'`. BUMP WITH THE PIN — a test
+/// holds the pair together.
+///
+/// Without it Hermes reads the file as unversioned on every boot: the boot
+/// bootstrap logs "config migration skipped: This config predates version
+/// 12", and stage2's `docker_config_migrate.py` tries to migrate it and
+/// fails on the read-only bind. The render writes the whole schema Talaria
+/// means, so there is nothing for Hermes to migrate; stamping the current
+/// version says so, and both paths skip as up to date.
+pub const HERMES_CONFIG_VERSION: u64 = 51;
 
 /// What every agent's service gets whatever chassis it was seeded from:
 /// the current pin in place of any stock default a past template shipped,
@@ -1331,6 +1358,14 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         .join("talaria-events");
 
     let mut services: Map<String, Value> = Map::new();
+    // The departments whose agent keeps both the browser and the terminal
+    // toolsets on: each start installs the image's pinned browser engine onto
+    // their volume first (talaria-fleet-docker's browser_engine.rs). A
+    // terminal-less agent is never listed ([`fleet_browser_engine`]), and
+    // neither is an agent `department_runners` left out: it is not in
+    // `targets`, so its department is listed only for the agent that runs
+    // there, and only by that agent's own toolsets.
+    let mut browser_departments: Vec<String> = Vec::new();
     let mut secrets: Map<String, Value> = Map::new();
     let mut volumes: Map<String, Value> = chassis.volumes.clone();
 
@@ -1548,9 +1583,12 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         fleet_nous_off(&mut routed);
         fleet_delegation(&mut routed, def.max_children);
         fleet_disabled_toolsets(&mut routed, &toolset_floor, &def.disabled_toolsets);
+        fleet_browser_local_close(&mut routed, &secret_names);
+        let browser_engine = fleet_browser_engine(&routed);
         fleet_tool_loop_guardrails(&mut routed);
         fleet_title_generation(&mut routed);
         fleet_model_routes(&mut routed, &def.model);
+        fleet_config_version(&mut routed);
         match talaria_model_efforts::EffortVoices::read(pg).await {
             Ok(voices) => {
                 let efforts = target_efforts(&voices, &version.config, &routed);
@@ -1568,6 +1606,10 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
 
         let cfg_path = agent_dir.join("config.yaml");
         let cfg_text = config_yaml_text(&def.model, version.version, &routed);
+        // What of this config a running agent would only see on a restart —
+        // labelled on the service below, so a change to it is a change to
+        // the service, and a change to the rest is not.
+        let start_fingerprint = start_config_fingerprint(&routed);
         // Written after the loop, once the relay's scope already allows
         // what it routes to (the scope write, below).
         staged_configs.push((cfg_path.clone(), cfg_text));
@@ -1641,6 +1683,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             obj.remove("depends_on");
             obj.remove("profiles");
             apply_service_defaults(obj);
+            label_start_config(obj, &start_fingerprint);
             if !dial_is_container() {
                 let port = ports.get(&def.slug).copied().unwrap_or(0);
                 obj.insert("ports".into(), json!([format!("127.0.0.1:{port}:8642")]));
@@ -1701,7 +1744,8 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         // Nothing set → nothing rendered → Hermes resolves its own floor. A
         // URL rendered here also switches that keyless floor off (the `web:`
         // merge above), unless Admin → Search allowed it. Rendered is not
-        // reachable: nothing probes the URL from an agent.
+        // reachable: Admin → Search probes it from inside a running agent
+        // (talaria-agent-web-search's `probe`) to say which it is.
         if let Some(url) = &agent_search_url {
             env.insert("SEARXNG_URL".into(), json!(url));
         }
@@ -2078,6 +2122,9 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         }
         services.insert(service_name.clone(), svc);
         result.agents.push(def.model.clone());
+        if browser_engine {
+            browser_departments.push(def.department.clone());
+        }
     }
 
     for m in &remapped {
@@ -2148,6 +2195,17 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     .await
     .map_err(|e| format!("{}: {e}", compose_path.display()))?;
     result.files.push(compose_path.display().to_string());
+
+    let engine_path =
+        talaria_fleet_layout::fleet_dir().join(talaria_fleet_docker::BROWSER_ENGINE_FILE);
+    talaria_fleet_brain::write_atomic(
+        &engine_path,
+        talaria_fleet_docker::browser_engine_manifest(&browser_departments).as_bytes(),
+        0o644,
+    )
+    .await
+    .map_err(|e| format!("{}: {e}", engine_path.display()))?;
+    result.files.push(engine_path.display().to_string());
 
     let left_out: Vec<String> = left_out.into_iter().map(|l| l.slug).collect();
     write_fleet_manifest(pg, &mut result, &left_out).await?;
@@ -2682,6 +2740,239 @@ fn fleet_disabled_toolsets(
     routed.insert("agent".into(), Value::Object(agent));
 }
 
+/// Whether this agent's starts install the browser engine: the `browser`
+/// toolset on AND the `terminal` toolset on, read from the merged config
+/// ([`toolset_closed`], so [`fleet_disabled_toolsets`] runs first). It
+/// renders nothing itself: Hermes's own default browser stands, and a
+/// `browser:` block the def authored passes through as written.
+///
+/// WHY THE TERMINAL DECIDES. Hermes v0.22.4 has two browser surfaces, and
+/// both drive the image's Chromium through the `agent-browser` CLI, which the
+/// image does not stage (talaria-fleet-docker's browser_engine.rs installs it
+/// onto the volume). Its default, Browser Use mode (`browser.backend` unset),
+/// is one `browser_exec` tool that Hermes offers only to a session that also
+/// has the `terminal` tool (`model_tools._rewrite_browser_exec`), and in that
+/// mode the built-in `browser_navigate` / `browser_click` / … tools are
+/// withheld (`check_browser_requirements`). The built-in tools
+/// (`browser.backend: off`) would work without a terminal, but Hermes runs
+/// them as a LOCAL browser, and it skips the private-address check for a
+/// local browser whenever `TERMINAL_ENV` is local or unset
+/// (`browser_tool_cloud._is_local_backend`: SSRF protection "only matters
+/// when the browser can reach networks the terminal cannot"). It never asks
+/// whether the session has a terminal. So a terminal-less agent given those
+/// tools could open the host, other agents' containers and the LAN, which its
+/// own `web_extract` refuses; no setting restores the check for a local
+/// browser, and `TERMINAL_ENV` cannot move off `local` (the file tools run
+/// through it). With the terminal on, Hermes's premise holds: the shell
+/// already reaches all of it. So only that agent gets the engine, and with it
+/// Hermes's default `browser_exec`. A terminal-less agent with `browser`
+/// ticked and no `browser:` block of its own renders exactly what it rendered
+/// before the engine existed (no `browser:` block, no engine), so it has no
+/// browser tool, an upgrade changes nothing for it, and the toolset grid says
+/// why (ui's `browserNote`).
+///
+/// "The terminal" is the `terminal` TOOL, which is what Hermes's gate reads
+/// ([`toolset_closed`] says where it can be closed).
+///
+/// A `browser:` block the def authored stands, and with the terminal open it
+/// is the def's own browser. With the terminal closed, one that Hermes would
+/// run as a local browser has the `browser` toolset closed for it first
+/// ([`fleet_browser_local_close`]), so no terminal-less agent keeps a browser
+/// without the private-address check, even on an engine an earlier start left
+/// on its volume.
+fn fleet_browser_engine(routed: &Map<String, Value>) -> bool {
+    !toolset_closed(routed, "browser") && !toolset_closed(routed, "terminal")
+}
+
+/// Whether the merged config closes `toolset` for the agent's sessions, read
+/// the way Hermes v0.22.4's api_server resolves a turn's tools: the platform
+/// list (`platform_toolsets.api_server`, Hermes's default bundle when the def
+/// authored none) minus `agent.disabled_toolsets`. So it is closed when the
+/// disabled list names it (a retired name as the governed toolsets it closes,
+/// [`talaria_agent_defs::toolset_names`]: `debugging` closes the terminal), or
+/// when the def authored a platform list that carries it nowhere
+/// ([`platform_list_carries`]). Talaria never writes that list, and the
+/// toolset grid does not read it; a def that authors one narrows its agent's
+/// tools behind the grid.
+fn toolset_closed(routed: &Map<String, Value>, toolset: &str) -> bool {
+    let disabled = routed
+        .get("agent")
+        .and_then(|a| a.get("disabled_toolsets"))
+        .and_then(Value::as_array);
+    // A name as the governed toolsets it closes; a stranger is taken as
+    // written.
+    let named = disabled.is_some_and(|d| {
+        d.iter().filter_map(Value::as_str).any(|raw| {
+            raw.trim() == toolset
+                || talaria_agent_defs::toolset_names(raw)
+                    .is_some_and(|names| names.contains(&toolset))
+        })
+    });
+    named || api_server_list(routed).is_some_and(|list| !platform_list_carries(&list, toolset))
+}
+
+/// The toolset list the def authored for Hermes's api_server platform, which
+/// replaces that platform's default bundle (v0.22.4 `_get_platform_tools`).
+/// None when there is none: Hermes reads only a list, or a string holding a
+/// list literal (`'["web", "terminal"]'`, older `hermes config set` builds),
+/// and falls back to its default for anything else. A list-literal string
+/// this cannot read is taken as an empty list, so it closes rather than
+/// opens.
+fn api_server_list(routed: &Map<String, Value>) -> Option<Vec<String>> {
+    let value = routed
+        .get("platform_toolsets")?
+        .as_object()?
+        .get("api_server")?;
+    let names = |items: &[Value]| -> Vec<String> {
+        items
+            .iter()
+            .filter_map(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            })
+            .collect()
+    };
+    match value {
+        Value::Array(items) => Some(names(items)),
+        Value::String(s) if s.trim_start().starts_with('[') => {
+            let parsed = serde_json::from_str::<Vec<Value>>(s.trim())
+                .or_else(|_| serde_json::from_str::<Vec<Value>>(&s.trim().replace('\'', "\"")));
+            Some(parsed.map(|items| names(&items)).unwrap_or_default())
+        }
+        _ => None,
+    }
+}
+
+/// Whether an authored platform list carries `toolset` (`terminal` or
+/// `browser`): by name, `debugging` for the terminal tool, or one of
+/// v0.22.4's composites that carry both (`all`, `*`, `coding`, the legacy
+/// `hermes`, and every `hermes-*` bundle but `hermes-webhook`, whose tools are
+/// web search, extract, vision and clarify). A custom toolset is not read, so
+/// it carries nothing here: the reading errs toward closed.
+fn platform_list_carries(list: &[String], toolset: &str) -> bool {
+    list.iter().any(|name| {
+        name == toolset
+            || (toolset == "terminal" && name == "debugging")
+            || matches!(name.as_str(), "all" | "*" | "coding" | "hermes")
+            || (name.starts_with("hermes-") && name != "hermes-webhook")
+    })
+}
+
+/// Which browser Hermes v0.22.4 gives an agent whose `browser` toolset is
+/// on, from its config and the names of its own secrets (which reach Hermes
+/// as env).
+#[derive(Debug, PartialEq, Eq)]
+enum HermesBrowser {
+    /// Browser Use mode: the one `browser_exec` tool, offered only with the
+    /// terminal. Hermes's default (`browser.backend` unset, or `browser-use`).
+    Exec,
+    /// The built-in `browser_*` tools on a browser Hermes calls local (this
+    /// machine's Chromium through the engine, or Camofox), for which it
+    /// skips the private-address check (`_is_local_backend`).
+    Local,
+    /// The built-in tools on a CDP endpoint or a hosted provider, which keep
+    /// Hermes's check.
+    Remote,
+}
+
+/// Hermes's reading of a config value as `str(v or "")`.
+fn py_text(v: &Value) -> String {
+    match v {
+        Value::Null => String::new(),
+        Value::Bool(false) => String::new(),
+        Value::Bool(true) => "True".into(),
+        Value::Number(n) if n.as_f64() == Some(0.0) => String::new(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.clone(),
+        Value::Array(a) if a.is_empty() => String::new(),
+        Value::Object(o) if o.is_empty() => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// The browser Hermes v0.22.4 would give this agent, mirroring
+/// `is_browser_use_cli_mode`, `is_camofox_mode` and `_is_local_backend`.
+/// Where Talaria cannot see a setting (a live `/browser connect`, a
+/// `BROWSER_CDP_URL` or cloud credential in the agent's env), it reads it as
+/// absent, which errs toward `Local`; the one env name read is `CAMOFOX_URL`,
+/// which selects Camofox when no `browser.cloud_provider` is written.
+fn hermes_browser(routed: &Map<String, Value>, secret_names: &[String]) -> HermesBrowser {
+    let cfg = routed.get("browser").and_then(Value::as_object);
+    let get = |key: &str| cfg.and_then(|c| c.get(key));
+    // get_browser_backend: YAML 1.1's bare `off` is `false`, which is a
+    // choice; `true` is unset.
+    let backend = match get("backend") {
+        Some(Value::Bool(false)) => "off".to_string(),
+        Some(Value::Bool(true)) | None => String::new(),
+        Some(v) => py_text(v).trim().to_lowercase(),
+    };
+    let cdp = get("cdp_url").is_some_and(|v| !py_text(v).trim().is_empty());
+    // read_selection("browser"): the written `cloud_provider`, if any.
+    let selection = get("cloud_provider")
+        .filter(|v| !v.is_null())
+        .map(|v| match v {
+            Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+            other => py_text(other).trim().to_lowercase(),
+        })
+        .filter(|s| !s.is_empty());
+    let camofox = !cdp
+        && match &selection {
+            Some(s) => s == "camofox",
+            None => secret_names.iter().any(|n| n == "CAMOFOX_URL"),
+        };
+    if !camofox && (backend.is_empty() || backend == "browser-use") {
+        return HermesBrowser::Exec;
+    }
+    if cdp {
+        return HermesBrowser::Remote;
+    }
+    if camofox {
+        return HermesBrowser::Local;
+    }
+    // _resolve_cloud_provider_uncached: a written key names a provider unless
+    // it normalises to local (or camofox, handled above).
+    let hosted = get("cloud_provider").is_some_and(|v| {
+        let key = py_text(v).trim().to_lowercase();
+        !key.is_empty() && key != "local" && key != "camofox"
+    });
+    if hosted {
+        HermesBrowser::Remote
+    } else {
+        HermesBrowser::Local
+    }
+}
+
+/// Close the `browser` toolset for an agent whose terminal is closed when the
+/// browser Hermes would give it is a local one ([`hermes_browser`]): a def
+/// that authored a backend other than `browser-use`, or Camofox. Hermes
+/// skips its private-address check for that browser, and with no terminal
+/// nothing else of the agent's reaches those networks. Talaria installs no
+/// engine for such an agent, but one that an earlier start with the terminal
+/// open left on the volume would still run the built-in tools, so the render
+/// closes the toolset rather than relying on the engine being absent. A CDP
+/// endpoint or a hosted provider keeps Hermes's check and is left alone, and
+/// so is Hermes's default (`browser_exec`, which needs the terminal anyway),
+/// so a def with no `browser:` block renders exactly what it did before.
+/// The def's own `browser:` block is never rewritten, and the toolset grid
+/// says what happened (ui's `browserNote`).
+fn fleet_browser_local_close(routed: &mut Map<String, Value>, secret_names: &[String]) {
+    if toolset_closed(routed, "browser")
+        || !toolset_closed(routed, "terminal")
+        || hermes_browser(routed, secret_names) != HermesBrowser::Local
+    {
+        return;
+    }
+    // [`fleet_disabled_toolsets`] ran first, so the list is there.
+    if let Some(list) = routed
+        .get_mut("agent")
+        .and_then(|a| a.get_mut("disabled_toolsets"))
+        .and_then(Value::as_array_mut)
+    {
+        list.push(json!("browser"));
+    }
+}
+
 /// Hermes's progressive tool disclosure, pinned on. Every agent carries the
 /// `talaria` MCP server, and Hermes always treats an MCP tool as deferrable,
 /// so with the bridge on the toolkit's schemas stay out of the model-facing
@@ -2765,6 +3056,110 @@ fn fleet_title_generation(routed: &mut Map<String, Value>) {
     titles.insert("model_upgrade_enabled".into(), json!(false));
     aux.insert("title_generation".into(), Value::Object(titles));
     routed.insert("auxiliary".into(), Value::Object(aux));
+}
+
+/// The schema version the render writes against ([`HERMES_CONFIG_VERSION`]),
+/// set over whatever the authored config carried: an imported or federated
+/// def may hold an older stamp, and an older stamp is what sends Hermes into
+/// a migration of a file it cannot write.
+fn fleet_config_version(routed: &mut Map<String, Value>) {
+    routed.insert("_config_version".into(), json!(HERMES_CONFIG_VERSION));
+}
+
+/// The compose label that carries [`start_config_fingerprint`]. A label is
+/// part of the service definition, so compose's own config hash
+/// (`com.docker.compose.config-hash`) moves when it does — which is how a
+/// change Hermes reads only at start reaches the one comparison that decides
+/// a recreate (talaria-fleet-docker's `container_fit`).
+pub const START_CONFIG_LABEL: &str = "talaria.config-start-hash";
+
+/// The config.yaml paths a RUNNING Hermes (v0.22.4) picks up from the
+/// in-place rewrite, each read against its source:
+///
+/// - `agent.disabled_toolsets` — every API turn builds its AIAgent from
+///   `_load_gateway_config()` and `_get_platform_tools(…, "api_server")`,
+///   which applies the list last (`gateway/platforms/api_server.py`,
+///   `hermes_cli/tools_config.py`).
+/// - `delegation.max_concurrent_children` — read on each delegate call
+///   through `load_config_readonly()` (`tools/delegate_tool_config.py`).
+/// - `mcp_servers` — the housekeeping tick reconciles the live servers
+///   against the file BY NAME (`reconcile_mcp_servers_with_config`). Only the
+///   name set is live; an entry that changes under the same name is not
+///   reconnected. The render builds every entry from the registry and the
+///   only field that can move under a name is `timeout`, whose edit keeps
+///   its own roll (talaria-mcp-apply).
+///
+/// Everything else is treated as read at start — `platforms.api_server.extra.
+/// model_routes` is parsed once in the adapter's constructor, plugins load
+/// at boot — and a path joins this list only with the same evidence.
+const LIVE_CONFIG_PATHS: &[&[&str]] = &[
+    &["agent", "disabled_toolsets"],
+    &["delegation", "max_concurrent_children"],
+    &["mcp_servers"],
+];
+
+/// A digest of the config.yaml a container needs to be RESTARTED to see:
+/// the routed config minus [`LIVE_CONFIG_PATHS`], keys sorted so the same
+/// config always digests the same. Rendered as [`START_CONFIG_LABEL`].
+pub fn start_config_fingerprint(routed: &Map<String, Value>) -> String {
+    fn without(map: &mut Map<String, Value>, path: &[&str]) {
+        match path {
+            [] => {}
+            [leaf] => {
+                map.remove(*leaf);
+            }
+            [head, rest @ ..] => {
+                if let Some(Value::Object(inner)) = map.get_mut(*head) {
+                    without(inner, rest);
+                    if inner.is_empty() {
+                        map.remove(*head);
+                    }
+                }
+            }
+        }
+    }
+    fn canonical(v: &Value) -> Value {
+        match v {
+            Value::Object(m) => {
+                let mut keys: Vec<&String> = m.keys().collect();
+                keys.sort();
+                let mut out = Map::new();
+                for k in keys {
+                    out.insert(k.clone(), canonical(&m[k]));
+                }
+                Value::Object(out)
+            }
+            Value::Array(a) => Value::Array(a.iter().map(canonical).collect()),
+            other => other.clone(),
+        }
+    }
+    let mut start_only = routed.clone();
+    for path in LIVE_CONFIG_PATHS {
+        without(&mut start_only, path);
+    }
+    let text = serde_json::to_string(&canonical(&Value::Object(start_only))).unwrap_or_default();
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Stamp [`START_CONFIG_LABEL`] on a service, in whichever form the
+/// chassis spelled its labels (a map, or compose's `KEY=value` list).
+fn label_start_config(svc: &mut Map<String, Value>, fingerprint: &str) {
+    match svc.get_mut("labels") {
+        Some(Value::Array(list)) => {
+            let prefix = format!("{START_CONFIG_LABEL}=");
+            list.retain(|l| !l.as_str().is_some_and(|s| s.starts_with(&prefix)));
+            list.push(json!(format!("{prefix}{fingerprint}")));
+        }
+        Some(Value::Object(map)) => {
+            map.insert(START_CONFIG_LABEL.into(), json!(fingerprint));
+        }
+        _ => {
+            svc.insert("labels".into(), json!({ START_CONFIG_LABEL: fingerprint }));
+        }
+    }
 }
 
 /// THE PERSONA'S TIERS, as Hermes' API server routes them. Talaria publishes
@@ -4440,6 +4835,105 @@ service:
     }
 
     #[test]
+    fn the_config_version_is_the_pinned_images_own() {
+        // BUMP WITH THE PIN. When this fails, read the new image's
+        // DEFAULT_CONFIG["_config_version"] (the HERMES_CONFIG_VERSION doc
+        // has the one-liner) and update the constant and this pair together.
+        let tag = HERMES_IMAGE_PIN
+            .split_once(':')
+            .and_then(|(_, rest)| rest.split_once('@'))
+            .map(|(tag, _)| tag)
+            .expect("the pin is repo:tag@digest");
+        assert_eq!(
+            (tag, HERMES_CONFIG_VERSION),
+            ("v0.22.4", 51),
+            "HERMES_CONFIG_VERSION must be the pinned image's own _config_version"
+        );
+    }
+
+    #[test]
+    fn every_render_declares_the_schema_version_over_an_authored_one() {
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!({ "default": "m" }));
+        // An imported def stamped by an older Hermes: overridden, not kept —
+        // an older stamp is what starts a migration of the read-only file.
+        routed.insert("_config_version".into(), json!(9));
+        fleet_config_version(&mut routed);
+        let text = config_yaml_text("x-eng", 3, &routed);
+        assert!(text.contains("\n_config_version: 51\n"), "{text}");
+        let back: Value = serde_yaml_ng::from_str(&text).expect("parses");
+        assert_eq!(back["_config_version"], json!(HERMES_CONFIG_VERSION));
+    }
+
+    #[test]
+    fn the_start_fingerprint_ignores_what_hermes_reads_live_and_nothing_else() {
+        let base = json!({
+            "model": { "default": "m", "provider": "talaria" },
+            "agent": { "disabled_toolsets": ["todo", "clarify"], "max_turns": 60 },
+            "delegation": { "max_concurrent_children": 3 },
+            "mcp_servers": { "talaria": { "url": "http://gw/talaria" } },
+            "platforms": { "api_server": { "extra": { "model_routes": { "a-fast": { "model": "f" } } } } },
+        });
+        let base = base.as_object().cloned().expect("object");
+        let print = start_config_fingerprint(&base);
+        assert_eq!(print.len(), 64, "a sha256 hex digest");
+
+        // What a running agent takes from the in-place rewrite does not move it.
+        let mut live = base.clone();
+        live["agent"]["disabled_toolsets"] = json!(["todo", "clarify", "terminal"]);
+        live["delegation"]["max_concurrent_children"] = json!(8);
+        live["mcp_servers"]["github"] = json!({ "url": "http://gw/github", "timeout": 30 });
+        assert_eq!(start_config_fingerprint(&live), print, "live paths only");
+        // A section the live path empties is the same as one that never had it.
+        let mut bare = base.clone();
+        bare.remove("delegation");
+        assert_eq!(start_config_fingerprint(&bare), print);
+
+        // Key order is not a change.
+        let mut reordered = Map::new();
+        for (k, v) in base.iter().rev() {
+            reordered.insert(k.clone(), v.clone());
+        }
+        assert_eq!(start_config_fingerprint(&reordered), print);
+
+        // Everything else is read at start, and does.
+        let mut sibling = base.clone();
+        sibling["agent"]["max_turns"] = json!(90);
+        assert_ne!(start_config_fingerprint(&sibling), print, "agent.max_turns");
+        let mut routes = base.clone();
+        routes["platforms"]["api_server"]["extra"]["model_routes"]["a-fast"]["model"] = json!("g");
+        assert_ne!(start_config_fingerprint(&routes), print, "model_routes");
+        let mut model = base.clone();
+        model["model"]["default"] = json!("n");
+        assert_ne!(start_config_fingerprint(&model), print, "model");
+    }
+
+    #[test]
+    fn the_start_label_lands_in_whichever_form_the_chassis_used() {
+        let mut none = Map::new();
+        label_start_config(&mut none, "abc");
+        assert_eq!(none["labels"], json!({ START_CONFIG_LABEL: "abc" }));
+
+        let mut map = Map::new();
+        map.insert("labels".into(), json!({ "team": "ops" }));
+        label_start_config(&mut map, "abc");
+        label_start_config(&mut map, "def");
+        assert_eq!(
+            map["labels"],
+            json!({ "team": "ops", START_CONFIG_LABEL: "def" })
+        );
+
+        let mut list = Map::new();
+        list.insert("labels".into(), json!(["team=ops"]));
+        label_start_config(&mut list, "abc");
+        label_start_config(&mut list, "def");
+        assert_eq!(
+            list["labels"],
+            json!(["team=ops", format!("{START_CONFIG_LABEL}=def")])
+        );
+    }
+
+    #[test]
     fn the_rendered_config_ends_its_document_so_a_stale_tail_cannot_parse() {
         let mut routed = Map::new();
         routed.insert("model".into(), json!({ "default": "m" }));
@@ -4475,6 +4969,265 @@ service:
         );
         let back: Value = serde_yaml_ng::from_str(&yaml).expect("emitted yaml parses");
         assert_eq!(back, Value::Object(routed), "round-trip must be lossless");
+    }
+
+    /// A routed config after the toolset merge: the floor plus `def`.
+    fn merged(def_disabled: &[&str]) -> Map<String, Value> {
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!("x"));
+        let def: Vec<String> = def_disabled.iter().map(|s| s.to_string()).collect();
+        fleet_disabled_toolsets(&mut routed, &mandatory(), &def);
+        routed
+    }
+
+    #[test]
+    fn the_engine_comes_only_with_the_terminal() {
+        // Terminal open (a Developer Agent, or any agent a manager opened it
+        // on): the engine, and Hermes's own default browser.
+        assert!(fleet_browser_engine(&merged(&["cronjob"])));
+        assert!(fleet_browser_engine(&merged(&[])));
+        // A new agent's default, browser on and terminal closed: no engine,
+        // so no browser tool (Browser Use mode offers browser_exec only with
+        // the terminal, and the built-in tools would be a local browser with
+        // no private-address check).
+        let fresh = merged(talaria_agent_defs::DEFAULT_DISABLED_FOR_NEW);
+        assert!(!fleet_browser_engine(&fresh));
+        assert!(!fleet_browser_engine(&merged(&["terminal"])));
+        // The browser closed: no engine, terminal or not.
+        assert!(!fleet_browser_engine(&merged(&["browser"])));
+        assert!(!fleet_browser_engine(&merged(&["browser", "terminal"])));
+    }
+
+    #[test]
+    fn a_terminal_closed_anywhere_is_closed() {
+        // By the org floor.
+        let mut floored = Map::new();
+        fleet_disabled_toolsets(&mut floored, &["todo".into(), "terminal".into()], &[]);
+        assert!(!fleet_browser_engine(&floored));
+        // By the authored config's own list, spelled loosely.
+        for name in ["terminal", " terminal "] {
+            let mut authored = Map::new();
+            authored.insert("agent".into(), json!({ "disabled_toolsets": [name] }));
+            fleet_disabled_toolsets(&mut authored, &mandatory(), &[]);
+            assert!(!fleet_browser_engine(&authored), "{name:?}");
+        }
+        // By a retired name whose Hermes toolset carries the terminal tool
+        // (`debugging` is terminal + process_manage, with web and file).
+        let mut retired = Map::new();
+        retired.insert(
+            "agent".into(),
+            json!({ "disabled_toolsets": ["debugging"] }),
+        );
+        fleet_disabled_toolsets(&mut retired, &mandatory(), &[]);
+        assert!(!fleet_browser_engine(&retired));
+        // A retired name that closes something else leaves both open, and
+        // so does a stranger or a non-string entry.
+        let mut other = Map::new();
+        other.insert(
+            "agent".into(),
+            json!({ "disabled_toolsets": ["search", "safe", "terminalish", 7, null] }),
+        );
+        fleet_disabled_toolsets(&mut other, &mandatory(), &[]);
+        assert!(fleet_browser_engine(&other));
+        // The browser closed the same ways.
+        let mut browser = Map::new();
+        browser.insert("agent".into(), json!({ "disabled_toolsets": [" browser"] }));
+        fleet_disabled_toolsets(&mut browser, &mandatory(), &[]);
+        assert!(!fleet_browser_engine(&browser));
+    }
+
+    #[test]
+    fn an_authored_backend_does_not_buy_a_terminal_less_agent_an_engine() {
+        // The built-in tools are exactly the local browser the terminal
+        // rule is about, so a def that asked for them with the terminal
+        // closed still gets no engine; with the terminal open its backend
+        // stands and the engine is installed. The block itself is the def's
+        // and is never rewritten (the predicate only reads).
+        for block in [
+            json!({ "backend": "off", "headed": false }),
+            json!({ "backend": false }),
+            json!({ "backend": "browser-use" }),
+            json!({ "backend": null }),
+            json!(false),
+        ] {
+            let mut closed = merged(&["terminal"]);
+            closed.insert("browser".into(), block.clone());
+            assert!(!fleet_browser_engine(&closed), "{block}");
+            assert_eq!(closed.get("browser"), Some(&block));
+            let mut open = merged(&[]);
+            open.insert("browser".into(), block.clone());
+            assert!(fleet_browser_engine(&open), "{block}");
+        }
+    }
+
+    /// The merged list after the local-browser close, for a def whose
+    /// own disabled list is `def` and whose authored `browser:` is `block`.
+    fn closed_for(def: &[&str], block: Option<Value>, secrets: &[&str]) -> Vec<Value> {
+        let mut routed = merged(def);
+        if let Some(block) = block {
+            routed.insert("browser".into(), block);
+        }
+        let secrets: Vec<String> = secrets.iter().map(|s| s.to_string()).collect();
+        fleet_browser_local_close(&mut routed, &secrets);
+        routed["agent"]["disabled_toolsets"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn a_local_browser_is_closed_while_the_terminal_is() {
+        // Each of these is the built-in tools on a browser Hermes calls
+        // local, which skips its private-address check: with the terminal
+        // closed the render closes the toolset, so an engine an earlier start
+        // left on the volume runs nothing. The block itself stands.
+        for block in [
+            json!({ "backend": "off", "headed": false }),
+            json!({ "backend": false }),
+            json!({ "backend": " Camofox " }),
+            json!({ "backend": "off", "cloud_provider": "local" }),
+            json!({ "backend": "off", "cloud_provider": null }),
+            json!({ "backend": "off", "cdp_url": "  " }),
+            json!({ "cloud_provider": "camofox" }),
+            json!({ "backend": "browser-use", "cloud_provider": "CAMOFOX" }),
+        ] {
+            let mut routed = merged(&["terminal"]);
+            routed.insert("browser".into(), block.clone());
+            fleet_browser_local_close(&mut routed, &[]);
+            let list = routed["agent"]["disabled_toolsets"].as_array().unwrap();
+            assert_eq!(list.last(), Some(&json!("browser")), "{block}");
+            assert_eq!(routed.get("browser"), Some(&block));
+            assert!(!fleet_browser_engine(&routed), "{block}");
+            // With the terminal open the same block is the def's own browser.
+            let open = closed_for(&[], Some(block.clone()), &[]);
+            assert_eq!(
+                open,
+                merged(&[])["agent"]["disabled_toolsets"]
+                    .as_array()
+                    .unwrap()
+                    .clone()
+            );
+        }
+        // Camofox chosen by its env name alone, with no provider written.
+        let by_env = closed_for(&["terminal"], None, &["CAMOFOX_URL"]);
+        assert_eq!(by_env.last(), Some(&json!("browser")));
+        // A retired name that closes the terminal counts, and so does an
+        // authored platform list without it.
+        let retired = closed_for(&["debugging"], Some(json!({ "backend": "off" })), &[]);
+        assert_eq!(retired.last(), Some(&json!("browser")));
+        let mut listed = merged(&[]);
+        listed.insert(
+            "platform_toolsets".into(),
+            json!({ "api_server": ["web", "browser"] }),
+        );
+        listed.insert("browser".into(), json!({ "backend": "off" }));
+        fleet_browser_local_close(&mut listed, &[]);
+        assert_eq!(
+            listed["agent"]["disabled_toolsets"]
+                .as_array()
+                .unwrap()
+                .last(),
+            Some(&json!("browser"))
+        );
+    }
+
+    #[test]
+    fn hermes_default_and_a_remote_browser_are_left_alone() {
+        let terminal_closed = merged(&["terminal"])["agent"]["disabled_toolsets"]
+            .as_array()
+            .unwrap()
+            .clone();
+        // No block at all (every default agent): the list is exactly what
+        // the toolset merge wrote, so an upgrade changes nothing for it.
+        let fresh = merged(talaria_agent_defs::DEFAULT_DISABLED_FOR_NEW);
+        let mut after = fresh.clone();
+        fleet_browser_local_close(&mut after, &[]);
+        assert_eq!(after, fresh);
+        // Browser Use mode (browser_exec needs the terminal anyway), a CDP
+        // endpoint, and a hosted provider (both keep Hermes's check).
+        for block in [
+            None,
+            Some(json!({ "backend": "browser-use" })),
+            Some(json!({ "backend": null, "headed": true })),
+            Some(json!({ "backend": true })),
+            Some(json!({ "backend": "" })),
+            Some(json!(false)),
+            Some(json!({ "backend": "off", "cdp_url": "http://chrome:9222" })),
+            Some(json!({ "cloud_provider": "camofox", "cdp_url": "ws://chrome:9222" })),
+            Some(json!({ "backend": "off", "cloud_provider": "browserbase" })),
+            Some(json!({ "backend": "off", "cloud_provider": "nous" })),
+            Some(json!({ "cloud_provider": "local" })),
+        ] {
+            let label = format!("{block:?}");
+            assert_eq!(
+                closed_for(&["terminal"], block, &[]),
+                terminal_closed,
+                "{label}"
+            );
+        }
+        // A written provider wins over the env name, as in Hermes.
+        let written = closed_for(
+            &["terminal"],
+            Some(json!({ "cloud_provider": "local" })),
+            &["CAMOFOX_URL"],
+        );
+        assert_eq!(written, terminal_closed);
+        // A browser already closed is not listed twice.
+        let both = merged(&["terminal", "browser"])["agent"]["disabled_toolsets"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            closed_for(
+                &["terminal", "browser"],
+                Some(json!({ "backend": "off" })),
+                &[]
+            ),
+            both
+        );
+    }
+
+    #[test]
+    fn an_authored_platform_list_can_close_the_terminal() {
+        let with = |list: Value| {
+            let mut routed = merged(&[]);
+            routed.insert("platform_toolsets".into(), json!({ "api_server": list }));
+            routed
+        };
+        // Lists that carry both: by name, or through a composite.
+        for list in [
+            json!(["terminal", "browser", "web"]),
+            json!(["debugging", "browser"]),
+            json!(["hermes-api-server"]),
+            json!(["hermes"]),
+            json!(["coding"]),
+            json!(["all"]),
+            json!("[\"terminal\", \"browser\"]"),
+            json!("['terminal', 'browser']"),
+        ] {
+            assert!(fleet_browser_engine(&with(list.clone())), "{list}");
+        }
+        // Lists that leave the terminal (or the browser) out, or that cannot
+        // be read: closed, so no engine.
+        for list in [
+            json!(["web", "browser", "file"]),
+            json!(["terminal", "web"]),
+            json!(["hermes-webhook"]),
+            json!(["safe"]),
+            json!(["my-custom-kit"]),
+            json!([]),
+            json!("[terminal"),
+        ] {
+            assert!(!fleet_browser_engine(&with(list.clone())), "{list}");
+        }
+        // Anything but a list falls back to Hermes's default, which opens
+        // both; so does a platform other than the api_server.
+        for list in [json!("terminal"), json!(null), json!(7)] {
+            assert!(fleet_browser_engine(&with(list.clone())), "{list}");
+        }
+        let mut other = merged(&[]);
+        other.insert("platform_toolsets".into(), json!({ "cli": ["web"] }));
+        assert!(fleet_browser_engine(&other));
     }
 
     #[test]
@@ -5211,6 +5964,12 @@ empty_list: []
         assert!(
             asked.contains(r#""repo":"acme/widgets""#),
             "the repo string must be .git-suffix-free: {asked}"
+        );
+        // The remote's host rides along: the route resolves the grant on
+        // the git host the push goes to.
+        assert!(
+            asked.contains(r#""host":"github.com""#),
+            "the host must arrive bare: {asked}"
         );
         let (code, err, _) = run(r#"{"error":"acme/widgets is not yours to push"}"#);
         assert_eq!(code, 1, "a refused push must abort");

@@ -861,7 +861,7 @@ async fn workbench_start_job(pg: &PgPool, model: &str, task_id: &str) -> String 
     .await
     .unwrap();
     sqlx::query(
-        "insert into workbench_repos (agent_id, repo) values ($1::uuid, 'workchains-live/repo') \
+        "insert into workbench_repos (agent_id, host_id, repo) values ($1::uuid, 'github', 'workchains-live/repo') \
          on conflict do nothing",
     )
     .bind(&agent_id)

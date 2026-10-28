@@ -19,6 +19,7 @@ talaria-comms-decay = { workspace = true }
 talaria-config = { workspace = true }
 talaria-attribution = { workspace = true }
 talaria-conversations = { workspace = true }
+talaria-cron-output = { workspace = true }
 talaria-inbox-focus = { workspace = true }
 talaria-tasks = { workspace = true }
 talaria-app-triggers = { workspace = true }

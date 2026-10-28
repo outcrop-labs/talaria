@@ -83,7 +83,7 @@
           <span class="flex min-w-0 flex-1 items-center gap-1.5">
             <GitBranch size={12} class="shrink-0 text-muted" />
             <span class="truncate font-mono text-[13px] text-fg" title={r.url}>{r.repo}</span>
-            <span class="shrink-0 font-mono text-[11px] text-muted">@ {r.ref ?? 'default branch'}</span>
+            <span class="shrink-0 font-mono text-[11px] text-muted">@ {r.ref ?? 'default branch'} on {r.hostId}</span>
           </span>
           <Chip title="The Developer Agent that asked, and will maintain it">{r.agentName ?? r.agentModel}</Chip>
           {#if r.ticketRef}<Chip title={`The ticket it was built for, on ${r.boardName ?? 'its board'}: maintenance tickets go there`}>{r.ticketRef}</Chip>{/if}

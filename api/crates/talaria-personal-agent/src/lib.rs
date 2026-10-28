@@ -22,7 +22,10 @@ use talaria_fleet_create::{CreateAgentInput, create_agent, ensure_agent_key, res
 /// handle's department (`personal-<handle>`) is already another agent's
 /// (talaria-agent-defs, "A department is one agent's key").
 pub use talaria_agent_defs::is_department_taken;
-use talaria_fleet_docker::{container_status, fleet_restart, fleet_up, wait_healthy};
+use talaria_fleet_docker::{
+    ANSWER_WITHIN, Detached, container_status, fleet_up, run_detached, wait_healthy,
+};
+use talaria_fleet_reconcile::apply_after_render;
 use talaria_retrieval_collections::ensure_personal_collection;
 use talaria_retrieval_embed as embed;
 use talaria_retrieval_qdrant as qdrant;
@@ -282,10 +285,83 @@ fn private_doc_sync(state: &AppState, user_id: &str) {
     });
 }
 
+/// A [`PersonalUser`] an owner's call carries onto a task of its own.
+struct OwnedUser {
+    id: String,
+    email: Option<String>,
+    name: Option<String>,
+}
+
+impl OwnedUser {
+    fn of(user: &PersonalUser<'_>) -> Self {
+        OwnedUser {
+            id: user.id.to_string(),
+            email: user.email.map(str::to_string),
+            name: user.name.map(str::to_string),
+        }
+    }
+
+    fn user(&self) -> PersonalUser<'_> {
+        PersonalUser {
+            id: &self.id,
+            email: self.email.as_deref(),
+            name: self.name.as_deref(),
+        }
+    }
+}
+
+// AN OWNER'S CALL RUNS WHOLE ON A TASK OF ITS OWN (talaria-fleet-docker
+// `run_detached`), like a control verb. Each is several steps — a create's
+// def, grants, boards and bring-up; an edit's version, a rename's one
+// transaction then its directory move, the render and the apply — and a
+// request future that is dropped (a closed tab, a curl that gave up, the app
+// proxy's 300 s) stops at whichever await it was on. Measured live under IO
+// starvation: a rename's COMMIT took 5 s, the caller left at 5 s, and the
+// assistant was left renamed in the database with its files, its render and
+// its container still on the old handle. The caller waits `ANSWER_WITHIN`
+// for the answer; past that it gets the assistant as it is, and the call goes
+// on to its end.
+
 /// Create + start a personal agent for the user, based on a template (any
 /// enabled agent). Idempotent: an existing assistant is returned as-is
-/// (re-enabled if retired) — creation options don't apply.
+/// (re-enabled if retired) — creation options don't apply. Runs whole on a
+/// task of its own (above).
 pub async fn create_personal_agent(
+    state: &AppState,
+    user: &PersonalUser<'_>,
+    input: &PersonalAgentInput<'_>,
+) -> Result<PersonalAgent, String> {
+    let (on_task, owner) = (state.clone(), OwnedUser::of(user));
+    let [name, handle, personality] =
+        [input.name, input.handle, input.personality].map(|f| f.map(str::to_string));
+    let create = async move {
+        let input = PersonalAgentInput {
+            name: name.as_deref(),
+            handle: handle.as_deref(),
+            personality: personality.as_deref(),
+        };
+        create_whole(&on_task, &owner.user(), &input).await
+    };
+    match run_detached(create, ANSWER_WITHIN).await {
+        Detached::Settled(answer) => answer,
+        Detached::StillRunning => {
+            tracing::warn!(
+                "[personal-agent] creating {}'s assistant is still running after {}s — answering with it as it is; it goes on",
+                user.id,
+                ANSWER_WITHIN.as_secs()
+            );
+            personal_agent_for(&state.pg, user.id)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| {
+                    "your assistant is still being set up — it appears here in a moment".to_string()
+                })
+        }
+        Detached::Lost(why) => Err(format!("creating the assistant did not finish: {why}")),
+    }
+}
+
+async fn create_whole(
     state: &AppState,
     user: &PersonalUser<'_>,
     input: &PersonalAgentInput<'_>,
@@ -450,12 +526,18 @@ pub async fn create_personal_agent(
     .await;
     private_doc_sync(state, user.id);
 
+    // The render and the bring-up, on the call's own task (above), so a
+    // caller who leaves no longer kills compose halfway through. The
+    // assistant row is written either way; a bring-up that fails is the
+    // operator's to read — compose's own words, never the user's.
     if let Ok(sb) = state.secretbox().await
         && let Some(rf) = talaria_fleet_create::RENDER_FLEET.get()
     {
-        let _ = rf(pg.clone(), sb.clone()).await;
+        let _ = rf(pg.clone(), sb).await;
     }
-    let _ = fleet_up(pg, &department).await;
+    if let Err(e) = fleet_up(pg, &department).await {
+        tracing::warn!("[personal-agent] {department}: the assistant did not come up: {e}");
+    }
     wait_healthy_spawn(state, &department);
 
     personal_agent_for(pg, user.id)
@@ -553,14 +635,6 @@ async fn rename_agent_slug(
              where principal_type = 'agent' and principal_id = $2",
             vec![new_model.as_str(), def.model.as_str()],
         ),
-        (
-            "delete from fleet_agents where name = $1",
-            vec![new_model.as_str()],
-        ),
-        (
-            "update fleet_agents set name = $1 where name = $2",
-            vec![new_model.as_str(), def.model.as_str()],
-        ),
     ] {
         let mut q = sqlx::query(sql);
         for b in bind {
@@ -593,9 +667,45 @@ pub struct PersonalAgentPatch<'a> {
 
 /// Owner-scoped edits: rename, change the @handle, rewrite the personality, or
 /// switch the default model tier. Config/soul changes land as one new
-/// immutable version and are applied to the running container right away —
-/// same pipeline as the admin editor.
+/// immutable version and are APPLIED the way the admin editor applies an
+/// edit: in place, the container rolled only when the render moved it, and a
+/// stopped assistant left stopped for its next start to read. Runs whole on
+/// a task of its own (above `create_personal_agent`).
 pub async fn update_personal_agent(
+    state: &AppState,
+    user: &PersonalUser<'_>,
+    patch: &PersonalAgentPatch<'_>,
+) -> Result<PersonalAgent, String> {
+    let (on_task, owner) = (state.clone(), OwnedUser::of(user));
+    let [name, handle, personality, model] =
+        [patch.name, patch.handle, patch.personality, patch.model].map(|f| f.map(str::to_string));
+    let edit = async move {
+        let patch = PersonalAgentPatch {
+            name: name.as_deref(),
+            handle: handle.as_deref(),
+            personality: personality.as_deref(),
+            model: model.as_deref(),
+        };
+        update_whole(&on_task, &owner.user(), &patch).await
+    };
+    match run_detached(edit, ANSWER_WITHIN).await {
+        Detached::Settled(answer) => answer,
+        Detached::StillRunning => {
+            tracing::warn!(
+                "[personal-agent] {}'s assistant update is still running after {}s — answering with it as it is; it goes on",
+                user.id,
+                ANSWER_WITHIN.as_secs()
+            );
+            personal_agent_for(&state.pg, user.id)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "assistant vanished during update".to_string())
+        }
+        Detached::Lost(why) => Err(format!("the assistant's update did not finish: {why}")),
+    }
+}
+
+async fn update_whole(
     state: &AppState,
     user: &PersonalUser<'_>,
     patch: &PersonalAgentPatch<'_>,
@@ -729,17 +839,33 @@ pub async fn update_personal_agent(
         .1;
         if (created || rehandled) && managed && enabled {
             // A render failure fails the whole PATCH — after
-            // the version row was written; that write stands. Only the docker
-            // restart/up half is best-effort.
+            // the version row was written; that write stands. Only the
+            // apply's roll is best-effort.
             let sb = state.secretbox().await.map_err(|e| e.to_string())?;
             let rf = talaria_fleet_create::RENDER_FLEET
                 .get()
                 .ok_or_else(|| "fleet renderer is not wired".to_string())?;
+            // APPLIED, like the admin editor's edit, never bounced: the render
+            // rewrites SOUL.md and config.yaml in place, and the container is
+            // rolled only when the render moved it (talaria-fleet-reconcile
+            // `apply_after_render`). A personality or name edit reaches the
+            // running assistant from its next new conversation without a
+            // restart; a model tier the agent reads only at start, or a
+            // handle rename (key env, model name, config-mount path — what a
+            // plain restart would keep, crashing on the moved dir), rolls it.
+            // A stopped assistant stays stopped: a `compose restart` here
+            // started it again, and no edit starts an agent its owner stopped.
+            // Its next start reads the render, and compose recreates a
+            // container whose service moved.
+            //
+            // On the call's own task (above `create_personal_agent`): a
+            // caller that goes away mid-roll no longer takes the compose verb
+            // with it. A render that fails still fails the PATCH.
             rf(pg.clone(), sb.clone()).await?;
             // The container is the department's, and where another agent
             // shares this one's department and runs there (a pair from
             // before a department became one agent's), it is THAT agent's:
-            // the render left this one out, and restarting it would restart
+            // the render left this one out, and applying here would roll
             // somebody else's agent for this owner's edit. The version
             // stands for when the two are untied.
             if let Some(runner) = talaria_agent_defs::runner_instead_of(pg, &id, &department)
@@ -750,7 +876,7 @@ pub async fn update_personal_agent(
                     "[personal-agent] {}: saved, not applied — {}",
                     row.slug,
                     talaria_agent_defs::shared_department_refusal(
-                        "restart",
+                        "roll",
                         &display_name,
                         &department,
                         &runner.display_name,
@@ -761,14 +887,17 @@ pub async fn update_personal_agent(
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| "assistant vanished during update".to_string());
             }
-            // A handle rename changes the service definition (key env, model
-            // name, config-mount path), so the container must be RECREATED
-            // (up -d), not restarted — restart keeps the old mounts and
-            // crashes on the moved dir.
-            if rehandled {
-                let _ = fleet_up(pg, &department).await;
-            } else {
-                let _ = fleet_restart(pg, &department).await;
+            for (_, verdict) in apply_after_render(pg, &sb, std::slice::from_ref(&department)).await
+            {
+                match verdict {
+                    Ok(None) => {}
+                    Ok(Some(warning)) => tracing::warn!(
+                        "[personal-agent] {department}: the update is saved and rendered, but: {warning}"
+                    ),
+                    Err(e) => tracing::warn!(
+                        "[personal-agent] {department}: the update is saved and rendered, but applying it failed: {e}"
+                    ),
+                }
             }
         }
     }

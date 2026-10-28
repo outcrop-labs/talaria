@@ -111,7 +111,10 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         if record.is_some_and(|r| r.state == RollState::Rolling) {
             rolling = true;
         }
+        // An idle row is an apply's roll that found its agent stopped and
+        // left it: no roll happened, so it names no batch.
         if let Some(r) = record
+            && r.state != RollState::Idle
             && latest.is_none_or(|l| r.since > l.since)
         {
             latest = Some(r);
