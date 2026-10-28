@@ -216,7 +216,7 @@ pub async fn post(
     .unwrap_or(false);
     // The compaction knobs, and what the answer owes the caller about them.
     // note: `compression` — `{ threshold?: number|null (0.1..1), thresholdTokens?: number|null (1000..10000000) }`; null clears a knob, absent leaves it; a threshold under 0.75 saves and the answer's `notes` says Hermes raises it for models under 512K context
-    let (compression, mut notes) = match parse_compression(obj, "compression") {
+    let (compression, notes) = match parse_compression(obj, "compression") {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
@@ -363,8 +363,9 @@ pub async fn post(
         // is the other agent's: the render leaves this one out, so nothing of
         // this version runs anywhere, and applying would restart the other
         // agent for an edit that is not its own. The version stands; the
-        // answer says it was not applied, and why — in `notes` too, which the
-        // editor shows.
+        // answer says it was not applied, and why, in `warning` — the one
+        // field every apply that did not land answers, and the one the Config
+        // form shows.
         match talaria_agent_defs::runner_instead_of(&state.pg, &def_id, &department).await {
             Ok(Some(runner)) => {
                 let warning = talaria_agent_defs::shared_department_refusal(
@@ -373,9 +374,6 @@ pub async fn post(
                     &department,
                     &runner.display_name,
                 );
-                notes.push(format!(
-                    "saved as version {version}, not applied: {warning}"
-                ));
                 return Ok(Json(json!({
                     "ok": true,
                     "version": version,

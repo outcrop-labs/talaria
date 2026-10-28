@@ -372,19 +372,32 @@ export async function saveAgentEdit(
   created?: boolean
   applied?: boolean
   /** The route's own remarks about what it did with the edit — e.g. a
-   *  threshold Hermes will floor on this model, or a change saved without a
-   *  roll. Optional: an api that reports none simply shows nothing. */
+   *  threshold Hermes will floor on this model. Optional: an api that
+   *  reports none simply shows nothing. */
   notes?: string[]
+  /** Why an asked-for apply did not land (`applied: false`): the roll
+   *  failed or found the department mid-roll, or the agent has no container
+   *  of its own. The version is saved either way. */
+  warning?: string
   error?: string
 }> {
   try {
-    return await postJson<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean; notes?: string[] }>(
+    return await postJson<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean; notes?: string[]; warning?: string }>(
       `/api/fleet/defs/${id}/edit`,
       edit,
     )
   } catch (e) {
     return { error: errorMessage(e) }
   }
+}
+
+/** The sentence a config save owes the person when its apply did not land,
+ *  or null when there is none. A saved version that is not running is not a
+ *  success to close on: the editor shows this in place instead. */
+export function editNotApplied(r: { version?: number; warning?: string }): string | null {
+  const why = r.warning?.trim()
+  if (!why) return null
+  return r.version ? `Saved as version ${r.version}, not applied: ${why}` : `Saved, not applied: ${why}`
 }
 
 export type FleetAction = 'up' | 'stop' | 'restart' | 'roll' | 'retire' | 'unretire' | 'delete'
