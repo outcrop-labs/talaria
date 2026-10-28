@@ -80,11 +80,14 @@ pub fn slot_container(department: &str, slot: Slot) -> String {
 /// def row. Missing row / null reads as 'a'; only an agent a pre-2026-10-22
 /// blue/green roll left behind reads 'b', until its next roll. Where two
 /// agents hold one department (a pair that predates the one-agent rule), the
-/// row read is the one the render runs there: enabled first, then the oldest.
+/// row read is the one the render runs there: enabled with a current version
+/// first (the render's own conditions), then the oldest.
 pub async fn active_slot(pg: &PgPool, department: &str) -> Slot {
     let row: Option<(Option<String>,)> = sqlx::query_as(
-        "select active_slot from agent_defs where department = $1 and managed \
-         order by enabled desc, created_at, id limit 1",
+        "select d.active_slot from agent_defs d where d.department = $1 and d.managed \
+         order by (d.enabled and exists (select 1 from agent_versions v \
+             where v.agent_id = d.id and v.version = d.current_version)) desc, \
+           d.created_at, d.id limit 1",
     )
     .bind(department)
     .fetch_optional(pg)

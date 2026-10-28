@@ -165,6 +165,7 @@ pub async fn managed_agents(pg: &PgPool) -> Result<Vec<RenderTarget>, sqlx::Erro
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeftOut {
     pub slug: String,
+    pub model: String,
     pub warning: String,
 }
 
@@ -201,6 +202,7 @@ pub fn department_runners(targets: Vec<RenderTarget>) -> (Vec<RenderTarget>, Vec
                 .unwrap_or_else(|| ("another agent".into(), "the older agent".into()));
             LeftOut {
                 slug: d.slug.clone(),
+                model: d.model.clone(),
                 warning: format!(
                     "{}: not rendered — its department \"{}\" is also {holder_model}'s, the older agent, and a department is one container (agent-{}) and one memory volume. {holder_name} keeps both; retire and delete one of the two, because Talaria never merges two agents into one",
                     d.model, d.department, d.department
@@ -1248,8 +1250,19 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     seed_events_plugin().await?;
 
     // Credential-migration visibility — a render is the operator's moment.
-    if let Ok(legacy) = talaria_agent_auth::legacy_migration_status(pg).await
-        && let Some(w) = talaria_agent_auth::legacy_migration_warning(&legacy)
+    // An agent this render leaves out (`department_runners`) has no
+    // container to roll onto its own key, so it is no step of the migration:
+    // counting it would ask for a roll nobody can make.
+    if let Ok(mut legacy) = talaria_agent_auth::legacy_migration_status(pg).await
+        && let Some(w) = {
+            let skipped: std::collections::HashSet<&str> =
+                left_out.iter().map(|l| l.model.as_str()).collect();
+            legacy
+                .agents
+                .retain(|a| !skipped.contains(a.model.as_str()));
+            legacy.pending.retain(|m| !skipped.contains(m.as_str()));
+            talaria_agent_auth::legacy_migration_warning(&legacy)
+        }
     {
         result.warnings.push(w.clone());
         if legacy.window_open {
