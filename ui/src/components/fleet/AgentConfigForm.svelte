@@ -10,7 +10,7 @@
   import TargetRow from '@/components/fleet/TargetRow.svelte'
   import { fade, listStagger, slide } from '@/lib/motion'
   import { pushToast } from '@/lib/toast.svelte'
-  import { COMPACTION_BOUNDS, editNotApplied, saveAgentEdit, type AgentDef, type LlmEndpoint, type ModelTarget } from '@/lib/fleet-defs'
+  import { COMPACTION_BOUNDS, editNotApplied, saveAgentEdit, type AgentDef, type LlmEndpoint, type ModelTarget, type UnappliedVersion } from '@/lib/fleet-defs'
 
   type AliasRow = ModelTarget & { name: string }
 
@@ -49,6 +49,17 @@
   // had worked: a roll that failed after a save used to close the modal
   // with no word at all (the answer's `warning` was never read).
   let notApplied = $state<string | null>(null)
+  // The version behind `notApplied`, kept for the next Save & apply: with
+  // the draft unchanged that save creates nothing, the route has nothing new
+  // to apply and answers with no warning, and the form must not read that
+  // silence as the earlier version now running.
+  let unapplied = $state<UnappliedVersion | null>(null)
+  const settle = (r: { version?: number; created?: boolean; applied?: boolean; warning?: string }) => {
+    notApplied = editNotApplied(r, unapplied)
+    if (r.applied) unapplied = null
+    else if (r.version && r.warning?.trim()) unapplied = { version: r.version, why: r.warning.trim() }
+    return notApplied
+  }
 
   const save = async (apply: boolean) => {
     err = null
@@ -98,8 +109,9 @@
       const said = r.notes ?? []
       if (said.length > 0) pushToast({ title: `${def.displayName} · config saved`, body: said.join(' · ') })
       await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
-      notApplied = editNotApplied(r)
-      if (notApplied) return
+      // Only an apply speaks to whether a version is running: a plain Save
+      // version answers no warning, and closes as it always did.
+      if (apply && settle(r)) return
       onSaved?.()
     } finally {
       busy = false
@@ -235,8 +247,7 @@
           // The workspace stays open over the form, so a soul that saved but
           // did not apply is said where the person is looking, and again in
           // the form for when they close it.
-          notApplied = editNotApplied(r)
-          if (notApplied) pushToast({ title: `${def.displayName} · soul saved, not applied`, body: r.warning, tone: 'danger' })
+          if (settle(r)) pushToast({ title: `${def.displayName} · soul saved, not applied`, body: r.warning?.trim() || notApplied || undefined, tone: 'danger' })
           await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
         }}
         history={{ kind: 'soul', id: def.id }}

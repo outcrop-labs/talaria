@@ -90,10 +90,13 @@ tally and every failure sentence until you dismiss it.
 ### Config
 
 **Save version** saves the form as a new version; **Save & apply** also puts it on the running
-agent. When the apply does not land (the roll failed or found the agent mid-roll, the agent is
-retired, or it has no container of its own), the version is still saved, and the form stays
-open and says *Saved as version N, not applied:* with the reason, rather than closing as if it
-had worked. A soul saved from the workspace says the same in a notice.
+agent. When the apply does not land (a roll step failed, the container never reported healthy,
+the roll found the agent mid-roll, the agent is retired, or it has no container of its own), the
+version is still saved, and the form stays open and says *Saved as version N, not applied:* with
+the reason, rather than closing as if it had worked. A soul saved from the workspace says the
+same in a notice. Pressing **Save & apply** again with nothing changed saves nothing new, so it
+has nothing new to apply: the form says version N is still not applied, with the same reason.
+Once that clears, **Roll** the agent from the roster to put version N on it.
 
 - **Main model** — its brain.
 - **Model tiers (aliases)** — named slots (like `opus`) you can address per-message with a

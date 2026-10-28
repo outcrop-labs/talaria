@@ -179,9 +179,11 @@
       })
       if (r.error) {
         err = r.error
-        // A refusal the hint could not see coming (the department was taken
-        // after this page read the roster, a 409 at the door) is the roster
-        // moving: refetch it, so the field says who holds it and Create waits.
+        // Any refusal refetches the roster. The one that matters is the one
+        // the hint could not see coming (the department was taken after this
+        // page read the roster, a 409 at the door): with the fresh roster the
+        // field says who holds it and Create waits. For any other refusal it
+        // is one extra read.
         void qc.invalidateQueries({ queryKey: ['fleet-defs'] })
         return
       }

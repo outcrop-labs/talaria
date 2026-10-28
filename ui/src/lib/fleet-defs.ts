@@ -376,8 +376,9 @@ export async function saveAgentEdit(
    *  reports none simply shows nothing. */
   notes?: string[]
   /** Why an asked-for apply did not land (`applied: false`): the roll
-   *  failed or found the department mid-roll, or the agent has no container
-   *  of its own. The version is saved either way. */
+   *  failed (a step threw, or the container never reported healthy), found
+   *  the department mid-roll or no agent to roll, or the agent has no
+   *  container of its own. The version is saved either way. */
   warning?: string
   error?: string
 }> {
@@ -391,13 +392,31 @@ export async function saveAgentEdit(
   }
 }
 
+/** A version this editor saw saved and not applied, and the route's reason. */
+export interface UnappliedVersion {
+  version: number
+  why: string
+}
+
 /** The sentence a config save owes the person when its apply did not land,
  *  or null when there is none. A saved version that is not running is not a
- *  success to close on: the editor shows this in place instead. */
-export function editNotApplied(r: { version?: number; warning?: string }): string | null {
+ *  success to close on: the editor shows this in place instead.
+ *
+ *  `unapplied` is the version this editor already saw saved and not applied,
+ *  passed only for a save that asked to apply. A second Save & apply of that
+ *  same draft creates nothing, and the route applies only a version it just
+ *  created, so it answers with no warning at all: read alone, that silence
+ *  closed the form as if the earlier version were now running. */
+export function editNotApplied(
+  r: { version?: number; created?: boolean; applied?: boolean; warning?: string },
+  unapplied: UnappliedVersion | null = null,
+): string | null {
   const why = r.warning?.trim()
-  if (!why) return null
-  return r.version ? `Saved as version ${r.version}, not applied: ${why}` : `Saved, not applied: ${why}`
+  if (why) return r.version ? `Saved as version ${r.version}, not applied: ${why}` : `Saved, not applied: ${why}`
+  if (unapplied && r.version === unapplied.version && r.created === false && r.applied !== true) {
+    return `Version ${unapplied.version} is still not applied, and nothing changed since it was saved, so Save & apply had nothing new to apply. Roll the agent to put it on once this clears: ${unapplied.why}`
+  }
+  return null
 }
 
 export type FleetAction = 'up' | 'stop' | 'restart' | 'roll' | 'retire' | 'unretire' | 'delete'

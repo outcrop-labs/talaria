@@ -59,4 +59,41 @@ describe('editNotApplied', () => {
     expect(editNotApplied({ version: 2 })).toBeNull()
     expect(editNotApplied({ version: 2, warning: '  ' })).toBeNull()
   })
+
+  it('says a roll step that threw the same way as a soft failure', () => {
+    // The route answers a thrown step (render, pull, recreate) as applied:
+    // false with the reason, since the version row is already written.
+    expect(
+      editNotApplied({ version: 5, created: true, applied: false, warning: 'the roll failed — compose up exited 1' }),
+    ).toBe('Saved as version 5, not applied: the roll failed — compose up exited 1')
+  })
+
+  // A second Save & apply of the same draft: nothing new, so the route has
+  // nothing to apply and answers with no warning. Read alone, that closed the
+  // form as if the earlier version were running.
+  const held = { version: 3, why: 'department "research" is already mid-roll — wait for it to finish' }
+
+  it('keeps saying a version the form saw not apply when the retry created nothing', () => {
+    expect(editNotApplied({ version: 3, created: false, applied: false }, held)).toBe(
+      'Version 3 is still not applied, and nothing changed since it was saved, so Save & apply had nothing new to apply. ' +
+        'Roll the agent to put it on once this clears: department "research" is already mid-roll — wait for it to finish',
+    )
+  })
+
+  it('says nothing for a no-op apply when the form saw no version fail', () => {
+    // A fresh form cannot tell an unchanged running config from one that
+    // never applied, so it closes as it always did.
+    expect(editNotApplied({ version: 3, created: false, applied: false })).toBeNull()
+  })
+
+  it('says nothing once a new version applied, or for a different version', () => {
+    expect(editNotApplied({ version: 4, created: true, applied: true }, held)).toBeNull()
+    expect(editNotApplied({ version: 4, created: false, applied: false }, held)).toBeNull()
+  })
+
+  it('prefers a fresh warning over the remembered one', () => {
+    expect(editNotApplied({ version: 4, created: true, applied: false, warning: 'no managed agent in department "desk"' }, held)).toBe(
+      'Saved as version 4, not applied: no managed agent in department "desk"',
+    )
+  })
 })
