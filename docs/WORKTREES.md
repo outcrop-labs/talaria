@@ -90,9 +90,10 @@ data so you still have realistic agents/boards/tickets to work against.
 It prints the exact `talaria dev` command and the teardown steps.
 
 **The setup is the invoking checkout's, not the base ref's.** `bun talaria worktree`
-and the `talaria` shim run the CLI of the checkout you call them from — usually the
-primary, on `main` — so `talaria worktree <name> origin/rc` writes `ui/.env` and
-picks ports by `main`'s rules, however far `rc` has moved. A stack cut that way on
+runs the CLI of the checkout you call it from, and the `talaria` shim always runs the
+primary's, wherever you call it. That is usually the primary, on `main`, so
+`talaria worktree <name> origin/rc` writes `ui/.env` and picks ports by `main`'s
+rules, however far `rc` has moved. A stack cut that way on
 2026-10-22 got no `TALARIA_FLEET_PROJECT`, because the primary's CLI predated it.
 When the running `cli/src/cmd/worktree.ts` differs from the base ref's, the command
 ends with a warning that says so: bring the invoking checkout up to the base ref and
@@ -121,24 +122,40 @@ recut, or check the new `ui/.env` against step 4.
   `talaria-wt-<name>-fleet`, which are picked by compose project label, never by a
   name prefix. `reset` prints those targets before it asks you to confirm. It also
   checks that the postgres it would exec into is the one `DATABASE_URL` names, by
-  compose project and published port. Where the target would be a guess, the
-  command refuses and says why:
+  compose project, published port, database and role. Where the target would be a
+  guess, the command refuses and says why:
   - a shell variable names another stack's container;
-  - the worktree has no `TALARIA_FLEET_PROJECT`, so its agents went to main's
-    project;
+  - a shell variable overrides a line the worktree's `ui/.env` owns with another
+    value: `DATABASE_URL`, `REDIS_URL`, `PORT`, `TALARIA_API_PORT`,
+    `TALARIA_RUST_API_URL`, `TALARIA_GATEWAY_SELF_URL`, `TALARIA_FLEET_PROJECT`,
+    the toolkit, omp-auth and gateway ports (`dev`), or `TALARIA_PG_PORT` /
+    `TALARIA_REDIS_PORT` naming another port than the URLs. `talaria dev` lets the
+    shell win, so a stale `DATABASE_URL` exported for main made the worktree's api
+    a second server on main's database. The same value as `ui/.env`'s is fine;
+  - the worktree has no `TALARIA_FLEET_PROJECT`, or one that is not
+    `talaria-wt-<name>-fleet`, so its agents would render into another project
+    (`dev` and `reset fleet` both refuse);
   - the rendered `fleet/docker-compose.yml` names another project;
+  - `restore` with a `TALARIA_ENV_FILE` whose `DATABASE_URL` is not the worktree's,
+    and no `--target`;
   - you run the installed `talaria` shim from inside a worktree. The shim always
     runs the primary's CLI, so it would act on the primary's stack. Use
     `bun talaria …` from the worktree.
 
   `talaria deploy` and `service` drive the production compose project, which no
   worktree owns. In a worktree they need `COMPOSE_PROJECT_NAME` set to a project of
-  its own, and `service install`/`uninstall` refuse there, because the unit is the
-  host's only one. `restore` in a worktree writes nothing outside it. It writes no
-  blobs into main's object storage (a worktree's app shares it), and no dir it
-  inherited from main's env. Before this, `talaria reset` run in a worktree reset
-  **main**: it exec'd into `talaria-postgres-dev` and removed every
-  `talaria-fleet-agent*` container.
+  its own. `deploy up`, `down` and `update` need more: every key
+  [`CONTAINER.md`](./CONTAINER.md) lists for a second instance on one host
+  (`COMPOSE_PROJECT_NAME`, `TALARIA_STATE_DIR`, `TALARIA_HTTP_PORT`,
+  `TALARIA_FLEET_PROJECT`, `TALARIA_FLEET_NETWORK`) set to a value of its own,
+  none of them a `talaria-wt-*` name, or the deploy would share the production
+  instance's state dir and fleet. `service install`/`uninstall` refuse there,
+  because the unit is the host's only one. `restore` in a worktree writes nothing
+  outside it. It writes no blobs into main's object storage (a worktree's app
+  shares it), and no dir it inherited from main's env. Before this, `talaria reset`
+  run in a worktree reset **main**: it exec'd into `talaria-postgres-dev` and
+  removed every `talaria-fleet-agent*` container. In the primary, `reset fleet`
+  refuses a `TALARIA_FLEET_PROJECT` that is a worktree's (`talaria-wt-*`).
 - **Clean up** with the two teardown commands the script prints, from the primary
   checkout; `-v` drops the isolated volumes so nothing lingers. A worktree left past
   that is what [`bun talaria cleanup`](../.claude/skills/cleanup/SKILL.md) flags, and

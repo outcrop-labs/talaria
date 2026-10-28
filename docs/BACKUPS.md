@@ -238,8 +238,10 @@ bucket named in the manifest (or the `TALARIA_BACKUP_S3_*` overrides).
 **In a dev worktree** ([`WORKTREES.md`](./WORKTREES.md)), a restore writes only
 what the worktree owns, and refuses with the reason before it changes anything:
 
-- **A shell `DATABASE_URL` that differs from the worktree's `ui/.env`.** Without
-  `--target`, which one you mean is a guess.
+- **A shell `DATABASE_URL`, or a `TALARIA_ENV_FILE` whose `DATABASE_URL`, differs
+  from the worktree's `ui/.env`.** Without `--target`, which one you mean is a
+  guess. Whether the checkout is a worktree is read from its own `ui/.env`, so an
+  env file pointed at main's does not switch these rules off.
 - **Blobs in internal mode.** A worktree has no object storage of its own, and its
   app keeps blobs in the main stack's, so the blob half would write into main's
   bucket. Use `--db-only`.
