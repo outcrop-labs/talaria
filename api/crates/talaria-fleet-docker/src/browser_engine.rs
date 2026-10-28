@@ -35,7 +35,13 @@
 //
 // Best effort, never a failed start: with no route to the npm registry the
 // install fails, the reason is logged, and the agent starts without browser
-// tools, as every agent did before this existed.
+// tools, as every agent did before this existed. And bounded: a host whose
+// egress DROPS packets instead of refusing them would otherwise hold every
+// start for minutes (pm retries each of its two mirrors four times; 145 s
+// measured with a resolver that never answers, longer on a dropped TCP
+// connect), so the one-shot is capped ([`INSTALL_TIMEOUT`]), removed when it
+// runs past the cap, and a timeout makes the next few minutes of starts skip
+// it ([`TIMEOUT_COOLDOWN`]).
 //
 // WHICH agents: the render decides, because only the render knows the
 // effective toolset list (the floor, the def's own list and the authored
@@ -45,7 +51,8 @@
 // before this existed starts as it always did, and the next render writes
 // the file.
 
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -62,10 +69,45 @@ const PACKAGE: &str = "agent-browser";
 /// then fail.
 const IMAGE_USER: &str = "hermes";
 
-/// A first install downloads the CLI (one tarball: 18 s measured on the
-/// pinned image); an installed one answers in the time a container takes to
-/// start.
-const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long a start waits for the one-shot. A first install downloads the
+/// CLI (one tarball: 4 to 18 s measured on the pinned image, container start
+/// included); an installed one answers in the time a container takes to
+/// start (4.3 s). The cap is five times the slowest install measured. It is
+/// what a start pays on a host whose egress drops packets: uncapped, pm's
+/// own retries (four attempts per mirror on 60 s and 120 s socket timeouts,
+/// pm/network.py and pm/downloader.py) held a start for 145 s with a
+/// resolver that never answers, and longer on a dropped connect.
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// After a one-shot TIMES OUT, how long every start skips the install (an
+/// engine an earlier start put on a volume stays there and works). A
+/// timeout is the egress, which every agent shares (one network, one pair of
+/// resolvers, one registry), not the agent, so the memory is fleet-wide: a
+/// reconcile that starts ten browser-on agents on such a host pays the cap
+/// once, not ten times. A fast failure (no DNS, a refused connection, an
+/// HTTP error) costs seconds and is not remembered, so the first start after
+/// the fix installs. In-process: an api restart forgets it, and the next
+/// start tries again.
+const TIMEOUT_COOLDOWN: Duration = Duration::from_secs(300);
+
+/// When the last one-shot timed out, if one did since this api started.
+static LAST_TIMEOUT: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Why a one-shot did not install.
+#[derive(Debug, PartialEq)]
+enum Failure {
+    /// It ran past [`INSTALL_TIMEOUT`], and its container was removed.
+    TimedOut,
+    /// It exited non-zero, or could not be run, with what it said.
+    Failed(String),
+}
+
+/// How much of the cooldown is left after a timeout at `last`, or `None`
+/// when a start should try the install.
+fn cooling_down(last: Option<Instant>, now: Instant) -> Option<Duration> {
+    let left = TIMEOUT_COOLDOWN.saturating_sub(now.saturating_duration_since(last?));
+    (!left.is_zero()).then_some(left)
+}
 
 /// The manifest the render writes: `{"departments": [...]}`, sorted and
 /// deduped so a render of the same fleet writes the same bytes.
@@ -100,15 +142,29 @@ async fn wanted(department: &str) -> bool {
     }
 }
 
+/// The one-shot's container name: fixed per service, so a one-shot that
+/// runs past the cap is removed by name, and a second start of the same
+/// agent cannot run a second install beside the first (docker refuses the
+/// name). The name is never left behind: `--rm` is docker's AutoRemove, so
+/// a one-shot whose api died mid-install finishes and removes itself
+/// (measured: the container outlives a killed compose CLI, then goes when
+/// it exits). It never matches an agent's own container, which compose
+/// names `<project>-<service>-1` ([`crate::slot_container`]).
+fn one_shot_name(project: &str, service: &str) -> String {
+    format!("{project}-{service}-browser-engine")
+}
+
 /// The one-shot's compose arguments (after the project, file and env-file
 /// prefix). `--entrypoint hermes` replaces the image's s6 init, so nothing
 /// but pm runs: no gateway, no cron, no lock on the agent's volume.
-fn install_args(service: &str) -> Vec<&str> {
+fn install_args<'a>(service: &'a str, name: &'a str) -> Vec<&'a str> {
     vec![
         "run",
         "--rm",
         "--no-deps",
         "-T",
+        "--name",
+        name,
         "--user",
         IMAGE_USER,
         "--entrypoint",
@@ -126,45 +182,87 @@ pub(crate) async fn ensure(department: &str, service: &str) {
     if !wanted(department).await {
         return;
     }
-    let args = crate::compose_args(&install_args(service));
-    match run(&args).await {
+    let last = *LAST_TIMEOUT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(left) = cooling_down(last, Instant::now()) {
+        tracing::warn!(
+            "[fleet] {service}: browser engine ({PACKAGE}) install skipped for this start: an install timed out after {}s less than {}s ago (this host's egress drops packets). An engine already on the agent's volume still works; a missing one stays missing until a start in {}s or later",
+            INSTALL_TIMEOUT.as_secs(),
+            TIMEOUT_COOLDOWN.as_secs(),
+            left.as_secs()
+        );
+        return;
+    }
+    let name = one_shot_name(&talaria_fleet_layout::fleet_project(), service);
+    let args = crate::compose_args(&install_args(service, &name));
+    let outcome = run("docker", &args, &name, INSTALL_TIMEOUT).await;
+    {
+        let mut last = LAST_TIMEOUT.lock().unwrap_or_else(|e| e.into_inner());
+        match &outcome {
+            Ok(()) => *last = None,
+            Err(Failure::TimedOut) => *last = Some(Instant::now()),
+            Err(Failure::Failed(_)) => {}
+        }
+    }
+    match outcome {
         Ok(()) => tracing::info!("[fleet] {service}: browser engine ({PACKAGE}) is installed"),
-        Err(e) => tracing::warn!(
+        Err(Failure::TimedOut) => tracing::warn!(
+            "[fleet] {service}: browser engine ({PACKAGE}) not installed, so this start has no browser tools: the install ran past {}s and was removed; starts skip it for {}s",
+            INSTALL_TIMEOUT.as_secs(),
+            TIMEOUT_COOLDOWN.as_secs()
+        ),
+        Err(Failure::Failed(e)) => tracing::warn!(
             "[fleet] {service}: browser engine ({PACKAGE}) not installed, so this start has no browser tools: {e}"
         ),
     }
 }
 
-/// The one-shot, with the reason kept when it fails. pm reports a failed
-/// install on STDOUT (`✗ agent-browser: …`), so the shared `docker` helper,
-/// which keeps only stderr, would log compose's bare exit line and lose why.
-async fn run(args: &[String]) -> Result<(), String> {
-    let out = tokio::time::timeout(INSTALL_TIMEOUT, async {
-        // kill_on_drop: a timed-out compose CLI dies with this future. The
-        // one-off container it started finishes pm's install on its own and
-        // removes itself (`--rm`); it holds no port and no lock.
-        tokio::process::Command::new("docker")
+/// The one-shot (`program` is `docker`; the tests pass a stand-in), with
+/// the reason kept when it fails. pm reports a failed install on STDOUT
+/// (`✗ agent-browser: …`), so the shared `docker` helper, which keeps only
+/// stderr, would log compose's bare exit line and lose why.
+async fn run(program: &str, args: &[String], name: &str, cap: Duration) -> Result<(), Failure> {
+    let out = tokio::time::timeout(
+        cap,
+        // kill_on_drop: a timed-out compose CLI dies with this future.
+        tokio::process::Command::new(program)
             .args(args)
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true)
-            .output()
-            .await
-            .map_err(|e| format!("docker compose run: {e}"))
-    })
-    .await
-    .map_err(|_| {
-        format!(
-            "docker compose run: timed out after {}s",
-            INSTALL_TIMEOUT.as_secs()
-        )
-    })??;
+            .output(),
+    )
+    .await;
+    let out = match out {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(Failure::Failed(format!("{program} compose run: {e}"))),
+        Err(_) => {
+            // Killing the compose CLI does not stop the container it
+            // started, which would go on running pm against the volume while
+            // the start (re)creates the agent on it. pm publishes atomically
+            // under its store's lock (a staging dir, then a rename), so that
+            // overlap could not leave a half-written engine, but the cap is
+            // only a bound if the one-shot is really gone: remove it.
+            let removed = tokio::time::timeout(
+                Duration::from_secs(20),
+                tokio::process::Command::new(program)
+                    .args(["rm", "-f", name])
+                    .stdin(std::process::Stdio::null())
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await;
+            if !matches!(&removed, Ok(Ok(o)) if o.status.success()) {
+                tracing::debug!("[fleet] {name}: remove after the timeout: {removed:?}");
+            }
+            return Err(Failure::TimedOut);
+        }
+    };
     if out.status.success() {
         return Ok(());
     }
-    Err(failure_reason(
+    Err(Failure::Failed(failure_reason(
         &String::from_utf8_lossy(&out.stdout),
         &String::from_utf8_lossy(&out.stderr),
-    ))
+    )))
 }
 
 /// What a failed one-shot said, both streams, trimmed to the last few lines
@@ -241,13 +339,16 @@ mod tests {
 
     #[test]
     fn the_install_is_the_agents_own_service_as_hermes_running_only_pm() {
+        let name = one_shot_name("talaria-fleet", "agent-research");
         assert_eq!(
-            install_args("agent-research"),
+            install_args("agent-research", &name),
             [
                 "run",
                 "--rm",
                 "--no-deps",
                 "-T",
+                "--name",
+                "talaria-fleet-agent-research-browser-engine",
                 "--user",
                 "hermes",
                 "--entrypoint",
@@ -260,9 +361,108 @@ mod tests {
         );
         // The full command line addresses the rendered compose file and the
         // fleet .env, like every other compose verb here.
-        let args = crate::compose_args(&install_args("agent-research"));
+        let args = crate::compose_args(&install_args("agent-research", &name));
         assert_eq!(args[0], "compose");
         assert!(args[4].ends_with("docker-compose.yml"), "{}", args[4]);
         assert_eq!(args[7], "run");
+    }
+
+    #[test]
+    fn the_one_shot_is_never_named_like_an_agent() {
+        // An agent's container is `<project>-<service>-1`; the one-shot's
+        // name cannot be any department's, so status and the roll, which
+        // find agents by exact name, never read it as one.
+        let project = talaria_fleet_layout::fleet_project();
+        for dept in ["research", "research-browser-engine", "a"] {
+            let one_shot = one_shot_name(&project, &crate::slot_service(dept, crate::Slot::A));
+            for other in ["research", "research-browser-engine", "a", "a-browser"] {
+                for slot in [crate::Slot::A, crate::Slot::B] {
+                    assert_ne!(
+                        one_shot,
+                        crate::slot_container(other, slot),
+                        "{dept} vs {other}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_timeout_cools_the_install_down_for_a_while_and_no_longer() {
+        let now = Instant::now();
+        // Nothing timed out: install.
+        assert_eq!(cooling_down(None, now), None);
+        // Just timed out: skip for the whole window.
+        assert_eq!(cooling_down(Some(now), now), Some(TIMEOUT_COOLDOWN));
+        // Part of the way through: what is left.
+        let later = now + Duration::from_secs(100);
+        assert_eq!(
+            cooling_down(Some(now), later),
+            Some(TIMEOUT_COOLDOWN - Duration::from_secs(100))
+        );
+        // At and past the end of the window: install again.
+        assert_eq!(cooling_down(Some(now), now + TIMEOUT_COOLDOWN), None);
+        assert_eq!(
+            cooling_down(Some(now), now + TIMEOUT_COOLDOWN + Duration::from_secs(1)),
+            None
+        );
+        // The window covers the cap many times over, so a reconcile that
+        // starts a fleet of browser-on agents pays the cap once.
+        const { assert!(TIMEOUT_COOLDOWN.as_secs() >= 3 * INSTALL_TIMEOUT.as_secs()) };
+    }
+
+    #[tokio::test]
+    async fn a_one_shot_past_the_cap_is_a_timeout_and_is_killed() {
+        // `sleep` stands in for docker, so no daemon is needed: a one-shot
+        // that outlives the cap is a timeout (not a failure with a reason),
+        // and the CLI dies with it rather than running on.
+        let started = Instant::now();
+        let got = run(
+            "sleep",
+            &["30".into()],
+            "nobody",
+            Duration::from_millis(200),
+        )
+        .await;
+        assert_eq!(got, Err(Failure::TimedOut));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_one_shot_that_exits_is_installed_or_says_why() {
+        assert_eq!(
+            run("true", &[], "nobody", Duration::from_secs(10)).await,
+            Ok(())
+        );
+        let failed = run(
+            "sh",
+            &[
+                "-c".into(),
+                "echo '✗ agent-browser: download failed'; exit 1".into(),
+            ],
+            "nobody",
+            Duration::from_secs(10),
+        )
+        .await;
+        assert_eq!(
+            failed,
+            Err(Failure::Failed("✗ agent-browser: download failed".into()))
+        );
+        // No docker at all is a failure with the reason, not a timeout.
+        let missing = run(
+            "/nonexistent/talaria-docker",
+            &[],
+            "nobody",
+            Duration::from_secs(10),
+        )
+        .await;
+        assert!(
+            matches!(&missing, Err(Failure::Failed(e)) if e.contains("compose run")),
+            "{missing:?}"
+        );
     }
 }
