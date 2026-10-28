@@ -235,6 +235,24 @@ Blobs go back to *this* instance's configured location, not the source's: local
 mode extracts into `TALARIA_UPLOADS_DIR`, bucket modes mirror back up to the
 bucket named in the manifest (or the `TALARIA_BACKUP_S3_*` overrides).
 
+**In a dev worktree** ([`WORKTREES.md`](./WORKTREES.md)), a restore writes only
+what the worktree owns, and refuses with the reason before it changes anything:
+
+- **A shell `DATABASE_URL` that differs from the worktree's `ui/.env`.** Without
+  `--target`, which one you mean is a guess.
+- **Blobs in internal mode.** A worktree has no object storage of its own, and its
+  app keeps blobs in the main stack's, so the blob half would write into main's
+  bucket. Use `--db-only`.
+- **Blobs in s3 mode, unless `TALARIA_BACKUP_S3_BUCKET` (or `_ENDPOINT`) names the
+  bucket.**
+- **An uploads or app-data dir outside the worktree,** inherited from main's env.
+
+`backup` in a worktree reads the worktree's own database, its app databases and its
+dirs. In internal mode it reads the blobs from the main stack's storage, because
+that is where the worktree's app keeps them. Run both as `bun talaria …` from
+inside the worktree. The installed `talaria` shim runs the primary's CLI and
+refuses there.
+
 ## The drill
 
 A backup nobody has restored is not a backup. This one takes five minutes and

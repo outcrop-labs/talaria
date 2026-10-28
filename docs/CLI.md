@@ -35,8 +35,19 @@ Two isolation levels, depending on how far you want to be from main:
 Worktrees and boxes both get their own ports and state; `talaria dev` inside
 either is the same loop as the primary stack.
 
+Inside a worktree, run commands as **`bun talaria …` from the worktree**. Each
+command that acts on a stack (`dev`, `reset`, `backup`, `restore`, `deploy`,
+`service`) then takes every container, compose project and database from the
+worktree's own `ui/.env`, never from main's defaults. The installed `talaria`
+shim always runs the primary's CLI, so run from inside a worktree those commands
+refuse and print the `bun talaria` line to use instead
+([`WORKTREES.md`](./WORKTREES.md#rules-of-the-road)).
+
 ## Destructive commands
 
 `reset` (secrets / database / fleet) and `restore` drop or replace real state.
-There is no `-y`: each asks for a typed confirmation. That is deliberate — see
+There is no `-y`: each asks for a typed confirmation. Before it asks, `reset`
+names its target: the stack, its postgres container with compose project and
+port, and for `fleet` the project and every container in it. Answering
+anything but the mode name is the dry run. That is deliberate — see
 [`WORKTREES.md`](./WORKTREES.md) for the safer isolation first.

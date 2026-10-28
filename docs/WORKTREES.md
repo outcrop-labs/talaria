@@ -114,6 +114,31 @@ recut, or check the new `ui/.env` against step 4.
   lifted into the api by `talaria dev`). A worktree never manages your main
   agents, and the cleanup sweep knows a worktree's fleet project is the
   worktree's own. Hiring an agent still needs the Hermes image on the host.
+- **Every command run in a worktree acts on that worktree's stack**
+  ([`cli/src/stack.ts`](../cli/src/stack.ts)). `talaria reset`, `dev`, `backup` and
+  `restore` take their targets from the worktree's own `ui/.env`: its
+  `talaria-pg-<name>` postgres, its `DATABASE_URL`, and its agents in
+  `talaria-wt-<name>-fleet`, which are picked by compose project label, never by a
+  name prefix. `reset` prints those targets before it asks you to confirm. It also
+  checks that the postgres it would exec into is the one `DATABASE_URL` names, by
+  compose project and published port. Where the target would be a guess, the
+  command refuses and says why:
+  - a shell variable names another stack's container;
+  - the worktree has no `TALARIA_FLEET_PROJECT`, so its agents went to main's
+    project;
+  - the rendered `fleet/docker-compose.yml` names another project;
+  - you run the installed `talaria` shim from inside a worktree. The shim always
+    runs the primary's CLI, so it would act on the primary's stack. Use
+    `bun talaria …` from the worktree.
+
+  `talaria deploy` and `service` drive the production compose project, which no
+  worktree owns. In a worktree they need `COMPOSE_PROJECT_NAME` set to a project of
+  its own, and `service install`/`uninstall` refuse there, because the unit is the
+  host's only one. `restore` in a worktree writes nothing outside it. It writes no
+  blobs into main's object storage (a worktree's app shares it), and no dir it
+  inherited from main's env. Before this, `talaria reset` run in a worktree reset
+  **main**: it exec'd into `talaria-postgres-dev` and removed every
+  `talaria-fleet-agent*` container.
 - **Clean up** with the two teardown commands the script prints, from the primary
   checkout; `-v` drops the isolated volumes so nothing lingers. A worktree left past
   that is what [`bun talaria cleanup`](../.claude/skills/cleanup/SKILL.md) flags, and
