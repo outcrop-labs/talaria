@@ -372,7 +372,7 @@ pub async fn seal_stored_configs(
         }
         // 2. A container that holds them: the roll, or the stopped one gone.
         let step2 = if agent.roll {
-            match talaria_fleet_reconcile::roll_agent(pg, sb, &department).await {
+            match talaria_fleet_reconcile::roll_running_agent(pg, sb, &department).await {
                 Ok(None) => {
                     agent.rolled = true;
                     Ok(())

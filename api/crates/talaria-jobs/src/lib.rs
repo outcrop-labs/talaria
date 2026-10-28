@@ -126,7 +126,7 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
                 talaria_approvals::announce_approval(&deps, &key).await;
             })
         }));
-    // THE ROLL'S OWN EDGE. `roll_agent` reaches the renderer through it — a
+    // THE ROLL'S OWN EDGE. `roll_running_agent` reaches the renderer through it — a
     // roll renders, then recreates the container on that render — and an
     // edge nothing sets is a roll that returns "… not wired" into callers
     // that discard it: the roster never changes, the logs stay silent, and
@@ -1009,7 +1009,7 @@ mod tests {
 
         // THE ROLL'S EDGE, the same completeness rule one layer down. This
         // OnceLock is how the reconcile crate reaches the renderer, and an
-        // unwired one makes `roll_agent` return "… not wired" — a sentence
+        // unwired one makes `roll_running_agent` return "… not wired" — a sentence
         // the control route discards while answering `{"rolling": true}`.
         // Nothing else in the crate graph runs boot, so this is the only
         // place the absence can be caught before an operator notices that
