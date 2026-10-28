@@ -164,8 +164,15 @@ recut, or check the new `ui/.env` against step 4.
   is their seed source), and the primary's `talaria dev` and `reset`. A
   `TALARIA_*_CONTAINER` is refused when its name is a worktree's or a box's
   (`talaria-pg-<name>`, `talaria-redis-<name>`, `talaria-wt-*`, `devbox-*`), or when
-  docker places the container in such a compose project. The refusal prints the
-  `env -u …` command to run instead. Before this, `box new` from such a shell seeded
+  docker places the container in such a compose project. The same shell carries the
+  worktree's `ui/.env` lines as well (its vite loads the file into its environment,
+  and its api gets them too), and the primary lets the shell win. So the primary's
+  `talaria dev` also refuses a shell `TALARIA_WORKTREE` and a `talaria-wt-*`
+  `TALARIA_FLEET_PROJECT`, as `reset` does. Every one of these refusals prints the
+  `env -u …` command to run instead. It names each worktree line the shell sets
+  (`TALARIA_WORKTREE`, `DATABASE_URL`, `REDIS_URL`, the ports, the api url, the
+  fleet project), not only the container names, since any one left would start
+  main's app on the worktree's stack. Before this, `box new` from such a shell seeded
   the box from that worktree, and the primary compose `up` it runs would recreate
   main's postgres under the worktree's name, or remove it on the name conflict.
 - **Clean up** with the two teardown commands the script prints, from the primary
