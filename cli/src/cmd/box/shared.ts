@@ -35,6 +35,11 @@ export const boxHost = (name: string): string => `devbox-${name}`
  *  `minio`, … — named by devbox.compose.yml's `container_name:` lines. */
 export const boxSvc = (name: string, svc: string): string => `devbox-${name}-${svc}`
 
+/** The box project's own network — compose's `<project>_default`, where the
+ *  box's sidecars live and, by `TALARIA_APP_DB_NETWORK`
+ *  (docker/devbox.compose.yml), its app databases. */
+export const boxNetwork = (name: string): string => `${boxProject(name)}_default`
+
 /** The box's PRIVATE agent network — devbox.compose.yml's `networks.fleet.name`
  *  and, by design, the fleet render's own compose project name: agents attach
  *  to it and reach the box container-to-container. Per box on purpose (shared

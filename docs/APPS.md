@@ -279,7 +279,11 @@ rather than failing to build it.
   Dev and a checkout install (`server-entry.ts` on the host) reach it on the loopback port
   the container publishes. `TALARIA_APP_DB_NETWORK` names the network outright: the DB joins it
   with no published port, and the host dials it by container name, so set it only on a host
-  that is on that network.
+  that is on that network. A devbox sets it to the box's own network (`devbox-<name>_default`,
+  in `docker/devbox.compose.yml`): its app runs in a container, where `127.0.0.1` is that
+  container's own loopback and a port the host publishes cannot be reached. The box's name is
+  its `TALARIA_DEVBOX`, so two boxes running one app name two databases, and `talaria box rm`
+  removes a box's app databases with it.
 - An app DB reached on its loopback port runs on docker's default `bridge`, so it takes no
   network of its own: a compose file that names none got a `<project>_default` network made for
   it, one subnet per app from the daemon's ~30 address pools. Nothing dials an app DB over a

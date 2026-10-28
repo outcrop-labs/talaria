@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
 import { compose, stackComposeFiles } from '../../compose'
-import { boxComposeSpec, boxDir, boxFleetNetwork, IMAGE, requireBox } from './shared'
+import { boxComposeSpec, boxDir, boxFleetNetwork, boxNetwork, IMAGE, requireBox } from './shared'
 import { runBuild } from './new'
 
 export function runStop(ctx: Ctx, name: string): Promise<number> {
@@ -57,10 +57,18 @@ ${unpushed}
 push them (or --force to discard)`)
     }
   }
-  ctx.log.say(`Tearing down devbox ${name} (project, volumes, fleet, directory)`)
+  ctx.log.say(`Tearing down devbox ${name} (project, volumes, fleet, app databases, directory)`)
   // Each teardown step is best-effort (`|| true` in the bash): the goal is
   // the directory gone, and a step that already ran itself clean — or failed
   // on a half-torn-down box — must not shield the rest.
+  //
+  // The app databases go first. Each is a compose project of its own
+  // (ui/src/server/app-db.ts) on the box's default network, so the box
+  // project's `down` neither removes them nor can remove the network they
+  // hold an endpoint on.
+  for (const db of await boxAppDbs(ctx, name)) {
+    await ctx.exec('docker', ['rm', '-f', '-v', db]).catch(() => {})
+  }
   await compose(ctx, boxComposeSpec(ctx, name), ['down', '-v', '--remove-orphans']).catch(() => {})
   await ctx
     .exec('docker', ['compose', '-p', boxFleetNetwork(name), 'down', '-v', '--remove-orphans'])
@@ -72,6 +80,26 @@ push them (or --force to discard)`)
   rmSync(box, { recursive: true, force: true })
   ctx.log.ok('gone')
   return 0
+}
+
+/** The app databases a box's app started: on the box's default network
+ *  (`TALARIA_APP_DB_NETWORK` in docker/devbox.compose.yml), named
+ *  `talaria-appdb-<box>-<slug>`. Found by the network, not by a name prefix,
+ *  because box `a`'s prefix `talaria-appdb-a-` is also box `a-b`'s. Stopped
+ *  ones count: a stopped container keeps its network. An answer docker could
+ *  not give is no databases, like every other best-effort teardown step. */
+export async function boxAppDbs(ctx: Ctx, name: string): Promise<string[]> {
+  try {
+    const { stdout } = await ctx.exec('docker', [
+      'ps', '-a',
+      '--filter', `network=${boxNetwork(name)}`,
+      '--filter', 'name=^talaria-appdb-',
+      '--format', '{{.Names}}',
+    ])
+    return stdout.split('\n').map((s) => s.trim()).filter(Boolean)
+  } catch {
+    return []
+  }
 }
 
 export const stopCommand: Leaf = {

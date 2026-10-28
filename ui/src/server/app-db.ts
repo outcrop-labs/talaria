@@ -43,7 +43,11 @@ export function inImage(): boolean {
  *  rather than on the loopback port the container publishes? In the image,
  *  and wherever TALARIA_APP_DB_NETWORK names the network: runningNetwork()
  *  attaches the DB there and composeYaml then publishes no port, so a
- *  loopback dial has nothing to reach. */
+ *  loopback dial has nothing to reach. A devbox is the second case: its
+ *  compose sets the variable to the box's own network
+ *  (docker/devbox.compose.yml), because the app runs in a container there,
+ *  and 127.0.0.1 is that container's loopback, where nothing the host
+ *  publishes can be reached. */
 export function dialsByName(): boolean {
   return inImage() || Boolean(process.env.TALARIA_APP_DB_NETWORK)
 }
