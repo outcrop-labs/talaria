@@ -14,8 +14,10 @@
   type AliasRow = ModelTarget & { name: string }
 
   // The agent config surface — soul, main model, alias tiers, fallback chain —
-  // as an embeddable form. Saving creates a NEW version; "apply" re-renders and
-  // restarts the managed container. The Config tab of the unified manage modal.
+  // as an embeddable form. Saving creates a NEW version; "apply" re-renders,
+  // and restarts the managed container only when the render moved it (a
+  // model, a tier, a key Hermes reads at start — a soul edit restarts
+  // nothing). The Config tab of the unified manage modal.
   let { def, endpoints, onSaved }: { def: AgentDef; endpoints: LlmEndpoint[]; onSaved?: () => void } = $props()
 
   const qc = useQueryClient()

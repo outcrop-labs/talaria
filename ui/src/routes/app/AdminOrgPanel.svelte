@@ -31,7 +31,7 @@
       await putJson<{ ok: true }>('/api/admin/settings', { org: { name: nameVal, about: aboutVal } })
     } catch (e) {
       // Keep the edited identity in the form — flashing "Saved" over a failed
-      // PUT would pretend the fleet just rolled onto it.
+      // PUT would pretend every agent's identity had just been rewritten.
       toastError('Save failed', e)
       return
     }
@@ -68,7 +68,7 @@
     <!-- QueryState's error branch holds a failed read: the identity form used
          to render BLANK there. Typing one word into it made it dirty, and Save
          then wrote an empty business name and description over the real ones —
-         and rolled the whole fleet onto them. -->
+         and rewrote every agent's identity with them. -->
     <div class="space-y-3">
       <div>
         <label for="org-name" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Business name</label>

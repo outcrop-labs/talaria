@@ -160,10 +160,10 @@ fn enqueue(departments: &[String], mode: Mode, pg: &PgPool, sb: &SecretBox) {
 /// The departments whose managed agents carry this server right now — every
 /// grant `servers_for_agent` renders from: all-agents, an assignment row, or
 /// an allowed team grant for a team the agent is on. A team-granted agent
-/// left out here would keep its old session when the server changes under
-/// it (most visibly: the org account gets connected, and the agent stays on
-/// the gateway's in-house not-connected answer until something else rolls
-/// it).
+/// left out here would miss the apply or roll its server's change asks for
+/// (most visibly: a timeout or auth-mode edit, which only a recreate
+/// delivers, and the agent stays on its old session until something else
+/// rolls it).
 pub async fn carriers_for_server(pg: &PgPool, server_id: &str) -> Result<Vec<String>, sqlx::Error> {
     let all_agents: Option<(bool,)> =
         sqlx::query_as("select all_agents from mcp_servers where id::text = $1")

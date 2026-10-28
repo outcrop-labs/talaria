@@ -637,7 +637,7 @@ pub async fn set_pinned_sessions(pg: &PgPool, id: &str, on: bool) -> Result<bool
 /// through [`validate_toolsets`] first — this writes what it is given. Whole
 /// list, not a delta: the UI edits a set of checkboxes and the column is what
 /// they show. Returns whether the stored value changed, for the audit row and
-/// for the roll (a re-save of the same set must not bounce a container).
+/// for the apply (a re-save of the same set must not even re-render).
 pub async fn set_disabled_toolsets(
     pg: &PgPool,
     id: &str,

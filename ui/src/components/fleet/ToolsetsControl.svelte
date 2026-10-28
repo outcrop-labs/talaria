@@ -24,8 +24,9 @@
    *  `terminal` here needs to know it is an admin's call and not a bug.
    *
    *  This is the one control on the MCP tab that does NOT autosave: a change
-   *  rolls the container, so per UI-CONVENTIONS it waits for an explicit
-   *  Apply. */
+   *  opens or closes a whole family of tools on a working agent (in place,
+   *  from its next turn — no restart), so per UI-CONVENTIONS it waits for an
+   *  explicit Apply. */
   let { def, canManage }: { def: AgentDef; canManage: boolean } = $props()
 
   const qc = useQueryClient()
@@ -47,9 +48,9 @@
   // floor later gives this agent back exactly what they chose.
   const builtin = $derived(builtinFloor(toolsets))
   // Compared against the def's list in its STORABLE spelling, because Apply
-  // must not offer to roll a container for a list that already means what is
-  // stored: order is not a change, and neither is a legacy def carrying one of
-  // the two names the renderer closes anyway.
+  // must not offer to apply a list that already means what is stored: order
+  // is not a change, and neither is a legacy def carrying one of the two
+  // names the renderer closes anyway.
   const stored = $derived(normalizeToolsets(def.disabledToolsets, builtin))
   const dirty = $derived(pending !== null && !sameToolsets(pending, stored))
 
