@@ -266,6 +266,8 @@ talaria-conversation-layout = { path = "crates/talaria-conversation-layout" }
 
 talaria-conversations = { path = "crates/talaria-conversations" }
 
+talaria-cron-output = { path = "crates/talaria-cron-output" }
+
 talaria-daily-brief = { path = "crates/talaria-daily-brief" }
 
 talaria-daily-brief-comms = { path = "crates/talaria-daily-brief-comms" }

@@ -680,6 +680,10 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_digest::register_approval_escalation_job(real_digest_deps(state, rt.clone()));
     talaria_notify::register_notification_mail_job(real_drain_deps(state.pg.clone(), sb.clone()));
     talaria_work_dispatch::register_redispatch_job(state.pg.clone(), run.clone());
+    // The cron-output pull: a thread schedule's report the plugin's
+    // fire-and-forget push lost, read back from the agent's own session
+    // store and landed through the same door code.
+    talaria_cron_output::register_cron_pull_job(state.clone());
     talaria_runs_reclaim::register_reclaim_job(Arc::new(ReclaimDeps {
         due: due_fn(run.store.clone()),
         definition_for: run.definition_for.clone(),
@@ -929,6 +933,10 @@ mod tests {
         assert!(
             names.contains(&JobName::SkillsIndexRefresh),
             "skills-index-refresh fell out of the job table"
+        );
+        assert!(
+            names.contains(&JobName::CronOutputPull),
+            "cron-output-pull fell out of the job table — a thread's lost cron report would never land"
         );
         assert!(
             names.contains(&JobName::AppTriggers),

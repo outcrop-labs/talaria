@@ -4587,6 +4587,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-cron-output"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-crons",
+ "talaria-body",
+ "talaria-conversations",
+ "talaria-gateway",
+ "talaria-notify",
+ "talaria-runs-work-session",
+ "talaria-scheduler",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-daily-brief"
 version = "0.1.0"
 dependencies = [
@@ -5714,6 +5734,7 @@ dependencies = [
  "talaria-comms-decay",
  "talaria-config",
  "talaria-conversations",
+ "talaria-cron-output",
  "talaria-daily-brief",
  "talaria-decide",
  "talaria-digest",
@@ -6874,6 +6895,7 @@ dependencies = [
  "talaria-channels",
  "talaria-chips",
  "talaria-conversations",
+ "talaria-cron-output",
  "talaria-error",
  "talaria-gaps",
  "talaria-harness-defs",
