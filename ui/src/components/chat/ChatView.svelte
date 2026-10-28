@@ -28,6 +28,7 @@
   import { queueChatMessage, steerChat, stopChat, streamChat, type ChatFocus, type ChatKind } from '@/lib/chat'
   import { HttpError } from '@/lib/fetch-json'
   import { mergeTool } from '@/lib/sse-parse'
+  import { onUserEvent } from '@/lib/user-events.svelte'
   import {
     loadConversation,
     loadSessionOverview,
@@ -37,6 +38,7 @@
   } from '@/lib/conversations.svelte'
   import { uploadFile, splitAttachments, type Attachment } from '@/lib/attachments'
   import {
+    foldToolVerdicts,
     reactionChips,
     sendRoute,
     stampFromServer,
@@ -488,7 +490,8 @@
   // Chips land on the streaming row from a different request (the agent's
   // tool call), so the SSE the speaker is watching never carries them.
   // Merge chips onto the live turn without replacing the prose the stream
-  // is still writing.
+  // is still writing. The agent's verdict on a call comes the same way (the
+  // stream says `completed` for a call that failed), and rides the same read.
   $effect(() => {
     if (!streaming) return
     const id = convId
@@ -497,17 +500,41 @@
     const iv = setInterval(async () => {
       if (stop) return
       const res = await loadConversation(id)
-      const remote = res?.messages.filter((m) => m.role === 'assistant').at(-1)
-      if (stop || !remote?.chips?.length) return
-      messages = messages.map((m, i) =>
-        i === messages.length - 1 && m.role === 'assistant' ? { ...m, chips: remote.chips, seq: remote.seq } : m,
-      )
+      if (stop || !res) return
+      const remote = res.messages.filter((m) => m.role === 'assistant').at(-1)
+      const chipped = remote?.chips?.length
+        ? messages.map((m, i) =>
+            i === messages.length - 1 && m.role === 'assistant' ? { ...m, chips: remote.chips, seq: remote.seq } : m,
+          )
+        : messages
+      const next = foldToolVerdicts(chipped, res.messages)
+      if (next !== messages) messages = next
     }, 1000)
     return () => {
       stop = true
       clearInterval(iv)
     }
   })
+
+  // THE RING FOR THIS CONVERSATION. The server fans an id-shaped
+  // `conversation` event when something lands on it, and that includes the
+  // agent's verdict on a call the stream called `completed`: the tool-events
+  // door marks the stored row `error` and rings. A verdict that lands after
+  // the turn did has no poll to ride, so this is how the open tab learns it.
+  // Only the calls' verdicts are taken from the re-read: prose, chips and
+  // the live row's own state stay this view's (the post-turn sync and the
+  // pollers above own those).
+  $effect(() =>
+    onUserEvent((event) => {
+      const id = convId
+      if (event.type !== 'conversation' || !id || event.conversationId !== id) return
+      void loadConversation(id).then((res) => {
+        if (!res || convId !== id) return
+        const next = foldToolVerdicts(messages, res.messages)
+        if (next !== messages) messages = next
+      })
+    }),
+  )
 
   // The surface's nudge — see the prop. Same last-signal guard the doc panes
   // use, so the effect only fires on a real bump.
@@ -1035,7 +1062,6 @@
                   title={pinned ? PINNED_TIER_NOTE : 'Model tier for this chat'}
                   menuLabel="Model tier"
                   disabled={pinned}
-                  class={pinned ? 'cursor-not-allowed opacity-50' : undefined}
                   onChange={(t) => (tier = t)}
                 />
               </span>

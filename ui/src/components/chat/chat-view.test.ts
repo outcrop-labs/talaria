@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import type { StoredMessage } from '@/lib/conversations.svelte'
 import {
   cronJobFromMarker,
+  foldToolVerdicts,
   reactionChips,
   sendRoute,
   stampFromServer,
@@ -209,5 +210,52 @@ describe('sendRoute', () => {
   it('attachments go the queue: the steer wire carries text only', () => {
     expect(ctx({ intent: 'send-now', hasAttachments: true })).toBe('queue')
     expect(ctx({ hasAttachments: true })).toBe('queue')
+  })
+})
+
+// The agent's verdict on a call, brought onto a row the stream drew. The live
+// shape: Hermes' completions stream ended the refused `rm` `completed`; the
+// server's row says `error` (the tool-events door marked it).
+describe('foldToolVerdicts', () => {
+  const rm = { id: 'call_8b732cd27d', name: 'terminal', label: '💻 rm -rf /tmp/fu-canary', status: 'completed' as const }
+  const echo = { id: 'call_547dfba246', name: 'terminal', label: '💻 echo fu-safe-ok', status: 'completed' as const }
+  const failed = { ...rm, status: 'error' as const }
+  const user = (id: string): DisplayMessage => ({ role: 'user', content: 'go', id })
+
+  it('marks a landed row by id, only the failed call, and nothing else on it', () => {
+    const local: DisplayMessage[] = [user('u1'), { role: 'assistant', content: 'done', id: 'a1', tools: [rm, echo], chips: [] }]
+    const remote = [stored({ id: 'u1', role: 'user' }), stored({ id: 'a1', content: 'server prose', tools: [failed, echo] })]
+    const next = foldToolVerdicts(local, remote)
+    expect(next[1]!.tools!.map((t) => t.status)).toEqual(['error', 'completed'])
+    // Prose and every other field stay what is on screen.
+    expect(next[1]!.content).toBe('done')
+    expect(next[0]).toBe(local[0])
+  })
+
+  it('pairs the live row (no id yet) with the newest assistant row', () => {
+    const local: DisplayMessage[] = [user('u1'), { role: 'assistant', content: 'stre', tools: [rm], status: 'streaming' }]
+    const remote = [stored({ id: 'u1', role: 'user' }), stored({ id: 'a-live', status: 'streaming', tools: [failed] })]
+    expect(foldToolVerdicts(local, remote)[1]!.tools![0]!.status).toBe('error')
+  })
+
+  it('never pairs the live row with a row already on screen, nor a call by name', () => {
+    // The server's newest row is the earlier turn, still on screen by id: the
+    // live row (the same command, a call id Hermes minted again) is not it.
+    const earlier: DisplayMessage = { role: 'assistant', content: 'one', id: 'a1', tools: [failed] }
+    const live: DisplayMessage = { role: 'assistant', content: 'two', tools: [rm], status: 'streaming' }
+    const local = [user('u1'), earlier, user('u2'), live]
+    const remote = [stored({ id: 'u1', role: 'user' }), stored({ id: 'a1', tools: [failed] }), stored({ id: 'u2', role: 'user' })]
+    expect(foldToolVerdicts(local, remote)).toBe(local)
+    // A call with no id is never matched.
+    const bare: DisplayMessage[] = [{ role: 'assistant', content: 'x', id: 'a1', tools: [{ ...rm, id: undefined }] }]
+    expect(foldToolVerdicts(bare, [stored({ id: 'a1', tools: [{ ...failed, id: undefined }] })])).toBe(bare)
+  })
+
+  it('only ever moves toward error, and answers the same array when nothing changed', () => {
+    const local: DisplayMessage[] = [{ role: 'assistant', content: 'x', id: 'a1', tools: [failed, echo] }]
+    // The server saying `completed` for a call shown failed changes nothing.
+    expect(foldToolVerdicts(local, [stored({ id: 'a1', tools: [rm, echo] })])).toBe(local)
+    expect(foldToolVerdicts(local, [stored({ id: 'a1', tools: [failed, echo] })])).toBe(local)
+    expect(foldToolVerdicts(local, [])).toBe(local)
   })
 })

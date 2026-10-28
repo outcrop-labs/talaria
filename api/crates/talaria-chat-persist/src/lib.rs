@@ -821,6 +821,9 @@ pub async fn persist_assistant_stream(
     let verdict_agent: Option<(String, Option<i64>)> = usage_meta
         .as_ref()
         .map(|m| (m.agent_model.clone(), m.sent_at_ms));
+    // The streaming flush's own handle on those verdicts, taken the first
+    // time a call with an id is open.
+    let mut verdict_redis = None;
     macro_rules! land {
         ($status:expr) => {
             let mut redis = match &verdict_agent {
@@ -907,6 +910,25 @@ pub async fn persist_assistant_stream(
                 // flushes immediately, then every 400ms.
                 if last_flush.is_none_or(|t| t.elapsed() > Duration::from_millis(400)) {
                     last_flush = Some(Instant::now());
+                    // A VERDICT KEPT MID-TURN STAYS ON THE LIVE ROW. The door
+                    // marks the running reply's call `error` the moment the
+                    // plugin posts, and this flush would write the stream's
+                    // `completed` back over it within 400 ms: a reader of the
+                    // row (the open tab's poll, a member's) would see the call
+                    // work again until the turn landed. The same kept
+                    // verdicts the landing write folds, read only while a
+                    // call with an id is still open.
+                    if let Some((agent, since)) = &verdict_agent
+                        && tools.iter().any(|t| t.id.is_some() && t.status != "error")
+                    {
+                        if verdict_redis.is_none() {
+                            verdict_redis = state.redis().await.ok();
+                        }
+                        if let Some(conn) = verdict_redis.as_mut() {
+                            fold_tool_failures(conn, agent, &conversation_id, *since, &mut tools)
+                                .await;
+                        }
+                    }
                     flush!("streaming");
                 }
             }

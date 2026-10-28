@@ -24,7 +24,8 @@
 // marked failed on the chat reply that ran it, found by the conversation its
 // session names, its tool-call id and when it finished: Hermes' completions
 // stream calls every finished call `completed`, so this door is the only
-// place a chat turn learns otherwise.
+// place a chat turn learns otherwise, and it rings the conversation's
+// readers so a tab that drew the call from the stream re-reads it.
 
 use axum::Json;
 use axum::extract::State;
@@ -34,6 +35,7 @@ use serde_json::json;
 use talaria_agent_auth::require_agent;
 use talaria_body::truncate_utf16;
 use talaria_error::house_error;
+use talaria_notify::{NotifyDeps, fan_conversation_event};
 use talaria_state::AppState;
 
 const MAX_FIELD: usize = 2_000;
@@ -175,7 +177,7 @@ pub async fn post(
             talaria_agent_auth::now_ms(),
         );
         let mut conn = redis.clone();
-        if let Err(e) = talaria_conversations::record_tool_failure(
+        match talaria_conversations::record_tool_failure(
             &state.pg,
             conn.as_mut(),
             &caller.model,
@@ -185,7 +187,17 @@ pub async fn post(
         )
         .await
         {
-            tracing::warn!("[tool-events] marking {tool} {call_id} failed: {e}");
+            // A TAB WITH THE CONVERSATION OPEN DREW THIS CALL FROM THE STREAM,
+            // which said `completed`. The ring is id-shaped like every other
+            // (the reader re-reads the conversation and takes the call's
+            // status from the row), and it is what reaches a verdict that
+            // lands after the turn did, when nothing is polling.
+            Ok(Some(kept)) => fan_conversation_event(
+                NotifyDeps::publishing(state.pg.clone(), redis.clone()),
+                kept.conversation_id,
+            ),
+            Ok(None) => {}
+            Err(e) => tracing::warn!("[tool-events] marking {tool} {call_id} failed: {e}"),
         }
     }
     // THE FLEET'S ONLY FAILURE SIGNAL. A persona tool failing is invisible to

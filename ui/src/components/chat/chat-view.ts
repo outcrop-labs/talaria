@@ -202,6 +202,44 @@ export function stampFromServer(local: readonly DisplayMessage[], remote: readon
   })
 }
 
+/** THE AGENT'S VERDICT ON A CALL, BROUGHT ONTO THE ROW ON SCREEN. Hermes'
+ *  completions stream calls every finished tool `completed`, a command its
+ *  approval gate refused included. The agent's talaria-events plugin tells
+ *  the server otherwise, and the server marks that call `error` on the stored
+ *  row (talaria-conversations `record_tool_failure`) and rings the
+ *  conversation's readers. A row this tab drew from the stream still says
+ *  `completed` until something brings the server's word over: this, on that
+ *  ring and on the live turn's poll.
+ *
+ *  Rows pair by id. The row the stream is still writing has no id yet, and
+ *  pairs with the server's newest assistant row (the same pairing the chips
+ *  poll uses), unless a row on screen already holds that one. A call pairs by
+ *  its tool-call id. Only ever toward `error`, and only a call's status: the
+ *  prose, chips and every other field stay what is on screen. Answers `local`
+ *  itself when nothing changed, so the caller can skip the write. */
+export function foldToolVerdicts(local: DisplayMessage[], remote: readonly StoredMessage[]): DisplayMessage[] {
+  const failedOn = (r: StoredMessage | undefined): Set<string> =>
+    new Set((r?.tools ?? []).filter((t) => t.status === 'error' && t.id).map((t) => t.id!))
+  const byId = new Map(remote.filter((r) => r.role === 'assistant' && r.id).map((r) => [r.id!, r]))
+  const shown = new Set(local.map((m) => m.id).filter(Boolean))
+  const newest = remote.findLast((r) => r.role === 'assistant')
+  const liveAt = local.findLastIndex((m) => m.role === 'assistant')
+  let changed = false
+  const next = local.map((m, i) => {
+    if (m.role !== 'assistant' || !m.tools?.length) return m
+    const pair = m.id
+      ? byId.get(m.id)
+      : i === liveAt && newest && !(newest.id && shown.has(newest.id))
+        ? newest
+        : undefined
+    const failed = failedOn(pair)
+    if (failed.size === 0 || !m.tools.some((t) => t.id && t.status !== 'error' && failed.has(t.id))) return m
+    changed = true
+    return { ...m, tools: m.tools.map((t) => (t.id && failed.has(t.id) ? { ...t, status: 'error' as const } : t)) }
+  })
+  return changed ? next : local
+}
+
 // One formatter per resolved zone ('' = the browser's) — turnTime runs per row.
 const turnTimeFormatters = new Map<string, Intl.DateTimeFormat>()
 

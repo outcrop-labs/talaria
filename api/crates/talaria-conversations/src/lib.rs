@@ -1849,12 +1849,22 @@ async fn verdict_conversation(
     .await
 }
 
+/// What the door did with a verdict it kept: the conversation it was kept
+/// for, and how many reply rows it marked failed (0 when the reply running
+/// the call does not hold it yet; the turn's own writes fold it in).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeptVerdict {
+    pub conversation_id: String,
+    pub marked: u64,
+}
+
 /// The agent's plugin saw `tool_call_id` fail at `at_ms` (`verdict_at`), in
 /// the session `session_id` names: keep that for the conversation's turn
 /// still running it, and mark it failed on the reply that was running when
-/// it finished, if that reply already holds the call. Returns how many reply
-/// rows were marked; a session that names no conversation of this agent's
-/// keeps nothing.
+/// it finished, if that reply already holds the call. Answers the
+/// conversation it was kept for, so the door can ring the tabs that have it
+/// open; a session that names no conversation of this agent's keeps nothing
+/// and answers None.
 pub async fn record_tool_failure(
     pg: &PgPool,
     redis: Option<&mut redis::aio::ConnectionManager>,
@@ -1862,16 +1872,16 @@ pub async fn record_tool_failure(
     session_id: &str,
     tool_call_id: &str,
     at_ms: i64,
-) -> Result<u64, sqlx::Error> {
+) -> Result<Option<KeptVerdict>, sqlx::Error> {
     let Some(id) = plain_call_id(tool_call_id) else {
-        return Ok(0);
+        return Ok(None);
     };
     let Some(conversation) = verdict_conversation(pg, agent_model, session_id).await? else {
         tracing::debug!(
             "[tool-events] {agent_model}: {id} failed in session {session_id:?}, which names no \
              conversation — not kept"
         );
-        return Ok(0);
+        return Ok(None);
     };
     // Before the row: a turn that lands after this line reads the verdict,
     // and one that landed before it is marked below.
@@ -1909,7 +1919,10 @@ pub async fn record_tool_failure(
     .bind(TOOL_FAILURE_SECS as f64)
     .execute(pg)
     .await?;
-    Ok(marked.rows_affected())
+    Ok(Some(KeptVerdict {
+        conversation_id: conversation,
+        marked: marked.rows_affected(),
+    }))
 }
 
 /// Fold the verdicts the door recorded into a landing turn's tools: a call
