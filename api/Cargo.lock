@@ -4180,6 +4180,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-approval-cards"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-managers",
+ "talaria-audit",
+ "talaria-chips",
+ "talaria-gateway",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-approvals"
 version = "0.1.0"
 dependencies = [
@@ -5722,6 +5737,7 @@ dependencies = [
  "talaria-agent-skills",
  "talaria-alerts",
  "talaria-app-triggers",
+ "talaria-approval-cards",
  "talaria-approvals",
  "talaria-apps",
  "talaria-artifacts",
@@ -6810,6 +6826,7 @@ dependencies = [
  "talaria-agent-todo",
  "talaria-alerts",
  "talaria-api-facades",
+ "talaria-approval-cards",
  "talaria-artifacts",
  "talaria-audit",
  "talaria-boards",

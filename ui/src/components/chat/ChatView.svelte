@@ -23,6 +23,7 @@
   import Button from '@/components/ui/Button.svelte'
   import AssistantTurn from './AssistantTurn.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import EmptyState from '@/components/ui/EmptyState.svelte'
   import { slide } from '@/lib/motion'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { queueChatMessage, steerChat, stopChat, streamChat, type ChatFocus, type ChatKind } from '@/lib/chat'
@@ -33,6 +34,7 @@
     loadConversation,
     loadSessionOverview,
     markConversationRead,
+    openConversation,
     toggleConversationReaction,
     type SessionOverview,
   } from '@/lib/conversations.svelte'
@@ -165,6 +167,11 @@
   // True while an EXISTING conversation's history is being fetched — the pane
   // shows transcript-shaped skeletons, never the "Talk to X" hero.
   let loadingConversation = $state(false)
+  // The server answered 404 for the open thread: it is gone, or not the
+  // viewer's to read (it does not say which, and neither does the pane). The
+  // pane says so in place of an empty thread, and offers no composer, whose
+  // first send would only 404 in turn.
+  let missing = $state(false)
   // What Hermes has done to this thread's pinned session, read ONCE per
   // conversation beside the history. Deliberately not in the pollers: a
   // compaction is not news arriving turn by turn, and the read goes out to
@@ -236,6 +243,7 @@
     held = []
     userStopped = false
     loadingConversation = false
+    missing = false
     // A fresh thread has no session behind it yet, so the previous thread's
     // compaction row must not survive the switch.
     sessionOverview = null
@@ -322,10 +330,13 @@
     userStopped = false
     let cancelled = false
     loadingConversation = true
+    missing = false
     sessionOverview = null
-    loadConversation(conversationId)
+    openConversation(conversationId)
       .then((res) => {
-        if (!cancelled) messages = (res?.messages ?? []).map(toDisplay)
+        if (cancelled) return
+        missing = res === 'missing'
+        messages = (res && res !== 'missing' ? res.messages : []).map(toDisplay)
       })
       .finally(() => {
         if (!cancelled) loadingConversation = false
@@ -880,6 +891,16 @@
           </div>
         {/each}
       </div>
+    {:else if missing}
+      <!-- The house not-found answer (boards, documents, folders use the
+           same words). The 404 covers a thread that was deleted and one this
+           viewer may not read, and the copy names both without saying
+           which. -->
+      <EmptyState
+        icon="⧉"
+        title="Conversation not found"
+        hint="It may have been deleted, or you don’t have access."
+      />
     {:else if messages.length === 0}
       <!-- Outside the measure on purpose: this centres in the whole surface,
            where before it centred inside a 900px column that was itself
@@ -984,6 +1005,7 @@
        page rather than on a patch. A gradient scrim would fade the clip more
        softly, but this design system has no gradients anywhere and the matte
        rule is the house style. -->
+  {#if !missing}
   <div bind:clientHeight={composerH} class="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-surface pb-6">
     <div class="mx-auto w-full max-w-[var(--converse-width)] px-6">
     <!-- The composer panel (spec §7): #141312 body, strong 1px border,
@@ -1120,5 +1142,6 @@
       </div>
     </div>
   </div>
+  {/if}
   <ContextMenu {menu} />
 </div>

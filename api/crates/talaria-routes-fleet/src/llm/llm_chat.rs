@@ -248,6 +248,7 @@ async fn app_agent_turn(
         source: APP_SOURCE.to_string(),
         ref_id: app.stated.ref_id.clone(),
         task_id: app.stated.task_id.clone(),
+        attended: false,
     };
     let stream = proxy_chat(&payload, app.hold_ms, Some(attribution)).await;
     let mut out = Response::builder()

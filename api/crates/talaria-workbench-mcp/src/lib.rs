@@ -393,6 +393,7 @@ async fn record_eval_session(pg: &PgPool, job_id: &str, task_id: Option<&str>) -
         source: "workbench".into(),
         ref_id: Some(job_id.to_string()),
         task_id: task_id.map(str::to_string),
+        attended: false,
     };
     match gw_usage::record_attribution(&flow, &key).await {
         Ok(()) => Some(devenv::eval_session_json(&key, job_id)),

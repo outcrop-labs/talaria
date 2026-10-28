@@ -676,10 +676,14 @@ async fn hold_for_agent(
         if let Some(entry) = entry {
             match request.open(entry, attribution.as_ref()).await {
                 Opened::Stream(stream) => {
-                    // Hermes' approval requests on this turn are refused
-                    // here, and recorded (fleet_approvals.rs).
+                    // Hermes' approval requests on this turn are answered
+                    // here: refused and recorded, or, on an attended
+                    // conversation turn, put to its person as a card
+                    // (fleet_approvals.rs).
                     let subject = turn_subject(&manifest, entry);
-                    let stream = crate::fleet_approvals::refuse_approvals(stream, entry, &subject);
+                    let turn = crate::fleet_approvals::ApprovalTurn::of(attribution.as_ref());
+                    let stream =
+                        crate::fleet_approvals::tap_approvals(stream, entry, &subject, turn);
                     return Ok(attribute_stream(stream, &request, attribution).await);
                 }
                 Opened::Lost => return Err(SessionLost),
@@ -1830,8 +1834,8 @@ fn parse_session_frame(
         "run.steered" => Some(Vec::new()),
         "run.queued" => Some(Vec::new()),
         // Hermes asking whoever reads the stream to approve a flagged call.
-        // The door answered it as the bytes went past (fleet_approvals.rs);
-        // the consumer has nothing to land.
+        // The door answered it, or raised its card, as the bytes went past
+        // (fleet_approvals.rs); the consumer has nothing to land.
         "approval.request" => Some(Vec::new()),
         "error" => Some(vec![AgentStreamEvent::Error {
             message: session_error_message(json),

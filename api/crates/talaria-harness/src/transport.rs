@@ -1369,6 +1369,9 @@ fn turn_attribution(pg: &sqlx::PgPool, req: &TransportRequest) -> TurnAttributio
         source: led.source.as_str().to_string(),
         ref_id: led.ref_id,
         task_id: led.task_id,
+        // A harness turn is a step nobody reads as it is written, even when
+        // its spend is booked as a conversation's (the plan document).
+        attended: false,
     }
 }
 
