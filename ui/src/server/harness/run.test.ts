@@ -1548,10 +1548,10 @@ describe('routing a persona TIER', () => {
   const onTier = { caller: 'plan:c-1', model: 'engineer-engineering', tier: 'opus' as const }
 
   it('calls the tier id and attributes the spend to the base agent', async () => {
-    // `recordUsage` prices a row by finding `agent_defs.model = agentModel` and
-    // then the alias named by `tier`. Hand it the routed id with a null tier and
-    // BOTH lookups miss: the row lands on an agent that does not exist, with no
-    // endpoint class, which means no price. A tier draft becomes free.
+    // The wire carries the tier id; the attribution keeps the base agent and
+    // the alias name apart. The relay prices and books the call from the tier
+    // id (talaria-gateway `persona_base`), so this pins the runner's spelling of
+    // `<model>-<tier>` and the attribution it carries, not a price.
     const r = world({ replies: ['drafted'] })
     const res = await runHarness(titler, { transcript: 'x' }, { ...onTier, deps: r.deps })
 

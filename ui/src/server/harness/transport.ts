@@ -151,14 +151,19 @@ export interface ToolCall {
  *             TICKET'S cost, which is the number a ticket owner reads.
  *    refId +  research's persona stages metered as `source: 'chat'` with no run
  *    source   id, so a run's cost stopped being answerable at all.
- *    tier     `recordUsage` prices a row by looking up `agent_defs.model =
- *             agentModel` and then the alias named by `tier`. Hand it the routed
- *             id "engineer-engineering-opus" with a null tier and BOTH lookups miss:
- *             the row is attributed to an agent that does not exist, with no
- *             endpoint class, which means no price. A tier draft becomes free.
+ *    tier     the TS ledger writer (ui/src/server/usage.ts, since deleted)
+ *             priced a row by looking up `agent_defs.model = agentModel` and
+ *             then the alias named by `tier`. Handed the routed id
+ *             "engineer-engineering-opus" with a null tier, BOTH lookups missed:
+ *             the row went to an agent that does not exist, with no endpoint
+ *             class and so no price. A tier draft was free.
  *
- *  Hence `agentModel` is the BASE persona id and `tier` is the alias NAME, never
- *  the routed id — `TransportRequest.model` is the id actually called. */
+ *  That writer is gone. The relay prices the call it routed, and books a tier's
+ *  turn under its base agent from the routed id itself (talaria-gateway
+ *  `persona_base`, `turn_subject`). `agentModel` is still the BASE persona id
+ *  and `tier` the alias NAME, never the routed id — `TransportRequest.model` is
+ *  the id actually called — but neither leaves this process: of the
+ *  attribution, `relay` sends only `refId` and `taskId`. */
 export interface LedgerAttribution {
   /** The agent as the ledger names it: the base persona id, never a tier id. */
   agentModel: string
@@ -171,7 +176,7 @@ export interface LedgerAttribution {
   refId: string | null
   /** The ticket this spend belongs to, so it reaches the ticket's cost. */
   taskId: string | null
-  /** The alias NAME (`opus`), as `classifyAgent` wants it. */
+  /** The alias NAME (`opus`), never the routed id. Not sent to the relay. */
   tier: string | null
 }
 
@@ -972,9 +977,10 @@ export const fleetStream: StreamingTransport = (req, emit) => personaTurn(req, e
  *  same rule `gateway.ts` uses to hide them in the first place. That inference
  *  stays, because a caller may still arrive with a routed id it built itself —
  *  but a caller that KNOWS it is routing a tier should say so with
- *  `RunContext.tier`, which needs no inference and is the only way the ledger can
- *  price the turn (see `LedgerAttribution.tier`). `persona.ts` resolves the same
- *  ids for capability keys, and does it from the database. */
+ *  `RunContext.tier`, which needs no inference. The price does not hang on it:
+ *  the relay books a tier's turn under its base agent from the id it is sent
+ *  (see `LedgerAttribution`). `persona.ts` resolves the same ids for capability
+ *  keys, and does it from the database. */
 export async function pickTransport(model: string): Promise<Transport> {
   return (await transportKind(model)) === 'fleet' ? fleetTransport : gatewayTransport
 }

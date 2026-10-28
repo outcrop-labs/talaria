@@ -48,9 +48,9 @@
 //   - `def.holdMs`         how long to hold for a persona that is restarting
 //   - `ctx.ledger`         source / refId / taskId, so a turn's spend reaches
 //                          the ticket, the channel or the research run
-//   - `ctx.tier`           an alias tier, routed AND priced (a routed id with a
-//                          null tier misses both of recordUsage's lookups and
-//                          the turn costs nothing)
+//   - `ctx.tier`           an alias tier: the turn calls `<model>-<tier>`. The
+//                          relay prices the call it routed and books a tier's
+//                          turn under its base agent, from that id alone
 //   - `runHarnessStreamed` a streaming transport, so a surface where tokens
 //                          landing on a screen is the feature keeps streaming
 //                          and still gets the guard pass
@@ -412,12 +412,16 @@ export interface RunContext {
    *
    *  `pickTransport` can already INFER a tier from a routed id by splitting at
    *  the last hyphen, and it still does, because a caller may arrive with an id
-   *  it built itself. But inference cannot recover the two facts the ledger
-   *  needs: `recordUsage` prices a row by finding `agent_defs.model =
-   *  agentModel` and then the alias named by `tier`, so a routed id handed over
-   *  with a null tier misses BOTH lookups and the turn is priced at nothing.
-   *  Naming the tier here is how a caller says it deliberately, once, and gets
-   *  the routing and the price together. */
+   *  it built itself. Naming the tier here is how a caller says it
+   *  deliberately, once: the runner spells `<model>-<tier>` in one place, calls
+   *  it, and asks the capability index about it.
+   *
+   *  The price does not depend on it. The Rust relay books every call it
+   *  serves, priced from the endpoint it routed, and finds a tier's base agent
+   *  from the routed id itself (talaria-gateway `persona_base`, `turn_subject`),
+   *  so a routed id with no tier named here is booked the same. The ledger
+   *  writer that once needed the pair named here (ui/src/server/usage.ts) is
+   *  deleted. */
   tier?: string
   /** THE REASONING EFFORT THIS TURN RUNS AT, when the caller's surface let a
    *  human pick one. A model id, not a harness, decides whether the level is
@@ -924,10 +928,10 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
     step = resolved.step
   }
 
-  // THE ID ACTUALLY CALLED. `model` stays the BASE persona — it is what the
-  // ledger has to name, because `recordUsage` prices a row by finding
-  // `agent_defs.model = agentModel` and then the alias named by `tier`, and a
-  // routed id matches neither. `routed` is what goes on the wire, what the
+  // THE ID ACTUALLY CALLED. `model` stays the BASE persona, the one
+  // `LedgerAttribution.agentModel` names. `routed` is what goes on the wire,
+  // and so all the relay prices and books by (a tier's turn lands under its
+  // base agent, talaria-gateway `persona_base`). It is also what the
   // capability lookup asks about (a tier is a different, usually larger model
   // than its agent's main, and `persona.ts` resolves it as one), and what the
   // result and the run row name, because it is the model that answered.
@@ -1249,9 +1253,10 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
     return { kind, text, toolNames: toolCalls.map((c) => c.name), toolCalls, usage: null, contractDropped }
   }
 
-  /** The ledger row this turn belongs to, resolved ONCE. `agentModel` is the
-   *  base persona and `tier` the alias name, because that is the pair
-   *  `recordUsage` prices from; `RunContext` carries the rest. */
+  /** Where this turn's spend belongs, resolved ONCE. `agentModel` is the base
+   *  persona and `tier` the alias name; `RunContext` carries the rest. Of these,
+   *  only `refId` and `taskId` leave this process, as relay headers (transport.ts
+   *  `relay`); the relay prices and books the call from the routed id. */
   const ledger: LedgerAttribution = {
     agentModel: model,
     source: ctx.ledger?.source ?? 'chat',
