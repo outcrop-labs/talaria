@@ -274,11 +274,11 @@ async fn department_guard(
     if action == "delete" {
         return None;
     }
-    let share = match talaria_agent_defs::department_share(&state.pg, &def.department).await {
-        Ok(share) => share?,
-        Err(e) => return Some(internal("[fleet] department share read failed", e)),
-    };
-    let runner = share.runs_instead_of(&def.id)?;
+    let runner =
+        match talaria_agent_defs::runner_instead_of(&state.pg, &def.id, &def.department).await {
+            Ok(runner) => runner?,
+            Err(e) => return Some(internal("[fleet] department share read failed", e)),
+        };
     if action != "retire" {
         return Some(house_error(
             StatusCode::CONFLICT,

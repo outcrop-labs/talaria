@@ -216,7 +216,7 @@ pub async fn post(
     .unwrap_or(false);
     // The compaction knobs, and what the answer owes the caller about them.
     // note: `compression` — `{ threshold?: number|null (0.1..1), thresholdTokens?: number|null (1000..10000000) }`; null clears a knob, absent leaves it; a threshold under 0.75 saves and the answer's `notes` says Hermes raises it for models under 512K context
-    let (compression, notes) = match parse_compression(obj, "compression") {
+    let (compression, mut notes) = match parse_compression(obj, "compression") {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
@@ -358,6 +358,42 @@ pub async fn post(
     }
     let mut applied = false;
     if created && apply && managed {
+        // ONE CONTAINER PER DEPARTMENT. The roll below is by department, and
+        // where an older agent holds this one's too (a pair from before a
+        // department became one agent's) that container is the other
+        // agent's: the render leaves this one out, so nothing of this version
+        // runs anywhere, and rolling would restart the other agent for an
+        // edit that is not its own. The version stands; the answer says it
+        // was not applied, and why — in `notes` too, which the editor shows.
+        match talaria_agent_defs::runner_instead_of(&state.pg, &def_id, &department).await {
+            Ok(Some(runner)) => {
+                let warning = talaria_agent_defs::shared_department_refusal(
+                    "roll",
+                    &display_name,
+                    &department,
+                    &runner.display_name,
+                );
+                notes.push(format!(
+                    "saved as version {version}, not applied: {warning}"
+                ));
+                return Ok(Json(json!({
+                    "ok": true,
+                    "version": version,
+                    "created": created,
+                    "applied": false,
+                    "warning": warning,
+                    "notes": notes,
+                }))
+                .into_response());
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return Ok(internal(
+                    "[fleet/defs/edit] department share read failed",
+                    e,
+                ));
+            }
+        }
         // Roll, don't restart: the new config comes up beside the old
         // container and traffic cuts over only after health — applying an
         // edit never interrupts conversations in flight.

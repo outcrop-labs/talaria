@@ -31,6 +31,12 @@ use talaria_state::AppState;
 use futures_util::future::BoxFuture;
 use std::sync::{Arc, OnceLock};
 
+/// Why a retired assistant cannot come back: another agent shares its
+/// department (a pair from before a department became one agent's) and runs
+/// in its container. Said without naming that agent — any signed-in user
+/// reaches this door — and pointing at who can untie it.
+pub const ASSISTANT_DISPLACED: &str = "your assistant cannot come back: another agent runs in its container now — ask an admin to untie the two";
+
 pub static SYNC_PRIVATE_DOCS: OnceLock<
     Arc<dyn Fn(sqlx::PgPool, String) -> BoxFuture<'static, ()> + Send + Sync>,
 > = OnceLock::new();
@@ -154,8 +160,16 @@ pub async fn personal_agent_for(
         return Ok(None);
     };
     let departments = vec![department.clone()];
-    let (latest, containers) = tokio::join!(list_versions(pg, &id), container_status(&departments));
+    let (latest, containers, displaced) = tokio::join!(
+        list_versions(pg, &id),
+        container_status(&departments),
+        talaria_agent_defs::runner_instead_of(pg, &id, &department)
+    );
     let latest = latest?.into_iter().next();
+    // The container is found by department; where another agent shares this
+    // one's and runs there, it is not this assistant's, and its state is not
+    // this assistant's either.
+    let own_container = displaced?.is_none();
     let containers = containers.unwrap_or_default();
     let main = latest.as_ref().and_then(|v| v.config.get("main")).cloned();
     let main_target: Option<ModelTarget> = main
@@ -198,10 +212,11 @@ pub async fn personal_agent_for(
         display_name,
         enabled,
         personality: latest.as_ref().and_then(|v| personality_of(&v.soul)),
-        running: containers
-            .first()
-            .and_then(|c| c.managed.as_ref())
-            .is_some_and(|m| m.state == "running"),
+        running: own_container
+            && containers
+                .first()
+                .and_then(|c| c.managed.as_ref())
+                .is_some_and(|m| m.state == "running"),
         current_model: main_target.as_ref().map(|t| t.model.clone()),
         tiers,
     }))
@@ -281,6 +296,20 @@ pub async fn create_personal_agent(
         .map_err(|e| e.to_string())?
     {
         if !existing.enabled {
+            // ONE CONTAINER PER DEPARTMENT. Where another agent holds this
+            // assistant's department too (a pair from before a department
+            // became one agent's) and runs in its container, bringing this
+            // one back would take that container from it at the next render
+            // when this one is the older — the takeover the control route's
+            // unretire refuses — or leave it with no container at all. So it
+            // stays retired, and the owner is told without naming the other.
+            if talaria_agent_defs::runner_instead_of(pg, &existing.id, &existing.department)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_some()
+            {
+                return Err(ASSISTANT_DISPLACED.to_string());
+            }
             sqlx::query(
                 "update agent_defs set enabled = true, updated_at = now() where id = $1::uuid",
             )
@@ -707,11 +736,31 @@ pub async fn update_personal_agent(
                 .get()
                 .ok_or_else(|| "fleet renderer is not wired".to_string())?;
             rf(pg.clone(), sb.clone()).await?;
-            // A handle rename changes the service definition (key env, model
-            // name, config-mount path), so the container must be RECREATED
-            // (up -d), not restarted — restart keeps the old mounts and
-            // crashes on the moved dir.
-            if rehandled {
+            // The container is the department's, and where another agent
+            // shares this one's department and runs there (a pair from
+            // before a department became one agent's), it is THAT agent's:
+            // the render left this one out, and restarting it would restart
+            // somebody else's agent for this owner's edit. The version
+            // stands for when the two are untied.
+            let displaced = talaria_agent_defs::runner_instead_of(pg, &id, &department)
+                .await
+                .map_err(|e| e.to_string())?;
+            if let Some(runner) = displaced {
+                tracing::warn!(
+                    "[personal-agent] {}: saved, not applied — {}",
+                    row.slug,
+                    talaria_agent_defs::shared_department_refusal(
+                        "restart",
+                        &display_name,
+                        &department,
+                        &runner.display_name,
+                    )
+                );
+            } else if rehandled {
+                // A handle rename changes the service definition (key env,
+                // model name, config-mount path), so the container must be
+                // RECREATED (up -d), not restarted — restart keeps the old
+                // mounts and crashes on the moved dir.
                 let _ = fleet_up(pg, &department).await;
             } else {
                 let _ = fleet_restart(pg, &department).await;

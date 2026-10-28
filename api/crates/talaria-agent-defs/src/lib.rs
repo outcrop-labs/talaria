@@ -885,8 +885,14 @@ impl SharedDepartment {
     }
 }
 
-/// The 409 a lifecycle act on `name` meets when its department's container is
-/// `runner`'s: starting, stopping or rolling it would act on the other agent.
+/// The tail every [`shared_department_refusal`] ends with — what
+/// [`is_shared_department_refusal`] recognises.
+const SHARED_DEPARTMENT_TAIL: &str = "(Talaria never merges two agents into one)";
+
+/// The refusal an act on `name` meets when its department's container is
+/// `runner`'s: starting, stopping or rolling it — or reaching into its memory
+/// — would act on the other agent. `action` is a control verb (`up`,
+/// `unretire` read as "start") or the phrase to say ("read memory from").
 pub fn shared_department_refusal(
     action: &str,
     name: &str,
@@ -898,8 +904,31 @@ pub fn shared_department_refusal(
         other => other,
     };
     format!(
-        "{name} has no container of its own to {verb}: its department \"{department}\" is also {runner}'s, and {runner} runs in that department's container. Retire and delete one of the two (Talaria never merges two agents into one)"
+        "{name} has no container of its own to {verb}: its department \"{department}\" is also {runner}'s, and {runner} runs in that department's container. Retire and delete one of the two {SHARED_DEPARTMENT_TAIL}"
     )
+}
+
+/// Whether an error string is [`shared_department_refusal`]'s sentence, for
+/// a route that holds only the string and answers it 409.
+pub fn is_shared_department_refusal(msg: &str) -> bool {
+    msg.contains(SHARED_DEPARTMENT_TAIL)
+}
+
+/// The agent the render runs in `department`'s container when that agent is
+/// not `id`: the one a department-keyed act on `id` — a roll, a restart, a
+/// start, an exec into its memory — would really reach. None when `id` holds
+/// its department alone, or is the one running there. Every door that acts on
+/// an agent's container by department asks this first (the control route,
+/// the config and MCP applies, the personal assistant's doors, memory and
+/// media).
+pub async fn runner_instead_of(
+    pg: &PgPool,
+    id: &str,
+    department: &str,
+) -> Result<Option<DepartmentMember>, sqlx::Error> {
+    Ok(department_share(pg, department)
+        .await?
+        .and_then(|share| share.runs_instead_of(id).cloned()))
 }
 
 /// Rows in (department, oldest first) order, grouped; a department with one
@@ -1935,6 +1964,25 @@ mod tests {
                     .contains("of its own to start:")
             );
         }
+        // A door that reaches into the container says what it would do.
+        let memory = shared_department_refusal("read memory from", "Zed", "research", "Ava");
+        assert!(
+            memory.starts_with("Zed has no container of its own to read memory from:"),
+            "{memory}"
+        );
+        // The string layers answer it 409; nothing else reads as it — not
+        // the hire's department refusal, not the control route's catch arm.
+        assert!(is_shared_department_refusal(&memory));
+        assert!(!is_shared_department_refusal(
+            "could not roll the agent — see server logs"
+        ));
+        let taken = DepartmentTaken {
+            department: "research".into(),
+            holder_slug: "ava".into(),
+            holder_name: "Ava".into(),
+        };
+        assert!(!is_shared_department_refusal(&taken.to_string()));
+        assert!(!is_department_taken(&memory));
     }
 
     #[test]

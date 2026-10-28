@@ -15,8 +15,8 @@ use serde_json::{Value, json};
 use talaria_body::{optional_max_string_member, parse, string_msg, zod_type_name};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_personal_agent::{
-    HANDLE_RE_NOTE, PersonalAgent, PersonalAgentInput, PersonalAgentPatch, PersonalUser,
-    create_personal_agent, handle_ok, is_department_taken, personal_agent_for,
+    ASSISTANT_DISPLACED, HANDLE_RE_NOTE, PersonalAgent, PersonalAgentInput, PersonalAgentPatch,
+    PersonalUser, create_personal_agent, handle_ok, is_department_taken, personal_agent_for,
     update_personal_agent,
 };
 use talaria_session::require_user;
@@ -179,6 +179,9 @@ pub async fn post(
                 StatusCode::CONFLICT,
                 "that handle is taken — another agent already runs under it; pick another",
             ),
+            // A retired assistant whose department another agent shares and
+            // runs in (a pair from before the one-agent rule) stays retired.
+            Err(e) if e == ASSISTANT_DISPLACED => house_error(StatusCode::CONFLICT, &e),
             Err(e) => house_error(StatusCode::BAD_REQUEST, &friendly(&e)),
         },
     )
