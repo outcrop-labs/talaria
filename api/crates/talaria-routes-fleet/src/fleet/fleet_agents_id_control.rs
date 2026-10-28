@@ -20,26 +20,35 @@
 //   the settle window — so "not there yet" is not "failed";
 // - docker not answering the re-read at all: the same 503.
 //
-// EACH COMPOSE VERB RUNS ON A TASK OF ITS OWN ([`own_task`]). A client that
-// goes away drops the request's future, and `docker()` kills its CLI with the
-// future it belongs to — so a curl that gave up mid-`up` killed compose
-// between creating a recreate's container and renaming it, stranding it, and
-// left the agent stopped with nothing logged (seen live under heavy IO, where
-// the render ahead of it took minutes). Awaiting a spawned task instead, the
-// verb finishes and its failure is logged, whoever is still listening.
+// EVERY VERB BUT `roll` RUNS ON A TASK OF ITS OWN, WHOLE ([`run_verb`],
+// talaria-fleet-docker `run_detached`): the render ahead of an `up`, the
+// compose verb (which holds the service's lock inside that task), and the
+// re-read and cleanup after a failure. A client that goes away drops the
+// request's future, and `docker()` kills its CLI with the future it belongs
+// to — so a curl that gave up mid-`up` killed compose between creating a
+// recreate's container and renaming it, stranding it, and left the agent
+// stopped with nothing logged (seen live under heavy IO, where the render
+// ahead of it took minutes); one that gave up during that render left the
+// agent down without compose ever running. The app's own proxy gives up on a
+// response with no headers after 300 s, the same way. Now the verb runs to its
+// end whoever is still listening. The route answers with what the verb came
+// to when it settles within `ANSWER_WITHIN` (210 s); past that it answers 202
+// with the container as it is so far (`pending`), and the roster shows the
+// rest.
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use talaria_agent_defs::AgentDefRow;
 use talaria_agent_defs::agent_def_by_id;
 use talaria_api_facades::fleet::create::delete_agent_forever;
 use talaria_api_facades::fleet::docker::{
-    Observed, fleet_remove, fleet_restart, fleet_stop, fleet_up, is_timeout, observe,
-    remove_stopped, settle, up_landed,
+    ANSWER_WITHIN, Detached, Observed, fleet_remove, fleet_restart, fleet_stop, fleet_up,
+    is_timeout, observe, remove_stopped, run_detached, settle, up_landed,
 };
-use talaria_api_facades::fleet::reconcile::roll_agent;
+use talaria_api_facades::fleet::reconcile::roll_running_agent;
 use talaria_api_facades::fleet::render::render_fleet;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{enum_member, parse};
@@ -102,47 +111,153 @@ pub async fn post(
         });
     }
 
+    if action == "roll" {
+        return Ok(start_roll(&state, &actor_of(&user), &def).await);
+    }
+    // Everything else runs whole on its own task (header). The answer is the
+    // verb's own when it settles in time; past the bound, the state so far.
+    let verb = run_verb(state.clone(), def.clone(), action.clone());
+    Ok(match run_detached(verb, ANSWER_WITHIN).await {
+        Detached::Settled(answer) => answer,
+        Detached::StillRunning => {
+            still_working(&state, &action, &def.display_name, &def.department).await
+        }
+        Detached::Lost(why) => control_failure(
+            &action,
+            &def.display_name,
+            &def.department,
+            &format!("the {action}'s task failed: {why}"),
+        ),
+    })
+}
+
+/// `roll`: recreate in place — the container stops gracefully and a fresh
+/// one starts from the current render. Long (pull, stop, health wait), so it
+/// runs detached; the roster's health polling tells the story. A roll never
+/// starts an agent: one that is not running is refused here (start it — its
+/// start reads the current render), and one stopped before the recreate
+/// holds the service's lock is left stopped (`roll_running_agent`).
+async fn start_roll(state: &AppState, actor: &str, def: &AgentDefRow) -> Response {
+    if !def.managed {
+        return house_error(StatusCode::BAD_REQUEST, "not a managed agent");
+    }
+    // One roll per department at a time: the roll holds the lock itself
+    // (in-process set + Postgres advisory lock), so a second click lands as
+    // its soft refusal in the audit trail — but a caller who can be told now
+    // is told now.
+    if talaria_api_facades::fleet::reconcile::is_rolling(&def.department) {
+        return house_error(
+            StatusCode::CONFLICT,
+            "this agent is already rolling — wait for it to finish",
+        );
+    }
+    if matches!(
+        observe(&state.pg, &def.department).await,
+        Observed::Stopped { .. } | Observed::Absent
+    ) {
+        return house_error(StatusCode::CONFLICT, NOT_RUNNING);
+    }
+    // The roll records itself in the fleet-wide registry (start and
+    // verdict), which is what /api/fleet/roll shows; the Redis mirror behind
+    // it is wired here as well as there, so a manager's roll on an instance
+    // nobody pressed "roll all" on still reaches every other instance's
+    // picture.
+    super::fleet_roll::wire_roll_sink(state);
+    if let Ok(sb) = state.secretbox().await {
+        let pg = state.pg.clone();
+        let dept = def.department.clone();
+        let target_id = def.id.clone();
+        let label = def.display_name.clone();
+        let actor = actor.to_string();
+        tokio::spawn(async move {
+            // THE VERDICT HAS NOWHERE ELSE TO GO. A roll is detached and the
+            // caller already got `{"rolling": true}`, so a step that throws
+            // and a soft refusal both used to vanish: the operator saw a roll
+            // that never changed anything and no reason for it. The audit
+            // entry is the same shape mcp-apply writes when its own roll
+            // fails.
+            let error = match roll_running_agent(&pg, &sb, &dept).await {
+                Ok(None) => return,
+                Ok(Some(warning)) => warning,
+                Err(thrown) => thrown,
+            };
+            tracing::warn!("[fleet] roll of {label} ({dept}) failed: {error}");
+            log_audit(
+                &pg,
+                AuditEntry {
+                    actor: &actor,
+                    action: "agent.roll_failed",
+                    target_type: "agent",
+                    target_id: Some(&target_id),
+                    target_label: Some(&label),
+                    before: None,
+                    after: Some(json!({ "error": error })),
+                },
+            )
+            .await;
+        });
+    }
+    Json(json!({ "ok": true, "rolling": true })).into_response()
+}
+
+/// The refusal of a roll of an agent that is not running — the em dash is
+/// part of the wire contract.
+const NOT_RUNNING: &str =
+    "this agent is not running — start it instead; its start reads the current render";
+
+/// The answer once [`ANSWER_WITHIN`] has passed with the verb still running:
+/// 202, and the container as docker describes it now. The verb goes on, and
+/// logs its own outcome.
+async fn still_working(
+    state: &AppState,
+    action: &str,
+    display_name: &str,
+    department: &str,
+) -> Response {
+    let now = observe(&state.pg, department).await;
+    tracing::warn!(
+        "[fleet] {action} of {display_name} ({department}) is still running after {}s — answering 202 with the container as it is now ({}); the {action} goes on",
+        ANSWER_WITHIN.as_secs(),
+        now.describe()
+    );
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "ok": true, "pending": true, "state": now.word() })),
+    )
+        .into_response()
+}
+
+/// One verb, whole, on its own task ([`run_detached`]): its answer is the
+/// route's when it settles in time.
+async fn run_verb(state: AppState, def: AgentDefRow, action: String) -> Response {
     // Docker and pg failure text is operator context, not a user sentence:
     // the answer names the verb, and the log line holds the why — compose's
     // own stderr, which `docker()` carries in the error.
     let catch = |e: String| -> Response {
         control_failure(&action, &def.display_name, &def.department, &e)
     };
-    Ok(match action.as_str() {
+    match action.as_str() {
         "up" => {
             if !def.managed {
-                return Ok(house_error(StatusCode::BAD_REQUEST, "not a managed agent"));
+                return house_error(StatusCode::BAD_REQUEST, "not a managed agent");
             }
             let sb = match state.secretbox().await {
                 Ok(sb) => sb,
-                Err(e) => return Ok(catch(e)),
+                Err(e) => return catch(e),
             };
             if let Err(e) = render_fleet(&state.pg, &sb).await {
-                return Ok(catch(e));
+                return catch(e);
             }
-            if let Err(e) = own_task(&state, &def.department, |pg, d| async move {
-                fleet_up(&pg, &d).await
-            })
-            .await
+            if let Err(e) = fleet_up(&state.pg, &def.department).await
                 && let Err(last) =
                     up_landed_anyway(&state, &action, &def.display_name, &def.department, &e).await
             {
-                return Ok(failed(
-                    &action,
-                    &def.display_name,
-                    &def.department,
-                    &e,
-                    &last,
-                ));
+                return failed(&action, &def.display_name, &def.department, &e, &last);
             }
             // Don't block on health — the roster shows the warm-up phase.
             Json(json!({ "ok": true, "warming": true })).into_response()
         }
-        "stop" => match own_task(&state, &def.department, |pg, d| async move {
-            fleet_stop(&pg, &d).await
-        })
-        .await
-        {
+        "stop" => match fleet_stop(&state.pg, &def.department).await {
             Ok(_) => Json(json!({ "ok": true })).into_response(),
             Err(e) => match settled(
                 &state,
@@ -163,16 +278,12 @@ pub async fn post(
             // same env and image). 'roll' recreates it from the current
             // render instead.
             if !def.managed {
-                return Ok(house_error(StatusCode::BAD_REQUEST, "not a managed agent"));
+                return house_error(StatusCode::BAD_REQUEST, "not a managed agent");
             }
             // The start stamp before, so a restart that did happen can be
             // told from one that did not when compose reports a failure.
             let before = observe(&state.pg, &def.department).await;
-            match own_task(&state, &def.department, |pg, d| async move {
-                fleet_restart(&pg, &d).await
-            })
-            .await
-            {
+            match fleet_restart(&state.pg, &def.department).await {
                 Ok(_) => Json(json!({ "ok": true, "warming": true })).into_response(),
                 Err(e) => {
                     match settled(
@@ -191,66 +302,6 @@ pub async fn post(
                 }
             }
         }
-        "roll" => {
-            // Recreate in place — the container stops gracefully and a fresh
-            // one starts from the current render. Long (pull, stop, health
-            // wait), so it runs detached; the roster's health polling tells
-            // the story.
-            if !def.managed {
-                return Ok(house_error(StatusCode::BAD_REQUEST, "not a managed agent"));
-            }
-            // One roll per department at a time: `roll_agent` holds the
-            // lock itself (in-process set + Postgres advisory lock), so a
-            // second click lands as its soft refusal in the audit trail —
-            // but a caller who can be told now is told now.
-            if talaria_api_facades::fleet::reconcile::is_rolling(&def.department) {
-                return Ok(house_error(
-                    StatusCode::CONFLICT,
-                    "this agent is already rolling — wait for it to finish",
-                ));
-            }
-            // The roll records itself in the fleet-wide registry (start and
-            // verdict), which is what /api/fleet/roll shows; the Redis
-            // mirror behind it is wired here as well as there, so a
-            // manager's roll on an instance nobody pressed "roll all" on
-            // still reaches every other instance's picture.
-            super::fleet_roll::wire_roll_sink(&state);
-            if let Ok(sb) = state.secretbox().await {
-                let pg = state.pg.clone();
-                let dept = def.department.clone();
-                let target_id = def.id.clone();
-                let label = def.display_name.clone();
-                let actor = actor_of(&user);
-                tokio::spawn(async move {
-                    // THE VERDICT HAS NOWHERE ELSE TO GO. A roll is detached
-                    // and the caller already got `{"rolling": true}`, so a
-                    // step that throws and a soft refusal both used to
-                    // vanish: the operator saw a roll that never changed
-                    // anything and no reason for it. The audit entry is the
-                    // same shape mcp-apply writes when its own roll fails.
-                    let error = match roll_agent(&pg, &sb, &dept).await {
-                        Ok(None) => return,
-                        Ok(Some(warning)) => warning,
-                        Err(thrown) => thrown,
-                    };
-                    tracing::warn!("[fleet] roll of {label} ({dept}) failed: {error}");
-                    log_audit(
-                        &pg,
-                        AuditEntry {
-                            actor: &actor,
-                            action: "agent.roll_failed",
-                            target_type: "agent",
-                            target_id: Some(&target_id),
-                            target_label: Some(&label),
-                            before: None,
-                            after: Some(json!({ "error": error })),
-                        },
-                    )
-                    .await;
-                });
-            }
-            Json(json!({ "ok": true, "rolling": true })).into_response()
-        }
         "retire" => {
             // Spin down + drop from the fleet. Container removed (a remove
             // that ran out its time after the stop is finished by
@@ -263,12 +314,9 @@ pub async fn post(
             .execute(&state.pg)
             .await
             {
-                return Ok(catch(e.to_string()));
+                return catch(e.to_string());
             }
-            if let Err(e) = own_task(&state, &def.department, |pg, d| async move {
-                fleet_remove(&pg, &d).await
-            })
-            .await
+            if let Err(e) = fleet_remove(&state.pg, &def.department).await
                 && let Err(last) = settled(
                     &state,
                     &action,
@@ -279,17 +327,11 @@ pub async fn post(
                 )
                 .await
             {
-                return Ok(failed(
-                    &action,
-                    &def.display_name,
-                    &def.department,
-                    &e,
-                    &last,
-                ));
+                return failed(&action, &def.display_name, &def.department, &e, &last);
             }
             let sb = match state.secretbox().await {
                 Ok(sb) => sb,
-                Err(e) => return Ok(catch(e)),
+                Err(e) => return catch(e),
             };
             match render_fleet(&state.pg, &sb).await {
                 // the manifest drops it; the persona door re-reads it on each attempt
@@ -303,7 +345,7 @@ pub async fn post(
             // agent's managers, like every other act on this route.
             let sb = match state.secretbox().await {
                 Ok(sb) => sb,
-                Err(e) => return Ok(catch(e)),
+                Err(e) => return catch(e),
             };
             match delete_agent_forever(&state.pg, &sb, &def.id).await {
                 Ok(removed_volume) => {
@@ -324,50 +366,29 @@ pub async fn post(
             .execute(&state.pg)
             .await
             {
-                return Ok(catch(e.to_string()));
+                return catch(e.to_string());
             }
             let sb = match state.secretbox().await {
                 Ok(sb) => sb,
-                Err(e) => return Ok(catch(e)),
+                Err(e) => return catch(e),
             };
             if let Err(e) = render_fleet(&state.pg, &sb).await {
-                return Ok(catch(e));
+                return catch(e);
             }
             if def.managed {
-                if let Err(e) = own_task(&state, &def.department, |pg, d| async move {
-                    fleet_up(&pg, &d).await
-                })
-                .await
+                if let Err(e) = fleet_up(&state.pg, &def.department).await
                     && let Err(last) =
                         up_landed_anyway(&state, &action, &def.display_name, &def.department, &e)
                             .await
                 {
-                    return Ok(failed(
-                        &action,
-                        &def.display_name,
-                        &def.department,
-                        &e,
-                        &last,
-                    ));
+                    return failed(&action, &def.display_name, &def.department, &e, &last);
                 }
-                return Ok(Json(json!({ "ok": true, "warming": true })).into_response());
+                return Json(json!({ "ok": true, "warming": true })).into_response();
             }
             Json(json!({ "ok": true })).into_response()
         }
         _ => internal("[fleet] control: unknown action", &action),
-    })
-}
-
-/// Run one compose verb on a task of its own and wait for it (see the
-/// header): a client that goes away drops this future, not the verb's.
-async fn own_task<F, Fut>(state: &AppState, department: &str, verb: F) -> Result<String, String>
-where
-    F: FnOnce(sqlx::PgPool, String) -> Fut,
-    Fut: std::future::Future<Output = Result<String, String>> + Send + 'static,
-{
-    tokio::spawn(verb(state.pg.clone(), department.to_string()))
-        .await
-        .unwrap_or_else(|e| Err(format!("the compose verb's task failed: {e}")))
+    }
 }
 
 /// The catch arm's sentence — the em dash is part of the wire contract.

@@ -76,7 +76,7 @@ fn roll_lock_key(department: &str) -> String {
 // registry is the story: when each roll started, how it ended, and the
 // sentence it failed with — what `GET /api/fleet/roll` shows and what a
 // second api instance reads back through the Redis hash the sink writes.
-// Recorded by `roll_agent` itself (start, then the verdict) so a roll from
+// Recorded by `roll_agent_mode` itself (start, then the verdict) so a roll from
 // any door — the fleet-wide button, one agent's control, an MCP apply —
 // lands on the same page.
 
@@ -229,10 +229,18 @@ const ROLL_HEALTH_WAIT_MS: u64 = 180_000;
 // a key rotation (env), the operator's own roll and restart, the update
 // job's fleet roll (a new image), and an MCP timeout or auth-mode edit
 // (talaria-mcp-apply), whose effect Hermes only takes from a reconnect.
+//
+// NO ROLL STARTS AN AGENT A PERSON STOPPED EITHER. Each of those rolls
+// recreates a RUNNING agent whatever its fit, and leaves a stopped one as it
+// is ([`roll_running_agent`], the same in-lock read an apply's roll makes):
+// its next start reads the render — compose recreates a container whose
+// service moved, and a plain start boots Hermes on the rewritten config.yaml.
+// The one roll that starts stopped agents is the fleet roll a person asks to
+// include them in (`/api/fleet/roll` with `all`).
 
 /// Apply a change to one department's agent: render, then roll it only if
 /// the render moved its container ([`talaria_fleet_docker::ContainerFit`]).
-/// The verdict has [`roll_agent`]'s shape: `Ok(None)` when the change is in
+/// The verdict has [`roll_running_agent`]'s shape: `Ok(None)` when the change is in
 /// place (live, or waiting for a stopped agent's next start), `Ok(Some(_))`
 /// a roll's soft failure, `Err` a failed step.
 pub async fn apply_agent_change(
@@ -338,7 +346,7 @@ fn apply_step(fit: talaria_fleet_docker::ContainerFit) -> ApplyStep {
 enum Applied {
     /// In place, or a stopped agent left stopped.
     Untouched,
-    /// The roll's verdict ([`roll_agent`]'s shape).
+    /// The roll's verdict ([`roll_running_agent`]'s shape).
     Rolled(Result<Option<String>, String>),
     /// Docker would not describe the container: the sentence for the caller.
     Unconfirmed(String),
@@ -389,7 +397,7 @@ fn unconfirmed_apply(department: &str) -> String {
     )
 }
 
-/// [`apply_one`] in [`roll_agent`]'s verdict shape.
+/// [`apply_one`] in [`roll_running_agent`]'s verdict shape.
 async fn apply_rendered(
     pg: &PgPool,
     sb: &SecretBox,
@@ -405,13 +413,23 @@ async fn apply_rendered(
 /// Whether a roll recreates whatever it finds, or only a running agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RollMode {
-    /// A roll asked for as one — the operator's, the fleet's, an MCP timeout
-    /// or auth-mode edit's: recreate, which starts the agent if it was
-    /// stopped.
+    /// The fleet roll a person asked to include stopped agents in (`all`):
+    /// recreate, which starts the agent if it was stopped.
     Always,
-    /// Applying a change: recreate only a container still running when the
-    /// recreate holds the service's lock; leave any other as it is.
+    /// Every other roll, and an apply's: recreate only a container still
+    /// running when the recreate holds the service's lock; leave any other
+    /// as it is.
     IfRunning,
+}
+
+/// The mode a fleet-roll batch member is rolled in: a stopped agent is
+/// started only when the person asked for stopped agents too.
+fn batch_mode(include_stopped: bool) -> RollMode {
+    if include_stopped {
+        RollMode::Always
+    } else {
+        RollMode::IfRunning
+    }
 }
 
 /// What [`roll_agent_locked`] did.
@@ -433,23 +451,33 @@ enum Rolled {
 /// part of config.yaml Hermes reads only at start. An edit that may or may
 /// not touch those goes through [`apply_agent_change`], which rolls only
 /// when the render moved the container.
-pub async fn roll_agent(
+///
+/// A roll NEVER STARTS AN AGENT (see "Applying a change"): a running agent is
+/// recreated whatever its fit; one that is stopped, gone, or that docker will
+/// not describe when the recreate holds the service's lock is left as it is,
+/// and its next start reads the render. `Ok(None)` either way — the change is
+/// in place for a stopped agent too, waiting for its start — and the roll
+/// registry records the second as `idle`, not `rolled`.
+pub async fn roll_running_agent(
     pg: &PgPool,
     sb: &SecretBox,
     department: &str,
 ) -> Result<Option<String>, String> {
-    roll_agent_in_batch(pg, sb, department, None).await
+    roll_agent_mode(pg, sb, department, None, RollMode::IfRunning).await
 }
 
-/// [`roll_agent`] with the fleet-wide batch it belongs to stamped on its
-/// registry records, so the live picture can group them.
-pub async fn roll_agent_in_batch(
+/// One member of a fleet-wide roll batch, its batch stamped on its registry
+/// records so the live picture can group them. `include_stopped` is the
+/// batch's `all`: the person asked for stopped agents to be rolled — and so
+/// started — too; otherwise this is [`roll_running_agent`].
+async fn roll_agent_in_batch(
     pg: &PgPool,
     sb: &SecretBox,
     department: &str,
-    batch: Option<&str>,
+    batch: &str,
+    include_stopped: bool,
 ) -> Result<Option<String>, String> {
-    roll_agent_mode(pg, sb, department, batch, RollMode::Always).await
+    roll_agent_mode(pg, sb, department, Some(batch), batch_mode(include_stopped)).await
 }
 
 async fn roll_agent_mode(
@@ -568,6 +596,23 @@ async fn roll_agent_locked(
     // is always a plain one: the agent was running when the apply decided
     // to roll it, and the move is what takes it from -b to its home.
     let legacy = active.as_deref() == Some("b");
+    // The move home starts the home container whatever `-b` was doing, so a
+    // roll that must not start an agent checks `-b` first: one that is not
+    // running (or that docker will not describe) stays where it is, and its
+    // next start brings it up there on the render.
+    if legacy
+        && mode == RollMode::IfRunning
+        && !talaria_fleet_docker::container_running(&talaria_fleet_docker::slot_container(
+            department,
+            Slot::B,
+        ))
+        .await
+    {
+        tracing::info!(
+            "[fleet] {display_name} ({department}): its legacy -b container is not running when its roll reached it — left as it is; its next start reads the render"
+        );
+        return Ok(Rolled::LeftStopped);
+    }
     if legacy {
         let legacy = talaria_fleet_docker::slot_container(department, Slot::B);
         set_active_slot(pg, &slug, "a").await?;
@@ -722,7 +767,9 @@ pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileRes
 /// Render, then ROLL every running managed agent one at a time, whether or
 /// not its container moved — the update job's fleet roll (a new image is
 /// the point). Agents someone deliberately stopped stay stopped (they read
-/// the new render on next start). An edit uses [`apply_running_agents`].
+/// the new render on next start), including one stopped while the job works
+/// down the list: each roll reads its container again under the service's
+/// lock ([`roll_running_agent`]). An edit uses [`apply_running_agents`].
 pub async fn roll_running_agents(
     pg: &PgPool,
     sb: &SecretBox,
@@ -755,7 +802,7 @@ pub async fn roll_running_agents(
         if !running.contains(department) {
             continue;
         }
-        match roll_agent(pg, sb, department).await {
+        match roll_running_agent(pg, sb, department).await {
             Ok(None) => rolled.push(display_name.clone()),
             Ok(Some(error)) => warnings.push(error),
             Err(e) => warnings.push(e),
@@ -891,7 +938,7 @@ pub async fn start_roll_batch(
             let Ok(_permit) = semaphore.acquire_owned().await else {
                 return;
             };
-            let error = match roll_agent_in_batch(&pg, &sb, &department, Some(&batch)).await {
+            let error = match roll_agent_in_batch(&pg, &sb, &department, &batch, all).await {
                 Ok(None) => return,
                 Ok(Some(soft)) => soft,
                 Err(thrown) => thrown,
@@ -1006,6 +1053,16 @@ mod tests {
         let sentence = unconfirmed_apply("ops");
         assert!(sentence.contains("\"ops\""), "{sentence}");
         assert!(sentence.contains("not applied"), "{sentence}");
+    }
+
+    #[test]
+    fn only_a_fleet_roll_asked_to_include_stopped_agents_starts_one() {
+        // `all`: the person ticked "also start and roll agents that are
+        // stopped".
+        assert_eq!(batch_mode(true), RollMode::Always);
+        // Every other batch member is rolled only if it still runs when its
+        // recreate holds the service's lock.
+        assert_eq!(batch_mode(false), RollMode::IfRunning);
     }
 
     #[test]

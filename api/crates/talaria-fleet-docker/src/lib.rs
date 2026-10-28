@@ -98,6 +98,51 @@ pub async fn active_slot(pg: &PgPool, department: &str) -> Slot {
     }
 }
 
+// ── An operation that outlives its caller ──────────────────────────────────
+//
+// `docker()` kills its CLI with the future that waits on it (kill_on_drop, so
+// a timed-out verb leaves no orphan). A route's future is dropped when its
+// client hangs up — a curl that gave up, a tab closed, or the app's own proxy
+// hop, whose fetch gives up on a response with no headers after 300 s and
+// answers 502. Measured live: a compose recreate killed that way between its
+// create and its rename stranded a container and left the agent stopped. So a
+// control verb, a hire's bring-up and a personal assistant's up or restart
+// run on a task of their own ([`run_detached`]); the caller only waits on it.
+// The compose verbs take the service's lock inside that task, so the lock is
+// held for exactly the verb, whoever is still listening.
+
+/// How long a route waits for a fleet operation it spawned before answering
+/// with the state so far. Under the app proxy's 300 s, with room for the read
+/// of the container that answer carries (a patient inspect, 30 s).
+pub const ANSWER_WITHIN: Duration = Duration::from_secs(210);
+
+/// What a bounded wait on a spawned fleet operation came to.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Detached<T> {
+    /// It finished within the bound: its own answer.
+    Settled(T),
+    /// Still running when the bound passed. It goes on to its end; nobody
+    /// waits for it any more.
+    StillRunning,
+    /// Its task panicked: why.
+    Lost(String),
+}
+
+/// Run `op` on a task of its own and wait up to `within` for it. A caller
+/// that goes away drops only this wait — the operation runs to its end, and
+/// logs its own outcome.
+pub async fn run_detached<T, F>(op: F, within: Duration) -> Detached<T>
+where
+    F: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::time::timeout(within, tokio::spawn(op)).await {
+        Ok(Ok(answer)) => Detached::Settled(answer),
+        Ok(Err(e)) => Detached::Lost(e.to_string()),
+        Err(_) => Detached::StillRunning,
+    }
+}
+
 /// One docker CLI invocation: non-zero exit is an error carrying stderr,
 /// success returns (stdout, stderr) trimmed as written. Crate-visible —
 /// the app's own update engine (api/src/update/) speaks docker through
@@ -459,6 +504,14 @@ impl Observed {
             Observed::Stopped { .. } => "stopped",
             Observed::Absent => "gone",
             Observed::Unreadable => "unreadable (docker did not answer)",
+        }
+    }
+
+    /// The one word an answer carries: running, stopped, gone or unknown.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Observed::Unreadable => "unknown",
+            seen => seen.describe(),
         }
     }
 }
@@ -1428,6 +1481,82 @@ async fn container_status_fresh(departments: &[String]) -> Result<Vec<AgentConta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_detached_operation_answers_in_time_or_runs_on_without_its_caller() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // Within the bound: the operation's own answer.
+        assert_eq!(
+            run_detached(async { 7 }, Duration::from_secs(5)).await,
+            Detached::Settled(7)
+        );
+        // Past the bound: the caller is answered, and the operation goes on
+        // to its end all the same.
+        let done = Arc::new(AtomicBool::new(false));
+        let flag = done.clone();
+        let slow = async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            flag.store(true, Ordering::SeqCst);
+        };
+        assert_eq!(
+            run_detached(slow, Duration::from_millis(20)).await,
+            Detached::StillRunning
+        );
+        assert!(!done.load(Ordering::SeqCst));
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(done.load(Ordering::SeqCst), "the operation ran to its end");
+        // A caller that hangs up — its future dropped mid-wait, as axum drops
+        // a handler's when the client disconnects — cancels nothing.
+        let done = Arc::new(AtomicBool::new(false));
+        let flag = done.clone();
+        let slow = async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            flag.store(true, Ordering::SeqCst);
+        };
+        let waiting = run_detached(slow, Duration::from_secs(60));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), waiting)
+                .await
+                .is_err(),
+            "the caller gave up first"
+        );
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(done.load(Ordering::SeqCst), "the hang-up did not cancel it");
+        // A task that panics is reported, not hung on.
+        let lost = run_detached(
+            async {
+                if Duration::ZERO.is_zero() {
+                    panic!("boom");
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(matches!(lost, Detached::Lost(_)), "{lost:?}");
+        // Under the app proxy's 300 s, with the closing read's 30 s besides.
+        const { assert!(ANSWER_WITHIN.as_secs() + 30 < 300) };
+    }
+
+    #[test]
+    fn an_answer_names_the_container_in_one_word() {
+        assert_eq!(
+            Observed::Running {
+                id: "c0ffee".into(),
+                started_at: "t1".into()
+            }
+            .word(),
+            "running"
+        );
+        assert_eq!(
+            Observed::Stopped {
+                id: "c0ffee".into()
+            }
+            .word(),
+            "stopped"
+        );
+        assert_eq!(Observed::Absent.word(), "gone");
+        assert_eq!(Observed::Unreadable.word(), "unknown");
+    }
 
     #[test]
     fn slot_names_carry_the_project_and_only_slot_b_gets_a_suffix() {

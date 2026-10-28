@@ -93,7 +93,7 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         })
     }));
     let _ = talaria_mcp_apply::ROLL_AGENT.set(std::sync::Arc::new(|pg, sb, dept| {
-        Box::pin(async move { talaria_fleet_reconcile::roll_agent(&pg, &sb, &dept).await })
+        Box::pin(async move { talaria_fleet_reconcile::roll_running_agent(&pg, &sb, &dept).await })
     }));
     let _ = talaria_mcp_apply::APPLY_AGENTS.set(std::sync::Arc::new(|pg, sb, depts| {
         Box::pin(

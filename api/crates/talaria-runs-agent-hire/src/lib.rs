@@ -412,19 +412,31 @@ pub fn real_agent_hire_deps(state: talaria_state::AppState) -> AgentHireDeps {
                     // leave the daemon finishing the create and the start, and
                     // a step that errors here is retried from the top — a
                     // second hire of an agent that is already up.
-                    match talaria_fleet_docker::fleet_up(&pg, &department).await {
-                        Ok(_) => Ok(()),
-                        Err(e) if talaria_fleet_docker::up_landed(&pg, &department, &e).await => {
-                            tracing::warn!(
-                                "[fleet] hire of {department}: compose reported a failure ({e}), but the container runs the current render — going on"
-                            );
-                            Ok(())
-                        }
-                        Err(e) => {
-                            tracing::warn!("[fleet] hire of {department}: up failed: {e}");
+                    //
+                    // On a task of its own: a step future the engine drops
+                    // (a lost lease, a shutdown) must not take the compose
+                    // verb with it, halfway — `docker()` kills its CLI with
+                    // the future that waits on it. The step still waits for
+                    // the verdict; a re-entered step finds the container.
+                    let up = tokio::spawn(async move {
+                        match talaria_fleet_docker::fleet_up(&pg, &department).await {
+                            Ok(_) => Ok(()),
                             Err(e)
+                                if talaria_fleet_docker::up_landed(&pg, &department, &e).await =>
+                            {
+                                tracing::warn!(
+                                    "[fleet] hire of {department}: compose reported a failure ({e}), but the container runs the current render — going on"
+                                );
+                                Ok(())
+                            }
+                            Err(e) => {
+                                tracing::warn!("[fleet] hire of {department}: up failed: {e}");
+                                Err(e)
+                            }
                         }
-                    }
+                    });
+                    up.await
+                        .unwrap_or_else(|e| Err(format!("the hire's up task failed: {e}")))
                 })
             })
         },

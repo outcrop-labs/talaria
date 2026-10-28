@@ -6,6 +6,8 @@ restart: its tools and toolsets, its delegation cap, its soul (from its next new
 conversation), and its MCP servers and tools (within a few minutes). A change the agent can only take
 at start — its Developer switch, a rotated key, a model or tier, most config edits — restarts
 its container: the agent is offline for about a minute, and a turn in flight waits for it.
+None of these starts an agent someone stopped: a stopped agent stays stopped, and takes the
+change when it next starts.
 The policy panels in **Admin → Agents** govern how all agents behave; this page governs each
 one.
 
@@ -60,8 +62,9 @@ The confirm says what happens, and it is exact: the old key stops working the mo
 confirm; the fleet is re-rendered and a running container is rolled onto the new key (it stops,
 a fresh one starts in its place, and the roll waits for it to report healthy); until then the
 agent is locked out, so a toolkit call or a workbench session in flight on the old key fails and
-has to be retried, while conversations wait for the new container and carry on there. An agent Talaria does not run
-gets the new key the next time it starts. The new value is never shown; the audit trail records
+has to be retried, while conversations wait for the new container and carry on there. A
+stopped agent stays stopped and takes the new key when it next starts, and so does an agent
+Talaria does not run. The new value is never shown; the audit trail records
 who rotated which key. If the roll fails, roll the agent again from the roster, or stop and
 start it.
 

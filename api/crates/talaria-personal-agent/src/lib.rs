@@ -17,7 +17,9 @@ use talaria_agent_defs::{
     apply_config_edits, list_versions,
 };
 use talaria_fleet_create::{CreateAgentInput, create_agent, ensure_agent_key, restamp_slug};
-use talaria_fleet_docker::{container_status, fleet_restart, fleet_up, wait_healthy};
+use talaria_fleet_docker::{
+    ANSWER_WITHIN, Detached, container_status, fleet_restart, fleet_up, run_detached, wait_healthy,
+};
 use talaria_retrieval_collections::ensure_personal_collection;
 use talaria_retrieval_embed as embed;
 use talaria_retrieval_qdrant as qdrant;
@@ -416,15 +418,30 @@ pub async fn create_personal_agent(
     .await;
     private_doc_sync(state, user.id);
 
-    if let Ok(sb) = state.secretbox().await
-        && let Some(rf) = talaria_fleet_create::RENDER_FLEET.get()
-    {
-        let _ = rf(pg.clone(), sb.clone()).await;
-    }
-    // The assistant row is written either way; a bring-up that fails is
-    // the operator's to read — compose's own words, never the user's.
-    if let Err(e) = fleet_up(pg, &department).await {
-        tracing::warn!("[personal-agent] {department}: the assistant did not come up: {e}");
+    // The render and the bring-up run on a task of their own
+    // (talaria-fleet-docker `run_detached`): a person who closes the tab, or
+    // the app proxy's 300 s, drops this request's future, and a compose verb
+    // dies with the future that waits on it — halfway, if it was recreating.
+    // The assistant row is written either way; a bring-up that fails is the
+    // operator's to read — compose's own words, never the user's.
+    let bring_up = {
+        let (pg, sb, department) = (pg.clone(), state.secretbox().await.ok(), department.clone());
+        async move {
+            if let Some(sb) = sb
+                && let Some(rf) = talaria_fleet_create::RENDER_FLEET.get()
+            {
+                let _ = rf(pg.clone(), sb).await;
+            }
+            if let Err(e) = fleet_up(&pg, &department).await {
+                tracing::warn!("[personal-agent] {department}: the assistant did not come up: {e}");
+            }
+        }
+    };
+    if run_detached(bring_up, ANSWER_WITHIN).await != Detached::Settled(()) {
+        tracing::warn!(
+            "[personal-agent] {department}: the assistant's bring-up is still running after {}s — answering now; it goes on",
+            ANSWER_WITHIN.as_secs()
+        );
     }
     wait_healthy_spawn(state, &department);
 
@@ -697,21 +714,42 @@ pub async fn update_personal_agent(
             let rf = talaria_fleet_create::RENDER_FLEET
                 .get()
                 .ok_or_else(|| "fleet renderer is not wired".to_string())?;
-            rf(pg.clone(), sb.clone()).await?;
-            // A handle rename changes the service definition (key env, model
-            // name, config-mount path), so the container must be RECREATED
-            // (up -d), not restarted — restart keeps the old mounts and
-            // crashes on the moved dir.
-            let brought = if rehandled {
-                fleet_up(pg, &department).await
-            } else {
-                fleet_restart(pg, &department).await
+            // The render and the bring-up run whole on a task of their own,
+            // like create's: a caller that goes away mid-restart no longer
+            // takes the compose verb with it. A render that fails within the
+            // bound still fails the PATCH; past the bound, the answer is the
+            // assistant as it is, and the restart goes on.
+            let bring_up = {
+                let (pg, department) = (pg.clone(), department.clone());
+                async move {
+                    rf(pg.clone(), sb).await?;
+                    // A handle rename changes the service definition (key
+                    // env, model name, config-mount path), so the container
+                    // must be RECREATED (up -d), not restarted — restart
+                    // keeps the old mounts and crashes on the moved dir.
+                    let brought = if rehandled {
+                        fleet_up(&pg, &department).await
+                    } else {
+                        fleet_restart(&pg, &department).await
+                    };
+                    if let Err(e) = brought {
+                        tracing::warn!(
+                            "[personal-agent] {department}: the assistant did not {} after the update: {e}",
+                            if rehandled { "come back up" } else { "restart" }
+                        );
+                    }
+                    Ok::<(), String>(())
+                }
             };
-            if let Err(e) = brought {
-                tracing::warn!(
-                    "[personal-agent] {department}: the assistant did not {} after the update: {e}",
-                    if rehandled { "come back up" } else { "restart" }
-                );
+            match run_detached(bring_up, ANSWER_WITHIN).await {
+                Detached::Settled(rendered) => rendered?,
+                Detached::StillRunning => tracing::warn!(
+                    "[personal-agent] {department}: the update's restart is still running after {}s — answering now; it goes on",
+                    ANSWER_WITHIN.as_secs()
+                ),
+                Detached::Lost(why) => {
+                    return Err(format!("the assistant's update did not finish: {why}"));
+                }
             }
         }
     }
