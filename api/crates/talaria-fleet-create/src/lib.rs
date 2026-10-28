@@ -10,8 +10,8 @@ use sqlx::PgPool;
 
 use talaria_agent_defs::{
     AgentDefRow, CompressionEdits, ConfigEdits, ModelTarget, NewVersion, UpsertDef,
-    add_version_if_changed, agent_def_by_id, agent_def_by_slug, apply_config_edits_over, dept_ok,
-    list_versions, slug_ok, upsert_agent_def,
+    add_version_if_changed, agent_def_by_id, agent_def_by_slug, apply_config_edits_over,
+    department_holder, dept_ok, list_versions, slug_ok, upsert_agent_def,
 };
 use talaria_gateway::registry::list_endpoints;
 
@@ -149,6 +149,15 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         .map_err(|e| e.to_string())?;
     if exists.is_some() {
         return Err(format!("agent \"{}\" already exists", input.slug));
+    }
+    // A department is one agent's container and memory. Asked here too, not
+    // only under the write's lock, so a refusal leaves nothing behind (the
+    // fleet key below is a line in a file); the lock is the race's answer.
+    if let Some(taken) = department_holder(pg, &input.department, &input.slug)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Err(taken.to_string());
     }
 
     // An empty-string templateId is no template (truthiness on the way in).
@@ -417,13 +426,32 @@ pub async fn delete_agent_forever(
         return Err("retire the agent first. Delete is for retired agents only.".into());
     }
 
+    // Another agent in this department (a pair that predates the one-agent
+    // rule) means the department's container and volume are not this
+    // agent's alone: the other one runs in them, or will. Deleting this one
+    // removes its def and files, and leaves those to the agent still there.
+    let shared = talaria_agent_defs::department_holder(pg, &department, &slug)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(other) = &shared {
+        tracing::warn!(
+            "[fleet] deleting {slug}: its department \"{department}\" is also {}'s, so its container and memory volume stay",
+            other.holder_slug
+        );
+    }
+
     // Containers first (should already be gone after retire; both service
     // names, a legacy -b included; best-effort, and graceful — never a
     // SIGKILL).
-    for slot in [talaria_fleet_docker::Slot::A, talaria_fleet_docker::Slot::B] {
+    let slots: &[talaria_fleet_docker::Slot] = if shared.is_some() {
+        &[]
+    } else {
+        &[talaria_fleet_docker::Slot::A, talaria_fleet_docker::Slot::B]
+    };
+    for slot in slots {
         let _ = talaria_fleet_docker::retire_container(&talaria_fleet_docker::slot_container(
             &department,
-            slot,
+            *slot,
         ))
         .await;
     }
@@ -497,6 +525,7 @@ pub async fn delete_agent_forever(
     // State volume: only for created agents (imported volumes are external
     // legacy).
     let removed_volume = source == "created"
+        && shared.is_none()
         && talaria_fleet_docker::remove_volume(&format!(
             "{}_hermes-{department}",
             talaria_fleet_layout::fleet_project()

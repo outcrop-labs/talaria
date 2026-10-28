@@ -17,6 +17,11 @@ use talaria_agent_defs::{
     apply_config_edits, list_versions,
 };
 use talaria_fleet_create::{CreateAgentInput, create_agent, ensure_agent_key, restamp_slug};
+
+/// Whether a create refusal is the one-agent-per-department rule: the
+/// handle's department (`personal-<handle>`) is already another agent's
+/// (talaria-agent-defs, "A department is one agent's key").
+pub use talaria_agent_defs::is_department_taken;
 use talaria_fleet_docker::{container_status, fleet_restart, fleet_up, wait_healthy};
 use talaria_retrieval_collections::ensure_personal_collection;
 use talaria_retrieval_embed as embed;
@@ -202,9 +207,9 @@ pub async fn personal_agent_for(
     }))
 }
 
-/// slug + department derived from the user — BOTH must be unique per user,
-/// since the department names the container (agent-<department>). `create_agent`
-/// enforces slug uniqueness and errs on collision.
+/// slug + department derived from the user — BOTH must be unique, since the
+/// department names the container (agent-<department>) and its memory.
+/// `create_agent` refuses a taken slug and a taken department alike.
 fn personal_identity(email: Option<&str>, name: Option<&str>) -> (String, String) {
     let raw = email
         .map(|e| e.split('@').next().unwrap_or(""))

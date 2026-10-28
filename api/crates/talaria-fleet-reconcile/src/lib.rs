@@ -289,9 +289,12 @@ async fn roll_agent_locked(
     sb: &SecretBox,
     department: &str,
 ) -> Result<Option<String>, String> {
+    // Oldest first: where two agents hold one department (a pair that
+    // predates the one-agent rule), the first row is the one the render runs
+    // in its container (talaria-fleet-render's `department_runners`).
     let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
         "select slug, display_name, active_slot from agent_defs \
-         where department = $1 and managed and enabled",
+         where department = $1 and managed and enabled order by created_at, id",
     )
     .bind(department)
     .fetch_all(pg)

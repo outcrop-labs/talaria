@@ -88,6 +88,39 @@ pub async fn compute_alerts(state: &AppState, user_id: &str) -> Vec<Alert> {
     value
 }
 
+/// The alert for a department two or more agents hold.
+fn shared_department_alert(share: &talaria_agent_defs::SharedDepartment) -> Alert {
+    let d = &share.department;
+    let detail = match share.runner() {
+        Some(runner) => {
+            let others: Vec<&str> = share
+                .members
+                .iter()
+                .filter(|m| m.id != runner.id)
+                .map(|m| m.display_name.as_str())
+                .collect();
+            format!(
+                "{} runs in its container (agent-{d}) and keeps its memory; {} {} left out of the fleet. Retire and delete one of them — Talaria never merges two agents into one.",
+                runner.display_name,
+                others.join(", "),
+                if others.len() == 1 { "is" } else { "are" }
+            )
+        }
+        None => format!(
+            "None of them is running. A department is one container (agent-{d}) and one memory volume: retire and delete all but one before starting it."
+        ),
+    };
+    Alert {
+        severity: AlertSeverity::Warning,
+        title: format!(
+            "{} agents share the department \"{d}\"",
+            share.members.len()
+        ),
+        detail,
+        href: "/agents",
+    }
+}
+
 /// en-US grouping (1,234,567) via the crate's shared grouping helper.
 fn fmt(n: i64) -> String {
     group(n)
@@ -219,6 +252,16 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
                 _ => {}
             }
         }
+    }
+
+    // ── Fleet: one agent per department ─────────────────────────────────────────
+    // A department is one container and one memory volume, so two agents in
+    // one are one agent in practice. New hires cannot make such a pair; one
+    // that predates the rule is said here, every read, until somebody unties
+    // it — the render quietly running the older one is exactly the kind of
+    // silence this file exists for.
+    if let Ok(shared) = talaria_agent_defs::shared_departments(pg).await {
+        alerts.extend(shared.iter().map(shared_department_alert));
     }
 
     // ── Gateway plane reachability ──────────────────────────────────────────────
@@ -771,6 +814,47 @@ async fn probe_mcp() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn member(id: &str, name: &str, renders: bool) -> talaria_agent_defs::DepartmentMember {
+        talaria_agent_defs::DepartmentMember {
+            id: id.into(),
+            slug: id.into(),
+            display_name: name.into(),
+            renders,
+        }
+    }
+
+    #[test]
+    fn a_shared_department_is_a_warning_that_names_who_runs_and_who_is_left_out() {
+        let share = talaria_agent_defs::SharedDepartment {
+            department: "research".into(),
+            members: vec![member("a", "Ava", true), member("z", "Zed", true)],
+        };
+        let alert = shared_department_alert(&share);
+        assert_eq!(alert.severity, AlertSeverity::Warning);
+        assert_eq!(alert.title, "2 agents share the department \"research\"");
+        assert_eq!(
+            alert.detail,
+            "Ava runs in its container (agent-research) and keeps its memory; Zed is left out of the fleet. Retire and delete one of them — Talaria never merges two agents into one."
+        );
+        assert_eq!(alert.href, "/agents");
+
+        let idle = talaria_agent_defs::SharedDepartment {
+            department: "ops".into(),
+            members: vec![
+                member("a", "Ava", false),
+                member("b", "Bo", false),
+                member("c", "Cy", false),
+            ],
+        };
+        let alert = shared_department_alert(&idle);
+        assert_eq!(alert.title, "3 agents share the department \"ops\"");
+        assert!(
+            alert.detail.starts_with("None of them is running."),
+            "{}",
+            alert.detail
+        );
+    }
 
     #[test]
     fn mcp_attention_is_one_warning_naming_every_server() {

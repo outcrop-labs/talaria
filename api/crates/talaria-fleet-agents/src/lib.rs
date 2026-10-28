@@ -211,8 +211,8 @@ pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, 
 
     // defs (enabled only) → container reality, keyed by the def's MODEL (the
     // agent id). A defs read that fails reads as "no containers".
-    let defs: Vec<(String, String)> =
-        sqlx::query_as("select model, department from agent_defs where enabled")
+    let defs: Vec<(String, String, String)> =
+        sqlx::query_as("select id::text, model, department from agent_defs where enabled")
             .fetch_all(pg)
             .await
             .unwrap_or_default();
@@ -220,10 +220,22 @@ pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, 
         Vec::new()
     } else {
         talaria_fleet_docker::container_status(
-            &defs.iter().map(|(_, d)| d.clone()).collect::<Vec<_>>(),
+            &defs.iter().map(|(_, _, d)| d.clone()).collect::<Vec<_>>(),
         )
         .await
         .unwrap_or_default()
+    };
+    // A container is found by department, and where two agents hold one (a
+    // pair from before a department became one agent's) it is the runner's
+    // alone: the other agent is offline, as the roster's dot says.
+    let shared = talaria_agent_defs::shared_departments(pg)
+        .await
+        .unwrap_or_default();
+    let own_container = |id: &str, dept: &str| {
+        shared
+            .iter()
+            .find(|s| s.department == dept)
+            .is_none_or(|s| s.runner().is_some_and(|r| r.id == id))
     };
     let by_dept: std::collections::HashMap<&str, &talaria_fleet_docker::AgentContainers> =
         containers
@@ -232,11 +244,12 @@ pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, 
             .collect();
     let container_up: std::collections::HashMap<&str, bool> = defs
         .iter()
-        .map(|(model, dept)| {
-            let running = by_dept
-                .get(dept.as_str())
-                .and_then(|c| c.managed.as_ref())
-                .is_some_and(|m| m.state == "running");
+        .map(|(id, model, dept)| {
+            let running = own_container(id, dept)
+                && by_dept
+                    .get(dept.as_str())
+                    .and_then(|c| c.managed.as_ref())
+                    .is_some_and(|m| m.state == "running");
             (model.as_str(), running)
         })
         .collect();

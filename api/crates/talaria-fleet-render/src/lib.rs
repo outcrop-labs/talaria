@@ -72,6 +72,11 @@ pub struct RenderDef {
     /// `fleet_disabled_toolsets` merges them on top of the pair Talaria always
     /// suppresses and whatever the def's own config already listed.
     pub disabled_toolsets: Vec<String>,
+    /// This agent's place among the rendered agents of its department, oldest
+    /// first: 1 runs in `agent-<department>`, anything above it is a second
+    /// agent in one department, which the render leaves out
+    /// ([`department_runners`]).
+    pub department_rank: i64,
 }
 
 /// The version's render-facing columns (the full version shape lives in
@@ -104,6 +109,7 @@ type TargetTuple = (
     bool,
     i32,
     sqlx::types::Json<Vec<String>>,
+    i64,
     i32,
     String,
     Value,
@@ -123,23 +129,28 @@ fn target_of(r: TargetTuple) -> RenderTarget {
             developer: r.8,
             max_children: r.9,
             disabled_toolsets: r.10.0,
+            department_rank: r.11,
         },
         version: RenderVersion {
-            version: r.11,
-            soul: r.12,
-            config: r.13,
+            version: r.12,
+            soul: r.13,
+            config: r.14,
         },
     }
 }
 
 /// Every managed+enabled agent with its current version, slug-ordered — the
 /// render's whole world. Agents without a current version are absent (the
-/// join drops them): a def with no version cannot be rendered.
+/// join drops them): a def with no version cannot be rendered. Each carries
+/// its rank in its department, oldest first — the same order
+/// talaria-agent-defs' `SharedDepartment::runner` reads.
 pub async fn managed_agents(pg: &PgPool) -> Result<Vec<RenderTarget>, sqlx::Error> {
     // Literal SQL: one auditable statement, columns spelled once.
     let rows: Vec<TargetTuple> = sqlx::query_as(
         "select d.id::text, d.slug, d.department, d.model, d.display_name, d.role, d.source, \
-         d.active_slot, d.developer, d.max_children, d.disabled_toolsets, v.version, v.soul, v.config \
+         d.active_slot, d.developer, d.max_children, d.disabled_toolsets, \
+         row_number() over (partition by d.department order by d.created_at, d.id) as department_rank, \
+         v.version, v.soul, v.config \
          from agent_defs d \
          join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
          where d.managed and d.enabled \
@@ -148,6 +159,56 @@ pub async fn managed_agents(pg: &PgPool) -> Result<Vec<RenderTarget>, sqlx::Erro
     .fetch_all(pg)
     .await?;
     Ok(rows.into_iter().map(target_of).collect())
+}
+
+/// An agent the render leaves out: an older agent holds its department.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeftOut {
+    pub slug: String,
+    pub warning: String,
+}
+
+/// One container per department. A department names the compose service
+/// (`agent-<department>`) and the Hermes data volume, so two agents in one
+/// would be one service in the compose map — the later insert replacing the
+/// earlier agent's container — and one Hermes home both write. New writes
+/// cannot make such a pair (talaria-agent-defs, "A department is one agent's
+/// key"); one that predates that rule renders its OLDEST agent only (rank 1
+/// from [`managed_agents`]), which keeps its container and volume, and every
+/// other is left out: no service, no config, no manifest entry, and a warning
+/// that names both. Nothing is renamed or merged.
+pub fn department_runners(targets: Vec<RenderTarget>) -> (Vec<RenderTarget>, Vec<LeftOut>) {
+    let runner_of: HashMap<String, (String, String)> = targets
+        .iter()
+        .filter(|t| t.def.department_rank == 1)
+        .map(|t| {
+            (
+                t.def.department.clone(),
+                (t.def.model.clone(), t.def.display_name.clone()),
+            )
+        })
+        .collect();
+    let (kept, out): (Vec<RenderTarget>, Vec<RenderTarget>) = targets
+        .into_iter()
+        .partition(|t| t.def.department_rank <= 1);
+    let left_out = out
+        .into_iter()
+        .map(|t| {
+            let d = &t.def;
+            let (holder_model, holder_name) = runner_of
+                .get(&d.department)
+                .cloned()
+                .unwrap_or_else(|| ("another agent".into(), "the older agent".into()));
+            LeftOut {
+                slug: d.slug.clone(),
+                warning: format!(
+                    "{}: not rendered — its department \"{}\" is also {holder_model}'s, the older agent, and a department is one container (agent-{}) and one memory volume. {holder_name} keeps both; retire and delete one of the two, because Talaria never merges two agents into one",
+                    d.model, d.department, d.department
+                ),
+            }
+        })
+        .collect();
+    (kept, left_out)
 }
 
 /// Assign each managed agent a stable loopback port (persisted, never reused),
@@ -1075,7 +1136,10 @@ fn config_yaml_text(model: &str, version: i32, routed: &Map<String, Value>) -> S
 /// render_fleet — regenerate everything the managed fleet runs on. See the
 /// module header.
 pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, String> {
-    let targets = managed_agents(pg).await.map_err(|e| e.to_string())?;
+    // One agent per department's container: a second one is left out of
+    // everything below, by name.
+    let (targets, left_out) =
+        department_runners(managed_agents(pg).await.map_err(|e| e.to_string())?);
     let agent_search_url =
         agent_search_url(&talaria_search::search_url(pg).await, dial_is_container());
     // The operator's agent web-search choice (Admin → Search), the same for
@@ -1090,6 +1154,10 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         files: Vec::new(),
         warnings: web_search.warnings.clone(),
     };
+    for skipped in &left_out {
+        tracing::warn!("[fleet] {}", skipped.warning);
+        result.warnings.push(skipped.warning.clone());
+    }
 
     // The fleet's default brain is Talaria's own gateway. Best-effort — never
     // blocks a render.
@@ -1615,9 +1683,10 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         env.insert("GIT_TERMINAL_PROMPT".into(), json!("0"));
 
         // Developer Agent overlay: the dev sandbox. Harness state PERSISTS
-        // on the department state volume (hand-offs: a session one agent
-        // starts, a department-mate can resume); GitHub attribution AUTHORS
-        // commits as the agent (display name + stable per-agent email).
+        // on the agent's state volume (named for its department, which is
+        // its alone — `department_runners`), so a session survives restarts
+        // and rolls; GitHub attribution AUTHORS commits as the agent (display
+        // name + stable per-agent email).
         if developer {
             let obj = svc
                 .as_object_mut()
@@ -2013,7 +2082,8 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     .map_err(|e| format!("{}: {e}", compose_path.display()))?;
     result.files.push(compose_path.display().to_string());
 
-    write_fleet_manifest(pg, &mut result).await?;
+    let left_out: Vec<String> = left_out.into_iter().map(|l| l.slug).collect();
+    write_fleet_manifest(pg, &mut result, &left_out).await?;
     Ok(result)
 }
 
@@ -3082,7 +3152,14 @@ fn talaria_provider_models_json(base_url: &str, model_ids: &[String]) -> Value {
     })
 }
 
-async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<(), String> {
+/// `left_out` is the render's [`department_runners`] skip list: an agent with
+/// no service of its own must not be dialed either — its department's url is
+/// another agent's container.
+async fn write_fleet_manifest(
+    pg: &PgPool,
+    result: &mut RenderResult,
+    left_out: &[String],
+) -> Result<(), String> {
     type DefRow = (
         String,
         String,
@@ -3115,6 +3192,9 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
 
     let mut manifest: Vec<Value> = Vec::new();
     for (slug, department, model, gateway_port, active_slot, config) in &defs {
+        if left_out.contains(slug) {
+            continue;
+        }
         let key = keys.get(&slug.to_lowercase()).cloned().unwrap_or_default();
         if key.is_empty() {
             result.warnings.push(format!(
@@ -3180,6 +3260,67 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn target(slug: &str, department: &str, rank: i64) -> RenderTarget {
+        RenderTarget {
+            def: RenderDef {
+                id: format!("id-{slug}"),
+                slug: slug.into(),
+                department: department.into(),
+                model: format!("{slug}-{department}"),
+                display_name: slug.to_uppercase(),
+                role: None,
+                source: "created".into(),
+                active_slot: None,
+                developer: false,
+                max_children: 0,
+                disabled_toolsets: Vec::new(),
+                department_rank: rank,
+            },
+            version: RenderVersion {
+                version: 1,
+                soul: String::new(),
+                config: json!({}),
+            },
+        }
+    }
+
+    #[test]
+    fn a_second_agent_in_a_department_is_left_out_and_the_older_one_keeps_its_container() {
+        // Slug order (the render's own) puts the newer agent last, where its
+        // service insert used to replace the older agent's.
+        let (kept, left_out) = department_runners(vec![
+            target("ava", "research", 1),
+            target("bo", "ops", 1),
+            target("zed", "research", 2),
+            target("amy", "research", 3),
+        ]);
+        assert_eq!(
+            kept.iter().map(|t| t.def.slug.as_str()).collect::<Vec<_>>(),
+            vec!["ava", "bo"],
+            "one agent per department, in the render's own order"
+        );
+        assert_eq!(
+            left_out.iter().map(|l| l.slug.as_str()).collect::<Vec<_>>(),
+            vec!["zed", "amy"]
+        );
+        let w = &left_out[0].warning;
+        assert!(
+            w.starts_with("zed-research: not rendered — its department \"research\" is also ava-research's, the older agent"),
+            "{w}"
+        );
+        assert!(w.contains("one container (agent-research)"), "{w}");
+        assert!(w.contains("AVA keeps both"), "{w}");
+        assert!(w.contains("never merges"), "{w}");
+    }
+
+    #[test]
+    fn a_fleet_with_one_agent_per_department_renders_whole() {
+        let (kept, left_out) =
+            department_runners(vec![target("ava", "research", 1), target("bo", "ops", 1)]);
+        assert_eq!(kept.len(), 2);
+        assert!(left_out.is_empty());
+    }
 
     #[test]
     fn a_new_agent_port_continues_past_the_highest_and_never_starts_below_the_base() {

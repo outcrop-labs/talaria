@@ -47,6 +47,9 @@ pub async fn post(
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
         Err(e) => return Ok(internal("[fleet] agent_def_by_id failed", e)),
     };
+    if let Some(answer) = department_guard(&state, &def, &action, &actor_of(&user)).await {
+        return Ok(answer);
+    }
 
     // Lifecycle actions are governance-relevant — record them, BEFORE the
     // act (an audit that only logged successes would be a lie).
@@ -254,4 +257,125 @@ pub async fn post(
 /// The catch arm's sentence — the em dash is part of the wire contract.
 fn could_not(action: &str) -> String {
     format!("could not {action} the agent — see server logs")
+}
+
+/// ONE CONTAINER PER DEPARTMENT. Every verb on this route addresses the
+/// container by department (`agent-<department>`). Where an older agent holds
+/// this one's department too — a pair that predates the one-agent rule
+/// (talaria-agent-defs, "A department is one agent's key") — that container is
+/// the OTHER agent's: the render runs it there and leaves this one out. So no
+/// act on this agent may reach it. `retire` still lands, as the def write and
+/// a render alone (this agent has no container to remove); `delete` passes
+/// through, because `delete_agent_forever` leaves a shared container and
+/// volume to the agent still in them; everything else is refused, by name,
+/// before anything acts (so there is nothing to audit). None: the action goes
+/// on as usual.
+async fn department_guard(
+    state: &AppState,
+    def: &talaria_agent_defs::AgentDefRow,
+    action: &str,
+    actor: &str,
+) -> Option<Response> {
+    if action == "delete" {
+        return None;
+    }
+    let share = match talaria_agent_defs::department_share(&state.pg, &def.department).await {
+        Ok(share) => share?,
+        Err(e) => return Some(internal("[fleet] department share read failed", e)),
+    };
+    let runner = share.runs_instead_of(&def.id)?;
+    if action != "retire" {
+        return Some(house_error(
+            StatusCode::CONFLICT,
+            &shared_refusal(
+                action,
+                &def.display_name,
+                &def.department,
+                &runner.display_name,
+            ),
+        ));
+    }
+    // The retire is recorded like any other, before the act and off the
+    // request's path (the route's own audit spawns the same way).
+    let (pg, actor, target_id, label) = (
+        state.pg.clone(),
+        actor.to_string(),
+        def.id.clone(),
+        def.display_name.clone(),
+    );
+    tokio::spawn(async move {
+        log_audit(
+            &pg,
+            AuditEntry {
+                actor: &actor,
+                action: "agent.retire",
+                target_type: "agent",
+                target_id: Some(&target_id),
+                target_label: Some(&label),
+                before: None,
+                after: None,
+            },
+        )
+        .await;
+    });
+    if let Err(e) =
+        sqlx::query("update agent_defs set enabled = false, updated_at = now() where id = $1::uuid")
+            .bind(&def.id)
+            .execute(&state.pg)
+            .await
+    {
+        tracing::warn!(
+            "[fleet] retire of {} ({}) failed: {e}",
+            def.display_name,
+            def.department
+        );
+        return Some(house_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &could_not("retire"),
+        ));
+    }
+    let rendered = match state.secretbox().await {
+        Ok(sb) => render_fleet(&state.pg, &sb).await,
+        Err(e) => Err(e),
+    };
+    Some(match rendered {
+        Ok(render) => Json(json!({ "ok": true, "render": render.agents })).into_response(),
+        Err(e) => {
+            tracing::warn!(
+                "[fleet] retire of {} ({}) rendered nothing: {e}",
+                def.display_name,
+                def.department
+            );
+            house_error(StatusCode::INTERNAL_SERVER_ERROR, &could_not("retire"))
+        }
+    })
+}
+
+/// The 409 for an act on an agent whose department's container is another's.
+fn shared_refusal(action: &str, name: &str, department: &str, runner: &str) -> String {
+    let verb = match action {
+        "up" | "unretire" => "start",
+        other => other,
+    };
+    format!(
+        "{name} has no container of its own to {verb}: its department \"{department}\" is also {runner}'s, and {runner} runs in that department's container. Retire and delete one of the two (Talaria never merges two agents into one)"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_shared_department_refusal_names_both_agents_and_the_way_out() {
+        assert_eq!(
+            shared_refusal("roll", "Zed", "research", "Ava"),
+            "Zed has no container of its own to roll: its department \"research\" is also Ava's, and Ava runs in that department's container. Retire and delete one of the two (Talaria never merges two agents into one)"
+        );
+        // Bringing it up or back would start the other agent's container.
+        assert!(shared_refusal("up", "Zed", "research", "Ava").contains("of its own to start:"));
+        assert!(
+            shared_refusal("unretire", "Zed", "research", "Ava").contains("of its own to start:")
+        );
+    }
 }

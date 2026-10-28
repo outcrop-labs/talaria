@@ -227,32 +227,6 @@ export async function getAgentDef(id: string): Promise<AgentDef | null> {
   return (rows[0] as unknown as AgentDef) ?? null
 }
 
-export async function upsertAgentDef(input: {
-  slug: string
-  department: string
-  displayName: string
-  role?: string | null
-  source?: 'imported' | 'created'
-}): Promise<AgentDef> {
-  const sql = await db()
-  const model = `${input.slug}-${input.department}`
-  const rows = await sql`
-    insert into agent_defs (slug, department, model, display_name, role, source)
-    values (${input.slug}, ${input.department}, ${model}, ${input.displayName}, ${input.role ?? null}, ${input.source ?? 'imported'})
-    on conflict (slug) do update set
-      department = excluded.department, model = excluded.model,
-      display_name = excluded.display_name,
-      -- keep an existing role unless a new one is supplied (imports don't carry it)
-      role = coalesce(excluded.role, agent_defs.role), updated_at = now()
-    returning id, slug, department, model, display_name as "displayName", role,
-              email_alias as "emailAlias", owner_user_id as "ownerUserId",
-              enabled, managed, source,
-              ticket_template_id as "ticketTemplateId", plan_template_id as "planTemplateId",
-              current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
-  `
-  return rows[0] as unknown as AgentDef
-}
-
 /** Update editable identity metadata (role, display name, email alias). Not
  *  versioned — this is the agent's identity, not its config payload. */
 export async function updateAgentMeta(

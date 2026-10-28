@@ -478,11 +478,12 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_federate.rs`](../../ap
 > POST /api/fleet/federate. Federate outside agents into Talaria: read a
 > Hermes-format directory and create each agent natively (Talaria def,
 > fresh key + state volume, our chassis, skills copied in). One-way and
-> re-runnable. Admin.
+> re-runnable. Admin. A roster that would put a second agent in a department
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `admin` | [body](#post-apifleetfederate-body) | `{result}` | 200, 400 | audit |
+| POST | `admin` | [body](#post-apifleetfederate-body) | `{result}` | 200, 400, 409 | audit |
 
 ### POST `/api/fleet/federate` body
 

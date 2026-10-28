@@ -16,7 +16,8 @@ use talaria_body::{optional_max_string_member, parse, string_msg, zod_type_name}
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_personal_agent::{
     HANDLE_RE_NOTE, PersonalAgent, PersonalAgentInput, PersonalAgentPatch, PersonalUser,
-    create_personal_agent, handle_ok, personal_agent_for, update_personal_agent,
+    create_personal_agent, handle_ok, is_department_taken, personal_agent_for,
+    update_personal_agent,
 };
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -171,6 +172,13 @@ pub async fn post(
         .await
         {
             Ok(assistant) => answer(&state, &user.id, Some(assistant)).await,
+            // The handle names the assistant's department, and another agent
+            // already holds it — the same conflict a hire meets, said without
+            // naming somebody else's agent.
+            Err(e) if is_department_taken(&e) => house_error(
+                StatusCode::CONFLICT,
+                "that handle is taken — another agent already runs under it; pick another",
+            ),
             Err(e) => house_error(StatusCode::BAD_REQUEST, &friendly(&e)),
         },
     )
