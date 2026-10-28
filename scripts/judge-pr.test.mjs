@@ -159,9 +159,15 @@ function judge(body) {
   try {
     const file = join(dir, 'body.md')
     writeFileSync(file, body)
+    // Not the runner's own target: on the promotion pull request CI sets
+    // GITHUB_BASE_REF=main, and a judge that inherited it would add
+    // `targets-main` (a must, exit 2) to every body below.
+    const env = { ...process.env }
+    delete env.GITHUB_BASE_REF
     const run = spawnSync(process.execPath, ['scripts/judge-pr.mjs', '--base', 'HEAD', '--pr-body', file, '--json'], {
       cwd: ROOT,
       encoding: 'utf8',
+      env,
     })
     if (run.status !== 0) throw new Error(`judge-pr exited ${run.status}: ${run.stderr}`)
     return JSON.parse(run.stdout).findings.map((f) => f.id).sort()
