@@ -71,7 +71,7 @@ export async function runReset(ctx: Ctx, mode: ResetMode): Promise<number> {
   // The stack is resolved from ui/.env, then the container proven to be the
   // database DATABASE_URL names (its compose project, its published port),
   // all before the first count runs.
-  const stack = devStack(ctx, uiEnv)
+  const stack = devStack(ctx, uiEnv, `reset ${mode}`)
   const pgc = stack.pgContainer
   const pgPort = await verifyPostgres(ctx, stack, dbUrl)
 

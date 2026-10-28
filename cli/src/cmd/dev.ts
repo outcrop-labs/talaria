@@ -12,7 +12,7 @@ import { PG_CONTAINER, REDIS_CONTAINER } from '../containers'
 import { envValue } from '../envfile'
 import { anyNewer } from '../paths'
 import { API_PORT } from '../ports'
-import { devStack, refuseForeignCheckout, refuseWorktreeEnvOverride } from '../stack'
+import { ALL_PRIMARY_CONTAINER_VARS, devStack, refuseForeignCheckout, refuseSideStackContainers, refuseWorktreeEnvOverride } from '../stack'
 
 const DEV_COMPOSE = 'docker/dev-compose.yml'
 
@@ -378,6 +378,14 @@ export async function runDev(ctx: Ctx): Promise<number> {
     if (code !== 0) ctx.log.die('worktree infra failed to start (run `bun talaria worktree` again? it was torn down?)')
     return await waitThenRunApp(ctx, uiEnv)
   }
+
+  // The primary: the shell's TALARIA_*_CONTAINER is its override point, but
+  // one that names a worktree's or a box's container (a shell under that
+  // worktree's `talaria dev` inherits them) would make the `up` below
+  // recreate main's postgres under that name, or remove it on the name
+  // conflict. Checked before the `??=` lines, so only the shell's values are
+  // judged.
+  await refuseSideStackContainers(ctx, ALL_PRIMARY_CONTAINER_VARS, 'dev')
 
   // The MinIO-era spellings keep working: a ui/.env written before the engine
   // swap names the container and port under the old variables, and compose

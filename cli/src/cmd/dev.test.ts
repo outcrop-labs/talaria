@@ -408,6 +408,30 @@ describe('talaria dev — gates', () => {
     expect(ctx.calls).toHaveLength(0)
   })
 
+  test("the primary refuses an inherited worktree's container names before any docker call; its own override passes", async () => {
+    // A worktree's `talaria dev` sets TALARIA_PG_CONTAINER (and the ports) in
+    // its own process. From a shell under it, the primary's `up` would
+    // interpolate that name into main's project: compose recreates main's
+    // postgres under it, or removes it on the name conflict.
+    const root = makeTree({ uiEnv: 'DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5544/talaria\nREDIS_URL=y\n' })
+    const ctx = fakeCtx({
+      env: { TALARIA_PG_CONTAINER: 'talaria-pg-demo', TALARIA_PG_PORT: '5605', TALARIA_REDIS_CONTAINER: 'talaria-redis-demo', TALARIA_API: 'off' },
+    })
+    ctx.root = root
+    const msg = await attempt(ctx)
+    expect(msg).toContain('TALARIA_PG_CONTAINER=talaria-pg-demo')
+    expect(msg).toContain('TALARIA_REDIS_CONTAINER=talaria-redis-demo')
+    expect(msg).toContain('env -u TALARIA_PG_CONTAINER -u TALARIA_REDIS_CONTAINER -u TALARIA_PG_PORT bun talaria dev')
+    expect(ctx.calls.filter((c) => c.cmd === 'docker')).toHaveLength(0)
+
+    const own = fakeCtx({ env: { TALARIA_PG_CONTAINER: 'my-main-pg', TALARIA_API: 'off' } })
+    own.root = root
+    own.plant(['docker', ['exec', 'my-main-pg', 'pg_isready', '-U', 'talaria', '-d', 'talaria']], '')
+    own.plant(['docker', ['exec', 'talaria-redis-dev', 'redis-cli', 'ping']], '')
+    await runDev(own)
+    expect(own.calls.some((c) => c.args[0] === 'exec' && c.args[1] === 'my-main-pg')).toBe(true)
+  })
+
   test('missing ui/.env dies pointing at setup', async () => {
     const ctx = fakeCtx()
     ctx.root = mkdtempSync(join(tmpdir(), 'talaria-empty-'))

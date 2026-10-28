@@ -28,7 +28,13 @@
 //   · in a worktree, the shell overrides a line its ui/.env owns
 //     (DATABASE_URL, REDIS_URL, a port, the fleet project) with another
 //     stack's value. `talaria dev` lifts the shell over ui/.env, so a stale
-//     `DATABASE_URL=…:5544` put a second server on main's database.
+//     `DATABASE_URL=…:5544` put a second server on main's database;
+//   · a command that reads or starts MAIN's containers by name (the seed
+//     source of `talaria box new`/`box seed`, the primary's `talaria dev`)
+//     finds a TALARIA_*_CONTAINER in the shell that names a worktree's or a
+//     box's container. A worktree's `talaria dev` sets exactly those
+//     variables in its own process, so every process it starts inherits them
+//     (primaryContainer, refuseSideStackContainers).
 //
 // The names below mirror what cmd/worktree.ts creates for a worktree. Change
 // them together.
@@ -36,7 +42,7 @@
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Ctx } from './ctx'
-import { PG_CONTAINER, REDIS_CONTAINER } from './containers'
+import { EMBED_CONTAINER, PG_CONTAINER, QDRANT_CONTAINER, REDIS_CONTAINER, STORAGE_CONTAINER } from './containers'
 import { envFileText, envValue } from './envfile'
 
 /** docker/dev-compose.yml's `name:`, the project that owns the primary's
@@ -122,8 +128,9 @@ const isFile = (p: string): boolean => {
 /** The stack this checkout owns. It dies on every ambiguity the module header
  *  lists that can be settled from config alone. The docker-side check,
  *  whether the container IS the one DATABASE_URL names, is verifyPostgres.
- *  `uiEnv` is ui/.env's text when the caller has already read it. */
-export function devStack(ctx: Ctx, uiEnv: string = envFileText(ctx, 'ui/.env')): DevStack {
+ *  `uiEnv` is ui/.env's text when the caller has already read it; `command`
+ *  is what a refusal tells the operator to re-run. */
+export function devStack(ctx: Ctx, uiEnv: string = envFileText(ctx, 'ui/.env'), command?: string): DevStack {
   const box = ctx.env.TALARIA_DEVBOX || envValue(uiEnv, 'TALARIA_DEVBOX')
   if (box) {
     ctx.log.die(
@@ -158,11 +165,16 @@ export function devStack(ctx: Ctx, uiEnv: string = envFileText(ctx, 'ui/.env')):
     // `reset fleet` at a worktree's agents.
     const fleet = ctx.env.TALARIA_FLEET_PROJECT ?? envValue(uiEnv, 'TALARIA_FLEET_PROJECT') ?? PRIMARY_FLEET_PROJECT
     const theirs = fleet.startsWith('talaria-wt-')
+    // The same rule for the containers, by name: a shell override shaped like
+    // a worktree's or a box's container is that stack's, never the primary's.
+    // verifyPostgres adds the label check once docker is asked.
+    const byName = sideStackContainers(ctx, ['TALARIA_PG_CONTAINER', 'TALARIA_REDIS_CONTAINER'])
+    if (byName.length > 0) ctx.log.die(sideStackRefusal(ctx, byName, command))
     return {
       kind: 'primary',
       worktree: null,
-      pgContainer: ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER,
-      redisContainer: ctx.env.TALARIA_REDIS_CONTAINER ?? REDIS_CONTAINER,
+      pgContainer: primaryContainer(ctx, 'TALARIA_PG_CONTAINER'),
+      redisContainer: primaryContainer(ctx, 'TALARIA_REDIS_CONTAINER'),
       infraProject: PRIMARY_INFRA_PROJECT,
       fleetProject: theirs ? null : fleet,
       fleetProblem: theirs
@@ -262,6 +274,134 @@ export function refuseWorktreeEnvOverride(ctx: Ctx, stack: DevStack, uiEnv: stri
   )
 }
 
+// ── Main's containers, named by the shell ───────────────────────────────────
+//
+// dev-compose.yml names the primary's containers `${TALARIA_*_CONTAINER:-…}`,
+// and the shell is the primary's override point for them. Some commands read
+// or start MAIN's containers on purpose: `talaria box new` and `box seed` copy
+// main's postgres (and storage, and qdrant) into a box, and the primary's
+// `talaria dev` brings main's infra up. They read those variables from the
+// shell. But a worktree's `talaria dev` sets TALARIA_PG_CONTAINER and
+// TALARIA_REDIS_CONTAINER (and the two ports) to its own, in its own process,
+// so the app, its harness runs and every shell they open inherit them. From
+// such a shell, `box new` seeded the box from that worktree and called it
+// main. Worse, the primary compose `up` that `box new` and the primary's
+// `talaria dev` run would interpolate the worktree's name into MAIN's
+// project: compose recreates main's postgres under that name (and the
+// worktree's port), or, while the worktree's own container holds the name,
+// removes main's and fails on the name conflict, leaving main down. An
+// override that names another stack's container is refused, before anything
+// is created.
+
+/** dev-compose.yml's container-name variables, each with the primary's
+ *  default (containers.ts). TALARIA_MINIO_CONTAINER is the MinIO-era
+ *  spelling of the storage container, still read as its fallback. */
+export const PRIMARY_CONTAINER_VARS = {
+  TALARIA_PG_CONTAINER: PG_CONTAINER,
+  TALARIA_REDIS_CONTAINER: REDIS_CONTAINER,
+  TALARIA_QDRANT_CONTAINER: QDRANT_CONTAINER,
+  TALARIA_EMBED_CONTAINER: EMBED_CONTAINER,
+  TALARIA_STORAGE_CONTAINER: STORAGE_CONTAINER,
+  TALARIA_MINIO_CONTAINER: STORAGE_CONTAINER,
+} as const
+export type PrimaryContainerVar = keyof typeof PRIMARY_CONTAINER_VARS
+export const ALL_PRIMARY_CONTAINER_VARS = Object.keys(PRIMARY_CONTAINER_VARS) as PrimaryContainerVar[]
+
+/** What a worktree's `talaria dev` sets for its own compose call, and so what
+ *  a shell started under it inherits (cmd/dev.ts, the worktree branch). */
+export const WORKTREE_DEV_EXPORTS = ['TALARIA_PG_CONTAINER', 'TALARIA_PG_PORT', 'TALARIA_REDIS_CONTAINER', 'TALARIA_REDIS_PORT'] as const
+
+/** A compose project that is another stack's, never main's: a worktree's
+ *  (`talaria-wt-*`, its infra and its fleet) or a devbox's (`devbox-*`). */
+export const isSideProject = (project: string): boolean => project.startsWith('talaria-wt-') || project.startsWith('devbox-')
+
+/** Whose container a name is by its shape alone: a worktree's
+ *  (`talaria-pg-<name>`, `talaria-redis-<name>`, worktreeStackNames, or
+ *  anything of a `talaria-wt-*` project) or a devbox's (`devbox-*`, shared.ts).
+ *  Null for any other name. The caller skips the primary's own defaults:
+ *  `talaria-redis-dev` has a worktree's shape. */
+export function sideStackOfName(name: string): string | null {
+  const m = /^talaria-(pg|redis)-([a-z0-9][a-z0-9-]*)$/.exec(name)
+  if (m) return `worktree "${m[2]}"'s ${m[1] === 'pg' ? 'postgres' : 'redis'}`
+  if (name.startsWith('talaria-wt-')) return "a worktree's stack (talaria-wt-*)"
+  if (name.startsWith('devbox-')) return "a devbox's stack (devbox-*)"
+  return null
+}
+
+/** Main's container for `key`: the shell's value, or the primary's default
+ *  when the shell sets none or an empty one (compose's `:-` reads empty as
+ *  unset). Storage falls back to the MinIO-era variable. Call it after
+ *  refuseSideStackContainers (or sideStackContainers), which is what makes
+ *  the shell's value main's. */
+export function primaryContainer(ctx: Ctx, key: PrimaryContainerVar): string {
+  const legacy = key === 'TALARIA_STORAGE_CONTAINER' ? ctx.env.TALARIA_MINIO_CONTAINER : undefined
+  return ctx.env[key] || legacy || PRIMARY_CONTAINER_VARS[key]
+}
+
+/** One shell variable that names another stack's container, and why. */
+export type SideStackOverride = { key: PrimaryContainerVar; value: string; whose: string }
+
+/** The shell's `keys` whose value has another stack's shape. Pure: no docker
+ *  call, so it also catches a name whose container is gone, which compose
+ *  would CREATE under main's project with that name. A value equal to the
+ *  primary's default is main's by definition. */
+export function sideStackContainers(ctx: Ctx, keys: readonly PrimaryContainerVar[]): SideStackOverride[] {
+  const out: SideStackOverride[] = []
+  for (const key of keys) {
+    const value = ctx.env[key]
+    if (!value || value === PRIMARY_CONTAINER_VARS[key]) continue
+    const whose = sideStackOfName(value)
+    if (whose) out.push({ key, value, whose })
+  }
+  return out
+}
+
+/** The compose project docker says a container belongs to: '' for none,
+ *  null when docker does not know it (or does not answer). */
+export async function containerProject(ctx: Ctx, name: string): Promise<string | null> {
+  try {
+    const info = (JSON.parse((await ctx.exec('docker', ['inspect', name])).stdout) as Inspect[])[0]
+    return info ? (info.Config?.Labels?.[COMPOSE_PROJECT_LABEL] ?? '') : null
+  } catch {
+    return null
+  }
+}
+
+/** The refusal for `found`: each variable with what it names, the
+ *  inherited-from-a-worktree reading, and the command to run instead. The
+ *  `env -u` list carries every WORKTREE_DEV_EXPORTS variable the shell sets
+ *  too: the ports ride with the container names, and a primary compose `up`
+ *  with a worktree's TALARIA_PG_PORT would republish main's postgres there. */
+export function sideStackRefusal(ctx: Ctx, found: readonly SideStackOverride[], command?: string): string {
+  const keys = [...new Set([...found.map((f) => f.key), ...WORKTREE_DEV_EXPORTS.filter((k) => ctx.env[k] !== undefined)])]
+  const lines = found.map((f) => `    ${f.key}=${f.value}   (${f.whose})`)
+  const unset = keys.map((k) => `-u ${k}`).join(' ')
+  return (
+    "the environment names another stack's container where this command means the primary dev stack's (main's):\n" +
+    `${lines.join('\n')}\n` +
+    "  A worktree's `talaria dev` sets these for itself, and every process it starts (its app, harness runs, their shells) " +
+    "inherits them. Acting on them here would read or start that stack's container as if it were main's, so this refuses rather than guess.\n" +
+    `  Run it without them: env ${unset} bun talaria ${command ?? '<command>'}`
+  )
+}
+
+/** Refuse when the shell names, for any of `keys`, a container that is
+ *  another stack's: by its shape (sideStackContainers), or because docker
+ *  says it belongs to a worktree's or a box's compose project. Every command
+ *  that reads or starts MAIN's containers through these variables calls it
+ *  before its first docker call that could act. The primary's own override
+ *  (a container of its own name, outside any side project) passes. */
+export async function refuseSideStackContainers(ctx: Ctx, keys: readonly PrimaryContainerVar[], command: string): Promise<void> {
+  const found = sideStackContainers(ctx, keys)
+  for (const key of keys) {
+    const value = ctx.env[key]
+    if (!value || found.some((f) => f.key === key)) continue
+    const project = await containerProject(ctx, value)
+    if (project && isSideProject(project)) found.push({ key, value, whose: `a container of compose project ${project}` })
+  }
+  if (found.length > 0) ctx.log.die(sideStackRefusal(ctx, found, command))
+}
+
 /** One line naming the stack, for the plan a destructive command prints
  *  before it asks. */
 export function describeStack(stack: DevStack): string {
@@ -328,8 +468,9 @@ export async function verifyPostgres(ctx: Ctx, stack: DevStack, dbUrl: string): 
         'Refusing: it is not this stack\'s database.',
     )
   }
-  if (stack.kind === 'primary' && project.startsWith('talaria-wt-')) {
-    ctx.log.die(`${name} belongs to worktree project '${project}', and this is the primary checkout. Refusing.`)
+  if (stack.kind === 'primary' && isSideProject(project)) {
+    const kind = project.startsWith('devbox-') ? 'devbox' : 'worktree'
+    ctx.log.die(`${name} belongs to ${kind} project '${project}', and this is the primary checkout. Refusing.`)
   }
   const want = urlPort(dbUrl)
   const published = (info.NetworkSettings?.Ports?.['5432/tcp'] ?? []).map((b) => b.HostPort ?? '').filter(Boolean)

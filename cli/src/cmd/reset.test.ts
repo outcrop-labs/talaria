@@ -344,6 +344,18 @@ describe("reset fleet — the primary never acts on a worktree's fleet", () => {
     expect(ctx.calls.some((c) => c.args[0] === 'ps')).toBe(false)
     expect(destructive(ctx)).toHaveLength(0)
   })
+
+  test("a shell under a worktree's `talaria dev` (its TALARIA_PG_CONTAINER inherited) dies in the primary before any docker call", async () => {
+    for (const mode of ['secrets', 'database', 'fleet'] as const) {
+      const ctx = fakeCtx({ reply: mode, env: { TALARIA_PG_CONTAINER: 'talaria-pg-other', TALARIA_PG_PORT: '5605' } })
+      ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
+      plantUp(ctx)
+      const msg = await attempt(() => runReset(ctx, mode))
+      expect(msg).toContain('TALARIA_PG_CONTAINER=talaria-pg-other   (worktree "other"\'s postgres)')
+      expect(msg).toContain(`env -u TALARIA_PG_CONTAINER -u TALARIA_PG_PORT bun talaria reset ${mode}`)
+      expect(ctx.calls).toHaveLength(0)
+    }
+  })
 })
 
 describe('reset — the shim run from another checkout', () => {

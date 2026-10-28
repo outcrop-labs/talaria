@@ -7,8 +7,9 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  checkoutAt, composeFileProject, devStack, inside, physical, printable, projectContainers, refuseForeignCheckout,
-  refuseWorktreeEnvOverride, verifyPostgres, worktreeStackNames, type DevStack,
+  ALL_PRIMARY_CONTAINER_VARS, checkoutAt, composeFileProject, containerProject, devStack, inside, isSideProject, physical,
+  primaryContainer, printable, projectContainers, refuseForeignCheckout, refuseSideStackContainers, refuseWorktreeEnvOverride,
+  sideStackContainers, sideStackOfName, verifyPostgres, worktreeStackNames, type DevStack,
 } from './stack'
 import { fakeCtx, type FakeCtx } from './testing'
 import { CliError } from './ui'
@@ -171,6 +172,24 @@ describe('devStack — in the primary', () => {
     expect(devStack(file).fleetProject).toBeNull()
   })
 
+  test("a shell container shaped like a worktree's or a box's is refused, and an empty one is the default", () => {
+    for (const [key, value] of [
+      ['TALARIA_PG_CONTAINER', 'talaria-pg-other'],
+      ['TALARIA_REDIS_CONTAINER', 'talaria-redis-other'],
+      ['TALARIA_PG_CONTAINER', 'devbox-b1-postgres'],
+    ] as const) {
+      const ctx = fakeCtx({ env: { [key]: value } })
+      ctx.root = checkout('DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5544/talaria\n')
+      const msg = attempt(() => devStack(ctx))
+      expect(msg).toContain(`${key}=${value}`)
+      expect(msg).toContain(`env -u ${key}`)
+    }
+    const empty = fakeCtx({ env: { TALARIA_PG_CONTAINER: '', TALARIA_REDIS_CONTAINER: 'talaria-redis-dev' } })
+    empty.root = checkout('DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5544/talaria\n')
+    expect(devStack(empty).pgContainer).toBe('talaria-postgres-dev')
+    expect(devStack(empty).redisContainer).toBe('talaria-redis-dev')
+  })
+
   test('a linked git worktree with no marker is refused: its stack is a guess', () => {
     const ctx = fakeCtx()
     ctx.root = checkout('DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5544/talaria\n', { linked: true })
@@ -254,6 +273,11 @@ describe('verifyPostgres', () => {
     plantPg(theirs, 'talaria-postgres-dev', inspectJson({ project: 'talaria-wt-x', port: '5544' }))
     expect(await attemptAsync(() => verifyPostgres(theirs, primary, 'postgres://talaria:talaria@127.0.0.1:5544/talaria'))).toContain(
       "worktree project 'talaria-wt-x'",
+    )
+    const box = fakeCtx()
+    plantPg(box, 'talaria-postgres-dev', inspectJson({ project: 'devbox-b1', port: '5544' }))
+    expect(await attemptAsync(() => verifyPostgres(box, primary, 'postgres://talaria:talaria@127.0.0.1:5544/talaria'))).toContain(
+      "devbox project 'devbox-b1'",
     )
   })
 })
@@ -382,5 +406,119 @@ describe('inside / physical', () => {
     symlinkSync(root, link)
     expect(physical(join(link, 'not/yet/made'))).toBe(join(root, 'not/yet/made'))
     expect(inside(root, join(link, 'app-data'))).toBe(true)
+  })
+})
+
+describe("main's containers named by the shell (box seed, box new, the primary's dev)", () => {
+  // A worktree's `talaria dev` sets these four for its own compose call, in
+  // its own process: everything it starts inherits them.
+  const INHERITED = {
+    TALARIA_PG_CONTAINER: 'talaria-pg-demo',
+    TALARIA_PG_PORT: '5605',
+    TALARIA_REDIS_CONTAINER: 'talaria-redis-demo',
+    TALARIA_REDIS_PORT: '6505',
+  }
+
+  test("sideStackOfName knows a worktree's and a box's names, and nothing else", () => {
+    expect(sideStackOfName('talaria-pg-demo')).toBe('worktree "demo"\'s postgres')
+    expect(sideStackOfName('talaria-redis-fu-reset')).toBe('worktree "fu-reset"\'s redis')
+    expect(sideStackOfName('talaria-wt-demo-fleet-agent-x-1')).toContain('talaria-wt-*')
+    expect(sideStackOfName('devbox-b1-postgres')).toContain('devbox-*')
+    for (const name of ['talaria-postgres-dev', 'talaria-storage-dev', 'talaria-qdrant-dev', 'talaria-embeddings-dev', 'my-pg', 'talaria-pg']) {
+      expect(sideStackOfName(name)).toBeNull()
+    }
+    // the primary's own redis has a worktree's shape; sideStackContainers skips
+    // the defaults for exactly that reason
+    expect(sideStackOfName('talaria-redis-dev')).not.toBeNull()
+  })
+
+  test('isSideProject: a worktree\'s infra or fleet, or a box\'s; never main\'s', () => {
+    for (const p of ['talaria-wt-demo', 'talaria-wt-demo-fleet', 'devbox-b1', 'devbox-b1-fleet']) expect(isSideProject(p)).toBe(true)
+    for (const p of ['talaria-dev', 'talaria-fleet', 'talaria', '']) expect(isSideProject(p)).toBe(false)
+  })
+
+  test("primaryContainer: the shell's value, else the default; empty is unset; storage falls back to the MinIO name", () => {
+    const none = fakeCtx()
+    expect(primaryContainer(none, 'TALARIA_PG_CONTAINER')).toBe('talaria-postgres-dev')
+    expect(primaryContainer(none, 'TALARIA_REDIS_CONTAINER')).toBe('talaria-redis-dev')
+    expect(primaryContainer(none, 'TALARIA_QDRANT_CONTAINER')).toBe('talaria-qdrant-dev')
+    expect(primaryContainer(none, 'TALARIA_EMBED_CONTAINER')).toBe('talaria-embeddings-dev')
+    expect(primaryContainer(none, 'TALARIA_STORAGE_CONTAINER')).toBe('talaria-storage-dev')
+    expect(primaryContainer(fakeCtx({ env: { TALARIA_PG_CONTAINER: '' } }), 'TALARIA_PG_CONTAINER')).toBe('talaria-postgres-dev')
+    expect(primaryContainer(fakeCtx({ env: { TALARIA_PG_CONTAINER: 'my-pg' } }), 'TALARIA_PG_CONTAINER')).toBe('my-pg')
+    expect(primaryContainer(fakeCtx({ env: { TALARIA_MINIO_CONTAINER: 'old-minio' } }), 'TALARIA_STORAGE_CONTAINER')).toBe('old-minio')
+    expect(
+      primaryContainer(fakeCtx({ env: { TALARIA_MINIO_CONTAINER: 'old-minio', TALARIA_STORAGE_CONTAINER: 'new-store' } }), 'TALARIA_STORAGE_CONTAINER'),
+    ).toBe('new-store')
+  })
+
+  test('sideStackContainers is pure: every shaped override, never a default, never an unset key', () => {
+    const ctx = fakeCtx({ env: { ...INHERITED, TALARIA_QDRANT_CONTAINER: 'devbox-b1-qdrant', TALARIA_EMBED_CONTAINER: 'my-tei' } })
+    expect(sideStackContainers(ctx, ALL_PRIMARY_CONTAINER_VARS).map((f) => f.key)).toEqual([
+      'TALARIA_PG_CONTAINER',
+      'TALARIA_REDIS_CONTAINER',
+      'TALARIA_QDRANT_CONTAINER',
+    ])
+    expect(sideStackContainers(fakeCtx({ env: { TALARIA_REDIS_CONTAINER: 'talaria-redis-dev' } }), ALL_PRIMARY_CONTAINER_VARS)).toEqual([])
+    expect(sideStackContainers(fakeCtx(), ALL_PRIMARY_CONTAINER_VARS)).toEqual([])
+    expect(ctx.calls).toHaveLength(0)
+  })
+
+  test("an inherited worktree container is refused by its shape, before docker is asked, and the hint unsets the ports too", async () => {
+    const ctx = fakeCtx({ env: INHERITED })
+    const msg = await attemptAsync(() => refuseSideStackContainers(ctx, ['TALARIA_PG_CONTAINER'], 'box seed demo'))
+    expect(msg).toContain('TALARIA_PG_CONTAINER=talaria-pg-demo   (worktree "demo"\'s postgres)')
+    expect(msg).toContain("A worktree's `talaria dev` sets these for itself")
+    expect(msg).toContain(
+      'env -u TALARIA_PG_CONTAINER -u TALARIA_PG_PORT -u TALARIA_REDIS_CONTAINER -u TALARIA_REDIS_PORT bun talaria box seed demo',
+    )
+    expect(ctx.calls).toHaveLength(0)
+  })
+
+  test("an override of any other name is asked of docker: a side project's container is refused, main's own passes", async () => {
+    const theirs = fakeCtx({ env: { TALARIA_PG_CONTAINER: 'renamed-pg' } })
+    theirs.plant(['docker', ['inspect', 'renamed-pg']], inspectJson({ project: 'talaria-wt-demo' }))
+    expect(await attemptAsync(() => refuseSideStackContainers(theirs, ['TALARIA_PG_CONTAINER'], 'box new b1'))).toContain(
+      'TALARIA_PG_CONTAINER=renamed-pg   (a container of compose project talaria-wt-demo)',
+    )
+    const box = fakeCtx({ env: { TALARIA_STORAGE_CONTAINER: 'some-store' } })
+    box.plant(['docker', ['inspect', 'some-store']], inspectJson({ project: 'devbox-b1' }))
+    expect(await attemptAsync(() => refuseSideStackContainers(box, ['TALARIA_STORAGE_CONTAINER'], 'dev'))).toContain(
+      'compose project devbox-b1',
+    )
+    // main's own, renamed: honoured, as the primary's override point
+    const mine = fakeCtx({ env: { TALARIA_PG_CONTAINER: 'my-main-pg' } })
+    mine.plant(['docker', ['inspect', 'my-main-pg']], inspectJson({ project: 'talaria-dev' }))
+    expect(await attemptAsync(() => refuseSideStackContainers(mine, ['TALARIA_PG_CONTAINER'], 'dev'))).toBe('')
+    // a name docker does not know yet (compose will create it) passes the label half
+    const fresh = fakeCtx({ env: { TALARIA_PG_CONTAINER: 'not-yet' } })
+    fresh.plant(['docker', ['inspect', 'not-yet']], new Error('No such object'))
+    expect(await attemptAsync(() => refuseSideStackContainers(fresh, ['TALARIA_PG_CONTAINER'], 'dev'))).toBe('')
+  })
+
+  test('only the keys asked about, and only the ones set, are judged', async () => {
+    const ctx = fakeCtx({ env: { TALARIA_QDRANT_CONTAINER: 'devbox-b1-qdrant' } })
+    expect(await attemptAsync(() => refuseSideStackContainers(ctx, ['TALARIA_PG_CONTAINER', 'TALARIA_STORAGE_CONTAINER'], 'box seed b2'))).toBe('')
+    expect(ctx.calls).toHaveLength(0)
+    expect(await attemptAsync(() => refuseSideStackContainers(ctx, ALL_PRIMARY_CONTAINER_VARS, 'box new b2'))).toContain(
+      'TALARIA_QDRANT_CONTAINER=devbox-b1-qdrant',
+    )
+  })
+
+  test('every offender is named in one refusal', async () => {
+    const ctx = fakeCtx({ env: { ...INHERITED, TALARIA_MINIO_CONTAINER: 'devbox-b1-storage' } })
+    const msg = await attemptAsync(() => refuseSideStackContainers(ctx, ALL_PRIMARY_CONTAINER_VARS, 'dev'))
+    for (const key of ['TALARIA_PG_CONTAINER', 'TALARIA_REDIS_CONTAINER', 'TALARIA_MINIO_CONTAINER']) expect(msg).toContain(`${key}=`)
+    expect(msg).toContain('-u TALARIA_MINIO_CONTAINER')
+  })
+
+  test("containerProject: the label, '' for none, null for a container docker does not know", async () => {
+    const ctx = fakeCtx()
+    ctx.plant(['docker', ['inspect', 'a']], inspectJson({ project: 'talaria-dev' }))
+    ctx.plant(['docker', ['inspect', 'b']], inspectJson({}))
+    ctx.plant(['docker', ['inspect', 'c']], new Error('No such object'))
+    expect(await containerProject(ctx, 'a')).toBe('talaria-dev')
+    expect(await containerProject(ctx, 'b')).toBe('')
+    expect(await containerProject(ctx, 'c')).toBeNull()
   })
 })
