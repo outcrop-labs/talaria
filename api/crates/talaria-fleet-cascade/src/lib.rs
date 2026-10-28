@@ -1,14 +1,23 @@
 // Cascading model/endpoint removal: when models (or a whole endpoint) are
 // deleted from the registry while agents still target them, reconfigure those
 // agents — ONE new version per agent with every stripped tier (auditable),
-// one re-render, one restart wave for running managed containers. An agent's
-// MAIN model is never cascaded away: that requires an explicit reassignment.
+// one re-render, then one apply wave. An agent's MAIN model is never cascaded
+// away: that requires an explicit reassignment.
+//
+// THE APPLY WAVE NEVER STARTS AN AGENT SOMEONE STOPPED. It used to be a
+// `compose restart` per changed agent, and compose restarts a stopped
+// container as readily as a running one — so deleting a model brought back
+// every agent a manager had switched off. Now each changed agent APPLIES
+// (fleet-reconcile's `apply_after_render`): a running one whose container the
+// render moved is rolled at once — the stripped tiers are `model_routes` and
+// the fallback chain, which Hermes reads only at start, so it always moves —
+// and a stopped one stays stopped, reading the render when it next starts
+// (`up` renders, and compose recreates a container whose service moved).
 
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 
 use talaria_agent_defs::{NewVersion, add_version_if_changed, list_versions};
-use talaria_fleet_docker::fleet_restart;
 use talaria_secretbox::SecretBox;
 
 #[derive(Debug, serde::Serialize)]
@@ -96,15 +105,18 @@ pub async fn model_usage(
 #[serde(rename_all = "camelCase")]
 pub struct CascadeResult {
     pub changed: Vec<String>,
-    /// Set when the post-cascade render/restart failed — agent VERSIONS are
-    /// already written; re-render from /agents once the cause is fixed.
+    /// Set when the post-cascade render failed — agent VERSIONS are already
+    /// written; re-render from /agents once the cause is fixed. The rolls
+    /// after a good render run detached: each one's verdict lands in the roll
+    /// registry (the roster's chip) and the log, not here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub render_error: Option<String>,
 }
 
 /// Strip alias/fallback targets of endpoint(+models) from every affected agent
-/// (one new version each), then re-render once and restart running managed
-/// agents. Callers must have verified no agent uses the targets as MAIN.
+/// (one new version each), then re-render once and apply to each changed
+/// managed agent — a roll for a running one the render moved, nothing for a
+/// stopped one. Callers must have verified no agent uses the targets as MAIN.
 pub async fn cascade_removal(
     pg: &PgPool,
     sb: &SecretBox,
@@ -206,11 +218,26 @@ pub async fn cascade_removal(
     };
     match rendered {
         Ok(_) => {
-            for u in &affected {
-                if u.managed && u.enabled && changed.contains(&u.slug) {
-                    // stopped agents pick it up on next start
-                    let _ = fleet_restart(pg, &u.department).await;
-                }
+            let departments = apply_targets(&affected, &changed);
+            if !departments.is_empty() {
+                // Detached: a roll waits for its container to report healthy
+                // (minutes, for several agents), and the caller is an admin's
+                // save. The versions and the render have landed already.
+                let (pg, sb) = (pg.clone(), sb.clone());
+                tokio::spawn(async move {
+                    let verdicts =
+                        talaria_fleet_reconcile::apply_after_render(&pg, &sb, &departments).await;
+                    for (department, verdict) in verdicts {
+                        let error = match verdict {
+                            Ok(None) => continue,
+                            Ok(Some(soft)) => soft,
+                            Err(thrown) => thrown,
+                        };
+                        tracing::warn!(
+                            "[fleet] cascade: {department} did not take the model removal: {error}"
+                        );
+                    }
+                });
             }
             Ok(CascadeResult {
                 changed,
@@ -221,5 +248,51 @@ pub async fn cascade_removal(
             changed,
             render_error: Some(e),
         }),
+    }
+}
+
+/// The departments a cascade applies to: each changed agent Talaria runs.
+/// Running or stopped is not decided here — the apply asks docker, and
+/// leaves a stopped agent stopped.
+fn apply_targets(affected: &[ModelUsage], changed: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for u in affected {
+        if u.managed && u.enabled && changed.contains(&u.slug) && !out.contains(&u.department) {
+            out.push(u.department.clone());
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn usage(slug: &str, department: &str, managed: bool) -> ModelUsage {
+        ModelUsage {
+            slug: slug.into(),
+            def_id: format!("id-{slug}"),
+            department: department.into(),
+            managed,
+            enabled: true,
+            as_main: false,
+            aliases: vec!["fast".into()],
+            fallbacks: 0,
+        }
+    }
+
+    #[test]
+    fn the_apply_wave_names_each_changed_managed_agent_once() {
+        let affected = vec![
+            usage("ada", "ops", true),
+            usage("bob", "eng", true),
+            // An external agent: Talaria renders it, but runs no container.
+            usage("cy", "ext", false),
+            // Unchanged (its version already said this): nothing to apply.
+            usage("dee", "fin", true),
+        ];
+        let changed = vec!["ada".to_string(), "bob".to_string(), "cy".to_string()];
+        assert_eq!(apply_targets(&affected, &changed), vec!["ops", "eng"]);
+        assert!(apply_targets(&affected, &[]).is_empty());
     }
 }

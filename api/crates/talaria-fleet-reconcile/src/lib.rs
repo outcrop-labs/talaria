@@ -246,6 +246,18 @@ pub async fn apply_agent_changes(
             .map(|d| (d.clone(), Err(e.clone())))
             .collect();
     }
+    apply_after_render(pg, sb, departments).await
+}
+
+/// [`apply_agent_changes`] for a caller that has just rendered itself and
+/// reported that render's own error (the model cascade): one fit check per
+/// agent and a roll only where a container moved. A stopped agent stays
+/// stopped — its next start reads the render.
+pub async fn apply_after_render(
+    pg: &PgPool,
+    sb: &SecretBox,
+    departments: &[String],
+) -> Vec<(String, Result<Option<String>, String>)> {
     let mut out = Vec::with_capacity(departments.len());
     for department in departments {
         out.push((department.clone(), apply_rendered(pg, sb, department).await));

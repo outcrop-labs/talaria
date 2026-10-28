@@ -4924,8 +4924,10 @@ dependencies = [
  "sqlx",
  "talaria-agent-defs",
  "talaria-fleet-create",
- "talaria-fleet-docker",
+ "talaria-fleet-reconcile",
  "talaria-secretbox",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
