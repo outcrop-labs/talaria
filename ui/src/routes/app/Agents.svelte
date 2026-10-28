@@ -20,6 +20,7 @@
   import HiringStrip from '@/components/fleet/HiringStrip.svelte'
   import RoleTemplatesTab from '@/components/fleet/RoleTemplatesTab.svelte'
   import FederateModal from '@/components/fleet/FederateModal.svelte'
+  import SealConfigsModal from '@/components/fleet/SealConfigsModal.svelte'
   import FleetCronsTab from '@/components/fleet/FleetCronsTab.svelte'
   import { errorMessage } from '@/lib/fetch-json'
   import { useFleet } from '@/lib/fleet'
@@ -140,6 +141,7 @@
   let creating = $state(false)
   let duplicateFrom = $state<AgentDef | null>(null)
   let federateOpen = $state(false)
+  let sealOpen = $state(false)
   // The background design row (TALA-11): headline = first words of the
   // purpose while generating/erroring, the designed agent's name once
   // landed. Null when the store holds nothing.
@@ -490,7 +492,16 @@
       </div>
     {/key}
 
-    {#if federateOpen}<FederateModal onClose={() => (federateOpen = false)} />{/if}
+    {#if federateOpen}
+      <FederateModal
+        onClose={() => (federateOpen = false)}
+        onSealStored={() => {
+          federateOpen = false
+          sealOpen = true
+        }}
+      />
+    {/if}
+    {#if sealOpen}<SealConfigsModal onClose={() => (sealOpen = false)} />{/if}
     {#if creating}<CreateAgentModal open={creating} onClose={() => (creating = false)} templates={defs.filter((d) => d.enabled)} />{/if}
     {#if duplicateFrom}
       <CreateAgentModal open onClose={() => (duplicateFrom = null)} templates={defs} templateId={duplicateFrom.id} />

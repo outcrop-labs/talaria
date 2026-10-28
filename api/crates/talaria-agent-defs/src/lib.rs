@@ -986,7 +986,7 @@ pub struct NewVersion<'a> {
 
 /// Append a new version (and point current_version at it). Skips when the
 /// payload equals the latest version — safe to re-run imports, and the hire
-/// run's resume depends on it (addVersionIfChanged).
+/// run's resume depends on it.
 pub async fn add_version_if_changed(
     pg: &PgPool,
     agent_id: &str,

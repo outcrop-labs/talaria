@@ -32,6 +32,25 @@ with a key of its own. The federation result lists both what was sealed and what
 credential that spans several lines or runs past 8 KB (an inline PEM key) cannot be delivered
 at all, so federation refuses that agent and names where it sat.
 
+Agents federated before that sealing existed may still store those credentials as written, in
+every version of their config. The federation dialog's last line, **Seal the credentials their
+stored configs still hold**, opens a dry run: it reads every agent's stored versions and lists
+what sealing would do, agent by agent, writing nothing. **Seal** then does it. Each credential
+becomes one of the agent's `CONFIG_…` secrets with the value its current version holds, and
+every version, old ones included, keeps a reference in its place, so the history and the
+history views stop serving the credential. The value the agent runs on does not change. A
+running agent that gains secrets restarts once, before its config changes, so it never reads a
+reference it cannot resolve. A stopped one's container is removed instead (a restart would
+bring back the old container, which lacks the secrets); **Start** creates a new one. **Seal**
+acts on the agents the dry run listed, and no others. A credential only older versions held is
+not kept: those versions keep a reference with nothing behind it, and reverting to one leaves
+that setting out. One too long or multi-line to seal skips its agent unless you tick **Take out
+credentials that cannot be sealed**. Each sealed agent writes an `agent.config_sealed` audit row
+with the secret names and paths, never a value; one whose secrets were stored but whose configs
+were not rewritten (its restart failed, or an edit landed meanwhile) writes
+`agent.config_seal_incomplete` with the reason. Ask again and it finishes. The seal keeps going
+if you close the dialog. Database backups taken before the seal still hold the old literals.
+
 ## The manage modal
 
 Every agent opens a modal with the same eight tabs: **Summary · Config · Skills · Memory ·
@@ -88,7 +107,9 @@ check, then traffic cuts over*. Add a version note if the change deserves one.
 
 The rendered model/tool config per version — click a revision to see what changed. Versions
 are append-only: **reverting to v3** doesn't rewind, it publishes the old config *as a new
-version*, so history never has a hole.
+version*, so history never has a hole. A setting in the old version that names a sealed
+credential (`${CONFIG_…}`) the agent no longer holds is left out of the new version, and its
+note says where: kept, the agent would read the reference's own text as the value.
 
 ### Secrets
 
@@ -99,16 +120,28 @@ the agent's runtime use themselves are refused with the reason — `TALARIA_*`, 
 `HERMES_*`, `TERMINAL_*`, and Hermes's own provider and platform names such as
 `OPENAI_API_KEY`, `GITHUB_TOKEN` or `TELEGRAM_BOT_TOKEN`, which Hermes strips from every
 command the agent runs; give the credential a name of its own instead. An entry saved
-under such a name before the rule is marked in the list with the same reason; it still
-loads into the container until you remove it. Nothing entered?
+under such a name before the rule is marked **Not loaded** in the list with the same reason:
+the render leaves it out of the container (and logs each one), and it stays listed until you
+remove it. Most of these did nothing a tool could use, but one kind did: a key Hermes's own
+tools read for themselves, such as a `TAVILY_API_KEY` its web search used. That stops working
+when the agent next restarts; pick the web search provider and its key for every agent in
+**Admin → Search → Agent web search** instead. Upgrading a live instance? Releases before
+this one mark the same entries **Would be refused today**, so the Secrets tabs show beforehand
+which ones stop loading. Nothing entered?
 *"Everything it needs comes from the shared platform env."*
 Which secrets an agent may spend is admin-only; members see **Admins only.**
 
 A `CONFIG_…` entry is a credential sealed out of the agent's own config when it was federated,
-and the config refers to it by that name. Replace its value here to rotate it, then roll the
-agent. Replace rather than delete: deleting it leaves the reference in the config, and the agent
-then reads the `${CONFIG_…}` text itself as the value. Like every secret here, the value sits in
-the agent's environment, where a terminal command the agent runs can read it. An agent hired
+and the config refers to it by that name; the list says where (**used at**
+`platforms.telegram.token`). Replace its value here to rotate it, then roll the agent. Removing
+one the current config still uses removes that setting too: the confirm names it, and the
+config gets a new version without it, so the agent never reads the `${CONFIG_…}` text itself as
+the value. (The API refuses the delete with a 409 unless the caller asks for the setting to go
+as well.) If one goes some other way, the render leaves out the setting that names it and warns,
+until the secret is set again under that name. Hermes reads these values for itself; they are kept out of every command the agent
+runs (its terminal, background processes and code execution), the way Hermes keeps its own
+platform tokens out. That is a guard, not a wall: the values are still in the environment of
+the agent's own process, which runs as the same user as its commands. An agent hired
 from this one as a template takes these values along only when the person hiring manages this
 agent (or is an admin); otherwise the clone is hired without them, and its first version's note
 lists what was left out.

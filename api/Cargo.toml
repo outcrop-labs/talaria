@@ -323,6 +323,7 @@ talaria-fleet-reconcile = { path = "crates/talaria-fleet-reconcile" }
 talaria-fleet-render = { path = "crates/talaria-fleet-render" }
 
 talaria-fleet-resources = { path = "crates/talaria-fleet-resources" }
+talaria-fleet-seal = { path = "crates/talaria-fleet-seal" }
 
 talaria-gaps = { path = "crates/talaria-gaps" }
 
@@ -739,6 +740,7 @@ talaria-fleet-preflight = { workspace = true }
 talaria-fleet-reconcile = { workspace = true }
 talaria-fleet-render = { workspace = true }
 talaria-fleet-resources = { workspace = true }
+talaria-fleet-seal = { workspace = true }
 talaria-gaps = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-github = { workspace = true }
