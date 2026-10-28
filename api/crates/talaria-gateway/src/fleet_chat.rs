@@ -868,7 +868,10 @@ pub(crate) async fn open_stream(req: reqwest::RequestBuilder, body: &Value) -> O
         Ok(Err(e)) => {
             return Some(error_stream(
                 502,
-                format!("the agent gateway failed after the request was sent: {e}"),
+                format!(
+                    "the agent gateway failed after the request was sent: {}",
+                    transport_error(e)
+                ),
             ));
         }
         Err(_) => {
@@ -941,6 +944,43 @@ fn failed_before_any_byte(e: &reqwest::Error) -> bool {
         source = err.source();
     }
     false
+}
+
+/// A failed request to an agent's API server, as a reader may see it: what
+/// went wrong and why, never where.
+///
+/// reqwest's Display is "error sending request for url (http://agent-x:8642/
+/// v1/…)" — the agent's dial URL (a container DNS name and port, or a host
+/// loopback port: the fleet's topology) and no cause, so it was both leaky
+/// and useless to the person reading it. This keeps reqwest's own words
+/// without the URL and adds the innermost cause ("Connection refused (os
+/// error 111)", "operation timed out"), which no layer of the chain prints
+/// with an address. The whole error, URL and chain, goes to the server log.
+/// Every agent-transport error that reaches a caller's text goes through
+/// here.
+pub(crate) fn transport_error(e: reqwest::Error) -> String {
+    let mut chain = Vec::new();
+    let mut source = std::error::Error::source(&e);
+    while let Some(err) = source {
+        chain.push(err.to_string());
+        source = err.source();
+    }
+    tracing::warn!("[fleet] agent transport: {e}: {}", chain.join(": "));
+    let url = e.url().map(|u| u.to_string());
+    let host = e
+        .url()
+        .and_then(|u| Some(format!("{}:{}", u.host_str()?, u.port_or_known_default()?)));
+    let what = e.without_url().to_string();
+    let text = match chain.last() {
+        Some(cause) if *cause != what => format!("{what}: {cause}"),
+        _ => what,
+    };
+    // No layer below reqwest prints an address today; this keeps it so if
+    // one ever does.
+    [url, host]
+        .into_iter()
+        .flatten()
+        .fold(text, |t, leak| t.replace(&leak, "the agent"))
 }
 
 /// A non-200 reply synthesized on this side of the wire, for the two
@@ -1144,7 +1184,7 @@ pub async fn steer_run(agent_model: &str, run_id: &str, text: &str) -> SteerOutc
         Ok(Ok(res)) if res.status().is_success() => SteerOutcome::Accepted,
         Ok(Ok(res)) if res.status() == reqwest::StatusCode::CONFLICT => SteerOutcome::NotAccepting,
         Ok(Ok(res)) => SteerOutcome::Failed(control_failure(res).await),
-        Ok(Err(e)) => SteerOutcome::Failed(e.to_string()),
+        Ok(Err(e)) => SteerOutcome::Failed(transport_error(e)),
         Err(_) => SteerOutcome::Failed("the agent did not answer the steer".into()),
     }
 }
@@ -1173,7 +1213,7 @@ pub async fn stop_run(agent_model: &str, run_id: &str) -> Result<(), String> {
     match sent {
         Ok(Ok(res)) if res.status().is_success() => Ok(()),
         Ok(Ok(res)) => Err(control_failure(res).await),
-        Ok(Err(e)) => Err(e.to_string()),
+        Ok(Err(e)) => Err(transport_error(e)),
         Err(_) => Err("the agent did not answer the stop".into()),
     }
 }
@@ -1230,7 +1270,7 @@ pub async fn agent_request(
             status,
             body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         }),
-        Ok(Err(e)) => Err(e.to_string()),
+        Ok(Err(e)) => Err(transport_error(e)),
         Err(_) => Err(format!("no answer within {}s", window.as_secs())),
     }
 }
@@ -3447,6 +3487,74 @@ data: {"session_id": "fu-c2-probe", "run_id": "run_caafc7a88e35432ca627e870623b4
             None
         );
         assert_eq!(parse_message_count(&serde_json::json!({})), None);
+    }
+
+    /// A port nothing listens on: bound once to learn a free one, then let go.
+    fn closed_port() -> u16 {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    }
+
+    /// A refused agent reads as refused, and nowhere in it is the agent's
+    /// address — reqwest's own Display would have been "error sending
+    /// request for url (http://127.0.0.1:<port>/v1/runs/r/stop)".
+    #[tokio::test]
+    async fn a_refused_agent_names_the_cause_and_not_the_dial_url() {
+        let entry = ManifestEntry {
+            model: "x-eng".into(),
+            url: format!("http://127.0.0.1:{}", closed_port()),
+            key: Some("k".into()),
+        };
+        let e = agent_post(&entry, "/v1/runs/r/stop")
+            .send()
+            .await
+            .expect_err("nothing listens there");
+        assert!(e.to_string().contains("for url"), "the leak this replaces");
+        let text = transport_error(e);
+        assert!(!text.contains("127.0.0.1"), "{text}");
+        assert!(!text.contains("for url"), "{text}");
+        assert!(!text.contains("/v1/runs"), "{text}");
+        assert!(text.to_ascii_lowercase().contains("refused"), "{text}");
+    }
+
+    /// The one transport failure a turn surfaces as text — a reply that
+    /// broke after the request went out — says what broke, not where.
+    #[tokio::test]
+    async fn a_turn_that_breaks_after_the_send_says_so_without_the_url() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = conn.read(&mut buf);
+            // Not HTTP: the request was taken, and the answer is garbage.
+            let _ = conn.write_all(b"HTTP/9.9 what\r\n\r\n");
+        });
+        let entry = ManifestEntry {
+            model: "x-eng".into(),
+            url: format!("http://127.0.0.1:{port}"),
+            key: None,
+        };
+        let stream = open_stream(agent_post(&entry, "/v1/chat/completions"), &json!({}))
+            .await
+            .expect("an answer, not a refusal");
+        server.join().unwrap();
+        assert_eq!(stream.status, 502);
+        let text: Vec<u8> = stream
+            .body
+            .map(|c| c.expect("the synthesized body"))
+            .collect::<Vec<_>>()
+            .await
+            .concat();
+        let text = String::from_utf8(text).unwrap();
+        assert!(
+            text.starts_with("the agent gateway failed after the request was sent: "),
+            "{text}"
+        );
+        assert!(!text.contains("127.0.0.1"), "{text}");
+        assert!(!text.contains(&port.to_string()), "{text}");
+        assert!(!text.contains("for url"), "{text}");
     }
 
     #[tokio::test]
