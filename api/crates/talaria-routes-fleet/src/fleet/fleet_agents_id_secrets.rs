@@ -31,6 +31,9 @@ pub async fn get(
     headers: HeaderMap,
 ) -> Result<Response, Response> {
     require_agent_manager(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     Ok(match list_agent_secrets(&state.pg, &id).await {
         Ok(secrets) => Json(json!({ "secrets": secrets })).into_response(),
         Err(e) => internal("[fleet] list_agent_secrets failed", e),
@@ -55,6 +58,9 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let sb = secretbox_or_500(&state, "[fleet] secretbox failed").await?;
     let actor = user.email.clone().or_else(|| user.name.clone());
     Ok(
@@ -84,6 +90,9 @@ pub async fn delete(
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
     let user = require_agent_manager(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     // Body { name } — matches PUT's transport. When the body doesn't parse
     // (unparseable JSON, wrong shape, failed validation), the old ?name=
     // query spelling still works, and THAT path is only length-checked by

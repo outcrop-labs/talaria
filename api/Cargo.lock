@@ -4601,6 +4601,7 @@ dependencies = [
  "sqlx",
  "talaria-agent-auth",
  "talaria-gateway",
+ "talaria-params",
  "talaria-secretbox",
  "talaria-uploads",
  "tracing",
@@ -6247,7 +6248,6 @@ dependencies = [
  "axum",
  "talaria-error",
  "tracing",
- "uuid",
 ]
 
 [[package]]

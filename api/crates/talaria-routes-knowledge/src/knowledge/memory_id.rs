@@ -47,6 +47,9 @@ pub async fn get(
     uri: Uri,
 ) -> Result<Response, Response> {
     require_agent_manager(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let file = match which_file(&uri) {
         Ok(f) => f,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, msg)),
@@ -76,6 +79,9 @@ pub async fn put(
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
     let user = require_agent_manager(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let file = match which_file(&uri) {
         Ok(f) => f,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, msg)),

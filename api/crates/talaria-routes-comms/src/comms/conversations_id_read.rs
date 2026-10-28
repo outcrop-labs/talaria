@@ -27,6 +27,11 @@ pub async fn post(
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
+    // A mangled id names no thread: the GET's 404, not the access read's
+    // `$1::uuid` cast failing as a 500.
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     // The same predicate the GET gates with — the owner, or a plan member.
     // Inaccessible and nonexistent answer the same 403, never leaking which.
     match conversation_accessible(&state.pg, &user.id, &id).await {

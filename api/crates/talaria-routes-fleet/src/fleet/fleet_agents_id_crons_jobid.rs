@@ -23,6 +23,9 @@ pub async fn delete(
     headers: HeaderMap,
 ) -> Result<Response, Response> {
     let user = require_agent_manager(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     Ok(match remove_cron_job(&state.pg, &id, &job_id).await {
         Ok(()) => {
             audit(
@@ -87,6 +90,9 @@ pub async fn put(
             &talaria_body::too_small_msg(1),
         ));
     }
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     Ok(
         match edit_cron_job(
             &state.pg,
@@ -126,6 +132,9 @@ pub async fn post(
         Ok(a) => a,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let result = match action.as_str() {
         "pause" => pause_cron_job(&state.pg, &id, &job_id).await,
         "resume" => resume_cron_job(&state.pg, &id, &job_id).await,

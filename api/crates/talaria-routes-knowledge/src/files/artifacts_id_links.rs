@@ -72,6 +72,9 @@ pub async fn post(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let (user, _artifact) = match gate(&state, &headers, &id).await {
         Ok(v) => v,
         Err(resp) => return Ok(resp),
@@ -97,6 +100,9 @@ pub async fn delete(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let (_user, _artifact) = match gate(&state, &headers, &id).await {
         Ok(v) => v,
         Err(resp) => return Ok(resp),

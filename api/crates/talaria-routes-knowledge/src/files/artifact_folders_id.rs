@@ -84,6 +84,9 @@ pub async fn get(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let folder = match get_folder(&state.pg, &id).await {
         Ok(f) => f,
         Err(e) => return Ok(internal("[folders] read failed", e)),
@@ -128,6 +131,9 @@ pub async fn put(
         Ok(b) => b,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let folder = match get_folder(&state.pg, &id).await {
         Ok(f) => f,
         Err(e) => return Ok(internal("[folders] read failed", e)),
@@ -211,6 +217,9 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     let user = require_perm(&state, &headers, "artifacts.create").await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let folder = match get_folder(&state.pg, &id).await {
         Ok(f) => f,
         Err(e) => return Ok(internal("[folders] read failed", e)),
