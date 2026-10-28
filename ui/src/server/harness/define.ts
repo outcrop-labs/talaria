@@ -580,9 +580,11 @@ export interface HarnessDefinition<I, O> {
    *  Omitted means 'none', and 'none' is right for every single-shot structured
    *  harness: the runner asks one question and parses one answer, so a tool call
    *  can only be the model wandering off. On a persona it has no wire form —
-   *  Hermes reads neither `tools` nor `tool_choice` off a chat-completions body —
-   *  so what stands behind it is the guard pass over the tool names the stream
-   *  reports, and a Hermes session turn refuses it outright.
+   *  Hermes reads neither `tools` nor `tool_choice` off a chat-completions body,
+   *  and its loop runs its own tools whatever the turn asks — so nothing stops
+   *  the persona's calls: the guard pass reads their names off the stream (a
+   *  harness that keeps `zero_tool_claim` judges a claim against them), and a
+   *  Hermes session turn refuses 'none' outright.
    *
    *  'own' is the three turns whose whole feature IS the tool loop — an agent
    *  working a ticket, an outreach check-in acting through `message_user`, a

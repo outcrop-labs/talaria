@@ -78,11 +78,14 @@ export type TransportKind = 'gateway' | 'fleet'
  *
  *  'none' is the default and is right for every single-shot structured harness:
  *  the runner asks one question and parses one answer, so a tool call can only
- *  be the model wandering off. On a persona it has no wire form: Hermes' API
- *  server reads neither `tools` nor `tool_choice` off a chat-completions body,
- *  and its own loop keeps its own tools, so `personaPayload` sends neither and
- *  what stands behind 'none' is the guard pass over the tool names the stream
- *  reports (the Rust twin's `ToolPolicy` says the same).
+ *  be the model wandering off. On a persona it has no wire form, and nothing
+ *  on the completions arm enforces it: Hermes' API server reads neither
+ *  `tools` nor `tool_choice` off a chat-completions body, and its own loop runs
+ *  its own tools whatever the turn asks, so `personaPayload` sends neither.
+ *  What the runner does is read the persona's tool names off the stream into
+ *  the guard pass's tool record, so a harness that keeps `zero_tool_claim`
+ *  judges a claimed action against the calls that really ran (the Rust twin's
+ *  `ToolPolicy` says the same).
  *
  *  'own' is for the three turns whose whole FEATURE is the tool loop — an agent
  *  working a ticket, an outreach check-in that acts through `message_user`, a
@@ -333,10 +336,10 @@ export function personaPayload(req: TransportRequest): PersonaPayload {
     messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
   }
   // NO `tools` / `tool_choice`, for either policy: Hermes' API server reads
-  // neither off a chat-completions body, and its own loop keeps its own tools.
+  // neither off a chat-completions body, and its own loop runs its own tools.
   // Sending `tools: []` / `tool_choice: 'none'` for 'none' only made the policy
-  // look honored; the guard pass over the tool names the stream reports is
-  // what stands behind it.
+  // look honored. Nothing on this arm stops the loop; the guard pass reads the
+  // tool names the stream reports, and judges a claim against them.
   // The effort pick rides in `model_options`, forwarded to the persona's own
   // gateway, which hands it to the provider it fronts. Talaria already refused
   // an unvouched level on the way IN (the routes validate against

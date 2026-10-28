@@ -68,13 +68,17 @@ impl TransportKind {
 /// `None` (the request default, spelled `None` rather than a `None` variant) is
 /// right for every single-shot structured harness: the runner asks one
 /// question and parses one answer, so a tool call can only be the model
-/// wandering off. On a persona it has no wire form: Hermes' API server reads
-/// neither `tools` nor `tool_choice` off a chat-completions body and its own
-/// loop keeps its own tools, so the completions arm sends neither, and what
-/// stands behind `None` there is the guard pass, which reads the tool names
-/// the stream reports. A session turn refuses it outright
-/// (`session_turn_refusal`). The gateway arm has no tools of its own to
-/// withhold.
+/// wandering off. On a persona it has no wire form, and nothing on the
+/// completions arm enforces it: Hermes' API server reads neither `tools` nor
+/// `tool_choice` off a chat-completions body, and its own loop runs its own
+/// tools whatever the turn asks, so the arm sends neither. What the runner
+/// does with the persona's calls is read their names off the stream into the
+/// guard pass's tool record, so a harness that keeps `zero_tool_claim`
+/// (inbox-brief, briefer:reply) still judges a claimed action against the
+/// calls that really ran: a call to a non-backing tool like `memory` leaves
+/// the claim standing, and the rule trips. A session turn refuses `None`
+/// outright (`session_turn_refusal`). The gateway arm has no tools of its own
+/// to withhold.
 ///
 /// `Own` is for the three turns whose whole FEATURE is the tool loop — an
 /// agent working a ticket, an outreach check-in that acts through
@@ -380,10 +384,10 @@ pub fn persona_payload(req: &TransportRequest) -> Value {
     );
     // NO `tools` / `tool_choice`, for either policy: Hermes' API server reads
     // neither off a chat-completions body (see the module header), and its
-    // own loop keeps its own tools. Sending `tools: []` / `tool_choice:
-    // "none"` for `ToolPolicy::None` only made the policy look honored; the
-    // guard pass over the tool names the stream reports is what stands
-    // behind it.
+    // own loop runs its own tools. Sending `tools: []` / `tool_choice:
+    // "none"` for `ToolPolicy::None` only made the policy look honored.
+    // Nothing on this arm stops the loop; the guard pass reads the tool
+    // names the stream reports, and judges a claim against them.
     // The effort pick rides in `model_options`, the one place Hermes reads a
     // per-request effort from; the container hands it to the provider it
     // fronts. Talaria already refused an unvouched level on the way IN (the
