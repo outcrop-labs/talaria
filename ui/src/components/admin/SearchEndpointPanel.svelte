@@ -8,16 +8,17 @@
   import { putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import HealthDot from './HealthDot.svelte'
-  import { agentProbeNote, useSearchEndpoint } from './search'
+  import { type SearchEndpoint, agentProbeNote, useSearchEndpoint } from './search'
 
   // THE WORKSPACE SEARCH URL: an operator's own SearXNG-compatible endpoint.
   // Research searches it, and the fleet render hands it to every agent as
   // SEARXNG_URL. Two dots, because those are two vantage points: the app's
   // own probe, and the same probe run inside a running agent against the
   // URL as the agents dial it — a SearXNG on the host's loopback answers the
-  // first and refuses the second. The PUT re-tests after saving, so the dots
-  // answer for the value just written. SEARXNG_URL in the api's environment
-  // wins.
+  // first and refuses the second. The PUT re-tests after saving and answers
+  // with the GET's body, so its answer IS the panel's new state: refetching
+  // would run both probes (an agent exec among them) a second time.
+  // SEARXNG_URL in the api's environment wins.
   const qc = useQueryClient()
   const query = useSearchEndpoint()
   let busy = $state(false)
@@ -25,13 +26,15 @@
   const save = async (url: string) => {
     busy = true
     try {
-      await putJson('/api/admin/search', { url })
+      qc.setQueryData<SearchEndpoint>(['admin-search'], await putJson<SearchEndpoint>('/api/admin/search', { url }))
     } catch (e) {
       toastError('Search URL not saved', e)
+      // The field still holds what was typed; read back what is stored.
+      await qc.invalidateQueries({ queryKey: ['admin-search'] })
     } finally {
       busy = false
     }
-    await qc.invalidateQueries({ queryKey: ['admin-search'] })
+    // The render summary below reads the URL too.
     await qc.invalidateQueries({ queryKey: ['admin-search-agents'] })
   }
 </script>
