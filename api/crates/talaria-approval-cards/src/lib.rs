@@ -19,6 +19,10 @@
 // path outside the agent's write root, which refuses the write whatever the
 // answer, so the door refuses it before offering it to this seam
 // (`fleet_approvals::unanswerable`). A card is for an answer that can land.
+// Nor does an MCP server's form that asks for fields (a reason, an amount):
+// Hermes answers an allowed one `accept` with empty content, and a card can
+// only allow or deny, so the door declines it before this seam too. The
+// confirmation that asks for no field is the one card that arises.
 //
 // THE RULE, IN FOUR PARTS.
 //

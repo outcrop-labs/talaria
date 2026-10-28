@@ -8,6 +8,9 @@
   // commands without asking, so what still reaches a person is one of the few
   // things Hermes never lets anything wave through. On a Talaria agent today
   // that is an MCP server asking to confirm an action ("Delete record 42?").
+  // (An MCP server that asks for fields to be filled in is declined before
+  // any card: this card can only allow or deny, and an allow would send the
+  // server an empty form.)
   // Hermes' untrusted-server, spend-limit and card-fill gates would arrive the
   // same way, but Talaria configures none of them, so they do not come up. (A
   // write to a project's AGENTS.md / CLAUDE.md outside the agent's data

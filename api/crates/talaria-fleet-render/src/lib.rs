@@ -2383,7 +2383,9 @@ fn fleet_vision(
 ///   agent, Talaria's door puts the request to that person as a card;
 ///   everywhere else it answers `deny`. The protected write is never carded:
 ///   it only asks about paths outside `/opt/data`, which the write root
-///   ([`pin_write_root`]) refuses whatever the answer.
+///   ([`pin_write_root`]) refuses whatever the answer. Nor is an MCP form
+///   that asks for fields: Hermes would answer an allowed one with empty
+///   content, so the door declines it.
 /// - Every other agent gets `mode: manual` and `deny`. No guardian, so no
 ///   model ever approves a command. A streamed turn's request reaches
 ///   Talaria's door, which answers `deny` and records it; an unattended path

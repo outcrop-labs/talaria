@@ -203,7 +203,8 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
                         "answered": r.failure.is_none(),
                         "error": r.failure,
                         // Set when no answer could have made it land (a
-                        // protected write outside the agent's write root),
+                        // protected write outside the agent's write root,
+                        // or an MCP form asking for fields nobody can type),
                         // so nobody was asked; null for a policy refusal.
                         "reason": r.reason,
                     })),

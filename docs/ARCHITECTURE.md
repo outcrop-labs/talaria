@@ -389,6 +389,15 @@ text says the user denied it. The steer can only follow the refusal (Hermes' ste
 run that is waiting on an approval); one that misses the agent's next model call reaches it as a
 follow-up turn in the same run.
 
+Nor does an MCP server's form that asks for fields. A form-mode `elicitation/create` whose
+`requestedSchema` names a field (a reason, an amount) comes through the same approval plane as a
+confirmation, and Hermes v0.22.4 answers an allowed one `accept` with empty `content`, so the
+server would act on an empty form. A card can only allow or deny. Hermes describes such a request
+as "Fields requested by MCP server '…':" (a confirmation reads "Approval requested by MCP
+server '…'."), so the door declines it the same way, before any card: the server hears
+`decline`, the audit row says `reason: fields_requested`, and the run is told why. A
+confirmation that names no field is still a card.
+
 So a person can answer one, on exactly one kind of turn (`talaria-approval-cards`). On an
 *attended* conversation turn (sent from `/api/chat`, or chained or resumed from one:
 `TurnAttribution::attended`), the door first offers the request to a card. A card is raised only
