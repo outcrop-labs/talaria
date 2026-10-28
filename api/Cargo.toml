@@ -210,6 +210,8 @@ talaria-api-routes = { path = "crates/talaria-api-routes" }
 
 talaria-app-harnesses = { path = "crates/talaria-app-harnesses" }
 
+talaria-approval-cards = { path = "crates/talaria-approval-cards" }
+
 talaria-approvals = { path = "crates/talaria-approvals" }
 
 talaria-app-agents = { path = "crates/talaria-app-agents" }
@@ -323,6 +325,7 @@ talaria-fleet-reconcile = { path = "crates/talaria-fleet-reconcile" }
 talaria-fleet-render = { path = "crates/talaria-fleet-render" }
 
 talaria-fleet-resources = { path = "crates/talaria-fleet-resources" }
+talaria-fleet-seal = { path = "crates/talaria-fleet-seal" }
 
 talaria-gaps = { path = "crates/talaria-gaps" }
 
@@ -739,6 +742,7 @@ talaria-fleet-preflight = { workspace = true }
 talaria-fleet-reconcile = { workspace = true }
 talaria-fleet-render = { workspace = true }
 talaria-fleet-resources = { workspace = true }
+talaria-fleet-seal = { workspace = true }
 talaria-gaps = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-github = { workspace = true }

@@ -26,6 +26,7 @@ talaria-fleet-preflight = { workspace = true }
 talaria-fleet-reconcile = { workspace = true }
 talaria-fleet-render = { workspace = true }
 talaria-fleet-resources = { workspace = true }
+talaria-fleet-seal = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-google-agent = { workspace = true }
 talaria-google-api-health = { workspace = true }

@@ -3,6 +3,7 @@
 pub mod agent_keys;
 pub mod app_keys;
 pub mod budget;
+mod fleet_abandoned;
 pub mod fleet_approvals;
 pub mod fleet_chat;
 pub mod fleet_lost_turns;

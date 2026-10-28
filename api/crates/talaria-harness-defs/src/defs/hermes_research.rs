@@ -447,8 +447,9 @@ pub fn hermes_research_harness() -> HarnessDefinition {
         redact: true,
     });
     // THE TOOL LOOP IS THE SUBJECT. Declared `Own` for the same reason
-    // work-session declares it: the runner's default transport disarms the
-    // model, and a disarmed model cannot delegate anything.
+    // work-session declares it: the default, 'none', asks for one structured
+    // answer with no tool loop, and a model given no loop cannot delegate
+    // anything.
     d.tools = Some(ToolPolicy::Own);
 
     // ── The dry run ──────────────────────────────────────────────────────────

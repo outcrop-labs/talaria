@@ -31,7 +31,9 @@
   // recreates each agent inside Talaria: our chassis, our orchestration, fresh
   // key and state volume, skills carried over. The source dir is not referenced
   // again afterwards.
-  let { onClose }: { onClose: () => void } = $props()
+  // onSealStored: hand over to the stored-config seal (configs federated
+  // before inline credentials were sealed on the way in).
+  let { onClose, onSealStored }: { onClose: () => void; onSealStored?: () => void } = $props()
 
   const qc = useQueryClient()
   let step = $state(0)
@@ -108,6 +110,14 @@
               />
             </div>
             {#if err}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{err}</p>{/if}
+            {#if onSealStored}
+              <p class="border-t border-line pt-3 text-xs leading-relaxed text-muted">
+                Federated agents before credentials were sealed on the way in?
+                <button type="button" class="text-accent underline-offset-2 hover:underline" onclick={onSealStored}>
+                  Seal the credentials their stored configs still hold
+                </button>
+              </p>
+            {/if}
           </div>
         {/if}
 

@@ -51,8 +51,8 @@ pub async fn read_agent_image(
         });
     };
 
-    let department: Option<(String,)> =
-        sqlx::query_as("select department from agent_defs where model = $1 and managed")
+    let department: Option<(String, String)> =
+        sqlx::query_as("select id::text, department from agent_defs where model = $1 and managed")
             .bind(model)
             .fetch_optional(pg)
             .await
@@ -60,12 +60,30 @@ pub async fn read_agent_image(
                 error: "unknown agent",
                 status: 404,
             })?;
-    let Some((department,)) = department else {
+    let Some((id, department)) = department else {
         return Err(MediaError {
             error: "unknown agent",
             status: 404,
         });
     };
+    // The container is found by department. Where another agent shares this
+    // one's (a pair from before a department became one agent's) and runs
+    // there, the files in it are that agent's, not this one's.
+    match talaria_agent_defs::runner_instead_of(pg, &id, &department).await {
+        Ok(None) => {}
+        Ok(Some(_)) => {
+            return Err(MediaError {
+                error: "this agent has no container of its own: another agent runs in its department's",
+                status: 409,
+            });
+        }
+        Err(_) => {
+            return Err(MediaError {
+                error: "unknown agent",
+                status: 404,
+            });
+        }
+    }
 
     let read = async {
         let name = managed_container(pg, &department).await;

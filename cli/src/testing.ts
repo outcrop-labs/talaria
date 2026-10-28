@@ -76,6 +76,9 @@ export function fakeCtx(init: { env?: Record<string, string>; isTTY?: boolean; r
     env: { ...init.env },
     isTTY: init.isTTY ?? false,
     now: () => new Date('2026-01-01T00:00:00Z'),
+    // Waits are instant: a probe that never passes runs out its attempts at
+    // once, so a timed-out readiness wait is a cheap test.
+    sleep: async () => {},
     log,
     calls,
     logLines,

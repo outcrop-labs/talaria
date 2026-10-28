@@ -61,6 +61,23 @@
 // A workflow run that failed with no failing check in the rollup (a startup
 // failure has no jobs) is red.
 //
+// WHOSE ci.yml. The CI workflow's name is the target repository's — the one
+// the PR's URL names (gh hands that back, so it is where the PR lives), else
+// `--repo` — read from GitHub at the PR's head. (A pull_request run reads the
+// merge commit's copy, which carries the head's name unless the base renamed
+// the workflow after the branch point.) Not this checkout's: run from a clone of
+// another repository (or a stale branch), the cwd's ci.yml names a workflow
+// the PR never runs, or none at all. When GitHub cannot answer, this
+// checkout's copy stands in only if one of its remotes is the target, and
+// failing that the name is `CI`. Either fallback is said, in the pending
+// reason and the proof line: a guessed name is not a read one. `gh run list`
+// and the failed-job logs go to the same repository, and every `gh api` read
+// (the ci.yml, the branch's head, the compare) names that repository's host
+// with `--hostname`: `gh api` takes no `--repo`, and left to itself it asks
+// GH_HOST or gh's one logged-in host, not the PR's. `gh run list` and
+// `gh run view` get `--repo HOST/OWNER/REPO` for the same reason: gh reads a
+// bare `OWNER/REPO` against GH_HOST too.
+//
 // BOUNDS. First poll is immediate. Then exponential backoff from 20s, capped
 // at 2min, until a 45-minute wall clock. The skill quotes these numbers; they
 // are the contract. A poll that is still pending at the wall clock exits 2
@@ -73,6 +90,8 @@
 //       [--backoff 2] [--deadline 2700] [--log-lines 80]
 //
 //   No --pr: the open PR for the current branch. Run from the repo root.
+//   --repo: the PR's repository (gh's `[HOST/]OWNER/REPO`), when it is not
+//   this checkout's. A PR URL passed to --pr names its repository itself.
 
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
@@ -154,11 +173,12 @@ exit 2   red | conflict | pending (--once, or a head that waiting cannot fix) | 
          closed | base. Reason on stderr.
 exit 1   could not run. Not a pass.
 
-  node scripts/hooks/pr-watch.mjs [--pr <n|url>] [--once] [--json]
+  node scripts/hooks/pr-watch.mjs [--pr <n|url>] [--once] [--json] [--repo owner/name]
       [--interval 20] [--max-interval 120] [--backoff 2] [--deadline 2700]
 
-No --pr: the open PR for the current branch. The procedure is
-.claude/skills/ship-a-change/SKILL.md. This script does not edit or push.`)
+No --pr: the open PR for the current branch. --repo: the PR's repository when it is not
+this checkout's; the CI workflow's name is read from that repository's ci.yml at the PR
+head. The procedure is .claude/skills/ship-a-change/SKILL.md. This script does not edit or push.`)
   process.exit(0)
 }
 
@@ -421,7 +441,9 @@ export function classify(pr, ctx = {}) {
   if (!runs) {
     waiting.push(`workflow runs for ${short(pr.headRefOid)} not read${ctx.runsError ? `: ${ctx.runsError}` : ''}`)
   } else {
-    if (!runs.some((r) => r.workflow === ci)) waiting.push(`no ${ci} workflow run for ${short(pr.headRefOid)} yet`)
+    if (!runs.some((r) => r.workflow === ci)) {
+      waiting.push(`no ${ci} workflow run for ${short(pr.headRefOid)} yet${ctx.ciNote ? ` (${ctx.ciNote})` : ''}`)
+    }
     const unsettled = runs.filter((r) => r.verdict === 'pending')
     if (unsettled.length) waiting.push(`workflow run(s) not finished: ${unsettled.map((r) => r.workflow).join(', ')}`)
   }
@@ -433,12 +455,92 @@ export function classify(pr, ctx = {}) {
   return { kind: 'green', ...base }
 }
 
-/** ci.yml's top-level `name:` — what `gh run list` calls the CI workflow. */
-function ciWorkflowName() {
+/** A workflow file's top-level `name:` — what `gh run list` calls it — or
+ *  null. Only column 0 counts: a job's `name:` is indented. */
+export function workflowNameOf(text) {
+  const m = /^name:[ \t]*['"]?([^'"#\n]+?)['"]?[ \t]*(?:#.*)?$/m.exec(String(text ?? ''))
+  return m ? m[1].trim() : null
+}
+
+/** A repository as gh names one — `OWNER/REPO`, `HOST/OWNER/REPO`, an https
+ *  or ssh URL (a PR's URL included), or a `git@host:owner/repo` remote — as
+ *  `{ host, slug }`, or null. Lowercased: GitHub's names are not case-sensitive. */
+export function parseRepo(text) {
+  const s = String(text ?? '').trim()
+  const m =
+    /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/([^/]+)\/([^/]+)/i.exec(s) ||
+    /^[^@/\s]+@([^:/]+):([^/]+)\/([^/]+)$/.exec(s) ||
+    /^(?:([^/\s]+)\/)?([^/\s]+)\/([^/\s]+)$/.exec(s)
+  if (!m) return null
+  const name = m[3].replace(/\.git$/i, '')
+  if (!m[2] || !name) return null
+  return { host: (m[1] || 'github.com').toLowerCase(), slug: `${m[2]}/${name}`.toLowerCase() }
+}
+
+/** The repository the PR lives in: the one its URL names, else `--repo`.
+ *  The URL is gh's answer for the PR it found, so it wins over a flag that
+ *  disagrees. That is where its workflows run, and whose ci.yml names them. */
+export function targetRepoOf(pr, repoFlag) {
+  return parseRepo(pr?.url) || parseRepo(repoFlag)
+}
+
+/** A parsed repository as the verdict names it: `OWNER/REPO` on github.com,
+ *  `HOST/OWNER/REPO` elsewhere. Words only — gh gets repoArgOf(). */
+export function repoFlagOf(target) {
+  if (!target) return null
+  return target.host === 'github.com' ? target.slug : `${target.host}/${target.slug}`
+}
+
+/** The target as `--repo` for `gh run list` and `gh run view`: always
+ *  `HOST/OWNER/REPO`. gh resolves a bare `OWNER/REPO` against GH_HOST (or its
+ *  one logged-in host), so a github.com PR's runs were read from another host
+ *  whenever GH_HOST named one. */
+export function repoArgOf(target) {
+  return target ? `${target.host}/${target.slug}` : null
+}
+
+/** A `gh api` call to the target's host. `gh api` does not take `--repo`:
+ *  left to itself it asks GH_HOST, or the one host gh is logged in to, else
+ *  github.com — not the PR's. A GitHub Enterprise PR's branch-head and
+ *  compare reads went to github.com, and a GH_HOST naming another host moved a
+ *  github.com PR's. So the host is always named, github.com included. With no
+ *  target there is none to name, and gh's own default stands. */
+export function ghApiArgs(target, path, ...rest) {
+  return ['api', path, ...(target?.host ? ['--hostname', target.host] : []), ...rest]
+}
+
+/** The CI workflow's name for this PR: the target repository's ci.yml at the
+ *  PR's head, from GitHub. When GitHub cannot answer, this checkout's ci.yml
+ *  if one of its remotes is the target; else `CI`. `source` says which, and
+ *  `note` (empty on a read) why a fallback stands in. `io` is injected for
+ *  the test: `gh` and `git` runners, and `localCi`, the cwd's ci.yml or null. */
+export function resolveCiWorkflow(pr, target, io) {
+  const head = String(pr.headRefOid || '')
+  const where = target ? `${repoFlagOf(target)}'s ci.yml at ${short(head)}` : 'the target repository\'s ci.yml'
+  let why
+  if (!target) why = `no repository in --repo or the PR URL (${pr.url || 'none'})`
+  else {
+    const path = `repos/${target.slug}/contents/.github/workflows/ci.yml?ref=${encodeURIComponent(head)}`
+    const run = io.gh(ghApiArgs(target, path, '-H', 'Accept: application/vnd.github.raw'), 60_000)
+    if (run.status === 0) {
+      const name = workflowNameOf(run.stdout)
+      if (name) return { name, source: `${repoFlagOf(target)}@${short(head)}`, note: '' }
+      why = 'it has no top-level name:'
+    } else why = ghFailure(run).split('\n')[0]
+  }
+  const remotes = io.git(['remote', '-v']).out.split('\n').map((l) => parseRepo(l.split(/\s+/)[1]))
+  const here = target && remotes.some((r) => r && r.host === target.host && r.slug === target.slug)
+  const local = here ? workflowNameOf(io.localCi()) : null
+  if (local) {
+    return { name: local, source: 'this checkout', note: `${local} is this checkout's ci.yml; ${where} was not read: ${why}` }
+  }
+  const unrelated = target && !here ? `; this checkout is not ${repoFlagOf(target)}, so its ci.yml was not used` : ''
+  return { name: 'CI', source: 'fallback', note: `CI is a guess: ${where} was not read (${why})${unrelated}` }
+}
+
+function localCiFile() {
   const file = resolve(process.cwd(), '.github/workflows/ci.yml')
-  if (!existsSync(file)) return 'CI'
-  const m = /^name:[ \t]*['"]?([^'"#\n]+?)['"]?[ \t]*(?:#.*)?$/m.exec(readFileSync(file, 'utf8'))
-  return m ? m[1].trim() : 'CI'
+  return existsSync(file) ? readFileSync(file, 'utf8') : null
 }
 
 function git(args) {
@@ -452,12 +554,13 @@ function headRepoPath(pr) {
   return owner && name ? `${owner}/${name}` : null
 }
 
-/** The branch's head on GitHub, from the git ref API. */
-function readRemoteHead(pr, io) {
+/** The branch's head on GitHub, from the git ref API. A head repository
+ *  (a fork included) lives on the PR's host, so `target`'s host is asked. */
+function readRemoteHead(pr, target, io) {
   const path = headRepoPath(pr)
   if (!path) return { noHeadRepo: true }
   const ref = String(pr.headRefName).split('/').map(encodeURIComponent).join('/')
-  const run = io.gh(['api', `repos/${path}/git/ref/heads/${ref}`, '--jq', '.object.sha'], 60_000)
+  const run = io.gh(ghApiArgs(target, `repos/${path}/git/ref/heads/${ref}`, '--jq', '.object.sha'), 60_000)
   if (run.status !== 0) return { remote: null, remoteError: ghFailure(run).split('\n')[0] }
   return { remote: String(run.stdout).trim() }
 }
@@ -470,7 +573,7 @@ const RELATIONS = new Set(['ahead', 'behind', 'diverged'])
  *  when both commits are in this clone. This script never fetches, so a head
  *  pushed from another checkout often is not, and `merge-base` exits 128 —
  *  which is not a "no". GitHub's compare answers that case. */
-function relationOf(pr, local, want, io) {
+function relationOf(pr, local, want, target, io) {
   const ancestor = (a, b) => io.git(['merge-base', '--is-ancestor', a, b]).status
   const up = ancestor(local, want)
   if (up === 0) return { relation: 'ahead' }
@@ -481,7 +584,7 @@ function relationOf(pr, local, want, io) {
   }
   const path = headRepoPath(pr)
   if (!path) return { relation: null, compareError: 'the head repository is gone' }
-  const run = io.gh(['api', `repos/${path}/compare/${local}...${want}?per_page=1`, '--jq', '.status'], 60_000)
+  const run = io.gh(ghApiArgs(target, `repos/${path}/compare/${local}...${want}?per_page=1`, '--jq', '.status'), 60_000)
   if (run.status !== 0) return { relation: null, compareError: `compare: ${ghFailure(run).split('\n')[0]}` }
   const status = String(run.stdout).trim()
   if (status === 'identical') return { relation: 'ahead' }
@@ -489,26 +592,27 @@ function relationOf(pr, local, want, io) {
   return { relation: null, compareError: `compare answered ${status || 'nothing'}` }
 }
 
-/** What headCheck() needs, read from this checkout and GitHub. `io` is the
+/** What headCheck() needs, read from this checkout and GitHub. `target` is
+ *  targetRepoOf(): its host is the one GitHub's answers come from. `io` is the
  *  git and gh runners and the current branch, injected so the test can drive
  *  the real git reads against a scratch repository. */
-export function readHeadFacts(pr, io = { branch: currentBranch(), git, gh }) {
+export function readHeadFacts(pr, target, io = { branch: currentBranch(), git, gh }) {
   const want = String(pr.headRefOid)
-  if (io.branch !== pr.headRefName) return { onBranch: false, ...readRemoteHead(pr, io) }
+  if (io.branch !== pr.headRefName) return { onBranch: false, ...readRemoteHead(pr, target, io) }
   const local = io.git(['rev-parse', 'HEAD']).out
   const tracking = io.git(['rev-parse', '--verify', '-q', `refs/remotes/origin/${pr.headRefName}`])
   const facts = { onBranch: true, local, tracking: tracking.ok ? tracking.out : null }
   if (local === want) return facts
-  Object.assign(facts, relationOf(pr, local, want, io))
+  Object.assign(facts, relationOf(pr, local, want, target, io))
   // Settled without GitHub's branch: the PR contains HEAD, HEAD is not pushed,
   // or the PR is an older commit of HEAD's own history (the push not registered).
   if (facts.relation === 'ahead' || facts.relation === 'behind' || facts.tracking !== local) return facts
-  return { ...facts, ...readRemoteHead(pr, io) }
+  return { ...facts, ...readRemoteHead(pr, target, io) }
 }
 
-function readRuns(sha) {
+function readRuns(sha, repoFlag) {
   const args = ['run', 'list', '--commit', String(sha), '--limit', '100', '--json', RUN_FIELDS]
-  if (repo) args.push('--repo', repo)
+  if (repoFlag) args.push('--repo', repoFlag)
   const run = gh(args, 60_000)
   if (run.status !== 0) return { runs: null, runsError: ghFailure(run).split('\n')[0] }
   try {
@@ -543,12 +647,12 @@ function idsFromUrl(url) {
   return { runId: m[1], jobId: m[2] || null }
 }
 
-function logTail(url) {
+function logTail(url, repoFlag) {
   const ids = idsFromUrl(url)
   if (!ids) return `(no Actions run id in ${url})`
   const args = ['run', 'view', ids.runId, '--log-failed']
   if (ids.jobId) args.push('--job', ids.jobId)
-  if (repo) args.push('--repo', repo)
+  if (repoFlag) args.push('--repo', repoFlag)
   const run = gh(args, 120_000)
   if (run.status !== 0) {
     const why = ghFailure(run).split('\n')[0]
@@ -560,7 +664,7 @@ function logTail(url) {
   return tail || '(log fetch returned empty)'
 }
 
-function payloadOf(pr, result) {
+function payloadOf(pr, result, ci) {
   return {
     token: result.kind,
     number: pr.number,
@@ -579,6 +683,7 @@ function payloadOf(pr, result) {
     passing: result.passing.length,
     skipped: result.passing.filter((c) => c.conclusion === 'SKIPPED').length,
     superseded: result.superseded,
+    ciWorkflow: ci ? { name: ci.name, source: ci.source, note: ci.note } : null,
   }
 }
 
@@ -603,8 +708,9 @@ function branchNote(pr) {
 }
 
 function redBody(pr, result) {
+  const repoFlag = repoArgOf(targetRepoOf(pr, repo))
   const logs = result.failing.slice(0, 3).map((c) => {
-    const tail = logTail(c.url)
+    const tail = logTail(c.url, repoFlag)
     return `--- log: ${c.name} (last ${logLines} lines) ---\n${tail}`
   })
   const more =
@@ -649,8 +755,10 @@ function pendingSummary(result) {
 }
 
 async function main() {
-  const ciWorkflow = ciWorkflowName()
   const started = Date.now()
+  // One read of the CI workflow's name per PR head (a push can rename it). A
+  // fallback is not kept: a read that failed once is tried again next poll.
+  const ciByHead = new Map()
   const deadlineMs = deadlineSec * 1000
   let interval = intervalStart
   let sawRead = false
@@ -675,13 +783,19 @@ async function main() {
     readFailures = 0
     const pr = read.pr
     const open = pr.state !== 'MERGED' && pr.state !== 'CLOSED'
-    const ctx = { ciWorkflow }
+    const target = targetRepoOf(pr, repo)
+    const ctx = {}
+    let ci = null
     if (open) {
-      ctx.head = headCheck(pr, readHeadFacts(pr))
-      if (ctx.head.ok) Object.assign(ctx, readRuns(pr.headRefOid))
+      ctx.head = headCheck(pr, readHeadFacts(pr, target))
+      if (ctx.head.ok) {
+        ci = ciByHead.get(pr.headRefOid) ?? resolveCiWorkflow(pr, target, { gh, git, localCi: localCiFile })
+        if (!ci.note) ciByHead.set(pr.headRefOid, ci)
+        Object.assign(ctx, { ciWorkflow: ci.name, ciNote: ci.note }, readRuns(pr.headRefOid, repoArgOf(target)))
+      }
     }
     const result = classify(pr, ctx)
-    const payload = payloadOf(pr, result)
+    const payload = payloadOf(pr, result, ci)
 
     if (result.kind === 'green') {
       const skipped = result.passing.filter((c) => c.conclusion === 'SKIPPED').length
@@ -689,7 +803,7 @@ async function main() {
       const behind = result.mergeState === 'BEHIND' ? ' behind rc (strict is off; not a conflict).' : ''
       const merged = result.merged ? ' already merged.' : ''
       const superseded = result.superseded ? `, ${result.superseded} superseded run(s) ignored` : ''
-      const ran = result.merged ? '' : `, ${ciWorkflow} run settled`
+      const ran = result.merged ? '' : `, ${ci?.name || 'CI'} run settled${ci?.note ? ` (${ci.note})` : ''}`
       const note = result.note ? ` (${result.note})` : ''
       emit(
         0,

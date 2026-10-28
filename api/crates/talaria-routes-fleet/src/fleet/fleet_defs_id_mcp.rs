@@ -522,7 +522,29 @@ pub async fn post(
     // ── make it so: render, then roll the agent ──
     let mut applied = false;
     let mut warning: Option<String> = None;
-    if (touched_registry || created) && apply && def.managed {
+    // ONE CONTAINER PER DEPARTMENT: where an older agent holds this one's
+    // department too (a pair from before a department became one agent's),
+    // the department's container is the other agent's and the render leaves
+    // this one out. Rolling it would restart the other agent for a change
+    // that is not its own, so the change is rendered and not applied.
+    let runs_instead = if (touched_registry || created) && apply && def.managed {
+        match talaria_agent_defs::runner_instead_of(&state.pg, &def.id, &def.department).await {
+            Ok(runner) => runner,
+            Err(e) => return Ok(internal("[fleet/defs/mcp] department share read failed", e)),
+        }
+    } else {
+        None
+    };
+    if let Some(runner) = &runs_instead {
+        let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
+        let _ = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb).await;
+        warning = Some(talaria_agent_defs::shared_department_refusal(
+            "roll",
+            &def.display_name,
+            &def.department,
+            &runner.display_name,
+        ));
+    } else if (touched_registry || created) && apply && def.managed {
         let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
         let _ = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb).await;
         match roll_agent(&state.pg, &sb, &def.department).await {

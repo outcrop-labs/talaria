@@ -205,6 +205,70 @@ pub async fn spend_since(
         .unwrap_or_default())
 }
 
+/// Which measure of a window's spend a ceiling counts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SpendUnit {
+    Tokens,
+    Usd,
+}
+
+/// WHEN A ROLLING WINDOW'S SPEND FALLS BACK UNDER `cap`, if nothing more is
+/// spent: the epoch second the oldest rows have aged out far enough. Each row
+/// leaves the window `window_hours` after it was written, so walking the
+/// window's rows oldest-first, the answer is the moment the first row whose
+/// running total takes the rest under the cap leaves. The rows, the subject
+/// and the priced figures are `spend_since`'s, so the total this walks is the
+/// one the budget just refused on. `None` when the window is already under
+/// the cap, or empty.
+///
+/// It is the honest answer to "when can this caller spend again" for a 24h
+/// window — usually hours, not the minutes a fixed `Retry-After` implies.
+pub async fn spend_clears_at(
+    pg: &PgPool,
+    window_hours: i64,
+    agent_model: Option<&str>,
+    unit: SpendUnit,
+    cap: f64,
+) -> Result<Option<i64>, sqlx::Error> {
+    let priced = priced();
+    let hours = window_hours.clamp(1, 24 * 365) as i32;
+    let family = agent_model.and_then(crate::app_keys::app_family_prefix);
+    let sql = format!(
+        "with priced as ({priced}), \
+         w as ( \
+           select id, created_at, \
+                  case when $4 then coalesce(cost, 0)::float8 \
+                       else (prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens)::float8 \
+                  end as amount \
+           from priced \
+           where created_at > now() - make_interval(hours => $1) \
+             and ($2::text is null or agent_model = $2 \
+                  or ($3::text is not null and left(agent_model, length($3)) = $3)) \
+         ), \
+         r as ( \
+           select created_at, \
+                  sum(amount) over (order by created_at, id rows between unbounded preceding and current row) as aged, \
+                  sum(amount) over () as used \
+           from w \
+         ) \
+         select ceil(extract(epoch from created_at + make_interval(hours => $1)))::bigint \
+         from r \
+         where used >= $5 and used - aged < $5 \
+         order by created_at \
+         limit 1"
+    );
+    // AssertSqlSafe: the only interpolation is the PRICED const — every
+    // runtime value is a bind.
+    sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(hours)
+        .bind(agent_model)
+        .bind(family)
+        .bind(unit == SpendUnit::Usd)
+        .bind(cap)
+        .fetch_optional(pg)
+        .await
+}
+
 // ── The token ledger overview (GET /api/cost) ────────────────────────────────
 
 /// One window's aggregate, in wire order.
@@ -832,188 +896,11 @@ pub async fn record_relay_usage(
     Ok(())
 }
 
-// ── Agent-reported spend (tasks.$id.usage POST) ──────────────────────────────
-
-/// Which model serves this generation: the requested TIER's model when a tier
-/// was routed, else the agent's current MAIN model.
-///
-/// The agent's stored `endpoint` is a config-time PREFERENCE, not what ran:
-/// agents call the gateway by model name and `resolve_route` round-robins the
-/// pool serving it, so trusting the config can stamp a cloud turn `local` and
-/// price it at $0. Classify from the gateway's real pool instead and record
-/// only what's certain — one server is exact, a pool that agrees on class is
-/// priced by class, a mixed pool leaves the row unattributed rather than
-/// guessing.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AgentClass {
-    pub endpoint_class: Option<String>,
-    pub llm_model: String,
-    pub endpoint: Option<String>,
-}
-
-type ClassCache = std::collections::HashMap<String, (std::time::Instant, Option<AgentClass>)>;
-
-static CLASS_CACHE: std::sync::LazyLock<std::sync::Mutex<ClassCache>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(ClassCache::new()));
-
-/// The serving tier-or-main spec for an agent, narrowed to
-/// what the gateway's pool can honestly claim. Cached 60s per
-/// (agentModel, tier): the def and the endpoint pool both move slower than
-/// that, and the hot path should never feel a classification.
-pub async fn classify_agent(
-    pg: &PgPool,
-    agent_model: &str,
-    tier: Option<&str>,
-) -> Result<Option<AgentClass>, sqlx::Error> {
-    let cache_key = format!("{agent_model}:{}", tier.unwrap_or(""));
-    {
-        let cache = CLASS_CACHE.lock().unwrap();
-        if let Some((at, value)) = cache.get(&cache_key)
-            && at.elapsed().as_secs() < 60
-        {
-            return Ok(value.clone());
-        }
-    }
-    let row: Option<(Option<String>, Option<String>, Option<String>)> = match tier {
-        Some(tier) => {
-            sqlx::query_as(
-                "select e.class, (a->>'model') as model, (a->>'endpoint') as endpoint \
-                 from agent_defs d \
-                 join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
-                 cross join lateral jsonb_array_elements(coalesce(v.config->'aliases','[]'::jsonb)) a \
-                 left join llm_endpoints e on e.name = (a->>'endpoint') \
-                 where d.model = $1 and a->>'name' = $2",
-            )
-            .bind(agent_model)
-            .bind(tier)
-            .fetch_optional(pg)
-            .await?
-        }
-        None => {
-            sqlx::query_as(
-                "select e.class, (v.config->'main'->>'model') as model, (v.config->'main'->>'endpoint') as endpoint \
-                 from agent_defs d \
-                 join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
-                 left join llm_endpoints e on e.name = (v.config->'main'->>'endpoint') \
-                 where d.model = $1",
-            )
-            .bind(agent_model)
-            .fetch_optional(pg)
-            .await?
-        }
-    };
-    let value = match row {
-        // A tier still pointed at a legacy upstream (no model on the alias)
-        // classifies as nothing — an unattributable row, never a guess.
-        Some((class, Some(model), endpoint)) if !model.is_empty() => {
-            classify_model(pg, &model, (class.as_deref(), endpoint.as_deref())).await?
-        }
-        _ => None,
-    };
-    CLASS_CACHE
-        .lock()
-        .unwrap()
-        .insert(cache_key, (std::time::Instant::now(), value.clone()));
-    Ok(value)
-}
-
-async fn classify_model(
-    pg: &PgPool,
-    model: &str,
-    configured: (Option<&str>, Option<&str>),
-) -> Result<Option<AgentClass>, sqlx::Error> {
-    let (class, endpoint) = configured;
-    let routing = crate::registry::routing_for(pg, model).await?;
-    if routing.endpoints.len() == 1 {
-        let one = &routing.endpoints[0];
-        return Ok(Some(AgentClass {
-            endpoint_class: Some(one.class.clone()),
-            llm_model: routing.upstream_model,
-            endpoint: Some(one.name.clone()),
-        }));
-    }
-    if routing.endpoints.is_empty() {
-        return Ok(class.map(|class| AgentClass {
-            endpoint_class: Some(class.to_string()),
-            llm_model: model.to_string(),
-            endpoint: endpoint.map(str::to_string),
-        }));
-    }
-    // A pool: the class is certain when every member agrees (local stays $0,
-    // cloud stays visible as unpriced), the endpoint never is.
-    let all_agree = routing
-        .endpoints
-        .iter()
-        .map(|e| e.class.as_str())
-        .all(|c| c == routing.endpoints[0].class.as_str());
-    Ok(Some(AgentClass {
-        endpoint_class: all_agree.then(|| routing.endpoints[0].class.clone()),
-        llm_model: routing.upstream_model,
-        endpoint: None,
-    }))
-}
-
-/// One spend row. 'chat'/'channel' rows are gateway-metered by Talaria.
-/// 'ticket' rows were agent-SELF-REPORTED through the retired MCP `log_usage`
-/// tool; nothing writes them any more, because that spend was already metered
-/// at the gateway and the report counted it twice.
-pub struct UsageInput<'a> {
-    pub agent_model: &'a str,
-    pub source: &'a str,
-    pub ref_id: Option<&'a str>,
-    pub task_id: Option<&'a str>,
-    /// Alias tier the request was routed to (None = the agent's main model).
-    pub tier: Option<&'a str>,
-    pub counts: TokenCounts,
-    pub estimated: bool,
-}
-
-/// Insert one usage_events row, attributed by the classify
-/// plane. Classification failure is swallowed to null here:
-/// the row still lands, unattributed.
-pub async fn record_usage(pg: &PgPool, u: &UsageInput<'_>) -> Result<(), sqlx::Error> {
-    let cls = classify_agent(pg, u.agent_model, u.tier)
-        .await
-        .unwrap_or(None);
-    sqlx::query(
-        "insert into usage_events (agent_model, source, ref_id, task_id, prompt_tokens, completion_tokens, \
-                                  cache_write_tokens, cache_read_tokens, reasoning_tokens, \
-                                  estimated, endpoint_class, llm_model, endpoint) \
-         values ($1, $2, $3::uuid, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-    )
-    .bind(u.agent_model)
-    .bind(u.source)
-    .bind(u.ref_id)
-    .bind(u.task_id)
-    .bind(k(u.counts.prompt_tokens))
-    .bind(k(u.counts.completion_tokens))
-    .bind(k(u.counts.cache_write_tokens))
-    .bind(k(u.counts.cache_read_tokens))
-    .bind(k(u.counts.reasoning_tokens))
-    .bind(u.estimated)
-    .bind(cls.as_ref().and_then(|c| c.endpoint_class.clone()))
-    .bind(cls.as_ref().map(|c| c.llm_model.clone()))
-    .bind(cls.as_ref().and_then(|c| c.endpoint.clone()))
-    .execute(pg)
-    .await
-    .map(|_| ())?;
-
-    // A cloud row landing without a price is the oracle's cue to look again —
-    // detached, throttled, and idempotent, so the hot path never feels it. A
-    // probe that itself fails nudges nothing.
-    if let Some(cls) = cls
-        && cls.endpoint_class.as_deref() == Some("cloud")
-        && let Some(endpoint) = cls.endpoint.as_deref()
-    {
-        nudge_if_unpriced(pg, endpoint, &cls.llm_model);
-    }
-    Ok(())
-}
-
 /// Nudge the price oracle when `model` on `endpoint` has no published price
 /// to derive a cloud row's cost from — detached, so no write ever waits on
-/// it. Both ledger writers call it for a cloud row that carries no cost of
-/// its own.
+/// it. The relay's ledger writer (`record_relay_usage`, which every booked
+/// call goes through) calls it for a cloud row that carries no cost of its
+/// own.
 fn nudge_if_unpriced(pg: &PgPool, endpoint: &str, model: &str) {
     if endpoint.is_empty() || model.is_empty() {
         return;
@@ -1129,6 +1016,13 @@ pub struct TurnAttribution {
     pub source: String,
     pub ref_id: Option<String>,
     pub task_id: Option<String>,
+    /// A person is reading this turn as it is written: a conversation turn
+    /// sent from `/api/chat`, or chained from one, with `ref_id` the
+    /// conversation. `source` alone cannot say so, because a work session
+    /// and the plan-document harness book their spend as `chat` too, and
+    /// nobody watches either. Only an attended turn can put an agent's
+    /// approval request to a person (fleet_approvals); the ledger ignores it.
+    pub attended: bool,
 }
 
 fn uuid_or_none(v: Option<&str>) -> Option<String> {
@@ -1469,6 +1363,7 @@ mod live_db {
             source: source.to_string(),
             ref_id: Some(ref_id.to_string()),
             task_id: task_id.map(str::to_string),
+            attended: false,
         }
     }
 
@@ -1507,6 +1402,63 @@ mod live_db {
             .await
             .expect("the org-wide window");
         assert!(all.tokens >= 101);
+        cleanup(&pg, &a).await;
+    }
+
+    /// The resume time a budget refusal names: the moment enough of the
+    /// window's oldest spend has aged out to take the rest under the cap.
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn spend_clears_at_is_when_the_oldest_rows_age_out_far_enough() {
+        let pg = pg().await;
+        let a = agent();
+        cleanup(&pg, &a).await;
+        // 401, 301 and 201 tokens (each row is prompt + 1), written 10h, 5h
+        // and 1h ago: 903 in the 24h window.
+        for (prompt, hours_ago) in [(400, 10), (300, 5), (200, 1)] {
+            book(&pg, UNATTENDED_SOURCE, &a, None, prompt).await;
+            sqlx::query(
+                "update usage_events set created_at = now() - make_interval(hours => $3) \
+                  where agent_model = $1 and prompt_tokens = $2",
+            )
+            .bind(&a)
+            .bind(prompt as i32)
+            .bind(hours_ago)
+            .execute(&pg)
+            .await
+            .unwrap();
+        }
+        let leaves = |prompt: i32| {
+            let (pg, a) = (pg.clone(), a.clone());
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "select ceil(extract(epoch from created_at + interval '24 hours'))::bigint \
+                       from usage_events where agent_model = $1 and prompt_tokens = $2",
+                )
+                .bind(&a)
+                .bind(prompt)
+                .fetch_one(&pg)
+                .await
+                .unwrap()
+            }
+        };
+        let at = |cap: f64| spend_clears_at(&pg, 24, Some(&a), SpendUnit::Tokens, cap);
+
+        // Cap 600: the oldest row leaving takes 903 to 502.
+        assert_eq!(at(600.0).await.unwrap(), Some(leaves(400).await));
+        // Cap 300: two rows have to leave (903 → 502 → 201).
+        assert_eq!(at(300.0).await.unwrap(), Some(leaves(300).await));
+        // Cap 201: 201 left is still AT the cap — the newest row has to go.
+        assert_eq!(at(201.0).await.unwrap(), Some(leaves(200).await));
+        // Under the cap there is nothing to wait for.
+        assert_eq!(at(1000.0).await.unwrap(), None);
+        // Dollars: these rows are local, $0, so no dollar cap is reached.
+        let usd = spend_clears_at(&pg, 24, Some(&a), SpendUnit::Usd, 0.01).await;
+        assert_eq!(usd.unwrap(), None);
+        // The org-wide read is the same statement, with no subject.
+        spend_clears_at(&pg, 24, None, SpendUnit::Tokens, 1.0)
+            .await
+            .expect("the org-wide read");
         cleanup(&pg, &a).await;
     }
 

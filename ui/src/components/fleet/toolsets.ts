@@ -10,7 +10,9 @@
 /** The pair Talaria takes off every agent's table whatever a def says: its
  *  own todo and clarify tools are the ones a person actually sees, so Hermes'
  *  are closed fleet-wide (the renderer merges them ahead of the agent's own
- *  list). The server publishes it as `toolsets.mandatoryDisabled` and callers
+ *  list). Hermes' todo list would also reset every turn of an ordinary chat:
+ *  it lives in the session transcript, which a completions-arm turn does not
+ *  carry (talaria-agent-defs' `MANDATORY_DISABLED` says when that changes). The server publishes it as `toolsets.mandatoryDisabled` and callers
  *  pass that through — this is only the default, so a three-argument
  *  `toggleToolset` still cannot author one of them into a stored list. Spelled
  *  in the server constant's order (talaria-agent-defs' `MANDATORY_DISABLED`)

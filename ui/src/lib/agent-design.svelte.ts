@@ -199,22 +199,18 @@ export function startDesign(purpose: string): number {
   return design.id
 }
 
-/** Seed an idle, ready design from caller-owned fields — the role-template
- *  path on the describe step. No muse run: the record exists so the review
- *  step's store bindings and the refine's `current` read it, and everything
- *  stays editable from there. Replaces any idle design; an in-flight run is
- *  left alone (the role picker is hidden while one runs). */
-export function adoptDesign(fields: {
+type DesignFields = {
   name: string
   handle: string
   department: string
   role: string
   soul: string
   skills?: AgentDraft['skills']
-}): void {
-  const existing = store.design
-  if (existing && existing.status === 'generating') return
-  store.design = {
+}
+
+/** An idle, ready record over caller-owned fields: no muse run behind it. */
+function readyDesign(fields: DesignFields): AgentDesign {
+  return {
     id: nextId++,
     purpose: '',
     instruction: '',
@@ -232,6 +228,30 @@ export function adoptDesign(fields: {
     skills: fields.skills ?? [],
     lastChange: null,
   }
+}
+
+/** Seed an idle, ready design from caller-owned fields — the role-template
+ *  path on the describe step. No muse run: the record exists so the review
+ *  step's store bindings and the refine's `current` read it, and everything
+ *  stays editable from there. Replaces any idle design; an in-flight run is
+ *  left alone (the role picker is hidden while one runs). */
+export function adoptDesign(fields: DesignFields): void {
+  const existing = store.design
+  if (existing && existing.status === 'generating') return
+  store.design = readyDesign(fields)
+}
+
+/** The design the review step's fields write to, seeding an empty one when
+ *  the store holds none. "Configure manually →" and Duplicate (a preselected
+ *  chassis) open the review step with nothing designed, and a field with no
+ *  record behind it dropped every keystroke: the form looked typed into while
+ *  Create stayed disabled. The review step calls this on an edit, not on
+ *  entry, so a look at the empty form that is then closed leaves nothing
+ *  behind; an empty ready design would reopen the modal onto the review
+ *  step. A record that exists, in any state, is the one written to. */
+export function ensureDesign(): AgentDesign {
+  if (!store.design) store.design = readyDesign({ name: '', handle: '', department: '', role: '', soul: '' })
+  return store.design
 }
 
 /** Refine the current design. No-op when there is nothing to refine or a

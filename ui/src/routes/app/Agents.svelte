@@ -20,12 +20,13 @@
   import HiringStrip from '@/components/fleet/HiringStrip.svelte'
   import RoleTemplatesTab from '@/components/fleet/RoleTemplatesTab.svelte'
   import FederateModal from '@/components/fleet/FederateModal.svelte'
+  import SealConfigsModal from '@/components/fleet/SealConfigsModal.svelte'
   import FleetCronsTab from '@/components/fleet/FleetCronsTab.svelte'
   import { errorMessage } from '@/lib/fetch-json'
   import { useFleet } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { fly, slide, staggerIn } from '@/lib/motion'
-  import { rollFleet, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
+  import { containersOf, rollFleet, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import AgentListRow from './AgentListRow.svelte'
@@ -128,7 +129,7 @@
   const batchDone = $derived(batchRows.filter((r) => r.state === 'done').length)
   const batchFailed = $derived(batchRows.filter((r) => r.state === 'failed'))
   const runningCount = $derived(
-    (defsQuery.data?.defs ?? []).filter((d) => d.enabled && d.managed && (byDept.get(d.department)?.managed?.state === 'running')).length,
+    (defsQuery.data?.defs ?? []).filter((d) => d.enabled && d.managed && (containersOf(d, byDept)?.managed?.state === 'running')).length,
   )
   // The roster itself renders through QueryState below (a 500 must never read as
   // "no agents"). This copy is only for the create/duplicate modals' template
@@ -140,6 +141,7 @@
   let creating = $state(false)
   let duplicateFrom = $state<AgentDef | null>(null)
   let federateOpen = $state(false)
+  let sealOpen = $state(false)
   // The background design row (TALA-11): headline = first words of the
   // purpose while generating/erroring, the designed agent's name once
   // landed. Null when the store holds nothing.
@@ -476,9 +478,9 @@
               {@const brainByAgent = new Map((data.brains ?? []).map((b) => [b.agent, b]))}
               {#each data.defs as d (d.id)}
                 {#if view === 'grid'}
-                  <AgentTile def={d} containers={byDept.get(d.department) ?? null} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
+                  <AgentTile def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
                 {:else}
-                  <AgentListRow def={d} containers={byDept.get(d.department) ?? null} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
+                  <AgentListRow def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
                 {/if}
               {/each}
             {/snippet}
@@ -490,7 +492,16 @@
       </div>
     {/key}
 
-    {#if federateOpen}<FederateModal onClose={() => (federateOpen = false)} />{/if}
+    {#if federateOpen}
+      <FederateModal
+        onClose={() => (federateOpen = false)}
+        onSealStored={() => {
+          federateOpen = false
+          sealOpen = true
+        }}
+      />
+    {/if}
+    {#if sealOpen}<SealConfigsModal onClose={() => (sealOpen = false)} />{/if}
     {#if creating}<CreateAgentModal open={creating} onClose={() => (creating = false)} templates={defs.filter((d) => d.enabled)} />{/if}
     {#if duplicateFrom}
       <CreateAgentModal open onClose={() => (duplicateFrom = null)} templates={defs} templateId={duplicateFrom.id} />

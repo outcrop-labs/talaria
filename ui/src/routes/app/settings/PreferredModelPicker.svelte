@@ -44,7 +44,10 @@
   // The levels the PICKED model publishes — the default-effort control's whole
   // option list, and the reason it renders only for models that have one.
   // Getter form: the pick can change under the query.
-  const { efforts } = useModelEfforts(() => prefs?.preferredModel ?? null)
+  // Kept whole and read through its getter: destructured, the levels would
+  // be the query's answer at mount and never move.
+  const modelEfforts = useModelEfforts(() => prefs?.preferredModel ?? null)
+  const efforts = $derived(modelEfforts.efforts)
   // A saved default the picked model cannot honor (it was set against another
   // model, or the metadata changed) reads as auto here — inert, never an error.
   const effectiveEffort = $derived(

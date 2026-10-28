@@ -207,7 +207,7 @@ describe('the persona transport', () => {
       jsonMode: false,
       caller: 'app:crm:triage',
       holdMs: 600_000,
-      ledger: { agentModel: 'engineer-engineering', source: 'chat', refId: 'r-1', taskId: 't-1', tier: null },
+      ledger: { refId: 'r-1', taskId: 't-1' },
     })
     expect(reply).toMatchObject({ kind: 'fleet', text: 'done', usage: { promptTokens: 7, completionTokens: 3 } })
     const call = sent[0]!
@@ -218,6 +218,19 @@ describe('the persona transport', () => {
     expect(call.headers['x-talaria-ref-id']).toBe('r-1')
     expect(call.headers['x-talaria-task-id']).toBe('t-1')
     expect(call.body.model).toBe('engineer-engineering')
+  })
+
+  it('sends no tool fields for either policy, since Hermes reads neither off the body', async () => {
+    // `tools: []` / `tool_choice: 'none'` rode every 'none' turn and Hermes'
+    // chat-completions handler read neither, so they only made the policy look
+    // honored. The persona's own loop keeps its own tools either way.
+    for (const tools of [undefined, 'none', 'own'] as const) {
+      answers.push(stream(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', 'data: [DONE]\n\n']))
+      await fleetTransport({ model: 'engineer-engineering', messages: [{ role: 'user', content: 'hi' }], jsonMode: false, caller: 't', tools })
+      const body = sent.at(-1)!.body
+      expect('tools' in body, `tools: ${tools}`).toBe(false)
+      expect('tool_choice' in body, `tools: ${tools}`).toBe(false)
+    }
   })
 })
 

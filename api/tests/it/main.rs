@@ -61,6 +61,8 @@ mod runs_decide;
 mod runs_reclaim;
 mod runs_run;
 mod runs_store;
+mod seal_configs_live;
+mod secret_delete_live;
 mod secretbox;
 mod sender_identity_live;
 mod session_overview_live;
