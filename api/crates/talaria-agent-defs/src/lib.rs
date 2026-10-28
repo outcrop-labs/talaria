@@ -584,6 +584,7 @@ pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error
             },
         )
         .collect();
+    let shared = shared_departments(pg).await?;
     Ok(defs
         .into_iter()
         .map(|d| {
@@ -611,6 +612,11 @@ pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error
                 // Config tab reads the current values from here, and null
                 // means "the def says nothing, Hermes' defaults are in force".
                 "compression": compression_wire(latest.get("config").unwrap_or(&Value::Null)),
+                // Null unless another agent holds this def's department too
+                // (only ever a pair that predates the one-agent rule): then
+                // who runs in the department's container, and who else holds
+                // it — what the roster and the agent page warn with.
+                "departmentShare": department_share_wire(&shared, &d.id, &d.department),
                 "createdAt": epoch_ms_to_iso(d.created_ms),
                 "updatedAt": epoch_ms_to_iso(d.updated_ms),
                 "latest": latest,
@@ -756,15 +762,294 @@ pub async fn list_versions(
     Ok(rows.into_iter().map(version_row).collect())
 }
 
+// ── A department is one agent's key ──────────────────────────────────────────
+//
+// The department names the compose service (`agent-<department>`), the
+// Hermes data volume (`<project>_hermes-<department>`), the roll lock and the
+// model id (`<slug>-<department>`). Two agents in one department are one
+// container and one Hermes home: whichever renders last takes the service,
+// and both write the same memory. So a department belongs to ONE agent, from
+// its hire until it is deleted (a retired agent keeps its volume, so it keeps
+// its department too).
+//
+// No unique index says so. docs/UPDATES.md lets a roll-safe migration only
+// add, and an index build fails outright on an install that already holds two
+// agents in one department — which is exactly the install this rule is for.
+// So the writer checks under a per-department advisory lock
+// ([`upsert_agent_def`]), every writer goes through it, and a pair that
+// predates the rule is reported ([`shared_departments`]) and never merged: the
+// render runs the older agent in the department's container and leaves the
+// other out, and the roster, the agent page and the alerts say so.
+
+/// The sentence every writer refuses a held department with. Its tail is the
+/// part [`is_department_taken`] recognises, so a caller that only holds the
+/// error as a string (the hire run, the personal-assistant route) can still
+/// answer 409.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepartmentTaken {
+    pub department: String,
+    pub holder_slug: String,
+    pub holder_name: String,
+}
+
+const DEPARTMENT_TAKEN_TAIL: &str = "so two agents cannot share it";
+
+impl std::fmt::Display for DepartmentTaken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the department \"{}\" already belongs to {} ({}) — pick another one: a department names one agent's container and memory, {DEPARTMENT_TAKEN_TAIL}",
+            self.department, self.holder_name, self.holder_slug
+        )
+    }
+}
+
+/// Whether an error string is [`DepartmentTaken`]'s sentence.
+pub fn is_department_taken(msg: &str) -> bool {
+    msg.contains(DEPARTMENT_TAKEN_TAIL)
+}
+
+/// Why [`upsert_agent_def`] wrote nothing.
+#[derive(Debug)]
+pub enum UpsertDefError {
+    DepartmentTaken(DepartmentTaken),
+    Db(sqlx::Error),
+}
+
+impl std::fmt::Display for UpsertDefError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UpsertDefError::DepartmentTaken(t) => t.fmt(f),
+            UpsertDefError::Db(e) => e.fmt(f),
+        }
+    }
+}
+
+impl From<sqlx::Error> for UpsertDefError {
+    fn from(e: sqlx::Error) -> Self {
+        UpsertDefError::Db(e)
+    }
+}
+
+/// The agent other than `slug` that holds `department`, if any — retired or
+/// not, managed or not: the oldest, when (before the rule) there are several.
+/// The writers' pre-check and the check under the lock both ask this.
+pub async fn department_holder<'e, E>(
+    exec: E,
+    department: &str,
+    slug: &str,
+) -> Result<Option<DepartmentTaken>, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    let row: Option<(String, String)> = sqlx::query_as(
+        "select slug, display_name from agent_defs \
+         where department = $1 and slug <> $2 \
+         order by created_at, id limit 1",
+    )
+    .bind(department)
+    .bind(slug)
+    .fetch_optional(exec)
+    .await?;
+    Ok(row.map(|(holder_slug, holder_name)| DepartmentTaken {
+        department: department.to_string(),
+        holder_slug,
+        holder_name,
+    }))
+}
+
+/// One agent in a department another agent also holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DepartmentMember {
+    pub id: String,
+    pub slug: String,
+    pub display_name: String,
+    /// Whether the render runs it at all: managed, enabled, with a current
+    /// version — the same three conditions as the render's own roster.
+    #[serde(skip)]
+    pub renders: bool,
+}
+
+/// A department two or more agents hold — only ever one that predates the
+/// rule above, or one a direct SQL write made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedDepartment {
+    pub department: String,
+    /// Oldest first: the order that decides which one runs.
+    pub members: Vec<DepartmentMember>,
+}
+
+impl SharedDepartment {
+    /// The agent the render runs in the department's container: the oldest
+    /// one it renders (talaria-fleet-render's `managed_agents` ranks them the
+    /// same way). None when it renders none of them.
+    pub fn runner(&self) -> Option<&DepartmentMember> {
+        self.members.iter().find(|m| m.renders)
+    }
+
+    /// The agent running in the department's container when that agent is
+    /// not `id` — the one an act on `id`'s container would really reach.
+    pub fn runs_instead_of(&self, id: &str) -> Option<&DepartmentMember> {
+        self.runner().filter(|r| r.id != id)
+    }
+}
+
+/// The tail every [`shared_department_refusal`] ends with — what
+/// [`is_shared_department_refusal`] recognises.
+const SHARED_DEPARTMENT_TAIL: &str = "(Talaria never merges two agents into one)";
+
+/// The refusal an act on `name` meets when its department's container is
+/// `runner`'s: starting, stopping or rolling it — or reaching into its memory
+/// — would act on the other agent. `action` is a control verb (`up`,
+/// `unretire` read as "start") or the phrase to say ("read memory from").
+pub fn shared_department_refusal(
+    action: &str,
+    name: &str,
+    department: &str,
+    runner: &str,
+) -> String {
+    let verb = match action {
+        "up" | "unretire" => "start",
+        other => other,
+    };
+    format!(
+        "{name} has no container of its own to {verb}: its department \"{department}\" is also {runner}'s, and {runner} runs in that department's container. Retire and delete one of the two {SHARED_DEPARTMENT_TAIL}"
+    )
+}
+
+/// Whether an error string is [`shared_department_refusal`]'s sentence, for
+/// a route that holds only the string and answers it 409.
+pub fn is_shared_department_refusal(msg: &str) -> bool {
+    msg.contains(SHARED_DEPARTMENT_TAIL)
+}
+
+/// The agent the render runs in `department`'s container when that agent is
+/// not `id`: the one a department-keyed act on `id` — a roll, a restart, a
+/// start, an exec into its memory — would really reach. None when `id` holds
+/// its department alone, or is the one running there. Every door that acts on
+/// an agent's container by department asks this first (the control route,
+/// the config and MCP applies, the personal assistant's doors, memory and
+/// media).
+pub async fn runner_instead_of(
+    pg: &PgPool,
+    id: &str,
+    department: &str,
+) -> Result<Option<DepartmentMember>, sqlx::Error> {
+    Ok(department_share(pg, department)
+        .await?
+        .and_then(|share| share.runs_instead_of(id).cloned()))
+}
+
+/// Rows in (department, oldest first) order, grouped; a department with one
+/// member is not shared and is dropped.
+fn group_shared(rows: Vec<(String, DepartmentMember)>) -> Vec<SharedDepartment> {
+    let mut out: Vec<SharedDepartment> = Vec::new();
+    for (department, member) in rows {
+        match out.last_mut() {
+            Some(last) if last.department == department => last.members.push(member),
+            _ => out.push(SharedDepartment {
+                department,
+                members: vec![member],
+            }),
+        }
+    }
+    out.retain(|s| s.members.len() > 1);
+    out
+}
+
+type MemberTuple = (String, String, String, String, bool);
+
+fn member_row(
+    (department, id, slug, display_name, renders): MemberTuple,
+) -> (String, DepartmentMember) {
+    (
+        department,
+        DepartmentMember {
+            id,
+            slug,
+            display_name,
+            renders,
+        },
+    )
+}
+
+/// Every department more than one agent holds, for the people who can untie
+/// it: the roster read, the agent page and the alerts.
+pub async fn shared_departments(pg: &PgPool) -> Result<Vec<SharedDepartment>, sqlx::Error> {
+    let rows: Vec<MemberTuple> = sqlx::query_as(
+        "select d.department, d.id::text, d.slug, d.display_name, \
+           (d.managed and d.enabled and exists (select 1 from agent_versions v \
+              where v.agent_id = d.id and v.version = d.current_version)) as renders \
+         from agent_defs d \
+         where d.department in \
+           (select department from agent_defs group by department having count(*) > 1) \
+         order by d.department, d.created_at, d.id",
+    )
+    .fetch_all(pg)
+    .await?;
+    Ok(group_shared(rows.into_iter().map(member_row).collect()))
+}
+
+/// [`shared_departments`] for one department: None when one agent (or none)
+/// holds it.
+pub async fn department_share(
+    pg: &PgPool,
+    department: &str,
+) -> Result<Option<SharedDepartment>, sqlx::Error> {
+    let rows: Vec<MemberTuple> = sqlx::query_as(
+        "select d.department, d.id::text, d.slug, d.display_name, \
+           (d.managed and d.enabled and exists (select 1 from agent_versions v \
+              where v.agent_id = d.id and v.version = d.current_version)) as renders \
+         from agent_defs d where d.department = $1 \
+         order by d.created_at, d.id",
+    )
+    .bind(department)
+    .fetch_all(pg)
+    .await?;
+    Ok(group_shared(rows.into_iter().map(member_row).collect())
+        .into_iter()
+        .next())
+}
+
+/// The roster's `departmentShare` for one def: null for a department it holds
+/// alone; otherwise who runs in the department's container and who else holds
+/// it.
+fn department_share_wire(shared: &[SharedDepartment], id: &str, department: &str) -> Value {
+    let Some(share) = shared.iter().find(|s| s.department == department) else {
+        return Value::Null;
+    };
+    let runner = share.runner();
+    serde_json::json!({
+        "runs": runner.is_some_and(|r| r.id == id),
+        "runner": runner,
+        "others": share.members.iter().filter(|m| m.id != id).collect::<Vec<_>>(),
+    })
+}
+
 /// Insert-or-refresh a def by slug (upsertAgentDef). The create flow reaches
 /// this only after its exists pre-check, but the upsert — not a bare insert —
 /// is the contract: a slug already present keeps its role unless a new one is
 /// supplied (imports don't carry it).
+///
+/// Every writer of `agent_defs.department` comes through here, and here a
+/// department another agent holds is refused ([`DepartmentTaken`]). The check
+/// and the write share one transaction under a per-department advisory lock,
+/// so two hires racing into one department cannot both pass it: the second
+/// waits for the first to commit and then sees its row.
 pub async fn upsert_agent_def(
     pg: &PgPool,
     input: &UpsertDef<'_>,
-) -> Result<AgentDefRow, sqlx::Error> {
+) -> Result<AgentDefRow, UpsertDefError> {
     let model = format!("{}-{}", input.slug, input.department);
+    let mut tx = pg.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock(hashtext($1))")
+        .bind(format!("agent-department:{}", input.department))
+        .execute(&mut *tx)
+        .await?;
+    if let Some(taken) = department_holder(&mut *tx, input.department, input.slug).await? {
+        return Err(UpsertDefError::DepartmentTaken(taken));
+    }
     // A NEW row starts closed ([`default_disabled_for_new`]); an existing
     // slug keeps whatever its managers opened — the default is for the
     // insert only, never a reset on re-import. Nothing here knows whether
@@ -786,8 +1071,9 @@ pub async fn upsert_agent_def(
     .bind(input.role)
     .bind(input.source)
     .bind(serde_json::json!(default_disabled_for_new(false)))
-    .fetch_one(pg)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(def_row(row))
 }
 
@@ -1606,5 +1892,210 @@ mod tests {
             },
         );
         assert_eq!(out.unwrap_err(), "unknown endpoint \"nowhere\"");
+    }
+
+    fn member(id: &str, renders: bool) -> DepartmentMember {
+        DepartmentMember {
+            id: id.into(),
+            slug: id.into(),
+            display_name: id.to_uppercase(),
+            renders,
+        }
+    }
+
+    #[test]
+    fn a_held_department_is_refused_in_a_sentence_the_string_layers_can_still_recognise() {
+        let taken = DepartmentTaken {
+            department: "research".into(),
+            holder_slug: "ava".into(),
+            holder_name: "Ava".into(),
+        };
+        let msg = UpsertDefError::DepartmentTaken(taken.clone()).to_string();
+        assert_eq!(msg, taken.to_string());
+        assert!(msg.starts_with("the department \"research\" already belongs to Ava (ava)"));
+        assert!(is_department_taken(&msg));
+        // The hire's resume path adopts on "already exists": this sentence
+        // must never read as that one.
+        assert!(!msg.contains("already exists"));
+        assert!(!is_department_taken("agent \"ava\" already exists"));
+    }
+
+    #[test]
+    fn shared_departments_group_in_order_and_drop_a_department_held_once() {
+        let rows = vec![
+            ("ops".to_string(), member("solo", true)),
+            ("research".to_string(), member("ava", true)),
+            ("research".to_string(), member("zed", true)),
+            ("support".to_string(), member("old", false)),
+            ("support".to_string(), member("new", true)),
+        ];
+        let shared = group_shared(rows);
+        assert_eq!(
+            shared
+                .iter()
+                .map(|s| s.department.as_str())
+                .collect::<Vec<_>>(),
+            vec!["research", "support"],
+            "a department one agent holds is not shared"
+        );
+        // The oldest that renders runs; the other is left out.
+        assert_eq!(shared[0].runner().map(|m| m.id.as_str()), Some("ava"));
+        assert_eq!(
+            shared[0].runs_instead_of("zed").map(|m| m.id.as_str()),
+            Some("ava")
+        );
+        assert_eq!(shared[0].runs_instead_of("ava"), None);
+        // An older agent the render does not run (retired) does not hold the
+        // container: the oldest one it DOES run does.
+        assert_eq!(shared[1].runner().map(|m| m.id.as_str()), Some("new"));
+        assert_eq!(
+            shared[1].runs_instead_of("old").map(|m| m.id.as_str()),
+            Some("new")
+        );
+        // Nobody runs: nobody else's container to protect.
+        let idle = SharedDepartment {
+            department: "x".into(),
+            members: vec![member("a", false), member("b", false)],
+        };
+        assert_eq!(idle.runner(), None);
+        assert_eq!(idle.runs_instead_of("a"), None);
+    }
+
+    #[test]
+    fn the_shared_department_refusal_names_both_agents_and_the_way_out() {
+        assert_eq!(
+            shared_department_refusal("roll", "Zed", "research", "Ava"),
+            "Zed has no container of its own to roll: its department \"research\" is also Ava's, and Ava runs in that department's container. Retire and delete one of the two (Talaria never merges two agents into one)"
+        );
+        // Bringing it up or back would start the other agent's container.
+        for action in ["up", "unretire"] {
+            assert!(
+                shared_department_refusal(action, "Zed", "research", "Ava")
+                    .contains("of its own to start:")
+            );
+        }
+        // A door that reaches into the container says what it would do.
+        let memory = shared_department_refusal("read memory from", "Zed", "research", "Ava");
+        assert!(
+            memory.starts_with("Zed has no container of its own to read memory from:"),
+            "{memory}"
+        );
+        // The string layers answer it 409; nothing else reads as it — not
+        // the hire's department refusal, not the control route's catch arm.
+        assert!(is_shared_department_refusal(&memory));
+        assert!(!is_shared_department_refusal(
+            "could not roll the agent — see server logs"
+        ));
+        let taken = DepartmentTaken {
+            department: "research".into(),
+            holder_slug: "ava".into(),
+            holder_name: "Ava".into(),
+        };
+        assert!(!is_shared_department_refusal(&taken.to_string()));
+        assert!(!is_department_taken(&memory));
+    }
+
+    #[test]
+    fn the_roster_names_the_runner_and_the_others_for_a_shared_department_only() {
+        let shared = group_shared(vec![
+            ("research".to_string(), member("ava", true)),
+            ("research".to_string(), member("zed", true)),
+        ]);
+        assert_eq!(department_share_wire(&shared, "solo", "ops"), Value::Null);
+        assert_eq!(
+            department_share_wire(&shared, "zed", "research"),
+            serde_json::json!({
+                "runs": false,
+                "runner": {"id": "ava", "slug": "ava", "displayName": "AVA"},
+                "others": [{"id": "ava", "slug": "ava", "displayName": "AVA"}],
+            })
+        );
+        assert_eq!(
+            department_share_wire(&shared, "ava", "research"),
+            serde_json::json!({
+                "runs": true,
+                "runner": {"id": "ava", "slug": "ava", "displayName": "AVA"},
+                "others": [{"id": "zed", "slug": "zed", "displayName": "ZED"}],
+            })
+        );
+    }
+
+    /// The one-agent rule against a migrated database: a second agent is
+    /// refused the department, the same slug re-upserting its own department
+    /// is not, and two writers racing into one fresh department land one row
+    /// between them. `#[ignore]`d — it needs a database; CI's api-integration
+    /// job runs it:
+    ///
+    ///   DATABASE_URL=postgres://… cargo test -p talaria-agent-defs --lib -- --ignored live_
+    #[tokio::test]
+    #[ignore = "live DB: set DATABASE_URL"]
+    async fn live_a_department_belongs_to_one_agent_even_under_a_race() {
+        let url = std::env::var("DATABASE_URL").expect("set DATABASE_URL to run the live tests");
+        let pg = PgPool::connect(&url).await.expect("connect");
+        let tag: String = uuid::Uuid::new_v4().simple().to_string()[..10].to_string();
+        let dept = format!("deptlive-{tag}");
+        let upsert = |slug: String, dept: String| {
+            let pg = pg.clone();
+            async move {
+                upsert_agent_def(
+                    &pg,
+                    &UpsertDef {
+                        slug: &slug,
+                        department: &dept,
+                        display_name: &slug,
+                        role: None,
+                        source: "created",
+                    },
+                )
+                .await
+            }
+        };
+        let first = format!("dla{tag}");
+        let second = format!("dlb{tag}");
+        let run = async {
+            upsert(first.clone(), dept.clone())
+                .await
+                .expect("the first agent lands");
+            match upsert(second.clone(), dept.clone()).await {
+                Err(UpsertDefError::DepartmentTaken(t)) => {
+                    assert_eq!(t.holder_slug, first);
+                    assert_eq!(t.department, dept);
+                }
+                other => panic!("a second agent in the department must be refused: {other:?}"),
+            }
+            // The holder re-upserting itself is not a conflict.
+            upsert(first.clone(), dept.clone())
+                .await
+                .expect("an agent keeps its own department");
+
+            // The race: eight writers, eight slugs, one fresh department.
+            let raced = format!("deptrace-{tag}");
+            let attempts = (0..8).map(|i| upsert(format!("dlr{i}{tag}"), raced.clone()));
+            let results = futures_util::future::join_all(attempts).await;
+            let landed = results.iter().filter(|r| r.is_ok()).count();
+            let refused = results
+                .iter()
+                .filter(|r| matches!(r, Err(UpsertDefError::DepartmentTaken(_))))
+                .count();
+            assert_eq!((landed, refused), (1, 7), "{results:?}");
+            let rows: i64 =
+                sqlx::query_scalar("select count(*) from agent_defs where department = $1")
+                    .bind(&raced)
+                    .fetch_one(&pg)
+                    .await
+                    .unwrap();
+            assert_eq!(rows, 1);
+        };
+        use futures_util::FutureExt as _;
+        let outcome = std::panic::AssertUnwindSafe(run).catch_unwind().await;
+        sqlx::query("delete from agent_defs where department in ($1, $2)")
+            .bind(&dept)
+            .bind(format!("deptrace-{tag}"))
+            .execute(&pg)
+            .await
+            .unwrap();
+        if let Err(p) = outcome {
+            std::panic::resume_unwind(p);
+        }
     }
 }

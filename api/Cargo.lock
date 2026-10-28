@@ -3625,6 +3625,7 @@ name = "talaria-agent-media"
 version = "0.1.0"
 dependencies = [
  "sqlx",
+ "talaria-agent-defs",
  "talaria-fleet-docker",
  "tokio",
  "tracing",
@@ -3635,6 +3636,7 @@ name = "talaria-agent-memory"
 version = "0.1.0"
 dependencies = [
  "sqlx",
+ "talaria-agent-defs",
  "talaria-fleet-docker",
  "talaria-internal-history",
  "tokio",
@@ -3742,6 +3744,7 @@ dependencies = [
  "serde",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-defs",
  "talaria-boards",
  "talaria-brain-health",
  "talaria-fleet-agents",
@@ -4902,6 +4905,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-defs",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-users",

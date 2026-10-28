@@ -356,6 +356,43 @@ pub async fn post(
         )
         .await;
     }
+    if created && apply && managed {
+        // ONE CONTAINER PER DEPARTMENT. The apply below reaches the container
+        // by department, and where an older agent holds this one's too (a
+        // pair from before a department became one agent's) that container
+        // is the other agent's: the render leaves this one out, so nothing of
+        // this version runs anywhere, and applying would restart the other
+        // agent for an edit that is not its own. The version stands; the
+        // answer says it was not applied, and why, in `warning` — the one
+        // field every apply that did not land answers, and the one the Config
+        // form shows.
+        match talaria_agent_defs::runner_instead_of(&state.pg, &def_id, &department).await {
+            Ok(Some(runner)) => {
+                let warning = talaria_agent_defs::shared_department_refusal(
+                    "roll",
+                    &display_name,
+                    &department,
+                    &runner.display_name,
+                );
+                return Ok(Json(json!({
+                    "ok": true,
+                    "version": version,
+                    "created": created,
+                    "applied": false,
+                    "warning": warning,
+                    "notes": notes,
+                }))
+                .into_response());
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return Ok(internal(
+                    "[fleet/defs/edit] department share read failed",
+                    e,
+                ));
+            }
+        }
+    }
     let mut applied = false;
     if created && apply && managed {
         // Roll, don't restart: the new config comes up beside the old
@@ -375,7 +412,24 @@ pub async fn post(
                 }))
                 .into_response());
             }
-            Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
+            // A step that threw (the render, the image pull, the recreate)
+            // is an apply that did not land too, and the version above is
+            // already written: the same answer as a soft failure, the reason
+            // in `warning`. A bare 400 here said nothing of the saved
+            // version, and a second Save & apply of the same draft is a
+            // no-op (nothing new to create), so the form closed on it.
+            Err(e) => {
+                tracing::warn!("[fleet/defs/edit] roll of {department} failed: {e}");
+                return Ok(Json(json!({
+                    "ok": true,
+                    "version": version,
+                    "created": created,
+                    "applied": false,
+                    "warning": format!("the roll failed — {e}"),
+                    "notes": notes,
+                }))
+                .into_response());
+            }
         }
     }
     // `notes` is always present and usually empty — one shape for the client,

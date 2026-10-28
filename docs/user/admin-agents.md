@@ -17,6 +17,24 @@ ready for your red pen. Set **Name** and handle, pick a **role** (from **Your or
 or the **Common roles** Talaria maintains) and department, and optionally **Start the
 container now**.
 
+To skip the description, **Configure manually →** opens the same review form empty: type the
+name, handle and department, and **Create agent** hires it. **Duplicate** on a roster agent
+opens that form with the agent's chassis (model tiers, tools and plugins) preselected, and the
+identity is yours to fill in.
+
+A department is the agent's own: it names its container and its memory, so no two agents share
+one. A department another agent already holds (even a retired one) is refused — the modal says
+*Taken by …* as you type it — and so is a federated roster that would put two agents in one. An
+install from before this rule may still hold such a pair: the older agent runs in the
+department's container, the other one is left out of the fleet, and both agents' **Summary**
+tabs and the alerts say so. Nothing you do on the left-out agent reaches the other one's
+container: starting, stopping and rolling it are refused, a config change saves as a version
+without being applied, and its memory tab answers that it has none of its own. Retire and delete
+one of them to untie it; Talaria never merges two agents into one. If the newer agent had already
+taken the container before the upgrade, the first fleet roll after an image deploy puts the older
+one back; on an install run from a checkout, **Roll** the older one to put it back in its
+container.
+
 Empty fleet? *"Describe the first one and Muse designs it: identity, soul, and starter
 skills."* — **Design your first agent**.
 
@@ -89,6 +107,15 @@ agent mid-roll cannot be rolled again until it finishes. The strip above the ros
 tally and every failure sentence until you dismiss it.
 
 ### Config
+
+**Save version** saves the form as a new version; **Save & apply** also puts it on the running
+agent. When the apply does not land (a roll step failed, the container never reported healthy,
+the roll found the agent mid-roll, the agent is retired, or it has no container of its own), the
+version is still saved, and the form stays open and says *Saved as version N, not applied:* with
+the reason, rather than closing as if it had worked. A soul saved from the workspace says the
+same in a notice. Pressing **Save & apply** again with nothing changed saves nothing new, so it
+has nothing new to apply: the form says version N is still not applied, with the same reason.
+Once that clears, **Roll** the agent from the roster to put version N on it.
 
 - **Main model** — its brain.
 - **Model tiers (aliases)** — named slots (like `opus`) you can address per-message with a

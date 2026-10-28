@@ -18,7 +18,8 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use talaria_agent_defs::{
-    NewVersion, UpsertDef, add_version_if_changed, dept_ok, slug_ok, upsert_agent_def,
+    NewVersion, UpsertDef, add_version_if_changed, department_holder, dept_ok, slug_ok,
+    upsert_agent_def,
 };
 use talaria_agent_secrets::{plan_config_seal, seal_config_literals};
 use talaria_fleet_create::ensure_agent_key;
@@ -42,6 +43,11 @@ pub struct FederatedAgent {
 pub struct FederateResult {
     pub agents: Vec<FederatedAgent>,
     pub errors: Vec<String>,
+    /// Roster entries that would put a second agent in a department — one
+    /// another agent already holds, or one an earlier entry claims. Any at
+    /// all and nothing is imported: the route answers 409 with these.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<String>,
 }
 
 /// `"${LLM_API_KEY}"` → `"LLM_API_KEY"`; a literal key names no env var (and
@@ -155,6 +161,7 @@ pub async fn federate_from_dir(
     let mut result = FederateResult {
         agents: Vec::new(),
         errors: Vec::new(),
+        conflicts: Vec::new(),
     };
     let root = std::path::Path::new(dir);
     if !tokio::fs::metadata(root)
@@ -194,6 +201,23 @@ pub async fn federate_from_dir(
         _ => empty,
     };
 
+    // A department is one agent's container and memory (talaria-agent-defs,
+    // "A department is one agent's key"), so an import that would put a
+    // second agent in one is refused whole, before anything is written —
+    // fixed in the roster and re-run, rather than half-landed. An entry
+    // whose slug already exists is the re-run's "exists" and claims nothing.
+    match department_conflicts(pg, &roster).await {
+        Ok(conflicts) if !conflicts.is_empty() => {
+            result.conflicts = conflicts;
+            return result;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            result.errors.push(format!("department check: {e}"));
+            return result;
+        }
+    }
+
     for entry in &roster {
         let field = |k: &str| entry.get(k).and_then(Value::as_str).map(str::trim);
         let (Some(slug), Some(department)) = (field("slug"), field("department")) else {
@@ -221,6 +245,44 @@ pub async fn federate_from_dir(
         }
     }
     result
+}
+
+/// The roster's department claims that cannot land: an entry the loop would
+/// create (a valid, new slug) whose department another agent holds, or an
+/// earlier entry in the same roster claims.
+async fn department_conflicts(pg: &PgPool, roster: &[Value]) -> Result<Vec<String>, String> {
+    let mut claimed: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut conflicts = Vec::new();
+    for entry in roster {
+        let field = |k: &str| entry.get(k).and_then(Value::as_str).map(str::trim);
+        let (Some(slug), Some(department)) = (field("slug"), field("department")) else {
+            continue;
+        };
+        if !slug_ok(slug) || !dept_ok(department) {
+            continue; // the loop reports these by name
+        }
+        let exists: Option<(i32,)> = sqlx::query_as("select 1 from agent_defs where slug = $1")
+            .bind(slug)
+            .fetch_optional(pg)
+            .await
+            .map_err(|e| e.to_string())?;
+        if exists.is_some() {
+            continue;
+        }
+        if let Some(taken) = department_holder(pg, department, slug)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            conflicts.push(format!("{slug}: {taken}"));
+        } else if let Some(first) = claimed.get(department) {
+            conflicts.push(format!(
+                "{slug}: the department \"{department}\" is also {first}'s in this roster — give each agent its own department"
+            ));
+        } else {
+            claimed.insert(department.to_string(), slug.to_string());
+        }
+    }
+    Ok(conflicts)
 }
 
 #[allow(clippy::too_many_arguments)]

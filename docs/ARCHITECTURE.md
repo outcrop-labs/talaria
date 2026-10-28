@@ -174,6 +174,26 @@ Agents are **rendered, not hand-written**. The fleet render (api/src/fleet/rende
 app reads to dial each agent's persona gateway directly on its published port. No bridge, no
 multiplexer.
 
+- **A department is one agent's key.** It names the agent's compose service (`agent-<department>`),
+  its Hermes data volume (`<project>_hermes-<department>`), its roll lock and its model id
+  (`<slug>-<department>`), so two agents in one department would be one container and one Hermes
+  home. Every writer (hire, clone, personal assistant, federation) goes through
+  `talaria_agent_defs::upsert_agent_def`, which refuses a department another agent holds — retired
+  or not, since a retired agent keeps its volume — under a per-department advisory lock, and the
+  doors answer 409. There is no unique index: an index build fails outright on an install that
+  already holds such a pair, and roll-safe migrations only add ([UPDATES.md](./UPDATES.md)). A pair
+  that predates the rule is never merged or renamed: the render runs the older agent in the
+  department's container (`department_runners`) and leaves the other out of the compose file and
+  the manifest with a warning. No door acts on the runner's container for the left-out agent
+  (`talaria_agent_defs::runner_instead_of`): its lifecycle acts are refused (retire and delete
+  excepted, and delete leaves the shared container and volume alone), a config or MCP save lands
+  as a version without the roll, a personal assistant's edit skips the restart and its re-enable is
+  refused, and its memory and media doors answer 409. The reconcile and the fleet roll act on each
+  department's container once, as the runner's. The roster, the agent's Summary tab and the alerts
+  name both. The render used to keep the slug that sorted last, so an install upgraded with a pair
+  in place can find the other agent still in the container: a deploy's fleet roll
+  (`roll_running_agents`) recreates it as the runner's, and on a checkout a **Roll** of the runner
+  does.
 - Every model spec in a rendered config routes through the app's LLM gateway, so agents have
   exactly one upstream — guarded, metered, attributed. Each agent reaches it on **its own**
   gateway key (`agent:<slug>`, stamped as `LLM_API_KEY_<SLUG>` and interpolated into that
