@@ -253,7 +253,11 @@
     if (pinned && tier) tier = ''
   })
   const routedModel = $derived(tier ? `${agentModel}-${tier}` : agentModel)
-  const { efforts, default: agentEffort } = useModelEfforts(() => routedModel)
+  // Kept whole and read through its getters: a destructured `efforts` is the
+  // query's answer at mount (`[]` on a fresh page) and never moves after.
+  const modelEfforts = useModelEfforts(() => routedModel)
+  const efforts = $derived(modelEfforts.efforts)
+  const agentEffort = $derived(modelEfforts.default)
   // ── The seeded default: the AGENT-CONFIGURED effort for the routed model
   // (the pick saved beside the model in the agent editor) when there is one,
   // else the owner's platform default (Settings). Both are only ever offered

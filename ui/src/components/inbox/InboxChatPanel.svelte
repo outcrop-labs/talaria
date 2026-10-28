@@ -209,7 +209,11 @@
   // auto, stays authoritative for the conversation. Same rule as ChatView.
   let effort = $state('')
   let effortPristine = $state(true)
-  const { efforts, default: agentEffort } = useModelEfforts(() => assistant?.model ?? null)
+  // Kept whole and read through its getters, as in ChatView: destructured,
+  // the levels would be the query's answer at mount and never move.
+  const modelEfforts = useModelEfforts(() => assistant?.model ?? null)
+  const efforts = $derived(modelEfforts.efforts)
+  const agentEffort = $derived(modelEfforts.default)
   const prefs = useProfilePrefs()
   const preferredEffort = $derived(prefs.data?.preferredEffort ?? null)
   const seedEffort = $derived(agentEffort ?? preferredEffort)
