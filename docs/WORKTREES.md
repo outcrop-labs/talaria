@@ -140,9 +140,10 @@ data so you still have realistic agents/boards/tickets to work against.
 It prints the exact `talaria dev` command and the teardown steps.
 
 **The setup is the invoking checkout's, not the base ref's.** `bun talaria worktree`
-and the `talaria` shim run the CLI of the checkout you call them from — usually the
-primary, on `main` — so `talaria worktree <name> origin/rc` writes `ui/.env` and
-picks ports by `main`'s rules, however far `rc` has moved. A stack cut that way on
+runs the CLI of the checkout you call it from, and the `talaria` shim always runs the
+primary's, wherever you call it. That is usually the primary, on `main`, so
+`talaria worktree <name> origin/rc` writes `ui/.env` and picks ports by `main`'s
+rules, however far `rc` has moved. A stack cut that way on
 2026-10-22 got no `TALARIA_FLEET_PROJECT`, because the primary's CLI predated it.
 When the running `cli/src/cmd/worktree.ts` differs from the base ref's, the command
 ends with a warning that says so: bring the invoking checkout up to the base ref and
