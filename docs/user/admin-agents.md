@@ -22,9 +22,13 @@ one. A department another agent already holds (even a retired one) is refused �
 *Taken by …* as you type it — and so is a federated roster that would put two agents in one. An
 install from before this rule may still hold such a pair: the older agent runs in the
 department's container, the other one is left out of the fleet, and both agents' **Summary**
-tabs and the alerts say so. Retire and delete one of them to untie it; Talaria never merges two
-agents into one. If the newer agent had already taken the container before the upgrade, **Roll**
-the older one to put it back in its container.
+tabs and the alerts say so. Nothing you do on the left-out agent reaches the other one's
+container: starting, stopping and rolling it are refused, a config change saves as a version
+without being applied, and its memory tab answers that it has none of its own. Retire and delete
+one of them to untie it; Talaria never merges two agents into one. If the newer agent had already
+taken the container before the upgrade, the first fleet roll after an image deploy puts the older
+one back; on an install run from a checkout, **Roll** the older one to put it back in its
+container.
 
 Empty fleet? *"Describe the first one and Muse designs it: identity, soul, and starter
 skills."* — **Design your first agent**.
