@@ -600,7 +600,7 @@ fn owned(entry: &ManifestEntry) -> ManifestEntry {
     }
 }
 
-/// How much of a flagged command the audit row keeps.
+/// How much of a flagged command (or its description) the audit row keeps.
 pub const RECORDED_COMMAND_CHARS: usize = 500;
 
 /// The command as a record keeps it: redacted again with Talaria's own
@@ -608,6 +608,14 @@ pub const RECORDED_COMMAND_CHARS: usize = 500;
 pub fn recorded_command(command: &str) -> String {
     let (command, _) = crate::guard::redact_secrets(command, None);
     command.chars().take(RECORDED_COMMAND_CHARS).collect()
+}
+
+/// The description as a refusal's record keeps it, the same way as the
+/// command. Hermes writes most descriptions itself, in a sentence, but an MCP
+/// form's goes on to list each field the server asked for in the server's own
+/// words, as many as the server likes.
+pub fn recorded_description(description: &str) -> String {
+    recorded_command(description)
 }
 
 /// One request: refused here when no answer could make it land, a card when
@@ -804,7 +812,7 @@ async fn refuse_with(
             agent_model: agent_model.to_string(),
             run_id: asked.run_id.clone(),
             command: recorded_command(&asked.command),
-            description: asked.description.clone(),
+            description: recorded_description(&asked.description),
             failure,
             reason: reason.map(str::to_string),
         })
@@ -1371,6 +1379,33 @@ mod tests {
                 .unwrap()
                 .contains(&"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a".to_string())
         );
+    }
+
+    #[test]
+    fn a_refusal_records_the_description_redacted_and_clamped_like_the_command() {
+        // An MCP form's description goes on to list the server's fields in
+        // its own words, as many as it likes; the audit row keeps no more of
+        // it than of a command, with Talaria's credential patterns redacted.
+        let mut description = "Fields requested by MCP server 'faconfirm':\n  - token (string): \
+                               paste ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa here"
+            .to_string();
+        for i in 0..100 {
+            description.push_str(&format!(
+                "\n  - field{i} (string): more of the server's words"
+            ));
+        }
+        let kept = recorded_description(&description);
+        assert!(kept.starts_with("Fields requested by MCP server 'faconfirm':\n  - token"));
+        assert!(!kept.contains("ghp_aaaa"), "{kept}");
+        assert!(kept.contains("[redacted "), "{kept}");
+        assert_eq!(kept.chars().count(), RECORDED_COMMAND_CHARS);
+        // Hermes' own sentences are kept as they are.
+        for own in [
+            "delete in root path",
+            "Approval requested by MCP server 'faconfirm'.",
+        ] {
+            assert_eq!(recorded_description(own), own);
+        }
     }
 
     #[tokio::test]
