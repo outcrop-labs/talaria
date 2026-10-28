@@ -1441,6 +1441,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         fleet_nous_off(&mut routed);
         fleet_delegation(&mut routed, def.max_children);
         fleet_disabled_toolsets(&mut routed, &toolset_floor, &def.disabled_toolsets);
+        fleet_browser_local_close(&mut routed, &secret_names);
         let browser_engine = fleet_browser_engine(&routed);
         fleet_tool_loop_guardrails(&mut routed);
         fleet_title_generation(&mut routed);
@@ -2533,9 +2534,9 @@ fn fleet_disabled_toolsets(
 }
 
 /// Whether this agent's starts install the browser engine: the `browser`
-/// toolset on AND the `terminal` toolset on, read from the merged
-/// `agent.disabled_toolsets` (so [`fleet_disabled_toolsets`] runs first).
-/// It renders nothing either way: Hermes's own default browser stands, and a
+/// toolset on AND the `terminal` toolset on, read from the merged config
+/// ([`toolset_closed`], so [`fleet_disabled_toolsets`] runs first). It
+/// renders nothing itself: Hermes's own default browser stands, and a
 /// `browser:` block the def authored passes through as written.
 ///
 /// WHY THE TERMINAL DECIDES. Hermes v0.22.4 has two browser surfaces, and
@@ -2558,40 +2559,211 @@ fn fleet_disabled_toolsets(
 /// through it). With the terminal on, Hermes's premise holds: the shell
 /// already reaches all of it. So only that agent gets the engine, and with it
 /// Hermes's default `browser_exec`. A terminal-less agent with `browser`
-/// ticked renders exactly what it rendered before the engine existed (no
-/// `browser:` block, no engine), so it has no browser tool, an upgrade
-/// changes nothing for it, and the toolset grid says why (ui's
-/// `browserNote`).
+/// ticked and no `browser:` block of its own renders exactly what it rendered
+/// before the engine existed (no `browser:` block, no engine), so it has no
+/// browser tool, an upgrade changes nothing for it, and the toolset grid says
+/// why (ui's `browserNote`).
 ///
-/// "The terminal" is the `terminal` TOOL, which is what Hermes's gate reads.
-/// Besides `terminal`, the toolsets that carry it are `debugging` (a retired
-/// name Talaria still expands, [`talaria_agent_defs::toolset_names`]) and
-/// Hermes's composite bundles (`hermes-*`, `all`), which carry every browser
-/// tool too, so closing one of those leaves no browser tool to offer and needs
-/// no case here.
+/// "The terminal" is the `terminal` TOOL, which is what Hermes's gate reads
+/// ([`toolset_closed`] says where it can be closed).
 ///
-/// An authored backend is the def's call, and changes nothing here. Hermes
-/// reads anything but `browser-use` as the built-in tools, which need the
-/// same engine: a terminal-less agent gets none installed, but one a start
-/// with the terminal open left on the volume stays there and would run it.
-/// That reach is the def's own choice, and the grid says so on that agent.
+/// A `browser:` block the def authored stands, and with the terminal open it
+/// is the def's own browser. With the terminal closed, one that Hermes would
+/// run as a local browser has the `browser` toolset closed for it first
+/// ([`fleet_browser_local_close`]), so no terminal-less agent keeps a browser
+/// without the private-address check, even on an engine an earlier start left
+/// on its volume.
 fn fleet_browser_engine(routed: &Map<String, Value>) -> bool {
-    let disabled: Vec<&str> = routed
+    !toolset_closed(routed, "browser") && !toolset_closed(routed, "terminal")
+}
+
+/// Whether the merged config closes `toolset` for the agent's sessions, read
+/// the way Hermes v0.22.4's api_server resolves a turn's tools: the platform
+/// list (`platform_toolsets.api_server`, Hermes's default bundle when the def
+/// authored none) minus `agent.disabled_toolsets`. So it is closed when the
+/// disabled list names it (a retired name as the governed toolsets it closes,
+/// [`talaria_agent_defs::toolset_names`]: `debugging` closes the terminal), or
+/// when the def authored a platform list that carries it nowhere
+/// ([`platform_list_carries`]). Talaria never writes that list, and the
+/// toolset grid does not read it; a def that authors one narrows its agent's
+/// tools behind the grid.
+fn toolset_closed(routed: &Map<String, Value>, toolset: &str) -> bool {
+    let disabled = routed
         .get("agent")
         .and_then(|a| a.get("disabled_toolsets"))
-        .and_then(Value::as_array)
-        .map(|d| d.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
+        .and_then(Value::as_array);
     // A name as the governed toolsets it closes; a stranger is taken as
     // written.
-    let closes = |toolset: &str| {
-        disabled.iter().any(|raw| {
+    let named = disabled.is_some_and(|d| {
+        d.iter().filter_map(Value::as_str).any(|raw| {
             raw.trim() == toolset
                 || talaria_agent_defs::toolset_names(raw)
                     .is_some_and(|names| names.contains(&toolset))
         })
+    });
+    named || api_server_list(routed).is_some_and(|list| !platform_list_carries(&list, toolset))
+}
+
+/// The toolset list the def authored for Hermes's api_server platform, which
+/// replaces that platform's default bundle (v0.22.4 `_get_platform_tools`).
+/// None when there is none: Hermes reads only a list, or a string holding a
+/// list literal (`'["web", "terminal"]'`, older `hermes config set` builds),
+/// and falls back to its default for anything else. A list-literal string
+/// this cannot read is taken as an empty list, so it closes rather than
+/// opens.
+fn api_server_list(routed: &Map<String, Value>) -> Option<Vec<String>> {
+    let value = routed
+        .get("platform_toolsets")?
+        .as_object()?
+        .get("api_server")?;
+    let names = |items: &[Value]| -> Vec<String> {
+        items
+            .iter()
+            .filter_map(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            })
+            .collect()
     };
-    !closes("browser") && !closes("terminal")
+    match value {
+        Value::Array(items) => Some(names(items)),
+        Value::String(s) if s.trim_start().starts_with('[') => {
+            let parsed = serde_json::from_str::<Vec<Value>>(s.trim())
+                .or_else(|_| serde_json::from_str::<Vec<Value>>(&s.trim().replace('\'', "\"")));
+            Some(parsed.map(|items| names(&items)).unwrap_or_default())
+        }
+        _ => None,
+    }
+}
+
+/// Whether an authored platform list carries `toolset` (`terminal` or
+/// `browser`): by name, `debugging` for the terminal tool, or one of
+/// v0.22.4's composites that carry both (`all`, `*`, `coding`, the legacy
+/// `hermes`, and every `hermes-*` bundle but `hermes-webhook`, whose tools are
+/// web search, extract, vision and clarify). A custom toolset is not read, so
+/// it carries nothing here: the reading errs toward closed.
+fn platform_list_carries(list: &[String], toolset: &str) -> bool {
+    list.iter().any(|name| {
+        name == toolset
+            || (toolset == "terminal" && name == "debugging")
+            || matches!(name.as_str(), "all" | "*" | "coding" | "hermes")
+            || (name.starts_with("hermes-") && name != "hermes-webhook")
+    })
+}
+
+/// Which browser Hermes v0.22.4 gives an agent whose `browser` toolset is
+/// on, from its config and the names of its own secrets (which reach Hermes
+/// as env).
+#[derive(Debug, PartialEq, Eq)]
+enum HermesBrowser {
+    /// Browser Use mode: the one `browser_exec` tool, offered only with the
+    /// terminal. Hermes's default (`browser.backend` unset, or `browser-use`).
+    Exec,
+    /// The built-in `browser_*` tools on a browser Hermes calls local (this
+    /// machine's Chromium through the engine, or Camofox), for which it
+    /// skips the private-address check (`_is_local_backend`).
+    Local,
+    /// The built-in tools on a CDP endpoint or a hosted provider, which keep
+    /// Hermes's check.
+    Remote,
+}
+
+/// Hermes's reading of a config value as `str(v or "")`.
+fn py_text(v: &Value) -> String {
+    match v {
+        Value::Null => String::new(),
+        Value::Bool(false) => String::new(),
+        Value::Bool(true) => "True".into(),
+        Value::Number(n) if n.as_f64() == Some(0.0) => String::new(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.clone(),
+        Value::Array(a) if a.is_empty() => String::new(),
+        Value::Object(o) if o.is_empty() => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// The browser Hermes v0.22.4 would give this agent, mirroring
+/// `is_browser_use_cli_mode`, `is_camofox_mode` and `_is_local_backend`.
+/// Where Talaria cannot see a setting (a live `/browser connect`, a
+/// `BROWSER_CDP_URL` or cloud credential in the agent's env), it reads it as
+/// absent, which errs toward `Local`; the one env name read is `CAMOFOX_URL`,
+/// which selects Camofox when no `browser.cloud_provider` is written.
+fn hermes_browser(routed: &Map<String, Value>, secret_names: &[String]) -> HermesBrowser {
+    let cfg = routed.get("browser").and_then(Value::as_object);
+    let get = |key: &str| cfg.and_then(|c| c.get(key));
+    // get_browser_backend: YAML 1.1's bare `off` is `false`, which is a
+    // choice; `true` is unset.
+    let backend = match get("backend") {
+        Some(Value::Bool(false)) => "off".to_string(),
+        Some(Value::Bool(true)) | None => String::new(),
+        Some(v) => py_text(v).trim().to_lowercase(),
+    };
+    let cdp = get("cdp_url").is_some_and(|v| !py_text(v).trim().is_empty());
+    // read_selection("browser"): the written `cloud_provider`, if any.
+    let selection = get("cloud_provider")
+        .filter(|v| !v.is_null())
+        .map(|v| match v {
+            Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+            other => py_text(other).trim().to_lowercase(),
+        })
+        .filter(|s| !s.is_empty());
+    let camofox = !cdp
+        && match &selection {
+            Some(s) => s == "camofox",
+            None => secret_names.iter().any(|n| n == "CAMOFOX_URL"),
+        };
+    if !camofox && (backend.is_empty() || backend == "browser-use") {
+        return HermesBrowser::Exec;
+    }
+    if cdp {
+        return HermesBrowser::Remote;
+    }
+    if camofox {
+        return HermesBrowser::Local;
+    }
+    // _resolve_cloud_provider_uncached: a written key names a provider unless
+    // it normalises to local (or camofox, handled above).
+    let hosted = get("cloud_provider").is_some_and(|v| {
+        let key = py_text(v).trim().to_lowercase();
+        !key.is_empty() && key != "local" && key != "camofox"
+    });
+    if hosted {
+        HermesBrowser::Remote
+    } else {
+        HermesBrowser::Local
+    }
+}
+
+/// Close the `browser` toolset for an agent whose terminal is closed when the
+/// browser Hermes would give it is a local one ([`hermes_browser`]): a def
+/// that authored a backend other than `browser-use`, or Camofox. Hermes
+/// skips its private-address check for that browser, and with no terminal
+/// nothing else of the agent's reaches those networks. Talaria installs no
+/// engine for such an agent, but one that an earlier start with the terminal
+/// open left on the volume would still run the built-in tools, so the render
+/// closes the toolset rather than relying on the engine being absent. A CDP
+/// endpoint or a hosted provider keeps Hermes's check and is left alone, and
+/// so is Hermes's default (`browser_exec`, which needs the terminal anyway),
+/// so a def with no `browser:` block renders exactly what it did before.
+/// The def's own `browser:` block is never rewritten, and the toolset grid
+/// says what happened (ui's `browserNote`).
+fn fleet_browser_local_close(routed: &mut Map<String, Value>, secret_names: &[String]) {
+    if toolset_closed(routed, "browser")
+        || !toolset_closed(routed, "terminal")
+        || hermes_browser(routed, secret_names) != HermesBrowser::Local
+    {
+        return;
+    }
+    // [`fleet_disabled_toolsets`] ran first, so the list is there.
+    if let Some(list) = routed
+        .get_mut("agent")
+        .and_then(|a| a.get_mut("disabled_toolsets"))
+        .and_then(Value::as_array_mut)
+    {
+        list.push(json!("browser"));
+    }
 }
 
 /// Hermes's progressive tool disclosure, pinned on. Every agent carries the
@@ -4375,6 +4547,176 @@ service:
             open.insert("browser".into(), block.clone());
             assert!(fleet_browser_engine(&open), "{block}");
         }
+    }
+
+    /// The merged list after the local-browser close, for a def whose
+    /// own disabled list is `def` and whose authored `browser:` is `block`.
+    fn closed_for(def: &[&str], block: Option<Value>, secrets: &[&str]) -> Vec<Value> {
+        let mut routed = merged(def);
+        if let Some(block) = block {
+            routed.insert("browser".into(), block);
+        }
+        let secrets: Vec<String> = secrets.iter().map(|s| s.to_string()).collect();
+        fleet_browser_local_close(&mut routed, &secrets);
+        routed["agent"]["disabled_toolsets"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn a_local_browser_is_closed_while_the_terminal_is() {
+        // Each of these is the built-in tools on a browser Hermes calls
+        // local, which skips its private-address check: with the terminal
+        // closed the render closes the toolset, so an engine an earlier start
+        // left on the volume runs nothing. The block itself stands.
+        for block in [
+            json!({ "backend": "off", "headed": false }),
+            json!({ "backend": false }),
+            json!({ "backend": " Camofox " }),
+            json!({ "backend": "off", "cloud_provider": "local" }),
+            json!({ "backend": "off", "cloud_provider": null }),
+            json!({ "backend": "off", "cdp_url": "  " }),
+            json!({ "cloud_provider": "camofox" }),
+            json!({ "backend": "browser-use", "cloud_provider": "CAMOFOX" }),
+        ] {
+            let mut routed = merged(&["terminal"]);
+            routed.insert("browser".into(), block.clone());
+            fleet_browser_local_close(&mut routed, &[]);
+            let list = routed["agent"]["disabled_toolsets"].as_array().unwrap();
+            assert_eq!(list.last(), Some(&json!("browser")), "{block}");
+            assert_eq!(routed.get("browser"), Some(&block));
+            assert!(!fleet_browser_engine(&routed), "{block}");
+            // With the terminal open the same block is the def's own browser.
+            let open = closed_for(&[], Some(block.clone()), &[]);
+            assert_eq!(
+                open,
+                merged(&[])["agent"]["disabled_toolsets"]
+                    .as_array()
+                    .unwrap()
+                    .clone()
+            );
+        }
+        // Camofox chosen by its env name alone, with no provider written.
+        let by_env = closed_for(&["terminal"], None, &["CAMOFOX_URL"]);
+        assert_eq!(by_env.last(), Some(&json!("browser")));
+        // A retired name that closes the terminal counts, and so does an
+        // authored platform list without it.
+        let retired = closed_for(&["debugging"], Some(json!({ "backend": "off" })), &[]);
+        assert_eq!(retired.last(), Some(&json!("browser")));
+        let mut listed = merged(&[]);
+        listed.insert(
+            "platform_toolsets".into(),
+            json!({ "api_server": ["web", "browser"] }),
+        );
+        listed.insert("browser".into(), json!({ "backend": "off" }));
+        fleet_browser_local_close(&mut listed, &[]);
+        assert_eq!(
+            listed["agent"]["disabled_toolsets"]
+                .as_array()
+                .unwrap()
+                .last(),
+            Some(&json!("browser"))
+        );
+    }
+
+    #[test]
+    fn hermes_default_and_a_remote_browser_are_left_alone() {
+        let terminal_closed = merged(&["terminal"])["agent"]["disabled_toolsets"]
+            .as_array()
+            .unwrap()
+            .clone();
+        // No block at all (every default agent): the list is exactly what
+        // the toolset merge wrote, so an upgrade changes nothing for it.
+        let fresh = merged(talaria_agent_defs::DEFAULT_DISABLED_FOR_NEW);
+        let mut after = fresh.clone();
+        fleet_browser_local_close(&mut after, &[]);
+        assert_eq!(after, fresh);
+        // Browser Use mode (browser_exec needs the terminal anyway), a CDP
+        // endpoint, and a hosted provider (both keep Hermes's check).
+        for block in [
+            None,
+            Some(json!({ "backend": "browser-use" })),
+            Some(json!({ "backend": null, "headed": true })),
+            Some(json!({ "backend": true })),
+            Some(json!({ "backend": "" })),
+            Some(json!(false)),
+            Some(json!({ "backend": "off", "cdp_url": "http://chrome:9222" })),
+            Some(json!({ "cloud_provider": "camofox", "cdp_url": "ws://chrome:9222" })),
+            Some(json!({ "backend": "off", "cloud_provider": "browserbase" })),
+            Some(json!({ "backend": "off", "cloud_provider": "nous" })),
+            Some(json!({ "cloud_provider": "local" })),
+        ] {
+            let label = format!("{block:?}");
+            assert_eq!(
+                closed_for(&["terminal"], block, &[]),
+                terminal_closed,
+                "{label}"
+            );
+        }
+        // A written provider wins over the env name, as in Hermes.
+        let written = closed_for(
+            &["terminal"],
+            Some(json!({ "cloud_provider": "local" })),
+            &["CAMOFOX_URL"],
+        );
+        assert_eq!(written, terminal_closed);
+        // A browser already closed is not listed twice.
+        let both = merged(&["terminal", "browser"])["agent"]["disabled_toolsets"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            closed_for(
+                &["terminal", "browser"],
+                Some(json!({ "backend": "off" })),
+                &[]
+            ),
+            both
+        );
+    }
+
+    #[test]
+    fn an_authored_platform_list_can_close_the_terminal() {
+        let with = |list: Value| {
+            let mut routed = merged(&[]);
+            routed.insert("platform_toolsets".into(), json!({ "api_server": list }));
+            routed
+        };
+        // Lists that carry both: by name, or through a composite.
+        for list in [
+            json!(["terminal", "browser", "web"]),
+            json!(["debugging", "browser"]),
+            json!(["hermes-api-server"]),
+            json!(["hermes"]),
+            json!(["coding"]),
+            json!(["all"]),
+            json!("[\"terminal\", \"browser\"]"),
+            json!("['terminal', 'browser']"),
+        ] {
+            assert!(fleet_browser_engine(&with(list.clone())), "{list}");
+        }
+        // Lists that leave the terminal (or the browser) out, or that cannot
+        // be read: closed, so no engine.
+        for list in [
+            json!(["web", "browser", "file"]),
+            json!(["terminal", "web"]),
+            json!(["hermes-webhook"]),
+            json!(["safe"]),
+            json!(["my-custom-kit"]),
+            json!([]),
+            json!("[terminal"),
+        ] {
+            assert!(!fleet_browser_engine(&with(list.clone())), "{list}");
+        }
+        // Anything but a list falls back to Hermes's default, which opens
+        // both; so does a platform other than the api_server.
+        for list in [json!("terminal"), json!(null), json!(7)] {
+            assert!(fleet_browser_engine(&with(list.clone())), "{list}");
+        }
+        let mut other = merged(&[]);
+        other.insert("platform_toolsets".into(), json!({ "cli": ["web"] }));
+        assert!(fleet_browser_engine(&other));
     }
 
     #[test]
