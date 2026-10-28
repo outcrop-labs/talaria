@@ -119,11 +119,89 @@ describe('talaria deploy — inside a worktree, the project must be its own', ()
       ctx.root = inWorktree()
       const msg = await attempt(async () => leaf(name).run(ctx, NO_ARGS))
       expect(msg).toContain('worktree "demo"')
-      expect(msg).toContain("compose project 'talaria'")
+      expect(msg).toContain("COMPOSE_PROJECT_NAME: 'talaria', the compose file's default")
       expect(msg).toContain('COMPOSE_PROJECT_NAME=talaria-demo-deploy')
       expect(ctx.calls).toHaveLength(0)
     })
   }
+
+  /** Every multi-instance key CONTAINER.md names, each its own. */
+  const OWN_INSTANCE =
+    'COMPOSE_PROJECT_NAME=talaria-demo-deploy\nTALARIA_STATE_DIR=/var/lib/talaria-demo\nTALARIA_HTTP_PORT=5999\n' +
+    'TALARIA_FLEET_PROJECT=talaria-demo-deploy-fleet\nTALARIA_FLEET_NETWORK=talaria-demo-deploy\n'
+
+  for (const name of ['up', 'down', 'update']) {
+    test(`${name}: a project of its own is not enough; every shared key is named, before any docker or git call`, async () => {
+      // A project of its own still bound /var/lib/talaria and rendered into
+      // talaria-fleet: the production instance's, and on a dev host main's.
+      const ctx = fakeCtx()
+      ctx.root = inWorktree('COMPOSE_PROJECT_NAME=talaria-demo-deploy\n')
+      const msg = await attempt(async () => leaf(name).run(ctx, NO_ARGS))
+      expect(msg).toContain('worktree "demo"')
+      expect(msg).not.toContain('COMPOSE_PROJECT_NAME:')
+      expect(msg).toContain("TALARIA_STATE_DIR: '/var/lib/talaria'")
+      expect(msg).toContain("TALARIA_HTTP_PORT: '5273'")
+      expect(msg).toContain("TALARIA_FLEET_PROJECT: 'talaria-fleet'")
+      expect(msg).toContain("TALARIA_FLEET_NETWORK: 'talaria'")
+      expect(msg).toContain('docs/CONTAINER.md')
+      expect(ctx.calls).toHaveLength(0)
+    })
+
+    test(`${name}: each key's default refuses on its own; an empty value is the default`, async () => {
+      for (const [key, fallback] of [
+        ['TALARIA_STATE_DIR', '/var/lib/talaria'],
+        ['TALARIA_HTTP_PORT', '5273'],
+        ['TALARIA_FLEET_PROJECT', 'talaria-fleet'],
+        ['TALARIA_FLEET_NETWORK', 'talaria'],
+      ]) {
+        const dropped = OWN_INSTANCE.split('\n').filter((l) => !l.startsWith(`${key}=`)).join('\n')
+        const unset = fakeCtx()
+        unset.root = inWorktree(dropped)
+        expect(await attempt(async () => leaf(name).run(unset, NO_ARGS))).toContain(`${key}: '${fallback}'`)
+        expect(unset.calls).toHaveLength(0)
+        const empty = fakeCtx({ env: { [key]: '' } })
+        empty.root = inWorktree(OWN_INSTANCE)
+        expect(await attempt(async () => leaf(name).run(empty, NO_ARGS))).toContain(`${key}: '${fallback}'`)
+        expect(empty.calls).toHaveLength(0)
+      }
+    })
+
+    test(`${name}: a talaria-wt-* project or fleet project is a worktree dev stack's, and refused`, async () => {
+      for (const [key, value] of [
+        ['COMPOSE_PROJECT_NAME', 'talaria-wt-demo-deploy'],
+        ['TALARIA_FLEET_PROJECT', 'talaria-wt-demo-fleet'],
+      ]) {
+        const ctx = fakeCtx({ env: { [key]: value } })
+        ctx.root = inWorktree(OWN_INSTANCE)
+        const msg = await attempt(async () => leaf(name).run(ctx, NO_ARGS))
+        expect(msg).toContain(`${key}: '${value}', a worktree dev stack's name`)
+        expect(ctx.calls).toHaveLength(0)
+      }
+    })
+  }
+
+  test('up with every key its own passes the guard and runs the documented compose', async () => {
+    const ctx = fakeCtx()
+    ctx.root = inWorktree(OWN_INSTANCE)
+    expect(await attempt(async () => leaf('up').run(ctx, NO_ARGS))).not.toContain('worktree "demo"')
+    expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args.includes('up'))).toBe(true)
+  })
+
+  test('down with every key its own, from the shell, passes the guard', async () => {
+    const env = Object.fromEntries(OWN_INSTANCE.trim().split('\n').map((l) => l.split('=') as [string, string]))
+    const ctx = fakeCtx({ env })
+    ctx.root = inWorktree()
+    expect(await attempt(async () => leaf('down').run(ctx, NO_ARGS))).toBe('')
+    expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args.includes('down'))).toBe(true)
+  })
+
+  test('the read-only leaves need only the project of their own', async () => {
+    for (const name of ['logs', 'status', 'creds']) {
+      const ctx = fakeCtx()
+      ctx.root = inWorktree('COMPOSE_PROJECT_NAME=talaria-demo-deploy\n')
+      expect(await attempt(async () => leaf(name).run(ctx, NO_ARGS))).not.toContain('worktree "demo"')
+    }
+  })
 
   test('an explicit project of its own, in docker/.env or the shell, passes', async () => {
     const fromFile = fakeCtx()
@@ -139,7 +217,7 @@ describe('talaria deploy — inside a worktree, the project must be its own', ()
   test("naming the default explicitly is still the default: refused", async () => {
     const ctx = fakeCtx({ env: { COMPOSE_PROJECT_NAME: 'talaria' } })
     ctx.root = inWorktree()
-    expect(await attempt(async () => leaf('down').run(ctx, NO_ARGS))).toContain("compose project 'talaria'")
+    expect(await attempt(async () => leaf('down').run(ctx, NO_ARGS))).toContain("COMPOSE_PROJECT_NAME: 'talaria'")
   })
 
   test('the primary (no marker) keeps the default, as it always has', async () => {
@@ -147,6 +225,11 @@ describe('talaria deploy — inside a worktree, the project must be its own', ()
     ctx.root = makeDeployTree()
     await leaf('status').run(ctx, NO_ARGS)
     expect(ctx.calls.some((c) => c.args.includes('ps'))).toBe(true)
+    // …and every default for the leaves that change things
+    const down = fakeCtx()
+    down.root = makeDeployTree()
+    expect(await attempt(async () => leaf('down').run(down, NO_ARGS))).toBe('')
+    expect(down.calls.some((c) => c.cmd === 'docker' && c.args.includes('down'))).toBe(true)
   })
 
   test("the shim run from inside another checkout refuses: every target would be the shim's checkout's", async () => {

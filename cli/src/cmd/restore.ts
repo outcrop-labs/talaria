@@ -16,7 +16,7 @@ import { join, resolve } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
 import { argvOf, bucketUploadsPath, clientFor, dbLabel, liftAppEnv, localAppDataDir, manifestGet, pgQuery, rcloneRun, storageFromManifest, verifySums } from '../backup/lib'
-import { envFileText, envValue } from '../envfile'
+import { readEnvFile } from '../envfile'
 import { inside, refuseForeignCheckout } from '../stack'
 
 
@@ -33,11 +33,13 @@ function chmodDbEnvs(dir: string): void {
 }
 
 /** Where a restore inside a worktree would write somewhere that is not the
- *  worktree's own, or null when every target is. A worktree owns its
- *  database, its checkout's dirs and nothing else:
+ *  worktree's own, or null when every target is. Whether this IS a worktree
+ *  is read from the checkout's own ui/.env, never from TALARIA_ENV_FILE: an
+ *  env file pointed at main's would otherwise switch every rule below off. A
+ *  worktree owns its database, its checkout's dirs and nothing else:
  *
- *   · a DATABASE_URL in the shell that is not ui/.env's, with no --target,
- *     leaves which database is meant a guess;
+ *   · a DATABASE_URL in the shell, or in a TALARIA_ENV_FILE, that is not
+ *     ui/.env's, with no --target, leaves which database is meant a guess;
  *   · blobs in internal mode would land in the main stack's object storage,
  *     which a worktree's app shares (it has none of its own), and in s3 mode in
  *     whatever bucket the snapshot names, unless the operator names one
@@ -52,16 +54,31 @@ export function worktreeRestoreProblem(
   manifest: string,
   opts: { target?: string; what: RestoreWhat },
 ): string | null {
-  const fileEnv = envFileText(ctx, ctx.env.TALARIA_ENV_FILE || 'ui/.env')
-  const worktree = envValue(fileEnv, 'TALARIA_WORKTREE')
+  // Quotes stripped, as liftAppEnv reads the same files, so one value in two
+  // spellings is not a conflict.
+  const ownEnv = readEnvFile(ctx, 'ui/.env', { quotes: true })
+  const worktree = ownEnv.TALARIA_WORKTREE
   if (!worktree) return null
   const own = `this is worktree "${worktree}"`
-  const fileDb = envValue(fileEnv, 'DATABASE_URL')
-  if (!opts.target && ctx.env.DATABASE_URL !== undefined && ctx.env.DATABASE_URL !== fileDb) {
+  const ownDb = ownEnv.DATABASE_URL
+  const ownLabel = ownDb ? dbLabel(ownDb) : 'unset'
+  if (!opts.target && ctx.env.DATABASE_URL !== undefined && ctx.env.DATABASE_URL !== ownDb) {
     return (
       `${own}: DATABASE_URL in the environment (${dbLabel(ctx.env.DATABASE_URL)}) is not its ui/.env's ` +
-      `(${fileDb ? dbLabel(fileDb) : 'unset'}). Pass --target to say which database you mean, or unset DATABASE_URL.`
+      `(${ownLabel}). Pass --target to say which database you mean, or unset DATABASE_URL.`
     )
+  }
+  // The shell wins over the env file (liftAppEnv), so the file's DATABASE_URL
+  // is the target only when the shell names none.
+  const envFile = ctx.env.TALARIA_ENV_FILE
+  if (!opts.target && envFile && ctx.env.DATABASE_URL === undefined) {
+    const fileDb = readEnvFile(ctx, envFile, { quotes: true }).DATABASE_URL
+    if (fileDb !== ownDb) {
+      return (
+        `${own}: TALARIA_ENV_FILE=${envFile} names DATABASE_URL ${fileDb ? dbLabel(fileDb) : '(none)'}, not its ui/.env's ` +
+        `(${ownLabel}). Pass --target to say which database you mean, or unset TALARIA_ENV_FILE.`
+      )
+    }
   }
   if (opts.what !== 'db') {
     const mode = manifestGet(manifest, 'storage_mode')

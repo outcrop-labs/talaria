@@ -12,7 +12,7 @@ import { PG_CONTAINER, REDIS_CONTAINER } from '../containers'
 import { envValue } from '../envfile'
 import { anyNewer } from '../paths'
 import { API_PORT } from '../ports'
-import { devStack, refuseForeignCheckout } from '../stack'
+import { devStack, refuseForeignCheckout, refuseWorktreeEnvOverride } from '../stack'
 
 const DEV_COMPOSE = 'docker/dev-compose.yml'
 
@@ -121,7 +121,9 @@ const API_ENV_VARS = [
 
 /** The connection facts the Rust api reads, lifted out of ui/.env with the
  *  SHELL always winning — the same override point `talaria dev` gives every
- *  other lifted var.
+ *  other lifted var. In a worktree, a shell value that differs from a line
+ *  its ui/.env owns never gets this far: runDev refuses it first
+ *  (stack.ts refuseWorktreeEnvOverride).
  *
  *  The api's config.rs resolves the secret root in this order; lift all
  *  three candidates so ui/.env's arrangement works whichever one it uses.
@@ -343,14 +345,34 @@ export async function runDev(ctx: Ctx): Promise<number> {
   const worktree = envValue(uiEnv, 'TALARIA_WORKTREE')
   if (worktree) {
     // stack.ts names them, and refuses a shell var that names another
-    // stack's container instead of letting it win.
+    // stack's container instead of letting it win. The same holds for every
+    // line ui/.env owns: apiEnv and vite both let the shell win, so a stale
+    // DATABASE_URL, REDIS_URL or fleet project from another stack's shell
+    // would put this worktree's servers on that stack. And a worktree with no
+    // fleet project of its own renders its agents into main's: refused too.
     const own = devStack(ctx, uiEnv)
+    refuseWorktreeEnvOverride(ctx, own, uiEnv, 'dev')
+    if (own.fleetProblem) {
+      ctx.log.die(`${own.fleetProblem}\n  \`talaria dev\` would start its api rendering agents there, so it refuses.`)
+    }
     ctx.env.TALARIA_PG_CONTAINER = own.pgContainer
     ctx.env.TALARIA_REDIS_CONTAINER = own.redisContainer
+    // The ports compose publishes come from the URLs. A shell port that is
+    // not the URL's used to win (`??=`): the worktree's postgres then took,
+    // say, main's 5544 while its own app dialled the URL's, and main's app,
+    // on that port, would have reached the worktree's database.
     const pgPort = portOf(envValue(uiEnv, 'DATABASE_URL'))
     const redisPort = portOf(envValue(uiEnv, 'REDIS_URL'))
-    if (pgPort) ctx.env.TALARIA_PG_PORT ??= pgPort
-    if (redisPort) ctx.env.TALARIA_REDIS_PORT ??= redisPort
+    for (const [key, port, url] of [['TALARIA_PG_PORT', pgPort, 'DATABASE_URL'], ['TALARIA_REDIS_PORT', redisPort, 'REDIS_URL']] as const) {
+      const shell = ctx.env[key]
+      if (port && shell !== undefined && shell !== port) {
+        ctx.log.die(
+          `this is worktree "${worktree}", whose ${url} in ui/.env names port ${port}, but ${key}=${shell} in the environment ` +
+            `would publish its container on another. Refusing rather than guess: unset ${key}.`,
+        )
+      }
+      if (port) ctx.env[key] = port
+    }
     ctx.log.say(`infra (this worktree's postgres + redis — sidecars are the main stack's)`)
     const code = await compose(ctx, { files: stackComposeFiles(ctx.root, DEV_COMPOSE), project: `talaria-wt-${worktree}` }, ['up', '-d', 'postgres', 'redis'])
     if (code !== 0) ctx.log.die('worktree infra failed to start (run `bun talaria worktree` again? it was torn down?)')

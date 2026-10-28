@@ -227,6 +227,33 @@ describe('runRestore — inside a worktree, only the worktree\'s own targets', (
     expect(worktreeRestoreProblem(ctx, ctx.env, manifest('local'), { what: 'db', target: WT_DB })).toBeNull()
   })
 
+  test("a TALARIA_ENV_FILE pointed at main's ui/.env neither hides the worktree nor picks its database", () => {
+    // It used to: the marker was read from TALARIA_ENV_FILE, main's file has
+    // none, and every worktree rule switched off with main's DATABASE_URL as
+    // the target.
+    const mainEnv = join(mkdtempSync(join(tmpdir(), 'talaria-rs-main-')), '.env')
+    writeFileSync(mainEnv, 'DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5544/talaria\n')
+    const ctx = fakeCtx({ env: { TALARIA_ENV_FILE: mainEnv } })
+    ctx.root = wtRoot()
+    const msg = worktreeRestoreProblem(ctx, {}, manifest('local'), { what: 'db' })
+    expect(msg).toContain('worktree "demo"')
+    expect(msg).toContain(`TALARIA_ENV_FILE=${mainEnv}`)
+    expect(msg).toContain('127.0.0.1:5544/talaria')
+    expect(msg).not.toContain('talaria:talaria@')
+    // --target names the database outright
+    expect(worktreeRestoreProblem(ctx, {}, manifest('local'), { what: 'db', target: WT_DB })).toBeNull()
+    // the shell wins over the file: a shell DATABASE_URL that is ui/.env's own is the target
+    const shellOwn = fakeCtx({ env: { TALARIA_ENV_FILE: mainEnv, DATABASE_URL: WT_DB } })
+    shellOwn.root = ctx.root
+    expect(worktreeRestoreProblem(shellOwn, {}, manifest('local'), { what: 'db' })).toBeNull()
+    // an env file naming the worktree's own database is no guess
+    const same = join(ctx.root, 'alt.env')
+    writeFileSync(same, `DATABASE_URL="${WT_DB}"\n`)
+    const sameCtx = fakeCtx({ env: { TALARIA_ENV_FILE: same } })
+    sameCtx.root = ctx.root
+    expect(worktreeRestoreProblem(sameCtx, {}, manifest('local'), { what: 'db' })).toBeNull()
+  })
+
   test("internal-mode blobs would land in main's object storage: refused, --db-only passes", () => {
     const ctx = fakeCtx()
     ctx.root = wtRoot()

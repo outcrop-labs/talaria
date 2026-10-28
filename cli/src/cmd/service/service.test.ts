@@ -480,7 +480,7 @@ describe('talaria service — inside a worktree', () => {
     const ctx = fakeCtx({ env: { PATH: makeStubs() } })
     ctx.root = inWorktree()
     const msg = await attempt(() => leaf('status').run(ctx, { positionals: [], flags: {} }))
-    expect(msg).toContain("compose project 'talaria'")
+    expect(msg).toContain("COMPOSE_PROJECT_NAME: 'talaria', the compose file's default")
     expect(ctx.calls).toHaveLength(0)
   })
 })

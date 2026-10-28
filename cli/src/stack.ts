@@ -23,7 +23,12 @@
 //     The installed `talaria` shim always runs the primary's CLI, whose root is
 //     the primary, so inside a worktree it would act on the primary's stack;
 //   · the postgres container the command would exec into is not the one the
-//     checkout's DATABASE_URL names: another compose project, or another port.
+//     checkout's DATABASE_URL names: another compose project, another port,
+//     or a database and role other than the `talaria` ones it execs as;
+//   · in a worktree, the shell overrides a line its ui/.env owns
+//     (DATABASE_URL, REDIS_URL, a port, the fleet project) with another
+//     stack's value. `talaria dev` lifts the shell over ui/.env, so a stale
+//     `DATABASE_URL=…:5544` put a second server on main's database.
 //
 // The names below mirror what cmd/worktree.ts creates for a worktree. Change
 // them together.
@@ -146,16 +151,24 @@ export function devStack(ctx: Ctx, uiEnv: string = envFileText(ctx, 'ui/.env')):
           '`bun talaria worktree <name>` (docs/WORKTREES.md).',
       )
     }
+    // The api's own resolution order: the shell, then ui/.env (dev.ts lifts
+    // it), then the layout's default. A `talaria-wt-*` name is a worktree's
+    // fleet, never the primary's, the same rule verifyPostgres applies to the
+    // primary's postgres: a stale shell var must not point the primary's
+    // `reset fleet` at a worktree's agents.
+    const fleet = ctx.env.TALARIA_FLEET_PROJECT ?? envValue(uiEnv, 'TALARIA_FLEET_PROJECT') ?? PRIMARY_FLEET_PROJECT
+    const theirs = fleet.startsWith('talaria-wt-')
     return {
       kind: 'primary',
       worktree: null,
       pgContainer: ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER,
       redisContainer: ctx.env.TALARIA_REDIS_CONTAINER ?? REDIS_CONTAINER,
       infraProject: PRIMARY_INFRA_PROJECT,
-      // The api's own resolution order: the shell, then ui/.env (dev.ts lifts
-      // it), then the layout's default.
-      fleetProject: ctx.env.TALARIA_FLEET_PROJECT ?? envValue(uiEnv, 'TALARIA_FLEET_PROJECT') ?? PRIMARY_FLEET_PROJECT,
-      fleetProblem: null,
+      fleetProject: theirs ? null : fleet,
+      fleetProblem: theirs
+        ? `TALARIA_FLEET_PROJECT=${fleet} is a worktree's fleet project, and this is the primary checkout. ` +
+          "Refusing rather than act on that worktree's agents: unset it, or run from that worktree."
+        : null,
     }
   }
 
@@ -183,7 +196,7 @@ export function devStack(ctx: Ctx, uiEnv: string = envFileText(ctx, 'ui/.env')):
   if (named === undefined || named === '') {
     fleetProject = null
     fleetProblem =
-      `worktree "${worktree}" names no TALARIA_FLEET_PROJECT in ui/.env, so its api rendered into the default project ` +
+      `worktree "${worktree}" names no TALARIA_FLEET_PROJECT in ui/.env, so its api renders into the default project ` +
       `${PRIMARY_FLEET_PROJECT}, which is main's, and its agents cannot be told from main's. ` +
       `Add TALARIA_FLEET_PROJECT=${own.fleet} to ui/.env and re-render, or recut the worktree.`
   } else if (named !== own.fleet) {
@@ -201,6 +214,52 @@ export function devStack(ctx: Ctx, uiEnv: string = envFileText(ctx, 'ui/.env')):
     fleetProject,
     fleetProblem,
   }
+}
+
+/** The lines `talaria worktree` writes into a worktree's ui/.env that name
+ *  its stack: its database, its redis, its ports, the url its proxy dials and
+ *  its fleet project (cmd/worktree.ts; keep the two lists together). */
+export const WORKTREE_OWN_VARS = [
+  'DATABASE_URL',
+  'REDIS_URL',
+  'PORT',
+  'TALARIA_API_PORT',
+  'TALARIA_RUST_API_URL',
+  'TALARIA_GATEWAY_SELF_URL',
+  'TALARIA_FLEET_PROJECT',
+  'TALARIA_MCP_PORT',
+  'TALARIA_OMP_AUTH_PORT',
+  'TALARIA_GATEWAY_PORT_BASE',
+] as const
+
+/** A value safe to print: a url's userinfo (`user:password@`) cut, anything
+ *  else as it is. */
+export const printable = (v: string): string => v.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i, '$1')
+
+/** Refuse when, in a worktree, the shell sets a line its ui/.env owns to
+ *  another value. Both name a target and they disagree: the shell value is
+ *  most often a stale export from main's or another worktree's shell, and
+ *  `talaria dev` lets the shell win (apiEnv, and vite's own loader). A
+ *  `DATABASE_URL` naming main's port would make this worktree's api a second
+ *  server on main's database. A line ui/.env does not carry is left to the
+ *  shell, as before; a shell value equal to ui/.env's is not a conflict. The
+ *  primary keeps the shell as its override point. */
+export function refuseWorktreeEnvOverride(ctx: Ctx, stack: DevStack, uiEnv: string, command: string): void {
+  if (stack.kind !== 'worktree') return
+  const keys = WORKTREE_OWN_VARS.filter((key) => {
+    const shell = ctx.env[key]
+    const own = envValue(uiEnv, key)
+    return shell !== undefined && own !== undefined && shell !== own
+  })
+  if (keys.length === 0) return
+  const lines = keys.map((k) => `    ${k}=${printable(ctx.env[k]!)}   (ui/.env: ${printable(envValue(uiEnv, k)!)})`)
+  ctx.log.die(
+    `this is worktree "${stack.worktree}", and the environment overrides lines its ui/.env owns:\n` +
+      `${lines.join('\n')}\n` +
+      `  \`talaria ${command}\` lets the shell win, so this stack would run against another stack's targets ` +
+      "(a DATABASE_URL of main's makes a second server on main's database). Refusing rather than guess.\n" +
+      `  Unset them (unset ${keys.join(' ')}), or run from the checkout they belong to.`,
+  )
 }
 
 /** One line naming the stack, for the plan a destructive command prints
@@ -224,13 +283,35 @@ type Inspect = {
   NetworkSettings?: { Ports?: Record<string, { HostIp?: string; HostPort?: string }[] | null> | null }
 }
 
+/** The database and role every dev stack's postgres serves (dev-compose and
+ *  `talaria worktree` both create them), and the ones `reset` execs psql as
+ *  (`-U talaria -d talaria`, `drop database talaria`). */
+export const DEV_DB = 'talaria'
+
 /** Prove the postgres container this stack names is the database
- *  DATABASE_URL names, before anything is exec'd into it. It must be running;
- *  a worktree's must belong to the worktree's own compose project, and the
- *  primary's must not belong to any worktree's; and it must publish
- *  DATABASE_URL's port. Any other answer dies. Returns the published port. */
+ *  DATABASE_URL names, before anything is exec'd into it. DATABASE_URL must
+ *  name the `talaria` database and role, the ones a command execs psql as
+ *  inside the container; the container must be running; a worktree's must
+ *  belong to the worktree's own compose project, and the primary's must not
+ *  belong to any worktree's; and it must publish DATABASE_URL's port. Any
+ *  other answer dies. Returns the published port. */
 export async function verifyPostgres(ctx: Ctx, stack: DevStack, dbUrl: string): Promise<string> {
   const name = stack.pgContainer
+  let db = ''
+  let user = ''
+  try {
+    const u = new URL(dbUrl)
+    db = decodeURIComponent(u.pathname.replace(/^\//, ''))
+    user = decodeURIComponent(u.username)
+  } catch {
+    // unparseable: the names stay empty and the refusal below says so
+  }
+  if (db !== DEV_DB || user !== DEV_DB) {
+    ctx.log.die(
+      `DATABASE_URL names database '${db || '(none)'}' as role '${user || '(none)'}', but this command runs psql in ${name} ` +
+        `as role '${DEV_DB}' on database '${DEV_DB}'. That is not the database DATABASE_URL names, so refusing rather than guess.`,
+    )
+  }
   let info: Inspect | undefined
   try {
     info = (JSON.parse((await ctx.exec('docker', ['inspect', name])).stdout) as Inspect[])[0]

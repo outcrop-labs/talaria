@@ -7,8 +7,8 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  checkoutAt, composeFileProject, devStack, inside, physical, projectContainers, refuseForeignCheckout, verifyPostgres,
-  worktreeStackNames, type DevStack,
+  checkoutAt, composeFileProject, devStack, inside, physical, printable, projectContainers, refuseForeignCheckout,
+  refuseWorktreeEnvOverride, verifyPostgres, worktreeStackNames, type DevStack,
 } from './stack'
 import { fakeCtx, type FakeCtx } from './testing'
 import { CliError } from './ui'
@@ -112,7 +112,7 @@ describe('devStack — in a worktree', () => {
 
   test('no TALARIA_FLEET_PROJECT: the fleet cannot be named, and the reason says main', () => {
     const ctx = fakeCtx()
-    ctx.root = checkout('DATABASE_URL=postgres://t:t@127.0.0.1:5605/talaria\nTALARIA_WORKTREE=demo\n', { linked: true })
+    ctx.root = checkout('DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5605/talaria\nTALARIA_WORKTREE=demo\n', { linked: true })
     const s = devStack(ctx)
     expect(s.pgContainer).toBe('talaria-pg-demo')
     expect(s.fleetProject).toBeNull()
@@ -135,7 +135,7 @@ describe('devStack — in a worktree', () => {
 describe('devStack — in the primary', () => {
   test("the dev-compose defaults, the shell's override honoured", () => {
     const ctx = fakeCtx()
-    ctx.root = checkout('DATABASE_URL=postgres://t:t@127.0.0.1:5544/talaria\n')
+    ctx.root = checkout('DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5544/talaria\n')
     expect(devStack(ctx)).toEqual({
       kind: 'primary',
       worktree: null,
@@ -160,9 +160,20 @@ describe('devStack — in the primary', () => {
     expect(devStack(shell).fleetProject).toBe('from-shell')
   })
 
+  test("a worktree's fleet project is not the primary's: refused, from the shell or ui/.env", () => {
+    const shell = fakeCtx({ env: { TALARIA_FLEET_PROJECT: 'talaria-wt-other-fleet' } })
+    shell.root = checkout('DATABASE_URL=x\n')
+    const s = devStack(shell)
+    expect(s.fleetProject).toBeNull()
+    expect(s.fleetProblem).toContain("talaria-wt-other-fleet is a worktree's fleet project")
+    const file = fakeCtx()
+    file.root = checkout('DATABASE_URL=x\nTALARIA_FLEET_PROJECT=talaria-wt-other-fleet\n')
+    expect(devStack(file).fleetProject).toBeNull()
+  })
+
   test('a linked git worktree with no marker is refused: its stack is a guess', () => {
     const ctx = fakeCtx()
-    ctx.root = checkout('DATABASE_URL=postgres://t:t@127.0.0.1:5544/talaria\n', { linked: true })
+    ctx.root = checkout('DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5544/talaria\n', { linked: true })
     expect(attempt(() => devStack(ctx))).toContain('git worktree without an isolated stack')
   })
 
@@ -189,13 +200,13 @@ describe('verifyPostgres', () => {
   test("the worktree's own container on DATABASE_URL's port passes", async () => {
     const ctx = fakeCtx()
     plantPg(ctx, 'talaria-pg-demo', inspectJson({ project: 'talaria-wt-demo', port: '5605' }))
-    expect(await verifyPostgres(ctx, wtStack, 'postgres://t:t@127.0.0.1:5605/talaria')).toBe('5605')
+    expect(await verifyPostgres(ctx, wtStack, 'postgres://talaria:talaria@127.0.0.1:5605/talaria')).toBe('5605')
   })
 
   test('a container of another compose project dies', async () => {
     const ctx = fakeCtx()
     plantPg(ctx, 'talaria-pg-demo', inspectJson({ project: 'talaria-dev', port: '5605' }))
-    expect(await attemptAsync(() => verifyPostgres(ctx, wtStack, 'postgres://t:t@127.0.0.1:5605/talaria'))).toContain(
+    expect(await attemptAsync(() => verifyPostgres(ctx, wtStack, 'postgres://talaria:talaria@127.0.0.1:5605/talaria'))).toContain(
       "compose project 'talaria-dev'",
     )
   })
@@ -203,7 +214,7 @@ describe('verifyPostgres', () => {
   test("a port that is not DATABASE_URL's dies", async () => {
     const ctx = fakeCtx()
     plantPg(ctx, 'talaria-pg-demo', inspectJson({ project: 'talaria-wt-demo', port: '5544' }))
-    const msg = await attemptAsync(() => verifyPostgres(ctx, wtStack, 'postgres://t:t@127.0.0.1:5605/talaria'))
+    const msg = await attemptAsync(() => verifyPostgres(ctx, wtStack, 'postgres://talaria:talaria@127.0.0.1:5605/talaria'))
     expect(msg).toContain('DATABASE_URL names port 5605')
     expect(msg).toContain('publishes 5544')
   })
@@ -211,25 +222,75 @@ describe('verifyPostgres', () => {
   test('not running, or unknown to docker, dies as not running', async () => {
     const stopped = fakeCtx()
     plantPg(stopped, 'talaria-pg-demo', inspectJson({ running: false, project: 'talaria-wt-demo', port: '5605' }))
-    expect(await attemptAsync(() => verifyPostgres(stopped, wtStack, 'postgres://t:t@127.0.0.1:5605/talaria'))).toContain(
+    expect(await attemptAsync(() => verifyPostgres(stopped, wtStack, 'postgres://talaria:talaria@127.0.0.1:5605/talaria'))).toContain(
       'is not running',
     )
     const gone = fakeCtx()
     gone.plant(['docker', ['inspect', 'talaria-pg-demo']], new Error('No such object'))
-    expect(await attemptAsync(() => verifyPostgres(gone, wtStack, 'postgres://t:t@127.0.0.1:5605/talaria'))).toContain(
+    expect(await attemptAsync(() => verifyPostgres(gone, wtStack, 'postgres://talaria:talaria@127.0.0.1:5605/talaria'))).toContain(
       'is not running',
     )
+  })
+
+  test("a DATABASE_URL naming another database or role dies before docker is asked: psql runs as talaria on talaria", async () => {
+    for (const url of [
+      'postgres://talaria:talaria@127.0.0.1:5605/other',
+      'postgres://bob:pw@127.0.0.1:5605/talaria',
+      'postgres://127.0.0.1:5605',
+      'not a url',
+    ]) {
+      const ctx = fakeCtx()
+      plantPg(ctx, 'talaria-pg-demo', inspectJson({ project: 'talaria-wt-demo', port: '5605' }))
+      expect(await attemptAsync(() => verifyPostgres(ctx, wtStack, url))).toContain('not the database DATABASE_URL names')
+      expect(ctx.calls).toHaveLength(0)
+    }
   })
 
   test("the primary's container passes on its port, and a worktree's container is refused there", async () => {
     const ok = fakeCtx()
     plantPg(ok, 'talaria-postgres-dev', inspectJson({ project: 'talaria-dev', port: '5544' }))
-    expect(await verifyPostgres(ok, primary, 'postgres://t:t@127.0.0.1:5544/talaria')).toBe('5544')
+    expect(await verifyPostgres(ok, primary, 'postgres://talaria:talaria@127.0.0.1:5544/talaria')).toBe('5544')
     const theirs = fakeCtx()
     plantPg(theirs, 'talaria-postgres-dev', inspectJson({ project: 'talaria-wt-x', port: '5544' }))
-    expect(await attemptAsync(() => verifyPostgres(theirs, primary, 'postgres://t:t@127.0.0.1:5544/talaria'))).toContain(
+    expect(await attemptAsync(() => verifyPostgres(theirs, primary, 'postgres://talaria:talaria@127.0.0.1:5544/talaria'))).toContain(
       "worktree project 'talaria-wt-x'",
     )
+  })
+})
+
+describe('refuseWorktreeEnvOverride', () => {
+  const WT_UI = `${WT_ENV}REDIS_URL=redis://127.0.0.1:6505\nPORT=5305\n`
+  const stackOf = (ctx: FakeCtx): DevStack => devStack(ctx, WT_UI)
+
+  test('a shell value that is not ui/.env\'s dies, naming both with credentials cut', () => {
+    const ctx = fakeCtx({ env: { DATABASE_URL: 'postgres://talaria:secret@127.0.0.1:5544/talaria', PORT: '5273' } })
+    ctx.root = checkout(WT_UI, { linked: true })
+    const msg = attempt(() => refuseWorktreeEnvOverride(ctx, stackOf(ctx), WT_UI, 'dev'))
+    expect(msg).toContain('DATABASE_URL=postgres://127.0.0.1:5544/talaria   (ui/.env: postgres://127.0.0.1:5605/talaria)')
+    expect(msg).toContain('PORT=5273   (ui/.env: 5305)')
+    expect(msg).toContain('unset DATABASE_URL PORT')
+    expect(msg).not.toContain('secret')
+  })
+
+  test("equal values, and lines ui/.env does not carry, are no conflict", () => {
+    const ctx = fakeCtx({ env: { REDIS_URL: 'redis://127.0.0.1:6505', TALARIA_MCP_PORT: '5999' } })
+    ctx.root = checkout(WT_UI, { linked: true })
+    expect(attempt(() => refuseWorktreeEnvOverride(ctx, stackOf(ctx), WT_UI, 'dev'))).toBe('')
+  })
+
+  test('the primary keeps the shell as its override point', () => {
+    const ctx = fakeCtx({ env: { DATABASE_URL: 'postgres://talaria:talaria@127.0.0.1:5999/talaria' } })
+    ctx.root = checkout('DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5544/talaria\n')
+    const ui = 'DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5544/talaria\n'
+    expect(attempt(() => refuseWorktreeEnvOverride(ctx, devStack(ctx, ui), ui, 'dev'))).toBe('')
+  })
+
+  test('printable cuts a url\'s userinfo and leaves anything else alone', () => {
+    expect(printable('postgres://talaria:p@ss@127.0.0.1:5544/talaria')).toBe('postgres://127.0.0.1:5544/talaria')
+    expect(printable('redis://:pw@127.0.0.1:6399')).toBe('redis://127.0.0.1:6399')
+    expect(printable('redis://127.0.0.1:6399')).toBe('redis://127.0.0.1:6399')
+    expect(printable('a@b')).toBe('a@b')
+    expect(printable('5273')).toBe('5273')
   })
 })
 

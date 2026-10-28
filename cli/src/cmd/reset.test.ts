@@ -91,7 +91,7 @@ describe('reset — localhost guard', () => {
 
   test('postgres down dies before the counts', async () => {
     const ctx = fakeCtx()
-    ctx.root = makeTree('postgres://t:t@127.0.0.1:5544/talaria')
+    ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
     const msg = await attempt(() => runReset(ctx, 'secrets'))
     expect(msg).toContain('is not running')
     expect(ctx.calls.filter((c) => c.args.includes('psql'))).toHaveLength(0)
@@ -101,7 +101,7 @@ describe('reset — localhost guard', () => {
 describe('reset — typed confirm', () => {
   test('wrong word aborts with zero destructive execs recorded', async () => {
     const ctx = fakeCtx({ reply: 'secrets ' }) // trailing space: trimmed by a shell's `read`, and by us
-    ctx.root = makeTree('postgres://t:t@127.0.0.1:5544/talaria')
+    ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
     plantUp(ctx)
     // counts all plant to 0 by default (unplanted exec → empty stdout)
     const msg = await attempt(() => runReset(ctx, 'database'))
@@ -111,7 +111,7 @@ describe('reset — typed confirm', () => {
 
   test('the right word (after trim) proceeds to the batch', async () => {
     const ctx = fakeCtx({ reply: 'database' })
-    ctx.root = makeTree('postgres://t:t@127.0.0.1:5544/talaria')
+    ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
     plantUp(ctx)
     await runReset(ctx, 'database')
     const batch = ctx.calls.find((c) => c.args.includes('ON_ERROR_STOP=1'))!
@@ -124,7 +124,7 @@ describe('reset — typed confirm', () => {
     // One `-c` with all three statements is one transaction, and Postgres
     // refused the drop in it every time (found running this live).
     const ctx = fakeCtx({ reply: 'database' })
-    ctx.root = makeTree('postgres://t:t@127.0.0.1:5544/talaria')
+    ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
     plantUp(ctx)
     await runReset(ctx, 'database')
     const batch = ctx.calls.find((c) => c.args.includes('ON_ERROR_STOP=1'))!
@@ -140,7 +140,7 @@ describe('reset — typed confirm', () => {
 describe('reset — secrets scope', () => {
   test('clears ciphertext first, keys last, in one batch', async () => {
     const ctx = fakeCtx({ reply: 'secrets' })
-    ctx.root = makeTree('postgres://t:t@127.0.0.1:5544/talaria')
+    ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
     plantUp(ctx)
     await runReset(ctx, 'secrets')
     const batch = ctx.calls.find((c) => c.args.includes('ON_ERROR_STOP=1'))!
@@ -153,7 +153,7 @@ describe('reset — secrets scope', () => {
 
   test('every count prints on its own line', async () => {
     const ctx = fakeCtx({ reply: 'no' })
-    ctx.root = makeTree('postgres://t:t@127.0.0.1:5544/talaria')
+    ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
     plantUp(ctx)
     await attempt(() => runReset(ctx, 'secrets'))
     const rows = ctx.logLines.filter((l) => l.kind === 'raw' && l.msg.trim() !== '')
@@ -164,7 +164,7 @@ describe('reset — secrets scope', () => {
 
 describe('reset — fleet scope', () => {
   test('removes rendered artifacts, keeps fleet/chassis.yml + skills', async () => {
-    const root = makeTree('postgres://t:t@127.0.0.1:5544/talaria')
+    const root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
     mkdirSync(join(root, 'fleet/agents/x'), { recursive: true })
     writeFileSync(join(root, 'fleet/chassis.yml'), 'network:\n  name: talaria\n')
     writeFileSync(join(root, 'fleet/.env'), 'LLM_API_KEY=x\n')
@@ -181,7 +181,7 @@ describe('reset — fleet scope', () => {
 
   test("leftover containers of the primary's fleet project are force-removed, by label", async () => {
     const ctx = fakeCtx({ reply: 'fleet' })
-    ctx.root = makeTree('postgres://t:t@127.0.0.1:5544/talaria')
+    ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
     plantUp(ctx)
     ctx.plant(psByProject('talaria-fleet', true), 'talaria-fleet-agent-a-1\ntalaria-fleet-agent-b-1\n')
     await runReset(ctx, 'fleet')
@@ -193,7 +193,7 @@ describe('reset — fleet scope', () => {
   })
 
   test('the compose down names the project, so a rendered file cannot pick another', async () => {
-    const root = makeTree('postgres://t:t@127.0.0.1:5544/talaria')
+    const root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
     mkdirSync(join(root, 'fleet'), { recursive: true })
     writeFileSync(join(root, 'fleet/docker-compose.yml'), 'name: talaria-fleet\nservices: {}\n')
     writeFileSync(join(root, 'fleet/.env'), 'LLM_API_KEY=x\n')
@@ -309,7 +309,7 @@ describe('reset — inside a worktree, every target is the worktree\'s own', () 
 
   test('a linked git worktree without the marker dies: its stack is a guess', async () => {
     const ctx = fakeCtx({ reply: 'database' })
-    ctx.root = makeTree('postgres://t:t@127.0.0.1:5544/talaria', '', { linked: true })
+    ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria', '', { linked: true })
     plantUp(ctx)
     const msg = await attempt(() => runReset(ctx, 'database'))
     expect(msg).toContain('git worktree without an isolated stack')
@@ -317,11 +317,40 @@ describe('reset — inside a worktree, every target is the worktree\'s own', () 
   })
 })
 
+describe('reset — the database and role it execs as', () => {
+  for (const [what, url] of [
+    ['another database', 'postgres://talaria:talaria@127.0.0.1:5544/other'],
+    ['another role', 'postgres://bob:pw@127.0.0.1:5544/talaria'],
+  ] as const) {
+    test(`a DATABASE_URL naming ${what} dies before any docker call: reset runs psql -U talaria -d talaria`, async () => {
+      const ctx = fakeCtx({ reply: 'database' })
+      ctx.root = makeTree(url)
+      plantUp(ctx)
+      const msg = await attempt(() => runReset(ctx, 'database'))
+      expect(msg).toContain('not the database DATABASE_URL names')
+      expect(ctx.calls).toHaveLength(0)
+    })
+  }
+})
+
+describe("reset fleet — the primary never acts on a worktree's fleet", () => {
+  test("a shell TALARIA_FLEET_PROJECT naming a worktree's project dies before the listing", async () => {
+    const ctx = fakeCtx({ reply: 'fleet', env: { TALARIA_FLEET_PROJECT: 'talaria-wt-other-fleet' } })
+    ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
+    plantUp(ctx)
+    ctx.plant(psByProject('talaria-wt-other-fleet', true), 'talaria-wt-other-fleet-agent-a-1\n')
+    const msg = await attempt(() => runReset(ctx, 'fleet'))
+    expect(msg).toContain("TALARIA_FLEET_PROJECT=talaria-wt-other-fleet is a worktree's fleet project")
+    expect(ctx.calls.some((c) => c.args[0] === 'ps')).toBe(false)
+    expect(destructive(ctx)).toHaveLength(0)
+  })
+})
+
 describe('reset — the shim run from another checkout', () => {
   test("standing in a worktree with the primary's CLI dies before anything", async () => {
     // ctx.root is the CLI's own checkout (the shim's: the primary); the
     // operator stands in a worktree.
-    const primary = makeTree('postgres://t:t@127.0.0.1:5544/talaria')
+    const primary = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
     mkdirSync(join(primary, '.git'))
     mkdirSync(join(primary, 'cli/bin'), { recursive: true })
     writeFileSync(join(primary, 'cli/bin/talaria.ts'), '')

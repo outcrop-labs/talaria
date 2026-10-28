@@ -200,7 +200,7 @@ describe('talaria dev — gates', () => {
   })
 
   test('linked worktree WITH the stamp proceeds', async () => {
-    const root = makeTree({ uiEnv: 'TALARIA_WORKTREE=wt\nDATABASE_URL=x\nREDIS_URL=y\n' })
+    const root = makeTree({ uiEnv: 'TALARIA_WORKTREE=wt\nDATABASE_URL=x\nREDIS_URL=y\nTALARIA_FLEET_PROJECT=talaria-wt-wt-fleet\n' })
     writeFileSync(join(root, '.git'), 'gitdir: /elsewhere\n')
     const ctx = fakeCtx()
     ctx.root = root
@@ -230,7 +230,8 @@ describe('talaria dev — gates', () => {
   test('worktree mode aims compose at its own project and probes its own containers', async () => {
     const root = makeTree({
       uiEnv:
-        'TALARIA_WORKTREE=demo\nDATABASE_URL=postgres://talaria:talaria@127.0.0.1:5601/talaria\nREDIS_URL=redis://127.0.0.1:6501\nPORT=5301\n',
+        'TALARIA_WORKTREE=demo\nDATABASE_URL=postgres://talaria:talaria@127.0.0.1:5601/talaria\nREDIS_URL=redis://127.0.0.1:6501\nPORT=5301\n' +
+        'TALARIA_FLEET_PROJECT=talaria-wt-demo-fleet\n',
     })
     writeFileSync(join(root, '.git'), 'gitdir: /elsewhere\n')
     const ctx = fakeCtx()
@@ -254,7 +255,7 @@ describe('talaria dev — gates', () => {
   })
 
   test('a worktree\'s own PORT reaches vite (vite\'s script hardcodes 5273)', async () => {
-    const root = makeTree({ uiEnv: 'TALARIA_WORKTREE=wt\nDATABASE_URL=x\nREDIS_URL=y\nPORT=5310\n' })
+    const root = makeTree({ uiEnv: 'TALARIA_WORKTREE=wt\nDATABASE_URL=x\nREDIS_URL=y\nPORT=5310\nTALARIA_FLEET_PROJECT=talaria-wt-wt-fleet\n' })
     writeFileSync(join(root, '.git'), 'gitdir: /elsewhere\n')
     const ctx = fakeCtx()
     ctx.root = root
@@ -284,6 +285,108 @@ describe('talaria dev — gates', () => {
     const msg = await attempt(ctx)
     expect(msg).toContain('TALARIA_PG_CONTAINER=talaria-postgres-dev')
     expect(ctx.calls.filter((c) => c.cmd === 'docker')).toHaveLength(0)
+  })
+
+  describe("a worktree's own ui/.env lines beat nothing in the shell: a different value is refused", () => {
+    // apiEnv and vite both let the shell win. A stale export from main's
+    // shell made this worktree's api a second server on main's database.
+    const WT_ENV =
+      'TALARIA_WORKTREE=demo\nDATABASE_URL=postgres://talaria:talaria@127.0.0.1:5601/talaria\nREDIS_URL=redis://127.0.0.1:6501\n' +
+      'PORT=5301\nTALARIA_API_PORT=5401\nTALARIA_FLEET_PROJECT=talaria-wt-demo-fleet\n'
+    const wtTree = (uiEnv = WT_ENV) => {
+      const root = makeTree({ uiEnv })
+      writeFileSync(join(root, '.git'), 'gitdir: /elsewhere\n')
+      return root
+    }
+    const plantWt = (ctx: FakeCtx) => {
+      ctx.plant(['docker', ['exec', 'talaria-pg-demo', 'pg_isready', '-U', 'talaria', '-d', 'talaria']], '')
+      ctx.plant(['docker', ['exec', 'talaria-redis-demo', 'redis-cli', 'ping']], '')
+    }
+
+    for (const [key, mains] of [
+      ['DATABASE_URL', 'postgres://talaria:talaria@127.0.0.1:5544/talaria'],
+      ['REDIS_URL', 'redis://127.0.0.1:6399'],
+      ['TALARIA_FLEET_PROJECT', 'talaria-fleet'],
+      ['TALARIA_API_PORT', '5274'],
+      ['PORT', '5273'],
+    ] as const) {
+      test(`${key} naming main's is refused before any docker call or api spawn`, async () => {
+        const ctx = fakeCtx({ env: { [key]: mains } })
+        ctx.root = wtTree()
+        const msg = await attempt(ctx)
+        expect(msg).toContain('worktree "demo"')
+        expect(msg).toContain(`${key}=`)
+        expect(msg).toContain(`unset ${key}`)
+        expect(msg).not.toContain('talaria:talaria@')
+        expect(ctx.calls.filter((c) => c.cmd === 'docker' || c.cmd === 'cargo' || c.cmd === 'bun')).toHaveLength(0)
+      })
+    }
+
+    test('the message names each clash with both values, credentials cut', async () => {
+      const ctx = fakeCtx({ env: { DATABASE_URL: 'postgres://talaria:talaria@127.0.0.1:5544/talaria', REDIS_URL: 'redis://127.0.0.1:6399' } })
+      ctx.root = wtTree()
+      const msg = await attempt(ctx)
+      expect(msg).toContain('DATABASE_URL=postgres://127.0.0.1:5544/talaria   (ui/.env: postgres://127.0.0.1:5601/talaria)')
+      expect(msg).toContain('REDIS_URL=redis://127.0.0.1:6399   (ui/.env: redis://127.0.0.1:6501)')
+      expect(msg).toContain('unset DATABASE_URL REDIS_URL')
+    })
+
+    test("a shell value equal to ui/.env's is no conflict, and the stack comes up", async () => {
+      const ctx = fakeCtx({
+        env: { DATABASE_URL: 'postgres://talaria:talaria@127.0.0.1:5601/talaria', TALARIA_FLEET_PROJECT: 'talaria-wt-demo-fleet', TALARIA_API: 'off' },
+      })
+      ctx.root = wtTree()
+      plantWt(ctx)
+      await runDev(ctx)
+      expect(ctx.calls.some((c) => c.args.includes('talaria-wt-demo') && c.args.includes('up'))).toBe(true)
+    })
+
+    test('a line ui/.env does not carry is left to the shell, as before', async () => {
+      const ctx = fakeCtx({ env: { TALARIA_MCP_PORT: '5999', TALARIA_API: 'off' } })
+      ctx.root = wtTree()
+      plantWt(ctx)
+      await runDev(ctx)
+      expect(ctx.calls.some((c) => c.args.includes('talaria-wt-demo') && c.args.includes('up'))).toBe(true)
+    })
+
+    test('no TALARIA_FLEET_PROJECT: refused, since its agents would render into main\'s fleet project', async () => {
+      const ctx = fakeCtx()
+      ctx.root = wtTree(WT_ENV.replace('TALARIA_FLEET_PROJECT=talaria-wt-demo-fleet\n', ''))
+      const msg = await attempt(ctx)
+      expect(msg).toContain('names no TALARIA_FLEET_PROJECT')
+      expect(msg).toContain('TALARIA_FLEET_PROJECT=talaria-wt-demo-fleet')
+      expect(ctx.calls.filter((c) => c.cmd === 'docker')).toHaveLength(0)
+    })
+
+    test("a fleet project in ui/.env that is not the worktree's own is refused", async () => {
+      const ctx = fakeCtx()
+      ctx.root = wtTree(WT_ENV.replace('talaria-wt-demo-fleet', 'talaria-fleet'))
+      expect(await attempt(ctx)).toContain("is not worktree \"demo\"'s fleet project")
+      expect(ctx.calls.filter((c) => c.cmd === 'docker')).toHaveLength(0)
+    })
+
+    test("a shell TALARIA_PG_PORT that is not DATABASE_URL's is refused; the URL's port is what compose gets", async () => {
+      const bad = fakeCtx({ env: { TALARIA_PG_PORT: '5544' } })
+      bad.root = wtTree()
+      const msg = await attempt(bad)
+      expect(msg).toContain('TALARIA_PG_PORT=5544')
+      expect(msg).toContain('port 5601')
+      expect(bad.calls.filter((c) => c.cmd === 'docker')).toHaveLength(0)
+      const ok = fakeCtx({ env: { TALARIA_API: 'off' } })
+      ok.root = wtTree()
+      plantWt(ok)
+      await runDev(ok)
+      expect(ok.env.TALARIA_PG_PORT).toBe('5601')
+      expect(ok.env.TALARIA_REDIS_PORT).toBe('6501')
+    })
+
+    test('the primary keeps the shell as its override point', async () => {
+      const ctx = fakeCtx({ env: { DATABASE_URL: 'postgres://talaria:talaria@127.0.0.1:5999/talaria', TALARIA_API: 'off' } })
+      ctx.root = makeTree({ uiEnv: 'DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5544/talaria\nREDIS_URL=y\n' })
+      plantInfra(ctx)
+      await runDev(ctx)
+      expect(ctx.calls.some((c) => c.cmd === 'bun' && c.args[0] === 'run' && c.args[1] === 'dev')).toBe(true)
+    })
   })
 
   test("the shim run from inside another checkout refuses: it would start the shim's own stack", async () => {
