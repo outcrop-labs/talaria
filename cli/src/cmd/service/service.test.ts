@@ -455,3 +455,32 @@ describe('talaria service — group', () => {
     expect(ctx.calls.some((c) => c.cmd === 'sudo')).toBe(false)
   })
 })
+
+describe('talaria service — inside a worktree', () => {
+  const inWorktree = (dockerEnv?: string) => {
+    const root = makeRepo(dockerEnv)
+    mkdirSync(join(root, 'ui'), { recursive: true })
+    writeFileSync(join(root, 'ui/.env'), 'TALARIA_WORKTREE=demo\nDATABASE_URL=x\n')
+    return root
+  }
+  const leaf = (name: string) => serviceCommand.children.find((c) => c.name === name)! as Leaf
+
+  for (const name of ['install', 'uninstall']) {
+    test(`${name} is refused even with a project of its own: the unit is the host's one`, async () => {
+      const ctx = fakeCtx({ env: { PATH: makeStubs(), COMPOSE_PROJECT_NAME: 'talaria-demo-deploy' } })
+      ctx.root = inWorktree()
+      const msg = await attempt(() => leaf(name).run(ctx, { positionals: [], flags: {} }))
+      expect(msg).toContain(`talaria service ${name}`)
+      expect(msg).toContain("host's one talaria.service")
+      expect(ctx.calls).toHaveLength(0)
+    })
+  }
+
+  test("status in a worktree on the default project is refused like deploy's", async () => {
+    const ctx = fakeCtx({ env: { PATH: makeStubs() } })
+    ctx.root = inWorktree()
+    const msg = await attempt(() => leaf('status').run(ctx, { positionals: [], flags: {} }))
+    expect(msg).toContain("COMPOSE_PROJECT_NAME: 'talaria', the compose file's default")
+    expect(ctx.calls).toHaveLength(0)
+  })
+})
