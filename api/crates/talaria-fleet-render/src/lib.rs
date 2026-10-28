@@ -1613,6 +1613,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         // such case into git's immediate "could not read Username", which the
         // toolkit skill already tells the agent to report_problem.
         env.insert("GIT_TERMINAL_PROMPT".into(), json!("0"));
+        pin_write_root(&mut env);
 
         // Developer Agent overlay: the dev sandbox. Harness state PERSISTS
         // on the department state volume (hand-offs: a session one agent
@@ -2373,11 +2374,14 @@ fn fleet_vision(
 ///   point, the container is its boundary, and the harness runs code all
 ///   day. Flagged commands run without a prompt on every path; Hermes'
 ///   hardline floor and an authored `approvals.deny` list still hold. So do
-///   the gates Hermes never lets anything auto-approve (a write to a
-///   project's AGENTS.md / CLAUDE.md / SOUL.md, an untrusted MCP server's
-///   write tool, a saved card fill): they still ask. On a conversation turn
-///   whose owner manages the agent, Talaria's door puts the request to that
-///   person as a card; everywhere else it answers `deny`.
+///   the gates Hermes never lets anything auto-approve (an MCP server's
+///   confirmation request, an untrusted MCP server's write tool, a saved
+///   card fill, a write to a project's AGENTS.md / CLAUDE.md / SOUL.md):
+///   they still ask. On a conversation turn whose owner manages the agent,
+///   Talaria's door puts the request to that person as a card; everywhere
+///   else it answers `deny`. The protected write is never carded: it only
+///   asks about paths outside `/opt/data`, which the write root
+///   ([`pin_write_root`]) refuses whatever the answer.
 /// - Every other agent gets `mode: manual` and `deny`. No guardian, so no
 ///   model ever approves a command. A streamed turn's request reaches
 ///   Talaria's door, which answers `deny` and records it; an unattended path
@@ -2414,6 +2418,27 @@ fn fleet_approvals(routed: &mut Map<String, Value>, developer: bool) {
     cfg.insert("unattended_mode".into(), json!(unattended));
     cfg.insert("cron_mode".into(), json!(unattended));
     routed.insert("approvals".into(), Value::Object(cfg));
+}
+
+/// The file tools' write root, pinned on every agent: `HERMES_WRITE_SAFE_ROOT`
+/// = the agent's data volume (`/opt/data`, the image's `HERMES_HOME`). The
+/// official image sets the same value in its Dockerfile; rendering it makes
+/// it one Talaria sets, because the approval door reasons from it
+/// (`talaria_gateway::fleet_approvals::unanswerable`): Hermes'
+/// protected-instruction gate exempts `HERMES_HOME`, so every write it asks
+/// about lies outside this root and cannot land. Never widened: a Developer
+/// Agent's checkouts live under `/opt/data/workbench`, inside it. A chassis
+/// value is overwritten, and per-agent secrets cannot carry a `HERMES_*`
+/// name (talaria-agent-secrets).
+///
+/// Hermes reads the key as an `os.pathsep` list (`:` here), skips empty
+/// entries and `realpath`s each one (v0.22.4 `agent/file_safety.py`,
+/// `get_safe_write_roots`); a single root needs no separator.
+fn pin_write_root(env: &mut Map<String, Value>) {
+    env.insert(
+        "HERMES_WRITE_SAFE_ROOT".into(),
+        json!(talaria_gateway::fleet_approvals::AGENT_WRITE_ROOT),
+    );
 }
 
 /// Nous-hosted connectors and the Nous free-tier identity, off on every agent.
@@ -3547,6 +3572,32 @@ service:
                 "deny": ["git push --force*"]
             }))
         );
+    }
+
+    #[test]
+    fn every_agent_s_write_root_is_its_data_volume_and_a_chassis_cannot_widen_it() {
+        let mut env = Map::new();
+        pin_write_root(&mut env);
+        assert_eq!(env.get("HERMES_WRITE_SAFE_ROOT"), Some(&json!("/opt/data")));
+        // One root, no separator: Hermes splits on `os.pathsep`.
+        assert!(
+            !env["HERMES_WRITE_SAFE_ROOT"]
+                .as_str()
+                .unwrap()
+                .contains(':')
+        );
+
+        // A chassis that carried its own (wider) root is overwritten: the
+        // approval door reasons from this exact value.
+        let mut chassis = Map::new();
+        chassis.insert("HERMES_WRITE_SAFE_ROOT".into(), json!("/opt/data:/tmp:/"));
+        chassis.insert("TZ".into(), json!("UTC"));
+        pin_write_root(&mut chassis);
+        assert_eq!(
+            chassis.get("HERMES_WRITE_SAFE_ROOT"),
+            Some(&json!(talaria_gateway::fleet_approvals::AGENT_WRITE_ROOT))
+        );
+        assert_eq!(chassis.get("TZ"), Some(&json!("UTC")));
     }
 
     #[test]

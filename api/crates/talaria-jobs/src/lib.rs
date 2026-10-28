@@ -160,9 +160,9 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         Box::pin(async move { talaria_price_oracle::keys_for(&state).await })
     }));
     // WHERE A REFUSED APPROVAL IS RECORDED. The fleet chat door refuses
-    // every Hermes approval request on a streamed turn that no card takes
-    // (talaria-gateway's fleet_approvals), and the gateway crate holds no
-    // pool. A card's own answers are recorded by talaria-approval-cards,
+    // every Hermes approval request on a streamed turn that no card takes,
+    // and every one no answer could make land (talaria-gateway's
+    // fleet_approvals), and the gateway crate holds no pool. A card's own answers are recorded by talaria-approval-cards,
     // with the person as the actor. Unwired, the
     // answer still goes out and nothing is recorded.
     let record_pg = state.pg.clone();
@@ -202,6 +202,10 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
                         "runId": r.run_id,
                         "answered": r.failure.is_none(),
                         "error": r.failure,
+                        // Set when no answer could have made it land (a
+                        // protected write outside the agent's write root),
+                        // so nobody was asked; null for a policy refusal.
+                        "reason": r.reason,
                     })),
                 },
             )

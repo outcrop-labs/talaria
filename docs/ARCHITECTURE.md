@@ -368,9 +368,23 @@ answers each request `deny` through the agent's own `POST /v1/runs/{id}/approval
 (`talaria-gateway/src/fleet_approvals.rs`), and writes an `agent.approval_denied` row to the
 audit log. The door itself never answers `once`, not even for a Developer Agent. What a
 Developer Agent still asks under `mode: off` comes from the gates Hermes never lets anything
-auto-approve: a write to a project's AGENTS.md / CLAUDE.md / SOUL.md, an untrusted MCP server's
-write tool, a saved card fill. Those want a person, and v0.22 strips the `pattern_key` that would
-tell them apart from a command.
+auto-approve: an MCP server's confirmation request (`elicitation/create`, from any server), an
+untrusted MCP server's write tool or spend limit, a saved card fill, a write to a project's
+AGENTS.md / CLAUDE.md / SOUL.md. Those want a person, and v0.22 strips the `pattern_key` that
+would tell them apart from a command.
+
+The last of those never reaches a person. The render pins every agent's file-tool write root,
+`HERMES_WRITE_SAFE_ROOT=/opt/data` (the agent's data volume, which is also the image's
+`HERMES_HOME`; `pin_write_root` in `talaria-fleet-render`), and Hermes' protected-instruction gate
+exempts the whole `HERMES_HOME`. So the gate only ever asks about a path outside `/opt/data`, and
+the write root refuses that path whatever the answer. A Developer Agent's own checkouts live under
+`/opt/data/workbench`, inside the root, where the gate does not ask. The frame names no path, so
+the door recognises the gate by Hermes' own words (`fleet_approvals::unanswerable`), refuses it
+at once without offering it to a card, records `reason: outside_write_root` on the
+`agent.approval_denied` row, and then steers the run with the reason, because Hermes' own BLOCKED
+text says the user denied it. The steer can only follow the refusal (Hermes' steer door refuses a
+run that is waiting on an approval); one that misses the agent's next model call reaches it as a
+follow-up turn in the same run.
 
 So a person can answer one, on exactly one kind of turn (`talaria-approval-cards`). On an
 *attended* conversation turn (sent from `/api/chat`, or chained or resumed from one:
@@ -387,11 +401,12 @@ the card expired. A Developer Agent renders `approvals.timeout: 120`. The card c
 A person's answer is audited as `agent.approval_allowed` / `agent.approval_denied` with that
 person as the actor; an expired card is `agent.approval_denied` by `talaria`. An answer that
 reaches an agent no longer waiting took nothing, and is `agent.approval_expired` by the person,
-never an allow. An allowed step is past the ask, not past Hermes' other limits: on the pinned
-image, file tools write only under `HERMES_WRITE_SAFE_ROOT=/opt/data`, which the
-protected-instruction gate exempts, so an allowed instruction-file write is refused there.
-Every other request (an ordinary agent's, or one on a channel, ticket, research, app or harness
-turn) is refused at once, as above. Cards stay out of the approvals census: a card lives two
+never an allow. An allowed step is past the ask, not past Hermes' other limits. An open card
+holds only its own conversation: Hermes queues that session's next turn behind the request, and
+the agent's other conversations go on (measured on v0.22.4 on both arms: a turn in another
+conversation answered in under 10 s while a card waited). Every other request (an ordinary
+agent's, or one on a channel, ticket, research, app or harness turn) is refused at once, as
+above. Cards stay out of the approvals census: a card lives two
 minutes, and the census's announce and escalation sweeps work in hours. A request nobody answers
 is refused by Hermes after `approvals.timeout` (60 s for an ordinary agent).
 

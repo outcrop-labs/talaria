@@ -1,14 +1,20 @@
 // talaria-approval-cards — an agent's approval request, put to the one person
 // who may answer it.
 //
-// Hermes asks before a handful of things no policy may wave through: a write
-// to a project's AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / `.hermes/`,
-// an untrusted MCP server's write tool or spend limit, a saved card fill. On a
+// Hermes asks before a handful of things no policy may wave through: an MCP
+// server's confirmation request (`elicitation/create`), an untrusted MCP
+// server's write tool or spend limit, a saved card fill, a write to a
+// project's AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / `.hermes/`. On a
 // streamed turn the ask is an `approval.request` frame, and the fleet chat
 // door answers every one `deny` (talaria-gateway's fleet_approvals), because
 // a door cannot consent for a person and cannot tell those gates apart from
 // a dangerous command. Before this crate, that left a Developer Agent unable
 // ever to do one of those things on a chat turn.
+//
+// The protected-instruction write never gets here. It only ever asks about a
+// path outside the agent's write root, which refuses the write whatever the
+// answer, so the door refuses it before offering it to this seam
+// (`fleet_approvals::unanswerable`). A card is for an answer that can land.
 //
 // THE RULE, IN FOUR PARTS.
 //

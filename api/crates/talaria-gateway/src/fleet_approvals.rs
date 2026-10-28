@@ -30,9 +30,9 @@
 // without asking. What a Developer Agent still asks is a gate Hermes built
 // never to be auto-approved: a write to a project's AGENTS.md / CLAUDE.md /
 // SOUL.md / .cursorrules / `.hermes/` (the prompt-injection persistence
-// vector), an untrusted MCP server's write tool or spend limit, a saved
-// payment card fill. Each ignores yolo and `mode: off`, and each wants a
-// person. This door is not one. Nor can it tell those apart from a command:
+// vector), an MCP server's confirmation request (`elicitation/create`), an
+// untrusted MCP server's write tool or spend limit, a saved payment card
+// fill. Each ignores yolo and `mode: off`, and each wants a person. This door is not one. Nor can it tell those apart from a command:
 // v0.22's session authority projects a request down to its command,
 // description, choices and generation, and drops Hermes' `pattern_key`, so
 // a card fill reads exactly like `rm -rf`. A door that answered `once` would
@@ -48,6 +48,17 @@
 // agent. The card is answered by that person, `once` or `deny`, or by the
 // seam's own deadline, `deny`, five seconds before Hermes' timeout would
 // refuse it anyway. Everything the seam declines is refused here at once.
+//
+// NOBODY IS ASKED ABOUT A WRITE THAT CANNOT LAND. Hermes' protected-
+// instruction gate exempts the agent's whole `HERMES_HOME` (`/opt/data`), so
+// it asks only about paths outside it, and the render pins the file tools'
+// write root (`HERMES_WRITE_SAFE_ROOT`) to that same `/opt/data`
+// ([`AGENT_WRITE_ROOT`]). Every such ask is therefore for a write the root
+// refuses after any `once`. The door recognises the gate by Hermes' own
+// words on the frame ([`unanswerable`]), refuses it before the card seam is
+// offered it, and then steers the run with the real reason, because Hermes'
+// BLOCKED text says the user denied it. A future image that changed the
+// words would get a card again, never a `once` from the door.
 //
 // The answer goes through the agent's own door with its own bearer, the same
 // as a steer or a stop, inside the same control window. If the answer cannot
@@ -162,6 +173,80 @@ impl Choice {
 /// never `once`).
 pub const ANSWER: &str = "deny";
 
+/// Every agent's file-tool write root, pinned by the render as
+/// `HERMES_WRITE_SAFE_ROOT` (talaria-fleet-render). It is the agent's data
+/// volume, which is also the image's `HERMES_HOME`, so everything an agent
+/// keeps (a Developer Agent's checkouts under `/opt/data/workbench`
+/// included) is inside it. Hermes reads the key as an `os.pathsep` list of
+/// roots, each `realpath`'d; this is one root, never widened.
+pub const AGENT_WRITE_ROOT: &str = "/opt/data";
+
+/// How Hermes (v0.22.4, `tools/file_tools_write_guards.py`,
+/// `_request_protected_instruction_approval`) opens the description of its
+/// protected-instruction ask, and how it shows the write in place of a
+/// command (`<write to AGENTS.md>`). The frame carries no path and no
+/// `pattern_key`: the targets are the basenames Hermes matched (or a
+/// project-local `.hermes/` path), nothing more.
+const PROTECTED_WRITE_ASK: &str = "Write to protected agent-instruction file(s): ";
+const PROTECTED_WRITE_SHOWN: &str = "<write to ";
+
+/// A request no answer can make land. The door refuses it at once, raises no
+/// card for it, and tells the agent why.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Unanswerable {
+    /// Hermes' protected-instruction gate: a `write_file` or `patch` touching
+    /// an AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / project `.hermes/`
+    /// file. The gate exempts the agent's whole `HERMES_HOME` (`/opt/data`),
+    /// so it only ever asks about a path outside it, and that is outside
+    /// [`AGENT_WRITE_ROOT`] too: the root refuses the write after any `once`
+    /// (a person's or anyone's), as "Write denied … outside
+    /// HERMES_WRITE_SAFE_ROOT". A card would ask a person to approve a write
+    /// that cannot happen. `targets` is what Hermes named.
+    OutsideWriteRoot { targets: String },
+}
+
+impl Unanswerable {
+    /// The audit row's `reason`.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Unanswerable::OutsideWriteRoot { .. } => "outside_write_root",
+        }
+    }
+
+    /// What the agent is told, as a steer on the run right after the refusal:
+    /// Hermes' own text for a refused protected write says the user denied
+    /// it, and no person was asked.
+    pub fn note_to_agent(&self) -> String {
+        match self {
+            Unanswerable::OutsideWriteRoot { targets } => format!(
+                "Talaria refused the write to {targets} before asking anyone: the file is outside \
+                 this agent's write root ({AGENT_WRITE_ROOT}), and a write there is refused \
+                 whatever a person answers. No one denied it. Do not retry it, by this path or \
+                 any other; tell the user the write to {targets} was refused because it is \
+                 outside your write root."
+            ),
+        }
+    }
+}
+
+/// Whether a request is one no answer can make land.
+pub fn unanswerable(asked: &ApprovalAsked) -> Option<Unanswerable> {
+    if !asked.description.starts_with(PROTECTED_WRITE_ASK) {
+        return None;
+    }
+    let targets = asked
+        .command
+        .strip_prefix(PROTECTED_WRITE_SHOWN)?
+        .strip_suffix('>')?
+        .trim();
+    if targets.is_empty() {
+        return None;
+    }
+    Some(Unanswerable::OutsideWriteRoot {
+        targets: targets.chars().take(200).collect(),
+    })
+}
+
 /// One request the door refused, for the audit log.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalRecord {
@@ -173,6 +258,9 @@ pub struct ApprovalRecord {
     pub description: String,
     /// None when Hermes took the answer, otherwise why it did not.
     pub failure: Option<String>,
+    /// Set when no answer could have made the request land
+    /// ([`Unanswerable::reason`]); None for a refusal by policy.
+    pub reason: Option<String>,
 }
 
 pub type RecordFn = Arc<dyn Fn(ApprovalRecord) -> BoxFuture<'static, ()> + Send + Sync>;
@@ -431,13 +519,18 @@ pub fn recorded_command(command: &str) -> String {
     command.chars().take(RECORDED_COMMAND_CHARS).collect()
 }
 
-/// One request: a card when the seam raises one, otherwise refused here.
+/// One request: refused here when no answer could make it land, a card when
+/// the seam raises one, otherwise refused here.
 async fn handle(
     entry: ManifestEntry,
     agent_model: String,
     turn: ApprovalTurn,
     asked: ApprovalAsked,
 ) {
+    if let Some(why) = unanswerable(&asked) {
+        refuse_unanswerable(entry, agent_model, asked, why).await;
+        return;
+    }
     if let Some(raise) = RAISE_CARD.get() {
         let ask = CardAsk {
             agent_model: agent_model.clone(),
@@ -494,9 +587,25 @@ async fn deliver(entry: &ManifestEntry, asked: &ApprovalAsked, choice: Choice) -
             Delivery::NotPending(control_failure(res).await)
         }
         Ok(Ok(res)) => Delivery::Failed(control_failure(res).await),
-        Ok(Err(e)) => Delivery::Failed(e.to_string()),
+        Ok(Err(e)) => Delivery::Failed(transport_failure(e)),
         Err(_) => Delivery::Failed("the agent did not answer the approval".into()),
     }
+}
+
+/// A request that never reached the agent, in words an audit row may keep.
+/// reqwest's Display names the URL it was sending to ("error sending request
+/// for url (http://agent-x:8642/v1/runs/…/approval)"), which is the agent's
+/// dial address: the fleet's topology, and nothing an admin reading the
+/// `agent.approval_*` row needs. The failure text lands in that row (through
+/// `RECORD_APPROVAL` and the card's own record), so the URL is dropped here.
+/// The full error goes to the server log once.
+///
+/// #615 adds `fleet_chat::transport_error`, which does the same for every
+/// agent call and also keeps the innermost cause; whichever of the two PRs
+/// merges second can route this through it.
+fn transport_failure(e: reqwest::Error) -> String {
+    tracing::debug!("[approvals] agent transport: {e}");
+    e.without_url().to_string()
 }
 
 /// Answer a request a card is holding, through the agent's manifest row.
@@ -512,35 +621,104 @@ pub async fn answer_card(agent_model: &str, asked: &ApprovalAsked, choice: Choic
     deliver(entry, asked, choice).await
 }
 
+/// Refuse one request no answer could make land, tell the agent why, and
+/// record it.
+///
+/// The note goes as a steer, the one way to put words in front of a run
+/// that is already going, and only AFTER the refusal is taken: while Hermes
+/// holds an approval open it reports the run `waiting_for_approval`, and its
+/// steer door refuses anything but a `running` run. Hermes appends a steer
+/// as a user row after the tool batch's results (or before the next model
+/// call), so the agent reads it beside its own BLOCKED. One that loses the
+/// race with that model call (the window is milliseconds) is held, and Hermes
+/// hands a steer still held when the turn ends to the same run as a
+/// follow-up user turn, so the agent answers it then; on v0.22.4 that
+/// follow-up is sent without the session's history, which is why the note
+/// names the file and says what to tell the user. The refusal stands either
+/// way, and a run that is already over (the steer door answers 409) gets no
+/// note. Both arms take it: a `chatcmpl-…` run steers like a session run.
+async fn refuse_unanswerable(
+    entry: ManifestEntry,
+    agent_model: String,
+    asked: ApprovalAsked,
+    why: Unanswerable,
+) {
+    let refused = refuse_with(&entry, &agent_model, &asked, Some(why.reason())).await;
+    if !refused {
+        return;
+    }
+    let sent = tokio::time::timeout(
+        CONTROL_WINDOW,
+        agent_post(&entry, &format!("/v1/runs/{}/steer", asked.run_id))
+            .json(&json!({ "input": why.note_to_agent() }))
+            .send(),
+    )
+    .await;
+    match sent {
+        Ok(Ok(res)) if res.status().is_success() => tracing::info!(
+            "[approvals] {agent_model}: told the run why ({})",
+            why.reason()
+        ),
+        Ok(Ok(res)) => tracing::info!(
+            "[approvals] {agent_model}: the run did not take the note ({}): {}",
+            why.reason(),
+            control_failure(res).await
+        ),
+        Ok(Err(e)) => tracing::info!(
+            "[approvals] {agent_model}: the note did not reach the run ({}): {}",
+            why.reason(),
+            transport_failure(e)
+        ),
+        Err(_) => tracing::info!(
+            "[approvals] {agent_model}: the run did not answer the note ({})",
+            why.reason()
+        ),
+    }
+}
+
 /// Refuse one request, then record what happened.
 async fn refuse(entry: ManifestEntry, agent_model: String, asked: ApprovalAsked) {
-    let failure = match deliver(&entry, &asked, Choice::Deny).await {
+    refuse_with(&entry, &agent_model, &asked, None).await;
+}
+
+/// Answer `deny`, log it, and record it. True when Hermes took the answer.
+async fn refuse_with(
+    entry: &ManifestEntry,
+    agent_model: &str,
+    asked: &ApprovalAsked,
+    reason: Option<&str>,
+) -> bool {
+    let failure = match deliver(entry, asked, Choice::Deny).await {
         Delivery::Taken => None,
         Delivery::NotPending(why) | Delivery::Failed(why) => Some(why),
     };
     // The command stays out of the log line: the description names the
     // flag, and the audit row carries the (redacted) command.
+    let because = reason.map(|r| format!(" [{r}]")).unwrap_or_default();
     match &failure {
         None => tracing::info!(
-            "[approvals] {agent_model}: answered {ANSWER} to a flagged call ({})",
+            "[approvals] {agent_model}: answered {ANSWER} to a flagged call ({}){because}",
             asked.description
         ),
         Some(why) => tracing::warn!(
-            "[approvals] {agent_model}: could not answer {ANSWER} to a flagged call ({}): {why}; \
-             Hermes refuses it when approvals.timeout runs out",
+            "[approvals] {agent_model}: could not answer {ANSWER} to a flagged call ({}){because}: \
+             {why}; Hermes refuses it when approvals.timeout runs out",
             asked.description
         ),
     }
+    let taken = failure.is_none();
     if let Some(record) = RECORD_APPROVAL.get() {
         record(ApprovalRecord {
-            agent_model,
-            run_id: asked.run_id,
+            agent_model: agent_model.to_string(),
+            run_id: asked.run_id.clone(),
             command: recorded_command(&asked.command),
-            description: asked.description,
+            description: asked.description.clone(),
             failure,
+            reason: reason.map(str::to_string),
         })
         .await;
     }
+    taken
 }
 
 #[cfg(test)]
@@ -771,6 +949,246 @@ mod tests {
         let mut found = frames.feed(&bytes[..split]);
         found.extend(frames.feed(&bytes[split..]));
         assert_eq!(found[0].command, "echo héllo");
+    }
+
+    #[test]
+    fn a_protected_write_is_a_request_no_answer_can_land() {
+        let protected = approval_asked(PROTECTED_WRITE_FRAME).unwrap();
+        let why = unanswerable(&protected).expect("the protected-instruction ask");
+        assert_eq!(
+            why,
+            Unanswerable::OutsideWriteRoot {
+                targets: "AGENTS.md".into()
+            }
+        );
+        assert_eq!(why.reason(), "outside_write_root");
+        let note = why.note_to_agent();
+        assert!(note.contains("AGENTS.md"), "{note}");
+        assert!(note.contains("/opt/data"), "{note}");
+        assert!(note.contains("No one denied it"), "{note}");
+
+        // Several files in one patch, and a project-local `.hermes/` file,
+        // which Hermes names by its whole path.
+        for (command, targets) in [
+            ("<write to AGENTS.md, CLAUDE.md>", "AGENTS.md, CLAUDE.md"),
+            (
+                "<write to /srv/repo/.hermes/config.yaml>",
+                "/srv/repo/.hermes/config.yaml",
+            ),
+        ] {
+            let asked = ApprovalAsked {
+                command: command.into(),
+                description: format!("Write to protected agent-instruction file(s): {targets}. …"),
+                ..protected.clone()
+            };
+            assert_eq!(
+                unanswerable(&asked),
+                Some(Unanswerable::OutsideWriteRoot {
+                    targets: targets.into()
+                }),
+                "{command}"
+            );
+        }
+
+        // Every other gate is a request a person may still answer (or the
+        // door refuses by policy): a dangerous command, an MCP server's
+        // confirmation, an untrusted server's write tool.
+        let dangerous = approval_asked(SESSION_FRAME).unwrap();
+        assert_eq!(unanswerable(&dangerous), None);
+        for (command, description) in [
+            (
+                "Delete record 42?",
+                "Approval requested by MCP server 'records'.",
+            ),
+            (
+                "MCP tool 'delete' on UNTRUSTED server 'records' wants to run.",
+                "Server 'records' is configured 'trust: untrusted'. Approve to run 'delete' once, \
+                 or deny to block it.",
+            ),
+            // The gate's words without its shape, and the shape without the
+            // words: neither is read as the gate.
+            (
+                "rm AGENTS.md",
+                "Write to protected agent-instruction file(s): AGENTS.md.",
+            ),
+            ("<write to AGENTS.md>", "delete in root path"),
+            (
+                "<write to >",
+                "Write to protected agent-instruction file(s): .",
+            ),
+        ] {
+            let asked = ApprovalAsked {
+                command: command.into(),
+                description: description.into(),
+                ..protected.clone()
+            };
+            assert_eq!(unanswerable(&asked), None, "{command}");
+        }
+    }
+
+    /// What a stub agent door was sent, in order: (path, body).
+    type Sent = Arc<std::sync::Mutex<Vec<(String, Value)>>>;
+
+    async fn stub_agent_door() -> (ManifestEntry, Sent) {
+        use axum::extract::{Json, Path};
+        let sent: Sent = Arc::default();
+        let (a, s) = (sent.clone(), sent.clone());
+        let app = axum::Router::new()
+            .route(
+                "/v1/runs/{run}/approval",
+                axum::routing::post(move |Path(run): Path<String>, Json(body): Json<Value>| {
+                    let a = a.clone();
+                    async move {
+                        a.lock().unwrap().push((format!("{run}/approval"), body));
+                        Json(json!({ "status": "resolved" }))
+                    }
+                }),
+            )
+            .route(
+                "/v1/runs/{run}/steer",
+                axum::routing::post(move |Path(run): Path<String>, Json(body): Json<Value>| {
+                    let s = s.clone();
+                    async move {
+                        s.lock().unwrap().push((format!("{run}/steer"), body));
+                        Json(json!({ "object": "hermes.run.steer", "accepted": true }))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (
+            ManifestEntry {
+                model: "dex".into(),
+                url,
+                key: None,
+            },
+            sent,
+        )
+    }
+
+    fn one_frame_stream(frame: String) -> ChatStream {
+        let body: ByteStream = Box::pin(futures_util::stream::iter([Ok::<Bytes, reqwest::Error>(
+            Bytes::from(frame + "\n\n"),
+        )]));
+        ChatStream {
+            status: 200,
+            content_type: "text/event-stream".into(),
+            body,
+            canned: None,
+            hermes_session: None,
+        }
+    }
+
+    async fn wait_for(sent: &Sent, n: usize) -> Vec<(String, Value)> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while sent.lock().unwrap().len() < n && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Anything sent after the n-th would show here too.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        sent.lock().unwrap().clone()
+    }
+
+    /// The request ids the card seam was offered, across this test binary.
+    static OFFERED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    fn record_what_the_seam_is_offered() {
+        let _ = RAISE_CARD.set(Arc::new(|ask: CardAsk| {
+            OFFERED.lock().unwrap().push(ask.asked.request_id.clone());
+            // Declined: the door refuses it, as every other test expects.
+            Box::pin(async { false })
+        }));
+    }
+
+    #[tokio::test]
+    async fn a_write_the_root_refuses_is_refused_uncarded_and_the_run_is_told_why() {
+        record_what_the_seam_is_offered();
+        let (entry, sent) = stub_agent_door().await;
+        let frame = PROTECTED_WRITE_FRAME.replace(
+            "44e98bc6bc544867860b37c800ac72cc",
+            "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        );
+        // An attended conversation turn on a Developer Agent: exactly the
+        // turn a card could be raised from.
+        let turn = ApprovalTurn::attended_chat("6113b5bc-6935-46e1-a67c-60bd58daf4f0");
+        let tapped = tap_approvals(one_frame_stream(frame), &entry, "dex", turn);
+        let _: Vec<_> = tapped.body.collect().await;
+
+        let sent = wait_for(&sent, 2).await;
+        assert_eq!(
+            sent,
+            vec![
+                (
+                    "run_d87c07107c4244a89973e5bd2618264b/approval".to_string(),
+                    json!({ "request_id": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+                            "execution_generation": 1, "choice": "deny" })
+                ),
+                (
+                    "run_d87c07107c4244a89973e5bd2618264b/steer".to_string(),
+                    json!({ "input": Unanswerable::OutsideWriteRoot {
+                        targets: "AGENTS.md".into()
+                    }
+                    .note_to_agent() })
+                ),
+            ]
+        );
+        // Never offered to the card seam.
+        assert!(
+            !OFFERED
+                .lock()
+                .unwrap()
+                .contains(&"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn any_other_request_is_offered_to_the_seam_and_refused_without_a_note() {
+        record_what_the_seam_is_offered();
+        let (entry, sent) = stub_agent_door().await;
+        let frame = SESSION_FRAME.replace(
+            "f27f3b67938548a1af19d5c2d9707b64",
+            "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+        );
+        let turn = ApprovalTurn::attended_chat("6113b5bc-6935-46e1-a67c-60bd58daf4f0");
+        let tapped = tap_approvals(one_frame_stream(frame), &entry, "dex", turn);
+        let _: Vec<_> = tapped.body.collect().await;
+
+        let sent = wait_for(&sent, 1).await;
+        assert_eq!(
+            sent,
+            vec![(
+                "run_ea8f1e18253c456db8faeb3133d2c661/approval".to_string(),
+                json!({ "request_id": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+                        "execution_generation": 1, "choice": "deny" })
+            )]
+        );
+        assert!(
+            OFFERED
+                .lock()
+                .unwrap()
+                .contains(&"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_never_arrived_is_recorded_without_the_agent_s_address() {
+        // Nothing listens on the discard port: the send fails in transport,
+        // which is the text the audit row keeps. reqwest's own Display would
+        // carry the whole dial URL.
+        let entry = ManifestEntry {
+            model: "nobody".into(),
+            url: "http://127.0.0.1:9".into(),
+            key: None,
+        };
+        let asked = approval_asked(SESSION_FRAME).unwrap();
+        let Delivery::Failed(why) = deliver(&entry, &asked, Choice::Deny).await else {
+            panic!("an unreachable agent took the answer");
+        };
+        assert!(!why.is_empty());
+        for leak in ["127.0.0.1", ":9", "/v1/runs", "run_ea8f1e18", "http"] {
+            assert!(!why.contains(leak), "{leak} in {why:?}");
+        }
     }
 
     #[tokio::test]

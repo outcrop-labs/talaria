@@ -6,9 +6,12 @@
 
   // THE AGENT IS ASKING BEFORE IT GOES ON. A Developer Agent runs its flagged
   // commands without asking, so what still reaches a person is one of the few
-  // things Hermes never lets anything wave through: a write to a project's
-  // AGENTS.md / CLAUDE.md / SOUL.md, an untrusted MCP server's write tool, a
-  // saved card fill. The agent's turn is paused on the answer.
+  // things Hermes never lets anything wave through: an MCP server asking to
+  // confirm an action, an untrusted MCP server's write tool, a saved card
+  // fill. (A write to a project's AGENTS.md / CLAUDE.md outside the agent's
+  // data folder is never carded: the write root refuses it whatever the
+  // answer, so the door refuses it first.) This conversation's turn is paused
+  // on the answer; the agent's other conversations are not.
   //
   // ONE PERSON ANSWERS: the conversation's owner, who manages the agent
   // (`deciderId`). Anyone else reading the thread sees the card and what
