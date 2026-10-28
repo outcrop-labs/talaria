@@ -168,9 +168,12 @@ Search, or SearXNG at the workspace search URL, each with its key (stored encryp
 again), plus an optional separate provider for reading pages. Left on Hermes's default, Talaria
 sets nothing. Once you pick a provider, or set a search URL (every agent gets it as
 `SEARXNG_URL`), agents stop falling back to the anonymous free tiers of Exa, Parallel, Firecrawl
-and Keenable unless you tick **Allow Hermes's keyless public tiers**. Talaria does not check that
-the agents can connect to that URL: if they cannot, their searches fail with SearXNG's connection
-error instead of falling back. Brave Search and SearXNG only search. Unless you also pick a
+and Keenable unless you tick **Allow Hermes's keyless public tiers**. If the agents cannot connect
+to that URL, their searches fail with SearXNG's connection error instead of falling back, so the
+**Search URL** panel tests it twice: **from app** and **from agents**. The second runs the same
+test inside a running agent, against the address the agents actually dial (a `127.0.0.1` URL
+becomes `host.docker.internal`), and reads **not probed** when no agent is running. A SearXNG
+listening only on the host's loopback shows up from the app and down from the agents. Brave Search and SearXNG only search. Unless you also pick a
 provider under **Read pages**, agents' `web_extract` lands on them and fails, and the panel warns
 about it. The choice applies to every agent. It overrides an agent's own web backend settings, and
 an agent secret with the same name as the vendor key. Research is not affected: it searches with

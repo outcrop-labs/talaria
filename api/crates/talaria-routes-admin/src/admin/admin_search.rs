@@ -13,12 +13,22 @@
 // sets SEARXNG_URL and should not have that silently overridden by a
 // setting somebody typed once. The GET says which is in force so the field
 // is never a lie.
+//
+// TWO VANTAGE POINTS, TWO ANSWERS. `reachable` is the app's own view (what
+// Research dials). `agentReachable` is the same canary run from inside a
+// running agent against the URL the render hands the agents
+// (`talaria_agent_web_search::probe`): a SearXNG bound to the host's
+// loopback answers the app and refuses every agent, and only the second
+// answer shows it. `agentReachable: null` means there was nothing to probe —
+// no URL handed to the agents, or no agent running — with `agentError`
+// saying which. Both probes run at once.
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
+use talaria_agent_web_search::{AgentReach, agent_search_reachable};
 use talaria_api_facades::gateway::settings::{get_setting, set_setting};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::parse;
@@ -33,19 +43,34 @@ pub async fn get(
 ) -> Result<Response, Response> {
     require_admin(&state, &headers).await?;
     let stored = get_setting(&state.pg, SEARCH_URL_KEY, Value::String(String::new())).await;
-    let health = search_reachable(&state.pg, &real_deps()).await;
+    let deps = real_deps();
+    let (health, agents) = tokio::join!(
+        search_reachable(&state.pg, &deps),
+        agent_search_reachable(&state.pg)
+    );
     // SEARXNG_URL set-but-empty reads as false.
     let from_env = std::env::var("SEARXNG_URL")
         .map(|v| !v.is_empty())
         .unwrap_or(false);
-    Ok(Json(serde_json::json!({
+    let mut out = serde_json::json!({
         "url": search_url(&state.pg).await,
         "stored": stored,
         "fromEnv": from_env,
         "reachable": health.ok,
         "error": health.error,
-    }))
-    .into_response())
+    });
+    agent_fields(&mut out, agents);
+    Ok(Json(out).into_response())
+}
+
+/// The agents' half of the answer, merged into either verb's body.
+fn agent_fields(out: &mut Value, agents: AgentReach) {
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert("agentReachable".into(), serde_json::json!(agents.ok));
+        obj.insert("agentError".into(), serde_json::json!(agents.error));
+        obj.insert("probedFrom".into(), serde_json::json!(agents.probed_from));
+        obj.insert("agentUrl".into(), serde_json::json!(agents.url));
+    }
 }
 
 pub async fn put(
@@ -91,11 +116,16 @@ pub async fn put(
     // TESTED AFTER SAVING, not before: the point of the button is to tell an
     // admin whether what they just saved works, and a check against the old
     // value would answer a question nobody asked.
-    let health = search_reachable(&state.pg, &real_deps()).await;
-    Ok(Json(serde_json::json!({
+    let deps = real_deps();
+    let (health, agents) = tokio::join!(
+        search_reachable(&state.pg, &deps),
+        agent_search_reachable(&state.pg)
+    );
+    let mut out = serde_json::json!({
         "url": search_url(&state.pg).await,
         "reachable": health.ok,
         "error": health.error,
-    }))
-    .into_response())
+    });
+    agent_fields(&mut out, agents);
+    Ok(Json(out).into_response())
 }

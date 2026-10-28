@@ -3702,7 +3702,9 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "sqlx",
+ "talaria-fleet-docker",
  "talaria-fleet-layout",
+ "talaria-search",
  "talaria-secretbox",
  "talaria-settings",
 ]

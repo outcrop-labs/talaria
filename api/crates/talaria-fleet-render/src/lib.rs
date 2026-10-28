@@ -1589,7 +1589,8 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         // Nothing set → nothing rendered → Hermes resolves its own floor. A
         // URL rendered here also switches that keyless floor off (the `web:`
         // merge above), unless Admin → Search allowed it. Rendered is not
-        // reachable: nothing probes the URL from an agent.
+        // reachable: Admin → Search probes it from inside a running agent
+        // (talaria-agent-web-search's `probe`) to say which it is.
         if let Some(url) = &agent_search_url {
             env.insert("SEARXNG_URL".into(), json!(url));
         }

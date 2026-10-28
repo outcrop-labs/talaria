@@ -68,8 +68,10 @@ render writes `web.search_backend` / `web.extract_backend` into every agent's co
 vendor key from its sealed row through `fleet/.env` (`TALARIA_WEB_<VAR>`, interpolated as the
 variable the Hermes provider reads), and switches Hermes's keyless public tiers and their one-shot
 rescue off (`web.keyless_fallback` / `web.keyless_rescue: false`) once a provider is picked or the
-search URL is rendered to the agents as `SEARXNG_URL` (rendered, not probed), unless the operator
-allowed them. Unset, nothing is rendered. A search-only backend (Brave, SearXNG) left to read pages
+search URL is rendered to the agents as `SEARXNG_URL`, unless the operator allowed them. Rendered is
+not reachable, so Admin → Search probes the URL twice: from the app, and from inside a running
+agent against the URL as the agents dial it (`talaria-agent-web-search`'s `probe`), shown as the
+"from agents" dot. Unset, nothing is rendered. A search-only backend (Brave, SearXNG) left to read pages
 is a render warning, not a refusal. Research does not read it.
 
 ## Request lifecycle
