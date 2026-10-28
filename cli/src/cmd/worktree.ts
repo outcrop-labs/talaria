@@ -374,7 +374,13 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
           `Tear the half-made stack down with: ${teardown}`,
       )
     }
-    ctx.log.ok(`seeded (a point-in-time copy of main: ${mainTables} tables)`)
+    // An unread copy is not a checked one: say main's count, and that this
+    // side's could not be read, rather than quote main's as the copy's.
+    ctx.log.ok(
+      ownTables === null
+        ? `seeded (a point-in-time copy of main: ${mainTables} tables; this worktree's count could not be read)`
+        : `seeded (a point-in-time copy of main: ${mainTables} tables)`,
+    )
   }
   // The copied agent rows carry MAIN's gateway ports. This stack renders its
   // own fleet from its own base (TALARIA_GATEWAY_PORT_BASE below), so a copied

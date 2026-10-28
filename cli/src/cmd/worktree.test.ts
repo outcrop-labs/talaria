@@ -758,6 +758,22 @@ describe('runWorktree — what the seed copied', () => {
     }
   })
 
+  test("a copy whose own count cannot be read says so — it never quotes main's as checked", async () => {
+    const { ctx, done } = fixture('unreadcopy')
+    ctx.plant(['docker', COUNT('talaria-postgres-dev')], '142\n')
+    ctx.plant(['docker', COUNT('talaria-pg-unreadcopy')], new Error('docker exited 1'))
+    try {
+      await runWorktree(ctx, 'unreadcopy')
+      expect(ctx.logLines).toContainEqual({
+        kind: 'ok',
+        msg: "seeded (a point-in-time copy of main: 142 tables; this worktree's count could not be read)",
+      })
+      expect(ctx.logLines).not.toContainEqual({ kind: 'ok', msg: 'seeded (a point-in-time copy of main: 142 tables)' })
+    } finally {
+      done()
+    }
+  })
+
   test('the restore stops on the first failed statement', async () => {
     const { ctx, done } = fixture('strict')
     try {

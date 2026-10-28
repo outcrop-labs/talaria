@@ -78,7 +78,8 @@ data so you still have realistic agents/boards/tickets to work against.
    to copy and the worktree starts empty and migrates on its first `talaria dev`.
    The restore runs with `ON_ERROR_STOP`, so one failed statement fails the seed
    (psql otherwise prints it and exits 0), and a restore that comes up with fewer
-   tables than main dies too, with the teardown. Main's container is
+   tables than main dies too, with the teardown (a copy whose own count cannot be
+   read says so, rather than quote main's count as checked). Main's container is
    `talaria-postgres-dev`, or what `TALARIA_PG_CONTAINER` names — but one that
    belongs to a worktree's or a box's compose project is refused: `talaria dev` in
    a worktree sets that variable to the worktree's own Postgres, every process it
