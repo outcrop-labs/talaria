@@ -53,6 +53,15 @@
 // after an upgrade lands nothing twice. A job's runs never overlap (Hermes
 // holds one fire claim per job), so a row of that job inside that window is
 // that run's.
+//
+// A QUIET RUN IS DELIVERED TOO. A run that answered Hermes's silence sentinel
+// (`[SILENT]`, see `silence`) lands nothing by either road, and whichever
+// road saw it first recorded it in `cron_silent_runs` under the same run key.
+// That record counts as delivered here, by the session id or the job's
+// window exactly as a message row does, so a quiet run is never re-read and
+// never landed; the pull that finds one the push lost records it itself.
+// Records older than the look-back can never be consulted again, and each
+// pass drops them.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -66,7 +75,7 @@ use talaria_agent_crons::JobListener;
 use talaria_gateway::fleet_chat::{Method, agent_request};
 use talaria_state::AppState;
 
-use crate::{CronReport, LOG, Via, land, pull_marker};
+use crate::{CronReport, LOG, Outcome, Via, land, pull_marker};
 
 /// The pull's cadence: a lost report lands within five minutes of its run
 /// settling, and an idle install pays two small reads per listening agent.
@@ -336,8 +345,9 @@ pub fn by_prompt<'a>(hits: &[&'a AgentJob], first_user: &str) -> Option<&'a Agen
     top.next().is_none().then_some(winner)
 }
 
-/// Is this run already in the thread? A row carrying the session id, or a
-/// row of the same job that landed while the session ran (see the header).
+/// Is this run already delivered to the thread? A row carrying the session
+/// id, or a row of the same job that landed while the session ran (see the
+/// header) — or the same two facts of a quiet run's record.
 pub(crate) async fn delivered(
     pg: &PgPool,
     l: &Listener,
@@ -351,6 +361,13 @@ pub(crate) async fn delivered(
                 or (metadata->>'marker' like $3 \
                     and created_at >= to_timestamp($4::double precision / 1000) \
                     and created_at <= to_timestamp($5::double precision / 1000))) \
+         union all \
+         select 1 from cron_silent_runs \
+         where conversation_id = $1::uuid \
+           and (run_key = $2 \
+                or (job_id = $6 \
+                    and created_at >= to_timestamp($4::double precision / 1000) \
+                    and created_at <= to_timestamp($5::double precision / 1000))) \
          limit 1",
     )
     .bind(&l.conversation_id)
@@ -358,12 +375,14 @@ pub(crate) async fn delivered(
     .bind(&job_marker)
     .bind((s.started_ms - SLACK_MS) as f64)
     .bind((s.ended_ms + SLACK_MS) as f64)
+    .bind(&l.job_id)
     .fetch_optional(pg)
     .await?;
     Ok(hit.is_some())
 }
 
-/// Does a row in any of these threads already carry the session id?
+/// Is the session already delivered to any of these threads — a row
+/// carrying its id, or its quiet run's record?
 pub(crate) async fn landed_in_any(
     pg: &PgPool,
     threads: &[&str],
@@ -373,6 +392,9 @@ pub(crate) async fn landed_in_any(
     let hit: Option<i32> = sqlx::query_scalar(
         "select 1 from messages \
          where conversation_id = any($1::uuid[]) and metadata->>'cronSession' = $2 \
+         union all \
+         select 1 from cron_silent_runs \
+         where conversation_id = any($1::uuid[]) and run_key = $2 \
          limit 1",
     )
     .bind(&threads)
@@ -477,6 +499,9 @@ async fn agent_jobs(pg: &PgPool, model: &str) -> Result<(Vec<Listener>, Vec<Agen
 pub struct PullReport {
     /// Reports landed that the push never delivered.
     pub landed: usize,
+    /// Quiet runs (Hermes's silence sentinel) the push never delivered,
+    /// recorded as delivered silent with nothing landed.
+    pub silent: usize,
     /// Agents whose API server did not answer (stopped, or restarting).
     pub unreachable: Vec<String>,
     /// Agents whose API server answered and refused the reads.
@@ -584,7 +609,7 @@ async fn pull_agent(
         let Some(text) = run.report else {
             continue;
         };
-        let landed = land(
+        let outcome = land(
             pg,
             redis.clone(),
             &JobListener {
@@ -593,6 +618,7 @@ async fn pull_agent(
             },
             CronReport {
                 agent_model: model,
+                job_id: &job.id,
                 marker: pull_marker(&job.id, &session.id),
                 session_id: Some(&session.id),
                 via: Via::Pull,
@@ -600,18 +626,47 @@ async fn pull_agent(
             },
         )
         .await?;
-        if landed.fresh {
-            tracing::warn!(
-                "{LOG} {model}: job {} session {} ended without its report reaching thread {} — \
-                 pulled it in (message {})",
-                job.id,
-                session.id,
-                listener.conversation_id,
-                landed.message_id
-            );
-            report.landed += 1;
+        match outcome {
+            Outcome::Landed(landed) if landed.fresh => {
+                tracing::warn!(
+                    "{LOG} {model}: job {} session {} ended without its report reaching thread {} — \
+                     pulled it in (message {})",
+                    job.id,
+                    session.id,
+                    listener.conversation_id,
+                    landed.message_id
+                );
+                report.landed += 1;
+            }
+            Outcome::Silent { fresh: true } => {
+                tracing::info!(
+                    "{LOG} {model}: job {} session {} answered Hermes's silence sentinel and its \
+                     push never arrived — recorded as delivered silent, nothing landed in thread {}",
+                    job.id,
+                    session.id,
+                    listener.conversation_id
+                );
+                report.silent += 1;
+            }
+            _ => {}
         }
     }
+    Ok(())
+}
+
+/// How long a quiet run's record is kept: past the look-back (plus a run's
+/// own length), no session it could answer for is still in the window.
+pub const SILENT_KEEP_MS: i64 = 2 * LOOKBACK_MS;
+
+/// Drop the quiet-run records no pass can consult any more.
+pub(crate) async fn prune_silent(pg: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "delete from cron_silent_runs \
+         where created_at < now() - make_interval(secs => $1::double precision / 1000)",
+    )
+    .bind(SILENT_KEEP_MS as f64)
+    .execute(pg)
+    .await?;
     Ok(())
 }
 
@@ -648,6 +703,7 @@ fn tally(model: &str, refused: bool) -> u32 {
 /// hourly: its threads' lost reports cannot be pulled until someone fixes
 /// it. A database failure ends the pass, and the scheduler records it.
 pub async fn pull_pass(state: &AppState) -> Result<PullReport, String> {
+    prune_silent(&state.pg).await.map_err(|e| e.to_string())?;
     let models: Vec<String> = sqlx::query_scalar(
         "select distinct cs.agent_model from conversation_schedules cs \
          join agent_defs d on d.model = cs.agent_model and d.managed and d.enabled \
@@ -694,6 +750,35 @@ pub async fn pull_pass(state: &AppState) -> Result<PullReport, String> {
     Ok(report)
 }
 
+/// The scheduler's line for a pass, or None when it delivered nothing the
+/// push lost (a report, or a quiet run's record).
+fn pass_summary(report: &PullReport) -> Option<String> {
+    let mut parts = Vec::new();
+    if report.landed > 0 {
+        parts.push(format!(
+            "landed {} cron report(s) the push lost",
+            report.landed
+        ));
+    }
+    if report.silent > 0 {
+        parts.push(format!(
+            "recorded {} quiet run(s) the push lost as delivered silent ([SILENT], nothing landed)",
+            report.silent
+        ));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let mut line = parts.join("; ");
+    if report.ambiguous > 0 {
+        line.push_str(&format!(
+            " ({} session(s) two jobs could own, left alone)",
+            report.ambiguous
+        ));
+    }
+    Some(line)
+}
+
 pub fn cron_pull_job_spec(state: AppState) -> talaria_scheduler::JobSpec {
     let state = Arc::new(state);
     talaria_scheduler::JobSpec {
@@ -709,23 +794,11 @@ pub fn cron_pull_job_spec(state: AppState) -> talaria_scheduler::JobSpec {
             let state = state.clone();
             Box::pin(async move {
                 let report = pull_pass(&state).await?;
-                // Quiet unless something landed: an ambiguous run is logged
+                // Quiet unless the pass delivered something the push lost (a
+                // report, or a quiet run's record): an ambiguous run is logged
                 // per session at debug, and would otherwise repeat this line
                 // every pass for the whole look-back.
-                Ok((report.landed > 0).then(|| {
-                    format!(
-                        "landed {} cron report(s) the push lost{}",
-                        report.landed,
-                        if report.ambiguous > 0 {
-                            format!(
-                                " ({} session(s) two jobs could own, left alone)",
-                                report.ambiguous
-                            )
-                        } else {
-                            String::new()
-                        }
-                    )
-                }))
+                Ok(pass_summary(&report))
             })
         }),
     }
@@ -1014,6 +1087,34 @@ mod tests {
 
     // The messages page a live v0.22.4 agent answered for that run
     // (`GET /api/sessions/{id}/messages`), the preamble cut short.
+    #[test]
+    fn the_pass_line_names_what_it_delivered() {
+        let r = |landed, silent, ambiguous| PullReport {
+            landed,
+            silent,
+            ambiguous,
+            ..PullReport::default()
+        };
+        assert_eq!(pass_summary(&r(0, 0, 3)), None);
+        assert_eq!(
+            pass_summary(&r(2, 0, 0)).as_deref(),
+            Some("landed 2 cron report(s) the push lost")
+        );
+        assert_eq!(
+            pass_summary(&r(0, 1, 0)).as_deref(),
+            Some(
+                "recorded 1 quiet run(s) the push lost as delivered silent ([SILENT], nothing landed)"
+            )
+        );
+        assert_eq!(
+            pass_summary(&r(1, 1, 2)).as_deref(),
+            Some(
+                "landed 1 cron report(s) the push lost; recorded 1 quiet run(s) the push lost as \
+                 delivered silent ([SILENT], nothing landed) (2 session(s) two jobs could own, left alone)"
+            )
+        );
+    }
+
     #[test]
     fn the_report_is_the_last_assistant_text() {
         let page = json!({"object": "list",

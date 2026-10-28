@@ -302,7 +302,11 @@ multiplexer.
   died mid-loop never lands its narration as a report. The listing does not name the job, so the
   pull matches a session to a job by its title (Hermes titles a run with the job's name) against
   every job the agent has, listened or not, and checks the run was sent that job's prompt; when two
-  of the agent's jobs share a name, the prompt decides.
+  of the agent's jobs share a name, the prompt decides. A run that answered Hermes's silence
+  sentinel (`[SILENT]`, matched with Hermes's own `is_autonomous_silence_response` rule, ported in
+  `talaria-cron-output`'s `silence`) lands nothing by either road, as Hermes delivers nothing for
+  it: the run is recorded in `cron_silent_runs` as delivered silent under the same run key, and
+  the pull reads that record as delivered.
 - **Agent spend is metered at the relay, one row per upstream call.** Every agent's
   config.yaml carries a `providers.talaria` entry on the same gateway URL its model specs use,
   with `session_affinity_header: x-talaria-session`; Hermes matches it by base URL and stamps

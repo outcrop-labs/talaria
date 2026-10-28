@@ -25,8 +25,20 @@
 // skips one the pull already landed. The push keeps its own marker
 // (`cron:<job>:<execution>:<turn>`) as before, so a re-delivered push is
 // still the same row.
+//
+// A RUN THAT HAD NOTHING TO SAY LANDS NOTHING. The cron prompt tells the
+// agent to answer exactly `[SILENT]` when there is nothing new, and Hermes
+// then skips its own delivery — but both of Talaria's roads see the text
+// before (the push) or without (the pull) that decision, and used to land
+// the sentinel as a message. `land` now reads it with Hermes's own rule
+// (`silence`) before anything else: a silent run writes no message, rings
+// nobody, and is recorded in `cron_silent_runs` as delivered silent, under
+// the same run key the two roads dedupe on (the session id, or the push's
+// marker when it carried none), so the pull never takes a quiet run for a
+// report the push lost.
 
 pub mod pull;
+pub mod silence;
 
 use redis::aio::ConnectionManager;
 use serde_json::{Map, Value};
@@ -40,6 +52,7 @@ use talaria_gateway::guard::{
 use talaria_notify::{NotifyDeps, fan_conversation_event, notify_agent_reply};
 
 pub use pull::{pull_pass, register_cron_pull_job};
+pub use silence::is_silence;
 
 const LOG: &str = "[cron-output]";
 
@@ -75,6 +88,8 @@ impl Via {
 pub struct CronReport<'a> {
     /// The agent that ran the job (the caller's model on the push).
     pub agent_model: &'a str,
+    /// The Hermes job the run belongs to.
+    pub job_id: &'a str,
     /// The idempotency key `post_agent_turn` writes: the push's
     /// `cron:<job>:<execution>:<turn>`, or the pull's `pull_marker`.
     pub marker: String,
@@ -86,7 +101,7 @@ pub struct CronReport<'a> {
     pub text: &'a str,
 }
 
-/// What landing did.
+/// A report that is a row in the thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Landed {
     pub message_id: String,
@@ -94,6 +109,43 @@ pub struct Landed {
     /// same session landed by the other road): no row was inserted and
     /// nobody was rung (an empty responsible-user slot is still filled).
     pub fresh: bool,
+}
+
+/// What landing did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// The report is a message in the thread.
+    Landed(Landed),
+    /// The run answered Hermes's silence sentinel: no message, nobody rung,
+    /// and the run recorded as delivered silent. `fresh` is false when either
+    /// road had already recorded it.
+    Silent { fresh: bool },
+}
+
+/// The key a quiet run is recorded under: what the two roads dedupe on —
+/// the Hermes session id, or the push's own marker when it carried none.
+fn run_key<'a>(report: &'a CronReport<'_>) -> &'a str {
+    report.session_id.unwrap_or(report.marker.as_str())
+}
+
+/// Record a quiet run as delivered silent. True when this call wrote it.
+async fn record_silent(
+    pg: &PgPool,
+    conversation_id: &str,
+    report: &CronReport<'_>,
+) -> Result<bool, sqlx::Error> {
+    let wrote: Option<i32> = sqlx::query_scalar(
+        "insert into cron_silent_runs (conversation_id, run_key, job_id, agent_model, via) \
+         values ($1::uuid, $2, $3, $4, $5) on conflict do nothing returning 1",
+    )
+    .bind(conversation_id)
+    .bind(run_key(report))
+    .bind(report.job_id)
+    .bind(report.agent_model)
+    .bind(report.via.as_str())
+    .fetch_optional(pg)
+    .await?;
+    Ok(wrote.is_some())
 }
 
 /// What the row may hold, regardless of what the road clamped to.
@@ -150,7 +202,9 @@ async fn marker_row(
     .await
 }
 
-/// Land one cron run's report in the thread listening to its job.
+/// Land one cron run's report in the thread listening to its job — or, when
+/// the run answered Hermes's silence sentinel, record it as delivered silent
+/// and land nothing (see the header).
 ///
 /// The clamp, the scrub and the reply guard happen HERE, at the boundary,
 /// before the text becomes a message row that models and transcripts will
@@ -163,8 +217,24 @@ pub async fn land(
     redis: Option<ConnectionManager>,
     listener: &JobListener,
     report: CronReport<'_>,
-) -> Result<Landed, sqlx::Error> {
+) -> Result<Outcome, sqlx::Error> {
     let conversation = listener.conversation_id.as_str();
+    // Nothing to report: read on the text as the road received it, which is
+    // the text Hermes itself judged (`post_llm_call` hands the push the
+    // stored final response). No row, no guard pass, no bell.
+    if is_silence(report.text) {
+        let fresh = record_silent(pg, conversation, &report).await?;
+        if fresh {
+            tracing::debug!(
+                "{LOG} {}: job {} answered Hermes's silence sentinel — nothing landed in thread \
+                 {conversation}, recorded as delivered silent ({})",
+                report.agent_model,
+                report.job_id,
+                report.via.as_str()
+            );
+        }
+        return Ok(Outcome::Silent { fresh });
+    }
     // Scrub at the boundary — the same shapes the transcript capture kills.
     // A cron turn is a stored, re-readable message, so a key echoed into the
     // agent's closing summary would otherwise outlive the run.
@@ -204,10 +274,10 @@ pub async fn land(
                 .await?;
             if let Some(id) = already_landed(pg, conversation, session, report.via).await? {
                 tx.commit().await?;
-                return Ok(Landed {
+                return Ok(Outcome::Landed(Landed {
                     message_id: id,
                     fresh: false,
-                });
+                }));
             }
             Some(tx)
         }
@@ -270,7 +340,7 @@ pub async fn land(
     // wrote its row and died before the fan-out: that report sits in the
     // thread without a notification, and the next reader still sees it.
     if !landed.fresh {
-        return Ok(landed);
+        return Ok(Outcome::Landed(landed));
     }
     if !findings.is_empty() && matches!(mode, GuardMode::Annotate | GuardMode::Strict) {
         let _ =
@@ -294,7 +364,7 @@ pub async fn land(
             notify_agent_reply(&notify, &conversation, &message_id).await;
         });
     }
-    Ok(landed)
+    Ok(Outcome::Landed(landed))
 }
 
 #[cfg(test)]
@@ -357,6 +427,8 @@ mod live_db {
         PgPool::connect(&url).await.expect("connect")
     }
 
+    const JOB: &str = "abcdef012345";
+
     fn report<'a>(
         marker: &str,
         session: Option<&'a str>,
@@ -365,11 +437,56 @@ mod live_db {
     ) -> CronReport<'a> {
         CronReport {
             agent_model: "cron-output-live-agent",
+            job_id: JOB,
             marker: marker.to_string(),
             session_id: session,
             via,
             text,
         }
+    }
+
+    /// `land` for the cases whose text is a report: the row it wrote.
+    async fn land(
+        pg: &PgPool,
+        redis: Option<ConnectionManager>,
+        listener: &JobListener,
+        report: CronReport<'_>,
+    ) -> Result<Landed, sqlx::Error> {
+        match super::land(pg, redis, listener, report).await? {
+            Outcome::Landed(landed) => Ok(landed),
+            other => panic!("a report landed as {other:?}"),
+        }
+    }
+
+    /// A user and a thread of their own, every row of which goes with the
+    /// user at the end.
+    async fn thread(pg: &PgPool, what: &str) -> (String, String, JobListener) {
+        let tag = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let email = format!("cron-output-{what}-{tag}@link-test.invalid");
+        let user: String = sqlx::query_scalar(
+            "insert into users (sub, email, name, role) values ($1, $1, 'Cron Live', 'member') \
+             returning id::text",
+        )
+        .bind(&email)
+        .fetch_one(pg)
+        .await
+        .unwrap();
+        let conversation: String = sqlx::query_scalar(
+            "insert into conversations (user_id, agent_model) \
+             values ($1::uuid, 'cron-output-live-agent') returning id::text",
+        )
+        .bind(&user)
+        .fetch_one(pg)
+        .await
+        .unwrap();
+        let listener = JobListener {
+            conversation_id: conversation.clone(),
+            created_by: Some(user.clone()),
+        };
+        (user, conversation, listener)
     }
 
     async fn rows(
@@ -390,32 +507,8 @@ mod live_db {
     #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
     async fn the_two_roads_land_each_run_once() {
         let pg = pg().await;
-        let tag = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let email = format!("cron-output-live-{tag}@link-test.invalid");
-        let user: String = sqlx::query_scalar(
-            "insert into users (sub, email, name, role) values ($1, $1, 'Cron Live', 'member') \
-             returning id::text",
-        )
-        .bind(&email)
-        .fetch_one(&pg)
-        .await
-        .unwrap();
-        let conversation: String = sqlx::query_scalar(
-            "insert into conversations (user_id, agent_model) \
-             values ($1::uuid, 'cron-output-live-agent') returning id::text",
-        )
-        .bind(&user)
-        .fetch_one(&pg)
-        .await
-        .unwrap();
-        let listener = JobListener {
-            conversation_id: conversation.clone(),
-            created_by: Some(user.clone()),
-        };
-        let job = "abcdef012345";
+        let (user, conversation, listener) = thread(&pg, "live").await;
+        let job = JOB;
 
         // Push first, then the pull finds the same session: one row.
         let a = land(
@@ -704,5 +797,198 @@ mod live_db {
             .execute(&pg)
             .await
             .unwrap();
+    }
+
+    async fn silent_rows(pg: &PgPool, conversation: &str) -> Vec<(String, String)> {
+        sqlx::query_as(
+            "select run_key, via from cron_silent_runs where conversation_id = $1::uuid \
+             order by created_at, run_key",
+        )
+        .bind(conversation)
+        .fetch_all(pg)
+        .await
+        .unwrap()
+    }
+
+    // A QUIET RUN, BY BOTH ROADS: nothing lands, nobody is rung, and the run
+    // is recorded once under the key the roads dedupe on — which is what the
+    // pull's own "already delivered" check then reads.
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn a_quiet_run_lands_nothing_and_counts_as_delivered() {
+        let pg = pg().await;
+        let (user, conversation, listener) = thread(&pg, "quiet").await;
+        let silent = |o: Outcome| match o {
+            Outcome::Silent { fresh } => fresh,
+            other => panic!("a quiet run landed as {other:?}"),
+        };
+
+        // The push of a quiet run, then its re-delivery, then the pull of
+        // the same session: one record, the push's.
+        let push = report(
+            &format!("cron:{JOB}:e1:t1"),
+            Some("local-q1"),
+            Via::Push,
+            "[SILENT]",
+        );
+        assert!(silent(
+            super::land(&pg, None, &listener, push.clone())
+                .await
+                .unwrap()
+        ));
+        assert!(!silent(
+            super::land(&pg, None, &listener, push).await.unwrap()
+        ));
+        let pulled = report(
+            &pull_marker(JOB, "local-q1"),
+            Some("local-q1"),
+            Via::Pull,
+            "[SILENT]",
+        );
+        assert!(!silent(
+            super::land(&pg, None, &listener, pulled).await.unwrap()
+        ));
+
+        // The push lost: the pull records the run itself, and a late push of
+        // it (the sentinel with a note, as models write it) adds nothing.
+        let pulled = report(
+            &pull_marker(JOB, "local-q2"),
+            Some("local-q2"),
+            Via::Pull,
+            "Checked every feed.\n[SILENT]",
+        );
+        assert!(silent(
+            super::land(&pg, None, &listener, pulled).await.unwrap()
+        ));
+        let late = report(
+            &format!("cron:{JOB}:e2:t1"),
+            Some("local-q2"),
+            Via::Push,
+            "[SILENT] nothing new",
+        );
+        assert!(!silent(
+            super::land(&pg, None, &listener, late).await.unwrap()
+        ));
+
+        // A push from a plugin that sent no session id: recorded under its
+        // marker, and a repeat of it is the same record.
+        let bare = report(&format!("cron:{JOB}:e3:"), None, Via::Push, "NO_REPLY");
+        assert!(silent(
+            super::land(&pg, None, &listener, bare.clone())
+                .await
+                .unwrap()
+        ));
+        assert!(!silent(
+            super::land(&pg, None, &listener, bare).await.unwrap()
+        ));
+
+        // Nothing reached the thread, and nobody was rung.
+        assert!(rows(&pg, &conversation).await.is_empty());
+        let rung: i64 =
+            sqlx::query_scalar("select count(*) from notifications where user_id = $1::uuid")
+                .bind(&user)
+                .fetch_one(&pg)
+                .await
+                .unwrap();
+        assert_eq!(rung, 0);
+        assert_eq!(
+            silent_rows(&pg, &conversation).await,
+            vec![
+                ("local-q1".to_string(), "push".to_string()),
+                ("local-q2".to_string(), "pull".to_string()),
+                (format!("cron:{JOB}:e3:"), "push".to_string()),
+            ]
+        );
+
+        // The pull's "already delivered": the record by session id, or a
+        // record of the job inside the run's window; never another job's,
+        // never outside the window.
+        let l = Listener {
+            job_id: JOB.into(),
+            conversation_id: conversation.clone(),
+            created_by: None,
+            listening_since_ms: 0,
+        };
+        let now = talaria_agent_auth::now_ms();
+        let run = |id: &str, started: i64, ended: i64| CronSession {
+            id: id.into(),
+            title: String::new(),
+            started_ms: started,
+            ended_ms: ended,
+        };
+        assert!(delivered(&pg, &l, &run("local-q1", 0, 1)).await.unwrap());
+        assert!(
+            delivered(&pg, &l, &run("local-unstamped", now - 20_000, now + 5_000))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !delivered(&pg, &l, &run("local-old", now - 7_200_000, now - 3_600_000))
+                .await
+                .unwrap()
+        );
+        let other = Listener {
+            job_id: "fedcba543210".into(),
+            ..l.clone()
+        };
+        assert!(
+            !delivered(
+                &pg,
+                &other,
+                &run("local-unstamped", now - 20_000, now + 5_000)
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            landed_in_any(&pg, &[conversation.as_str()], "local-q2")
+                .await
+                .unwrap()
+        );
+
+        // A report that only MENTIONS the sentinel is a report.
+        let real = land(
+            &pg,
+            None,
+            &listener,
+            report(
+                &format!("cron:{JOB}:e4:t1"),
+                Some("local-q4"),
+                Via::Push,
+                "Yesterday was [SILENT]; today 2 tickets moved.",
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(real.fresh);
+        assert_eq!(rows(&pg, &conversation).await.len(), 1);
+
+        // The prune drops what no pass can consult any more, and only that.
+        sqlx::query(
+            "update cron_silent_runs set created_at = now() - interval '3 days' \
+             where conversation_id = $1::uuid and run_key = 'local-q1'",
+        )
+        .bind(&conversation)
+        .execute(&pg)
+        .await
+        .unwrap();
+        crate::pull::prune_silent(&pg).await.unwrap();
+        let keys: Vec<String> = silent_rows(&pg, &conversation)
+            .await
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["local-q2".to_string(), format!("cron:{JOB}:e3:")]
+        );
+
+        sqlx::query("delete from users where id = $1::uuid")
+            .bind(&user)
+            .execute(&pg)
+            .await
+            .unwrap();
+        // The records go with the thread.
+        assert!(silent_rows(&pg, &conversation).await.is_empty());
     }
 }

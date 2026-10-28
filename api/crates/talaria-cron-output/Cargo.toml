@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 redis = { workspace = true }
+regex = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-agent-auth = { workspace = true }

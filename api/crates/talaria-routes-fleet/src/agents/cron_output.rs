@@ -25,6 +25,12 @@
 // (`talaria_cron_output::pull`). The `sessionId` the plugin sends is what the
 // two roads dedupe on: it is stamped on the row, and a run the pull already
 // landed is not landed again here.
+//
+// A RUN THAT ANSWERED `[SILENT]` lands nothing: the plugin's hook fires on
+// the final text before Hermes's own delivery suppresses it, so the door
+// reads the sentinel with Hermes's rule (`talaria_cron_output::is_silence`),
+// records the run as delivered silent, and answers `silent: true` with no
+// message id.
 
 use axum::Json;
 use axum::extract::State;
@@ -32,7 +38,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::{refuse_legacy, require_agent};
-use talaria_cron_output::{CronReport, Via, land};
+use talaria_cron_output::{CronReport, Outcome, Via, land};
 use talaria_error::{house_error, internal};
 use talaria_state::AppState;
 
@@ -108,12 +114,13 @@ pub async fn post(
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty() && s.len() <= 200);
-    let landed = match land(
+    let outcome = match land(
         &state.pg,
         state.redis().await.ok(),
         &listener,
         CronReport {
             agent_model: &caller.model,
+            job_id: &job,
             marker,
             session_id,
             via: Via::Push,
@@ -122,10 +129,16 @@ pub async fn post(
     )
     .await
     {
-        Ok(landed) => landed,
+        Ok(outcome) => outcome,
         Err(e) => return Ok(internal("[cron-output] turn insert failed", e)),
     };
-    Ok(Json(json!({ "ok": true, "messageId": landed.message_id })).into_response())
+    // One shape for both: `messageId` is the row (null for a quiet run, which
+    // wrote none), `silent` says the run was recorded as delivered silent.
+    let (message_id, silent) = match outcome {
+        Outcome::Landed(landed) => (Some(landed.message_id), false),
+        Outcome::Silent { .. } => (None, true),
+    };
+    Ok(Json(json!({ "ok": true, "messageId": message_id, "silent": silent })).into_response())
 }
 
 #[cfg(test)]
