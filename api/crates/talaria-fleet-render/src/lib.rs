@@ -1250,9 +1250,10 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         .join("talaria-events");
 
     let mut services: Map<String, Value> = Map::new();
-    // The departments whose agent keeps the browser toolset on: each start
-    // installs the image's pinned browser engine onto their volume first
-    // (talaria-fleet-docker's browser_engine.rs).
+    // The departments whose agent keeps both the browser and the terminal
+    // toolsets on: each start installs the image's pinned browser engine onto
+    // their volume first (talaria-fleet-docker's browser_engine.rs). A
+    // terminal-less agent is never listed ([`fleet_browser_engine`]).
     let mut browser_departments: Vec<String> = Vec::new();
     let mut secrets: Map<String, Value> = Map::new();
     let mut volumes: Map<String, Value> = chassis.volumes.clone();
@@ -1440,7 +1441,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         fleet_nous_off(&mut routed);
         fleet_delegation(&mut routed, def.max_children);
         fleet_disabled_toolsets(&mut routed, &toolset_floor, &def.disabled_toolsets);
-        let browser_on = fleet_browser_backend(&mut routed);
+        let browser_engine = fleet_browser_engine(&routed);
         fleet_tool_loop_guardrails(&mut routed);
         fleet_title_generation(&mut routed);
         fleet_model_routes(&mut routed, &def.model);
@@ -1947,7 +1948,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         }
         services.insert(service_name.clone(), svc);
         result.agents.push(def.model.clone());
-        if browser_on {
+        if browser_engine {
             browser_departments.push(def.department.clone());
         }
     }
@@ -2531,197 +2532,66 @@ fn fleet_disabled_toolsets(
     routed.insert("agent".into(), Value::Object(agent));
 }
 
-/// Which browser Hermes offers, and whether the agent has one at all.
-/// Returns whether the browser toolset is on, from the merged
+/// Whether this agent's starts install the browser engine: the `browser`
+/// toolset on AND the `terminal` toolset on, read from the merged
 /// `agent.disabled_toolsets` (so [`fleet_disabled_toolsets`] runs first).
+/// It renders nothing either way: Hermes's own default browser stands, and a
+/// `browser:` block the def authored passes through as written.
 ///
-/// Hermes v0.22.4 has two browser surfaces and picks one with
-/// `browser.backend`. Unset is Browser Use mode, its default: one
-/// `browser_exec` tool, Python with browser helpers, which Hermes offers ONLY
-/// to a session that also has the `terminal` toolset (it is host execution;
-/// `model_tools._rewrite_browser_exec`), and in that mode the built-in
-/// `browser_navigate` / `browser_click` / … tools are withheld
-/// (`check_browser_requirements` answers no whenever Browser Use mode is on).
-/// `off` is the built-in tools. So an agent with the browser on and the
-/// terminal closed, which is every new agent (`DEFAULT_DISABLED_FOR_NEW`),
-/// was offered no browser tool of either kind. With the terminal closed the
-/// render says `off`, and the agent gets the built-in tools. With the
-/// terminal open it says nothing and Hermes's own default stands:
-/// `browser_exec`, which the workbench skills teach. A def that authored its
-/// own `browser.backend` keeps it (an operator's explicit call; YAML 1.1's
-/// bare `off`, which parses as false, counts as authored), as does a def
-/// whose `browser:` block is not a map. A backend Hermes itself reads as
-/// unset (`get_browser_backend`: null, `true`, an empty or blank string, a
-/// zero or an empty list or map) is not a choice, and is filled like a
-/// missing one ([`hermes_browser_backend_unset`]). Both surfaces drive the
-/// image's Chromium through the `agent-browser` CLI that each start installs
-/// onto the volume (talaria-fleet-docker's browser_engine.rs).
+/// WHY THE TERMINAL DECIDES. Hermes v0.22.4 has two browser surfaces, and
+/// both drive the image's Chromium through the `agent-browser` CLI, which the
+/// image does not stage (talaria-fleet-docker's browser_engine.rs installs it
+/// onto the volume). Its default, Browser Use mode (`browser.backend` unset),
+/// is one `browser_exec` tool that Hermes offers only to a session that also
+/// has the `terminal` tool (`model_tools._rewrite_browser_exec`), and in that
+/// mode the built-in `browser_navigate` / `browser_click` / … tools are
+/// withheld (`check_browser_requirements`). The built-in tools
+/// (`browser.backend: off`) would work without a terminal, but Hermes runs
+/// them as a LOCAL browser, and it skips the private-address check for a
+/// local browser whenever `TERMINAL_ENV` is local or unset
+/// (`browser_tool_cloud._is_local_backend`: SSRF protection "only matters
+/// when the browser can reach networks the terminal cannot"). It never asks
+/// whether the session has a terminal. So a terminal-less agent given those
+/// tools could open the host, other agents' containers and the LAN, which its
+/// own `web_extract` refuses; no setting restores the check for a local
+/// browser, and `TERMINAL_ENV` cannot move off `local` (the file tools run
+/// through it). With the terminal on, Hermes's premise holds: the shell
+/// already reaches all of it. So only that agent gets the engine, and with it
+/// Hermes's default `browser_exec`. A terminal-less agent with `browser`
+/// ticked renders exactly what it rendered before the engine existed (no
+/// `browser:` block, no engine), so it has no browser tool, an upgrade
+/// changes nothing for it, and the toolset grid says why (ui's
+/// `browserNote`).
 ///
-/// With the terminal closed the agent also gets
-/// [`fleet_browser_private_names`]: that browser reaches private addresses,
-/// and the name list is the part of that Hermes lets the render close.
-fn fleet_browser_backend(routed: &mut Map<String, Value>) -> bool {
-    let closed = |name: &str| {
-        routed
-            .get("agent")
-            .and_then(|a| a.get("disabled_toolsets"))
-            .and_then(Value::as_array)
-            .is_some_and(|d| d.iter().any(|n| n.as_str() == Some(name)))
-    };
-    if closed("browser") {
-        return false;
-    }
-    if !closed("terminal") {
-        return true;
-    }
-    let browser = routed
-        .entry("browser")
-        .and_modify(|v| {
-            if v.is_null() {
-                *v = json!({});
-            }
+/// "The terminal" is the `terminal` TOOL, which is what Hermes's gate reads.
+/// Besides `terminal`, the toolsets that carry it are `debugging` (a retired
+/// name Talaria still expands, [`talaria_agent_defs::toolset_names`]) and
+/// Hermes's composite bundles (`hermes-*`, `all`), which carry every browser
+/// tool too, so closing one of those leaves no browser tool to offer and needs
+/// no case here.
+///
+/// An authored backend is the def's call, and changes nothing here. Hermes
+/// reads anything but `browser-use` as the built-in tools, which need the
+/// same engine: a terminal-less agent gets none installed, but one a start
+/// with the terminal open left on the volume stays there and would run it.
+/// That reach is the def's own choice, and the grid says so on that agent.
+fn fleet_browser_engine(routed: &Map<String, Value>) -> bool {
+    let disabled: Vec<&str> = routed
+        .get("agent")
+        .and_then(|a| a.get("disabled_toolsets"))
+        .and_then(Value::as_array)
+        .map(|d| d.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    // A name as the governed toolsets it closes; a stranger is taken as
+    // written.
+    let closes = |toolset: &str| {
+        disabled.iter().any(|raw| {
+            raw.trim() == toolset
+                || talaria_agent_defs::toolset_names(raw)
+                    .is_some_and(|names| names.contains(&toolset))
         })
-        .or_insert_with(|| json!({}));
-    if let Some(browser) = browser.as_object_mut() {
-        browser
-            .entry("backend")
-            .and_modify(|v| {
-                if hermes_browser_backend_unset(v) {
-                    *v = json!("off");
-                }
-            })
-            .or_insert_with(|| json!("off"));
-    }
-    fleet_browser_private_names(routed);
-    true
-}
-
-/// Whether Hermes v0.22.4 reads this `browser.backend` as unset, which means
-/// its default (Browser Use mode). `get_browser_backend()` is
-/// `(off if raw is False else "") if isinstance(raw, bool) else
-/// str(raw or "").strip().lower()`: `false` is `off`, `true` is unset, and
-/// so is any value Python reads as falsy (null, 0, an empty string, list or
-/// map) or a string that is only whitespace.
-fn hermes_browser_backend_unset(v: &Value) -> bool {
-    match v {
-        Value::Null => true,
-        Value::Bool(b) => *b,
-        Value::String(s) => s.trim().is_empty(),
-        Value::Number(n) => n.as_f64() == Some(0.0),
-        Value::Array(a) => a.is_empty(),
-        Value::Object(o) => o.is_empty(),
-    }
-}
-
-/// The host names a terminal-less agent's browser is refused, by Hermes's
-/// own website policy (`security.website_blocklist`, tools/website_policy.py).
-///
-/// WHY. Hermes v0.22.4 refuses private and internal addresses to its web
-/// tools (`web_extract` checks every host it resolves), and to its browser
-/// only when the browser is not "local": `_is_local_backend()` is true for
-/// the built-in browser whenever `TERMINAL_ENV` is local or unset, on the
-/// reasoning that SSRF protection "only matters when the browser can reach
-/// networks the terminal cannot". That holds for an agent that has a
-/// terminal, and not for one whose terminal is closed, which is the agent
-/// that gets the built-in browser here. So that browser opens what the same
-/// agent's `web_extract` refuses: the host (the Talaria app, the toolkit,
-/// any service the host listens with on its docker bridge), other
-/// containers on the fleet network, and the LAN. Only cloud metadata stays
-/// refused for every backend. There is no setting that restores the
-/// private-address check for a local browser, and `TERMINAL_ENV` cannot be
-/// moved off `local` (the file tools run through it).
-///
-/// WHAT THIS CLOSES, AND WHAT IT DOES NOT. The policy matches host NAMES,
-/// and only on the URL a tool is asked to open (not on a redirect, a click
-/// or a script on the page). So this is the names that can only ever be
-/// private: ICANN's `internal` (which covers `host.docker.internal`, the
-/// name each agent's own config hands it for the app), `localhost`, mDNS's
-/// `local`, `home.arpa`, and the loopback and unspecified literals. An IP
-/// literal (the fleet gateway's, a LAN address), a docker service name, a
-/// public name that resolves to a private address, or a redirect still gets
-/// through. It is a speed bump against the obvious move, not a boundary;
-/// the boundary is the browser toolset off for that agent, or the host's
-/// own network policy (docs/AGENT-NETWORKING.md).
-///
-/// Never for an agent with a terminal: its shell already reaches all of it,
-/// and its browser is how it drives the dev server it started on
-/// `localhost` (the workbench skills). A def that authored
-/// `allow_private_urls` (under `security` or `browser`) asked for private
-/// reach and gets no list; one that switched its own blocklist off keeps it
-/// off; one with its own list keeps its entries and gains these, and the
-/// list is switched on (Hermes's own default for the block is off).
-const BROWSER_PRIVATE_NAMES: &[&str] = &[
-    "internal",
-    "localhost",
-    "local",
-    "home.arpa",
-    "127.0.0.1",
-    "0.0.0.0",
-    "::1",
-];
-
-fn fleet_browser_private_names(routed: &mut Map<String, Value>) {
-    // Hermes's `is_truthy_value`: one of its truthy strings, else Python's
-    // truthiness.
-    let truthy = |v: &Value| match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::String(s) => matches!(
-            s.trim().to_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Value::Number(n) => n.as_f64() != Some(0.0),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(o) => !o.is_empty(),
     };
-    let asked_private = |block: Option<&Value>| {
-        block
-            .and_then(|b| b.get("allow_private_urls"))
-            .is_some_and(truthy)
-    };
-    if asked_private(routed.get("security")) || asked_private(routed.get("browser")) {
-        return;
-    }
-    let security = routed
-        .entry("security")
-        .and_modify(|v| {
-            if v.is_null() {
-                *v = json!({});
-            }
-        })
-        .or_insert_with(|| json!({}));
-    let Some(security) = security.as_object_mut() else {
-        return;
-    };
-    let list = security
-        .entry("website_blocklist")
-        .and_modify(|v| {
-            if v.is_null() {
-                *v = json!({});
-            }
-        })
-        .or_insert_with(|| json!({}));
-    let Some(list) = list.as_object_mut() else {
-        return;
-    };
-    if list.get("enabled") == Some(&Value::Bool(false)) {
-        return;
-    }
-    let mut domains: Vec<Value> = match list.get("domains") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(a)) => a.clone(),
-        // Hermes refuses a non-list `domains` (and then fails open); the
-        // def's own block is its call.
-        Some(_) => return,
-    };
-    for name in BROWSER_PRIVATE_NAMES {
-        let name = json!(name);
-        if !domains.contains(&name) {
-            domains.push(name);
-        }
-    }
-    list.insert("enabled".into(), json!(true));
-    list.insert("domains".into(), Value::Array(domains));
+    !closes("browser") && !closes("terminal")
 }
 
 /// Hermes's progressive tool disclosure, pinned on. Every agent carries the
@@ -4427,244 +4297,84 @@ service:
         routed
     }
 
-    /// The website policy a terminal-less browser agent gets.
-    fn private_names() -> Value {
-        json!({ "website_blocklist": { "enabled": true, "domains": BROWSER_PRIVATE_NAMES } })
+    #[test]
+    fn the_engine_comes_only_with_the_terminal() {
+        // Terminal open (a Developer Agent, or any agent a manager opened it
+        // on): the engine, and Hermes's own default browser.
+        assert!(fleet_browser_engine(&merged(&["cronjob"])));
+        assert!(fleet_browser_engine(&merged(&[])));
+        // A new agent's default, browser on and terminal closed: no engine,
+        // so no browser tool (Browser Use mode offers browser_exec only with
+        // the terminal, and the built-in tools would be a local browser with
+        // no private-address check).
+        let fresh = merged(talaria_agent_defs::DEFAULT_DISABLED_FOR_NEW);
+        assert!(!fleet_browser_engine(&fresh));
+        assert!(!fleet_browser_engine(&merged(&["terminal"])));
+        // The browser closed: no engine, terminal or not.
+        assert!(!fleet_browser_engine(&merged(&["browser"])));
+        assert!(!fleet_browser_engine(&merged(&["browser", "terminal"])));
     }
 
     #[test]
-    fn a_browser_without_a_terminal_gets_the_built_in_tools() {
-        // The new-agent default: browser on, terminal closed. Browser Use
-        // mode would offer nothing here (browser_exec needs the terminal and
-        // hides the built-ins), so the render picks the built-in tools, and
-        // refuses that browser the names that can only be private.
-        let mut routed = merged(talaria_agent_defs::DEFAULT_DISABLED_FOR_NEW);
-        assert!(fleet_browser_backend(&mut routed));
-        assert_eq!(routed.get("browser"), Some(&json!({ "backend": "off" })));
-        assert_eq!(routed.get("security"), Some(&private_names()));
-        // Twice is once.
-        assert!(fleet_browser_backend(&mut routed));
-        assert_eq!(routed.get("browser"), Some(&json!({ "backend": "off" })));
-        assert_eq!(routed.get("security"), Some(&private_names()));
-        // The terminal closed by the org floor or the authored list counts
-        // the same as one the def closed.
+    fn a_terminal_closed_anywhere_is_closed() {
+        // By the org floor.
         let mut floored = Map::new();
         fleet_disabled_toolsets(&mut floored, &["todo".into(), "terminal".into()], &[]);
-        assert!(fleet_browser_backend(&mut floored));
-        assert_eq!(floored.get("browser"), Some(&json!({ "backend": "off" })));
-        assert_eq!(floored.get("security"), Some(&private_names()));
-        let mut authored = Map::new();
-        authored.insert("agent".into(), json!({ "disabled_toolsets": ["terminal"] }));
-        fleet_disabled_toolsets(&mut authored, &mandatory(), &[]);
-        assert!(fleet_browser_backend(&mut authored));
-        assert_eq!(authored.get("browser"), Some(&json!({ "backend": "off" })));
-        assert_eq!(authored.get("security"), Some(&private_names()));
+        assert!(!fleet_browser_engine(&floored));
+        // By the authored config's own list, spelled loosely.
+        for name in ["terminal", " terminal "] {
+            let mut authored = Map::new();
+            authored.insert("agent".into(), json!({ "disabled_toolsets": [name] }));
+            fleet_disabled_toolsets(&mut authored, &mandatory(), &[]);
+            assert!(!fleet_browser_engine(&authored), "{name:?}");
+        }
+        // By a retired name whose Hermes toolset carries the terminal tool
+        // (`debugging` is terminal + process_manage, with web and file).
+        let mut retired = Map::new();
+        retired.insert(
+            "agent".into(),
+            json!({ "disabled_toolsets": ["debugging"] }),
+        );
+        fleet_disabled_toolsets(&mut retired, &mandatory(), &[]);
+        assert!(!fleet_browser_engine(&retired));
+        // A retired name that closes something else leaves both open, and
+        // so does a stranger or a non-string entry.
+        let mut other = Map::new();
+        other.insert(
+            "agent".into(),
+            json!({ "disabled_toolsets": ["search", "safe", "terminalish", 7, null] }),
+        );
+        fleet_disabled_toolsets(&mut other, &mandatory(), &[]);
+        assert!(fleet_browser_engine(&other));
+        // The browser closed the same ways.
+        let mut browser = Map::new();
+        browser.insert("agent".into(), json!({ "disabled_toolsets": [" browser"] }));
+        fleet_disabled_toolsets(&mut browser, &mandatory(), &[]);
+        assert!(!fleet_browser_engine(&browser));
     }
 
     #[test]
-    fn a_browser_with_a_terminal_keeps_hermes_default() {
-        // A Developer Agent: terminal open, so Hermes's own browser_exec is
-        // offered, and the render leaves the choice to Hermes. No name list
-        // either: its shell reaches all of it anyway, and its browser drives
-        // the dev server it started on localhost.
-        let mut routed = merged(&["cronjob"]);
-        assert!(fleet_browser_backend(&mut routed));
-        assert!(!routed.contains_key("browser"), "{routed:?}");
-        assert!(!routed.contains_key("security"), "{routed:?}");
-    }
-
-    #[test]
-    fn a_closed_browser_renders_nothing_and_is_not_on() {
-        let mut routed = merged(&["browser", "terminal"]);
-        assert!(!fleet_browser_backend(&mut routed));
-        assert!(!routed.contains_key("browser"), "{routed:?}");
-        assert!(!routed.contains_key("security"), "{routed:?}");
-        // Closed by the authored list is closed too.
-        let mut authored = Map::new();
-        authored.insert("agent".into(), json!({ "disabled_toolsets": ["browser"] }));
-        fleet_disabled_toolsets(&mut authored, &mandatory(), &["terminal".into()]);
-        assert!(!fleet_browser_backend(&mut authored));
-        assert!(!authored.contains_key("browser"), "{authored:?}");
-        assert!(!authored.contains_key("security"), "{authored:?}");
-    }
-
-    #[test]
-    fn an_authored_backend_is_the_defs_call() {
-        for backend in [
-            json!("browser-use"),
-            json!("off"),
+    fn an_authored_backend_does_not_buy_a_terminal_less_agent_an_engine() {
+        // The built-in tools are exactly the local browser the terminal
+        // rule is about, so a def that asked for them with the terminal
+        // closed still gets no engine; with the terminal open its backend
+        // stands and the engine is installed. The block itself is the def's
+        // and is never rewritten (the predicate only reads).
+        for block in [
+            json!({ "backend": "off", "headed": false }),
+            json!({ "backend": false }),
+            json!({ "backend": "browser-use" }),
+            json!({ "backend": null }),
             json!(false),
-            json!("camofox"),
         ] {
-            let mut routed = merged(&["terminal"]);
-            routed.insert(
-                "browser".into(),
-                json!({ "backend": backend.clone(), "headed": false }),
-            );
-            assert!(fleet_browser_backend(&mut routed));
-            assert_eq!(
-                routed.get("browser"),
-                Some(&json!({ "backend": backend, "headed": false })),
-                "an authored backend must stand"
-            );
+            let mut closed = merged(&["terminal"]);
+            closed.insert("browser".into(), block.clone());
+            assert!(!fleet_browser_engine(&closed), "{block}");
+            assert_eq!(closed.get("browser"), Some(&block));
+            let mut open = merged(&[]);
+            open.insert("browser".into(), block.clone());
+            assert!(fleet_browser_engine(&open), "{block}");
         }
-        // Other keys in an authored block stay; only a missing or unset
-        // backend is filled.
-        let mut routed = merged(&["terminal"]);
-        routed.insert(
-            "browser".into(),
-            json!({ "backend": null, "command_timeout": 60 }),
-        );
-        assert!(fleet_browser_backend(&mut routed));
-        assert_eq!(
-            routed.get("browser"),
-            Some(&json!({ "backend": "off", "command_timeout": 60 }))
-        );
-        // A block that is not a map is left as written.
-        let mut odd = merged(&["terminal"]);
-        odd.insert("browser".into(), json!(false));
-        assert!(fleet_browser_backend(&mut odd));
-        assert_eq!(odd.get("browser"), Some(&json!(false)));
-    }
-
-    #[test]
-    fn a_backend_hermes_reads_as_unset_is_filled_like_a_missing_one() {
-        // `get_browser_backend()` reads each of these as "" (Browser Use
-        // mode, so no browser tool with the terminal closed): not a choice.
-        for unset in [
-            json!(null),
-            json!(""),
-            json!("   "),
-            json!(true),
-            json!(0),
-            json!(0.0),
-            json!([]),
-            json!({}),
-        ] {
-            assert!(hermes_browser_backend_unset(&unset), "{unset}");
-            let mut routed = merged(&["terminal"]);
-            routed.insert("browser".into(), json!({ "backend": unset.clone() }));
-            assert!(fleet_browser_backend(&mut routed));
-            assert_eq!(
-                routed.get("browser"),
-                Some(&json!({ "backend": "off" })),
-                "{unset} must be filled"
-            );
-        }
-        // And these are choices Hermes reads as one.
-        for set in [
-            json!(false),
-            json!("off"),
-            json!(" Off "),
-            json!("browser-use"),
-            json!(1),
-        ] {
-            assert!(!hermes_browser_backend_unset(&set), "{set}");
-        }
-    }
-
-    #[test]
-    fn a_def_that_asked_for_private_reach_gets_no_name_list() {
-        for (section, value) in [
-            ("security", json!(true)),
-            ("security", json!("yes")),
-            ("security", json!(" ON ")),
-            ("browser", json!(1)),
-            ("browser", json!("true")),
-        ] {
-            let mut routed = merged(&["terminal"]);
-            let mut block = Map::new();
-            block.insert("allow_private_urls".into(), value.clone());
-            routed.insert(section.into(), Value::Object(block));
-            assert!(fleet_browser_backend(&mut routed));
-            let wb = routed
-                .get("security")
-                .and_then(|s| s.get("website_blocklist"));
-            assert_eq!(wb, None, "{section}.allow_private_urls = {value}");
-        }
-        // A falsy toggle asked for nothing: the list lands.
-        for value in [json!(false), json!("no"), json!(0), json!(null), json!("")] {
-            let mut routed = merged(&["terminal"]);
-            routed.insert(
-                "security".into(),
-                json!({ "allow_private_urls": value.clone() }),
-            );
-            assert!(fleet_browser_backend(&mut routed));
-            assert_eq!(
-                routed["security"]["website_blocklist"]["domains"],
-                json!(BROWSER_PRIVATE_NAMES),
-                "{value}"
-            );
-            assert_eq!(routed["security"]["allow_private_urls"], value);
-        }
-    }
-
-    #[test]
-    fn an_authored_blocklist_keeps_its_own_and_gains_the_names() {
-        // Its entries first, ours after, nothing twice, its other keys kept,
-        // and the list on.
-        let mut routed = merged(&["terminal"]);
-        routed.insert(
-            "security".into(),
-            json!({
-                "redact_secrets": true,
-                "website_blocklist": {
-                    "domains": ["ads.example.com", "localhost"],
-                    "shared_files": ["blocked.txt"]
-                }
-            }),
-        );
-        assert!(fleet_browser_backend(&mut routed));
-        let mut want: Vec<&str> = vec!["ads.example.com", "localhost"];
-        want.extend(BROWSER_PRIVATE_NAMES.iter().filter(|n| **n != "localhost"));
-        assert_eq!(
-            routed.get("security"),
-            Some(&json!({
-                "redact_secrets": true,
-                "website_blocklist": {
-                    "enabled": true,
-                    "domains": want,
-                    "shared_files": ["blocked.txt"]
-                }
-            }))
-        );
-        // A list the def switched off stays off and untouched.
-        let mut off = merged(&["terminal"]);
-        let authored = json!({ "website_blocklist": { "enabled": false, "domains": ["x.test"] } });
-        off.insert("security".into(), authored.clone());
-        assert!(fleet_browser_backend(&mut off));
-        assert_eq!(off.get("security"), Some(&authored));
-        // Shapes Hermes would refuse are the def's own to fix.
-        for odd in [
-            json!("strict"),
-            json!({ "website_blocklist": "on" }),
-            json!({ "website_blocklist": { "domains": "localhost" } }),
-        ] {
-            let mut routed = merged(&["terminal"]);
-            routed.insert("security".into(), odd.clone());
-            assert!(fleet_browser_backend(&mut routed));
-            assert_eq!(routed.get("security"), Some(&odd));
-        }
-    }
-
-    #[test]
-    fn the_built_in_backend_survives_the_one_point_one_emitter() {
-        // YAML 1.1 reads a bare off as false. Hermes maps false to off too,
-        // but the render writes what it means: a quoted 'off'. The name list
-        // (with `::1` and the dotted literals) must come back as strings.
-        let mut routed = merged(&["terminal"]);
-        assert!(fleet_browser_backend(&mut routed));
-        let yaml = yaml11_emit(&Value::Object(routed.clone()));
-        assert!(
-            yaml.contains("browser:\n  backend: 'off'\n"),
-            "the block Hermes reads is missing from:\n{yaml}"
-        );
-        let back: Value = serde_yaml_ng::from_str(&yaml).expect("emitted yaml parses");
-        assert_eq!(back, Value::Object(routed), "round-trip must be lossless");
-        assert_eq!(
-            back["security"]["website_blocklist"]["domains"],
-            json!(BROWSER_PRIVATE_NAMES)
-        );
     }
 
     #[test]

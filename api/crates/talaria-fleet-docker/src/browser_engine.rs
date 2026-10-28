@@ -12,13 +12,23 @@
 // note says so: "an install without it silently loses every browser_* tool".
 // `browser_exec`, the Browser Use tool Hermes offers by default instead,
 // would fetch the CLI on its first call, but only a session that has the
-// `terminal` toolset ever sees `browser_exec`, and a Talaria agent starts
-// with `terminal` closed. Measured on the pinned image: an agent with the
-// browser toolset on was offered no browser tool of either kind.
+// `terminal` toolset ever sees `browser_exec`. Measured on the pinned image:
+// an agent with the browser toolset on and the terminal closed (a new
+// agent's default) was offered no browser tool of either kind.
 //
-// So before an agent whose rendered config keeps the browser toolset on
-// starts, Talaria asks the image's own pm to install that pinned CLI onto the
-// agent's own state volume: a one-shot container of the agent's own service
+// WHO GETS IT is the terminal's call (talaria-fleet-render's
+// `fleet_browser_engine`): an agent with both the browser and the terminal
+// on. Hermes's built-in `browser_navigate` tools would work without a
+// terminal, but they are a local browser, and v0.22.4 skips the
+// private-address check for a local browser on the grounds that the
+// terminal reaches those networks anyway, which is false for an agent with
+// no terminal. So a terminal-less agent gets no engine and no browser tool,
+// exactly as before this existed, and an upgrade installs nothing for it.
+//
+// So before an agent whose rendered config keeps the browser and terminal
+// toolsets on starts, Talaria asks the image's own pm to install that pinned
+// CLI onto the agent's own state volume (it would otherwise arrive on the
+// first `browser_exec` call, inside a turn, with any failure lost there): a one-shot container of the agent's own service
 // (`compose run --rm --no-deps`, so the image, volume, network and resolvers
 // are exactly the agent's), as the image's `hermes` user, running
 // `hermes pm install agent-browser`, the command Hermes's own install hint
@@ -45,11 +55,12 @@
 //
 // WHICH agents: the render decides, because only the render knows the
 // effective toolset list (the floor, the def's own list and the authored
-// config merged). It writes the departments whose agents keep `browser` on
-// to `fleet/browser-engine.json` ([`manifest_text`]); `compose_up` reads it.
-// No file, or a department not in it, is no install: an agent rendered
-// before this existed starts as it always did, and the next render writes
-// the file.
+// config merged). It writes the departments whose agents keep both
+// `browser` and `terminal` on to `fleet/browser-engine.json`
+// ([`manifest_text`]); `compose_up` reads it. No file, or a department not
+// in it, is no install: an agent rendered before this existed starts as it
+// always did, and the next render writes the file, without a terminal-less
+// agent in it.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -133,7 +144,8 @@ fn manifest_wants(text: &str, department: &str) -> bool {
         .is_some_and(|ds| ds.iter().any(|d| d.as_str() == Some(department)))
 }
 
-/// Whether the last render kept the browser toolset on for this department.
+/// Whether the last render kept the browser and terminal toolsets on for
+/// this department.
 async fn wanted(department: &str) -> bool {
     let path = talaria_fleet_layout::fleet_dir().join(MANIFEST_FILE);
     match tokio::fs::read_to_string(&path).await {

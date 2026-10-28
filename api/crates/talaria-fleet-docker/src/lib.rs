@@ -10,9 +10,9 @@
 // agent's own filesystem. Nothing here execs into an agent after it comes up:
 // Hermes keeps replaced bundled skills off by itself (talaria-hermes-skills).
 // Its image carries the Chromium the browser toolset drives but not the
-// `agent-browser` CLI that drives it, so a start installs that pinned CLI
-// onto the agent's volume first, in a one-shot container of its own service
-// (browser_engine.rs).
+// `agent-browser` CLI that drives it, so a start of an agent with the browser
+// and the terminal on installs that pinned CLI onto the agent's volume
+// first, in a one-shot container of its own service (browser_engine.rs).
 //
 // ONE CONTAINER PER AGENT. Each agent runs as `agent-<dept>`, and a roll
 // recreates that container in place (`fleet_recreate`). There is no second
