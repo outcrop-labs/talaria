@@ -55,13 +55,18 @@
         SEARXNG_URL. It is tested from both places: the app, and inside a running agent.
       </p>
       <div class="flex flex-wrap items-center gap-3">
+        <!-- Disabled reads disabled: Button's dim reading (opacity 50, which
+             keeps the URL legible in both themes) and a not-allowed cursor.
+             It rides here because the Input primitive has no disabled state
+             of its own, and giving it one would also dim every board viewer's
+             read-only ticket title, labels and statuses. -->
         <Input
           size="sm"
           value={s.fromEnv ? s.url : s.stored}
           disabled={s.fromEnv || busy}
           onblur={(e) => e.currentTarget.value.trim() !== s.stored && void save(e.currentTarget.value.trim())}
           placeholder="https://search.example.com"
-          class="w-96 font-[var(--font-mono)]"
+          class="w-96 font-[var(--font-mono)] disabled:cursor-not-allowed disabled:opacity-50"
         />
         {#if s.url}
           <HealthDot ok={s.reachable} label="from app" />

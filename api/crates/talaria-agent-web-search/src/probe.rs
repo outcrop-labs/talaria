@@ -75,6 +75,14 @@ sys.stdout.write(str(status) + "\n")
 sys.stdout.write(body.decode("utf-8", "replace"))
 "#;
 
+/// Why nothing was probed when the render withholds the URL: a containerized
+/// app (`TALARIA_AGENT_DIAL=container`) with a loopback search URL. The panel
+/// prints every not-probed reason after "From the agents: ", so the sentence
+/// names what happened rather than repeating who it happened to.
+const WITHHELD_LOOPBACK: &str = "the render withholds a loopback URL, since to an agent it is \
+                                 the app container itself; give the search URL an address the \
+                                 agents can reach";
+
 /// The exec's own bound: the program's 15 s request plus `docker exec`'s
 /// start-up, with room to spare on a loaded host.
 const PROBE_EXEC_MS: u64 = 30_000;
@@ -120,14 +128,7 @@ pub async fn agent_search_reachable(pg: &PgPool) -> AgentReach {
     let Some(url) =
         talaria_fleet_layout::agent_search_url(&app_url, talaria_fleet_layout::dial_is_container())
     else {
-        return AgentReach::nothing(
-            Some(
-                "not handed to the agents: a loopback address is the app container itself to \
-                 an agent, so the render withholds it; give it an address the agents can reach"
-                    .into(),
-            ),
-            None,
-        );
+        return AgentReach::nothing(Some(WITHHELD_LOOPBACK.into()), None);
     };
     let (department, display_name) = match probe_agent(pg).await {
         Ok(Some(agent)) => agent,
@@ -241,6 +242,17 @@ mod tests {
     fn output_that_is_neither_is_not_read_as_an_answer() {
         assert!(parse_probe_output("").is_err());
         assert!(parse_probe_output("Traceback (most recent call last):\n").is_err());
+    }
+
+    // The panel prints a not-probed reason as "From the agents: <reason>".
+    // This one once opened "not handed to the agents:", which read the
+    // phrase twice; it must name what the render did, as one sentence.
+    #[test]
+    fn the_withheld_reason_does_not_repeat_the_panels_prefix() {
+        let line = format!("From the agents: {WITHHELD_LOOPBACK}");
+        assert_eq!(line.matches("agents:").count(), 1, "{line}");
+        assert!(!WITHHELD_LOOPBACK.contains("  "), "{WITHHELD_LOOPBACK}");
+        assert!(WITHHELD_LOOPBACK.contains("loopback"));
     }
 
     // The program is argv-driven: the URL is never part of the source text,

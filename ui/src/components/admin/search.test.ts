@@ -86,4 +86,15 @@ describe('agentProbeNote: the from-agents line under the dots', () => {
       text: 'From the agents: no agent is running to probe from',
     })
   })
+  // The withheld sentence once opened "not handed to the agents", so the
+  // line read "From the agents: not handed to the agents: …". The server's
+  // sentence (talaria-agent-web-search probe.rs WITHHELD_LOOPBACK) now says
+  // what the render did, so the prefix is said once.
+  it('reads the withheld-loopback reason without repeating its prefix', () => {
+    const withheld =
+      'the render withholds a loopback URL, since to an agent it is the app container itself; give the search URL an address the agents can reach'
+    const note = agentProbeNote(ep({ agentReachable: null, agentError: withheld, probedFrom: null, agentUrl: null }))
+    expect(note).toEqual({ tone: 'muted', text: `From the agents: ${withheld}` })
+    expect(note!.text).not.toMatch(/agents:.*agents:/)
+  })
 })
