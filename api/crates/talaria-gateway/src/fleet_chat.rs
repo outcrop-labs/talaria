@@ -2002,30 +2002,59 @@ mod tests {
         })
     }
 
-    type Seen = std::sync::Arc<std::sync::Mutex<Vec<Value>>>;
+    /// What the stand-in was sent: each body, with the `Authorization`
+    /// header it came under.
+    #[derive(Clone, Default)]
+    struct Seen(std::sync::Arc<std::sync::Mutex<Vec<(Value, Option<String>)>>>);
+
+    impl Seen {
+        fn bodies(&self) -> Vec<Value> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(b, _)| b.clone())
+                .collect()
+        }
+
+        fn authorizations(&self) -> Vec<Option<String>> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, a)| a.clone())
+                .collect()
+        }
+    }
 
     /// Bind the stand-in; `status` is what every POST answers.
     async fn agent_gateway(status: u16) -> (ManifestEntry, Seen) {
-        let seen: Seen = Default::default();
+        let seen = Seen::default();
         let kept = seen.clone();
         let app = axum::Router::new().route(
             "/v1/chat/completions",
-            axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
-                let kept = kept.clone();
-                async move {
-                    let session = session_for(&body);
-                    kept.lock().unwrap().push(body);
-                    (
-                        axum::http::StatusCode::from_u16(status).unwrap(),
-                        [
-                            ("content-type", "text/event-stream".to_string()),
-                            ("x-hermes-session-id", session),
-                        ],
-                        "data: {\"choices\": [{\"index\": 0, \"delta\": {\"content\": \"on the \
+            axum::routing::post(
+                move |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>| {
+                    let kept = kept.clone();
+                    async move {
+                        let session = session_for(&body);
+                        let authorization = headers
+                            .get(axum::http::header::AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_string);
+                        kept.0.lock().unwrap().push((body, authorization));
+                        (
+                            axum::http::StatusCode::from_u16(status).unwrap(),
+                            [
+                                ("content-type", "text/event-stream".to_string()),
+                                ("x-hermes-session-id", session),
+                            ],
+                            "data: {\"choices\": [{\"index\": 0, \"delta\": {\"content\": \"on the \
                          fresh thread\"}, \"finish_reason\": null}]}\n\ndata: [DONE]\n\n",
-                    )
-                }
-            }),
+                        )
+                    }
+                },
+            ),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -2110,11 +2139,15 @@ mod tests {
         assert!(text.contains("on the fresh thread"), "{text}");
         assert!(text.ends_with("data: [DONE]\n\n"), "{text}");
 
-        let sent = seen.lock().unwrap().clone();
+        let sent = seen.bodies();
         assert_eq!(sent.len(), 1, "sent once");
         assert_eq!(thread_in(&sent[0]).as_deref(), Some("3"));
         assert_eq!(sent[0], completions_request(&refused_turn(), Some("3")));
         assert_eq!(sent[0]["stream"], true);
+        assert_eq!(
+            seen.authorizations(),
+            [Some("Bearer agent-door-key".to_string())]
+        );
     }
 
     /// A one-shot has nothing to keep a thread on: its repair takes a random
@@ -2127,7 +2160,7 @@ mod tests {
             let body = fresh(&entry, 1, None).send().await.expect("answers");
             assert!(read_all(body).await.contains("on the fresh thread"));
         }
-        let sent = seen.lock().unwrap().clone();
+        let sent = seen.bodies();
         assert_eq!(sent.len(), 2);
         let threads: Vec<String> = sent.iter().map(|b| thread_in(b).unwrap()).collect();
         for t in &threads {
@@ -2163,7 +2196,7 @@ mod tests {
             "the agent answered the turn sent on a fresh session with HTTP 503"
         );
         assert!(kept.lock().unwrap().is_empty());
-        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(seen.bodies().len(), 1);
 
         // Nothing listening: the turn never left.
         let gone = ManifestEntry {

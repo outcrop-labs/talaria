@@ -192,10 +192,21 @@ pub async fn post(
             // (the reader re-reads the conversation and takes the call's
             // status from the row), and it is what reaches a verdict that
             // lands after the turn did, when nothing is polling.
-            Ok(Some(kept)) => fan_conversation_event(
-                NotifyDeps::publishing(state.pg.clone(), redis.clone()),
-                kept.conversation_id,
-            ),
+            // `marked` 0 is the ordinary mid-turn case: the reply running the
+            // call does not hold it yet, and the turn's own writes fold it in.
+            Ok(Some(kept)) => {
+                tracing::debug!(
+                    "[tool-events] {}: {tool} {call_id} failed — kept for conversation {}, {} \
+                     reply row(s) marked",
+                    caller.model,
+                    kept.conversation_id,
+                    kept.marked
+                );
+                fan_conversation_event(
+                    NotifyDeps::publishing(state.pg.clone(), redis.clone()),
+                    kept.conversation_id,
+                )
+            }
             Ok(None) => {}
             Err(e) => tracing::warn!("[tool-events] marking {tool} {call_id} failed: {e}"),
         }

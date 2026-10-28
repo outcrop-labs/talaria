@@ -916,8 +916,11 @@ pub async fn persist_assistant_stream(
                     // `completed` back over it within 400 ms: a reader of the
                     // row (the open tab's poll, a member's) would see the call
                     // work again until the turn landed. The same kept
-                    // verdicts the landing write folds, read only while a
-                    // call with an id is still open.
+                    // verdicts the landing write folds, read while the reply
+                    // holds a call with an id not already marked `error`
+                    // (a `completed` one included: that is the call a
+                    // verdict turns), so one MGET a flush from the first
+                    // such call to the landing.
                     if let Some((agent, since)) = &verdict_agent
                         && tools.iter().any(|t| t.id.is_some() && t.status != "error")
                     {
