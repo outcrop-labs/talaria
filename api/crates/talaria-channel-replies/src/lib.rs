@@ -831,6 +831,7 @@ async fn stream_reply(
         source: "channel".into(),
         ref_id: Some(channel_id.to_string()),
         task_id: None,
+        attended: false,
     };
     let upstream = proxy_chat(
         &chat_payload(routed_model, messages, None),

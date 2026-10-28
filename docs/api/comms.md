@@ -378,11 +378,12 @@ Source: [`api/crates/talaria-routes-comms/src/comms/chips_approvals_id.rs`](../.
 > POST /api/chat/chips/approvals/{id} — approve or deny a chip.
 > Google sends execute through the existing confirm-send. Ticket moves apply
 > as the person who approved. Either way the chip that follows names the
-> tools that approval unlocked.
+> tools that approval unlocked. An agent's own approval request (kind
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apichatchipsapprovalsid-body) | `{status, tools}` | 200, 400, 403, 404, 502 | — |
+| POST | `session` | [body](#post-apichatchipsapprovalsid-body) | `{status, tools}` | 200, 400, 403, 404, 409, 502 | — |
 
 **POST** — Approve or deny a protected action surfaced as a chip in the thread.
 

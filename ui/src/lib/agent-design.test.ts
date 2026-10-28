@@ -15,7 +15,7 @@ const pushToastMock = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/muse.svelte', () => ({ draftAgent: draftAgentMock }))
 vi.mock('@/lib/toast.svelte', () => ({ pushToast: pushToastMock }))
 
-import { clearDesign, currentDesign, designGenerating, refineDesign, setModalOpen, startDesign } from './agent-design.svelte'
+import { adoptDesign, clearDesign, currentDesign, designGenerating, ensureDesign, refineDesign, setModalOpen, startDesign } from './agent-design.svelte'
 
 // The store is MODULE state, so every test starts from clearDesign() — the
 // real "the caller claimed it" transition, not a resetModules dance.
@@ -229,6 +229,51 @@ describe('clearDesign: claiming the design', () => {
     expect(currentDesign()).toBeNull()
     gate.resolve(DRAFT)
     await settle()
+    expect(currentDesign()).toBeNull()
+  })
+})
+
+describe('ensureDesign: a manual start has somewhere to write', () => {
+  // "Configure manually →" and Duplicate open the review step with nothing
+  // designed. Its fields write through to the store, and with no record there
+  // every keystroke was dropped: the form looked typed into while Create
+  // stayed disabled. The review step writes through ensureDesign.
+  it('seeds an empty, ready design when there is none, and the edits land in it', () => {
+    expect(currentDesign()).toBeNull()
+    const d = ensureDesign()
+    expect(d.status).toBe('ready')
+    expect([d.name, d.handle, d.department, d.role, d.soul]).toEqual(['', '', '', '', ''])
+    expect(d.skills).toEqual([])
+    expect(d.chat).toEqual([]) // no muse run behind it: the refine bar stays hidden
+    d.name = 'Night Auditor'
+    Object.assign(ensureDesign(), { handle: 'auditor', department: 'audit' })
+    const read = currentDesign()
+    expect(read?.id).toBe(d.id)
+    expect([read?.name, read?.handle, read?.department]).toEqual(['Night Auditor', 'auditor', 'audit'])
+  })
+
+  it('writes to the design that exists, in any state, and never replaces it', async () => {
+    adoptDesign({ name: 'Data Analyst', handle: 'dataanalyst', department: 'analytics', role: 'Analyst', soul: 'Reads numbers.' })
+    const adopted = currentDesign()
+    ensureDesign().department = 'analytics-2'
+    expect(currentDesign()?.id).toBe(adopted?.id)
+    expect(currentDesign()?.name).toBe('Data Analyst')
+    expect(currentDesign()?.department).toBe('analytics-2')
+
+    // An in-flight run is the record too: a hand edit does not start over.
+    const gate = pendingDraft()
+    draftAgentMock.mockImplementation(() => gate.promise)
+    const id = startDesign('a purpose')
+    expect(ensureDesign().id).toBe(id)
+    expect(currentDesign()?.status).toBe('generating')
+    gate.resolve(DRAFT)
+    await settle()
+    expect(currentDesign()?.id).toBe(id)
+  })
+
+  it('is cleared like any other design once the hire claims it', () => {
+    ensureDesign().name = 'Scout'
+    clearDesign()
     expect(currentDesign()).toBeNull()
   })
 })

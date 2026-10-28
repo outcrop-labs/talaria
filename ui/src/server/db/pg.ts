@@ -4381,6 +4381,22 @@ alter table tasks drop column if exists conversation_id`,
                where key = 'apps_catalog_url' and jsonb_typeof(value) = 'string'),
              'https://raw.githubusercontent.com/outcrop-labs/talaria-apps/main/index.json') as url) c
     where not exists (select 1 from app_catalogs)`,
+  // ── The Hermes thread a conversation's completions turns open on ────────
+  // Hermes files a header-less /v1/chat/completions turn under a session it
+  // derives from the turn's opening (the system rows and the first user
+  // message), so a conversation keeps one derived session for life. When the
+  // agent dies mid-turn, v0.22 fences that session's head as `unknown` and
+  // refuses every later turn on it, keeping each refusal queued behind it.
+  // The gateway's repair sends the refused turn again with one more system
+  // row in its opening (talaria-gateway `fleet_chat::Thread`), which lands it
+  // on a fresh derived session, and this is the number in that row: 0 is the
+  // opening as Talaria sends it, so every conversation that never lost a
+  // turn keeps the session it always had. Kept here so the conversation's
+  // next turn opens on the fresh session instead of being refused once more.
+  //
+  // AT THE END, not beside the conversations table: MIGRATIONS is append-only
+  // and keyed by INDEX.
+  `alter table conversations add column if not exists hermes_epoch integer not null default 0`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

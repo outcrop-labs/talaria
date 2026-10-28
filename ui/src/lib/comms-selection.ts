@@ -90,19 +90,48 @@ export function writeCommsSelection(sel: CommsSelection): void {
  * Pass `conversationIds: null` when that list has not loaded — the thread is
  * then taken on trust, which is correct, since discarding it for a list that
  * merely has not arrived yet is the same race in a new place.
+ *
+ * THE CHAT LIST IS NOT EVERY THREAD YOU MAY READ. `conversationIds` is your own
+ * chats; a plan or work session (yours, or one shared with you as a member)
+ * opens under `/comms/agent/<model>/<thread>` too and is in no such list. So a
+ * thread missing from it is first put to the server, which alone decides who
+ * may read a conversation (`threadAwaitingVerdict`), and `verdicts` carries its
+ * answers: true keeps the thread, false degrades it as a deleted one.
  */
 export function restorableSelection(
   saved: CommsSelection | null,
-  rosters: { channelIds: string[]; agentModels: string[]; conversationIds: string[] | null },
+  rosters: {
+    channelIds: string[]
+    agentModels: string[]
+    conversationIds: string[] | null
+    verdicts?: Readonly<Record<string, boolean>>
+  },
 ): CommsSelection | null {
   if (!saved) return null
   if (saved.t === 'threads' || saved.t === 'drafts' || saved.t === 'with' || saved.t === 'new') return saved
   if (saved.t === 'channel') return rosters.channelIds.includes(saved.id) ? saved : null
   if (!rosters.agentModels.includes(saved.model)) return null
   if (saved.conversationId && rosters.conversationIds && !rosters.conversationIds.includes(saved.conversationId)) {
+    if (rosters.verdicts?.[saved.conversationId] === true) return saved
     return { t: 'agent', model: saved.model, conversationId: null }
   }
   return saved
+}
+
+/**
+ * The remembered thread the caller must ask the server about before restoring:
+ * one outside the viewer's own chat list that has no verdict yet. Null when
+ * there is nothing to ask — no thread, a list still loading (the thread is
+ * trusted then), a thread in the list, or one already answered.
+ */
+export function threadAwaitingVerdict(
+  saved: CommsSelection | null,
+  conversationIds: string[] | null,
+  verdicts: Readonly<Record<string, boolean>>,
+): string | null {
+  if (saved?.t !== 'agent' || !saved.conversationId || !conversationIds) return null
+  if (conversationIds.includes(saved.conversationId)) return null
+  return saved.conversationId in verdicts ? null : saved.conversationId
 }
 
 /**

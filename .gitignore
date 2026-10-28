@@ -84,6 +84,12 @@ ui/.omc/
 .claude/settings.local.json
 .claude/worktrees/
 
+# Legacy generated file: the removed SearXNG setup rendered it per install,
+# holding that instance's generated secret_key. Nothing in this repo writes
+# it any more (f47d821b), but dev stacks set up before that commit still
+# bind-mount it into their own SearXNG container, so it lives on in old
+# checkouts — and must never be committed from one.
+docker/searxng/settings.local.yml
 
 # Client POC apps — true subrepos with their own history (see apps/leadworks/README.md).
 # Gitignore does not affect the build-time apps glob; the apps compile and run

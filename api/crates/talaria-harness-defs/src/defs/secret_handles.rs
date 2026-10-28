@@ -784,8 +784,9 @@ pub fn secret_handles_harness() -> HarnessDefinition {
         redact: true,
     });
     // THE TOOL LOOP IS THE SUBJECT. Declared `Own` for the same reason
-    // `work_session.rs` declares it: the runner's default transport disarms
-    // the model, and a disarmed model cannot spend anything.
+    // `work_session.rs` declares it: the default, 'none', asks for one
+    // structured answer with no tool loop, and a model given no loop cannot
+    // spend anything.
     d.tools = Some(ToolPolicy::Own);
 
     // ── The dry run ──────────────────────────────────────────────────────────

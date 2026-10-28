@@ -78,10 +78,16 @@ pub fn slot_container(department: &str, slot: Slot) -> String {
 
 /// Which service a department's managed agent currently runs in, from the
 /// def row. Missing row / null reads as 'a'; only an agent a pre-2026-10-22
-/// blue/green roll left behind reads 'b', until its next roll.
+/// blue/green roll left behind reads 'b', until its next roll. Where two
+/// agents hold one department (a pair that predates the one-agent rule), the
+/// row read is the one the render runs there: enabled with a current version
+/// first (the render's own conditions), then the oldest.
 pub async fn active_slot(pg: &PgPool, department: &str) -> Slot {
     let row: Option<(Option<String>,)> = sqlx::query_as(
-        "select active_slot from agent_defs where department = $1 and managed limit 1",
+        "select d.active_slot from agent_defs d where d.department = $1 and d.managed \
+         order by (d.enabled and exists (select 1 from agent_versions v \
+             where v.agent_id = d.id and v.version = d.current_version)) desc, \
+           d.created_at, d.id limit 1",
     )
     .bind(department)
     .fetch_optional(pg)
@@ -324,6 +330,39 @@ pub async fn container_running(name: &str) -> bool {
     )
     .await
     .is_ok_and(|(out, _)| out.trim() == "true")
+}
+
+/// Whether the named container is running (`Some(true)`), exists stopped
+/// (`Some(false)`: exited, created, dead), or does not exist (`None`). An
+/// Err is docker failing to answer, which is not the same as "absent": a
+/// caller that acts on the container's absence must not guess.
+pub async fn container_state(name: &str) -> Result<Option<bool>, String> {
+    match docker(
+        &["inspect", "-f", "{{.State.Running}}", name],
+        Duration::from_secs(10),
+    )
+    .await
+    {
+        Ok((out, _)) => Ok(Some(out.trim() == "true")),
+        // "no such object" (inspect, lowercase on docker 29) or "No such
+        // container" (rm), depending on the CLI and the verb.
+        Err(e) if e.to_lowercase().contains("no such") => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Remove a STOPPED container, so the next start has to create it from the
+/// current render (`compose restart` would otherwise start it again with the
+/// env, mounts and image it was created with). A plain `docker rm`: it
+/// refuses a running container, so a container someone started since the
+/// caller looked is left alone and the caller hears why. A container that is
+/// already gone counts as removed.
+pub async fn remove_stopped_container(name: &str) -> Result<(), String> {
+    match docker(&["rm", name], Duration::from_secs(60)).await {
+        Ok(_) => Ok(()),
+        Err(e) if e.to_lowercase().contains("no such") => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// Wait for the managed container to report healthy (or give up). `unhealthy`

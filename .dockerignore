@@ -34,6 +34,9 @@ logs
 app-data
 app-builds
 ui/.env*
+# The legacy SearXNG settings file an old checkout may still hold (it carries
+# a secret_key; see .gitignore) — never part of a local build context.
+docker/searxng/settings.local.yml
 **/.env
 !**/.env.example
 

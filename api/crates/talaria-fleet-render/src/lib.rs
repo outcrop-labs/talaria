@@ -72,6 +72,11 @@ pub struct RenderDef {
     /// `fleet_disabled_toolsets` merges them on top of the pair Talaria always
     /// suppresses and whatever the def's own config already listed.
     pub disabled_toolsets: Vec<String>,
+    /// This agent's place among the rendered agents of its department, oldest
+    /// first: 1 runs in `agent-<department>`, anything above it is a second
+    /// agent in one department, which the render leaves out
+    /// ([`department_runners`]).
+    pub department_rank: i64,
 }
 
 /// The version's render-facing columns (the full version shape lives in
@@ -104,6 +109,7 @@ type TargetTuple = (
     bool,
     i32,
     sqlx::types::Json<Vec<String>>,
+    i64,
     i32,
     String,
     Value,
@@ -123,23 +129,28 @@ fn target_of(r: TargetTuple) -> RenderTarget {
             developer: r.8,
             max_children: r.9,
             disabled_toolsets: r.10.0,
+            department_rank: r.11,
         },
         version: RenderVersion {
-            version: r.11,
-            soul: r.12,
-            config: r.13,
+            version: r.12,
+            soul: r.13,
+            config: r.14,
         },
     }
 }
 
 /// Every managed+enabled agent with its current version, slug-ordered — the
 /// render's whole world. Agents without a current version are absent (the
-/// join drops them): a def with no version cannot be rendered.
+/// join drops them): a def with no version cannot be rendered. Each carries
+/// its rank in its department, oldest first — the same order
+/// talaria-agent-defs' `SharedDepartment::runner` reads.
 pub async fn managed_agents(pg: &PgPool) -> Result<Vec<RenderTarget>, sqlx::Error> {
     // Literal SQL: one auditable statement, columns spelled once.
     let rows: Vec<TargetTuple> = sqlx::query_as(
         "select d.id::text, d.slug, d.department, d.model, d.display_name, d.role, d.source, \
-         d.active_slot, d.developer, d.max_children, d.disabled_toolsets, v.version, v.soul, v.config \
+         d.active_slot, d.developer, d.max_children, d.disabled_toolsets, \
+         row_number() over (partition by d.department order by d.created_at, d.id) as department_rank, \
+         v.version, v.soul, v.config \
          from agent_defs d \
          join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
          where d.managed and d.enabled \
@@ -148,6 +159,58 @@ pub async fn managed_agents(pg: &PgPool) -> Result<Vec<RenderTarget>, sqlx::Erro
     .fetch_all(pg)
     .await?;
     Ok(rows.into_iter().map(target_of).collect())
+}
+
+/// An agent the render leaves out: an older agent holds its department.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeftOut {
+    pub slug: String,
+    pub model: String,
+    pub warning: String,
+}
+
+/// One container per department. A department names the compose service
+/// (`agent-<department>`) and the Hermes data volume, so two agents in one
+/// would be one service in the compose map — the later insert replacing the
+/// earlier agent's container — and one Hermes home both write. New writes
+/// cannot make such a pair (talaria-agent-defs, "A department is one agent's
+/// key"); one that predates that rule renders its OLDEST agent only (rank 1
+/// from [`managed_agents`]), which keeps its container and volume, and every
+/// other is left out: no service, no config, no manifest entry, and a warning
+/// that names both. Nothing is renamed or merged.
+pub fn department_runners(targets: Vec<RenderTarget>) -> (Vec<RenderTarget>, Vec<LeftOut>) {
+    let runner_of: HashMap<String, (String, String)> = targets
+        .iter()
+        .filter(|t| t.def.department_rank == 1)
+        .map(|t| {
+            (
+                t.def.department.clone(),
+                (t.def.model.clone(), t.def.display_name.clone()),
+            )
+        })
+        .collect();
+    let (kept, out): (Vec<RenderTarget>, Vec<RenderTarget>) = targets
+        .into_iter()
+        .partition(|t| t.def.department_rank <= 1);
+    let left_out = out
+        .into_iter()
+        .map(|t| {
+            let d = &t.def;
+            let (holder_model, holder_name) = runner_of
+                .get(&d.department)
+                .cloned()
+                .unwrap_or_else(|| ("another agent".into(), "the older agent".into()));
+            LeftOut {
+                slug: d.slug.clone(),
+                model: d.model.clone(),
+                warning: format!(
+                    "{}: not rendered — its department \"{}\" is also {holder_model}'s, the older agent, and a department is one container (agent-{}) and one memory volume. {holder_name} keeps both; retire and delete one of the two, because Talaria never merges two agents into one",
+                    d.model, d.department, d.department
+                ),
+            }
+        })
+        .collect();
+    (kept, left_out)
 }
 
 /// Assign each managed agent a stable loopback port (persisted, never reused),
@@ -1075,7 +1138,10 @@ fn config_yaml_text(model: &str, version: i32, routed: &Map<String, Value>) -> S
 /// render_fleet — regenerate everything the managed fleet runs on. See the
 /// module header.
 pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, String> {
-    let targets = managed_agents(pg).await.map_err(|e| e.to_string())?;
+    // One agent per department's container: a second one is left out of
+    // everything below, by name.
+    let (targets, left_out) =
+        department_runners(managed_agents(pg).await.map_err(|e| e.to_string())?);
     let agent_search_url =
         agent_search_url(&talaria_search::search_url(pg).await, dial_is_container());
     // The operator's agent web-search choice (Admin → Search), the same for
@@ -1090,6 +1156,10 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         files: Vec::new(),
         warnings: web_search.warnings.clone(),
     };
+    for skipped in &left_out {
+        tracing::warn!("[fleet] {}", skipped.warning);
+        result.warnings.push(skipped.warning.clone());
+    }
 
     // The fleet's default brain is Talaria's own gateway. Best-effort — never
     // blocks a render.
@@ -1180,8 +1250,19 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     seed_events_plugin().await?;
 
     // Credential-migration visibility — a render is the operator's moment.
-    if let Ok(legacy) = talaria_agent_auth::legacy_migration_status(pg).await
-        && let Some(w) = talaria_agent_auth::legacy_migration_warning(&legacy)
+    // An agent this render leaves out (`department_runners`) has no
+    // container to roll onto its own key, so it is no step of the migration:
+    // counting it would ask for a roll nobody can make.
+    if let Ok(mut legacy) = talaria_agent_auth::legacy_migration_status(pg).await
+        && let Some(w) = {
+            let skipped: std::collections::HashSet<&str> =
+                left_out.iter().map(|l| l.model.as_str()).collect();
+            legacy
+                .agents
+                .retain(|a| !skipped.contains(a.model.as_str()));
+            legacy.pending.retain(|m| !skipped.contains(m.as_str()));
+            talaria_agent_auth::legacy_migration_warning(&legacy)
+        }
     {
         result.warnings.push(w.clone());
         if legacy.window_open {
@@ -1284,8 +1365,31 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             }
         }
 
+        // A `${CONFIG_…}` handle names a sealed credential the agent's env
+        // must hold, and Hermes keeps an unresolved one as its own text: a
+        // token that fails, or a password anyone who can read the config
+        // knows. So a handle with no secret behind it (removed by a path the
+        // Secrets route's guard does not cover, a secret-health clear or a
+        // hand edit) leaves its setting out of this render, and says so,
+        // until the secret is set again under that name.
+        let held = talaria_agent_secrets::held_config_secrets(pg, &def.id)
+            .await
+            .map_err(|e| format!("{}: agent secrets read failed: {e}", def.slug))?;
+        let (config, withheld, missing) =
+            talaria_agent_secrets::withhold_unheld_config_secrets(&version.config, &held);
+        if !withheld.is_empty() {
+            let warning = format!(
+                "{}: left out {} of its config: the sealed credential {} it names does not exist. Set it again under that name in the Secrets tab to restore the setting",
+                def.display_name,
+                withheld.join(", "),
+                missing.join(", ")
+            );
+            tracing::warn!("[fleet] {warning}");
+            result.warnings.push(warning);
+        }
+
         // Un-interweave: all model tiers point at Talaria's gateway.
-        let mut raw = def_raw_config(&version.config);
+        let mut raw = def_raw_config(&config);
         // How this agent reads an image, from what Talaria knows its models
         // can see — written into the authored config BEFORE the transform,
         // so an image-reader spec is routed and key-scoped like every other.
@@ -1426,6 +1530,14 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         if !enabled.iter().any(|v| v.as_str() == Some("talaria-events")) {
             enabled.push(json!("talaria-events"));
         }
+        // The sealed manifest is a declaration, never a plugin to load (it
+        // has no adapter): an authored list that names it loses the entry.
+        enabled.retain(|v| {
+            !matches!(
+                v.as_str(),
+                Some("talaria-sealed" | "platforms/talaria-sealed")
+            )
+        });
         plugins.insert("enabled".into(), json!(enabled));
         routed.insert("plugins".into(), Value::Object(plugins));
         // The agent's own secrets, by name, so execute_code gets them too.
@@ -1613,11 +1725,13 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         // such case into git's immediate "could not read Username", which the
         // toolkit skill already tells the agent to report_problem.
         env.insert("GIT_TERMINAL_PROMPT".into(), json!("0"));
+        pin_write_root(&mut env);
 
         // Developer Agent overlay: the dev sandbox. Harness state PERSISTS
-        // on the department state volume (hand-offs: a session one agent
-        // starts, a department-mate can resume); GitHub attribution AUTHORS
-        // commits as the agent (display name + stable per-agent email).
+        // on the agent's state volume (named for its department, which is
+        // its alone — `department_runners`), so a session survives restarts
+        // and rolls; GitHub attribution AUTHORS commits as the agent (display
+        // name + stable per-agent email).
         if developer {
             let obj = svc
                 .as_object_mut()
@@ -1862,12 +1976,24 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             "{}:/opt/data/plugins/talaria-events:ro",
             fleet_plugins.display()
         ));
+        // The sealed manifest (talaria-agent-secrets' `sealed_manifest`,
+        // written beside secrets.env below): its DIRECTORY, so the rename
+        // that rewrites it reaches a running container. Hermes strips the
+        // names it declares from every command the agent runs.
+        vols.push(format!(
+            "{}:{}:ro",
+            agent_dir
+                .join(talaria_agent_secrets::SEALED_PLUGIN_DIR)
+                .display(),
+            talaria_agent_secrets::SEALED_PLUGIN_MOUNT
+        ));
         let protected = [
             "/opt/data",
             "/opt/data/config.yaml",
             "/opt/data/SOUL.md",
             "/opt/dept-skills",
             "/opt/skills",
+            talaria_agent_secrets::SEALED_PLUGIN_MOUNT,
         ];
         for v in svc
             .get("volumes")
@@ -1898,8 +2024,18 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             .insert("volumes".into(), json!(vols));
 
         // Per-agent secrets (UI-configured, DB-encrypted) materialize into the
-        // agent dir and load via env_file.
-        if talaria_agent_secrets::materialize_agent_secrets(pg, sb, &def.id, &def.slug).await? {
+        // agent dir and load via env_file; the sealed manifest beside them
+        // names the CONFIG_* ones. A row under a name refused now is not
+        // loaded, and says so here on every render until someone removes it.
+        let agent_secrets =
+            talaria_agent_secrets::materialize_agent_secrets(pg, sb, &def.id, &def.slug).await?;
+        for (name, why) in &agent_secrets.skipped {
+            tracing::warn!(
+                "[fleet] {}: per-agent secret {name} is not loaded: {why}",
+                def.slug
+            );
+        }
+        if agent_secrets.env_file {
             svc.as_object_mut().expect("checked above").insert(
                 "env_file".into(),
                 json!([agent_dir.join("secrets.env").display().to_string()]),
@@ -2013,7 +2149,8 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     .map_err(|e| format!("{}: {e}", compose_path.display()))?;
     result.files.push(compose_path.display().to_string());
 
-    write_fleet_manifest(pg, &mut result).await?;
+    let left_out: Vec<String> = left_out.into_iter().map(|l| l.slug).collect();
+    write_fleet_manifest(pg, &mut result, &left_out).await?;
     Ok(result)
 }
 
@@ -2346,15 +2483,6 @@ fn fleet_vision(
     main.sees == Some(false) && reader.is_none() && !own_backend
 }
 
-/// How long Hermes holds a flagged call open waiting for an answer. Talaria
-/// refuses every approval request on a turn it drives within seconds
-/// (talaria-gateway's `fleet_approvals`); this is the backstop for a
-/// request nobody is left to answer — the stream that carried it dropped, the
-/// api restarted mid-turn. Hermes refuses the call when it runs out, and the
-/// session's next turn queues behind the wait, so a minute rather than
-/// Hermes' own five.
-const APPROVAL_TIMEOUT_SECS: u64 = 60;
-
 /// The approval policy, written whole every render: a def cannot author its
 /// way around any of these keys, and every other key in its `approvals` block
 /// is left alone.
@@ -2382,10 +2510,18 @@ const APPROVAL_TIMEOUT_SECS: u64 = 60;
 ///   point, the container is its boundary, and the harness runs code all
 ///   day. Flagged commands run without a prompt on every path; Hermes'
 ///   hardline floor and an authored `approvals.deny` list still hold. So do
-///   the gates Hermes never lets anything auto-approve (a write to a
-///   project's AGENTS.md / CLAUDE.md / SOUL.md, an untrusted MCP server's
-///   write tool, a saved card fill): they still ask, and Talaria's door
-///   answers `deny`, as it does for every request.
+///   the gates Hermes never lets anything auto-approve (an MCP server's
+///   confirmation request, an untrusted MCP server's write tool, a saved
+///   card fill, a write to a project's AGENTS.md / CLAUDE.md / SOUL.md):
+///   they still ask. (This render sets no MCP `trust`, no `tool_costs` and
+///   no browser vault, so of those only the confirmation request and the
+///   protected write arise.) On a conversation turn whose owner manages the
+///   agent, Talaria's door puts the request to that person as a card;
+///   everywhere else it answers `deny`. The protected write is never carded:
+///   it only asks about paths outside `/opt/data`, which the write root
+///   ([`pin_write_root`]) refuses whatever the answer. Nor is an MCP form
+///   that asks for fields: Hermes would answer an allowed one with empty
+///   content, so the door declines it.
 /// - Every other agent gets `mode: manual` and `deny`. No guardian, so no
 ///   model ever approves a command. A streamed turn's request reaches
 ///   Talaria's door, which answers `deny` and records it; an unattended path
@@ -2395,6 +2531,12 @@ const APPROVAL_TIMEOUT_SECS: u64 = 60;
 ///   closes that an operator might want is `execute_code` on a non-Developer
 ///   agent. That is the Developer switch's job, and the toolset editor says
 ///   so.
+///
+/// `timeout` is how long Hermes holds a request open: a minute for an
+/// ordinary agent, whose requests the door refuses in milliseconds, and two
+/// for a Developer Agent, whose card a person has to read. The values and
+/// why live with the door (`talaria_gateway::fleet_approvals`), because the
+/// card closes itself five seconds before this runs out.
 fn fleet_approvals(routed: &mut Map<String, Value>, developer: bool) {
     let mut cfg = routed
         .get("approvals")
@@ -2407,10 +2549,38 @@ fn fleet_approvals(routed: &mut Map<String, Value>, developer: bool) {
         ("manual", "deny")
     };
     cfg.insert("mode".into(), json!(mode));
-    cfg.insert("timeout".into(), json!(APPROVAL_TIMEOUT_SECS));
+    cfg.insert(
+        "timeout".into(),
+        json!(talaria_gateway::fleet_approvals::approval_timeout_secs(
+            developer
+        )),
+    );
     cfg.insert("unattended_mode".into(), json!(unattended));
     cfg.insert("cron_mode".into(), json!(unattended));
     routed.insert("approvals".into(), Value::Object(cfg));
+}
+
+/// The file tools' write root, pinned on every agent: `HERMES_WRITE_SAFE_ROOT`
+/// = the agent's data volume (`/opt/data`), and `HERMES_HOME` = that same
+/// folder. The official image sets both values in its Dockerfile; rendering
+/// them makes them values Talaria sets, because the approval door reasons
+/// from the pair (`talaria_gateway::fleet_approvals::unanswerable`): Hermes'
+/// protected-instruction gate exempts `HERMES_HOME`, so while the home and
+/// the root are one folder, every write the gate asks about lies outside the
+/// root and cannot land. A home that drifted from the root would have the
+/// door refuse, with a false reason, a write that could land, so both are
+/// pinned together. Never widened: a Developer Agent's checkouts live under
+/// `/opt/data/workbench`, inside it. A chassis value for either is
+/// overwritten, and per-agent secrets cannot carry a `HERMES_*` name
+/// (talaria-agent-secrets).
+///
+/// Hermes reads the root as an `os.pathsep` list (`:` here), skips empty
+/// entries and `realpath`s each one (v0.22.4 `agent/file_safety.py`,
+/// `get_safe_write_roots`); a single root needs no separator.
+fn pin_write_root(env: &mut Map<String, Value>) {
+    let root = talaria_gateway::fleet_approvals::AGENT_WRITE_ROOT;
+    env.insert("HERMES_WRITE_SAFE_ROOT".into(), json!(root));
+    env.insert("HERMES_HOME".into(), json!(root));
 }
 
 /// Nous-hosted connectors and the Nous free-tier identity, off on every agent.
@@ -3082,7 +3252,14 @@ fn talaria_provider_models_json(base_url: &str, model_ids: &[String]) -> Value {
     })
 }
 
-async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<(), String> {
+/// `left_out` is the render's [`department_runners`] skip list: an agent with
+/// no service of its own must not be dialed either — its department's url is
+/// another agent's container.
+async fn write_fleet_manifest(
+    pg: &PgPool,
+    result: &mut RenderResult,
+    left_out: &[String],
+) -> Result<(), String> {
     type DefRow = (
         String,
         String,
@@ -3115,6 +3292,9 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
 
     let mut manifest: Vec<Value> = Vec::new();
     for (slug, department, model, gateway_port, active_slot, config) in &defs {
+        if left_out.contains(slug) {
+            continue;
+        }
         let key = keys.get(&slug.to_lowercase()).cloned().unwrap_or_default();
         if key.is_empty() {
             result.warnings.push(format!(
@@ -3180,6 +3360,67 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn target(slug: &str, department: &str, rank: i64) -> RenderTarget {
+        RenderTarget {
+            def: RenderDef {
+                id: format!("id-{slug}"),
+                slug: slug.into(),
+                department: department.into(),
+                model: format!("{slug}-{department}"),
+                display_name: slug.to_uppercase(),
+                role: None,
+                source: "created".into(),
+                active_slot: None,
+                developer: false,
+                max_children: 0,
+                disabled_toolsets: Vec::new(),
+                department_rank: rank,
+            },
+            version: RenderVersion {
+                version: 1,
+                soul: String::new(),
+                config: json!({}),
+            },
+        }
+    }
+
+    #[test]
+    fn a_second_agent_in_a_department_is_left_out_and_the_older_one_keeps_its_container() {
+        // Slug order (the render's own) puts the newer agent last, where its
+        // service insert used to replace the older agent's.
+        let (kept, left_out) = department_runners(vec![
+            target("ava", "research", 1),
+            target("bo", "ops", 1),
+            target("zed", "research", 2),
+            target("amy", "research", 3),
+        ]);
+        assert_eq!(
+            kept.iter().map(|t| t.def.slug.as_str()).collect::<Vec<_>>(),
+            vec!["ava", "bo"],
+            "one agent per department, in the render's own order"
+        );
+        assert_eq!(
+            left_out.iter().map(|l| l.slug.as_str()).collect::<Vec<_>>(),
+            vec!["zed", "amy"]
+        );
+        let w = &left_out[0].warning;
+        assert!(
+            w.starts_with("zed-research: not rendered — its department \"research\" is also ava-research's, the older agent"),
+            "{w}"
+        );
+        assert!(w.contains("one container (agent-research)"), "{w}");
+        assert!(w.contains("AVA keeps both"), "{w}");
+        assert!(w.contains("never merges"), "{w}");
+    }
+
+    #[test]
+    fn a_fleet_with_one_agent_per_department_renders_whole() {
+        let (kept, left_out) =
+            department_runners(vec![target("ava", "research", 1), target("bo", "ops", 1)]);
+        assert_eq!(kept.len(), 2);
+        assert!(left_out.is_empty());
+    }
 
     #[test]
     fn a_new_agent_port_continues_past_the_highest_and_never_starts_below_the_base() {
@@ -3509,14 +3750,16 @@ service:
         );
 
         // A Developer Agent gets approvals off and approve: the sandbox runs
-        // code all day, streamed turn or not.
+        // code all day, streamed turn or not. What it still asks can become a
+        // card a person reads, so Hermes holds it two minutes, and the card
+        // closes itself five seconds before that.
         let mut dev = Map::new();
         dev.insert("model".into(), json!("x"));
         fleet_approvals(&mut dev, true);
         assert_eq!(
             dev.get("approvals"),
             Some(&json!({
-                "mode": "off", "timeout": 60,
+                "mode": "off", "timeout": 120,
                 "unattended_mode": "approve", "cron_mode": "approve"
             }))
         );
@@ -3542,6 +3785,34 @@ service:
                 "deny": ["git push --force*"]
             }))
         );
+    }
+
+    #[test]
+    fn every_agent_s_write_root_and_home_are_its_data_volume_and_a_chassis_cannot_move_them() {
+        let mut env = Map::new();
+        pin_write_root(&mut env);
+        assert_eq!(env.get("HERMES_WRITE_SAFE_ROOT"), Some(&json!("/opt/data")));
+        // One root, no separator: Hermes splits on `os.pathsep`.
+        assert!(
+            !env["HERMES_WRITE_SAFE_ROOT"]
+                .as_str()
+                .unwrap()
+                .contains(':')
+        );
+        // The home the protected-instruction gate exempts is the root itself.
+        assert_eq!(env.get("HERMES_HOME"), env.get("HERMES_WRITE_SAFE_ROOT"));
+
+        // A chassis that carried its own (wider) root, or moved the home, is
+        // overwritten: the approval door reasons from these exact values.
+        let mut chassis = Map::new();
+        chassis.insert("HERMES_WRITE_SAFE_ROOT".into(), json!("/opt/data:/tmp:/"));
+        chassis.insert("HERMES_HOME".into(), json!("/srv/hermes"));
+        chassis.insert("TZ".into(), json!("UTC"));
+        pin_write_root(&mut chassis);
+        let root = json!(talaria_gateway::fleet_approvals::AGENT_WRITE_ROOT);
+        assert_eq!(chassis.get("HERMES_WRITE_SAFE_ROOT"), Some(&root));
+        assert_eq!(chassis.get("HERMES_HOME"), Some(&root));
+        assert_eq!(chassis.get("TZ"), Some(&json!("UTC")));
     }
 
     #[test]

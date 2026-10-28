@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-26 routes.
+27 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -51,6 +51,7 @@
 | [`/api/fleet/resources`](#apifleetresources) | GET | `admin` |
 | [`/api/fleet/roll`](#apifleetroll) | GET | `admin` |
 | [`/api/fleet/roll`](#apifleetroll) | POST | `admin` |
+| [`/api/fleet/seal-configs`](#apifleetseal-configs) | POST | `admin` |
 
 ## `/api/fleet`
 
@@ -139,16 +140,16 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons_jobid.
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_secrets.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_secrets.rs)
 
 > /api/fleet/agents/{id}/secrets. Per-agent secrets, write-only. GET →
-> names + timestamps (never values). PUT { name, value } → set/replace.
-> DELETE { name } → remove. Admin, or the owner of a personal assistant.
-> Takes effect on the next start from Talaria. Every write audits — secret
+> names + timestamps (never values), and for a CONFIG_* secret where the
+> current config names it (usedAt). PUT { name, value } → set/replace.
+> DELETE { name, removeSetting? } → remove; a CONFIG_* secret the current
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `agent-manager` | — | `{secrets}` | 200 | — |
 | PUT | `session` + `agent-manager` | [body](#put-apifleetagentsidsecrets-body) | `{ok}` | 200, 400 | — |
-| DELETE | `session` + `agent-manager` | [body](#delete-apifleetagentsidsecrets-body) | `{ok}` | 200, 400 | — |
+| DELETE | `session` + `agent-manager` | [body](#delete-apifleetagentsidsecrets-body) | `{ok}` | 200, 400, 409 | audit |
 
 ### PUT `/api/fleet/agents/{id}/secrets` body
 
@@ -159,9 +160,10 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_secrets.rs`]
 
 ### DELETE `/api/fleet/agents/{id}/secrets` body
 
-Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
-through the `crate::body` member vocabulary — the field set lives in the route
-source.
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string(1, 64)` |  |
+| `removeSetting` | `bool?` |  |
 
 ## `/api/fleet/containers`
 
@@ -394,7 +396,8 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_versions.rs`](
 > /api/fleet/defs/{id}/versions. GET → an agent definition's full version
 > history (admin). POST { revertTo } → re-publish an old version's payload
 > as a NEW version (history is append-only; a revert is itself a tracked
-> change).
+> change). A setting the old version read from a sealed credential
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -478,11 +481,12 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_federate.rs`](../../ap
 > POST /api/fleet/federate. Federate outside agents into Talaria: read a
 > Hermes-format directory and create each agent natively (Talaria def,
 > fresh key + state volume, our chassis, skills copied in). One-way and
-> re-runnable. Admin.
+> re-runnable. Admin. A roster that would put a second agent in a department
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `admin` | [body](#post-apifleetfederate-body) | `{result}` | 200, 400 | audit |
+| POST | `admin` | [body](#post-apifleetfederate-body) | `{result}` | 200, 400, 409 | audit |
 
 ### POST `/api/fleet/federate` body
 
@@ -562,4 +566,27 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_roll.rs`](../../api/cr
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `all` | `bool?` | Every managed enabled agent, the stopped ones brought up too. |
+
+## `/api/fleet/seal-configs`
+
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_seal_configs.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_seal_configs.rs)
+
+> POST /api/fleet/seal-configs. Seal the credential literals agent configs
+> stored before federation sealed them on the way in: each becomes one of
+> that agent's CONFIG_* secrets and every version row keeps a handle in its
+> place, rewritten in place. A running agent that gains secrets is rolled
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | [body](#post-apifleetseal-configs-body) | `{result}` | 200, 400 | audit |
+
+### POST `/api/fleet/seal-configs` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `dryRun` | `bool?` | Default true: report what sealing would do, write nothing. |
+| `dropUndeliverable` | `bool?` | Take a literal no secret can carry (multi-line, over 8 KB) out of the config instead of skipping its agent. |
+| `agentId` | `uuid?` | One agent; with agentIds, added to them. Neither: every agent. |
+| `agentIds` | `uuid[]?(1000)` | These agents: an apply sends the ones its dry run listed. |
 
