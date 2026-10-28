@@ -491,7 +491,7 @@
     {/key}
 
     {#if federateOpen}<FederateModal onClose={() => (federateOpen = false)} />{/if}
-    {#if creating}<CreateAgentModal open={creating} onClose={() => (creating = false)} templates={defs.filter((d) => d.enabled)} roster={defs} />{/if}
+    {#if creating}<CreateAgentModal open={creating} onClose={() => (creating = false)} templates={defs.filter((d) => d.enabled)} />{/if}
     {#if duplicateFrom}
       <CreateAgentModal open onClose={() => (duplicateFrom = null)} templates={defs} templateId={duplicateFrom.id} />
     {/if}

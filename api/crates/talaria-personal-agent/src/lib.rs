@@ -742,10 +742,10 @@ pub async fn update_personal_agent(
             // the render left this one out, and restarting it would restart
             // somebody else's agent for this owner's edit. The version
             // stands for when the two are untied.
-            let displaced = talaria_agent_defs::runner_instead_of(pg, &id, &department)
+            if let Some(runner) = talaria_agent_defs::runner_instead_of(pg, &id, &department)
                 .await
-                .map_err(|e| e.to_string())?;
-            if let Some(runner) = displaced {
+                .map_err(|e| e.to_string())?
+            {
                 tracing::warn!(
                     "[personal-agent] {}: saved, not applied — {}",
                     row.slug,
@@ -756,11 +756,16 @@ pub async fn update_personal_agent(
                         &runner.display_name,
                     )
                 );
-            } else if rehandled {
-                // A handle rename changes the service definition (key env,
-                // model name, config-mount path), so the container must be
-                // RECREATED (up -d), not restarted — restart keeps the old
-                // mounts and crashes on the moved dir.
+                return personal_agent_for(pg, user.id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "assistant vanished during update".to_string());
+            }
+            // A handle rename changes the service definition (key env, model
+            // name, config-mount path), so the container must be RECREATED
+            // (up -d), not restarted — restart keeps the old mounts and
+            // crashes on the moved dir.
+            if rehandled {
                 let _ = fleet_up(pg, &department).await;
             } else {
                 let _ = fleet_restart(pg, &department).await;

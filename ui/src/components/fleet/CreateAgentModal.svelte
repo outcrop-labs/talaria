@@ -19,7 +19,7 @@
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import Select from '@/components/ui/Select.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
-  import { hireFleetAgent, type AgentDef } from '@/lib/fleet-defs'
+  import { hireFleetAgent, useFleetDefs, type AgentDef } from '@/lib/fleet-defs'
   import { useRoleTemplates } from '@/lib/agent-role-templates'
   import { fade, listStagger, slide, staggerIn } from '@/lib/motion'
   import type { AgentDraft } from '@/lib/muse.svelte'
@@ -54,16 +54,11 @@
     open,
     onClose,
     templates,
-    roster,
     templateId: preselect,
   }: {
     open: boolean
     onClose: () => void
     templates: AgentDef[]
-    /** Every agent, retired ones included — who holds which department. A
-     *  retired agent keeps its volume, so it keeps its department too.
-     *  Defaults to `templates`. */
-    roster?: AgentDef[]
     /** Preselect a template (e.g. "Duplicate" from a specific agent) — skips the describe step. */
     templateId?: string
   } = $props()
@@ -102,10 +97,13 @@
   const department = $derived(design?.department ?? '')
   // A department is ONE agent's: it names the container and the memory
   // volume, so the hire door refuses one another agent holds (409). Said the
-  // moment it is typed, from the whole roster — a hirer reads the whole
-  // fleet, and a retired agent still holds its department. A role template or
-  // a Muse design can propose a department somebody already has.
-  const departmentHolder = $derived((roster ?? templates).find((t) => t.department === department.trim()) ?? null)
+  // moment it is typed, from the whole roster — the page's own cached read,
+  // retired agents included, because a retired agent keeps its volume and so
+  // its department (`templates` may be the enabled ones only). A hirer reads
+  // the whole fleet. A role template or a Muse design can propose a
+  // department somebody already has.
+  const rosterQuery = useFleetDefs(true)
+  const departmentHolder = $derived((rosterQuery.data?.defs ?? templates).find((t) => t.department === department.trim()) ?? null)
   const role = $derived(design?.role ?? '')
   const soul = $derived(design?.soul ?? '')
   const soulRev = $derived(design?.soulRev ?? 0)

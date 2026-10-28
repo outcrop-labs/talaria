@@ -356,15 +356,15 @@ pub async fn post(
         )
         .await;
     }
-    let mut applied = false;
     if created && apply && managed {
-        // ONE CONTAINER PER DEPARTMENT. The roll below is by department, and
-        // where an older agent holds this one's too (a pair from before a
-        // department became one agent's) that container is the other
-        // agent's: the render leaves this one out, so nothing of this version
-        // runs anywhere, and rolling would restart the other agent for an
-        // edit that is not its own. The version stands; the answer says it
-        // was not applied, and why — in `notes` too, which the editor shows.
+        // ONE CONTAINER PER DEPARTMENT. The apply below reaches the container
+        // by department, and where an older agent holds this one's too (a
+        // pair from before a department became one agent's) that container
+        // is the other agent's: the render leaves this one out, so nothing of
+        // this version runs anywhere, and applying would restart the other
+        // agent for an edit that is not its own. The version stands; the
+        // answer says it was not applied, and why — in `notes` too, which the
+        // editor shows.
         match talaria_agent_defs::runner_instead_of(&state.pg, &def_id, &department).await {
             Ok(Some(runner)) => {
                 let warning = talaria_agent_defs::shared_department_refusal(
@@ -394,6 +394,9 @@ pub async fn post(
                 ));
             }
         }
+    }
+    let mut applied = false;
+    if created && apply && managed {
         // Roll, don't restart: the new config comes up beside the old
         // container and traffic cuts over only after health — applying an
         // edit never interrupts conversations in flight.
