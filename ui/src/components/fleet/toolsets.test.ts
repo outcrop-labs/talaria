@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   MANDATORY_DISABLED,
+  authoredBrowserBackend,
   browserNote,
   builtinFloor,
   normalizeToolsets,
@@ -187,5 +188,45 @@ describe('browserNote: which browser the terminal gives this agent', () => {
     expect(browserNote(toolsetRows(WITH_TERMINAL, FLOOR, ['browser']))).toBeNull()
     expect(browserNote(toolsetRows(WITH_TERMINAL, [...FLOOR, 'browser'], [], ['browser']))).toBeNull()
     expect(browserNote(toolsetRows(['memory', 'web'], FLOOR, []))).toBeNull()
+  })
+
+  it('names what a backend the def authored gives, whatever the terminal', () => {
+    const closed = toolsetRows(WITH_TERMINAL, FLOOR, ['terminal'])
+    const open = toolsetRows(WITH_TERMINAL, FLOOR, [])
+    // Any choice but browser-use is the built-in tools, terminal or not.
+    for (const rows of [closed, open]) {
+      const note = browserNote(rows, 'off')
+      expect(note).toContain('the built-in browser tools (browser_navigate and the rest)')
+      expect(note).toContain('as this agent’s config sets browser.backend: off')
+      expect(note).toContain('installed from npm')
+    }
+    // browser-use is browser_exec, which needs the terminal: with it closed
+    // the agent has no browser, and the line says so.
+    expect(browserNote(open, 'browser-use')).toContain('Browser: Hermes’ browser_exec, which comes with the terminal')
+    const none = browserNote(closed, 'browser-use')
+    expect(none).toMatch(/^Browser: none\./)
+    expect(none).not.toContain('browser_navigate')
+    // Still nothing to say when the browser row is off.
+    expect(browserNote(toolsetRows(WITH_TERMINAL, FLOOR, ['browser']), 'off')).toBeNull()
+  })
+})
+
+describe('authoredBrowserBackend: the def’s own choice, as Hermes reads it', () => {
+  const cfg = (backend: unknown) => ({ raw: { browser: { backend } } })
+
+  it('reads a choice', () => {
+    expect(authoredBrowserBackend(cfg('off'))).toBe('off')
+    expect(authoredBrowserBackend(cfg(false))).toBe('off')
+    expect(authoredBrowserBackend(cfg(' Browser-Use '))).toBe('browser-use')
+    expect(authoredBrowserBackend(cfg('camofox'))).toBe('camofox')
+  })
+
+  it('reads what Hermes treats as unset, and every missing level, as no choice', () => {
+    for (const unset of [null, undefined, '', '   ', true, 0, [], {}]) {
+      expect(authoredBrowserBackend(cfg(unset))).toBeNull()
+    }
+    for (const config of [null, undefined, {}, { raw: null }, { raw: {} }, { raw: { browser: false } }, { raw: { browser: 'x' } }]) {
+      expect(authoredBrowserBackend(config)).toBeNull()
+    }
   })
 })

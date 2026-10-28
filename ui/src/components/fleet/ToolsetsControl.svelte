@@ -5,7 +5,15 @@
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import { patchAgentMeta, useFleetDefs, type AgentDef } from '@/lib/fleet-defs'
   import { toastError } from '@/lib/toast.svelte'
-  import { browserNote, builtinFloor, normalizeToolsets, sameToolsets, toggleToolset, toolsetRows } from './toolsets'
+  import {
+    authoredBrowserBackend,
+    browserNote,
+    builtinFloor,
+    normalizeToolsets,
+    sameToolsets,
+    toggleToolset,
+    toolsetRows,
+  } from './toolsets'
 
   /** THE HERMES TOOLSETS THIS AGENT DOES NOT GET. The stored list is the
    *  absence (`disabledToolsets`); a checked box is the toolset being ON, and
@@ -43,8 +51,8 @@
   )
   const orgClosed = $derived(rows.filter((r) => r.orgClosed).map((r) => r.name))
   // Follows the pending edit, so ticking `terminal` shows the browser it
-  // brings before Apply.
-  const browser = $derived(browserNote(rows))
+  // brings before Apply; a backend the def's own config chose wins.
+  const browser = $derived(browserNote(rows, authoredBrowserBackend(def.latest?.config)))
   // Only Talaria's own pair is stripped from what gets stored. An org-closed
   // name stays in the def's list if its managers put it there, so lifting the
   // floor later gives this agent back exactly what they chose.

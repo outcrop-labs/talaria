@@ -130,6 +130,26 @@ export function sameToolsets(a: readonly string[], b: readonly string[]): boolea
 }
 
 /**
+ * The `browser.backend` a def authored in its raw Hermes config
+ * (`latest.config.raw.browser.backend`), when it is a choice Hermes reads as
+ * one: `false` (YAML 1.1's bare `off`), a non-blank string, or a non-zero
+ * number. Anything else Hermes reads as unset and the renderer fills, so it is
+ * null here too (talaria-fleet-render's `hermes_browser_backend_unset`). A
+ * `browser:` block that is not a map is left as written there, and reads as
+ * null here.
+ */
+export function authoredBrowserBackend(config: unknown): string | null {
+  const raw = (config as { raw?: unknown } | null | undefined)?.raw
+  const browser = (raw as { browser?: unknown } | null | undefined)?.browser
+  if (!browser || typeof browser !== 'object' || Array.isArray(browser)) return null
+  const backend = (browser as { backend?: unknown }).backend
+  if (backend === false) return 'off'
+  if (typeof backend === 'string' && backend.trim()) return backend.trim().toLowerCase()
+  if (typeof backend === 'number' && backend !== 0) return String(backend)
+  return null
+}
+
+/**
  * What the `browser` row gives this agent, or null when there is nothing to
  * say (the row is off, or there is no browser row at all).
  *
@@ -137,17 +157,31 @@ export function sameToolsets(a: readonly string[], b: readonly string[]): boolea
  * its default `browser_exec` is offered only alongside the terminal, and the
  * renderer (talaria-fleet-render's `fleet_browser_backend`) picks the
  * built-in tools for an agent whose terminal is closed. Without this line,
- * opening or closing `terminal` silently swaps the browser too. Both drive
- * the image's own Chromium through an engine (agent-browser) that a start
- * installs from npm onto the agent's volume, once per Hermes pin, which is
- * why the line says the start needs the registry.
+ * opening or closing `terminal` silently swaps the browser too. A backend the
+ * def authored (`authored`, from [`authoredBrowserBackend`]) is the def's
+ * call and the renderer keeps it, so the line names what that one gives:
+ * `browser-use` is `browser_exec` (nothing at all with the terminal closed),
+ * and any other choice is the built-in tools. Both drive the image's own
+ * Chromium through an engine (agent-browser) that a start installs from npm
+ * onto the agent's volume, once per Hermes pin, which is why the line says
+ * the start needs the registry.
  */
-export function browserNote(rows: readonly ToolsetRow[]): string | null {
+export function browserNote(rows: readonly ToolsetRow[], authored: string | null = null): string | null {
   const browser = rows.find((r) => r.name === 'browser')
   if (!browser?.on) return null
-  const terminal = rows.find((r) => r.name === 'terminal')
-  const kind = terminal?.on
+  const terminal = rows.find((r) => r.name === 'terminal')?.on ?? false
+  const engine =
+    ' Its engine is installed from npm onto the agent’s volume before the agent starts; with no route to the registry, the agent starts without browser tools.'
+  if (authored === 'browser-use') {
+    return terminal
+      ? `Browser: Hermes’ browser_exec, which comes with the terminal (this agent’s config sets browser.backend: browser-use).${engine}`
+      : 'Browser: none. This agent’s config sets browser.backend: browser-use, whose browser_exec comes only with the terminal, and the terminal is closed.'
+  }
+  if (authored) {
+    return `Browser: the built-in browser tools (browser_navigate and the rest), as this agent’s config sets browser.backend: ${authored}.${engine}`
+  }
+  const kind = terminal
     ? 'Browser: Hermes’ browser_exec, which comes with the terminal.'
     : 'Browser: the built-in browser tools (browser_navigate and the rest); browser_exec comes only with the terminal.'
-  return `${kind} Its engine is installed from npm onto the agent’s volume before the agent starts; with no route to the registry, the agent starts without browser tools.`
+  return `${kind}${engine}`
 }

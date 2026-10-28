@@ -218,11 +218,21 @@ multiplexer.
   `browser_engine.rs`; the render lists those departments in `fleet/browser-engine.json`). It
   never execs into a running agent, runs before a roll's drain, and installs no browser. An
   installed CLI answers at once; a failed install is logged and the agent starts without
-  browser tools. Which tools: Hermes's default `browser_exec` is offered only alongside the
+  browser tools. A start waits at most 90 s for it (a host whose egress drops packets would
+  otherwise hold it for minutes in pm's own retries); a one-shot past that is removed, and the
+  timeout makes every start skip the install for the next 5 minutes. Which tools: Hermes's default `browser_exec` is offered only alongside the
   `terminal` toolset, and its Browser Use mode withholds the built-in tools, so the render
   writes `browser.backend: 'off'` (the built-in `browser_navigate`, `browser_click`, …) for an
   agent whose terminal is closed and leaves Hermes's default for one whose terminal is open
-  (`fleet_browser_backend`); a def that authored its own backend keeps it. A Developer Agent's
+  (`fleet_browser_backend`); a def that authored its own backend keeps it. That built-in
+  browser is Hermes's local backend, which v0.22.4 lets open private and internal addresses
+  (it judges the browser's reach by the terminal backend, not by whether the session has a
+  terminal), so a terminal-less agent's browser opens what its own `web_extract` refuses. The
+  render also writes that agent a `security.website_blocklist` of the host names that can only
+  be private (`internal`, which covers `host.docker.internal`, `localhost`, `local`,
+  `home.arpa`, the loopback literals): a speed bump, not a boundary, because it matches names
+  only and only on the URL a tool is asked to open (docs/AGENT-NETWORKING.md, "What an agent's
+  browser can reach"). A Developer Agent's
   `PLAYWRIGHT_BROWSERS_PATH` (where a repo's own e2e suite installs its browsers, on the
   department volume) changes neither: Hermes hands `agent-browser` the image's Chromium by
   path itself.

@@ -137,7 +137,15 @@ the rest. With it open, it gets Hermes' `browser_exec` instead, which runs Pytho
 browser and so comes only with a shell. The line under the grid says which one this agent has.
 The browser's engine is installed from npm onto the agent's volume before the agent starts
 (once per Hermes version), so an agent whose host cannot reach the npm registry starts without
-browser tools, and the app's log says why.
+browser tools, and the app's log says why. A start waits at most 90 seconds for the install.
+If it runs out of time, starts skip the install for the next 5 minutes.
+
+The built-in browser can open addresses on your own network: the machine Talaria runs on,
+other agents' containers, and your LAN. The agent's `web_extract` refuses those addresses,
+but Hermes does not hold its own browser to that rule. Talaria blocks the browser from the
+names that can only be private, such as `host.docker.internal`, `localhost` and `*.local`,
+but an IP address still gets through. Turn `browser` off for an agent that must not reach
+your network.
 
 ## Retire an agent
 
