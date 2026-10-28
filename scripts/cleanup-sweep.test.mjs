@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import {
   POLICY,
   ageDays,
+  boxProjectOwners,
   classify,
   formatReport,
   orphanNetworks,
@@ -241,8 +242,14 @@ const net = (name, project, over = {}) => ({
   createdMs: old,
   ...over,
 })
-const scanNets = (networks, containers = [], live = []) =>
-  orphanNetworks({ networks, containers, liveWorktree: (o) => live.includes(o), now: NOW }).map((r) => r.id)
+const scanNets = (networks, containers = [], live = [], boxes) =>
+  orphanNetworks({
+    networks,
+    containers,
+    liveWorktree: (o) => live.includes(o),
+    ...(boxes ? { liveBox: (n) => boxes.includes(n) } : {}),
+    now: NOW,
+  }).map((r) => r.id)
 
 check('a talaria-* project network with nothing on it and nobody owning it is an orphan', () => {
   eq(scanNets([net('talaria-wt-gone_default', 'talaria-wt-gone')]).join(), 'talaria-wt-gone_default')
@@ -262,8 +269,55 @@ check('the shared talaria network is never an orphan, whatever its labels say', 
   eq(scanNets([net('talaria', 'talaria-dev'), net('talaria', null)]).length, 0)
 })
 
-check('a network outside a talaria-* project is not ours', () => {
-  eq(scanNets([net('devbox-mobile_default', 'devbox-mobile'), net('supabase_network_x', 'x'), net('mine', null)]).length, 0)
+check('a network outside a talaria-* or devbox-* project is not ours', () => {
+  eq(scanNets([net('supabase_network_x', 'x'), net('mine', null), net('mine', 'my-project')], [], [], []).length, 0)
+})
+
+// ── devbox networks (follow-up R20) ─────────────────────────────────────────
+// A box holds two networks — its project's `_default` and its private
+// `devbox-<name>-fleet` — and a box whose containers were removed without
+// `talaria box rm` (or an interrupted `box new`) left both holding subnets.
+
+check('a box project network with nothing on it and no box checkout is an orphan — both of its networks', () => {
+  const fleet = net('devbox-gone-fleet', 'devbox-gone', { labels: { 'com.docker.compose.project': 'devbox-gone', 'com.docker.compose.network': 'fleet' } })
+  eq(scanNets([net('devbox-gone_default', 'devbox-gone'), fleet], [], [], []).join(), 'devbox-gone_default,devbox-gone-fleet')
+  const [row] = orphanNetworks({ networks: [fleet], containers: [], liveWorktree: () => false, liveBox: () => false, now: NOW })
+  eq(row.kind, 'orphan-network')
+  eq(classify(row), 'remove')
+})
+
+check("a live box's networks stay — its own project, and the fleet project it renders", () => {
+  eq(scanNets([net('devbox-mobile_default', 'devbox-mobile')], [], [], ['mobile']).length, 0)
+  eq(scanNets([net('devbox-mobile-fleet_default', 'devbox-mobile-fleet')], [], [], ['mobile']).length, 0)
+  // ...and a box that is itself named `<x>-fleet` keeps its project network.
+  eq(scanNets([net('devbox-ops-fleet_default', 'devbox-ops-fleet')], [], [], ['ops-fleet']).length, 0)
+})
+
+check('a box network is kept when the caller cannot say whether its box lives', () => {
+  eq(scanNets([net('devbox-gone_default', 'devbox-gone')]).length, 0)
+})
+
+check('a box network something names, or whose project has a container, stays', () => {
+  const n = net('devbox-gone_default', 'devbox-gone')
+  eq(scanNets([n], [{ project: 'elsewhere', networks: ['devbox-gone_default'] }], [], []).length, 0)
+  eq(scanNets([n], [{ project: 'devbox-gone', networks: ['bridge'] }], [], []).length, 0)
+})
+
+check('a box network younger than the min age is mid-`up`', () => {
+  eq(scanNets([net('devbox-new_default', 'devbox-new', { createdMs: NOW - 1000 })], [], [], []).length, 0)
+})
+
+check("a box project's network named outside devbox-* is not the sweep's; nor is the tools layer", () => {
+  eq(scanNets([net('talaria-dev_default', 'devbox-gone'), net('custom', 'devbox-gone')], [], [], []).length, 0)
+  eq(scanNets([net('devbox-shared_default', 'devbox-shared')], [], [], []).length, 0)
+})
+
+check('box projects parse to the boxes that could own them', () => {
+  eq(JSON.stringify(boxProjectOwners('devbox-mobile')), '["mobile"]')
+  eq(JSON.stringify(boxProjectOwners('devbox-mobile-fleet')), '["mobile-fleet","mobile"]')
+  eq(JSON.stringify(boxProjectOwners('devbox-shared')), '[]')
+  eq(boxProjectOwners('talaria-wt-x'), null)
+  eq(boxProjectOwners('devbox-'), null)
 })
 
 check('a network a container names — even a stopped one — stays', () => {
@@ -299,11 +353,15 @@ check('orphan networks go on --apply only, never from the stop gate', () => {
   eq(selectRemoval(rows, 'report').length, 0)
 })
 
-check('the executor removes a network only by a talaria- name and a docker id', () => {
+check('the executor removes a network only by a talaria- or devbox- name and a docker id', () => {
   const r = (over) => removalAllowed({ kind: 'orphan-network', id: 'talaria-wt-gone_default', networkId: 'a1b2c3d4e5f6', path: '', ...over }, roots)
   eq(r({}), true)
   eq(r({ id: 'talaria' }), false)
-  eq(r({ id: 'devbox-x_default' }), false)
+  eq(r({ id: 'devbox-x_default' }), true)
+  eq(r({ id: 'devbox-x-fleet' }), true)
+  eq(r({ id: 'devbox' }), false)
+  eq(r({ id: 'devbox-' }), false)
+  eq(r({ id: 'supabase_network_x' }), false)
   eq(r({ id: 'bridge' }), false)
   eq(r({ networkId: 'talaria; rm -rf /' }), false)
   eq(r({ networkId: undefined }), false)

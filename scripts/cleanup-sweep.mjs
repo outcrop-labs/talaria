@@ -17,12 +17,13 @@
 //   - a devbox the same way (../devboxes/<name>, not the shared tools layer)
 //   - /tmp/talaria-* (or $TMPDIR) older than POLICY.tmpStaleMs
 //   - a compose project named talaria-wt-* or devbox-* whose directory is gone
-//   - (--apply only) a network a `talaria-*` compose project left behind:
-//     nothing attached, running or stopped; no container left in its project;
-//     no live worktree owning it; and older than POLICY.orphanNetworkMinAgeMs.
-//     Each one holds a subnet from the daemon's ~30 address pools, and with
-//     parallel stacks they ran out (follow-up A8). Also a pool probe network
-//     the CLI failed to remove (label talaria.pool-probe)
+//   - (--apply only) a network a `talaria-*` or `devbox-*` compose project
+//     left behind: nothing attached, running or stopped; no container left in
+//     its project; no live worktree or box owning it; and older than
+//     POLICY.orphanNetworkMinAgeMs. Each one holds a subnet from the daemon's
+//     ~30 address pools, and with parallel stacks they ran out (follow-ups A8,
+//     R20). Also a pool probe network the CLI failed to remove (label
+//     talaria.pool-probe)
 //
 // WHAT IT WILL NOT:
 //   - the primary checkout, the checkout this process is running in
@@ -36,7 +37,8 @@
 //   - a docker image, volume or exited container outside a swept project.
 //     The reclaimable total is reported; pruning it is a human's call
 //   - the shared external `talaria` network, or any network compose did not
-//     make for a `talaria-*` project (devbox-*, supabase_*, a person's own)
+//     make for a `talaria-*` or `devbox-*` project (supabase_*, a person's
+//     own), or a box project's network named outside `devbox-*`
 //
 // "MERGED" MEANS THE PULL REQUEST MERGED, and nothing else. Ancestry is not
 // the test: a worktree cut an hour ago from main also has a HEAD that is an
@@ -139,6 +141,20 @@ export function worktreeProjectOwner(projectName) {
   return wt[1].endsWith('-fleet') ? wt[1].slice(0, -'-fleet'.length) : wt[1]
 }
 
+/** The boxes a `devbox-*` compose project may belong to, or null for a
+ *  project that is not a box's. `talaria box new <name>` runs `devbox-<name>`,
+ *  and the agents that box renders live in `devbox-<name>-fleet` — but a box
+ *  may itself be named `<x>-fleet`, so both readings are candidates, and the
+ *  project is a live box's while EITHER checkout exists. `shared` is the
+ *  tools layer, never a box; an empty list means nothing can vouch for it. */
+export function boxProjectOwners(projectName) {
+  const box = /^devbox-([a-z0-9][a-z0-9-]*)$/.exec(projectName)
+  if (!box) return null
+  const raw = box[1]
+  const stripped = raw.endsWith('-fleet') ? raw.slice(0, -'-fleet'.length) : null
+  return [raw, stripped].filter((n) => n && n !== 'shared')
+}
+
 /** `k=v,k=v` — how `docker network ls --format '{{json .}}'` spells Labels. */
 export function parseLabels(text) {
   const out = {}
@@ -168,21 +184,32 @@ export function parseDockerTime(text) {
  *               or stopped: a stopped one still names its network, and
  *               removing that network would leave it unable to start
  *   liveWorktree(owner) — does that worktree's checkout exist
+ *   liveBox(name)       — does that box's checkout (its box.env) exist.
+ *               Defaults to yes, so a caller that cannot say never
+ *               removes a box's network
  *
  * A network is an orphan only when nothing at all is attached, its project
  * has no container left (so no stack, running or stopped, owns it), no live
- * worktree owns the project, and it is older than the min age. The shared
- * `talaria` network is never one, whatever its labels say; neither is any
- * network outside a `talaria-*` project.
+ * worktree or box owns the project, and it is older than the min age. The
+ * shared `talaria` network is never one, whatever its labels say; neither is
+ * any network outside a `talaria-*` or `devbox-*` project, nor a box
+ * project's network whose own name is outside `devbox-*`.
  */
-export function orphanNetworks({ networks, containers, liveWorktree, now = Date.now(), policy = POLICY }) {
+export function orphanNetworks({ networks, containers, liveWorktree, liveBox = () => true, now = Date.now(), policy = POLICY }) {
   const rows = []
   for (const net of networks) {
     if (!net?.name || net.name === 'talaria') continue
     const probe = net.labels?.['talaria.pool-probe'] === '1'
     const project = net.labels?.['com.docker.compose.project'] ?? ''
-    if (!probe && !project.startsWith('talaria-')) continue
-    if (!probe) {
+    const boxes = probe ? null : boxProjectOwners(project)
+    if (!probe && !project.startsWith('talaria-') && !boxes) continue
+    if (boxes) {
+      // A box's network goes only by the box's own prefix, and only once no
+      // box it could belong to has a checkout left (`talaria box rm` takes
+      // the directory; a stopped box keeps it, and its containers too).
+      if (!net.name.startsWith('devbox-')) continue
+      if (boxes.length === 0 || boxes.some((n) => liveBox(n))) continue
+    } else if (!probe) {
       const owner = worktreeProjectOwner(project)
       if (owner && liveWorktree(owner)) continue
     }
@@ -272,11 +299,11 @@ export function removalAllowed(artifact, roots) {
   if (artifact.kind === 'orphan-compose') {
     return /^(talaria-wt-|devbox-)[a-z0-9][a-z0-9-]*$/.test(artifact.id) && !artifact.path
   }
-  // A network: a `talaria-` name that is not the shared `talaria` network,
-  // and a docker id to remove it by — never a path.
+  // A network: a `talaria-` or `devbox-` name (so never the shared
+  // `talaria` network), and a docker id to remove it by — never a path.
   if (artifact.kind === 'orphan-network') {
     return (
-      /^talaria-[a-z0-9][a-z0-9_.-]*$/.test(artifact.id) &&
+      /^(talaria|devbox)-[a-z0-9][a-z0-9_.-]*$/.test(artifact.id) &&
       /^[0-9a-f]{12,64}$/.test(artifact.networkId ?? '') &&
       !artifact.path
     )
@@ -748,14 +775,10 @@ export function inventory(root, now = Date.now(), { scanNetworks = true } = {}) 
         }
         continue
       }
-      const box = /^devbox-([a-z0-9][a-z0-9-]*)$/.exec(name)
-      if (!box) continue
       // A project ending in -fleet is that box's fleet network, or a box whose
       // own name ends in -fleet. Orphan only when neither checkout exists.
-      const raw = box[1]
-      const stripped = raw.endsWith('-fleet') ? raw.slice(0, -'-fleet'.length) : null
-      const candidates = [raw, stripped].filter((n) => n && n !== 'shared')
-      if (candidates.length === 0) continue
+      const candidates = boxProjectOwners(name)
+      if (!candidates || candidates.length === 0) continue
       if (candidates.every((n) => !existsSync(join(home, n, 'box.env')))) artifacts.push(orphan(name))
     }
   }
@@ -771,6 +794,7 @@ export function inventory(root, now = Date.now(), { scanNetworks = true } = {}) 
         ...orphanNetworks({
           ...scan,
           liveWorktree: (owner) => seenWorktree.has(owner) || existsSync(join(sibling, `talaria-${owner}`)),
+          liveBox: (name) => existsSync(join(home, name, 'box.env')),
           now,
         }),
       )

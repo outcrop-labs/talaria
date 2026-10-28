@@ -71,13 +71,15 @@ bun talaria cleanup --apply    # remove the safe set, then report what remains
 
 `--apply` removes stale clean worktrees, stopped clean boxes, old `/tmp/talaria-*`,
 compose projects whose directory is already gone, and **orphan networks**: a
-`talaria-*` compose project's network with nothing attached (running or stopped), no
-container left in its project, no live worktree owning it, and at least ten minutes old.
+`talaria-*` or `devbox-*` compose project's network with nothing attached (running or
+stopped), no container left in its project, no live worktree or box owning it (a box
+lives while its `../devboxes/<name>/box.env` does), and at least ten minutes old.
 Each such network holds a subnet from docker's ~30 predefined address pools, and when
 they run out every `compose up` fails with `all predefined address pools have been fully
 subnetted` — the CLI names that error and points here. It will not remove the primary,
 the checkout you are in, a running stack, a dirty or unpushed tree, a `.talaria-keep`,
-the shared external `talaria` network, or any network outside a `talaria-*` project.
+the shared external `talaria` network, or any network outside a `talaria-*` or
+`devbox-*` project.
 
 `talaria dev` prints one line when disk use crosses the threshold. It does not refuse
 to start — you may need the stack to finish the task that will free the space.
