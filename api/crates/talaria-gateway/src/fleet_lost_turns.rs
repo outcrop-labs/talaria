@@ -147,7 +147,12 @@ async fn withdraw(entry: &ManifestEntry, run: &str) -> Result<(), String> {
     .await;
     let res = match sent {
         Ok(Ok(res)) => res,
-        Ok(Err(e)) => return Err(format!("withdrawing the refused turn failed: {e}")),
+        Ok(Err(e)) => {
+            return Err(format!(
+                "withdrawing the refused turn failed: {}",
+                crate::fleet_chat::transport_error(e)
+            ));
+        }
         Err(_) => return Err("the agent did not answer the withdrawal of the refused turn".into()),
     };
     if !res.status().is_success() {
