@@ -1980,6 +1980,355 @@ mod tests {
         assert!(one.remember.is_none());
     }
 
+    // ── The fresh-thread move itself (`FreshThread::send`) ───────────────────
+    //
+    // Against a stand-in for the agent's own gateway on loopback: it answers
+    // a completions POST the way Hermes does, a short stream with the derived
+    // session in `X-Hermes-Session-Id`, one session per thread row, and it
+    // keeps every body it was sent.
+
+    /// The derived session the stand-in names for a body: `api-` and the
+    /// body's thread, the way a different opening is a different session.
+    fn session_for(body: &Value) -> String {
+        format!("api-fresh{}", thread_in(body).unwrap_or_default())
+    }
+
+    /// The thread a body's `SESSION THREAD` row names, if it has one.
+    fn thread_in(body: &Value) -> Option<String> {
+        body["messages"].as_array()?.iter().find_map(|m| {
+            let text = m["content"].as_str()?;
+            let rest = text.strip_prefix("SESSION THREAD: ")?;
+            Some(rest.split('.').next()?.to_string())
+        })
+    }
+
+    type Seen = std::sync::Arc<std::sync::Mutex<Vec<Value>>>;
+
+    /// Bind the stand-in; `status` is what every POST answers.
+    async fn agent_gateway(status: u16) -> (ManifestEntry, Seen) {
+        let seen: Seen = Default::default();
+        let kept = seen.clone();
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+                let kept = kept.clone();
+                async move {
+                    let session = session_for(&body);
+                    kept.lock().unwrap().push(body);
+                    (
+                        axum::http::StatusCode::from_u16(status).unwrap(),
+                        [
+                            ("content-type", "text/event-stream".to_string()),
+                            ("x-hermes-session-id", session),
+                        ],
+                        "data: {\"choices\": [{\"index\": 0, \"delta\": {\"content\": \"on the \
+                         fresh thread\"}, \"finish_reason\": null}]}\n\ndata: [DONE]\n\n",
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let entry = ManifestEntry {
+            model: "ada-ops".into(),
+            url,
+            key: Some("agent-door-key".into()),
+        };
+        (entry, seen)
+    }
+
+    /// A refused turn as the repair holds it: the sealed payload, before any
+    /// thread row.
+    fn refused_turn() -> Value {
+        json!({
+            "model": "ada-ops",
+            "messages": [
+                { "role": "system", "content": "mode" },
+                { "role": "system", "content": "THIS CONVERSATION'S ID: c1." },
+                { "role": "user", "content": "alpha one" },
+                { "role": "assistant", "content": "SEEN 1" },
+                { "role": "user", "content": "alpha two" },
+            ],
+        })
+    }
+
+    fn fresh(
+        entry: &ManifestEntry,
+        next_epoch: i32,
+        remember: Option<RememberThread>,
+    ) -> FreshThread {
+        FreshThread {
+            entry: ManifestEntry {
+                model: entry.model.clone(),
+                url: entry.url.clone(),
+                key: entry.key.clone(),
+            },
+            payload: refused_turn(),
+            next_epoch,
+            remember,
+            attribution: None,
+            abandoned: Some("api-0123456789abcdef".into()),
+        }
+    }
+
+    /// What a `RememberThread` was called with, in order.
+    type Kept = std::sync::Arc<std::sync::Mutex<Vec<i32>>>;
+
+    fn remembering() -> (RememberThread, Kept) {
+        let kept: Kept = Default::default();
+        let k = kept.clone();
+        (
+            Box::new(move |n| {
+                k.lock().unwrap().push(n);
+                Box::pin(async {})
+            }),
+            kept,
+        )
+    }
+
+    async fn read_all(body: ByteStream) -> String {
+        let parts: Vec<Bytes> = body.map(|c| c.expect("a chunk")).collect().await;
+        String::from_utf8(parts.concat()).unwrap()
+    }
+
+    /// A conversation's repair opens the turn on the conversation's next
+    /// thread, not a random one, and keeps it, once, after the fresh stream
+    /// opened: the conversation's next turn opens there too. The body is the
+    /// refused turn plus that thread's row and nothing else, sent once, with
+    /// the agent's own bearer.
+    #[tokio::test]
+    async fn a_conversations_fresh_thread_is_its_next_one_and_is_kept() {
+        let (entry, seen) = agent_gateway(200).await;
+        let (remember, kept) = remembering();
+        let body = fresh(&entry, 3, Some(remember))
+            .send()
+            .await
+            .expect("the fresh thread answers");
+        assert_eq!(*kept.lock().unwrap(), [3]);
+        let text = read_all(body).await;
+        assert!(text.contains("on the fresh thread"), "{text}");
+        assert!(text.ends_with("data: [DONE]\n\n"), "{text}");
+
+        let sent = seen.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "sent once");
+        assert_eq!(thread_in(&sent[0]).as_deref(), Some("3"));
+        assert_eq!(sent[0], completions_request(&refused_turn(), Some("3")));
+        assert_eq!(sent[0]["stream"], true);
+    }
+
+    /// A one-shot has nothing to keep a thread on: its repair takes a random
+    /// eight-hex thread, a different one each time, so two one-shots wedged
+    /// on one opening do not land on one fresh session. Nothing is kept.
+    #[tokio::test]
+    async fn a_one_shot_takes_a_random_thread_and_keeps_none() {
+        let (entry, seen) = agent_gateway(200).await;
+        for _ in 0..2 {
+            let body = fresh(&entry, 1, None).send().await.expect("answers");
+            assert!(read_all(body).await.contains("on the fresh thread"));
+        }
+        let sent = seen.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2);
+        let threads: Vec<String> = sent.iter().map(|b| thread_in(b).unwrap()).collect();
+        for t in &threads {
+            assert_eq!(t.len(), 8, "{t}");
+            assert!(
+                t.bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                "{t}"
+            );
+            // Not the epoch a conversation would have taken.
+            assert_ne!(t, "1");
+        }
+        assert_ne!(threads[0], threads[1], "a fresh random thread each time");
+        // Apart from its row, the body is the refused turn.
+        for (body, thread) in sent.iter().zip(&threads) {
+            assert_eq!(*body, completions_request(&refused_turn(), Some(thread)));
+        }
+    }
+
+    /// A move the agent refuses, or one it is not there to take, says why
+    /// and keeps nothing: the conversation stays on the thread it had, and
+    /// its next turn is refused once more and moves again.
+    #[tokio::test]
+    async fn a_failed_move_keeps_no_thread() {
+        let (entry, seen) = agent_gateway(503).await;
+        let (remember, kept) = remembering();
+        let why = match fresh(&entry, 2, Some(remember)).send().await {
+            Err(why) => why,
+            Ok(_) => panic!("a 503 is no stream to carry on with"),
+        };
+        assert_eq!(
+            why,
+            "the agent answered the turn sent on a fresh session with HTTP 503"
+        );
+        assert!(kept.lock().unwrap().is_empty());
+        assert_eq!(seen.lock().unwrap().len(), 1);
+
+        // Nothing listening: the turn never left.
+        let gone = ManifestEntry {
+            model: "ada-ops".into(),
+            url: "http://127.0.0.1:9".into(),
+            key: None,
+        };
+        let (remember, kept) = remembering();
+        let why = match fresh(&gone, 2, Some(remember)).send().await {
+            Err(why) => why,
+            Ok(_) => panic!("nothing answered"),
+        };
+        assert_eq!(
+            why,
+            "the agent went away before the turn could be sent on a fresh session"
+        );
+        assert!(kept.lock().unwrap().is_empty());
+    }
+
+    /// The fresh session's key is recorded for the turn's flow the moment
+    /// its headers name it, and what the relay booked under that key before
+    /// the record (the agent's first call racing it) is claimed: once when
+    /// the stream opens, and once more when its reader lets go. The live
+    /// half of `usage.rs`'s ledger proof, run the same way:
+    ///
+    ///   DATABASE_URL=postgres://… cargo test -p talaria-gateway --lib -- \
+    ///     --ignored fleet_chat::tests::a_fresh_thread_records
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn a_fresh_thread_records_and_backfills_its_new_key() {
+        use crate::usage::{StatedFlow, TokenCounts, UNATTENDED_SOURCE, record_relay_usage};
+        let url = std::env::var("DATABASE_URL")
+            .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
+        let pg = sqlx::PgPool::connect(&url).await.expect("connect");
+        // A name no other test, and no real agent, books under.
+        let agent = format!("live-fresh-{}", uuid::Uuid::new_v4());
+        let conversation = uuid::Uuid::new_v4().to_string();
+        let cleanup = || async {
+            for sql in [
+                "delete from usage_events where agent_model = $1",
+                "delete from usage_attributions where agent_model = $1",
+            ] {
+                sqlx::query(sql).bind(&agent).execute(&pg).await.unwrap();
+            }
+        };
+        let book = |prompt: i64| {
+            let (pg, agent) = (pg.clone(), agent.clone());
+            async move {
+                let counts = TokenCounts {
+                    prompt_tokens: prompt,
+                    completion_tokens: 1,
+                    ..TokenCounts::default()
+                };
+                record_relay_usage(
+                    &pg,
+                    UNATTENDED_SOURCE,
+                    &agent,
+                    Some("api-fresh4"),
+                    &StatedFlow::default(),
+                    "live-test-endpoint",
+                    "local",
+                    "live-test-model",
+                    &counts,
+                    false,
+                    None,
+                )
+                .await
+                .expect("the relay's insert");
+            }
+        };
+        let row = |prompt: i64| {
+            let (pg, agent) = (pg.clone(), agent.clone());
+            async move {
+                sqlx::query_as::<_, (String, Option<String>)>(
+                    "select source, ref_id::text from usage_events \
+                      where agent_model = $1 and prompt_tokens = $2",
+                )
+                .bind(&agent)
+                .bind(prompt)
+                .fetch_one(&pg)
+                .await
+                .expect("the row")
+            }
+        };
+        // The backfills are detached; give each a moment to land.
+        let claimed = |prompt: i64| {
+            let row = &row;
+            async move {
+                for _ in 0..50 {
+                    if row(prompt).await.0 == "chat" {
+                        return true;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                false
+            }
+        };
+        cleanup().await;
+
+        let (entry, _seen) = agent_gateway(200).await;
+        // The turn's first call, booked before the fresh key was recorded.
+        book(101).await;
+        let (remember, _kept) = remembering();
+        let mut move_it = fresh(&entry, 4, Some(remember));
+        move_it.attribution = Some(TurnAttribution {
+            pg: pg.clone(),
+            agent_model: agent.clone(),
+            source: "chat".into(),
+            ref_id: Some(conversation.clone()),
+            task_id: None,
+        });
+        let body = move_it.send().await.expect("the fresh thread answers");
+
+        // Recorded before `send` handed the stream back.
+        let recorded: (String, Option<String>) = sqlx::query_as(
+            "select source, ref_id::text from usage_attributions \
+              where agent_model = $1 and affinity_key = 'api-fresh4'",
+        )
+        .bind(&agent)
+        .fetch_one(&pg)
+        .await
+        .expect("the fresh key is recorded");
+        assert_eq!(recorded, ("chat".into(), Some(conversation.clone())));
+        // Nothing was recorded under the abandoned session.
+        let abandoned: i64 = sqlx::query_scalar(
+            "select count(*) from usage_attributions \
+              where agent_model = $1 and affinity_key = 'api-0123456789abcdef'",
+        )
+        .bind(&agent)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert_eq!(abandoned, 0);
+
+        assert!(
+            claimed(101).await,
+            "the open's backfill claims the early call"
+        );
+        assert_eq!(row(101).await, ("chat".into(), Some(conversation.clone())));
+
+        // A call booked while the stream was still being read, whose insert
+        // missed the record (it read the attributions before the record
+        // committed) and landed after the open's backfill ran: the reader
+        // letting go claims it.
+        book(202).await;
+        sqlx::query(
+            "update usage_events set source = $2, ref_id = null \
+              where agent_model = $1 and prompt_tokens = 202",
+        )
+        .bind(&agent)
+        .bind(UNATTENDED_SOURCE)
+        .execute(&pg)
+        .await
+        .unwrap();
+        assert_eq!(row(202).await, (UNATTENDED_SOURCE.into(), None));
+        assert!(read_all(body).await.contains("on the fresh thread"));
+        assert!(
+            claimed(202).await,
+            "the end-of-read backfill claims the late call"
+        );
+        assert_eq!(row(202).await, ("chat".into(), Some(conversation.clone())));
+
+        cleanup().await;
+    }
+
     #[test]
     fn a_turn_is_metered_under_the_session_we_made_or_the_id_hermes_answered() {
         let stream = |hermes_session: Option<&str>| ChatStream {
