@@ -28,7 +28,8 @@ pub async fn post(
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
     // A mangled id names no thread: the GET's 404, not the access read's
-    // `$1::uuid` cast failing as a 500.
+    // `$1::uuid` cast failing as a 500. Not the 403 below either: no thread
+    // can have this id, so a 404 hides nothing that 403 keeps hidden.
     if let Some(gate) = talaria_params::uuid_gate_404(&id) {
         return Ok(gate);
     }

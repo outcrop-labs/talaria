@@ -52,10 +52,15 @@ pub fn uuid_gate(module: &str, action: &str, id: &str) -> Option<Response> {
 }
 
 /// The same shape, answering "not found" instead: a path id that cannot name
-/// a row is the same miss as a well-formed one that names nothing, so the
-/// answer does not say which. Most routes take this one; the boards, plans,
-/// research, teams and workflows routes answered `uuid_gate`'s 400 first and
-/// keep it.
+/// a row names nothing, and a 404 says only that. On most routes it is also
+/// the answer for a well-formed id that names nothing. Where a route answers
+/// that id its own way — a 403 that never says whether the row exists, an
+/// empty list, an idempotent ok, "not a managed agent" — a malformed id still
+/// gets this 404: no row can have it, so the 404 tells a prober nothing the
+/// 403 hides. Call it after the route's auth (and after any body check the
+/// route runs before its lookup), so who may ask is answered first. Most
+/// routes take this one; the boards, plans, research, teams and workflows
+/// routes answered `uuid_gate`'s 400 first and keep it.
 pub fn uuid_gate_404(id: &str) -> Option<Response> {
     if uuid_shaped(id) {
         return None;

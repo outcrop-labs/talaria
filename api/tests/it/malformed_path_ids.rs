@@ -8,7 +8,12 @@
 // with a malformed id against a running stack. The gate in front of the cast
 // is `talaria_params::uuid_gate_404`, whose shape check is Postgres' own uuid
 // input (so a well-formed id still reaches the read). A bad body still
-// answers its 400 first where the route validates the body before its lookup.
+// answers its 400 first where the route validates the body before its lookup,
+// and a caller with no session hears what it hears for any other id.
+//
+// The 404 is the answer even where the route answers a well-formed absent id
+// its own way (a 403 that hides whether the row exists, an empty list, an
+// idempotent ok): no row can have a malformed id, so the 404 hides nothing.
 //
 // The caller is an admin, which passes every agent-manager and permission
 // gate, so each request reaches the id. The channel routes get a channel the
@@ -325,4 +330,43 @@ async fn a_well_formed_id_still_reaches_the_read() {
         }
     }
     cleanup(&state.pg).await;
+}
+
+/// Who may ask is answered before the id is: with no session, a malformed id
+/// gets exactly what a well-formed absent id gets — the 401 on most routes,
+/// and the 404 where a route reads its row before it asks who is calling
+/// (`DELETE /api/kb/spaces/{id}`, `POST /api/artifacts/{id}/export/google`).
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn who_may_ask_is_answered_before_the_id() {
+    let state = live_app_state().await;
+    let absent = uuid::Uuid::new_v4().to_string();
+    // No session reaches a channel's members, so any channel id will do.
+    let ch = uuid::Uuid::new_v4().to_string();
+
+    let mut wrong = Vec::new();
+    for (method, path, body) in routes(&ch) {
+        let (want, _) = call_json(
+            &state,
+            method,
+            &path.replace("{bad}", &absent),
+            None,
+            body.clone(),
+        )
+        .await;
+        for bad in MALFORMED {
+            let uri = path.replace("{bad}", bad);
+            let (status, answer) = call_json(&state, method, &uri, None, body.clone()).await;
+            if status != want {
+                wrong.push(format!(
+                    "{method} {uri} → {status} {answer}; a well-formed absent id → {want}"
+                ));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "these answered a malformed id before asking who is calling:\n{}",
+        wrong.join("\n")
+    );
 }
