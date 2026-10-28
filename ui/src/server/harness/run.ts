@@ -46,8 +46,10 @@
 //   - `def.tools: 'own'`   the model's own tool loop, for the three turns whose
 //                          whole feature IS the tool loop
 //   - `def.holdMs`         how long to hold for a persona that is restarting
-//   - `ctx.ledger`         source / refId / taskId, so a turn's spend reaches
-//                          the ticket, the channel or the research run
+//   - `ctx.ledger`         refId / taskId, so a turn's spend reaches the
+//                          ticket, the channel or the research run. Its
+//                          `source` stays in this process: the relay books
+//                          every call on an app's key as `app`
 //   - `ctx.tier`           an alias tier: the turn calls `<model>-<tier>`. The
 //                          relay prices the call it routed and books a tier's
 //                          turn under its base agent, from that id alone
