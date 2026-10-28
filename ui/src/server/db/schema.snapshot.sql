@@ -579,7 +579,8 @@ CREATE TABLE public.conversations (
     kind text DEFAULT 'chat'::text NOT NULL,
     plan_template_id uuid,
     unlocked_tools jsonb DEFAULT '[]'::jsonb NOT NULL,
-    pinned_files jsonb DEFAULT '[]'::jsonb NOT NULL
+    pinned_files jsonb DEFAULT '[]'::jsonb NOT NULL,
+    hermes_epoch integer DEFAULT 0 NOT NULL
 );
 CREATE TABLE public.cron_silent_runs (
     conversation_id uuid NOT NULL,

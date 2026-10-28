@@ -766,6 +766,7 @@ pub async fn post(
         });
     }
 
+    let sent_at_ms = talaria_agent_auth::now_ms();
     let upstream = send_turn(
         &state.pg,
         pinned,
@@ -790,6 +791,7 @@ pub async fn post(
         sender: Some(identity),
         // A live turn is a first attempt — eligible for the one auto-resume.
         resumed: false,
+        sent_at_ms: Some(sent_at_ms),
     };
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let assistant_id_header = assistant_id.clone();

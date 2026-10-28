@@ -9,9 +9,9 @@ use serde_json::Value;
 use sqlx::PgPool;
 
 use talaria_agent_defs::{
-    AgentDefRow, CompressionEdits, ConfigEdits, ModelTarget, NewVersion, UpsertDef,
-    add_version_if_changed, agent_def_by_id, agent_def_by_slug, apply_config_edits_over, dept_ok,
-    list_versions, slug_ok, upsert_agent_def,
+    AgentDefRow, CompressionEdits, ConfigEdits, ModelTarget, NewVersion, UpsertDef, UpsertDefError,
+    add_version_if_changed, agent_def_by_id, agent_def_by_slug, apply_config_edits_over,
+    department_holder, dept_ok, list_versions, slug_ok, upsert_agent_def,
 };
 use talaria_gateway::registry::list_endpoints;
 
@@ -109,6 +109,51 @@ pub async fn ensure_agent_key(slug: &str) -> Result<bool, String> {
     Ok(true)
 }
 
+/// `content` without `slug`'s per-agent lines — its HERMES_KEY line (with
+/// the comment [`ensure_agent_key`] seeded above it) and its
+/// TALARIA_AGENT_KEY line.
+fn without_agent_env_lines(content: &str, slug: &str) -> String {
+    let hermes = format!("HERMES_KEY_{}=", slug.to_uppercase());
+    let agent_key = format!("{}=", talaria_fleet_layout::agent_key_var(slug));
+    // The seeded comment rides out with the HERMES key line it announced
+    // — only that line's pattern owns it, never the agent-key line.
+    let comment = "# added by Talaria (agent create)";
+    let comment_line = format!("{comment}\n");
+    let mut next = String::with_capacity(content.len());
+    for line in content.lines() {
+        let is_hermes = line.starts_with(&hermes);
+        let is_agent_key = line.starts_with(&agent_key);
+        if is_hermes && next.ends_with(&comment_line) {
+            next.truncate(next.len() - comment_line.len());
+        }
+        if !is_hermes && !is_agent_key {
+            next.push_str(line);
+            next.push('\n');
+        }
+    }
+    next
+}
+
+/// Drop `slug`'s per-agent lines from the fleet .env, keeping it 0600.
+/// Best-effort: the DB is authoritative, and the next render's stale-line
+/// sweep drops a line for a slug no def holds anyway.
+async fn strip_agent_env_lines(slug: &str) {
+    let env_path = talaria_fleet_layout::fleet_env();
+    let Ok(content) = tokio::fs::read_to_string(&env_path).await else {
+        return;
+    };
+    let next = without_agent_env_lines(&content, slug);
+    if next != content {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = tokio::fs::write(&env_path, &next).await;
+        if let Ok(meta) = tokio::fs::metadata(&env_path).await {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o600);
+            let _ = tokio::fs::set_permissions(&env_path, perms).await;
+        }
+    }
+}
+
 pub struct CreateAgentInput {
     pub slug: String,
     pub department: String,
@@ -149,6 +194,15 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         .map_err(|e| e.to_string())?;
     if exists.is_some() {
         return Err(format!("agent \"{}\" already exists", input.slug));
+    }
+    // A department is one agent's container and memory. Asked here too, not
+    // only under the write's lock, so a refusal leaves nothing behind (the
+    // fleet key below is a line in a file); the lock is the race's answer.
+    if let Some(taken) = department_holder(pg, &input.department, &input.slug)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Err(taken.to_string());
     }
 
     // An empty-string templateId is no template (truthiness on the way in).
@@ -211,7 +265,7 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
 
     let key_created = ensure_agent_key(&input.slug).await?;
 
-    let mut def = upsert_agent_def(
+    let mut def = match upsert_agent_def(
         pg,
         &UpsertDef {
             slug: &input.slug,
@@ -222,7 +276,28 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         },
     )
     .await
-    .map_err(|e| e.to_string())?;
+    {
+        Ok(def) => def,
+        // The race the pre-check above cannot see: another hire took the
+        // department between it and the write's lock. The key line this
+        // call just appended is a live credential for nobody — take it back
+        // out now rather than leave it to the next render's stale-line
+        // sweep, unless a def under this slug landed meanwhile (a second
+        // hire of the same slug), whose line it now is.
+        Err(UpsertDefError::DepartmentTaken(taken)) => {
+            if key_created
+                && agent_def_by_slug(pg, &input.slug)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_none()
+            {
+                strip_agent_env_lines(&input.slug).await;
+            }
+            return Err(taken.to_string());
+        }
+        Err(e) => return Err(e.to_string()),
+    };
     // MANAGED AND MANAGED-BY, IN ONE TRANSACTION, STRAIGHT AFTER THE ROW.
     // The def now exists under a slug that any later `create` will see as
     // taken; the ownership stamp has to land with it, or a process death
@@ -417,13 +492,32 @@ pub async fn delete_agent_forever(
         return Err("retire the agent first. Delete is for retired agents only.".into());
     }
 
+    // Another agent in this department (a pair that predates the one-agent
+    // rule) means the department's container and volume are not this
+    // agent's alone: the other one runs in them, or will. Deleting this one
+    // removes its def and files, and leaves those to the agent still there.
+    let shared = talaria_agent_defs::department_holder(pg, &department, &slug)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(other) = &shared {
+        tracing::warn!(
+            "[fleet] deleting {slug}: its department \"{department}\" is also {}'s, so its container and memory volume stay",
+            other.holder_slug
+        );
+    }
+
     // Containers first (should already be gone after retire; both service
     // names, a legacy -b included; best-effort, and graceful — never a
     // SIGKILL).
-    for slot in [talaria_fleet_docker::Slot::A, talaria_fleet_docker::Slot::B] {
+    let slots: &[talaria_fleet_docker::Slot] = if shared.is_some() {
+        &[]
+    } else {
+        &[talaria_fleet_docker::Slot::A, talaria_fleet_docker::Slot::B]
+    };
+    for slot in slots {
         let _ = talaria_fleet_docker::retire_container(&talaria_fleet_docker::slot_container(
             &department,
-            slot,
+            *slot,
         ))
         .await;
     }
@@ -464,39 +558,12 @@ pub async fn delete_agent_forever(
     // diagnostic). The renderer now rewrites rather than skips, so this is
     // belt and braces; the lingering plaintext is the reason it matters.
     // Best-effort: the DB is authoritative; the next render re-materializes.
-    if let Ok(content) = tokio::fs::read_to_string(talaria_fleet_layout::fleet_env()).await {
-        let hermes = format!("HERMES_KEY_{}=", slug.to_uppercase());
-        let agent_key = format!("{}=", talaria_fleet_layout::agent_key_var(&slug));
-        // The seeded comment rides out with the HERMES key line it announced
-        // — only that line's pattern owns it, never the agent-key line.
-        let comment = "# added by Talaria (agent create)";
-        let comment_line = format!("{comment}\n");
-        let mut next = String::with_capacity(content.len());
-        for line in content.lines() {
-            let is_hermes = line.starts_with(&hermes);
-            let is_agent_key = line.starts_with(&agent_key);
-            if is_hermes && next.ends_with(&comment_line) {
-                next.truncate(next.len() - comment_line.len());
-            }
-            if !is_hermes && !is_agent_key {
-                next.push_str(line);
-                next.push('\n');
-            }
-        }
-        if next != content {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = tokio::fs::write(talaria_fleet_layout::fleet_env(), &next).await;
-            if let Ok(meta) = tokio::fs::metadata(talaria_fleet_layout::fleet_env()).await {
-                let mut perms = meta.permissions();
-                perms.set_mode(0o600);
-                let _ = tokio::fs::set_permissions(talaria_fleet_layout::fleet_env(), perms).await;
-            }
-        }
-    }
+    strip_agent_env_lines(&slug).await;
 
     // State volume: only for created agents (imported volumes are external
     // legacy).
     let removed_volume = source == "created"
+        && shared.is_none()
         && talaria_fleet_docker::remove_volume(&format!(
             "{}_hermes-{department}",
             talaria_fleet_layout::fleet_project()
@@ -557,5 +624,34 @@ mod tests {
         assert!(soul.contains("You are Sloane, the customer success agent."));
         assert!(soul.contains("- Keep humans in the loop"));
         assert!(soul.contains("- Never do dev work in chat"));
+    }
+
+    /// What a refused hire (and a delete) takes back out of the fleet .env:
+    /// that slug's two credential lines and the comment the hire seeded —
+    /// never a neighbour's, not even one whose slug it prefixes.
+    #[test]
+    fn a_slugs_env_lines_leave_with_their_comment_and_nothing_else_does() {
+        let env = "\
+LLM_API_KEY=abc
+# added by Talaria (agent create)
+HERMES_KEY_AVA=aaa
+# added by Talaria (agent create)
+HERMES_KEY_BEA=bbb
+HERMES_KEY_BEAU=ccc
+TALARIA_AGENT_KEY_BEA=tak_b
+TALARIA_AGENT_KEY_BEAU=tak_bu
+";
+        assert_eq!(
+            without_agent_env_lines(env, "bea"),
+            "\
+LLM_API_KEY=abc
+# added by Talaria (agent create)
+HERMES_KEY_AVA=aaa
+HERMES_KEY_BEAU=ccc
+TALARIA_AGENT_KEY_BEAU=tak_bu
+"
+        );
+        // A slug with no lines leaves the file as it was.
+        assert_eq!(without_agent_env_lines(env, "zed"), env);
     }
 }

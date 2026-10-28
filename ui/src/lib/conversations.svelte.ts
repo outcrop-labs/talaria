@@ -1,6 +1,6 @@
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-import { delJson, getJson, getList, patchJson, postJson, putJson } from '@/lib/fetch-json'
+import { delJson, getJson, getJsonOr404, getList, patchJson, postJson, putJson } from '@/lib/fetch-json'
 import { confirm, prompt } from '@/components/ui/confirm.svelte'
 import { toastError } from '@/lib/toast.svelte'
 import type { ToolCall } from '@/lib/sse-parse'
@@ -345,13 +345,31 @@ export async function deleteConversation(
 // NOT a query function — chat-view drives it imperatively from effects and
 // polls, none of which have a rejection handler. Left non-throwing on purpose:
 // making it reject here buys unhandled rejections, not an error state. Fixing
-// it properly means giving chat-view a load-failure branch (audit follow-up).
+// it properly means giving chat-view a load-failure branch (audit follow-up);
+// its one branch so far is not-found, read through `openConversation` below.
 export async function loadConversation(
   id: string,
 ): Promise<{ conversation: Conversation; messages: StoredMessage[] } | null> {
   // Every failure — status or network — reads as "nothing to show" (see the
   // comment above for why this must not reject).
   return getJson<{ conversation: Conversation; messages: StoredMessage[] }>(`/api/conversations/${id}`).catch(
+    () => null,
+  )
+}
+
+/** `loadConversation` for the pane's FIRST read of a thread, with the one
+ *  answer it must not swallow told apart: `'missing'` when the server
+ *  answers 404. That is its answer both for a thread that is gone and for
+ *  one the viewer may not read (`get_conversation` decides: owner, member,
+ *  team, research run), and it deliberately does not say which. Without it
+ *  the pane opened such a thread as an empty one, with a composer whose
+ *  first send would 404 too. Every other failure is still null, and still
+ *  never rejects, for the reason above. */
+export async function openConversation(
+  id: string,
+): Promise<{ conversation: Conversation; messages: StoredMessage[] } | 'missing' | null> {
+  return getJsonOr404<{ conversation: Conversation; messages: StoredMessage[] }>(`/api/conversations/${id}`).then(
+    (res) => res ?? 'missing',
     () => null,
   )
 }

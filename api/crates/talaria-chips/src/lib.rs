@@ -1429,6 +1429,63 @@ pub async fn surface_for_agent(
     Ok(Some(landed))
 }
 
+/// Write chips onto a row the caller already resolved (`landing_target`),
+/// and tell the open thread to refetch. The door that raises an agent's
+/// approval card names its conversation, so it lands there or nowhere.
+pub async fn land_chips(
+    pg: &PgPool,
+    redis: Option<redis::aio::ConnectionManager>,
+    landed: &Landed,
+    chips: &[Value],
+) -> Result<(), sqlx::Error> {
+    write_chips(pg, landed, chips).await?;
+    fan(pg, redis, landed);
+    Ok(())
+}
+
+/// Set one chip's `status` where it sits on a conversation's message, in its
+/// place in the row, and tell the open thread to refetch. An approval chip
+/// that a person or a deadline settled reads as what became of it, not as
+/// still waiting. The rest of the chip, and every other chip on the row, is
+/// left as it was; a row without that chip is left alone.
+pub async fn set_chip_status(
+    pg: &PgPool,
+    redis: Option<redis::aio::ConnectionManager>,
+    conversation_id: &str,
+    message_id: &str,
+    chip_id: &str,
+    status: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update messages set chips = ( \
+           select coalesce(jsonb_agg( \
+                    case when e.c->>'id' = $2 \
+                         then e.c || jsonb_build_object('status', $3::text) \
+                         else e.c end \
+                    order by e.ord), '[]'::jsonb) \
+             from jsonb_array_elements(chips) with ordinality e(c, ord) \
+         ) \
+         where id = $1::uuid and conversation_id = $4::uuid \
+           and exists (select 1 from jsonb_array_elements(chips) x(c) where x.c->>'id' = $2)",
+    )
+    .bind(message_id)
+    .bind(chip_id)
+    .bind(status)
+    .bind(conversation_id)
+    .execute(pg)
+    .await?;
+    fan(
+        pg,
+        redis,
+        &Landed {
+            conversation_id: Some(conversation_id.to_string()),
+            channel_id: None,
+            message_id: message_id.to_string(),
+        },
+    );
+    Ok(())
+}
+
 /// Idempotent pending row. `external_id` is the google pending id, or a
 /// stable key for a ticket move (`ticket:{id}:{status}`). A retry returns
 /// the row that is already waiting. The arguments are the row's columns.

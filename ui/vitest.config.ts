@@ -35,6 +35,9 @@ export default defineConfig({
       '@talaria/sdk/server': resolve(here, 'src/sdk/server.ts'),
       '@talaria/sdk/testing': resolve(here, 'src/sdk/testing.ts'),
       '@talaria/sdk': resolve(here, 'src/sdk/index.ts'),
+      // `// @vitest-environment runes`: Svelte's client runtime, no DOM — for
+      // a test that observes a runes module's reactivity (see the file).
+      'vitest-environment-runes': resolve(here, 'vitest.runes-environment.ts'),
     },
   },
   plugins: [

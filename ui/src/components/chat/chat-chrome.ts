@@ -1,4 +1,5 @@
 import { cn } from '@/lib/cn'
+import { dimDisabled } from '@/components/ui/control'
 
 // Mercury chat chrome vocabulary (spec §7 + §10) — the shared class
 // strings and micro-components every composer/chat surface leans on, so the
@@ -12,15 +13,23 @@ import { cn } from '@/lib/cn'
 export const focusGold =
   'focus-visible:outline-2 focus-visible:outline-dashed focus-visible:outline-offset-2 focus-visible:outline-accent'
 
-/** Control-rail chip base: 36px tall, radius 6, mono 10/12 uppercase. */
+/** Control-rail chip base: 36px tall, radius 6, mono 10/12 uppercase.
+ *
+ *  DISABLED READS AS DISABLED: the primitives' own dim (`dimDisabled`, the
+ *  reading a disabled outline or ghost Button has) and a not-allowed cursor,
+ *  and the hover fill below is for an enabled chip only. A disabled chip that
+ *  still lit on hover looked like a control that ignored the click. The
+ *  pointer still reaches it, unlike a Button's, because a chip that is off
+ *  says why in its title (the tier chip on a pinned agent). */
 export const chipBase = cn(
-  'flex h-9 shrink-0 items-center gap-2 rounded-md border px-2.5 font-mono text-[10px] uppercase leading-3 tracking-[0.05em] transition-colors',
+  'flex h-9 shrink-0 items-center gap-2 rounded-md border px-2.5 font-mono text-[10px] uppercase leading-3 tracking-[0.05em] transition-colors disabled:cursor-not-allowed',
+  dimDisabled,
   focusGold,
 )
 /** Primary chips (agent/model) read brighter: strong border + readout text. */
-export const chipPrimary = cn(chipBase, 'border-line-strong text-fg hover:bg-hover')
+export const chipPrimary = cn(chipBase, 'border-line-strong text-fg enabled:hover:bg-hover')
 /** Secondary chips: hairline border + muted text → readout on hover. */
-export const chipSecondary = cn(chipBase, 'border-line text-muted hover:bg-hover hover:text-fg')
+export const chipSecondary = cn(chipBase, 'border-line text-muted enabled:hover:bg-hover enabled:hover:text-fg')
 
 /** Picker popover panel (model-menu pattern, `3Q-0`). Entrance lives at each
  *  use site as `in:pop={POPOVER}` from @/lib/motion (reduced-motion aware via

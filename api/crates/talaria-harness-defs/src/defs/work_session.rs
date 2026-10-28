@@ -791,12 +791,10 @@ pub fn work_session_harness() -> HarnessDefinition {
     // read. (Kept as this comment: the field's default IS none.)
     //
     // THE TURN IS THE TOOL LOOP. Declared rather than left to the default:
-    // the runner's default transport sends `tools: []` / `tool_choice:
-    // 'none'`, which is right for every single-shot structured harness and
-    // fatal here — a work session that cannot call `get_ticket` cannot do
-    // work, and would then trip `zero_tool_claim` on every turn for having
-    // called no tool. The guard firing because the guard's own transport
-    // disarmed the agent.
+    // the default policy is 'none', which is right for every single-shot
+    // structured harness and fatal here — a work session runs on a Hermes
+    // session, which refuses a 'none' turn outright (`session_turn_refusal`),
+    // and a work session that cannot call `get_ticket` cannot do work.
     d.tools = Some(ToolPolicy::Own);
     // TEN MINUTES, against the persona gateway's two-minute default — the
     // run kind's `max_step_ms` (eleven minutes) is sized against it. An

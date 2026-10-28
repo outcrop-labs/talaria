@@ -33,6 +33,7 @@ talaria-decide = { workspace = true }
 talaria-retrieval-http = { workspace = true }
 talaria-google-pending = { workspace = true }
 talaria-agent-auth = { workspace = true }
+talaria-approval-cards = { workspace = true }
 talaria-approvals = { workspace = true }
 talaria-apps = { workspace = true }
 talaria-audit = { workspace = true }
