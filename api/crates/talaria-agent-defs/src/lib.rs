@@ -151,8 +151,11 @@ pub const MANDATORY_DISABLED: &[&str] = &["todo", "clarify"];
 /// one by one — the container env carries the agent's own credential, the
 /// Hermes API key and the fleet gateway key, and an agent that can `env |
 /// curl` on a prompt-injected page needed exactly none of these to do the
-/// job it was hired for. `browser`, `delegation` and `memory` stay on: they
-/// are what an ordinary agent works with. A Developer Agent is the
+/// job it was hired for. `delegation` and `memory` stay on: they are what an
+/// ordinary agent works with. `browser` stays ticked too, but it brings a
+/// browser only once `terminal` is open as well (talaria-fleet-render's
+/// `fleet_browser_engine` says why), so opening the terminal is the one
+/// switch that gives an agent both. A Developer Agent is the
 /// exception ([`DEVELOPER_TOOLSETS`]): the switch opens the three the
 /// sandbox is for, and turning it off closes them again.
 pub const DEFAULT_DISABLED_FOR_NEW: &[&str] = &["terminal", "code_execution", "file", "cronjob"];
