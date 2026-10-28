@@ -12,7 +12,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use talaria_api_facades::mcp::apply::{
-    apply_agent_for_user, apply_agents_for_server, bump_tool_lists,
+    apply_agent_for_user, apply_agents_for_server, bump_tool_lists_for_ids,
 };
 use talaria_api_facades::mcp::oauth::{CallbackActor, handle_oauth_callback};
 use talaria_audit::{AuditEntry, log_audit};
@@ -140,7 +140,7 @@ pub async fn get(
         // change APPLIES: render, restart only a container the render moved
         // (talaria-mcp-apply).
         let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb).await;
-        bump_tool_lists(&pg).await;
+        bump_tool_lists_for_ids(&pg, std::slice::from_ref(&server_id)).await;
         if subject == "org" {
             apply_agents_for_server(&pg, &sb, &server_id).await;
         } else {

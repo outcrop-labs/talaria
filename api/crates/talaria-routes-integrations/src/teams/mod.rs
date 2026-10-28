@@ -46,14 +46,15 @@ pub(crate) enum Applies {
 /// the agent's config, which a running Hermes reconciles within a minute of
 /// the rewrite; a tool subset that changes under a server it keeps reaches
 /// it as the gateway's list-changed notice on its next keepalive
-/// (`bump_tool_lists`). Neither restarts the agent unless the render moved
-/// its container for some other reason (talaria-mcp-apply). Detached, never
-/// the caller's problem: the membership row is already written, and an
-/// apply that fails lands in the audit trail.
-pub(crate) fn render_and_apply(state: &AppState, applies: Applies) {
+/// (`bump_tool_lists`, for `servers` — the team's granted servers, the only
+/// ones a membership can move a list on). Neither restarts the agent unless
+/// the render moved its container for some other reason (talaria-mcp-apply).
+/// Detached, never the caller's problem: the membership row is already
+/// written, and an apply that fails lands in the audit trail.
+pub(crate) fn render_and_apply(state: &AppState, servers: Vec<String>, applies: Applies) {
     let (pg, state) = (state.pg.clone(), state.clone());
     tokio::spawn(async move {
-        talaria_api_facades::mcp::apply::bump_tool_lists(&pg).await;
+        talaria_api_facades::mcp::apply::bump_tool_lists(&pg, &servers).await;
         let sb = match state.secretbox().await {
             Ok(sb) => sb,
             Err(e) => {
@@ -73,6 +74,27 @@ pub(crate) fn render_and_apply(state: &AppState, applies: Applies) {
             }
         }
     });
+}
+
+/// The servers a team carries a grant row for (allowed or denied) — the
+/// servers a change to the team's members or agents can move a tool list on.
+/// Read before a write that cascades the rows away (a team delete). A read
+/// that fails is logged and counts nothing: the agents keep their lists until
+/// they reconnect.
+pub(crate) async fn team_servers(state: &AppState, team_id: &str) -> Vec<String> {
+    sqlx::query_scalar::<_, String>(
+        "select s.name from mcp_team_access t join mcp_servers s on s.id = t.server_id \
+         where t.team_id = $1::uuid order by s.name",
+    )
+    .bind(team_id)
+    .fetch_all(&state.pg)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(
+            "[teams] the team's MCP servers could not be read ({e}) — no tool-list notice"
+        );
+        Vec::new()
+    })
 }
 
 /// Owner-only. Same three-line read as reader_gate above, same refusal.

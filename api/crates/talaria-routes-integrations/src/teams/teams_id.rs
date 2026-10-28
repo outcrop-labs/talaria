@@ -142,11 +142,13 @@ pub async fn delete(
         Ok(a) => a,
         Err(e) => return Ok(internal("[teams] agent list on DELETE failed", e)),
     };
+    let servers = super::team_servers(&state, &id).await;
     if let Err(e) = delete_team(&state.pg, &id).await {
         return Ok(internal("[teams] delete failed", e));
     }
     super::render_and_apply(
         &state,
+        servers,
         super::Applies::Models(agents.into_iter().map(|a| a.agent_model).collect()),
     );
     log_audit(

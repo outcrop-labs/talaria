@@ -81,7 +81,11 @@ pub async fn post(
     .fetch_optional(&state.pg)
     .await
     {
-        Ok(Some(user_id)) => super::render_and_apply(&state, super::Applies::User(user_id)),
+        Ok(Some(user_id)) => super::render_and_apply(
+            &state,
+            super::team_servers(&state, &id).await,
+            super::Applies::User(user_id),
+        ),
         Ok(None) => {}
         Err(e) => {
             tracing::warn!("[teams] member added but the user read for the apply failed: {e}")
@@ -127,7 +131,11 @@ pub async fn delete(
         Ok(Some(msg)) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         Err(e) => return Ok(internal("[teams] member remove failed", e)),
     }
-    super::render_and_apply(&state, super::Applies::User(user_id.clone()));
+    super::render_and_apply(
+        &state,
+        super::team_servers(&state, &id).await,
+        super::Applies::User(user_id.clone()),
+    );
     log_audit(
         &state.pg,
         AuditEntry {

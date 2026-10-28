@@ -87,6 +87,33 @@ describe('maybeProxy', () => {
     expect(res!.headers.get('server')).toBeNull()
   })
 
+  it("an agent's MCP transport headers reach the gateway, and its revision comes back", async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    let sent: Headers | undefined
+    vi.stubGlobal(
+      'fetch',
+      (async (_url: string, init: RequestInit) => {
+        sent = new Headers(init.headers)
+        return new Response(': keepalive\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream', 'mcp-session-id': 'sess-abc', 'mcp-protocol-version': '2025-06-18' },
+        })
+      }) as unknown as typeof globalThis.fetch,
+    )
+    const res = await maybeProxy(
+      req('/api/mcp/gw/stateful', {
+        method: 'GET',
+        headers: { accept: 'text/event-stream', 'mcp-session-id': 'sess-abc', 'mcp-protocol-version': '2025-06-18', 'last-event-id': 'ev-41' },
+      }),
+      '/api/mcp/gw/stateful',
+    )
+    expect(sent?.get('mcp-session-id')).toBe('sess-abc')
+    expect(sent?.get('mcp-protocol-version')).toBe('2025-06-18')
+    expect(sent?.get('last-event-id')).toBe('ev-41')
+    expect(res!.headers.get('mcp-session-id')).toBe('sess-abc')
+    expect(res!.headers.get('mcp-protocol-version')).toBe('2025-06-18')
+  })
+
   it('the one prefix carries the whole surface — one path from every family the port moved', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }))

@@ -59,7 +59,11 @@ pub async fn post(
         Ok(Some(sentence)) => return Ok(house_error(StatusCode::BAD_REQUEST, &sentence)),
         Err(e) => return Ok(internal("[teams] agent add failed", e)),
     }
-    super::render_and_apply(&state, super::Applies::Models(vec![model.clone()]));
+    super::render_and_apply(
+        &state,
+        super::team_servers(&state, &id).await,
+        super::Applies::Models(vec![model.clone()]),
+    );
     log_audit(
         &state.pg,
         AuditEntry {
@@ -98,7 +102,11 @@ pub async fn delete(
     if let Err(e) = remove_team_agent(&state.pg, &id, &model).await {
         return Ok(internal("[teams] agent remove failed", e));
     }
-    super::render_and_apply(&state, super::Applies::Models(vec![model.clone()]));
+    super::render_and_apply(
+        &state,
+        super::team_servers(&state, &id).await,
+        super::Applies::Models(vec![model.clone()]),
+    );
     log_audit(
         &state.pg,
         AuditEntry {

@@ -396,6 +396,9 @@ pub async fn post(
 
     // ── registry assignments ──
     let mut touched_registry = false;
+    // The servers whose tool lists this edit can move for the agent — each
+    // counts its own change (`bump_tool_lists`).
+    let mut touched_servers: Vec<String> = Vec::new();
     for a in &assign {
         let server = match get_mcp_server(&state.pg, &a.server_id).await {
             Ok(Some(s)) => s,
@@ -440,6 +443,7 @@ pub async fn post(
         )
         .await;
         touched_registry = true;
+        touched_servers.push(server.name.clone());
     }
     for server_id in &unassign {
         let server = match get_mcp_server(&state.pg, server_id).await {
@@ -464,6 +468,7 @@ pub async fn post(
         )
         .await;
         touched_registry = true;
+        touched_servers.push(server.name.clone());
     }
 
     // ── legacy raw entries: a new config version without them ──
@@ -529,9 +534,7 @@ pub async fn post(
     // it keeps reaches it through the gateway's list-changed notice on its
     // next keepalive (`bump_tool_lists`). Neither moves the container, so
     // the apply recreates nothing unless something else did.
-    if touched_registry {
-        bump_tool_lists(&state.pg).await;
-    }
+    bump_tool_lists(&state.pg, &touched_servers).await;
     let mut applied = false;
     let mut warning: Option<String> = None;
     if (touched_registry || created) && apply && def.managed {

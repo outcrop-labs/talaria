@@ -8,14 +8,18 @@
 //   container the render moved — an MCP edit moves none).
 // · A tool list that changes UNDER a name the agent already holds — a tool
 //   subset widened, a team or user grant, an app's catalog — reaches it
-//   through the gateway: [`bump_tool_lists`] counts the change, and the
-//   gateway answers the agent's next keepalive on that server (a `ping`, or
+//   through the gateway: [`bump_tool_lists`] counts the change for that
+//   server, and the gateway answers the agent's next keepalive on that
+//   server (a `ping`, or
 //   the `tools/list` Hermes keeps alive with once an upstream did not answer
 //   ping) with a `notifications/tools/list_changed` first (routes-fleet's
 //   mcp_gw_server), which Hermes answers by listing the tools again.
 // · A `timeout` or an auth mode changed under a name still ROLLS: the
 //   reconcile does not reconnect a server whose entry changed, and a session
-//   minted under the old credentials is the old session.
+//   minted under the old credentials is the old session. A roll recreates a
+//   RUNNING carrier only: one a person stopped stays stopped, and its next
+//   start boots Hermes on the rewritten config (fleet-reconcile's
+//   `roll_running_agent` — no roll starts a stopped agent).
 //
 // Both kinds run sequentially off one deduped queue — a burst of registry
 // edits becomes one render and at most one roll per department, and a
@@ -31,7 +35,9 @@ use talaria_secretbox::SecretBox;
 use futures_util::future::BoxFuture;
 use std::sync::{Arc, OnceLock};
 
-/// Wired from the api binary so this crate does not depend on fleet reconcile.
+/// Wired from the api binary so this crate does not depend on fleet reconcile:
+/// fleet-reconcile's `roll_running_agent` — recreate a running agent, leave a
+/// stopped one stopped.
 pub static ROLL_AGENT: OnceLock<
     Arc<
         dyn Fn(
@@ -63,8 +69,9 @@ pub static APPLY_AGENTS: OnceLock<
 enum Mode {
     /// Render, and recreate only if the container moved.
     Apply,
-    /// Recreate regardless — the change is one Hermes takes only from a
-    /// fresh start.
+    /// Recreate a running agent regardless of its fit — the change is one
+    /// Hermes takes only from a fresh start. A stopped agent is left as it
+    /// is; its next start is that fresh start.
     Roll,
 }
 
@@ -241,8 +248,9 @@ pub async fn apply_agent_for_model(pg: &PgPool, sb: &SecretBox, model: &str) {
 
 // ── Roll: recreate regardless ───────────────────────────────────────────────
 
-/// Roll every managed agent that carries this server — for an edit Hermes
-/// takes only from a reconnect (a timeout, an auth mode).
+/// Roll every running managed agent that carries this server — for an edit
+/// Hermes takes only from a reconnect (a timeout, an auth mode). A stopped
+/// carrier stays stopped and reads the edit when it next starts.
 pub async fn roll_agents_for_server(pg: &PgPool, sb: &SecretBox, server_id: &str) {
     if let Ok(departments) = carriers_for_server(pg, server_id).await {
         enqueue(&departments, Mode::Roll, pg, sb);
@@ -250,7 +258,9 @@ pub async fn roll_agents_for_server(pg: &PgPool, sb: &SecretBox, server_id: &str
 }
 
 /// Roll one specific agent model's department — the Developer switch and a
-/// key rotation, both of which change the container's own env.
+/// key rotation, both of which change the container's own env. Only a
+/// running agent is recreated; a stopped one's next start recreates it, since
+/// its service moved.
 pub async fn roll_agent_for_model(pg: &PgPool, sb: &SecretBox, model: &str) {
     let departments = departments_for_model(pg, model).await;
     enqueue(&departments, Mode::Roll, pg, sb);
@@ -258,42 +268,91 @@ pub async fn roll_agent_for_model(pg: &PgPool, sb: &SecretBox, model: &str) {
 
 // ── Tool lists that change under a name ─────────────────────────────────────
 
-/// The `app_settings` row counting changes to what any agent's tool lists
-/// should hold. The gateway compares it with the count each agent last saw
-/// on each server, and tells an agent behind the count to list again.
-pub const TOOL_LISTS_EPOCH_SETTING: &str = "mcp.tool_lists_epoch";
+/// The `app_settings` key counting changes to what agents' tool lists for ONE
+/// server should hold. The gateway compares a server's count with the count
+/// each agent last saw on that server, and tells an agent behind it to list
+/// that server again. One count per server: a change to one server re-lists
+/// that server alone, for the agents that hold it — never every server every
+/// agent holds (the builtin toolkit's 82 tools among them), which is what one
+/// count for everything did.
+pub fn tool_list_count_key(server_name: &str) -> String {
+    format!("{TOOL_LIST_COUNT_PREFIX}{server_name}")
+}
+
+/// The prefix of [`tool_list_count_key`] — the TS app gateway's twin
+/// (`mcp-tool-list-notice.ts`) spells the same keys.
+pub const TOOL_LIST_COUNT_PREFIX: &str = "mcp.tool_list_count:";
 
 /// Count a change that may alter a tool list an agent already holds under a
 /// server name it keeps — a subset widened or narrowed, a team or user
-/// grant, an app's new catalog, a refreshed catalog, a connected account.
-/// Over-counting is harmless: an agent told to list again lists the same
-/// tools. Call it after the change commits, so the list it prompts reads
-/// the new state. Best effort; a failure is logged, and the agent keeps the
-/// list it has until its next reconnect.
-pub async fn bump_tool_lists(pg: &PgPool) {
+/// grant, an app's new catalog, a refreshed catalog, a connected account —
+/// once for each server named. Over-counting is harmless: an agent told to
+/// list again lists the same tools. Call it after the change commits, so the
+/// list it prompts reads the new state. Best effort; a failure is logged, and
+/// the agents keep the lists they have until their next reconnect.
+pub async fn bump_tool_lists(pg: &PgPool, server_names: &[String]) {
+    if server_names.is_empty() {
+        return;
+    }
     let bumped = sqlx::query(
-        "insert into app_settings (key, value) values ($1, '1'::jsonb) \
+        "insert into app_settings (key, value) \
+         select $1::text || name, '1'::jsonb from unnest($2::text[]) as name \
          on conflict (key) do update \
            set value = to_jsonb(coalesce((app_settings.value #>> '{}')::bigint, 0) + 1), \
                updated_at = now()",
     )
-    .bind(TOOL_LISTS_EPOCH_SETTING)
+    .bind(TOOL_LIST_COUNT_PREFIX)
+    .bind(dedup(server_names))
     .execute(pg)
     .await;
     if let Err(e) = bumped {
         tracing::warn!(
-            "[mcp] tool-list change not counted ({e}) — agents keep their lists until they reconnect"
+            "[mcp] tool-list change for {} not counted ({e}) — their agents keep their lists until they reconnect",
+            server_names.join(", ")
         );
     }
 }
 
-/// The current count ([`bump_tool_lists`]); `None` when it cannot be read,
-/// 0 before the first change.
-pub async fn tool_lists_epoch(pg: &PgPool) -> Option<i64> {
+/// [`bump_tool_lists`] for registry rows named by id — what most writers hold.
+/// An id with no row (already deleted) counts nothing: no agent can hold it.
+pub async fn bump_tool_lists_for_ids(pg: &PgPool, server_ids: &[String]) {
+    if server_ids.is_empty() {
+        return;
+    }
+    let names: Result<Vec<(String,)>, _> =
+        sqlx::query_as("select name from mcp_servers where id::text = any($1)")
+            .bind(server_ids)
+            .fetch_all(pg)
+            .await;
+    match names {
+        Ok(rows) => {
+            let names: Vec<String> = rows.into_iter().map(|(n,)| n).collect();
+            bump_tool_lists(pg, &names).await;
+        }
+        Err(e) => tracing::warn!(
+            "[mcp] tool-list change not counted — server names unreadable ({e}); their agents keep their lists until they reconnect"
+        ),
+    }
+}
+
+/// The names in their first order, each once — one row per server per bump.
+fn dedup(names: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(names.len());
+    for n in names {
+        if !out.contains(n) {
+            out.push(n.clone());
+        }
+    }
+    out
+}
+
+/// One server's current count ([`bump_tool_lists`]); `None` when it cannot be
+/// read, 0 before its first change.
+pub async fn tool_list_count(pg: &PgPool, server_name: &str) -> Option<i64> {
     sqlx::query_as::<_, (Option<i64>,)>(
         "select (value #>> '{}')::bigint from app_settings where key = $1",
     )
-    .bind(TOOL_LISTS_EPOCH_SETTING)
+    .bind(tool_list_count_key(server_name))
     .fetch_optional(pg)
     .await
     .ok()
@@ -328,5 +387,19 @@ mod tests {
         // An apply never downgrades a queued roll.
         merge_into(&mut queue, &["fin".into()], Mode::Apply);
         assert_eq!(queue[2], ("fin".to_string(), Mode::Roll));
+    }
+
+    #[test]
+    fn each_server_counts_its_own_tool_list_changes() {
+        assert_eq!(tool_list_count_key("github"), "mcp.tool_list_count:github");
+        assert_eq!(
+            tool_list_count_key("app-crm"),
+            format!("{TOOL_LIST_COUNT_PREFIX}app-crm")
+        );
+        // A bump naming one server twice counts it once.
+        assert_eq!(
+            dedup(&["a".into(), "b".into(), "a".into()]),
+            vec!["a".to_string(), "b".to_string()]
+        );
     }
 }

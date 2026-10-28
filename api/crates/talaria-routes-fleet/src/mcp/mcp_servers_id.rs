@@ -400,7 +400,7 @@ pub async fn put(
     // the same name, and a session minted under the old credentials stays
     // the old session, so those carriers still ROLL. Fire-and-forget —
     // never awaited, never the caller's problem.
-    bump_tool_lists(&state.pg).await;
+    bump_tool_lists(&state.pg, std::slice::from_ref(&server.name)).await;
     let reconnects = patch.auth_mode.is_some() || patch.timeout_secs.is_some();
     let touched_grant = patch.enabled.is_some() || patch.all_agents.is_some();
     if reconnects {

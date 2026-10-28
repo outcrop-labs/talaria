@@ -46,7 +46,7 @@ use axum::response::{IntoResponse, Response};
 use redis::AsyncCommands;
 use serde_json::{Value, json};
 use talaria_agent_auth::{AgentSubject, presented, require_agent, subject_model};
-use talaria_api_facades::mcp::apply::tool_lists_epoch;
+use talaria_api_facades::mcp::apply::tool_list_count;
 use talaria_api_facades::mcp::calls::{
     ACCESS_FAILED, BATCH_REFUSED, CallLog, Outcome, TappedStream, batch_needs_refusal,
     classify_answer, recorded_members, upstream_text,
@@ -489,9 +489,11 @@ fn is_initialize(rpc: Option<&Value>) -> bool {
 // do — so for most servers the stream an agent would hear it on does not
 // exist.
 //
-// The count is talaria-mcp-apply's `tool_lists_epoch`, bumped by every
-// change that can move a list. Per agent and server the gateway remembers
-// the count it last saw (Redis, refreshed on every keepalive); a handshake
+// The count is talaria-mcp-apply's `tool_list_count`, one per server, bumped
+// for each server a change can move a list on — so a change to one server
+// re-lists that server alone, for the agents that hold it. Per agent and
+// server the gateway remembers the count it last saw (Redis, refreshed on
+// every keepalive); a handshake
 // starts that count only when none is remembered (a reconnect keeps what it
 // finds — Hermes re-publishes a re-listed catalog only when it has nothing
 // registered), and a keepalive behind it is answered here — the notice, then
@@ -512,8 +514,10 @@ fn is_initialize(rpc: Option<&Value>) -> bool {
 /// only lapses for an agent that stopped asking.
 const TOOLS_SEEN_TTL_SECONDS: u64 = 24 * 60 * 60;
 
+/// v2: the count is the server's own (v1 remembered one count for every
+/// server, which a per-server count must never be compared with).
 fn tools_seen_key(server_name: &str, caller: &str) -> String {
-    format!("talaria:mcp-tools-seen:v1:{server_name}:{caller}")
+    format!("talaria:mcp-tools-seen:v2:{server_name}:{caller}")
 }
 
 /// Which request a tool-list notice can ride, from its body and whether its
@@ -659,7 +663,7 @@ async fn tool_list_notice(
     let rpc = rpc?;
     match notice_ride(rpc, accepts_event_stream(headers)) {
         NoticeRide::Handshake => {
-            if let Some(epoch) = tool_lists_epoch(&state.pg).await {
+            if let Some(epoch) = tool_list_count(&state.pg, server_name).await {
                 start_tools_seen(state, server_name, caller, epoch).await;
             }
             None
@@ -682,7 +686,7 @@ async fn tool_list_notice(
 /// and, either way, it now holds the current one. `false` when the count or
 /// Redis is out of reach: no notice, and the request goes on as it always did.
 async fn list_is_behind(state: &AppState, server_name: &str, caller: &str) -> bool {
-    let Some(epoch) = tool_lists_epoch(&state.pg).await else {
+    let Some(epoch) = tool_list_count(&state.pg, server_name).await else {
         return false;
     };
     swap_tools_seen(state, server_name, caller, epoch)
@@ -1128,10 +1132,10 @@ pub async fn post(
     }
 
     // Header assembly order: content-type, accept,
-    // [mcp-session-id], ...upstreamHeaders, and for the builtin toolkit the
-    // caller's OWN credential — the toolkit calls back into this API as the
-    // same agent, so substituting a server-held key here would make that hop
-    // the forgeable one.
+    // [mcp-session-id], [mcp-protocol-version], ...upstreamHeaders, and for
+    // the builtin toolkit the caller's OWN credential — the toolkit calls
+    // back into this API as the same agent, so substituting a server-held key
+    // here would make that hop the forgeable one.
     let hdr = |name: &'static str| {
         headers
             .get(name)
@@ -1154,6 +1158,9 @@ pub async fn post(
     );
     if let Some(session) = hdr("mcp-session-id") {
         req = req.header("mcp-session-id", session);
+    }
+    for (name, value) in transport_headers(&headers) {
+        req = req.header(name, value);
     }
     for (k, v) in &eff.upstream_headers {
         req = req.header(k.as_str(), v.as_str());
@@ -1319,6 +1326,9 @@ pub async fn get(
         }
         req = req.header("mcp-session-id", session);
     }
+    for (name, value) in transport_headers(&headers) {
+        req = req.header(name, value);
+    }
     for (k, v) in &eff.upstream_headers {
         req = req.header(k.as_str(), v.as_str());
     }
@@ -1366,6 +1376,24 @@ pub async fn get(
         .header(header::CONTENT_TYPE, ct)
         .body(Body::from_stream(upstream.bytes_stream()))
         .unwrap_or_else(|e| internal("[fleet] response build failed", e)))
+}
+
+/// The streamable-HTTP transport's request headers besides the session id
+/// (which passes the session gate first), relayed upstream as the agent sent
+/// them: the revision its `initialize` negotiated, which a stateful upstream
+/// checks on every later request (and refuses when it names one it does not
+/// speak), and, on a resumed notification stream, the last event the client
+/// saw, so an upstream that numbers its events replays what it missed.
+const TRANSPORT_HEADERS: &[&str] = &["mcp-protocol-version", "last-event-id"];
+
+fn transport_headers(headers: &HeaderMap) -> Vec<(&'static str, String)> {
+    TRANSPORT_HEADERS
+        .iter()
+        .filter_map(|name| {
+            let value = headers.get(*name)?.to_str().ok()?;
+            Some((*name, value.to_string()))
+        })
+        .collect()
 }
 
 /// The sentence a redirecting upstream earns. Neither relay client follows
@@ -1998,6 +2026,25 @@ mod tests {
         // Nothing remembered is adopted, never announced.
         assert!(!tool_list_is_stale(None, 4));
         assert!(!tool_list_is_stale(None, 0));
+    }
+
+    #[test]
+    fn the_transport_s_own_headers_ride_upstream_and_nothing_else_does() {
+        let mut h = HeaderMap::new();
+        h.insert("MCP-Protocol-Version", "2025-06-18".parse().unwrap());
+        h.insert("Last-Event-ID", "stream-1_42".parse().unwrap());
+        h.insert("mcp-session-id", "sess-abc".parse().unwrap());
+        h.insert(header::COOKIE, "talaria_session=x".parse().unwrap());
+        h.insert("x-api-key", "tak_secret".parse().unwrap());
+        assert_eq!(
+            transport_headers(&h),
+            vec![
+                ("mcp-protocol-version", "2025-06-18".to_string()),
+                ("last-event-id", "stream-1_42".to_string()),
+            ],
+            "the session id has its own gate; credentials and cookies never ride"
+        );
+        assert!(transport_headers(&HeaderMap::new()).is_empty());
     }
 
     #[test]

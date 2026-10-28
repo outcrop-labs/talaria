@@ -399,13 +399,19 @@ pub async fn sync_app_mcp_servers_report(
     // applied for. A FLIPPED row is a server name arriving in or leaving its
     // carriers' configs — the render writes it and a running Hermes
     // reconciles names within a minute. A RETOOLED row is a new catalog under
-    // the same name — the gateway tells each carrier to list again on its
-    // next keepalive (`bump_tool_lists`). Neither moves a container, so the
-    // carriers APPLY (talaria-mcp-apply), which restarts nobody unless the
-    // render moved their container for some other reason.
-    if !synced.retooled.is_empty() || !synced.flipped.is_empty() {
-        talaria_mcp_apply::bump_tool_lists(pg).await;
-    }
+    // the same name — the gateway tells each carrier to list that server
+    // again on its next keepalive (`bump_tool_lists`, counted per server, so
+    // the app's carriers re-list this app's server and nothing else). Neither
+    // moves a container, so the carriers APPLY (talaria-mcp-apply), which
+    // restarts nobody unless the render moved their container for some other
+    // reason.
+    let changed: Vec<String> = synced
+        .flipped
+        .iter()
+        .chain(&synced.retooled)
+        .cloned()
+        .collect();
+    talaria_mcp_apply::bump_tool_lists_for_ids(pg, &changed).await;
     for id in synced.flipped.iter().chain(&synced.retooled) {
         talaria_mcp_apply::apply_agents_for_server(pg, sb, id).await;
     }
