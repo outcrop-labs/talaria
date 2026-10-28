@@ -59,7 +59,8 @@ Never two servers on one database — a stale encryption key re-seals secrets wr
 
 - **Worktree** (host, light): `bun talaria worktree <name>` (alias `git wt <name>`) — own
   git worktree at `../talaria-<name>`, own Postgres + Redis on deterministic ports, a
-  pg_dump-seeded DB, `node_modules` symlinked from main. Teardown:
+  pg_dump-seeded DB, `ui/node_modules` symlinked from main and `cli/` + `mcp/`
+  installed from the branch's lockfiles. Teardown:
   `docker compose -p talaria-wt-<name> down -v && git worktree remove --force ../talaria-<name> && git branch -D wt/<name>`.
   Run that from the primary checkout, not from inside the worktree. Full rules: docs/WORKTREES.md.
 - **Devbox** (container, heavy): `bun talaria box new <name>` — a full stack per task with

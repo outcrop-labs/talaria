@@ -82,6 +82,16 @@ Two layers, so the key that actually unlocks everything never lives in a config:
 are synchronous everywhere else. The in-memory keys live on `globalThis` so a
 dev HMR reload doesn't lose them.
 
+The Rust api loads its own copy on first use (`AppState::secretbox`,
+talaria-state) and keeps it. It can get there **before** the migration pass:
+`talaria dev` starts the api first, and a fresh or reset database has no
+`secret_keys` table, or no first key in it, for the moments the pass takes. A
+load that failed that way is not final — the next caller after two seconds reads
+the table again, until the box is healthy — so the first hire on a fresh
+database seals its agent key without anyone restarting the api. A load whose
+keys the root secret **cannot unwrap** is never retried: that is a different
+root, and it stays loud until a person restores the right one.
+
 ## Versioned data keys
 
 Ciphertext is self-describing so multiple app instances and key rotations are
