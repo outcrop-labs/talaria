@@ -17,6 +17,11 @@ ready for your red pen. Set **Name** and handle, pick a **role** (from **Your or
 or the **Common roles** Talaria maintains) and department, and optionally **Start the
 container now**.
 
+To skip the description, **Configure manually →** opens the same review form empty: type the
+name, handle and department, and **Create agent** hires it. **Duplicate** on a roster agent
+opens that form with the agent's chassis (model tiers, tools and plugins) preselected, and the
+identity is yours to fill in.
+
 A department is the agent's own: it names its container and its memory, so no two agents share
 one. A department another agent already holds (even a retired one) is refused — the modal says
 *Taken by …* as you type it — and so is a federated roster that would put two agents in one. An
@@ -83,6 +88,12 @@ agent mid-roll cannot be rolled again until it finishes. The strip above the ros
 tally and every failure sentence until you dismiss it.
 
 ### Config
+
+**Save version** saves the form as a new version; **Save & apply** also puts it on the running
+agent. When the apply does not land (the roll failed or found the agent mid-roll, the agent is
+retired, or it has no container of its own), the version is still saved, and the form stays
+open and says *Saved as version N, not applied:* with the reason, rather than closing as if it
+had worked. A soul saved from the workspace says the same in a notice.
 
 - **Main model** — its brain.
 - **Model tiers (aliases)** — named slots (like `opus`) you can address per-message with a
