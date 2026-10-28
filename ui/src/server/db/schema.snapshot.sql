@@ -235,7 +235,8 @@ CREATE TABLE public.app_install_requests (
     app_slug text,
     installed_sha text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    host_id text NOT NULL
 );
 CREATE TABLE public.app_settings (
     key text NOT NULL,
@@ -674,6 +675,20 @@ CREATE TABLE public.fleet_agents (
     config jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.git_hosts (
+    id text NOT NULL,
+    kind text NOT NULL,
+    name text NOT NULL,
+    base_url text NOT NULL,
+    api_url text,
+    auth jsonb DEFAULT '{}'::jsonb NOT NULL,
+    repo_creation_orgs text[] DEFAULT '{}'::text[] NOT NULL,
+    created_by text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT git_hosts_id_check CHECK ((id ~ '^[a-z0-9][a-z0-9-]{0,39}$'::text)),
+    CONSTRAINT git_hosts_kind_check CHECK ((kind = ANY (ARRAY['github'::text, 'forgejo'::text])))
 );
 CREATE TABLE public.google_connections (
     user_id uuid NOT NULL,
@@ -1563,7 +1578,8 @@ CREATE TABLE public.workbench_jobs (
     workspace_cleared_at timestamp with time zone,
     queued_at timestamp with time zone,
     queued_reason text,
-    pr_number bigint
+    pr_number bigint,
+    host_id text NOT NULL
 );
 CREATE TABLE public.workbench_profiles (
     slug text NOT NULL,
@@ -1583,7 +1599,8 @@ CREATE TABLE public.workbench_repo_flow (
     repo text NOT NULL,
     base_branch text,
     testing_branch text,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    host_id text NOT NULL
 );
 CREATE TABLE public.workbench_repo_requests (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1603,7 +1620,8 @@ CREATE TABLE public.workbench_repo_requests (
     responsible_user_id uuid,
     decision_note text,
     protected boolean,
-    protection_note text
+    protection_note text,
+    host_id text NOT NULL
 );
 CREATE TABLE public.workbench_repos (
     agent_id uuid NOT NULL,
@@ -1611,7 +1629,8 @@ CREATE TABLE public.workbench_repos (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     base_branch text,
     push_mode text DEFAULT 'branches_only'::text NOT NULL,
-    branch_prefix text
+    branch_prefix text,
+    host_id text NOT NULL
 );
 CREATE TABLE public.workspace_secret_entries (
     secret_id uuid NOT NULL,
@@ -1792,6 +1811,8 @@ ALTER TABLE ONLY public.fleet_agents
     ADD CONSTRAINT fleet_agents_name_key UNIQUE (name);
 ALTER TABLE ONLY public.fleet_agents
     ADD CONSTRAINT fleet_agents_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.git_hosts
+    ADD CONSTRAINT git_hosts_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.google_connections
     ADD CONSTRAINT google_connections_pkey PRIMARY KEY (user_id);
 ALTER TABLE ONLY public.google_org_connection
@@ -1995,11 +2016,11 @@ ALTER TABLE ONLY public.workbench_jobs
 ALTER TABLE ONLY public.workbench_profiles
     ADD CONSTRAINT workbench_profiles_pkey PRIMARY KEY (slug);
 ALTER TABLE ONLY public.workbench_repo_flow
-    ADD CONSTRAINT workbench_repo_flow_pkey PRIMARY KEY (repo);
+    ADD CONSTRAINT workbench_repo_flow_pkey PRIMARY KEY (host_id, repo);
 ALTER TABLE ONLY public.workbench_repo_requests
     ADD CONSTRAINT workbench_repo_requests_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.workbench_repos
-    ADD CONSTRAINT workbench_repos_pkey PRIMARY KEY (agent_id, repo);
+    ADD CONSTRAINT workbench_repos_pkey PRIMARY KEY (agent_id, host_id, repo);
 ALTER TABLE ONLY public.workspace_secret_entries
     ADD CONSTRAINT workspace_secret_entries_pkey PRIMARY KEY (secret_id, key);
 ALTER TABLE ONLY public.workspace_secret_grants
@@ -2150,6 +2171,8 @@ ALTER TABLE ONLY public.app_install_requests
     ADD CONSTRAINT app_install_requests_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.app_install_requests
     ADD CONSTRAINT app_install_requests_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.app_install_requests
+    ADD CONSTRAINT app_install_requests_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id);
 ALTER TABLE ONLY public.app_install_requests
     ADD CONSTRAINT app_install_requests_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.app_install_requests
@@ -2367,6 +2390,8 @@ ALTER TABLE ONLY public.plugins
 ALTER TABLE ONLY public.plugins
     ADD CONSTRAINT plugins_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.plugins
+    ADD CONSTRAINT plugins_git_host_id_fkey FOREIGN KEY (git_host_id) REFERENCES public.git_hosts(id);
+ALTER TABLE ONLY public.plugins
     ADD CONSTRAINT plugins_maintainer_agent_id_fkey FOREIGN KEY (maintainer_agent_id) REFERENCES public.agent_defs(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.plugins
     ADD CONSTRAINT plugins_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
@@ -2471,15 +2496,23 @@ ALTER TABLE ONLY public.work_wait
 ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workbench_jobs
+    ADD CONSTRAINT workbench_jobs_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id);
+ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.workbench_repo_flow
+    ADD CONSTRAINT workbench_repo_flow_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id);
 ALTER TABLE ONLY public.workbench_repo_requests
     ADD CONSTRAINT workbench_repo_requests_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.workbench_repo_requests
+    ADD CONSTRAINT workbench_repo_requests_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id);
 ALTER TABLE ONLY public.workbench_repo_requests
     ADD CONSTRAINT workbench_repo_requests_responsible_user_id_fkey FOREIGN KEY (responsible_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_repo_requests
     ADD CONSTRAINT workbench_repo_requests_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_repos
     ADD CONSTRAINT workbench_repos_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.workbench_repos
+    ADD CONSTRAINT workbench_repos_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id);
 ALTER TABLE ONLY public.workspace_secret_entries
     ADD CONSTRAINT workspace_secret_entries_secret_id_fkey FOREIGN KEY (secret_id) REFERENCES public.workspace_secrets(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workspace_secret_grants

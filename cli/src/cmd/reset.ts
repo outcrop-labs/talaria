@@ -127,6 +127,7 @@ export async function runReset(ctx: Ctx, mode: ResetMode): Promise<number> {
     ctx.log.raw(row('mcp_oauth_tokens (connected accounts)', await psql('select count(*) from mcp_oauth_tokens')))
     ctx.log.raw(row('mcp_user_credentials (headers)', await psql('select count(*) from mcp_user_credentials')))
     ctx.log.raw(row('app_settings: email/storage/github', await psql("select count(*) from app_settings where key in ('email_config','storage_config','github_config')")))
+    ctx.log.raw(row('git_hosts (GitHub connections)', await psql("select count(*) from git_hosts where kind = 'github' and auth <> '{}'::jsonb")))
     ctx.log.raw(row('secret_keys (the data keys themselves)', await psql('select count(*) from secret_keys')) + '\n')
     ctx.log.say('What this will KEEP')
     for (const t of ['boards', 'tasks', 'users', 'agent_defs', 'messages']) {
@@ -151,6 +152,7 @@ delete from google_org_connection;
 delete from mcp_oauth_tokens;
 delete from mcp_user_credentials;
 delete from app_settings where key in ('email_config','storage_config','github_config');
+update git_hosts set auth = '{}'::jsonb where kind = 'github';
 delete from secret_keys;
 commit;`,
     )

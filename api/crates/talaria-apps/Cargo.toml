@@ -20,7 +20,7 @@ talaria-agent-auth = { workspace = true }
 talaria-app-manifest = { workspace = true }
 talaria-auth = { workspace = true }
 talaria-gateway = { workspace = true }
-talaria-github = { workspace = true }
+talaria-git-hosts = { workspace = true }
 talaria-llm-keys = { workspace = true }
 talaria-mcp-apply = { workspace = true }
 talaria-safe-fetch = { workspace = true }
