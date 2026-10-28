@@ -11,6 +11,7 @@
     adoptDesign,
     clearDesign,
     currentDesign,
+    ensureDesign,
     refineDesign,
     setModalOpen,
     startDesign,
@@ -91,7 +92,10 @@
   if (design?.status === 'ready') step = 'review'
   // Review fields, bound to the store's fields. Hand edits write straight
   // through to the store (that is what the refine's `current` reads), except
-  // templateId/start/busy/err, which are genuinely per-hire local state.
+  // templateId/start/busy/err, which are genuinely per-hire local state. A
+  // manual start (Configure manually, or Duplicate's preselect) has no design
+  // yet: the first edit seeds an empty one (ensureDesign), so the fields
+  // take what is typed and Create enables like on any other path.
   const displayName = $derived(design?.name ?? '')
   const slug = $derived(design?.handle ?? '')
   const department = $derived(design?.department ?? '')
@@ -111,14 +115,11 @@
   const lastChange = $derived(design?.lastChange ?? null)
 
   const set = (patch: Partial<{ name: string; handle: string; department: string; role: string; soul: string; skills: AgentDraft['skills'] }>) => {
-    const d = currentDesign()
-    if (!d) return
-    Object.assign(d, patch)
+    Object.assign(ensureDesign(), patch)
   }
 
   const onName = (v: string) => {
-    const d = currentDesign()
-    if (!d) return
+    const d = ensureDesign()
     const prev = d.name
     d.name = v
     if (!d.handle || d.handle === prev.toLowerCase().replace(/[^a-z0-9]/g, '')) {
@@ -178,6 +179,10 @@
       })
       if (r.error) {
         err = r.error
+        // A refusal the hint could not see coming (the department was taken
+        // after this page read the roster, a 409 at the door) is the roster
+        // moving: refetch it, so the field says who holds it and Create waits.
+        void qc.invalidateQueries({ queryKey: ['fleet-defs'] })
         return
       }
       await qc.invalidateQueries({ queryKey: ['fleet-hires'] })
