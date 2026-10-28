@@ -6,11 +6,23 @@
 // --json` output (pr-watch.fixtures/README.md); the in-flight variants are
 // derived from them. Run by `bun run check`.
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { classify, headCheck, latestChecks, latestRuns, normalize, readHeadFacts } from './pr-watch.mjs'
+import {
+  classify,
+  headCheck,
+  latestChecks,
+  latestRuns,
+  normalize,
+  parseRepo,
+  readHeadFacts,
+  repoFlagOf,
+  resolveCiWorkflow,
+  targetRepoOf,
+  workflowNameOf,
+} from './pr-watch.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const fixture = (name) => JSON.parse(readFileSync(join(HERE, 'pr-watch.fixtures', name), 'utf8'))
@@ -246,6 +258,115 @@ check('from another checkout, the head is compared with the branch on GitHub', (
   eq(headCheck(pr, { onBranch: false, noHeadRepo: true }).ok, true)
 })
 
+// ── whose ci.yml names the CI workflow ────────────────────────────────────
+//
+// With --repo (or a PR URL from another repository) the watcher used to read
+// the CI workflow's name from the cwd's ci.yml: a workflow the PR never runs,
+// so the floor waited on it to the wall clock — or, with no ci.yml here, on a
+// guessed `CI` it did not say was a guess.
+
+check('workflowNameOf reads the top-level name only', () => {
+  eq(workflowNameOf('# CI\nname: CI\non: [push]\n'), 'CI')
+  eq(workflowNameOf("name: 'Talaria CI'   # the tripwire\n"), 'Talaria CI')
+  eq(workflowNameOf('on: push\njobs:\n  a:\n    name: not this\n'), null)
+  eq(workflowNameOf(null), null)
+  eq(workflowNameOf(readFileSync(join(HERE, '..', '..', '.github/workflows/ci.yml'), 'utf8')), 'CI')
+})
+
+check('parseRepo reads every spelling gh and git use for a repository', () => {
+  const gh = { host: 'github.com', slug: 'outcrop-labs/talaria' }
+  eq(parseRepo('outcrop-labs/talaria'), gh)
+  eq(parseRepo('Outcrop-Labs/Talaria'), gh)
+  eq(parseRepo('github.com/outcrop-labs/talaria'), gh)
+  eq(parseRepo('https://github.com/outcrop-labs/talaria/pull/615'), gh)
+  eq(parseRepo('https://github.com/outcrop-labs/talaria.git'), gh)
+  eq(parseRepo('git@github.com:outcrop-labs/talaria.git'), gh)
+  eq(parseRepo('ssh://git@github.com/outcrop-labs/talaria.git'), gh)
+  eq(parseRepo('ghe.example.com/team/app'), { host: 'ghe.example.com', slug: 'team/app' })
+  eq(parseRepo('https://ghe.example.com:8443/team/app/pull/3'), { host: 'ghe.example.com', slug: 'team/app' })
+  eq([parseRepo(''), parseRepo(undefined), parseRepo('talaria'), parseRepo('/x')], [null, null, null, null])
+  eq(repoFlagOf(gh), 'outcrop-labs/talaria')
+  eq(repoFlagOf({ host: 'ghe.example.com', slug: 'team/app' }), 'ghe.example.com/team/app')
+})
+
+check('the target repository is --repo when given, else the one the PR URL names', () => {
+  const pr = { url: 'https://github.com/other-org/other-repo/pull/9' }
+  eq(targetRepoOf(pr, undefined), { host: 'github.com', slug: 'other-org/other-repo' })
+  eq(targetRepoOf(pr, 'outcrop-labs/talaria'), { host: 'github.com', slug: 'outcrop-labs/talaria' })
+  eq(targetRepoOf({}, undefined), null)
+})
+
+/** A fake io for resolveCiWorkflow: `contents` is gh's answer for the
+ *  contents read (a string is a 0 exit with that body), `remotes` the
+ *  checkout's `git remote -v`, `local` its ci.yml. Calls are recorded. */
+function ciIo({ contents, remotes = '', local = 'name: Local CI\n' } = {}) {
+  const calls = { gh: [], local: 0 }
+  return {
+    calls,
+    gh: (args) => {
+      calls.gh.push(args)
+      if (typeof contents === 'string') return { status: 0, stdout: contents, stderr: '' }
+      return contents || { status: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)\n' }
+    },
+    git: () => ({ ok: true, out: remotes, status: 0 }),
+    localCi: () => {
+      calls.local++
+      return local
+    },
+  }
+}
+const OTHER = { host: 'github.com', slug: 'other-org/other-repo' }
+const PR_OTHER = { url: 'https://github.com/other-org/other-repo/pull/9', headRefOid: 'a'.repeat(40) }
+
+check('the CI workflow is named by the target repository\'s ci.yml at the PR head, not the cwd\'s', () => {
+  const x = ciIo({ contents: '# theirs\nname: Pipeline\non: pull_request\n' })
+  const ci = resolveCiWorkflow(PR_OTHER, OTHER, x)
+  eq(ci, { name: 'Pipeline', source: 'other-org/other-repo@aaaaaaaaaaaa', note: '' })
+  eq(x.calls.gh, [[
+    'api',
+    `repos/other-org/other-repo/contents/.github/workflows/ci.yml?ref=${'a'.repeat(40)}`,
+    '-H',
+    'Accept: application/vnd.github.raw',
+  ]])
+  eq(x.calls.local, 0)
+})
+
+check('a GitHub Enterprise target reads through its own host', () => {
+  const x = ciIo({ contents: 'name: Build\n' })
+  eq(resolveCiWorkflow(PR_OTHER, { host: 'ghe.example.com', slug: 'team/app' }, x).name, 'Build')
+  ok(x.calls.gh[0].join(' ').includes('--hostname ghe.example.com'), x.calls.gh[0].join(' '))
+})
+
+check('unreadable, and this checkout is not the target: CI, said to be a guess, the cwd\'s ci.yml unused', () => {
+  const x = ciIo({ remotes: 'origin\tgit@github.com:outcrop-labs/talaria.git (fetch)\norigin\tgit@github.com:outcrop-labs/talaria.git (push)' })
+  const ci = resolveCiWorkflow(PR_OTHER, OTHER, x)
+  eq([ci.name, ci.source, x.calls.local], ['CI', 'fallback', 0])
+  ok(/^CI is a guess: other-org\/other-repo's ci.yml at aaaaaaaaaaaa was not read \(gh: Not Found \(HTTP 404\)\); this checkout is not other-org\/other-repo/.test(ci.note), ci.note)
+})
+
+check('unreadable, and a remote of this checkout is the target: its ci.yml stands in, and says so', () => {
+  const x = ciIo({ remotes: 'upstream\thttps://github.com/Other-Org/other-repo.git (fetch)' })
+  const ci = resolveCiWorkflow(PR_OTHER, OTHER, x)
+  eq([ci.name, ci.source], ['Local CI', 'this checkout'])
+  ok(/^Local CI is this checkout's ci.yml; other-org\/other-repo's ci.yml at aaaaaaaaaaaa was not read: gh: Not Found/.test(ci.note), ci.note)
+  // The checkout is the target but has no ci.yml either: still a said guess.
+  const none = resolveCiWorkflow(PR_OTHER, OTHER, ciIo({ remotes: 'origin\tgit@github.com:other-org/other-repo (fetch)', local: null }))
+  eq(none.name, 'CI')
+  ok(/^CI is a guess: .* was not read \(gh: Not Found/.test(none.note) && !/is not other-org/.test(none.note), none.note)
+})
+
+check('a ci.yml with no top-level name falls back the same way, and says why', () => {
+  const ci = resolveCiWorkflow(PR_OTHER, OTHER, ciIo({ contents: 'on: push\njobs: {}\n' }))
+  eq(ci.name, 'CI')
+  ok(/\(it has no top-level name:\)/.test(ci.note), ci.note)
+})
+
+check('a guessed CI name is named in the pending reason', () => {
+  const r = classify(asOpen(PR599), { head: HEAD_OK, runs: RUNS599, ciWorkflow: 'Pipeline', ciNote: 'Pipeline is a test' })
+  eq(r.kind, 'pending')
+  ok(r.waiting.some((w) => /^no Pipeline workflow run for b74073f04448 yet \(Pipeline is a test\)$/.test(w)), r.waiting.join(' | '))
+})
+
 // ── the head facts, read by real git from a scratch repository ────────────
 //
 // The watcher never fetches. A PR head pushed from another checkout is then
@@ -366,6 +487,81 @@ check('an unpushed HEAD exits pending at once, without --once, instead of pollin
     }
   } finally {
     sgit(['update-ref', `refs/remotes/origin/${BRANCH}`, B])
+  }
+})
+
+check('end to end: --repo, or a PR URL, sends the CI name read and gh run list to the target repository', () => {
+  // The scratch checkout has its own ci.yml, naming a workflow the target never runs.
+  mkdirSync(join(scratch, '.github', 'workflows'), { recursive: true })
+  writeFileSync(join(scratch, '.github', 'workflows', 'ci.yml'), 'name: Local CI\non: push\n')
+  const bin = mkdtempSync(join(tmpdir(), 'pr-watch-bin-'))
+  try {
+    const pr = { ...asOpen(PR599), ...prAt(B), number: 1, url: 'https://github.com/other-org/other-repo/pull/1', baseRefName: 'rc' }
+    const runs = RUNS599.map((r) => ({ ...r, headSha: B, workflowName: r.workflowName === 'CI' ? 'Pipeline' : r.workflowName }))
+    writeFileSync(join(bin, 'pr.json'), JSON.stringify(pr))
+    writeFileSync(join(bin, 'runs.json'), JSON.stringify(runs))
+    const log = join(bin, 'calls.log')
+    writeFileSync(
+      join(bin, 'gh'),
+      [
+        '#!/bin/sh',
+        `echo "$*" >> "${log}"`,
+        'case "$1" in',
+        `  pr) exec cat "${join(bin, 'pr.json')}" ;;`,
+        `  run) exec cat "${join(bin, 'runs.json')}" ;;`,
+        `  api) case "$2" in repos/other-org/other-repo/contents/*) [ -f "${join(bin, 'ci.yml')}" ] && exec cat "${join(bin, 'ci.yml')}" ;; esac`,
+        "       echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;",
+        'esac',
+        'echo "unexpected: gh $*" >&2',
+        'exit 1',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+    const watch = (...args) => {
+      writeFileSync(log, '')
+      const run = spawnSync(process.execPath, [join(HERE, 'pr-watch.mjs'), '--once', ...args], {
+        cwd: scratch,
+        encoding: 'utf8',
+        timeout: 15_000,
+        env: { ...cleanEnv, PATH: `${bin}:${process.env.PATH}` },
+      })
+      return { ...run, calls: readFileSync(log, 'utf8').trim().split('\n') }
+    }
+
+    // The target's ci.yml names Pipeline, and Pipeline ran: green, from --repo or the PR URL alike.
+    writeFileSync(join(bin, 'ci.yml'), 'name: Pipeline\non: pull_request\n')
+    for (const args of [['--repo', 'other-org/other-repo', '--pr', '1'], ['--pr', 'https://github.com/other-org/other-repo/pull/1']]) {
+      const run = watch(...args, '--json')
+      eq([run.status, run.stderr], [0, ''])
+      const out = JSON.parse(run.stdout)
+      eq([out.token, out.ciWorkflow], ['green', { name: 'Pipeline', source: `other-org/other-repo@${B.slice(0, 12)}`, note: '' }])
+      ok(run.calls.includes(`run list --commit ${B} --limit 100 --json databaseId,workflowName,event,status,conclusion,headSha,createdAt,url --repo other-org/other-repo`), run.calls.join('\n'))
+    }
+    const line = watch('--repo', 'other-org/other-repo', '--pr', '1')
+    eq(line.status, 0)
+    ok(/, Pipeline run settled, mergeable=MERGEABLE/.test(line.stdout), line.stdout)
+
+    // GitHub cannot answer and this clone is not the target: a said guess, never "Local CI".
+    rmSync(join(bin, 'ci.yml'))
+    const guess = watch('--repo', 'other-org/other-repo', '--pr', '1')
+    eq([guess.status, guess.stderr.split('\n')[0]], [2, 'pr-watch: pending'])
+    ok(/no CI workflow run for \S+ yet \(CI is a guess: other-org\/other-repo's ci.yml at \S+ was not read \(gh: Not Found \(HTTP 404\)\); this checkout is not other-org\/other-repo/.test(guess.stderr), guess.stderr)
+    ok(!/Local CI/.test(guess.stderr), guess.stderr)
+
+    // ...and when this clone is the target, its own ci.yml stands in, named as such.
+    sgit(['remote', 'add', 'origin', 'https://github.com/Other-Org/other-repo.git'])
+    try {
+      const local = watch('--pr', '1')
+      eq(local.status, 2)
+      ok(/no Local CI workflow run for \S+ yet \(Local CI is this checkout's ci.yml; other-org\/other-repo's ci.yml at \S+ was not read: gh: Not Found/.test(local.stderr), local.stderr)
+    } finally {
+      sgit(['remote', 'remove', 'origin'])
+      sgit(['update-ref', `refs/remotes/origin/${BRANCH}`, B])
+    }
+  } finally {
+    rmSync(bin, { recursive: true, force: true })
+    rmSync(join(scratch, '.github'), { recursive: true, force: true })
   }
 })
 
