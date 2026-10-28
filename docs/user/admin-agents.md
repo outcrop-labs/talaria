@@ -172,8 +172,12 @@ and Keenable unless you tick **Allow Hermes's keyless public tiers**. If the age
 to that URL, their searches fail with SearXNG's connection error instead of falling back, so the
 **Search URL** panel tests it twice: **from app** and **from agents**. The second runs the same
 test inside a running agent, against the address the agents actually dial (a `127.0.0.1` URL
-becomes `host.docker.internal`), and reads **not probed** when no agent is running. A SearXNG
-listening only on the host's loopback shows up from the app and down from the agents. Brave Search and SearXNG only search. Unless you also pick a
+becomes `host.docker.internal`), and reads **not probed** when no agent is running, or when a
+containerized install (`TALARIA_AGENT_DIAL=container`) has a loopback URL: there a `127.0.0.1`
+address is the app's own container, so it is not handed to the agents at all and the panel says
+so. A SearXNG listening only on the host's loopback shows up from the app and down from the
+agents. A `SEARXNG_URL` in the api's environment wins over the field, which then shows it and
+cannot be edited; set but empty counts as not set. Brave Search and SearXNG only search. Unless you also pick a
 provider under **Read pages**, agents' `web_extract` lands on them and fails, and the panel warns
 about it. The choice applies to every agent. It overrides an agent's own web backend settings, and
 an agent secret with the same name as the vendor key. Research is not affected: it searches with

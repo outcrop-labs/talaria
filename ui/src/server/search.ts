@@ -48,8 +48,16 @@ import { getSetting } from './audit'
  *  the authority and says why) — empty means no provider of this shape. */
 export const SEARCH_URL_KEY = 'search_url'
 
+/** SEARXNG_URL as the environment sets it, or null — and null includes SET
+ *  BUT BLANK (an env file's `SEARXNG_URL=`), which falls through to the
+ *  setting. The Rust twin's rule (`talaria_search::env_search_url`), so the
+ *  URL in force and Admin → Search's `fromEnv` agree on both sides. */
+export function envSearchUrl(env: Record<string, string | undefined> = process.env): string | null {
+  return env.SEARXNG_URL?.trim() || null
+}
+
 export async function searchUrl(): Promise<string> {
-  const configured = process.env.SEARXNG_URL ?? (await getSetting<string>(SEARCH_URL_KEY, ''))
+  const configured = envSearchUrl() ?? (await getSetting<string>(SEARCH_URL_KEY, ''))
   return configured.replace(/\/$/, '')
 }
 

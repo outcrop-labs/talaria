@@ -12,7 +12,9 @@
 // THE ENV VAR WINS, deliberately: a self-host that already runs SearXNG
 // sets SEARXNG_URL and should not have that silently overridden by a
 // setting somebody typed once. The GET says which is in force so the field
-// is never a lie.
+// is never a lie. Set but blank is not set (`talaria_search::env_search_url`
+// is the one reader of it), so the field is editable and what is saved there
+// is what is in force.
 //
 // TWO VANTAGE POINTS, TWO ANSWERS. `reachable` is the app's own view (what
 // Research dials). `agentReachable` is the same canary run from inside a
@@ -33,7 +35,7 @@ use talaria_api_facades::gateway::settings::{get_setting, set_setting};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::parse;
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_search::{SEARCH_URL_KEY, real_deps, search_reachable, search_url};
+use talaria_search::{SEARCH_URL_KEY, env_search_url, real_deps, search_reachable, search_url};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
@@ -55,10 +57,9 @@ async fn answer(state: &AppState) -> Value {
         search_reachable(&state.pg, &deps),
         agent_search_reachable(&state.pg)
     );
-    // SEARXNG_URL set-but-empty reads as false.
-    let from_env = std::env::var("SEARXNG_URL")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false);
+    // The same reader the URL in force comes from: SEARXNG_URL set but
+    // blank is unset there, and reads false here.
+    let from_env = env_search_url().is_some();
     serde_json::json!({
         "url": search_url(&state.pg).await,
         "stored": stored,
