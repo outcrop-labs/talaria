@@ -2377,10 +2377,12 @@ fn fleet_vision(
 ///   the gates Hermes never lets anything auto-approve (an MCP server's
 ///   confirmation request, an untrusted MCP server's write tool, a saved
 ///   card fill, a write to a project's AGENTS.md / CLAUDE.md / SOUL.md):
-///   they still ask. On a conversation turn whose owner manages the agent,
-///   Talaria's door puts the request to that person as a card; everywhere
-///   else it answers `deny`. The protected write is never carded: it only
-///   asks about paths outside `/opt/data`, which the write root
+///   they still ask. (This render sets no MCP `trust`, no `tool_costs` and
+///   no browser vault, so of those only the confirmation request and the
+///   protected write arise.) On a conversation turn whose owner manages the
+///   agent, Talaria's door puts the request to that person as a card;
+///   everywhere else it answers `deny`. The protected write is never carded:
+///   it only asks about paths outside `/opt/data`, which the write root
 ///   ([`pin_write_root`]) refuses whatever the answer.
 /// - Every other agent gets `mode: manual` and `deny`. No guardian, so no
 ///   model ever approves a command. A streamed turn's request reaches
@@ -2421,24 +2423,26 @@ fn fleet_approvals(routed: &mut Map<String, Value>, developer: bool) {
 }
 
 /// The file tools' write root, pinned on every agent: `HERMES_WRITE_SAFE_ROOT`
-/// = the agent's data volume (`/opt/data`, the image's `HERMES_HOME`). The
-/// official image sets the same value in its Dockerfile; rendering it makes
-/// it one Talaria sets, because the approval door reasons from it
-/// (`talaria_gateway::fleet_approvals::unanswerable`): Hermes'
-/// protected-instruction gate exempts `HERMES_HOME`, so every write it asks
-/// about lies outside this root and cannot land. Never widened: a Developer
-/// Agent's checkouts live under `/opt/data/workbench`, inside it. A chassis
-/// value is overwritten, and per-agent secrets cannot carry a `HERMES_*`
-/// name (talaria-agent-secrets).
+/// = the agent's data volume (`/opt/data`), and `HERMES_HOME` = that same
+/// folder. The official image sets both values in its Dockerfile; rendering
+/// them makes them values Talaria sets, because the approval door reasons
+/// from the pair (`talaria_gateway::fleet_approvals::unanswerable`): Hermes'
+/// protected-instruction gate exempts `HERMES_HOME`, so while the home and
+/// the root are one folder, every write the gate asks about lies outside the
+/// root and cannot land. A home that drifted from the root would have the
+/// door refuse, with a false reason, a write that could land, so both are
+/// pinned together. Never widened: a Developer Agent's checkouts live under
+/// `/opt/data/workbench`, inside it. A chassis value for either is
+/// overwritten, and per-agent secrets cannot carry a `HERMES_*` name
+/// (talaria-agent-secrets).
 ///
-/// Hermes reads the key as an `os.pathsep` list (`:` here), skips empty
+/// Hermes reads the root as an `os.pathsep` list (`:` here), skips empty
 /// entries and `realpath`s each one (v0.22.4 `agent/file_safety.py`,
 /// `get_safe_write_roots`); a single root needs no separator.
 fn pin_write_root(env: &mut Map<String, Value>) {
-    env.insert(
-        "HERMES_WRITE_SAFE_ROOT".into(),
-        json!(talaria_gateway::fleet_approvals::AGENT_WRITE_ROOT),
-    );
+    let root = talaria_gateway::fleet_approvals::AGENT_WRITE_ROOT;
+    env.insert("HERMES_WRITE_SAFE_ROOT".into(), json!(root));
+    env.insert("HERMES_HOME".into(), json!(root));
 }
 
 /// Nous-hosted connectors and the Nous free-tier identity, off on every agent.
@@ -3575,7 +3579,7 @@ service:
     }
 
     #[test]
-    fn every_agent_s_write_root_is_its_data_volume_and_a_chassis_cannot_widen_it() {
+    fn every_agent_s_write_root_and_home_are_its_data_volume_and_a_chassis_cannot_move_them() {
         let mut env = Map::new();
         pin_write_root(&mut env);
         assert_eq!(env.get("HERMES_WRITE_SAFE_ROOT"), Some(&json!("/opt/data")));
@@ -3586,17 +3590,19 @@ service:
                 .unwrap()
                 .contains(':')
         );
+        // The home the protected-instruction gate exempts is the root itself.
+        assert_eq!(env.get("HERMES_HOME"), env.get("HERMES_WRITE_SAFE_ROOT"));
 
-        // A chassis that carried its own (wider) root is overwritten: the
-        // approval door reasons from this exact value.
+        // A chassis that carried its own (wider) root, or moved the home, is
+        // overwritten: the approval door reasons from these exact values.
         let mut chassis = Map::new();
         chassis.insert("HERMES_WRITE_SAFE_ROOT".into(), json!("/opt/data:/tmp:/"));
+        chassis.insert("HERMES_HOME".into(), json!("/srv/hermes"));
         chassis.insert("TZ".into(), json!("UTC"));
         pin_write_root(&mut chassis);
-        assert_eq!(
-            chassis.get("HERMES_WRITE_SAFE_ROOT"),
-            Some(&json!(talaria_gateway::fleet_approvals::AGENT_WRITE_ROOT))
-        );
+        let root = json!(talaria_gateway::fleet_approvals::AGENT_WRITE_ROOT);
+        assert_eq!(chassis.get("HERMES_WRITE_SAFE_ROOT"), Some(&root));
+        assert_eq!(chassis.get("HERMES_HOME"), Some(&root));
         assert_eq!(chassis.get("TZ"), Some(&json!("UTC")));
     }
 

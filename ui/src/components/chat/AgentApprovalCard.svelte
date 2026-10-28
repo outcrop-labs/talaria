@@ -6,12 +6,15 @@
 
   // THE AGENT IS ASKING BEFORE IT GOES ON. A Developer Agent runs its flagged
   // commands without asking, so what still reaches a person is one of the few
-  // things Hermes never lets anything wave through: an MCP server asking to
-  // confirm an action, an untrusted MCP server's write tool, a saved card
-  // fill. (A write to a project's AGENTS.md / CLAUDE.md outside the agent's
-  // data folder is never carded: the write root refuses it whatever the
-  // answer, so the door refuses it first.) This conversation's turn is paused
-  // on the answer; the agent's other conversations are not.
+  // things Hermes never lets anything wave through. On a Talaria agent today
+  // that is an MCP server asking to confirm an action ("Delete record 42?").
+  // Hermes' untrusted-server, spend-limit and card-fill gates would arrive the
+  // same way, but Talaria configures none of them, so they do not come up. (A
+  // write to a project's AGENTS.md / CLAUDE.md outside the agent's data
+  // folder is never carded: the write root refuses it whatever the answer, so
+  // the door refuses it first.) The card shows Hermes' own words for whichever
+  // it is. This conversation's turn is paused on the answer; the agent's other
+  // conversations are not.
   //
   // ONE PERSON ANSWERS: the conversation's owner, who manages the agent
   // (`deciderId`). Anyone else reading the thread sees the card and what

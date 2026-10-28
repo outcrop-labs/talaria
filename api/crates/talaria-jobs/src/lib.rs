@@ -162,9 +162,9 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     // WHERE A REFUSED APPROVAL IS RECORDED. The fleet chat door refuses
     // every Hermes approval request on a streamed turn that no card takes,
     // and every one no answer could make land (talaria-gateway's
-    // fleet_approvals), and the gateway crate holds no pool. A card's own answers are recorded by talaria-approval-cards,
-    // with the person as the actor. Unwired, the
-    // answer still goes out and nothing is recorded.
+    // fleet_approvals), and the gateway crate holds no pool. A card's own
+    // answers are recorded by talaria-approval-cards, with the person as the
+    // actor. Unwired, the answer still goes out and nothing is recorded.
     let record_pg = state.pg.clone();
     let _ = talaria_gateway::fleet_approvals::RECORD_APPROVAL.set(Arc::new(move |r| {
         let pg = record_pg.clone();

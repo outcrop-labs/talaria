@@ -371,14 +371,17 @@ Developer Agent still asks under `mode: off` comes from the gates Hermes never l
 auto-approve: an MCP server's confirmation request (`elicitation/create`, from any server), an
 untrusted MCP server's write tool or spend limit, a saved card fill, a write to a project's
 AGENTS.md / CLAUDE.md / SOUL.md. Those want a person, and v0.22 strips the `pattern_key` that
-would tell them apart from a command.
+would tell them apart from a command. Talaria renders no MCP `trust` key (Hermes reads a missing
+one as `full`), no `tool_costs` and no browser vault, so on a Talaria agent today only the
+confirmation request and the protected write ever ask.
 
-The last of those never reaches a person. The render pins every agent's file-tool write root,
-`HERMES_WRITE_SAFE_ROOT=/opt/data` (the agent's data volume, which is also the image's
-`HERMES_HOME`; `pin_write_root` in `talaria-fleet-render`), and Hermes' protected-instruction gate
-exempts the whole `HERMES_HOME`. So the gate only ever asks about a path outside `/opt/data`, and
-the write root refuses that path whatever the answer. A Developer Agent's own checkouts live under
-`/opt/data/workbench`, inside the root, where the gate does not ask. The frame names no path, so
+The protected write never reaches a person. The render pins every agent's file-tool write root,
+`HERMES_WRITE_SAFE_ROOT=/opt/data` (the agent's data volume), and its `HERMES_HOME` to the same
+folder (`pin_write_root` in `talaria-fleet-render`; the image sets both values too), and Hermes'
+protected-instruction gate exempts the whole `HERMES_HOME`. So the gate only ever asks about a
+path outside `/opt/data`, and the write root refuses that path whatever the answer. A Developer
+Agent's own checkouts live under `/opt/data/workbench`, inside the root, where the gate does not
+ask. The frame names no path, so
 the door recognises the gate by Hermes' own words (`fleet_approvals::unanswerable`), refuses it
 at once without offering it to a card, records `reason: outside_write_root` on the
 `agent.approval_denied` row, and then steers the run with the reason, because Hermes' own BLOCKED

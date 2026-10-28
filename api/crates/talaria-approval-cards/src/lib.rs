@@ -9,7 +9,11 @@
 // door answers every one `deny` (talaria-gateway's fleet_approvals), because
 // a door cannot consent for a person and cannot tell those gates apart from
 // a dangerous command. Before this crate, that left a Developer Agent unable
-// ever to do one of those things on a chat turn.
+// ever to do one of those things on a chat turn. Talaria renders no MCP
+// `trust` (Hermes reads a missing one as `full`), no `tool_costs` and no
+// browser vault, so on a Talaria agent today the card this crate raises is
+// an MCP server's confirmation request; the other carded gates would come
+// through the same seam if a render ever turned them on.
 //
 // The protected-instruction write never gets here. It only ever asks about a
 // path outside the agent's write root, which refuses the write whatever the
