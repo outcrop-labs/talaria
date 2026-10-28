@@ -366,7 +366,16 @@ pub async fn post(
         // without interrupting anyone; one that does roll takes the agent
         // offline for about a minute, and a turn in flight waits for it.
         let sb = secretbox_or_500(&state, "[fleet/defs/edit] secretbox unavailable").await?;
-        match apply_agent_change(&state.pg, &sb, &department).await {
+        // On its own task: a client that goes away mid-save drops this
+        // future, and a recreate's compose CLI dies with the future that
+        // runs it — halfway, stranding its new container.
+        let verdict = {
+            let (pg, department) = (state.pg.clone(), department.clone());
+            tokio::spawn(async move { apply_agent_change(&pg, &sb, &department).await })
+                .await
+                .unwrap_or_else(|e| Err(format!("the apply's task failed: {e}")))
+        };
+        match verdict {
             Ok(None) => applied = true,
             Ok(Some(warning)) => {
                 return Ok(Json(json!({

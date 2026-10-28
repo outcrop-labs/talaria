@@ -11,10 +11,22 @@
 // with compose's own error (its stderr, or the timeout), the container is
 // re-read (talaria-fleet-docker `settle` / `up_landed`), and an agent that
 // did reach what was asked answers as the success it is. One that did not
-// answers the fixed failure sentence; and when docker itself would not
-// answer the re-read (it took minutes to on this host, mid-build), the
-// answer says the outcome is unconfirmed rather than that it failed — that
-// stop landed three minutes later.
+// is answered by why compose failed:
+// - docker's own error (a port already bound, a conflict) with the container
+//   in the wrong state: the fixed 500 failure sentence;
+// - the CLI killed at its deadline: a 503 that says the outcome is not
+//   confirmed. The daemon may still be carrying out what the killed CLI
+//   asked — that stop landed about two minutes after the answer, well past
+//   the settle window — so "not there yet" is not "failed";
+// - docker not answering the re-read at all: the same 503.
+//
+// EACH COMPOSE VERB RUNS ON A TASK OF ITS OWN ([`own_task`]). A client that
+// goes away drops the request's future, and `docker()` kills its CLI with the
+// future it belongs to — so a curl that gave up mid-`up` killed compose
+// between creating a recreate's container and renaming it, stranding it, and
+// left the agent stopped with nothing logged (seen live under heavy IO, where
+// the render ahead of it took minutes). Awaiting a spawned task instead, the
+// verb finishes and its failure is logged, whoever is still listening.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -24,7 +36,8 @@ use serde_json::json;
 use talaria_agent_defs::agent_def_by_id;
 use talaria_api_facades::fleet::create::delete_agent_forever;
 use talaria_api_facades::fleet::docker::{
-    Observed, fleet_remove, fleet_restart, fleet_stop, fleet_up, observe, settle, up_landed,
+    Observed, fleet_remove, fleet_restart, fleet_stop, fleet_up, is_timeout, observe,
+    remove_stopped, settle, up_landed,
 };
 use talaria_api_facades::fleet::reconcile::roll_agent;
 use talaria_api_facades::fleet::render::render_fleet;
@@ -107,7 +120,10 @@ pub async fn post(
             if let Err(e) = render_fleet(&state.pg, &sb).await {
                 return Ok(catch(e));
             }
-            if let Err(e) = fleet_up(&state.pg, &def.department).await
+            if let Err(e) = own_task(&state, &def.department, |pg, d| async move {
+                fleet_up(&pg, &d).await
+            })
+            .await
                 && let Err(last) =
                     up_landed_anyway(&state, &action, &def.display_name, &def.department, &e).await
             {
@@ -122,7 +138,11 @@ pub async fn post(
             // Don't block on health — the roster shows the warm-up phase.
             Json(json!({ "ok": true, "warming": true })).into_response()
         }
-        "stop" => match fleet_stop(&state.pg, &def.department).await {
+        "stop" => match own_task(&state, &def.department, |pg, d| async move {
+            fleet_stop(&pg, &d).await
+        })
+        .await
+        {
             Ok(_) => Json(json!({ "ok": true })).into_response(),
             Err(e) => match settled(
                 &state,
@@ -148,7 +168,11 @@ pub async fn post(
             // The start stamp before, so a restart that did happen can be
             // told from one that did not when compose reports a failure.
             let before = observe(&state.pg, &def.department).await;
-            match fleet_restart(&state.pg, &def.department).await {
+            match own_task(&state, &def.department, |pg, d| async move {
+                fleet_restart(&pg, &d).await
+            })
+            .await
+            {
                 Ok(_) => Json(json!({ "ok": true, "warming": true })).into_response(),
                 Err(e) => {
                     match settled(
@@ -228,8 +252,10 @@ pub async fn post(
             Json(json!({ "ok": true, "rolling": true })).into_response()
         }
         "retire" => {
-            // Spin down + drop from the fleet. Container removed; the state
-            // volume and the version history stay (re-hire with 'unretire').
+            // Spin down + drop from the fleet. Container removed (a remove
+            // that ran out its time after the stop is finished by
+            // `settled`); the state volume and the version history stay
+            // (re-hire with 'unretire').
             if let Err(e) = sqlx::query(
                 "update agent_defs set enabled = false, updated_at = now() where id = $1::uuid",
             )
@@ -239,7 +265,10 @@ pub async fn post(
             {
                 return Ok(catch(e.to_string()));
             }
-            if let Err(e) = fleet_remove(&state.pg, &def.department).await
+            if let Err(e) = own_task(&state, &def.department, |pg, d| async move {
+                fleet_remove(&pg, &d).await
+            })
+            .await
                 && let Err(last) = settled(
                     &state,
                     &action,
@@ -305,7 +334,10 @@ pub async fn post(
                 return Ok(catch(e));
             }
             if def.managed {
-                if let Err(e) = fleet_up(&state.pg, &def.department).await
+                if let Err(e) = own_task(&state, &def.department, |pg, d| async move {
+                    fleet_up(&pg, &d).await
+                })
+                .await
                     && let Err(last) =
                         up_landed_anyway(&state, &action, &def.display_name, &def.department, &e)
                             .await
@@ -326,6 +358,18 @@ pub async fn post(
     })
 }
 
+/// Run one compose verb on a task of its own and wait for it (see the
+/// header): a client that goes away drops this future, not the verb's.
+async fn own_task<F, Fut>(state: &AppState, department: &str, verb: F) -> Result<String, String>
+where
+    F: FnOnce(sqlx::PgPool, String) -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>> + Send + 'static,
+{
+    tokio::spawn(verb(state.pg.clone(), department.to_string()))
+        .await
+        .unwrap_or_else(|e| Err(format!("the compose verb's task failed: {e}")))
+}
+
 /// The catch arm's sentence — the em dash is part of the wire contract.
 fn could_not(action: &str) -> String {
     format!("could not {action} the agent — see server logs")
@@ -338,19 +382,45 @@ fn control_failure(action: &str, display_name: &str, department: &str, error: &s
     house_error(StatusCode::INTERNAL_SERVER_ERROR, &could_not(action))
 }
 
-/// The answer when docker would not say what the container is doing after
-/// the verb failed — the em dash is part of the wire contract, as in
-/// [`could_not`].
-fn unconfirmed(action: &str) -> String {
-    format!(
-        "could not confirm the agent's {action} — docker is not answering; the roster shows its state once it does"
-    )
+/// Why a failed verb's outcome is not known yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unconfirmed {
+    /// Docker would not answer the re-read.
+    Silent,
+    /// The CLI was killed at its deadline, and the container is not (yet)
+    /// what was asked: the daemon may still be carrying the request out.
+    StillWorking,
+}
+
+/// The answer when a failed verb's outcome is not known yet — the em dash is
+/// part of the wire contract, as in [`could_not`].
+fn unconfirmed(action: &str, why: Unconfirmed) -> String {
+    match why {
+        Unconfirmed::Silent => format!(
+            "could not confirm the agent's {action} — docker is not answering; the roster shows its state once it does"
+        ),
+        Unconfirmed::StillWorking => format!(
+            "could not confirm the agent's {action} — docker did not finish it in time and may still be working on it; the roster shows its state once it does"
+        ),
+    }
+}
+
+/// How a verb that did not reach what was asked is answered: by why compose
+/// failed. `None` is the fixed failure (500) — docker answered, with an
+/// error of its own, and the container is in the wrong state. A deadline,
+/// or a re-read docker would not answer, leaves the outcome unknown (503).
+fn unconfirmed_why(error: &str, last: &Observed) -> Option<Unconfirmed> {
+    if matches!(last, Observed::Unreadable) {
+        Some(Unconfirmed::Silent)
+    } else if is_timeout(error) {
+        Some(Unconfirmed::StillWorking)
+    } else {
+        None
+    }
 }
 
 /// A compose verb failed and the container did not reach what was asked
-/// within the settle window: the fixed failure sentence when docker said
-/// what it is instead (running when a stop was asked, say), the unconfirmed
-/// one (503) when docker would not say at all.
+/// within the settle window: answered per [`unconfirmed_why`].
 fn failed(
     action: &str,
     display_name: &str,
@@ -358,11 +428,12 @@ fn failed(
     error: &str,
     last: &Observed,
 ) -> Response {
-    if matches!(last, Observed::Unreadable) {
+    if let Some(why) = unconfirmed_why(error, last) {
         tracing::warn!(
-            "[fleet] {action} of {display_name} ({department}) is unconfirmed: compose failed ({error}) and docker did not answer the re-read"
+            "[fleet] {action} of {display_name} ({department}) is unconfirmed: compose failed ({error}) and the container is {}",
+            last.describe()
         );
-        return house_error(StatusCode::SERVICE_UNAVAILABLE, &unconfirmed(action));
+        return house_error(StatusCode::SERVICE_UNAVAILABLE, &unconfirmed(action, why));
     }
     control_failure(action, display_name, department, error)
 }
@@ -370,7 +441,7 @@ fn failed(
 /// Whether a container compose reported failing on is, in fact, what
 /// `action` asked for. `before` is the reading taken ahead of a restart.
 /// A retire (`rm -sf`) that left a stopped container has still spun the
-/// agent down; the leftover is named in the log.
+/// agent down; [`settled`] then removes the leftover.
 fn reached(action: &str, before: Option<&Observed>, now: &Observed) -> bool {
     match action {
         "stop" | "retire" => matches!(now, Observed::Stopped { .. } | Observed::Absent),
@@ -408,10 +479,19 @@ async fn settled(
             "[fleet] {action} of {display_name} ({department}): compose reported a failure ({error}), but the container is {} — answering by its state",
             now.describe()
         );
+        // A retire's `rm -sf` that ran out its time after the stop leaves
+        // the container stopped and not removed, and nothing later sweeps
+        // it (each compose call names one service). Finish the remove — an
+        // unforced `docker rm`, which refuses a container that runs.
         if action == "retire" && matches!(now, Observed::Stopped { .. }) {
-            tracing::warn!(
-                "[fleet] retire of {display_name} ({department}) stopped the container but did not remove it — remove it by hand"
-            );
+            match remove_stopped(&state.pg, department).await {
+                Ok(_) => tracing::warn!(
+                    "[fleet] retire of {display_name} ({department}): removed the stopped container compose left"
+                ),
+                Err(e) => tracing::warn!(
+                    "[fleet] retire of {display_name} ({department}) stopped the container but could not remove it ({e}) — deleting the agent removes it, or remove it by hand"
+                ),
+            }
         }
         return Ok(now);
     }
@@ -494,14 +574,59 @@ mod tests {
     }
 
     #[test]
+    fn a_verb_that_did_not_land_is_failed_only_on_docker_s_own_error() {
+        let timeout = "docker compose …: timed out after 75s";
+        let bind = "docker compose failed: failed to bind host port 127.0.0.1:20900/tcp: address already in use";
+        // Killed at its deadline, still running when the window closed: the
+        // daemon may yet land the stop (it did, two minutes on) — unknown.
+        assert_eq!(
+            unconfirmed_why(timeout, &running("t1")),
+            Some(Unconfirmed::StillWorking)
+        );
+        assert_eq!(
+            unconfirmed_why(
+                timeout,
+                &Observed::Stopped {
+                    id: "c0ffee".into()
+                }
+            ),
+            Some(Unconfirmed::StillWorking)
+        );
+        // Docker would not describe the container: unknown, whatever failed.
+        assert_eq!(
+            unconfirmed_why(timeout, &Observed::Unreadable),
+            Some(Unconfirmed::Silent)
+        );
+        assert_eq!(
+            unconfirmed_why(bind, &Observed::Unreadable),
+            Some(Unconfirmed::Silent)
+        );
+        // Docker's own error and the container in the wrong state: failed.
+        assert_eq!(
+            unconfirmed_why(
+                bind,
+                &Observed::Stopped {
+                    id: "c0ffee".into()
+                }
+            ),
+            None
+        );
+        assert_eq!(unconfirmed_why(bind, &running("t1")), None);
+    }
+
+    #[test]
     fn the_wire_sentences_keep_their_shape() {
         assert_eq!(
             could_not("stop"),
             "could not stop the agent — see server logs"
         );
         assert_eq!(
-            unconfirmed("stop"),
+            unconfirmed("stop", Unconfirmed::Silent),
             "could not confirm the agent's stop — docker is not answering; the roster shows its state once it does"
+        );
+        assert_eq!(
+            unconfirmed("restart", Unconfirmed::StillWorking),
+            "could not confirm the agent's restart — docker did not finish it in time and may still be working on it; the roster shows its state once it does"
         );
     }
 }

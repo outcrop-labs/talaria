@@ -93,8 +93,11 @@ pub enum RollState {
     Rolling,
     Done,
     Failed,
-    /// Never recorded — the wire word for a department the registry has no
-    /// row for, so the picture can list every agent in one vocabulary.
+    /// The wire word for a department the registry has no row for, so the
+    /// picture can list every agent in one vocabulary. Recorded only by a
+    /// roll that was applying a change and found, under the service's lock,
+    /// that its agent had stopped: it left it stopped, and the row says no
+    /// roll happened rather than "rolled".
     Idle,
 }
 
@@ -213,6 +216,15 @@ const ROLL_HEALTH_WAIT_MS: u64 = 180_000;
 // at start). Only a container that no longer matches is rolled. A stopped
 // agent stays stopped; its next start reads the render.
 //
+// AN APPLY NEVER STARTS AN AGENT. A recreate starts the container it makes,
+// whatever state the old one was in, so an apply rolls only a container it
+// has SEEN running: a fit docker would not answer is asked again, patiently,
+// and one it still will not describe is left alone with a sentence for the
+// caller (the change is rendered, not applied). The roll itself reads the
+// container once more under the service's lock (`fleet_recreate_running`),
+// so a person who stops the agent while the roll renders and pulls is not
+// overruled by it.
+//
 // What still rolls on purpose: the Developer switch (env, image, mounts),
 // a key rotation (env), the operator's own roll and restart, the update
 // job's fleet roll (a new image), and an MCP timeout or auth-mode edit
@@ -282,42 +294,134 @@ pub async fn apply_running_agents(
     .map_err(|e| e.to_string())?;
     let mut rolled = Vec::new();
     for (department, display_name) in &managed {
-        match talaria_fleet_docker::container_fit(pg, department).await {
-            talaria_fleet_docker::ContainerFit::Differs => {
-                match roll_agent(pg, sb, department).await {
-                    Ok(None) => rolled.push(display_name.clone()),
-                    Ok(Some(error)) => warnings.push(error),
-                    Err(e) => warnings.push(e),
-                }
-            }
-            talaria_fleet_docker::ContainerFit::Matches
-            | talaria_fleet_docker::ContainerFit::NotRunning => {}
+        match apply_one(pg, sb, department).await {
+            Applied::Untouched => {}
+            Applied::Rolled(Ok(None)) => rolled.push(display_name.clone()),
+            Applied::Rolled(Ok(Some(error))) | Applied::Rolled(Err(error)) => warnings.push(error),
+            Applied::Unconfirmed(warning) => warnings.push(warning),
         }
     }
     Ok((rolled, warnings))
 }
 
-/// One department against a render that already ran.
+/// What an apply does with a department, from its container's fit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApplyStep {
+    /// The running container already matches the render: in place.
+    InPlace,
+    /// No running container: left as it is, and its next start reads the
+    /// render.
+    LeaveStopped,
+    /// A running container the render moved: roll it.
+    Roll,
+    /// Docker would not say whether it even runs: start nothing, recreate
+    /// nothing, and tell the caller the change is not applied yet.
+    Unconfirmed,
+}
+
+/// The decision, from the fit [`apply_one`] settled on (after the patient
+/// second read, when the first was unknown). Only a container seen running
+/// and moved is rolled: a recreate starts the container it makes, so
+/// rolling one that is not known to run could start an agent a person
+/// stopped.
+fn apply_step(fit: talaria_fleet_docker::ContainerFit) -> ApplyStep {
+    use talaria_fleet_docker::ContainerFit;
+    match fit {
+        ContainerFit::Matches => ApplyStep::InPlace,
+        ContainerFit::NotRunning => ApplyStep::LeaveStopped,
+        ContainerFit::Differs => ApplyStep::Roll,
+        ContainerFit::Unknown => ApplyStep::Unconfirmed,
+    }
+}
+
+/// What applying a change to one department came to.
+enum Applied {
+    /// In place, or a stopped agent left stopped.
+    Untouched,
+    /// The roll's verdict ([`roll_agent`]'s shape).
+    Rolled(Result<Option<String>, String>),
+    /// Docker would not describe the container: the sentence for the caller.
+    Unconfirmed(String),
+}
+
+/// One department against a render that already ran: the fit, read again
+/// with docker's patience when the first read got no answer, then
+/// [`apply_step`].
+async fn apply_one(pg: &PgPool, sb: &SecretBox, department: &str) -> Applied {
+    use talaria_fleet_docker::{CONTAINER_FIT_PATIENT, ContainerFit, container_fit_within};
+    let mut fit = talaria_fleet_docker::container_fit(pg, department).await;
+    if fit == ContainerFit::Unknown {
+        fit = container_fit_within(pg, department, CONTAINER_FIT_PATIENT).await;
+    }
+    match apply_step(fit) {
+        ApplyStep::InPlace => {
+            tracing::info!(
+                "[fleet] {department}: change applied in place — the running container already matches the render"
+            );
+            Applied::Untouched
+        }
+        ApplyStep::LeaveStopped => {
+            tracing::info!(
+                "[fleet] {department}: not running — left as it is; its next start reads the render"
+            );
+            Applied::Untouched
+        }
+        ApplyStep::Roll => {
+            tracing::info!(
+                "[fleet] {department}: the render moved the container (env, image, limits or start-time config) — rolling it"
+            );
+            Applied::Rolled(roll_agent_mode(pg, sb, department, None, RollMode::IfRunning).await)
+        }
+        ApplyStep::Unconfirmed => {
+            tracing::warn!(
+                "[fleet] {department}: docker did not say whether the agent runs — the change is rendered, and nothing was started or recreated"
+            );
+            Applied::Unconfirmed(unconfirmed_apply(department))
+        }
+    }
+}
+
+/// The sentence an apply answers when docker would not describe the
+/// container: what happened, and what lands the change.
+fn unconfirmed_apply(department: &str) -> String {
+    format!(
+        "department \"{department}\": docker did not say whether the agent is running, so the change is saved and rendered but not applied — it lands when the agent next starts, or roll the agent to apply it now"
+    )
+}
+
+/// [`apply_one`] in [`roll_agent`]'s verdict shape.
 async fn apply_rendered(
     pg: &PgPool,
     sb: &SecretBox,
     department: &str,
 ) -> Result<Option<String>, String> {
-    match talaria_fleet_docker::container_fit(pg, department).await {
-        talaria_fleet_docker::ContainerFit::Matches => {
-            tracing::info!(
-                "[fleet] {department}: change applied in place — the running container already matches the render"
-            );
-            Ok(None)
-        }
-        talaria_fleet_docker::ContainerFit::NotRunning => Ok(None),
-        talaria_fleet_docker::ContainerFit::Differs => {
-            tracing::info!(
-                "[fleet] {department}: the render moved the container (env, image, limits or start-time config) — rolling it"
-            );
-            roll_agent(pg, sb, department).await
-        }
+    match apply_one(pg, sb, department).await {
+        Applied::Untouched => Ok(None),
+        Applied::Rolled(verdict) => verdict,
+        Applied::Unconfirmed(warning) => Ok(Some(warning)),
     }
+}
+
+/// Whether a roll recreates whatever it finds, or only a running agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RollMode {
+    /// A roll asked for as one — the operator's, the fleet's, an MCP timeout
+    /// or auth-mode edit's: recreate, which starts the agent if it was
+    /// stopped.
+    Always,
+    /// Applying a change: recreate only a container still running when the
+    /// recreate holds the service's lock; leave any other as it is.
+    IfRunning,
+}
+
+/// What [`roll_agent_locked`] did.
+enum Rolled {
+    /// Recreated and healthy.
+    Done,
+    /// A soft failure, with its sentence.
+    Soft(String),
+    /// [`RollMode::IfRunning`] found the agent not running and left it.
+    LeftStopped,
 }
 
 /// The roll verdict. `Err` is a failed step (the caller decides what that
@@ -344,6 +448,16 @@ pub async fn roll_agent_in_batch(
     sb: &SecretBox,
     department: &str,
     batch: Option<&str>,
+) -> Result<Option<String>, String> {
+    roll_agent_mode(pg, sb, department, batch, RollMode::Always).await
+}
+
+async fn roll_agent_mode(
+    pg: &PgPool,
+    sb: &SecretBox,
+    department: &str,
+    batch: Option<&str>,
+    mode: RollMode,
 ) -> Result<Option<String>, String> {
     // One roll per department at a time. The in-process set answers first
     // (cheap, and what a double-click hits); the Postgres session-level
@@ -379,11 +493,17 @@ pub async fn roll_agent_in_batch(
         detail: None,
         batch: batch.map(str::to_string),
     });
-    let verdict = roll_agent_locked(pg, sb, department).await;
-    let (state, detail) = match &verdict {
-        Ok(None) => (RollState::Done, None),
-        Ok(Some(soft)) => (RollState::Failed, Some(soft.clone())),
+    let outcome = roll_agent_locked(pg, sb, department, mode).await;
+    let (state, detail) = match &outcome {
+        Ok(Rolled::Done) => (RollState::Done, None),
+        Ok(Rolled::Soft(soft)) => (RollState::Failed, Some(soft.clone())),
+        Ok(Rolled::LeftStopped) => (RollState::Idle, None),
         Err(thrown) => (RollState::Failed, Some(thrown.clone())),
+    };
+    let verdict = match outcome {
+        Ok(Rolled::Done | Rolled::LeftStopped) => Ok(None),
+        Ok(Rolled::Soft(soft)) => Ok(Some(soft)),
+        Err(thrown) => Err(thrown),
     };
     record_roll(RollRecord {
         department: department.to_string(),
@@ -412,7 +532,8 @@ async fn roll_agent_locked(
     pg: &PgPool,
     sb: &SecretBox,
     department: &str,
-) -> Result<Option<String>, String> {
+    mode: RollMode,
+) -> Result<Rolled, String> {
     let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
         "select slug, display_name, active_slot from agent_defs \
          where department = $1 and managed and enabled",
@@ -422,7 +543,7 @@ async fn roll_agent_locked(
     .await
     .map_err(|e| e.to_string())?;
     let Some((slug, display_name, active)) = rows.first().cloned() else {
-        return Ok(Some(format!(
+        return Ok(Rolled::Soft(format!(
             "no managed agent in department \"{department}\""
         )));
     };
@@ -443,7 +564,11 @@ async fn roll_agent_locked(
     // drained gateway back up). A -b that stopped but would not be removed
     // no longer serves or holds the lock, so the move home goes on and the
     // leftover is named in the log.
-    if active.as_deref() == Some("b") {
+    // A legacy agent's move home stops `-b` itself, below, so its recreate
+    // is always a plain one: the agent was running when the apply decided
+    // to roll it, and the move is what takes it from -b to its home.
+    let legacy = active.as_deref() == Some("b");
+    if legacy {
         let legacy = talaria_fleet_docker::slot_container(department, Slot::B);
         set_active_slot(pg, &slug, "a").await?;
         let ready = match render(pg, sb).await {
@@ -474,15 +599,32 @@ async fn roll_agent_locked(
 
     // The roll itself: pull if the host lacks the image (a failed pull stops
     // here with the running container untouched — for a legacy -b agent the
-    // pull already ran above), stop gracefully, recreate.
-    talaria_fleet_docker::fleet_recreate(pg, department).await?;
+    // pull already ran above), stop gracefully, recreate. An apply's roll
+    // recreates only a container still running under the service's lock.
+    if mode == RollMode::IfRunning && !legacy {
+        match talaria_fleet_docker::fleet_recreate_running(pg, department).await? {
+            talaria_fleet_docker::UpOutcome::Done(_) => {}
+            talaria_fleet_docker::UpOutcome::LeftAlone(
+                talaria_fleet_docker::Observed::Unreadable,
+            ) => return Ok(Rolled::Soft(unconfirmed_apply(department))),
+            talaria_fleet_docker::UpOutcome::LeftAlone(seen) => {
+                tracing::info!(
+                    "[fleet] {display_name} ({department}): the agent was {} when its roll reached it — left as it is; its next start reads the render",
+                    seen.describe()
+                );
+                return Ok(Rolled::LeftStopped);
+            }
+        }
+    } else {
+        talaria_fleet_docker::fleet_recreate(pg, department).await?;
+    }
     if !talaria_fleet_docker::wait_healthy(pg, department, ROLL_HEALTH_WAIT_MS).await {
-        return Ok(Some(format!(
+        return Ok(Rolled::Soft(format!(
             "{display_name}: the recreated container did not report healthy within {}s — see its logs",
             ROLL_HEALTH_WAIT_MS / 1000
         )));
     }
-    Ok(None)
+    Ok(Rolled::Done)
 }
 
 /// One render through the wired edge.
@@ -846,6 +988,24 @@ mod tests {
             ]
         );
         assert_eq!(merged[0].detail.as_deref(), Some("thrown"));
+    }
+
+    #[test]
+    fn an_apply_rolls_only_a_container_it_saw_running_and_moved() {
+        use talaria_fleet_docker::ContainerFit;
+        assert_eq!(apply_step(ContainerFit::Matches), ApplyStep::InPlace);
+        assert_eq!(apply_step(ContainerFit::Differs), ApplyStep::Roll);
+        // A stopped agent stays stopped: its next start reads the render.
+        assert_eq!(
+            apply_step(ContainerFit::NotRunning),
+            ApplyStep::LeaveStopped
+        );
+        // Docker would not say (twice, by the time this is asked): never a
+        // roll, which would start a container a person stopped.
+        assert_eq!(apply_step(ContainerFit::Unknown), ApplyStep::Unconfirmed);
+        let sentence = unconfirmed_apply("ops");
+        assert!(sentence.contains("\"ops\""), "{sentence}");
+        assert!(sentence.contains("not applied"), "{sentence}");
     }
 
     #[test]

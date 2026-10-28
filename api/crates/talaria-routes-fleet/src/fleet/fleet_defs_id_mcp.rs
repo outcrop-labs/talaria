@@ -536,7 +536,15 @@ pub async fn post(
     let mut warning: Option<String> = None;
     if (touched_registry || created) && apply && def.managed {
         let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
-        match apply_agent_change(&state.pg, &sb, &def.department).await {
+        // On its own task, like the def edit's apply: a client that goes
+        // away must not kill a recreate halfway.
+        let verdict = {
+            let (pg, department) = (state.pg.clone(), def.department.clone());
+            tokio::spawn(async move { apply_agent_change(&pg, &sb, &department).await })
+                .await
+                .unwrap_or_else(|e| Err(format!("the apply's task failed: {e}")))
+        };
+        match verdict {
             Ok(None) => applied = true,
             Ok(Some(w)) => warning = Some(w),
             Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),

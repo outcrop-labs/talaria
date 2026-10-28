@@ -12,7 +12,10 @@
 // render moved is rolled at once — the stripped tiers are `model_routes` and
 // the fallback chain, which Hermes reads only at start, so it always moves —
 // and a stopped one stays stopped, reading the render when it next starts
-// (`up` renders, and compose recreates a container whose service moved).
+// (`up` renders, and compose recreates a container whose service moved). The
+// apply rolls only a container it has SEEN running, and the roll reads it
+// again under the service's lock: one docker will not describe, or one a
+// person stops mid-roll, is left as it is.
 
 use serde_json::{Map, Value};
 use sqlx::PgPool;
