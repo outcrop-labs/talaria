@@ -3,7 +3,7 @@
 // ceiling. Off by default; a failed read must not become an outage.
 
 use crate::settings::get_setting_hot;
-use crate::usage::{SpendWindow, spend_since};
+use crate::usage::{SpendUnit, SpendWindow, spend_clears_at, spend_since};
 use serde_json::Value;
 use sqlx::PgPool;
 use std::collections::HashMap;
@@ -92,7 +92,17 @@ pub struct BudgetDenial {
     pub limit: f64,
     pub used: f64,
     pub window_hours: i64,
+    /// The `Retry-After` an operator's or an app's key is answered with. An
+    /// agent's key gets none: see `resets_at`.
     pub retry_after_seconds: i64,
+    /// When the window's spend falls back under the cap if nothing more is
+    /// spent, in epoch seconds (`spend_clears_at`) — `None` when the read
+    /// failed. It rides the refusal as `error.resets_at`, the field Hermes
+    /// reads for a 429's reset: with no `Retry-After` beside it, an agent
+    /// fails the turn after a few seconds of retries and names this time,
+    /// instead of waiting out 300s twice and saying "resets in ~5 min" about
+    /// a 24h window.
+    pub resets_at: Option<i64>,
     /// Which side set the binding number — where the fix lives.
     pub via: &'static str, // "key" | "admin"
 }
@@ -122,8 +132,11 @@ fn merge_caps(key: &BudgetLimits, admin: &BudgetLimits) -> MergedCaps {
     }
 }
 
-/// A rolling window ages out continuously, so "try again shortly" is honest —
-/// but never advise a wait longer than the window itself.
+/// The `Retry-After` an operator's or an app's key hears. A rolling window
+/// ages out continuously, so "try again shortly" is a client's cue to look
+/// again, never longer than the window itself — the real resume time is
+/// `resets_at`, beside it. An agent's key is not sent this (llm_chat.rs
+/// `budget_refusal`): Hermes believes it, and holds the turn for it.
 fn retry_after(window_hours: i64) -> i64 {
     (window_hours * 3600).clamp(30, 300)
 }
@@ -163,10 +176,25 @@ pub fn budget_message(d: &BudgetDenial) -> String {
     } else {
         "an admin can raise the limit (Admin → Settings → LLM budgets)."
     };
+    let when = d
+        .resets_at
+        .map(|at| format!(" (around {}, if nothing more is spent)", utc_minute(at)))
+        .unwrap_or_default();
     format!(
-        "{who} has reached its LLM budget: {used} of {cap} in the last {h}h. Requests resume as spend ages out of the window, or {fix}",
+        "{who} has reached its LLM budget: {used} of {cap} in the last {h}h. Requests resume as spend ages out of the window{when}, or {fix}",
         h = d.window_hours
     )
+}
+
+/// `2026-10-28 14:21 UTC` for an epoch second — the minute a denial says the
+/// window reopens, rounded up: it is not open any earlier.
+fn utc_minute(epoch_s: i64) -> String {
+    let minute = epoch_s.saturating_add(59).div_euclid(60).saturating_mul(60);
+    let iso = talaria_agent_auth::epoch_ms_to_iso(minute.saturating_mul(1000));
+    match (iso.get(0..10), iso.get(11..16)) {
+        (Some(day), Some(minute)) => format!("{day} {minute} UTC"),
+        _ => iso,
+    }
 }
 
 // Spend is read per request, so it is cached briefly. The TTL collapses as
@@ -284,6 +312,19 @@ pub async fn check_budget(
         else {
             continue;
         };
+        // Only a refusal pays for the resume-time read; a failed one leaves
+        // the refusal without a time, never without the refusal.
+        let clears_at = |unit, cap| {
+            let subject = s.subject.clone();
+            async move {
+                spend_clears_at(pg, window_hours, subject.as_deref(), unit, cap)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("[budget] resume time unreadable: {e}");
+                        None
+                    })
+            }
+        };
         if let Some(t) = token_cap
             && spend.tokens as f64 >= t
         {
@@ -295,6 +336,7 @@ pub async fn check_budget(
                 used: spend.tokens as f64,
                 window_hours,
                 retry_after_seconds: retry_after(window_hours),
+                resets_at: clears_at(SpendUnit::Tokens, t).await,
                 via: if s.tokens_from_key { "key" } else { "admin" },
             });
         }
@@ -309,6 +351,7 @@ pub async fn check_budget(
                 used: spend.cost,
                 window_hours,
                 retry_after_seconds: retry_after(window_hours),
+                resets_at: clears_at(SpendUnit::Usd, u).await,
                 via: if s.usd_from_key { "key" } else { "admin" },
             });
         }
@@ -369,6 +412,7 @@ mod tests {
             used: 1000.0,
             window_hours: 24,
             retry_after_seconds: 300,
+            resets_at: None,
             via: "key",
         };
         let m = budget_message(&key_side);
@@ -376,6 +420,34 @@ mod tests {
         assert!(m.contains("1,000 tokens of 1,000 tokens"));
         assert!(m.contains("Settings → API keys"));
         assert!(m.ends_with("Requests resume as spend ages out of the window, or the key's owner can raise or remove the cap (Settings → API keys)."));
+    }
+
+    #[test]
+    fn message_names_the_minute_the_window_reopens() {
+        let agent = BudgetDenial {
+            scope: "caller",
+            subject: Some("engineer-engineering".into()),
+            unit: "usd",
+            limit: 2.0,
+            used: 2.5,
+            window_hours: 24,
+            retry_after_seconds: 300,
+            // 2026-10-28T14:20:59Z: named as the next whole minute.
+            resets_at: Some(1_793_197_259),
+            via: "admin",
+        };
+        assert_eq!(
+            budget_message(&agent),
+            "\"engineer-engineering\" has reached its LLM budget: $2.50 of $2.00 in the last 24h. \
+             Requests resume as spend ages out of the window (around 2026-10-28 14:21 UTC, if \
+             nothing more is spent), or an admin can raise the limit (Admin → Settings → LLM budgets)."
+        );
+    }
+
+    #[test]
+    fn the_reset_minute_rounds_up_and_a_whole_minute_stays() {
+        assert_eq!(utc_minute(1_793_197_200), "2026-10-28 14:20 UTC");
+        assert_eq!(utc_minute(1_793_197_201), "2026-10-28 14:21 UTC");
     }
 
     #[test]

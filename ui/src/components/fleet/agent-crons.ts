@@ -89,13 +89,26 @@ export function parseSchedule(raw: string): Sched {
   return { ...DEFAULT_SCHED, mode: 'custom', custom: s }
 }
 
+/** An interval in the largest whole unit it fills. Hermes stores every
+ *  interval in minutes (`every 6h` reads back as `every 360m`, `every 1d` as
+ *  `every 1440m`), so the display folds them back: whole days, then whole
+ *  hours, then minutes. Display only — `parseSchedule` keeps the minutes, so
+ *  an untouched edit form still round-trips the string Hermes stored. */
+function describeInterval(every: number, unit: 'm' | 'h'): string {
+  const minutes = unit === 'h' ? every * 60 : every
+  const say = (n: number, one: string, many: string) => (n === 1 ? `Every ${one}` : `Every ${n} ${many}`)
+  if (minutes > 0 && minutes % 1440 === 0) return say(minutes / 1440, 'day', 'days')
+  if (minutes > 0 && minutes % 60 === 0) return say(minutes / 60, 'hour', 'hours')
+  return say(minutes, 'minute', 'minutes')
+}
+
 /** Plain-English schedule for display — the cron string stays in the tooltip. */
 export function describeSchedule(raw: string): string {
   const s = parseSchedule(raw)
   const t = s.time
   switch (s.mode) {
     case 'interval':
-      return s.unit === 'h' ? (s.every === 1 ? 'Every hour' : `Every ${s.every} hours`) : `Every ${s.every} minutes`
+      return describeInterval(s.every, s.unit)
     case 'daily':
       return `Every day at ${t}`
     case 'weekdays':

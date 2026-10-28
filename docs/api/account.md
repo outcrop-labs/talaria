@@ -196,7 +196,7 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me_assistant.rs`](.
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 200 | — |
-| POST | `session` | [body](#post-apimeassistant-body) | `…` | 200, 400 | — |
+| POST | `session` | [body](#post-apimeassistant-body) | `…` | 200, 400, 409 | — |
 | PATCH | `session` | [body](#patch-apimeassistant-body) | `…` | 200, 400 | — |
 
 ### POST `/api/me/assistant` body

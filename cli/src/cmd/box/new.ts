@@ -8,10 +8,11 @@ import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf, ParsedArgs } from '../../cli'
 import { EMBED_CONTAINER } from '../../containers'
-import { compose, stackComposeFiles, waitFor } from '../../compose'
+import { compose, stackComposeFiles, waitFor, waitForPostgres } from '../../compose'
 import { envValue, writeSecret } from '../../envfile'
 import { portSlot } from '../../paths'
 import { runSeed } from './seed'
+import { ALL_PRIMARY_CONTAINER_VARS, refuseSideStackContainers } from '../../stack'
 import { boxDir, boxFleetNetwork, boxHost, boxProject, boxState, boxSvc, checkName, COMPOSE_FILE, IMAGE, sharedTools, toolsExec } from './shared'
 
 /** The per-box compose interpolation env (written 0600). Pure so the mount
@@ -154,6 +155,13 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
   } catch {
     ctx.log.die('docker is required')
   }
+  // The primary's compose `up` below and the seed both name main's containers
+  // by the shell's TALARIA_*_CONTAINER, and a shell under a worktree's
+  // `talaria dev` inherits that worktree's. The `up` would then recreate
+  // main's postgres under the worktree's name and port (or remove it, when
+  // the worktree's container holds the name), and the seed would copy the
+  // worktree. Refused before anything exists (stack.ts).
+  await refuseSideStackContainers(ctx, ALL_PRIMARY_CONTAINER_VARS, `box new ${name}`)
   if (!existsSync(join(root, 'ui/.env'))) {
     ctx.log.die('run `bun talaria setup` in the primary checkout first (need ui/.env)')
   }
@@ -302,20 +310,10 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
   if ((await compose(ctx, { files: stackComposeFiles(root, COMPOSE_FILE), project: boxProject(name), envFile: join(box, 'compose.env') }, ['up', '-d', '--quiet-pull'])) !== 0) {
     ctx.log.die('box stack failed to start')
   }
-  const pgReady = await waitFor(
-    ctx,
-    'box postgres',
-    async () => {
-      try {
-        await ctx.exec('docker', ['exec', boxSvc(name, 'postgres'), 'pg_isready', '-U', 'talaria', '-d', 'talaria'])
-        return true
-      } catch {
-        return false
-      }
-    },
-    60,
-  )
-  if (!pgReady) ctx.log.die('box postgres never became ready')
+  // A real query over TCP (compose.ts, pgReadyArgs): the socket pg_isready
+  // this was passed against the entrypoint's temporary init server, before
+  // the box's database existed, and the seed below then raced its shutdown.
+  if (!(await waitForPostgres(ctx, boxSvc(name, 'postgres'), 60))) ctx.log.die('box postgres never became ready')
   await waitFor(
     ctx,
     'box redis',

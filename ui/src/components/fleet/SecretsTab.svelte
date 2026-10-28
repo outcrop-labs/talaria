@@ -18,9 +18,14 @@
     name: string
     updatedBy: string | null
     updatedAt: string
-    /** Why this name is refused now — present only on a row saved before the rule. */
+    /** Why this name is refused now — present only on a row saved before the rule. Such a row is not loaded. */
     refused?: string
+    /** CONFIG_* only: where the agent's current config names it. Empty when nothing does. */
+    usedAt?: string[]
   }
+
+  /** A credential sealed out of the agent's own config (federation). */
+  const sealed = (s: SecretMeta) => s.name.startsWith('CONFIG_')
 
   // Per-agent secrets: UI-configured env vars, encrypted at rest, write-only
   // (values never come back). Materialized into the agent's env at render — no
@@ -94,15 +99,30 @@
     }
   }
 
-  const remove = async (n: string) => {
-    if (!(await confirm({ title: 'Remove secret', message: `Remove ${n}? The agent loses it on its next start.`, confirmLabel: 'Remove', danger: true }))) return
+  // A sealed credential its config still names cannot go alone: the agent
+  // would read the handle's own text as the value. Removing it takes the
+  // setting out too, in a new version — so the confirm says which one. A
+  // stale list (the config changed since) gets the server's 409, which names
+  // the paths, as the toast.
+  const remove = async (s: SecretMeta) => {
+    const used = s.usedAt ?? []
+    const message = used.length
+      ? `Remove ${s.name}? This agent's config uses it at ${used.join(', ')}. Removing it also takes ${used.length === 1 ? 'that setting' : 'those settings'} out of the config, in a new version, so the agent never reads the placeholder text as the value. Both apply on its next start.`
+      : `Remove ${s.name}? The agent loses it on its next start.`
+    const confirmLabel = used.length ? 'Remove secret and setting' : 'Remove'
+    if (!(await confirm({ title: 'Remove secret', message, confirmLabel, danger: true }))) return
     try {
-      await delJson(`/api/fleet/agents/${agentId}/secrets?name=${encodeURIComponent(n)}`)
+      await delJson(`/api/fleet/agents/${agentId}/secrets`, { name: s.name, removeSetting: used.length > 0 })
     } catch (e) {
       // Fire-and-forget from a row button; the err line belongs to the form.
       toastError('Remove failed', e)
     }
     await qc.invalidateQueries({ queryKey: key() })
+    // A setting went with it: a new version, so the def's current one moved.
+    if (used.length) {
+      await qc.invalidateQueries({ queryKey: ['agent-versions', agentId] })
+      await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+    }
   }
 </script>
 
@@ -173,7 +193,8 @@
     <span class="inline-flex items-center gap-1 text-warning"><AlertTriangle size={12} aria-hidden="true" /> {agentLabel} can read these.</span>
     They are written into its container as plaintext and loaded as env vars, so anything running in there, including the shell its harness
     uses, can print them. Use one only when a process inside the container reads the variable itself; if the credential merely needs to be
-    spent through a tool, grant a handle above instead.
+    spent through a tool, grant a handle above instead. A <code class="font-mono text-fg">CONFIG_…</code> entry is the exception: a credential
+    sealed out of its own config, which Hermes reads for itself and keeps out of every command it runs.
   </p>
   <QueryState {query} errorTitle="Could not load this agent's secrets" errorVariant="compact">
     {#snippet skeleton()}
@@ -202,18 +223,28 @@
             <button
               type="button"
               title="Remove"
-              onclick={() => void remove(s.name)}
+              onclick={() => void remove(s)}
               class="shrink-0 text-muted transition-colors hover:text-danger"
             >
               <Trash2 size={14} />
             </button>
             {#if s.refused}
-              <!-- Saved before the rule that refuses this name. It still loads
-                   into the container (nothing was taken away), but no tool of
-                   the agent's can read it — so say why, beside the remove. -->
+              <!-- Saved before the rule that refuses this name. The render
+                   leaves it out of the container (no tool of the agent's could
+                   read it, and loading it only reconfigured the agent), so say
+                   why, beside the remove. -->
               <p class="flex basis-full items-start gap-1 font-sans text-xs text-warning">
                 <AlertTriangle size={12} class="mt-0.5 shrink-0" aria-hidden="true" />
-                <span>Would be refused today: {s.refused}. It still loads into the container until you remove it.</span>
+                <span>Not loaded: {s.refused}.</span>
+              </p>
+            {:else if sealed(s)}
+              <p class="basis-full font-sans text-xs text-muted">
+                {#if s.usedAt?.length}
+                  A config credential, used at <span class="font-mono text-fg">{s.usedAt.join(', ')}</span>. Hermes reads it; the agent's
+                  commands do not see it. Replace the value to rotate it.
+                {:else}
+                  A config credential its current config does not use. The agent's commands do not see it.
+                {/if}
               </p>
             {/if}
           </li>

@@ -1,7 +1,7 @@
 <script lang="ts">
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import StatCard from '@/components/ui/StatCard.svelte'
-  import { useFleetContainers, useFleetDefs } from '@/lib/fleet-defs'
+  import { containersOf, useFleetContainers, useFleetDefs } from '@/lib/fleet-defs'
   import { useHasPerm } from '@/lib/session'
   import { healthOf, type Health } from '@/routes/app/agents.svelte'
   import { p } from '@/router'
@@ -22,7 +22,7 @@
     if (!defs || !containers) return null
     const byDept = new Map(containers.map((c) => [c.department, c]))
     const tally: Record<Health, number> = { up: 0, warming: 0, degraded: 0, down: 0, draft: 0, retired: 0 }
-    for (const d of defs) tally[healthOf(d, byDept.get(d.department) ?? null).health] += 1
+    for (const d of defs) tally[healthOf(d, containersOf(d, byDept)).health] += 1
     return tally
   })
   const live = $derived(counts ? counts.up + counts.warming + counts.degraded + counts.down : 0)

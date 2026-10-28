@@ -1448,8 +1448,8 @@ describe('when there is no model', () => {
 describe('tool passthrough', () => {
   it("tells the transport when the model may use its OWN tools", async () => {
     // The work session, the outreach check-in and the briefing follow-up are
-    // tool loops. `tools: []` / `tool_choice: 'none'` does not weaken them — it
-    // disarms the agent and then trips `zero_tool_claim` for calling no tool.
+    // tool loops, and say so: 'none' is the wrong ask for them, and a Hermes
+    // session refuses it outright.
     const r = world({ replies: ['picked it up, running the tests now'] })
     const looping: HarnessDefinition<{ transcript: string }, string> = { ...titler, tools: 'own' }
     await run(looping, { transcript: 'x' }, r)
@@ -1513,15 +1513,16 @@ describe('tool passthrough', () => {
 })
 
 describe('ledger attribution', () => {
-  it('defaults to the attribution a harness turn has always had', async () => {
+  it('defaults to no refs: the turn belongs to no conversation, run or ticket', async () => {
     const r = world()
     await run(judge, { ticket: 'x' }, r)
-    expect(r.requests[0]?.ledger).toEqual({ agentModel: 'pl-main', source: 'chat', refId: null, taskId: null, tier: null })
+    expect(r.requests[0]?.ledger).toEqual({ refId: null, taskId: null })
   })
 
-  it("restores research's own source and run id", async () => {
-    // The persona stages metered as `source: 'chat'` with no refId after the
-    // port, so a run's cost stopped being answerable at all.
+  it("carries research's run id, and not the source the relay decides itself", async () => {
+    // The persona stages metered with no refId after the port, so a run's cost
+    // stopped being answerable at all. A source the caller names rides nowhere:
+    // the relay books every call on an app's key as `app`.
     const r = world()
     const res = await runHarness(judge, { ticket: 'x' }, {
       caller: 'research:run-9',
@@ -1529,7 +1530,7 @@ describe('ledger attribution', () => {
       deps: r.deps,
     })
     expect(res.value).not.toBeNull()
-    expect(r.requests[0]?.ledger).toEqual({ agentModel: 'pl-main', source: 'research', refId: 'run-9', taskId: null, tier: null })
+    expect(r.requests[0]?.ledger).toEqual({ refId: 'run-9', taskId: null })
   })
 
   it("carries the work session's taskId, without which the spend misses the ticket", async () => {
@@ -1540,23 +1541,23 @@ describe('ledger attribution', () => {
       ledger: { source: 'chat', refId: 't-41', taskId: 't-41' },
       deps: r.deps,
     })
-    expect(r.requests[0]?.ledger).toMatchObject({ agentModel: 'engineer-engineering', refId: 't-41', taskId: 't-41' })
+    expect(r.requests[0]?.ledger).toEqual({ refId: 't-41', taskId: 't-41' })
   })
 })
 
 describe('routing a persona TIER', () => {
   const onTier = { caller: 'plan:c-1', model: 'engineer-engineering', tier: 'opus' as const }
 
-  it('calls the tier id and attributes the spend to the base agent', async () => {
-    // `recordUsage` prices a row by finding `agent_defs.model = agentModel` and
-    // then the alias named by `tier`. Hand it the routed id with a null tier and
-    // BOTH lookups miss: the row lands on an agent that does not exist, with no
-    // endpoint class, which means no price. A tier draft becomes free.
+  it('calls the tier id, and names neither the base agent nor the alias beside it', async () => {
+    // The wire carries the tier id, and that is all the relay needs: it prices
+    // and books the call from the tier id, under its base agent
+    // (talaria-gateway `persona_base`). So this pins the runner's spelling of
+    // `<model>-<tier>`, and an attribution of refs only, not a price.
     const r = world({ replies: ['drafted'] })
     const res = await runHarness(titler, { transcript: 'x' }, { ...onTier, deps: r.deps })
 
     expect(r.requests[0]?.model).toBe('engineer-engineering-opus')
-    expect(r.requests[0]?.ledger).toMatchObject({ agentModel: 'engineer-engineering', tier: 'opus' })
+    expect(r.requests[0]?.ledger).toEqual({ refId: null, taskId: null })
     // The RESULT names the id that answered, because that is the model the
     // fitness matrix is scoring.
     expect(res.model).toBe('engineer-engineering-opus')
@@ -1710,7 +1711,7 @@ describe('runHarnessStreamed', () => {
         },
       },
     )
-    expect(seen).toMatchObject({ model: 'assistant-operations', tools: 'own', ledger: { refId: 'c-3', agentModel: 'assistant-operations' } })
+    expect(seen).toMatchObject({ model: 'assistant-operations', tools: 'own', ledger: { refId: 'c-3', taskId: null } })
   })
 })
 

@@ -410,9 +410,56 @@ async fn dispatch_block(
 // advances past a live run.
 pub const REDISPATCH_SETTLE_MS: i64 = 5 * 60_000;
 
-/// One sweep pass. Fire-and-forget by nature (a scheduler job calls it);
-/// every failure is logged here and never thrown.
-pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) {
+/// What one sweep pass decided, per ticket. Only `offer` reaches
+/// `maybe_dispatch_ticket`; the other two are reported, never offered.
+#[derive(Debug, Default)]
+pub struct SweepPass {
+    /// Tickets in a pickup column with at least one agent assignee, not
+    /// behind a live workchain step: re-offered to their agents.
+    pub offer: Vec<DispatchTicket>,
+    /// Ids of agent-assigned tickets sitting outside a pickup column.
+    pub parked: Vec<String>,
+    /// Ids of agent-assigned tickets waiting on an earlier workchain step.
+    pub waiting: Vec<String>,
+}
+
+/// The pass in numbers — what the log line says, and what a test asserts.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SweepCount {
+    pub offered: usize,
+    pub parked: usize,
+    pub waiting: usize,
+}
+
+impl SweepPass {
+    pub fn count(&self) -> SweepCount {
+        SweepCount {
+            offered: self.offer.len(),
+            parked: self.parked.len(),
+            waiting: self.waiting.len(),
+        }
+    }
+}
+
+/// The assignee list a sweep offers, or None when the ticket has nobody the
+/// sweep can offer it to. AN AGENT ASSIGNEE, NOT ANY ASSIGNEE: a ticket
+/// assigned only to people (`user:<id>`) gives `maybe_dispatch_ticket`
+/// nothing to loop over, so offering it was a guaranteed no-op that the
+/// count still called "re-offered", at the cost of a status and a workchain
+/// read every minute. The full list rides on (people included):
+/// `maybe_dispatch_ticket` filters it again, and is the one that decides.
+fn sweep_assignees(assignees: Option<serde_json::Value>) -> Option<Vec<String>> {
+    let assignees = tasks::json_strings(&assignees.filter(|v| !v.is_null())?);
+    if tasks::agent_assignees(&assignees).is_empty() {
+        return None;
+    }
+    Some(assignees)
+}
+
+/// Which tickets this pass offers, and which it reports as parked or
+/// waiting. None when the pass cannot run (the sweep query or the
+/// workchain read failed — logged here).
+pub async fn sweep_pass(pg: &PgPool) -> Option<SweepPass> {
     // `assignees` is JSONB (see tasks.rs's own read): decoded as a Value and
     // mapped with the same json_strings law, not as TEXT[] — the trap the
     // first night of this sweep found the loud way.
@@ -440,7 +487,7 @@ pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("{LOG} sweep query failed: {e}");
-            return;
+            return None;
         }
     };
     // THE COUNT IS THE DIAGNOSTIC. Offering a ticket whose column is not a
@@ -450,18 +497,16 @@ pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) {
     // real question was why. Pickup keys are read once per board per pass
     // (the same status_meta the gate itself reads), and only tickets that
     // pass the column question here are offered and counted; everything
-    // else is reported as parked, which is what it is.
+    // else is reported as parked, which is what it is. A ticket with no
+    // agent assignee is neither: the sweep has nobody to offer it to, so it
+    // is not counted at all (`sweep_assignees`).
     let mut meta_by_board: HashMap<String, Option<statuses::StatusMeta>> = HashMap::new();
     let mut in_pickup: Vec<DispatchTicket> = Vec::new();
-    let mut parked = 0usize;
+    let mut pass = SweepPass::default();
     for (id, board_id, status, assignees, archived_at) in rows {
-        let Some(assignees) = assignees.filter(|v| !v.is_null()) else {
+        let Some(assignees) = sweep_assignees(assignees) else {
             continue;
         };
-        let assignees = tasks::json_strings(&assignees);
-        if assignees.is_empty() {
-            continue;
-        }
         let meta = match meta_by_board.entry(board_id.clone()) {
             std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
             std::collections::hash_map::Entry::Vacant(v) => {
@@ -485,7 +530,7 @@ pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) {
             .as_ref()
             .is_some_and(|m| m.pickup_keys.contains(&status))
         {
-            parked += 1;
+            pass.parked.push(id);
             continue;
         }
         in_pickup.push(DispatchTicket {
@@ -510,22 +555,37 @@ pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) {
         Ok(blocked) => blocked,
         Err(e) => {
             tracing::error!("{LOG} sweep could not read workchain order, not offering: {e}");
-            return;
+            return None;
         }
     };
-    let mut offered = 0usize;
-    let mut waiting = 0usize;
     for task in in_pickup {
         if blocked.contains(&task.id) {
-            waiting += 1;
-            continue;
+            pass.waiting.push(task.id);
+        } else {
+            pass.offer.push(task);
         }
+    }
+    Some(pass)
+}
+
+/// One sweep pass. Fire-and-forget by nature (a scheduler job calls it);
+/// every failure is logged here and never thrown. Answers what it did.
+pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) -> SweepCount {
+    let Some(pass) = sweep_pass(pg).await else {
+        return SweepCount::default();
+    };
+    let count = pass.count();
+    for task in &pass.offer {
         // Re-offering is the whole point: every internal gate (agent
         // refusal, the chain order, the generation walk) re-decides from
         // live state.
-        maybe_dispatch_ticket(pg, deps, &task, None).await;
-        offered += 1;
+        maybe_dispatch_ticket(pg, deps, task, None).await;
     }
+    let SweepCount {
+        offered,
+        parked,
+        waiting,
+    } = count;
     if offered > 0 || parked > 0 || waiting > 0 {
         let parked_note = if parked > 0 {
             format!(" ({parked} parked outside pickup columns)")
@@ -541,6 +601,7 @@ pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) {
             "{LOG} sweep re-offered {offered} ticket(s) to their agents{parked_note}{waiting_note}"
         );
     }
+    count
 }
 
 /// The sweep's cadence. Sixty seconds, matching the update-reconcile hand:
@@ -944,5 +1005,158 @@ mod tests {
         // Must return without panicking — the driven-method unreachables are
         // the assertion that a blind store means no insert.
         dispatch_ticket_work(&deps(store), &ticket(), "claude-opus-4-5", None).await;
+    }
+
+    // C13: the sweep offers a ticket only to an AGENT. A people-only ticket
+    // has nobody `maybe_dispatch_ticket` can loop over, so it is neither
+    // offered nor counted; a mixed one is offered with its whole list.
+    #[test]
+    fn a_people_only_ticket_is_not_the_sweeps_to_offer() {
+        let people = serde_json::json!(["user:7d3c0d7e-2a8e-4c35-9a61-3b1f5e0c9a10"]);
+        assert_eq!(sweep_assignees(Some(people)), None);
+        let mixed = serde_json::json!(["user:7d3c0d7e-2a8e-4c35-9a61-3b1f5e0c9a10", "ada-ops"]);
+        assert_eq!(
+            sweep_assignees(Some(mixed)),
+            Some(vec![
+                "user:7d3c0d7e-2a8e-4c35-9a61-3b1f5e0c9a10".to_string(),
+                "ada-ops".to_string()
+            ])
+        );
+        assert_eq!(
+            sweep_assignees(Some(serde_json::json!(["ada-ops"]))),
+            Some(vec!["ada-ops".to_string()])
+        );
+        assert_eq!(sweep_assignees(Some(serde_json::json!([]))), None);
+        assert_eq!(sweep_assignees(Some(Value::Null)), None);
+        assert_eq!(sweep_assignees(None), None);
+        // Not an array of strings: json_strings reads nothing, so nothing is
+        // offered (the same law the dispatch gate reads it with).
+        assert_eq!(sweep_assignees(Some(serde_json::json!({"a": 1}))), None);
+    }
+}
+
+// ── Live DB: the sweep's own query against the real schema ──────────────────
+// What a unit test cannot see is the pass reading real rows: the JSONB
+// assignees column, the default status list a board with no custom columns
+// gets, and the pickup-column filter. #[ignore]d; CI's live job runs it on its
+// migrated scratch database:
+//
+//   DATABASE_URL=postgres://… cargo test -p talaria-work-dispatch --lib -- --ignored live_db
+//
+// The pass reads every ticket in the database, so the assertions are on this
+// test's own rows only; everything it writes hangs off one user row it
+// deletes at the end (users → boards → tasks cascade).
+#[cfg(test)]
+mod live_db {
+    use super::*;
+
+    async fn pg() -> PgPool {
+        let url = std::env::var("DATABASE_URL")
+            .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
+        PgPool::connect(&url).await.expect("connect")
+    }
+
+    async fn ticket(
+        pg: &PgPool,
+        board: &str,
+        status: &str,
+        assignees: serde_json::Value,
+    ) -> String {
+        sqlx::query_scalar(
+            "insert into tasks (board_id, title, status, assignees) \
+             values ($1::uuid, 'sweep-live', $2, $3) returning id::text",
+        )
+        .bind(board)
+        .bind(status)
+        .bind(assignees)
+        .fetch_one(pg)
+        .await
+        .expect("insert ticket")
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn the_pass_offers_agent_tickets_and_skips_people_only_ones() {
+        let pg = pg().await;
+        let tag = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let email = format!("sweep-live-{tag}@link-test.invalid");
+        let user: String = sqlx::query_scalar(
+            "insert into users (sub, email, name, role) values ($1, $1, 'Sweep Live', 'member') \
+             returning id::text",
+        )
+        .bind(&email)
+        .fetch_one(&pg)
+        .await
+        .expect("insert user");
+        let board: String = sqlx::query_scalar(
+            "insert into boards (name, owner_id) values ('sweep-live', $1::uuid) returning id::text",
+        )
+        .bind(&user)
+        .fetch_one(&pg)
+        .await
+        .expect("insert board");
+        // `assigned` is a pickup column of the default list; `inbox` is not.
+        let person = format!("user:{user}");
+        let people_only = ticket(&pg, &board, "assigned", serde_json::json!([person])).await;
+        let agent = ticket(
+            &pg,
+            &board,
+            "assigned",
+            serde_json::json!(["sweep-live-agent"]),
+        )
+        .await;
+        let mixed = ticket(
+            &pg,
+            &board,
+            "in_progress",
+            serde_json::json!([person, "sweep-live-agent"]),
+        )
+        .await;
+        let parked = ticket(
+            &pg,
+            &board,
+            "inbox",
+            serde_json::json!(["sweep-live-agent"]),
+        )
+        .await;
+        let people_parked = ticket(&pg, &board, "inbox", serde_json::json!([person])).await;
+
+        let pass = sweep_pass(&pg).await.expect("the pass runs");
+        let mine: Vec<String> = vec![
+            people_only.clone(),
+            agent.clone(),
+            mixed.clone(),
+            parked.clone(),
+            people_parked.clone(),
+        ];
+        let ours = |ids: Vec<String>| -> Vec<String> {
+            let mut ids: Vec<String> = ids.into_iter().filter(|i| mine.contains(i)).collect();
+            ids.sort();
+            ids
+        };
+        let offered = ours(pass.offer.iter().map(|t| t.id.clone()).collect());
+        let mut expect_offered = vec![agent.clone(), mixed.clone()];
+        expect_offered.sort();
+        assert_eq!(
+            offered, expect_offered,
+            "only the agent-assigned pickup tickets are offered"
+        );
+        assert_eq!(ours(pass.parked.clone()), vec![parked.clone()]);
+        assert!(ours(pass.waiting.clone()).is_empty());
+        // The mixed ticket rides with its whole list; dispatch filters again.
+        let mixed_row = pass.offer.iter().find(|t| t.id == mixed).unwrap();
+        assert_eq!(
+            mixed_row.assignees,
+            vec![person.clone(), "sweep-live-agent".to_string()]
+        );
+
+        sqlx::query("delete from users where id = $1::uuid")
+            .bind(&user)
+            .execute(&pg)
+            .await
+            .expect("cleanup");
     }
 }

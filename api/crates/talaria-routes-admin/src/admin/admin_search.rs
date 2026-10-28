@@ -12,18 +12,30 @@
 // THE ENV VAR WINS, deliberately: a self-host that already runs SearXNG
 // sets SEARXNG_URL and should not have that silently overridden by a
 // setting somebody typed once. The GET says which is in force so the field
-// is never a lie.
+// is never a lie. Set but blank is not set (`talaria_search::env_search_url`
+// is the one reader of it), so the field is editable and what is saved there
+// is what is in force.
+//
+// TWO VANTAGE POINTS, TWO ANSWERS. `reachable` is the app's own view (what
+// Research dials). `agentReachable` is the same canary run from inside a
+// running agent against the URL the render hands the agents
+// (`talaria_agent_web_search::probe`): a SearXNG bound to the host's
+// loopback answers the app and refuses every agent, and only the second
+// answer shows it. `agentReachable: null` means there was nothing to probe —
+// no URL handed to the agents, or no agent running — with `agentError`
+// saying which. Both probes run at once.
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
+use talaria_agent_web_search::agent_search_reachable;
 use talaria_api_facades::gateway::settings::{get_setting, set_setting};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::parse;
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_search::{SEARCH_URL_KEY, real_deps, search_reachable, search_url};
+use talaria_search::{SEARCH_URL_KEY, env_search_url, real_deps, search_reachable, search_url};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
@@ -32,20 +44,33 @@ pub async fn get(
     headers: axum::http::HeaderMap,
 ) -> Result<Response, Response> {
     require_admin(&state, &headers).await?;
+    Ok(Json(answer(&state).await).into_response())
+}
+
+/// Where search points and whether it answers, from both vantage points —
+/// the GET's body, and the PUT's once it has saved, so the panel takes the
+/// PUT's answer as the field's new state instead of probing all over again.
+async fn answer(state: &AppState) -> Value {
     let stored = get_setting(&state.pg, SEARCH_URL_KEY, Value::String(String::new())).await;
-    let health = search_reachable(&state.pg, &real_deps()).await;
-    // SEARXNG_URL set-but-empty reads as false.
-    let from_env = std::env::var("SEARXNG_URL")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false);
-    Ok(Json(serde_json::json!({
+    let deps = real_deps();
+    let (health, agents) = tokio::join!(
+        search_reachable(&state.pg, &deps),
+        agent_search_reachable(&state.pg)
+    );
+    // The same reader the URL in force comes from: SEARXNG_URL set but
+    // blank is unset there, and reads false here.
+    let from_env = env_search_url().is_some();
+    serde_json::json!({
         "url": search_url(&state.pg).await,
         "stored": stored,
         "fromEnv": from_env,
         "reachable": health.ok,
         "error": health.error,
-    }))
-    .into_response())
+        "agentReachable": agents.ok,
+        "agentError": agents.error,
+        "probedFrom": agents.probed_from,
+        "agentUrl": agents.url,
+    })
 }
 
 pub async fn put(
@@ -90,12 +115,6 @@ pub async fn put(
 
     // TESTED AFTER SAVING, not before: the point of the button is to tell an
     // admin whether what they just saved works, and a check against the old
-    // value would answer a question nobody asked.
-    let health = search_reachable(&state.pg, &real_deps()).await;
-    Ok(Json(serde_json::json!({
-        "url": search_url(&state.pg).await,
-        "reachable": health.ok,
-        "error": health.error,
-    }))
-    .into_response())
+    // value would answer a question nobody asked. The body is the GET's.
+    Ok(Json(answer(&state).await).into_response())
 }

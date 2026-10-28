@@ -342,8 +342,8 @@ Source: [`api/crates/talaria-routes-knowledge/src/knowledge/memory_id.rs`](../..
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `agent-manager` | — | `{content, container}` | 200, 400 | — |
-| PUT | `session` + `agent-manager` | [body](#put-apimemoryid-body) | `{ok}` | 200, 400 | — |
+| GET | `session` + `agent-manager` | — | `{content, container}` | 200, 400, 409 | — |
+| PUT | `session` + `agent-manager` | [body](#put-apimemoryid-body) | `{ok}` | 200, 400, 409 | — |
 
 **GET** — Read one of the agent's two memory files. `?file=memory` (the default) is MEMORY.md, what the agent has learned and kept; `?file=profile` is USER.md, its profile of the person it works for. Any other value is a 400. A file the agent has never written reads as empty, not as a miss.
 

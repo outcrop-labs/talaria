@@ -33,6 +33,19 @@ export const COMPOSE_BASE = 'docker/compose.yml'
  *  the operator's own layering, and this file is not their override. */
 export const SIDECARS_COMPOSE = 'docker/sidecars.compose.yml'
 
+/** The third file of a `talaria worktree` stack: its postgres and redis on
+ *  the default bridge, so the project creates no network of its own and
+ *  takes no subnet from the daemon's address pools (the file says why). Every
+ *  compose call that brings a worktree's services up names it — a call that
+ *  left it out would see a different config and recreate them on a network. */
+export const WORKTREE_COMPOSE = 'docker/worktree.compose.yml'
+
+/** A worktree stack's files: the sidecar plane, the dev loop's file, then
+ *  WORKTREE_COMPOSE. */
+export function worktreeComposeFiles(root: string): string[] {
+  return stackComposeFiles(root, 'docker/dev-compose.yml', WORKTREE_COMPOSE)
+}
+
 /** A stack's compose file list: the shared sidecar plane FIRST, then the
  *  stack's own file(s) — the ONE place the merge order is decided, so no
  *  caller can spell it the other way round (see SIDECARS_COMPOSE for why
@@ -137,13 +150,63 @@ export function composeArgs(spec: ComposeSpec): string[] {
   return args
 }
 
-/** Run a compose operation, inheriting the terminal. */
-export function compose(ctx: Ctx, spec: ComposeSpec, op: string[]): Promise<number> {
-  return ctx.run('docker', ['compose', ...composeArgs(spec), ...op])
+/** Run a compose operation, inheriting the terminal. A failed `up` is asked
+ *  one more question — is docker out of network address pools? — because
+ *  compose's own line for that says nothing about what to do. */
+export async function compose(ctx: Ctx, spec: ComposeSpec, op: string[]): Promise<number> {
+  const code = await ctx.run('docker', ['compose', ...composeArgs(spec), ...op])
+  if (code !== 0 && op[0] === 'up') await explainPoolExhaustion(ctx)
+  return code
+}
+
+/** docker's words when no predefined address pool has a subnet left: the
+ *  daemon's own (`network create`, compose) and the older libnetwork one. */
+export const POOL_EXHAUSTED_RE =
+  /all predefined address pools have been fully subnetted|could not find an available,? non-overlapping ipv[46] address pool/i
+
+/** The probe network's name. It carries the `talaria.pool-probe` label and
+ *  no compose project, and the cleanup sweep removes one left behind. */
+export const POOL_PROBE_NETWORK = `talaria-pool-probe-${process.pid}`
+
+/** After a failed `up`: could docker create a network at all right now? The
+ *  answer cannot come from compose's output — the terminal owns it (stdio is
+ *  inherited, so its progress UI stays intact) — so ask docker directly with a
+ *  throwaway network, removed at once when it is made. Only the pool answer
+ *  says anything; every other failure is compose's own to report.
+ *
+ *  The incident (follow-up A8, 2026-10-27): every worktree, devbox and app
+ *  database project creates its own network, the daemon's default pools hold
+ *  about thirty, and with parallel stacks `up` failed with "all predefined
+ *  address pools have been fully subnetted". Networks a stopped or
+ *  interrupted stack left behind hold pools too; `talaria cleanup` lists them
+ *  and `--apply` removes them. */
+export async function explainPoolExhaustion(ctx: Ctx): Promise<boolean> {
+  try {
+    await ctx.exec('docker', ['network', 'create', '--label', 'talaria.pool-probe=1', POOL_PROBE_NETWORK])
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e)
+    if (!POOL_EXHAUSTED_RE.test(why)) return false
+    ctx.log.warn(
+      'docker has no network address space left: every predefined address pool is fully subnetted, so no ' +
+        'compose project can create the network it needs. Networks that stopped or interrupted stacks left ' +
+        'behind still hold their subnets — `bun talaria cleanup` lists the ones no worktree, box or running ' +
+        'stack owns, and `bun talaria cleanup --apply` removes them. `docker network ls` shows every network; ' +
+        'a host that runs many stacks at once can also give the daemon more room (`default-address-pools` in ' +
+        '/etc/docker/daemon.json).',
+    )
+    return true
+  }
+  try {
+    await ctx.exec('docker', ['network', 'rm', POOL_PROBE_NETWORK])
+  } catch {
+    // A probe network that would not go is one small network, labelled
+    // talaria.pool-probe; it does not change the answer.
+  }
+  return false
 }
 
 /** Poll until `probe` resolves true, `attempts` × interval. Returns the last
- *  answer — the pg_isready / redis-cli waits, without the bash sleep loop. */
+ *  answer — the postgres / redis-cli waits, without the bash sleep loop. */
 export async function waitFor(
   ctx: Ctx,
   what: string,
@@ -155,9 +218,49 @@ export async function waitFor(
   for (let i = 0; i < attempts; i++) {
     ok = await probe()
     if (ok) return true
-    await new Promise((r) => setTimeout(r, intervalMs))
+    await ctx.sleep(intervalMs)
   }
   return ok
+}
+
+/** The readiness probe for a stack's Postgres, as `docker exec` argv: a real
+ *  query against the `talaria` database, over TCP.
+ *
+ *  `pg_isready` over the socket was the probe, and it lies twice on a fresh
+ *  volume. The image's entrypoint first runs a TEMPORARY server with
+ *  `listen_addresses=''` — socket only — to create POSTGRES_DB and run the
+ *  init scripts, then shuts it down and starts the real one on TCP. The
+ *  socket probe passes against that temp server, before the database exists
+ *  and moments before its fast shutdown; and `pg_isready -d` answers
+ *  "accepting connections" for a database that does not exist at all. So a
+ *  worktree's seed, run straight after the wait, died with `FATAL: the
+ *  database system is shutting down` or `database "talaria" does not exist`
+ *  (follow-up A1, 2026-10-27 — five of the run's first worktrees). The temp
+ *  server has no TCP listener, and before init there is no database to
+ *  query, so this probe cannot pass until the real server serves the real
+ *  database. Loopback TCP inside the container is `trust` in the image's
+ *  pg_hba.conf, so no password rides along. */
+export function pgReadyArgs(container: string): string[] {
+  return ['exec', container, 'psql', '-h', '127.0.0.1', '-U', 'talaria', '-d', 'talaria', '-tAc', 'select 1']
+}
+
+/** Wait for `container`'s Postgres to serve the `talaria` database
+ *  (pgReadyArgs says why it is a query over TCP). The answer is the caller's
+ *  to act on — every caller dies on false. */
+export function waitForPostgres(ctx: Ctx, container: string, attempts: number): Promise<boolean> {
+  return waitFor(
+    ctx,
+    `postgres (${container})`,
+    async () => {
+      try {
+        await ctx.exec('docker', pgReadyArgs(container))
+        return true
+      } catch {
+        return false
+      }
+    },
+    attempts,
+  )
 }
 
 /** The `docker network inspect x || docker network create x` idiom,

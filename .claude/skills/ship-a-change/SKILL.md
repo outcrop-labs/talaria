@@ -98,7 +98,10 @@ capped at 2min, hard stop at 45 minutes) and does not edit, merge, push, or comm
 It reads the latest run of each check, so a judge run that a body edit cancelled and
 re-ran is not red. Green also needs the PR's head to be the commit you pushed and a
 finished CI workflow run for that head, so running it straight after a push waits
-instead of reading the previous head, or a rollup that holds only `judge`. A PR
+instead of reading the previous head, or a rollup that holds only `judge`. The CI
+workflow's name is read from the PR's repository at its head, so `--repo owner/name`
+(or a PR URL) watches another repository's PR from any checkout; a name it had to
+guess is named as a guess in the verdict. A PR
 head that contains your HEAD (someone pushed on top) passes, even when this clone
 has not fetched it. Two head states cannot be waited out, so the watcher exits
 `pending` at once instead of polling: a HEAD you have not pushed, and a PR head

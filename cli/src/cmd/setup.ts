@@ -153,7 +153,8 @@ REDIS_URL=redis://127.0.0.1:${redisPort}
 # Nothing is bundled: register a search provider in the app, or point this at
 # a SearXNG-compatible JSON endpoint you already run (Admin → Search sets the
 # same thing without an env edit). Fleet agents search through their own
-# Hermes toolset and get this URL passed through when it is set.
+# Hermes toolset and get this URL passed through when it is set. Set, it wins
+# over Admin → Search; set but empty counts as unset.
 #SEARXNG_URL=
 
 # Session signing (safe to rotate — only invalidates live logins).

@@ -160,9 +160,11 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         Box::pin(async move { talaria_price_oracle::keys_for(&state).await })
     }));
     // WHERE A REFUSED APPROVAL IS RECORDED. The fleet chat door refuses
-    // every Hermes approval request on a streamed turn (talaria-gateway's
-    // fleet_approvals), and the gateway crate holds no pool. Unwired, the
-    // answer still goes out and nothing is recorded.
+    // every Hermes approval request on a streamed turn that no card takes,
+    // and every one no answer could make land (talaria-gateway's
+    // fleet_approvals), and the gateway crate holds no pool. A card's own
+    // answers are recorded by talaria-approval-cards, with the person as the
+    // actor. Unwired, the answer still goes out and nothing is recorded.
     let record_pg = state.pg.clone();
     let _ = talaria_gateway::fleet_approvals::RECORD_APPROVAL.set(Arc::new(move |r| {
         let pg = record_pg.clone();
@@ -200,12 +202,39 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
                         "runId": r.run_id,
                         "answered": r.failure.is_none(),
                         "error": r.failure,
+                        // Set when no answer could have made it land (a
+                        // protected write outside the agent's write root,
+                        // or an MCP form asking for fields nobody can type),
+                        // so nobody was asked; null for a policy refusal.
+                        "reason": r.reason,
                     })),
                 },
             )
             .await;
         })
     }));
+    // WHERE AN APPROVAL A PERSON MAY ANSWER BECOMES A CARD. On an attended
+    // conversation turn, the door offers each request to this seam before it
+    // refuses it; talaria-approval-cards raises a card for a Developer
+    // Agent's request when the conversation's owner manages the agent, and
+    // its deadline answers `deny` if nobody does. Unwired, every request is
+    // refused, as before cards existed. The deadlines live in this process,
+    // so the cards a restart left waiting are closed (or re-armed) here.
+    let card_state = state.clone();
+    let _ = talaria_gateway::fleet_approvals::RAISE_CARD.set(Arc::new(move |ask| {
+        let state = card_state.clone();
+        Box::pin(async move {
+            let redis = state.redis().await.ok();
+            talaria_approval_cards::raise(&state.pg, redis, ask).await
+        })
+    }));
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let redis = state.redis().await.ok();
+            talaria_approval_cards::expire_overdue(&state.pg, redis).await;
+        });
+    }
     // THE RUN ASSEMBLY plan-draft, research, and reindex enqueue through.
     // The seam and its constructor (`work_dispatch::dispatch_deps`, which is
     // `real_run_deps` — the same assembly agent-hire calls directly) both
@@ -680,6 +709,10 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_digest::register_approval_escalation_job(real_digest_deps(state, rt.clone()));
     talaria_notify::register_notification_mail_job(real_drain_deps(state.pg.clone(), sb.clone()));
     talaria_work_dispatch::register_redispatch_job(state.pg.clone(), run.clone());
+    // The cron-output pull: a thread schedule's report the plugin's
+    // fire-and-forget push lost, read back from the agent's own session
+    // store and landed through the same door code.
+    talaria_cron_output::register_cron_pull_job(state.clone());
     talaria_runs_reclaim::register_reclaim_job(Arc::new(ReclaimDeps {
         due: due_fn(run.store.clone()),
         definition_for: run.definition_for.clone(),
@@ -929,6 +962,10 @@ mod tests {
         assert!(
             names.contains(&JobName::SkillsIndexRefresh),
             "skills-index-refresh fell out of the job table"
+        );
+        assert!(
+            names.contains(&JobName::CronOutputPull),
+            "cron-output-pull fell out of the job table — a thread's lost cron report would never land"
         );
         assert!(
             names.contains(&JobName::AppTriggers),

@@ -1,7 +1,9 @@
 // POST /api/chat/chips/approvals/{id} — approve or deny a chip.
 // Google sends execute through the existing confirm-send. Ticket moves apply
 // as the person who approved. Either way the chip that follows names the
-// tools that approval unlocked.
+// tools that approval unlocked. An agent's own approval request (kind
+// `hermes_approval`) is answered through the agent instead: `once` or
+// `deny`, by the conversation's owner while they manage the agent.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -18,8 +20,8 @@ use talaria_chips::{
     tools_unlocked, unlock_chip,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_session::require_user;
 use talaria_session::secretbox_or_500;
+use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 use talaria_tasks::{TaskActor, TaskDeps, TaskError, TaskPatch, update_task};
 
@@ -45,6 +47,11 @@ pub async fn post(
     };
     if row.status != "pending" {
         return Ok(Json(json!({ "status": row.status, "tools": [] })).into_response());
+    }
+    // An agent's own approval request, put to the person whose conversation
+    // it is: answered through the agent's door, not executed here.
+    if row.kind == talaria_approval_cards::KIND {
+        return Ok(answer_card(&state, &user, &row, &decision).await);
     }
     let allowed = row.owner_user_id.as_deref() == Some(user.id.as_str()) || user.role == "admin";
     if !allowed {
@@ -77,6 +84,57 @@ pub async fn post(
         }
     }
     Ok(Json(json!({ "status": "approved", "tools": tools })).into_response())
+}
+
+/// `approve` is `once` and `reject` is `deny`, sent as
+/// `POST /v1/runs/{run_id}/approval {request_id, execution_generation, choice}`
+/// on the agent's own door. Who may answer is the card's rule
+/// (talaria-approval-cards), checked again here: the conversation's owner,
+/// and only while they manage the agent. A card the agent stopped waiting on
+/// answers 409 and reads expired.
+async fn answer_card(
+    state: &AppState,
+    user: &talaria_session::SessionUser,
+    row: &talaria_chips::ApprovalRow,
+    decision: &str,
+) -> Response {
+    use talaria_approval_cards::{Choice, Decided, Person};
+    let choice = if decision == "approve" {
+        Choice::Once
+    } else {
+        Choice::Deny
+    };
+    let actor = actor_of(user);
+    let person = Person {
+        user_id: &user.id,
+        role: &user.role,
+        actor: &actor,
+    };
+    let redis = state.redis().await.ok();
+    match talaria_approval_cards::decide(&state.pg, redis, row, &person, choice).await {
+        Decided::Answered(status) => Json(json!({ "status": status, "tools": [] })).into_response(),
+        Decided::Settled(status) => Json(json!({ "status": status, "tools": [] })).into_response(),
+        Decided::Forbidden => house_error(StatusCode::FORBIDDEN, "forbidden"),
+        Decided::NotOffered => house_error(
+            StatusCode::BAD_REQUEST,
+            "the agent cannot take that answer for this request",
+        ),
+        Decided::Expired => house_error(
+            StatusCode::CONFLICT,
+            "the agent was no longer waiting for this answer",
+        ),
+        Decided::Undelivered(why) => {
+            tracing::warn!(
+                "[chips] approval {}: the answer did not reach the agent: {why}",
+                row.id
+            );
+            house_error(
+                StatusCode::BAD_GATEWAY,
+                "the answer did not reach the agent — try again",
+            )
+        }
+        Decided::Db(e) => internal("[chips] approval answer failed", e),
+    }
 }
 
 async fn execute(

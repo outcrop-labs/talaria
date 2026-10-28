@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { appDataDir, appDbContainer, appDbUrl, composeYaml, dialsByName, inImage, writeDbEnv } from './app-db'
+import { appDataDir, appDbContainer, appDbUrl, composeYaml, dialsByName, inImage, legacyAppDbNetwork, writeDbEnv } from './app-db'
 
 describe('app db identity', () => {
   it('names containers from the instance + slug', () => {
@@ -35,6 +35,19 @@ describe('composeYaml', () => {
     expect(y).not.toMatch(/secret/i)
   })
 
+  // A compose file that names no network gets `<project>_default` made for
+  // it: a subnet per app DB from docker's ~30 address pools (R19). The host
+  // dials the published loopback port, so the default bridge serves.
+  it('puts a loopback-published DB on the default bridge, so compose makes no network', () => {
+    const y = composeYaml({ image: 'postgres:16-alpine', container: 'talaria-appdb-x-contacts', network: null })
+    expect(y).toContain('    network_mode: bridge\n')
+    expect(y).not.toMatch(/^networks:/m)
+    expect(y).not.toMatch(/^ {4}networks:/m)
+    // the port is still published, on loopback only
+    expect(y.indexOf('network_mode: bridge')).toBeLessThan(y.indexOf('ports:'))
+    expect(y).toContain('- "127.0.0.1::5432"')
+  })
+
   it('attaches an external network instead of publishing a port', () => {
     const y = composeYaml({
       image: 'postgres:16-alpine',
@@ -42,7 +55,13 @@ describe('composeYaml', () => {
       network: 'foo_internal',
     })
     expect(y).toContain('name: foo_internal')
+    expect(y).toContain('external: true')
     expect(y).not.toContain('ports:')
+    expect(y).not.toContain('network_mode')
+  })
+
+  it('names the network compose used to make for an app DB', () => {
+    expect(legacyAppDbNetwork('talaria-appdb-x-contacts')).toBe('talaria-appdb-x-contacts_default')
   })
 })
 

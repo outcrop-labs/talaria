@@ -113,8 +113,17 @@ async function pgDataExists(ctx: Ctx, volume: string): Promise<boolean> {
  *  initialized cluster could hand it a fresh random password it had never
  *  heard of. */
 export function pgVolumeName(ctx: Ctx): string {
-  const project = ctx.env.COMPOSE_PROJECT_NAME || dockerEnvFile(ctx).COMPOSE_PROJECT_NAME || 'talaria'
-  return `${project}_pg-data`
+  return `${deployProject(ctx)}_pg-data`
+}
+
+/** The compose file's own `name:` — the project every deploy lands in unless
+ *  COMPOSE_PROJECT_NAME says otherwise. */
+export const DEFAULT_DEPLOY_PROJECT = 'talaria'
+
+/** The production compose project as compose resolves it: COMPOSE_PROJECT_NAME
+ *  from the shell or docker/.env, else the file's own `name: talaria`. */
+export function deployProject(ctx: Ctx): string {
+  return ctx.env.COMPOSE_PROJECT_NAME || dockerEnvFile(ctx).COMPOSE_PROJECT_NAME || DEFAULT_DEPLOY_PROJECT
 }
 
 /** Fill docker/.env's shared-secret gaps before `up`. Returns nothing; the
