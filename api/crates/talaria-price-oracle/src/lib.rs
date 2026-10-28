@@ -16,7 +16,7 @@ mod spend_fetch;
 // (registered against the scheduler; the boot wiring arms it),
 // the opportunistic `maybe_refresh_auto_prices` kick, and the
 // `nudge_auto_prices` cue a cloud usage row without a price fires — wired into
-// gateway::usage::record_usage.
+// gateway::usage::record_relay_usage (its `nudge_if_unpriced`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};

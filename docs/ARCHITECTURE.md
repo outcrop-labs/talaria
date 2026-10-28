@@ -180,7 +180,12 @@ multiplexer.
   service alone as `LLM_API_KEY`): the relay budgets it as the agent (`llm_budgets.perAgent`
   / `agents{<model>}`, on the same `agent_model` window its chat turns land in) and refuses
   any model outside the set its rendered config routes to (`gateway_agent_models`, written
-  by the render). No container holds a fleet-wide gateway secret.
+  by the render). No container holds a fleet-wide gateway secret. A budget refusal names
+  when the rolling window falls back under the cap (`error.resets_at`, epoch seconds, and
+  the same minute in its message), and an agent's key gets no `Retry-After` with it:
+  Hermes honours that header with waits of up to 600 s, so it would hold the turn for it,
+  where without it Hermes retries for a few seconds, ends the turn and names the reset
+  from `resets_at`. Other keys keep the header.
 - **Hermes' own controls are rendered, not re-implemented.** Each `config.yaml` arms Hermes'
   tool-loop guard (`tool_loop_guardrails.hard_stop_enabled` — `api_server` counts as attended, so
   the hard stops are off unless rendered), routes each persona tier

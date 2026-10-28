@@ -171,9 +171,17 @@ impl AppCall {
     }
 }
 
-/// The 429 a budget denial answers with — the same body and Retry-After
-/// whichever door the call was headed for.
-fn budget_refusal(denial: &BudgetDenial) -> Response {
+/// The 429 a budget denial answers with — the same body whichever door the
+/// call was headed for, with the window's real resume time as
+/// `error.resets_at` when it is known.
+///
+/// AN AGENT'S KEY GETS NO `Retry-After`. Hermes honours the header on a 429
+/// (up to 600s a wait, `api_max_retries` times): a 300 held the turn ten
+/// minutes and then told the person the limit "resets in ~5 min", about a
+/// 24h window. Without it Hermes backs off a few seconds, ends the turn,
+/// and names the reset from `resets_at`. An operator's or an app's key
+/// keeps the header its clients may honour (`budget.rs` `retry_after`).
+fn budget_refusal(denial: &BudgetDenial, agent_key: bool) -> Response {
     let mut out = openai_budget_error(
         StatusCode::TOO_MANY_REQUESTS,
         &budget_message(denial),
@@ -188,7 +196,11 @@ fn budget_refusal(denial: &BudgetDenial) -> Response {
             window_hours: denial.window_hours,
             via: denial.via.to_string(),
         },
+        denial.resets_at,
     );
+    if agent_key {
+        return out;
+    }
     out.headers_mut().insert(
         header::RETRY_AFTER,
         header::HeaderValue::from_str(&denial.retry_after_seconds.max(1).to_string())
@@ -240,7 +252,7 @@ async fn app_agent_turn(
     )
     .await
     {
-        return budget_refusal(&denial);
+        return budget_refusal(&denial, false);
     }
     let attribution = TurnAttribution {
         pg: state.pg.clone(),
@@ -432,7 +444,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
     )
     .await
     {
-        return budget_refusal(&denial);
+        return budget_refusal(&denial, is_agent_key);
     }
 
     let mut call = match build_upstream(&state, &route, &client_body).await {
@@ -1158,6 +1170,55 @@ mod tests {
             "api:app:Not A Slug",
             "only an app's shape is an app"
         );
+    }
+
+    /// An agent's key hears the reset time and no `Retry-After` (Hermes
+    /// would hold the turn for it); every other key keeps its header.
+    #[tokio::test]
+    async fn a_budget_refusal_tells_an_agent_when_and_never_to_wait() {
+        let denial = BudgetDenial {
+            scope: "caller",
+            subject: Some("engineer-engineering".into()),
+            unit: "tokens",
+            limit: 1.0,
+            used: 1200.0,
+            window_hours: 24,
+            retry_after_seconds: 300,
+            resets_at: Some(1_793_197_259),
+            via: "admin",
+        };
+        let body = |r: Response| async move {
+            let bytes = axum::body::to_bytes(r.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        };
+
+        let agent = budget_refusal(&denial, true);
+        assert_eq!(agent.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(agent.headers().get(header::RETRY_AFTER).is_none());
+        let json = body(agent).await;
+        assert_eq!(json["error"]["code"], "budget_exceeded");
+        assert_eq!(json["error"]["resets_at"], 1_793_197_259);
+        assert_eq!(json["error"]["budget"]["scope"], "caller");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("(around 2026-10-28 14:21 UTC, if nothing more is spent)")
+        );
+
+        let operator = budget_refusal(&denial, false);
+        assert_eq!(operator.headers()[header::RETRY_AFTER], "300");
+        assert_eq!(body(operator).await["error"]["resets_at"], 1_793_197_259);
+
+        // An unknown resume time is left out, not sent as null.
+        let unknown = BudgetDenial {
+            resets_at: None,
+            ..denial
+        };
+        let json = body(budget_refusal(&unknown, true)).await;
+        assert!(json["error"].get("resets_at").is_none());
     }
 
     #[test]
