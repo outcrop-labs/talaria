@@ -1218,6 +1218,36 @@ pub async fn stop_run(agent_model: &str, run_id: &str) -> Result<(), String> {
     }
 }
 
+/// Stop a COMPLETIONS turn a person is reading, by its completion id — the
+/// arm whose turn has no `run.started` to name it. While the turn's request
+/// is open its completion id is its Hermes run id (fleet_abandoned.rs), and
+/// the drain that holds the request open is what knows the id: `current`
+/// asks it (the reply row's open completion, [`AgentStreamParser::completion`]),
+/// before every send, and answers None once the stream has ended.
+///
+/// The stop is sent again while Hermes cannot place it yet, within the
+/// control window. `Ok(Some(words))` says what it did to the turn, for a log
+/// line (interrupted, or cancelled while still queued); `Ok(None)` means the
+/// stream ended first, so nothing was left to stop; `Err` is why Hermes
+/// would not take it, in the closed vocabulary (never the body's prose,
+/// never the dial URL). Like `stop_run`, `Ok` means the interrupt was taken,
+/// not that the turn is over: Hermes ends the turn's stream with a
+/// `cancelled` finish, and the drain still owns that ending.
+pub async fn stop_completion(
+    agent_model: &str,
+    current: impl Fn() -> Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(entry) = agent_entry(agent_model).await else {
+        return Err("no such agent".into());
+    };
+    crate::fleet_abandoned::stop_open_completion(
+        &entry,
+        current,
+        tokio::time::Instant::now() + CONTROL_WINDOW,
+    )
+    .await
+}
+
 /// This agent's manifest row, looked up once. The control calls do not hold
 /// for a container coming up the way a turn does, so a missing row is the
 /// answer here rather than something to wait out.
@@ -1556,6 +1586,8 @@ pub struct AgentStreamParser {
     /// what tells a turn that already streamed its words (do not land them
     /// twice) from one that never streamed at all (land them once).
     streamed: bool,
+    /// The completion this stream named last ([`completion_id_of`]).
+    completion: Option<String>,
 }
 
 impl AgentStreamParser {
@@ -1572,6 +1604,7 @@ impl AgentStreamParser {
                 &frame[..frame.len() - 2],
                 &mut self.streamed,
                 &mut self.calls,
+                &mut self.completion,
             ));
         }
         events
@@ -1580,14 +1613,41 @@ impl AgentStreamParser {
     /// End of body: parse whatever the final frame left behind.
     pub fn finish(&mut self) -> Vec<AgentStreamEvent> {
         let rest = std::mem::take(&mut self.buffer);
-        parse_frame(&rest, &mut self.streamed, &mut self.calls)
+        parse_frame(
+            &rest,
+            &mut self.streamed,
+            &mut self.calls,
+            &mut self.completion,
+        )
     }
+
+    /// The completion a completions-arm stream named last (`chatcmpl-…`),
+    /// or None on the session arm, which names its run in `run.started`
+    /// instead. While the turn's request is open this id is also the turn's
+    /// Hermes run id, so it is what a person's stop names
+    /// ([`stop_completion`]). A turn the lost-turn watch moved names its
+    /// fresh completion in its next role chunk, and that one replaces it.
+    pub fn completion(&self) -> Option<&str> {
+        self.completion.as_deref()
+    }
+}
+
+/// The completion a `/v1/chat/completions` chunk belongs to: the chunk's own
+/// top-level `id` (`chatcmpl-…`), never an id quoted in the reply's words.
+/// Hermes writes it on every chunk of a turn, the role chunk first, and
+/// while the turn's request is open the same id names the turn's run
+/// (`POST /v1/runs/{id}/stop`; fleet_abandoned.rs says how).
+pub(crate) fn completion_id_of(json: &Value) -> Option<&str> {
+    json.get("id")
+        .and_then(Value::as_str)
+        .filter(|id| id.len() > "chatcmpl-".len() && id.starts_with("chatcmpl-"))
 }
 
 fn parse_frame(
     frame: &str,
     streamed: &mut bool,
     calls: &mut HashMap<String, u32>,
+    completion: &mut Option<String>,
 ) -> Vec<AgentStreamEvent> {
     let mut event_name = String::new();
     let mut data_lines: Vec<&str> = Vec::new();
@@ -1622,12 +1682,36 @@ fn parse_frame(
     {
         return events;
     }
+    // Only an unnamed chunk is a completion's: a named frame on this stream
+    // (an approval request) names its run in `run_id`, not `id`.
+    if event_name.is_empty()
+        && let Some(id) = completion_id_of(&json)
+    {
+        *completion = Some(id.to_string());
+    }
     let mut events = Vec::new();
     // The failure frame first: it rides a 200 with no content delta, and the
     // turn is over the moment it lands — later arms may still pull usage, but
     // nothing downstream should read this frame as a healthy empty one.
     if let Some(message) = error_message_of(&json) {
         events.push(AgentStreamEvent::Error { message });
+    }
+    // AN INTERRUPTED COMPLETION ENDS `cancelled`, the completions arm's
+    // `run.cancelled`: Hermes' finish chunk says `cancelled` for a turn that
+    // did not complete and named no error (`_finish_reason` in
+    // api_server_openai_routes.py, v0.22.4), which is a turn a stop
+    // interrupted, or a queued one a stop withdrew. Every turn that ends
+    // unfinished for another reason carries its error, and reads as one
+    // above. So it says only that it happened, and the words before it
+    // stand as the reply.
+    if json
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(Value::as_str)
+        == Some("cancelled")
+    {
+        events.push(AgentStreamEvent::Stopped);
     }
     let delta = json
         .get("choices")
@@ -2482,6 +2566,69 @@ mod tests {
         // turn's calls stay unattended rather than claiming someone else's.
         assert_eq!(turn_key(&completions, &stream(None)), None);
         assert_eq!(turn_key(&completions, &stream(Some("bad key"))), None);
+    }
+
+    /// The completion a completions stream is on is the chunk's own `id`,
+    /// the newest one named: never an id the reply's words quote, never a
+    /// named frame's `run_id`, and nothing on the session arm.
+    #[test]
+    fn the_parser_names_the_completion_the_stream_is_on() {
+        let mut p = AgentStreamParser::new();
+        assert_eq!(p.completion(), None);
+        p.feed(
+            b"data: {\"id\": \"chatcmpl-a1\", \"object\": \"chat.completion.chunk\", \"choices\": [{\"index\": 0, \"delta\": {\"role\": \"assistant\"}, \"finish_reason\": null}]}\n\n",
+        );
+        assert_eq!(p.completion(), Some("chatcmpl-a1"));
+        // Words that quote another completion, and an approval frame naming
+        // its run, leave it where it is.
+        p.feed(
+            b"data: {\"id\": \"chatcmpl-a1\", \"choices\": [{\"index\": 0, \"delta\": {\"content\": \"see {\\\"id\\\": \\\"chatcmpl-zz\\\"}\"}, \"finish_reason\": null}]}\n\n",
+        );
+        p.feed(b"event: approval.request\ndata: {\"run_id\": \"chatcmpl-a1\", \"request_id\": \"r1\", \"id\": \"chatcmpl-qq\"}\n\n");
+        assert_eq!(p.completion(), Some("chatcmpl-a1"));
+        // A turn the lost-turn watch moved names its fresh completion.
+        p.feed(
+            b"data: {\"id\": \"chatcmpl-b2\", \"object\": \"chat.completion.chunk\", \"choices\": [{\"index\": 0, \"delta\": {\"role\": \"assistant\"}, \"finish_reason\": null}]}\n\n",
+        );
+        assert_eq!(p.completion(), Some("chatcmpl-b2"));
+        // A bare prefix is not an id.
+        let mut bare = AgentStreamParser::new();
+        bare.feed(b"data: {\"id\": \"chatcmpl-\", \"choices\": []}\n\n");
+        assert_eq!(bare.completion(), None);
+        // The session arm names its run in `run.started`, not here.
+        let mut session = AgentStreamParser::new();
+        session
+            .feed(b"event: run.started\ndata: {\"run_id\": \"run_1\", \"session_id\": \"s\"}\n\n");
+        assert_eq!(session.completion(), None);
+    }
+
+    /// A completion a stop interrupted ends `cancelled`: the completions
+    /// arm's `run.cancelled`. The words before it stand as the reply, and
+    /// nothing reads it as a failure. A plain `stop` finish is just the end.
+    #[test]
+    fn a_cancelled_finish_is_a_stop_not_an_error() {
+        let mut p = AgentStreamParser::new();
+        let events = p.feed(
+            concat!(
+                "data: {\"id\": \"chatcmpl-a1\", \"choices\": [{\"index\": 0, \"delta\": {\"content\": \"half a\"}, \"finish_reason\": null}]}\n\n",
+                "data: {\"id\": \"chatcmpl-a1\", \"object\": \"chat.completion.chunk\", \"choices\": [{\"index\": 0, \"delta\": {}, \"finish_reason\": \"cancelled\"}], \"hermes\": {\"completed\": false, \"partial\": false, \"failed\": false, \"error\": null, \"error_code\": \"agent_error\"}}\n\n",
+                "data: [DONE]\n\n",
+            )
+            .as_bytes(),
+        );
+        assert_eq!(
+            events,
+            vec![
+                AgentStreamEvent::Content {
+                    text: "half a".into()
+                },
+                AgentStreamEvent::Stopped
+            ]
+        );
+        let done = AgentStreamParser::new().feed(
+            b"data: {\"id\": \"chatcmpl-a1\", \"choices\": [{\"index\": 0, \"delta\": {}, \"finish_reason\": \"stop\"}]}\n\n",
+        );
+        assert!(done.is_empty(), "{done:?}");
     }
 
     #[test]

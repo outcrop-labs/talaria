@@ -74,10 +74,11 @@ export async function queueChatMessage(params: {
   await postJson<{ queued: true; conversationId: string }>('/api/chat', { ...params, queue: true })
 }
 
-/** What a stop did. `hermes` says the turn was running as a Hermes session, so
- *  the RUN was told to stop and not merely this reader's stream. Callers fire
- *  and forget; the field is named because the route answers it and the wire is
- *  worth reading in a devtools log. */
+/** What a stop did. `hermes` says the agent's RUN was told to stop (by its run
+ *  id on a session turn, by its completion id on a completions turn), not
+ *  merely this reader's stream. Callers fire and forget; the field is named
+ *  because the route answers it and the wire is worth reading in a devtools
+ *  log. */
 export interface StopResult {
   ok: true
   hermes: boolean

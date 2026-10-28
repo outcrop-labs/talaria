@@ -778,6 +778,71 @@ fn with_error_line(content: &str, line: &str) -> String {
     }
 }
 
+/// THE COMPLETION EACH DRAIN IS READING, by its reply row: what a person's
+/// stop names on the completions arm (`/api/conversations/{id}/stop`). That
+/// arm's turn never announces a run the way a session's `run.started` does
+/// (stamped on the row as `hermes_run_id`), but while its request is open
+/// its completion id IS its Hermes run id (talaria-gateway
+/// fleet_abandoned.rs), and the drain is what holds the request open.
+///
+/// In memory, not on the row, because that is exactly the id's lifetime:
+/// it names the run only while this process holds the turn's request, so
+/// an entry goes when the drain stops reading, and a restart (which drops
+/// every request) leaves none behind. And not `hermes_run_id`: a run id on
+/// a row says the conversation is driven through a Hermes session
+/// (`pinned_history_fits`), which a completions turn is not.
+static OPEN_COMPLETIONS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// The completion the drain of this reply row is reading right now, if a
+/// completions-arm turn is streaming into it.
+pub fn open_completion(message_id: &str) -> Option<String> {
+    OPEN_COMPLETIONS
+        .lock()
+        .ok()
+        .and_then(|open| open.get(message_id).cloned())
+}
+
+/// One drain's entry in [`OPEN_COMPLETIONS`], kept to the completion its
+/// stream names last and removed when the drain stops reading.
+struct OpenCompletion {
+    message_id: String,
+    noted: Option<String>,
+}
+
+impl OpenCompletion {
+    fn new(message_id: &str) -> Self {
+        OpenCompletion {
+            message_id: message_id.to_string(),
+            noted: None,
+        }
+    }
+
+    fn note(&mut self, completion: Option<&str>) {
+        let Some(completion) = completion else {
+            return;
+        };
+        if self.noted.as_deref() == Some(completion) {
+            return;
+        }
+        self.noted = Some(completion.to_string());
+        if let Ok(mut open) = OPEN_COMPLETIONS.lock() {
+            open.insert(self.message_id.clone(), completion.to_string());
+        }
+    }
+}
+
+impl Drop for OpenCompletion {
+    fn drop(&mut self) {
+        if self.noted.is_some()
+            && let Ok(mut open) = OPEN_COMPLETIONS.lock()
+        {
+            open.remove(&self.message_id);
+        }
+    }
+}
+
 /// Drain an assistant stream into the reply row.
 /// `forward`, when present, is the client's teed branch: every chunk rides to
 /// the caller first (a send failure is the client hanging up — the drain
@@ -814,6 +879,8 @@ pub async fn persist_assistant_stream(
     let mut last_flush: Option<Instant> = None;
     let mut parser = AgentStreamParser::new();
     let mut stream = body;
+    // What a person's stop names while this reads a completions turn.
+    let mut open = OpenCompletion::new(&message_id);
 
     macro_rules! flush {
         ($status:expr) => {
@@ -926,6 +993,7 @@ pub async fn persist_assistant_stream(
                         AgentStreamEvent::Stopped => stopped = true,
                     }
                 }
+                open.note(parser.completion());
                 // Stamped per CHUNK, not per parsed event: a keep-alive-only
                 // stretch still proves the writer is alive, and streamed_at —
                 // not created_at — is what the stale sweep and the working
@@ -960,6 +1028,9 @@ pub async fn persist_assistant_stream(
             }
         }
     };
+    // The stream has ended, and with it the request the completion id named
+    // a run through: a stop from here on has nothing to interrupt.
+    drop(open);
     for ev in parser.finish() {
         match ev {
             AgentStreamEvent::Content { text } => content.push_str(&text),
@@ -1247,6 +1318,31 @@ fn maybe_resume(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A drain's open completion is what a stop reads while the drain reads
+    /// the stream: the newest one the stream named, and nothing once the
+    /// drain lets go.
+    #[test]
+    fn the_open_completion_lives_as_long_as_the_drain_reads() {
+        let row = "8a6d1f0e-3b2c-4d5e-9f10-111213141516";
+        assert_eq!(open_completion(row), None);
+        let mut open = OpenCompletion::new(row);
+        // The session arm names none: nothing is noted.
+        open.note(None);
+        assert_eq!(open_completion(row), None);
+        open.note(Some("chatcmpl-a1"));
+        assert_eq!(open_completion(row).as_deref(), Some("chatcmpl-a1"));
+        // A moved turn's fresh completion replaces it.
+        open.note(Some("chatcmpl-b2"));
+        open.note(None);
+        assert_eq!(open_completion(row).as_deref(), Some("chatcmpl-b2"));
+        // Another row's drain is its own.
+        let other = OpenCompletion::new("other-row");
+        drop(other);
+        assert_eq!(open_completion(row).as_deref(), Some("chatcmpl-b2"));
+        drop(open);
+        assert_eq!(open_completion(row), None);
+    }
 
     /// The pinned turn is cut from the same list the full-history path
     /// sends: system rows fold into the ephemeral system message, the

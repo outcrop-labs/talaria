@@ -399,7 +399,11 @@ multiplexer.
   agent's headers. A turn let go of is never moved. A turn let go of before the agent's response
   headers came has nothing naming it, and stays Hermes' to handle. The
   inbox brief, which runs detached with nobody waiting, gets the time a reply does (90 s) for
-  a slow agent, and a brief past it is stopped this way instead of parked.
+  a slow agent, and a brief past it is stopped this way instead of parked. A person's Stop on a
+  completions chat turn names the same id: the drain holding the turn's request open knows it
+  (talaria-chat-persist `open_completion`), so `/api/conversations/{id}/stop` posts the stop while
+  the drain reads on, and Hermes' `cancelled` finish lands the row stopped, as `run.cancelled` does
+  on a session.
 
   Pinned sessions stay a per-agent switch, off by default. One thing blocks making them the
   default: on a session, a per-message tier is not honoured, and the session runs its main

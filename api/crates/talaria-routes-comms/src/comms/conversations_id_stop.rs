@@ -1,12 +1,18 @@
 // /api/conversations/{id}/stop.
 // POST → interrupt the reply that is streaming in this thread right now. The
-// stop button, server-side: Hermes addresses a running turn by its own run id,
-// and the assistant row is the only place that says which one this is.
+// stop button, server-side: Hermes addresses a running turn by its own run id.
+// A session turn's run id is on its assistant row (stamped from
+// `run.started`). A completions turn has none, but while its request is open
+// its completion id (`chatcmpl-…`) is its run id, and the drain reading the
+// turn knows it (talaria-chat-persist `open_completion`), so it is stopped
+// the same way: Hermes interrupts a started turn, or withdraws one still
+// queued behind another of the agent's turns, and ends its stream.
 //
 // A stop is not a cancel of the turn's record. The row stays, with whatever the
 // agent managed to say, and lands `complete` with a `stopped` stamp (the drain
-// loop in chat_persist owns that ending, reached by the `run.cancelled` the
-// container sends after the interrupt). Nothing here writes the row — asking
+// loop in chat_persist owns that ending, reached by the `run.cancelled` a
+// session's container sends after the interrupt, or the `cancelled` finish a
+// completion's stream ends with). Nothing here writes the row — asking
 // twice must cost nothing, and the stream is the one writer.
 //
 // Gated by the conversations' own access rule — the owner, or a member of the
@@ -18,15 +24,18 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_api_facades::gateway::fleet_chat::stop_run;
+use talaria_api_facades::gateway::fleet_chat::{stop_completion, stop_run};
+use talaria_chat_persist::open_completion;
 use talaria_conversations::{accessible_conversation, streaming_run};
 use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-// doc: Interrupt the reply streaming in this thread. `hermes` says whether the
-// doc: agent's own run was interrupted, or whether hanging up was the whole
-// doc: stop. Nothing is streaming → 409.
+// doc: Interrupt the reply streaming in this thread, on either arm: a session
+// doc: turn by its run id, a completions turn by its completion id. `hermes`
+// doc: says whether the agent's own run was interrupted, or whether hanging up
+// doc: was the whole stop (a completions turn whose id is not known, which a
+// doc: drain in another process would be). Nothing is streaming → 409.
 
 pub async fn post(
     State(state): State<AppState>,
@@ -58,17 +67,35 @@ pub async fn post(
     // Nothing in flight: a stop with nothing to stop is the caller's state
     // being stale, not a server fault, so it says so rather than answering ok
     // to a thing it did not do.
-    let Some((_message_id, run_id)) = streaming else {
+    let Some((message_id, run_id)) = streaming else {
         return Ok(house_error(StatusCode::CONFLICT, "nothing is streaming"));
     };
-    // NO RUN ID MEANS THE CLIENT'S OWN ABORT IS THE STOP. A turn driven through
-    // the full-history chat arm has no run Hermes could be asked to interrupt —
-    // the request is one long response, and dropping the read is how it ends.
-    // The persist keeps draining server-side either way, so the row still
-    // lands; `hermes: false` is what tells the client its own abort was the
-    // whole of it.
+    // NO RUN ID IS THE COMPLETIONS ARM. Its turn names no run, but while the
+    // drain holds its request open the completion id the stream named is the
+    // run's id in Hermes, so the RUN is stopped, not just this reader: the
+    // client's own abort only hangs up its copy of the stream, and the drain
+    // reads on server-side, so without this the agent worked (and spent) to
+    // the end of a turn nobody wanted. The drain is asked again before every
+    // send, so a turn the lost-turn watch moved is stopped where it went.
     let Some(run_id) = run_id else {
-        return Ok(Json(json!({ "ok": true, "hermes": false })).into_response());
+        if open_completion(&message_id).is_none() {
+            // No drain here is reading it (a restart dropped the request it
+            // ran under, or another process holds it): hanging up is all
+            // there is, and `hermes: false` says so.
+            return Ok(Json(json!({ "ok": true, "hermes": false })).into_response());
+        }
+        return Ok(
+            match stop_completion(&conv.agent_model, || open_completion(&message_id)).await {
+                Ok(Some(done)) => {
+                    tracing::info!("[conversations] {id}: a person's stop: the turn was {done}");
+                    Json(json!({ "ok": true, "hermes": true })).into_response()
+                }
+                // The stream ended while the stop was on its way: the turn
+                // finished on its own, exactly the stale stop a 409 means.
+                Ok(None) => house_error(StatusCode::CONFLICT, "nothing is streaming"),
+                Err(msg) => house_error(StatusCode::BAD_GATEWAY, &msg),
+            },
+        );
     };
     match stop_run(&conv.agent_model, &run_id).await {
         Ok(()) => Ok(Json(json!({ "ok": true, "hermes": true })).into_response()),
