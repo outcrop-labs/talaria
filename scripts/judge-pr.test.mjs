@@ -41,13 +41,32 @@ function ok(cond, what) {
 const FILLED = TEMPLATE.replace('- **Gate:**', '- **Gate:** `bun run gate` passed (check + the cli suite)')
   .replace('- **Exercised:**', '- **Exercised:** ran `talaria worktree probe` and read the seeded rows back')
   .replace(
-    '<!-- Paste the entry, or say why the change is internal-only. -->',
+    '<!-- Paste the entry from your changelog/ file, or say why the change is internal-only. -->',
     '- **The worktree waits for Postgres over TCP.** Verified: `bun run gate`, a real worktree.',
   )
 
 check('the template still has the sections the judge reads', () => {
   ok(section(TEMPLATE, 'Verified') !== null, 'no ## Verified in the template')
   ok(section(TEMPLATE, 'CHANGELOG entry') !== null, 'no ## CHANGELOG entry in the template')
+})
+
+check('the template\'s checklist asks for a changelog/ file, never a hand edit of CHANGELOG.md', () => {
+  // CHANGELOG.md is append-only and written by the roll (scripts/changelog-roll.mjs);
+  // `bun run check` fails a hand-appended [Unreleased] bullet. A checklist that
+  // names it sends the author to the one file they must not touch.
+  const boxes = section(TEMPLATE, 'Checklist')
+    .split('\n')
+    .reduce((items, line) => {
+      if (/^\s*- \[ \]/.test(line)) items.push(line)
+      else if (items.length && /^\s+\S/.test(line)) items[items.length - 1] += ` ${line.trim()}`
+      return items
+    }, [])
+  const entry = boxes.filter((b) => /changelog/i.test(b))
+  eq(entry.length, 1)
+  ok(/\[`changelog\/`\]\(\.\.\/changelog\/\)/.test(entry[0]), `the changelog item names no changelog/ file: ${entry[0]}`)
+  ok(/changelog\/YYYY-MM-DD-<slug>\.md/.test(entry[0]), `the changelog item gives no file name: ${entry[0]}`)
+  ok(!/CHANGELOG\.md\S* carries/.test(entry[0]), `the changelog item still asks for CHANGELOG.md: ${entry[0]}`)
+  ok(/written only by the release roll/.test(entry[0]), entry[0])
 })
 
 check('a filled Verified section reads as its text, not "" (the old reader always said "")', () => {

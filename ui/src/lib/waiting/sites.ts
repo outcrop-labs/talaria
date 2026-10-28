@@ -120,6 +120,7 @@ export const WAITING_SITES = {
   'ticket/work-watch': { role: 'reasoning', slot: 'inline', note: 'An agent is working this ticket right now.' },
   'fleet/cron-design': { role: 'reasoning', slot: 'inline', note: 'Designing a job: name, schedule, prompt.' },
   'fleet/federate': { role: 'submitting', slot: 'button', note: 'Federating with another instance.' },
+  'fleet/seal-configs': { role: 'tool', slot: 'inline', note: 'Sealing the credentials stored configs hold as written: a dry run, then the seal and its rolls.' },
   'fleet/mcp-apply': { role: 'tool', slot: 'inline', note: 'Applying an MCP change across an agent.' },
   'fleet/version-revert': { role: 'tool', slot: 'inline', note: 'Reverting to an earlier agent version.' },
 

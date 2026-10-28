@@ -3625,6 +3625,7 @@ name = "talaria-agent-media"
 version = "0.1.0"
 dependencies = [
  "sqlx",
+ "talaria-agent-defs",
  "talaria-fleet-docker",
  "tokio",
  "tracing",
@@ -3635,6 +3636,7 @@ name = "talaria-agent-memory"
 version = "0.1.0"
 dependencies = [
  "sqlx",
+ "talaria-agent-defs",
  "talaria-fleet-docker",
  "talaria-internal-history",
  "tokio",
@@ -3702,7 +3704,9 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "sqlx",
+ "talaria-fleet-docker",
  "talaria-fleet-layout",
+ "talaria-search",
  "talaria-secretbox",
  "talaria-settings",
 ]
@@ -3742,6 +3746,7 @@ dependencies = [
  "serde",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-defs",
  "talaria-boards",
  "talaria-brain-health",
  "talaria-fleet-agents",
@@ -3851,6 +3856,7 @@ dependencies = [
  "talaria-fleet-reconcile",
  "talaria-fleet-render",
  "talaria-fleet-resources",
+ "talaria-fleet-seal",
  "talaria-gaps",
  "talaria-gateway",
  "talaria-github",
@@ -4033,6 +4039,7 @@ dependencies = [
  "talaria-fleet-reconcile",
  "talaria-fleet-render",
  "talaria-fleet-resources",
+ "talaria-fleet-seal",
  "talaria-gateway",
  "talaria-google-agent",
  "talaria-google-api-health",
@@ -4178,6 +4185,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-approval-cards"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-managers",
+ "talaria-audit",
+ "talaria-chips",
+ "talaria-gateway",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-approvals"
 version = "0.1.0"
 dependencies = [
@@ -4215,7 +4237,7 @@ dependencies = [
  "talaria-app-manifest",
  "talaria-auth",
  "talaria-gateway",
- "talaria-github",
+ "talaria-git-hosts",
  "talaria-llm-keys",
  "talaria-mcp-apply",
  "talaria-safe-fetch",
@@ -4575,6 +4597,7 @@ dependencies = [
 name = "talaria-conversations"
 version = "0.1.0"
 dependencies = [
+ "redis",
  "serde",
  "serde_json",
  "sqlx",
@@ -4582,6 +4605,28 @@ dependencies = [
  "talaria-gateway",
  "talaria-secretbox",
  "talaria-uploads",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-cron-output"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "regex",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-crons",
+ "talaria-body",
+ "talaria-conversations",
+ "talaria-gateway",
+ "talaria-notify",
+ "talaria-runs-work-session",
+ "talaria-scheduler",
+ "talaria-state",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4883,6 +4928,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-defs",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-users",
@@ -5041,7 +5087,6 @@ dependencies = [
  "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-gateway",
- "talaria-github",
  "talaria-guard-coaching",
  "talaria-mcp",
  "talaria-mcp-service",
@@ -5069,6 +5114,34 @@ dependencies = [
  "talaria-fleet-budget",
  "talaria-fleet-docker",
  "talaria-scheduler",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-fleet-seal"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-secrets",
+ "talaria-audit",
+ "talaria-fleet-docker",
+ "talaria-fleet-reconcile",
+ "talaria-fleet-render",
+ "talaria-secretbox",
+]
+
+[[package]]
+name = "talaria-forgejo"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "talaria-body",
+ "talaria-gateway",
+ "talaria-git-host-types",
  "tokio",
  "tracing",
 ]
@@ -5120,34 +5193,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-git-host-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "talaria-git-hosts"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-forgejo",
+ "talaria-git-host-types",
+ "talaria-github",
+ "talaria-secretbox",
+ "talaria-workspace-secrets",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "talaria-github"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
- "chrono",
- "chrono-tz",
- "futures-util",
- "getrandom 0.3.4",
- "hex",
- "hmac",
  "regex",
  "reqwest",
  "rsa",
- "serde",
  "serde_json",
- "sha1 0.10.7",
- "sha2 0.11.0",
- "sqlx",
  "talaria-agent-auth",
  "talaria-body",
  "talaria-gateway",
+ "talaria-git-host-types",
  "talaria-secretbox",
  "talaria-tz",
- "thiserror",
  "tokio",
  "tracing",
- "url",
- "uuid",
 ]
 
 [[package]]
@@ -5705,6 +5793,7 @@ dependencies = [
  "talaria-agent-skills",
  "talaria-alerts",
  "talaria-app-triggers",
+ "talaria-approval-cards",
  "talaria-approvals",
  "talaria-apps",
  "talaria-artifacts",
@@ -5714,6 +5803,7 @@ dependencies = [
  "talaria-comms-decay",
  "talaria-config",
  "talaria-conversations",
+ "talaria-cron-output",
  "talaria-daily-brief",
  "talaria-decide",
  "talaria-digest",
@@ -6367,6 +6457,7 @@ dependencies = [
  "talaria-apps",
  "talaria-audit",
  "talaria-gateway",
+ "talaria-git-hosts",
  "talaria-github",
  "talaria-realtime",
  "talaria-runs-define",
@@ -6794,6 +6885,7 @@ dependencies = [
  "talaria-agent-todo",
  "talaria-alerts",
  "talaria-api-facades",
+ "talaria-approval-cards",
  "talaria-artifacts",
  "talaria-audit",
  "talaria-boards",
@@ -6875,6 +6967,7 @@ dependencies = [
  "talaria-channels",
  "talaria-chips",
  "talaria-conversations",
+ "talaria-cron-output",
  "talaria-error",
  "talaria-gaps",
  "talaria-harness-defs",
@@ -6933,7 +7026,7 @@ dependencies = [
  "talaria-claim",
  "talaria-config",
  "talaria-error",
- "talaria-github",
+ "talaria-git-hosts",
  "talaria-invites",
  "talaria-me",
  "talaria-org-domains",
@@ -7015,6 +7108,7 @@ dependencies = [
  "talaria-conversations",
  "talaria-db",
  "talaria-error",
+ "talaria-git-hosts",
  "talaria-github",
  "talaria-harness-defs",
  "talaria-instance",
@@ -7218,7 +7312,7 @@ dependencies = [
  "talaria-body",
  "talaria-config",
  "talaria-gateway",
- "talaria-github",
+ "talaria-git-hosts",
  "talaria-harness",
  "talaria-harness-defs",
  "talaria-runs-define",
@@ -7858,6 +7952,7 @@ dependencies = [
  "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-gateway",
+ "talaria-git-hosts",
  "talaria-github",
  "talaria-mcp-jsonrpc",
  "talaria-plugins",

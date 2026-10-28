@@ -237,7 +237,10 @@ fn asked(script: &Shared) -> Vec<String> {
 struct NoCreds;
 
 impl Credentials for NoCreds {
-    async fn github_read_token(&self, _repo: &str) -> Result<Option<String>, String> {
+    async fn host_read_login(
+        &self,
+        _src: &crate::source::GitSource,
+    ) -> Result<Option<(String, String)>, String> {
         Ok(None)
     }
 

@@ -1392,6 +1392,10 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::fleet::fleet_federate::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/fleet/seal-configs",
+            post(talaria_routes_fleet::fleet::fleet_seal_configs::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/fleet/defs",
             get(talaria_routes_fleet::fleet::fleet_defs::get).fallback(|| async { method_not_allowed("GET") }),
         )
@@ -1448,8 +1452,9 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         // The workbench family, the agent sandbox plane: the per-repo git
-        // flow, the org GitHub connection (status/installations/patch/
-        // disconnect; admin, it holds org credentials), the human side of
+        // flow, the operator's git hosts (talaria-git-hosts — list/add,
+        // read/patch/remove, test connection; admin, they hold org
+        // credentials), the human side of
         // workbench jobs (the ticket strip + approve/reject/merge-to-testing),
         // the repo-creation approval queue, and the per-agent repo grants.
         // Who is a developer is the agent's own switch (fleet/defs PATCH).
@@ -1460,11 +1465,22 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
-            "/api/workbench/github",
-            get(talaria_routes_workbench::workbench::workbench_github::get)
-                .put(talaria_routes_workbench::workbench::workbench_github::put)
-                .delete(talaria_routes_workbench::workbench::workbench_github::delete)
+            "/api/workbench/git-hosts",
+            get(talaria_routes_workbench::workbench::workbench_git_hosts::get)
+                .post(talaria_routes_workbench::workbench::workbench_git_hosts::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/workbench/git-hosts/{id}",
+            get(talaria_routes_workbench::workbench::workbench_git_hosts_id::get)
+                .put(talaria_routes_workbench::workbench::workbench_git_hosts_id::put)
+                .delete(talaria_routes_workbench::workbench::workbench_git_hosts_id::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/workbench/git-hosts/{id}/test",
+            post(talaria_routes_workbench::workbench::workbench_git_hosts_id_test::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/workbench/jobs",

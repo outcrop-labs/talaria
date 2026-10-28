@@ -187,9 +187,9 @@
     <div class="rounded-lg border border-line bg-panel p-4">
       <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Install from Git</div>
       <p class="mb-3 font-sans text-xs text-muted">
-        Any https git repository with a <code class="text-fg">talaria.json</code> at its root. A private GitHub repository
-        the GitHub connection can see is read with a read-only token; another host's private repository needs a workspace
-        secret that holds a token and lists that host. The code becomes part of this deployment and runs fully trusted, so
+        Any https git repository with a <code class="text-fg">talaria.json</code> at its root. A private repository on one of
+        this instance's git hosts (Admin → Git hosts) is read with that host's login — read-only, where the host can scope
+        one; a private repository anywhere else needs a workspace secret that holds a token and lists that host. The code becomes part of this deployment and runs fully trusted, so
         install only repositories you trust.
       </p>
       <div class="flex flex-wrap gap-2">

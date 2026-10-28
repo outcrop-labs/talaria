@@ -12,7 +12,7 @@ recoverable.
 Live credentials Talaria must store and replay — provider API keys, per-agent
 secrets and credentials, Google tokens (per-user and org), MCP OAuth tokens and
 headers, the email transport credential, external object-storage keys, the
-GitHub App key or PAT, the reranker key, the agent web-search vendor key, and each enabled
+GitHub App key or PAT (on its git host's row, `git_hosts.auth`), the reranker key, the agent web-search vendor key, and each enabled
 app's gateway key (`app_llm_keys`, the `tlk_` key the app host makes the app's model calls
 with). A repo's project env (`repo_env`,
 the values a workbench job's build reads) is sealed the same way and is
@@ -26,7 +26,19 @@ named provider's key, an `Authorization` header) is not stored as written
 either. Federation seals each one the render would emit as one of that agent's
 per-agent secrets (`CONFIG_<PATH>`) and stores a `${CONFIG_<PATH>}` handle in
 the config. The render delivers the value through the agent's `secrets.env`, and
-Hermes expands the handle when it loads `config.yaml`. Inline credentials the
+Hermes expands the handle when it loads `config.yaml`. The render also declares those
+`CONFIG_*` names in a platform plugin manifest Hermes never loads
+(`/opt/data/plugins/platforms/talaria-sealed/plugin.yaml`, mounted read-only), which is how
+Hermes v0.22.4 keeps its own platform tokens out of every child it spawns: the foreground
+terminal, background processes and `execute_code` all start without them, while Hermes's own
+process keeps them to expand the handles. Configs stored before federation sealed them can be
+sealed after the fact: `POST /api/fleet/seal-configs` (the federation dialog's last line) reports
+first, then seals the current values, rolls each running agent that gains secrets (a stopped
+one's container is removed, so its next start creates one that holds them), and rewrites every
+stored version in place. Backups taken before that still hold the literals. A handle whose secret
+is gone, whichever way it went, is left out of the rendered `config.yaml` with a render warning,
+so Hermes never reads `${CONFIG_…}` itself as a value; setting the secret again under that name
+brings the setting back. Inline credentials the
 render never emits are dropped: a model spec's `api_key`, which the render
 always points at the gateway; an authored MCP server's credentials, which the
 render replaces with the MCP gateway; and the API server's own `key`, which
@@ -69,6 +81,16 @@ Two layers, so the key that actually unlocks everything never lives in a config:
 `secretbox.ts` loads the DEK(s) once during DB migration, so `seal()`/`open()`
 are synchronous everywhere else. The in-memory keys live on `globalThis` so a
 dev HMR reload doesn't lose them.
+
+The Rust api loads its own copy on first use (`AppState::secretbox`,
+talaria-state) and keeps it. It can get there **before** the migration pass:
+`talaria dev` starts the api first, and a fresh or reset database has no
+`secret_keys` table, or no first key in it, for the moments the pass takes. A
+load that failed that way is not final — the next caller after two seconds reads
+the table again, until the box is healthy — so the first hire on a fresh
+database seals its agent key without anyone restarting the api. A load whose
+keys the root secret **cannot unwrap** is never retried: that is a different
+root, and it stays loud until a person restores the right one.
 
 ## Versioned data keys
 

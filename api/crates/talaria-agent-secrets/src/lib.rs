@@ -9,6 +9,13 @@
 // `terminal.env_passthrough` ([`passthrough_names`]): Hermes runs
 // execute_code with only the env names it allows, so without that list a
 // per-agent secret reached the agent's terminal and never its scripts.
+//
+// Two kinds of row are the exception. A `CONFIG_*` secret is a credential
+// sealed out of the agent's own config: Hermes reads it, its commands must
+// not. The render declares those names in a platform plugin manifest Hermes
+// never loads ([`sealed_manifest`]), which is how Hermes keeps its own
+// platform tokens out of every child it spawns. And a row saved under a name
+// the rules now refuse ([`reserved`]) is not loaded at all.
 
 use sqlx::PgPool;
 use std::path::Path;
@@ -18,8 +25,10 @@ use talaria_secretbox::SecretBox;
 mod config_seal;
 mod env_file;
 pub use config_seal::{
-    CONFIG_SECRET_PREFIX, ConfigLiteral, ConfigSeal, config_secret_handles, copy_config_secrets,
-    plan_config_seal, seal_config_literals, withhold_config_secrets,
+    CONFIG_SECRET_PREFIX, ConfigLiteral, ConfigSeal, config_secret_handles, config_secret_paths,
+    copy_config_secrets, held_config_secrets, plan_config_seal,
+    plan_config_seal_dropping_undeliverable, seal_config_literals, withhold_config_secret,
+    withhold_config_secrets, withhold_unheld_config_secrets,
 };
 
 /// Container-env name: UPPER_SNAKE, must not collide with the stamped vars.
@@ -148,7 +157,7 @@ pub fn reserved(name: &str) -> Option<String> {
     }
     if hermes_stripped().contains(name) {
         return Some(format!(
-            "{name} is one of Hermes's own provider, platform or tool names: Hermes strips it from every command the agent runs, so no tool of the agent's would see it, and reads it for itself instead. Give the secret a name of your own"
+            "{name} is one of Hermes's own provider, platform or tool names: Hermes strips it from every command the agent runs, so no tool of the agent's would see it, and reads it for itself instead. A key a command of the agent's reads goes under a name of your own; Hermes's own web search takes its key from Admin → Search"
         ));
     }
     None
@@ -162,11 +171,32 @@ pub struct AgentSecretMeta {
     pub updated_by: Option<String>,
     pub updated_at: Option<String>,
     /// Why this name would be refused now ([`reserved`]), for a row saved
-    /// before the rule. It still materializes (that behaviour is kept), but
-    /// it is left out of `env_passthrough`, so the UI says why and offers
-    /// the delete. Absent for an ordinary secret.
+    /// before the rule. Such a row is not loaded into the container
+    /// ([`materialize_agent_secrets`] skips it), so the UI says why and
+    /// offers the delete. Absent for an ordinary secret.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refused: Option<String>,
+    /// For a `CONFIG_*` secret: where the agent's current config names it
+    /// (`platforms.telegram.token`). Empty when nothing does any more.
+    /// Absent for every other secret.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_at: Option<Vec<String>>,
+}
+
+/// The stored config of the version the render runs (`current_version`),
+/// or None for a def with no version.
+pub async fn current_config(
+    pg: &PgPool,
+    agent_id: &str,
+) -> Result<Option<serde_json::Value>, sqlx::Error> {
+    sqlx::query_scalar(
+        "select v.config from agent_defs d \
+         join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
+         where d.id::text = $1",
+    )
+    .bind(agent_id)
+    .fetch_optional(pg)
+    .await
 }
 
 pub async fn list_agent_secrets(
@@ -180,10 +210,24 @@ pub async fn list_agent_secrets(
     .bind(agent_id)
     .fetch_all(pg)
     .await?;
+    let config = if rows
+        .iter()
+        .any(|(n, _, _)| n.starts_with(CONFIG_SECRET_PREFIX))
+    {
+        current_config(pg, agent_id).await?
+    } else {
+        None
+    };
     Ok(rows
         .into_iter()
         .map(|(name, updated_by, at)| AgentSecretMeta {
             refused: reserved(&name),
+            used_at: name.starts_with(CONFIG_SECRET_PREFIX).then(|| {
+                config
+                    .as_ref()
+                    .map(|c| config_secret_paths(c, &name))
+                    .unwrap_or_default()
+            }),
             name,
             updated_by,
             updated_at: at.map(talaria_agent_auth::epoch_ms_to_iso),
@@ -269,21 +313,98 @@ pub async fn passthrough_names(pg: &PgPool, agent_id: &str) -> Result<Vec<String
 /// header): the config names it as `${CONFIG_…}` and Hermes reads it for
 /// itself. It is not a key for the agent's tools, so it is never listed.
 /// execute_code admits a credential-looking name only by passthrough, so
-/// leaving these out keeps them out of the agent's scripts.
+/// leaving these out keeps them out of the agent's scripts; the sealed
+/// manifest ([`sealed_manifest`]) keeps them out of its terminal too.
 fn passes_through(name: &str) -> bool {
     reserved(name).is_none() && !name.starts_with(CONFIG_SECRET_PREFIX)
 }
 
-/// Write (or remove) the agent's secrets env file for the renderer. Returns
-/// whether the service should declare an env_file. An unsealable row fails
-/// the render — a secret the server can no longer open must not silently
-/// vanish from a container that runs on it.
+/// What [`materialize_agent_secrets`] wrote for one agent.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Materialized {
+    /// Whether the service should declare the env_file (any row was written).
+    pub env_file: bool,
+    /// The `CONFIG_*` names written: credentials sealed out of the agent's
+    /// own config, declared in the sealed manifest so no child sees them.
+    pub sealed: Vec<String>,
+    /// Rows left out because their name is refused now ([`reserved`]),
+    /// each with the reason. The render logs them.
+    pub skipped: Vec<(String, String)>,
+}
+
+/// The directory, inside the agent's fleet dir, that holds the sealed
+/// manifest. Mounted whole at [`SEALED_PLUGIN_MOUNT`], so a rewrite (a
+/// rename) is visible in a running container.
+pub const SEALED_PLUGIN_DIR: &str = "hermes-sealed";
+
+/// Where Hermes looks for a user platform plugin (`$HERMES_HOME/plugins/
+/// platforms/<name>/plugin.yaml`, `/opt/data` being the agent's home).
+pub const SEALED_PLUGIN_MOUNT: &str = "/opt/data/plugins/platforms/talaria-sealed";
+
+/// The sealed manifest: a platform plugin that declares the agent's
+/// `CONFIG_*` names as password entries, and nothing else.
+///
+/// Hermes v0.22.4 strips the secrets a profile's own platform plugins
+/// declare from EVERY child it spawns, the foreground terminal included
+/// (`tools/environments/local.py` `_filter_secret_env` and
+/// `_scrub_credentials`, via `local_env_policy._home_adapter_secret_env`,
+/// which scans `<home>/plugins/platforms/*/plugin.yaml` on every spawn,
+/// cached on the manifest's file signature). It refuses them as
+/// `env_passthrough` names too. The plugin itself is never loaded: it is not
+/// in `plugins.enabled`, and it has no adapter to load. Hermes's own process
+/// keeps the values, which is what lets it expand `${CONFIG_…}` in
+/// config.yaml on every reload.
+///
+/// `optional_env`, not `requires_env`: nothing is required of an adapter that
+/// never runs. No `category` (the scan counts only `messaging`, the default).
+pub fn sealed_manifest(names: &[String]) -> String {
+    let mut out = String::from(
+        "# Rendered by Talaria. Do not hand-edit.\n\
+         # A declaration only: no adapter, never enabled. Hermes strips every secret a\n\
+         # platform plugin declares from the commands the agent runs, so these sealed\n\
+         # config credentials reach Hermes (config.yaml's ${CONFIG_...}) and no child.\n\
+         name: talaria-sealed\n\
+         label: Talaria sealed config credentials\n\
+         kind: platform\n\
+         version: \"1\"\n\
+         description: Declares the agent's sealed config credentials so Hermes keeps them out of every command it runs. Never enabled; no adapter.\n",
+    );
+    if names.is_empty() {
+        out.push_str("optional_env: []\n");
+    } else {
+        out.push_str("optional_env:\n");
+        for name in names {
+            // The names are `CONFIG_[A-Z0-9_]+` (name_ok), plain YAML scalars.
+            out.push_str(&format!("  - name: {name}\n    password: true\n"));
+        }
+    }
+    out
+}
+
+/// Write (or remove) the agent's secrets env file for the renderer, and its
+/// sealed manifest. An unsealable row fails the render — a secret the server
+/// can no longer open must not silently vanish from a container that runs on
+/// it.
+///
+/// A row under a name that is refused now ([`reserved`], saved before the
+/// rule) is not written. No command the agent runs could read one of those
+/// names: Hermes strips its own provider, platform and tool names from every
+/// command, and the rest reconfigure the agent or are Talaria's. Loading one
+/// let it reconfigure the agent: a `TELEGRAM_BOT_TOKEN` switched on an
+/// adapter outside Talaria's channels, a `TERMINAL_ENV` moved the shell.
+///
+/// One thing does stop working. Hermes's own in-process tools read their
+/// vendor keys from its environment (v0.22.4's web search picks Tavily when
+/// `TAVILY_API_KEY` is set, `plugins/web/tavily/provider.py`), so a per-agent
+/// tool key saved before the rule stops reaching them on the agent's next
+/// recreate. Web search takes its key from Admin → Search, for every agent
+/// (talaria-agent-web-search); the render logs each row it leaves out.
 pub async fn materialize_agent_secrets(
     pg: &PgPool,
     sb: &SecretBox,
     agent_id: &str,
     slug: &str,
-) -> Result<bool, String> {
+) -> Result<Materialized, String> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "select name, value_enc from agent_secrets where agent_id::text = $1 order by name",
     )
@@ -291,25 +412,18 @@ pub async fn materialize_agent_secrets(
     .fetch_all(pg)
     .await
     .map_err(|e| format!("agent secrets read failed: {e}"))?;
-    let path = talaria_fleet_layout::fleet_dir()
-        .join("agents")
-        .join(slug)
-        .join("secrets.env");
-    if rows.is_empty() {
+    let agent_dir = talaria_fleet_layout::fleet_dir().join("agents").join(slug);
+    let path = agent_dir.join("secrets.env");
+    let (lines, mut out) = env_lines(rows, |enc| sb.open(enc).map_err(|e| e.to_string()))?;
+    write_sealed_manifest(&agent_dir, &out.sealed).await?;
+    if lines.is_empty() {
         // force: a missing file is already the goal.
         match tokio::fs::remove_file(&path).await {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("{}: {e}", path.display())),
         }
-        return Ok(false);
-    }
-    let mut lines = Vec::with_capacity(rows.len());
-    for (name, value_enc) in rows {
-        let value = sb
-            .open(&value_enc)
-            .map_err(|e| format!("secret \"{name}\" unseal failed: {e}"))?;
-        lines.push(env_file::line(&name, &value));
+        return Ok(out);
     }
     write_0600(
         &path,
@@ -319,7 +433,51 @@ pub async fn materialize_agent_secrets(
         ),
     )
     .await?;
-    Ok(true)
+    out.env_file = true;
+    Ok(out)
+}
+
+/// The env_file lines for an agent's rows, and what they hold: a refused
+/// name is skipped (with its reason), a `CONFIG_*` name is listed as sealed.
+fn env_lines(
+    rows: Vec<(String, String)>,
+    open: impl Fn(&str) -> Result<String, String>,
+) -> Result<(Vec<String>, Materialized), String> {
+    let mut out = Materialized::default();
+    let mut lines = Vec::with_capacity(rows.len());
+    for (name, value_enc) in rows {
+        if let Some(why) = reserved(&name) {
+            out.skipped.push((name, why));
+            continue;
+        }
+        let value =
+            open(&value_enc).map_err(|e| format!("secret \"{name}\" unseal failed: {e}"))?;
+        lines.push(env_file::line(&name, &value));
+        if name.starts_with(CONFIG_SECRET_PREFIX) {
+            out.sealed.push(name);
+        }
+    }
+    Ok((lines, out))
+}
+
+/// The manifest is written on every render, with no entries when the agent
+/// has no sealed secret, so the mount never changes. World-readable: it
+/// holds names only, and Hermes reads it strictly — an unreadable manifest
+/// under `plugins/platforms/` fails every command the agent runs. Written by
+/// rename into the bind-mounted directory, so a spawn never reads half a file.
+async fn write_sealed_manifest(agent_dir: &Path, names: &[String]) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = agent_dir.join(SEALED_PLUGIN_DIR);
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    let _ = tokio::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).await;
+    let file = dir.join("plugin.yaml");
+    let text = sealed_manifest(names);
+    if tokio::fs::read_to_string(&file).await.ok().as_deref() == Some(text.as_str()) {
+        return Ok(());
+    }
+    talaria_fleet_brain::write_atomic(&file, text.as_bytes(), 0o644).await
 }
 
 /// Truncate and rewrite, owner-only. One blocking task, the close included:
@@ -477,6 +635,7 @@ mod tests {
     fn a_legacy_row_under_a_refused_name_is_marked_on_the_wire() {
         let meta = |name: &str| AgentSecretMeta {
             refused: reserved(name),
+            used_at: None,
             name: name.into(),
             updated_by: Some("a@b.c".into()),
             updated_at: None,
@@ -525,5 +684,77 @@ mod tests {
         ] {
             assert!(!names.contains(&ours), "Hermes strips {ours}");
         }
+    }
+
+    #[test]
+    fn a_refused_name_is_not_loaded_and_sealed_names_are_listed() {
+        let rows = vec![
+            (
+                "CONFIG_PLATFORMS_TELEGRAM_TOKEN".to_string(),
+                "enc:tg".to_string(),
+            ),
+            ("FIGMA_TOKEN".to_string(), "enc:figma".to_string()),
+            ("TAVILY_API_KEY".to_string(), "enc:tavily".to_string()),
+            ("TERMINAL_ENV".to_string(), "enc:ssh".to_string()),
+        ];
+        let open = |enc: &str| Ok(enc.trim_start_matches("enc:").to_string());
+        let (lines, out) = env_lines(rows, open).expect("lines");
+        assert_eq!(
+            lines,
+            vec!["CONFIG_PLATFORMS_TELEGRAM_TOKEN=tg", "FIGMA_TOKEN=figma"]
+        );
+        assert_eq!(out.sealed, vec!["CONFIG_PLATFORMS_TELEGRAM_TOKEN"]);
+        let skipped: Vec<&str> = out.skipped.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(skipped, vec!["TAVILY_API_KEY", "TERMINAL_ENV"]);
+        assert!(
+            out.skipped[0].1.contains("Hermes strips it"),
+            "{:?}",
+            out.skipped
+        );
+        // Every row refused: nothing to load, so no env_file line at all.
+        let (lines, out) = env_lines(
+            vec![("OPENAI_API_KEY".to_string(), "enc:sk".to_string())],
+            open,
+        )
+        .unwrap();
+        assert!(lines.is_empty() && out.sealed.is_empty());
+        assert_eq!(out.skipped.len(), 1);
+        // An unsealable row still fails, naming it.
+        let err = env_lines(vec![("FIGMA_TOKEN".to_string(), "x".to_string())], |_| {
+            Err("bad tag".to_string())
+        })
+        .unwrap_err();
+        assert!(
+            err.contains("FIGMA_TOKEN") && err.contains("bad tag"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_sealed_manifest_declares_each_name_as_a_password_and_nothing_else() {
+        let names = vec![
+            "CONFIG_DASHBOARD_BASIC_AUTH_PASSWORD".to_string(),
+            "CONFIG_PLATFORMS_TELEGRAM_TOKEN".to_string(),
+        ];
+        let text = sealed_manifest(&names);
+        assert!(text.contains("\nname: talaria-sealed\n"), "{text}");
+        assert!(text.contains("\nkind: platform\n"), "{text}");
+        assert!(
+            text.contains(
+                "optional_env:\n  - name: CONFIG_DASHBOARD_BASIC_AUTH_PASSWORD\n    password: true\n  - name: CONFIG_PLATFORMS_TELEGRAM_TOKEN\n    password: true\n"
+            ),
+            "{text}"
+        );
+        // No adapter to load and nothing Hermes would read as one: no
+        // entry point, no requires_env, no category other than the default.
+        for absent in ["requires_env", "category", "entry", "provides_"] {
+            assert!(!text.contains(absent), "{absent} in {text}");
+        }
+        // The empty case still renders, so the mount never changes.
+        let empty = sealed_manifest(&[]);
+        assert!(empty.contains("optional_env: []\n"), "{empty}");
+        assert!(!empty.contains("password: true"));
+        assert!(SEALED_PLUGIN_MOUNT.starts_with("/opt/data/plugins/platforms/"));
+        assert!(SEALED_PLUGIN_MOUNT.ends_with("/talaria-sealed"));
     }
 }

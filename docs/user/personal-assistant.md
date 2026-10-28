@@ -42,7 +42,9 @@ Below the settings, its working parts:
 
 - **Schedules** — recurring jobs on the assistant's own scheduler; they keep firing even
   when Talaria is down. Describe one — *"every weekday morning, summarize my inbox into a
-  brief"* — and it's drafted for you.
+  brief"* — and it's drafted for you. A schedule made from a conversation posts each run
+  back into that conversation, except a run with nothing new to say: the agent answers
+  `[SILENT]`, and nothing is posted.
 - **Skills** — what it knows how to do.
 - **Memory** — add *"remember something: one fact the agent should keep"*. It's MEMORY.md,
   with version history.

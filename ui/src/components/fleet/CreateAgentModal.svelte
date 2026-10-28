@@ -11,6 +11,7 @@
     adoptDesign,
     clearDesign,
     currentDesign,
+    ensureDesign,
     refineDesign,
     setModalOpen,
     startDesign,
@@ -19,7 +20,7 @@
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import Select from '@/components/ui/Select.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
-  import { hireFleetAgent, type AgentDef } from '@/lib/fleet-defs'
+  import { hireFleetAgent, useFleetDefs, type AgentDef } from '@/lib/fleet-defs'
   import { useRoleTemplates } from '@/lib/agent-role-templates'
   import { fade, listStagger, slide, staggerIn } from '@/lib/motion'
   import type { AgentDraft } from '@/lib/muse.svelte'
@@ -91,10 +92,22 @@
   if (design?.status === 'ready') step = 'review'
   // Review fields, bound to the store's fields. Hand edits write straight
   // through to the store (that is what the refine's `current` reads), except
-  // templateId/start/busy/err, which are genuinely per-hire local state.
+  // templateId/start/busy/err, which are genuinely per-hire local state. A
+  // manual start (Configure manually, or Duplicate's preselect) has no design
+  // yet: the first edit seeds an empty one (ensureDesign), so the fields
+  // take what is typed and Create enables like on any other path.
   const displayName = $derived(design?.name ?? '')
   const slug = $derived(design?.handle ?? '')
   const department = $derived(design?.department ?? '')
+  // A department is ONE agent's: it names the container and the memory
+  // volume, so the hire door refuses one another agent holds (409). Said the
+  // moment it is typed, from the whole roster — the page's own cached read,
+  // retired agents included, because a retired agent keeps its volume and so
+  // its department (`templates` may be the enabled ones only). A hirer reads
+  // the whole fleet. A role template or a Muse design can propose a
+  // department somebody already has.
+  const rosterQuery = useFleetDefs(true)
+  const departmentHolder = $derived((rosterQuery.data?.defs ?? templates).find((t) => t.department === department.trim()) ?? null)
   const role = $derived(design?.role ?? '')
   const soul = $derived(design?.soul ?? '')
   const soulRev = $derived(design?.soulRev ?? 0)
@@ -102,14 +115,11 @@
   const lastChange = $derived(design?.lastChange ?? null)
 
   const set = (patch: Partial<{ name: string; handle: string; department: string; role: string; soul: string; skills: AgentDraft['skills'] }>) => {
-    const d = currentDesign()
-    if (!d) return
-    Object.assign(d, patch)
+    Object.assign(ensureDesign(), patch)
   }
 
   const onName = (v: string) => {
-    const d = currentDesign()
-    if (!d) return
+    const d = ensureDesign()
     const prev = d.name
     d.name = v
     if (!d.handle || d.handle === prev.toLowerCase().replace(/[^a-z0-9]/g, '')) {
@@ -169,6 +179,12 @@
       })
       if (r.error) {
         err = r.error
+        // Any refusal refetches the roster. The one that matters is the one
+        // the hint could not see coming (the department was taken after this
+        // page read the roster, a 409 at the door): with the fresh roster the
+        // field says who holds it and Create waits. For any other refusal it
+        // is one extra read.
+        void qc.invalidateQueries({ queryKey: ['fleet-defs'] })
         return
       }
       await qc.invalidateQueries({ queryKey: ['fleet-hires'] })
@@ -300,11 +316,17 @@
         </div>
         <div>
           <label for="cam-department" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Department</label>
-          <Input id="cam-department" value={department} oninput={(e) => set({ department: e.currentTarget.value })} placeholder="research" />
+          <Input id="cam-department" value={department} oninput={(e) => set({ department: e.currentTarget.value })} placeholder="research" aria-invalid={departmentHolder ? 'true' : undefined} />
+          {#if departmentHolder}
+            <p transition:slide={{ duration: 150 }} class="mt-1 text-xs text-danger" data-testid="department-taken">
+              Taken by {departmentHolder.displayName} — pick another.
+            </p>
+          {/if}
         </div>
       </div>
       <p class="-mt-2 font-sans text-xs text-muted">
-        Role is the roster title; department is the routing/mount key. The fleet model id becomes
+        Role is the roster title; department is the agent's own key — it names its container and its memory, so no two
+        agents share one. The fleet model id becomes
         <span class="font-mono text-fg">{slug || 'handle'}-{department || 'department'}</span>.
       </p>
 
@@ -391,7 +413,7 @@
         <Button variant="ghost" size="sm" onclick={onClose}>
           Cancel
         </Button>
-        <Button onclick={() => void create()} disabled={busy || generating || !slug || !department || !displayName}>
+        <Button onclick={() => void create()} disabled={busy || generating || !slug || !department || !displayName || !!departmentHolder}>
           {busy ? 'Hiring' : 'Create agent'}
         </Button>
       </div>

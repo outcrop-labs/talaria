@@ -13,12 +13,14 @@ pub use talaria_inbox_focus_types as types;
 // action execution.
 //
 // THE ADAPTERS are four harness runs with a deadline wrapped around each.
-// The deadlines are the entire point of that layer: ten seconds for a turn
-// nobody is watching (a card's one-line brief, a structured validation with
-// an honest fallback), ninety for a reply somebody asked for and is watching
-// words arrive. The timeout wraps the run future and the future's drop is the
-// abort — a transport mid-request is dropped rather than signal-noticed, same
-// 10s/90s wall clock, same error surfaces.
+// The deadlines are the entire point of that layer: ten seconds for a
+// structured validation with an honest fallback, ninety for a reply somebody
+// asked for and is watching words arrive, and ninety for a card's one-line
+// brief, which nobody waits on (it runs detached) but which a slow agent needs
+// the time for. The timeout wraps the run future and the future's drop is the
+// abort — a transport mid-request is dropped rather than signal-noticed, and
+// the gateway stops a fleet turn dropped that way in the agent too
+// (talaria-gateway fleet_abandoned.rs).
 //
 // ERROR MODEL: the engine fails two ways — a database error (→ the
 // platform's generic 500) and a product sentence (`That response model is no
@@ -94,11 +96,36 @@ const BRIEF_RETRY_MS: i64 = 2 * 60_000;
 const CONFIRMATION_MS: i64 = 10 * 60_000;
 const UNDO_MS: i64 = 30_000;
 
-/// The cap on a turn NOBODY IS WATCHING: the one-line brief on a queue card,
-/// and the structured command validation behind an action. Both are drawn
-/// alongside other content, both have an honest fallback, and a card that is
-/// ten seconds late is worse than a card that says it could not be written.
+/// The cap on the structured command validation behind an action. It is
+/// drawn alongside other content and has an honest fallback, and a card that
+/// is ten seconds late is worse than a card that says it could not be written.
 const DEADLINE_MS: u64 = 10_000;
+
+/// The cap on a card's one-line brief. NOBODY WAITS ON IT: the queue answers
+/// at once with the card `pending`, the brief runs detached
+/// (`spawn_claim_and_generate_brief`), and the card picks it up on a later
+/// read (the queue polls every 30 s). So this guards the agent turn, not a
+/// reader, and is sized by that turn: the same bound the same assistant gets
+/// for a reply, which a slow Hermes needs — a brief refused on a wedged
+/// derived session waits out the refusal and then the move to a fresh one
+/// (talaria-gateway's lost-turn watch) inside it. The ten seconds it had
+/// before dropped those, and each dropped brief left its turn parked in the
+/// agent.
+///
+/// It stays inside the claim's retry window, so a brief has always ended —
+/// landed, or been stopped — before its card can claim another, and two
+/// briefs for one card never queue behind each other in one derived session.
+/// A brief past it is let go of, and the gateway stops it in the agent
+/// (fleet_abandoned.rs), so it is not left queued there. Once Hermes can
+/// place that stop it lands within the gateway's control window, so the
+/// window is counted in. (An agent store too starved to bind the turn's id
+/// yet is sent the stop until it can; a brief claimed meanwhile queues behind
+/// that one, which is stopped once it is placed.)
+const BRIEF_DEADLINE_MS: u64 = REPLY_DEADLINE_MS;
+const _: () = assert!(
+    BRIEF_DEADLINE_MS + (talaria_gateway::fleet_chat::CONTROL_WINDOW.as_millis() as u64)
+        < (BRIEF_RETRY_MS as u64)
+);
 
 /// The cap on a turn SOMEBODY IS WAITING FOR — a question they typed into the
 /// assistant panel. Nine times the brief's, and the asymmetry is the entire
@@ -162,7 +189,7 @@ pub async fn request_focus_brief(
         ..Default::default()
     };
     let result = tokio::time::timeout(
-        Duration::from_millis(DEADLINE_MS),
+        Duration::from_millis(BRIEF_DEADLINE_MS),
         run_harness(state, &inbox_brief_harness(), &input_value, ctx),
     )
     .await

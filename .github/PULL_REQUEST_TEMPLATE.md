@@ -11,7 +11,8 @@ against `main`; one that does gets retargeted, and the branch-flow guard
 - [ ] This PR targets `rc`.
 - [ ] `bun run gate` is green locally. It compiles only what this diff touches; CI runs the full surface job.
 - [ ] I exercised the changed path in the running app; the steps are under **Verified**.
-- [ ] [`CHANGELOG.md`](../CHANGELOG.md) carries what changed and what was verified.
+- [ ] A [`changelog/`](../changelog/) file, `changelog/YYYY-MM-DD-<slug>.md`, carries what changed and
+      what was verified. [`CHANGELOG.md`](../CHANGELOG.md) is written only by the release roll — never by hand.
 - [ ] Generated files were regenerated, not hand-edited —
       [`docs/CLI-REFERENCE.md`](../docs/CLI-REFERENCE.md) and
       [`docs/api/README.md`](../docs/api/README.md).
@@ -54,4 +55,4 @@ promotion flow, or the workflows that carry them?
 
 ## CHANGELOG entry
 
-<!-- Paste the entry, or say why the change is internal-only. -->
+<!-- Paste the entry from your changelog/ file, or say why the change is internal-only. -->

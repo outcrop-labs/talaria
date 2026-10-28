@@ -143,13 +143,15 @@ credential, and the host runs the handler. The api never loads app code.
    `keptData: "adopt"` gives the data to the new app, `keptData: "wipe"` deletes it first.
    Manage → Apps offers both as buttons.
 
-   **Private repositories.** A github.com repository the GitHub connection
-   ([WORKBENCH.md](./WORKBENCH.md)) can see is fetched with a token scoped to that one
-   repository and to reading its contents — including the private repos `request_repo` creates.
-   Another host's private repository needs a **workspace secret** holding an https token whose
-   *Spendable at* list names that host; name it in the install (`secret`). The token reaches git
-   through `GIT_ASKPASS` for that host only — never in the URL, a command line or `.git/config`
-   — and a missing credential is an error, never a prompt.
+   **Private repositories.** A repository on one of the instance's registered git hosts
+   (Admin → Git hosts, [WORKBENCH.md](./WORKBENCH.md#git-hosts-the-operators-choice)) is
+   fetched with that host's read login — on a GitHub App host a token scoped to that one
+   repository and to reading its contents, including the private repos `request_repo` creates;
+   on a Forgejo host the host's own token. A private repository on a host nobody registered
+   needs a **workspace secret** holding an https token whose *Spendable at* list names that
+   host; name it in the install (`secret`), which wins over any registered host. The token
+   reaches git through `GIT_ASKPASS` for that host only — never in the URL, a command line or
+   `.git/config` — and a missing credential is an error, never a prompt.
 2. **Build** — this instance compiles the app against the host runtime (`/runtime/rt-*.js`)
    and starts a dedicated Postgres container for its data. Dev loads sources through Vite
    (HMR); production serves the compiled chunk. A failed build stays on that app.
@@ -280,6 +282,14 @@ rather than failing to build it.
   the container publishes. `TALARIA_APP_DB_NETWORK` names the network outright: the DB joins it
   with no published port, and the host dials it by container name, so set it only on a host
   that is on that network.
+- An app DB reached on its loopback port runs on docker's default `bridge`, so it takes no
+  network of its own: a compose file that names none got a `<project>_default` network made for
+  it, one subnet per app from the daemon's ~30 address pools. Nothing dials an app DB over a
+  docker network there (the host uses the published port; backup and uninstall use `docker
+  exec`). A container started without `--network` can reach it by IP, and still needs its
+  password. A DB made before this keeps its network while it runs (docker's restart policy
+  brings it back on that network); the next time Talaria itself starts it, after it was stopped,
+  it moves to the bridge and its old network is removed once no container names it.
 
 - A throw in an app's UI, server, or MCP is isolated — when it is awaited: the pane shows the
   crash, the rest of Talaria keeps running. The boundary is the exception boundary, not a process

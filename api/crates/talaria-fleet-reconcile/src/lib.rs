@@ -294,12 +294,10 @@ pub async fn apply_running_agents(
     sb: &SecretBox,
 ) -> Result<(Vec<String>, Vec<String>), String> {
     let (_, mut warnings) = render(pg, sb).await?;
-    let managed: Vec<(String, String)> = sqlx::query_as(
-        "select department, display_name from agent_defs where managed and enabled order by slug",
-    )
-    .fetch_all(pg)
-    .await
-    .map_err(|e| e.to_string())?;
+    let managed: Vec<(String, String)> = sqlx::query_as(DEPARTMENT_RUNNERS_SQL)
+        .fetch_all(pg)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut rolled = Vec::new();
     for (department, display_name) in &managed {
         match apply_one(pg, sb, department).await {
@@ -562,9 +560,16 @@ async fn roll_agent_locked(
     department: &str,
     mode: RollMode,
 ) -> Result<Rolled, String> {
+    // Where two agents hold one department (a pair that predates the
+    // one-agent rule), the first row is the one the render runs in its
+    // container: one with a current version (the render's own condition),
+    // then the oldest — talaria-fleet-render's `department_runners`.
     let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        "select slug, display_name, active_slot from agent_defs \
-         where department = $1 and managed and enabled",
+        "select d.slug, d.display_name, d.active_slot from agent_defs d \
+         where d.department = $1 and d.managed and d.enabled \
+         order by exists (select 1 from agent_versions v \
+             where v.agent_id = d.id and v.version = d.current_version) desc, \
+           d.created_at, d.id",
     )
     .bind(department)
     .fetch_all(pg)
@@ -737,6 +742,23 @@ pub struct ReconcileResult {
     pub warnings: Vec<String>,
 }
 
+/// One row per department: the managed, enabled agent that runs in its
+/// container, slug-ordered. A department is one container, so a loop over
+/// these starts or rolls each container once. Where two agents hold one
+/// department (a pair that predates the one-agent rule) the row is the one
+/// the render runs there — one with a current version first, then the
+/// oldest, as talaria-fleet-render's `department_runners` ranks them — and
+/// the left-out agent is not reported as started or rolled: it has no
+/// container. A department of one agent reads exactly as before.
+const DEPARTMENT_RUNNERS_SQL: &str = "select department, display_name from ( \
+       select distinct on (d.department) d.department, d.display_name, d.slug \
+       from agent_defs d where d.managed and d.enabled \
+       order by d.department, \
+         exists (select 1 from agent_versions v \
+           where v.agent_id = d.id and v.version = d.current_version) desc, \
+         d.created_at, d.id \
+     ) runner order by slug";
+
 /// Bring the running fleet to the desired state in one shot: re-render every
 /// managed agent's config, then start any enabled managed agent whose
 /// container isn't running. Reboot survival is already handled by `restart:
@@ -750,12 +772,10 @@ pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileRes
             .ok_or_else(|| "fleet render not wired".to_string())?;
         f(pg.clone(), sb.clone()).await?
     };
-    let managed: Vec<(String, String)> = sqlx::query_as(
-        "select department, display_name from agent_defs where managed and enabled order by slug",
-    )
-    .fetch_all(pg)
-    .await
-    .map_err(|e| e.to_string())?;
+    let managed: Vec<(String, String)> = sqlx::query_as(DEPARTMENT_RUNNERS_SQL)
+        .fetch_all(pg)
+        .await
+        .map_err(|e| e.to_string())?;
     let states = if managed.is_empty() {
         Vec::new()
     } else {
@@ -816,12 +836,10 @@ pub async fn roll_running_agents(
             .ok_or_else(|| "fleet render not wired".to_string())?;
         f(pg.clone(), sb.clone()).await?
     };
-    let managed: Vec<(String, String)> = sqlx::query_as(
-        "select department, display_name from agent_defs where managed and enabled order by slug",
-    )
-    .fetch_all(pg)
-    .await
-    .map_err(|e| e.to_string())?;
+    let managed: Vec<(String, String)> = sqlx::query_as(DEPARTMENT_RUNNERS_SQL)
+        .fetch_all(pg)
+        .await
+        .map_err(|e| e.to_string())?;
     let running: HashSet<String> = if managed.is_empty() {
         HashSet::new()
     } else {

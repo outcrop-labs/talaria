@@ -1,13 +1,13 @@
 // The token plumbing of app install and update, against a mock: a local
 // smart-HTTP git server (a CGI bridge to `git http-backend`) that demands a
-// Basic login, and mock credentials in place of the GitHub connection and the
-// workspace secrets. No network, no live GitHub.
+// Basic login, and mock credentials in place of the registered git hosts and
+// the workspace secrets. No network, no live GitHub.
 //
 // What it holds the plumbing to: the token reaches git only through askpass
 // (never in a URL the server sees, never in an argument), git asks for it only
 // for the host the fetch was pointed at, a missing credential is an error and
-// never a prompt, and a github.com repository gets the connection's read token
-// while a refusal from the connection falls back to an anonymous fetch.
+// never a prompt, and a repository on a registered host gets that host's read
+// login while a refusal from the host falls back to an anonymous fetch.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use base64::Engine as _;
 use talaria_apps::git::{GitAuth, fetch_into, remote_head};
 use talaria_apps::lifecycle::{Credentials, auth_for};
-use talaria_apps::source::parse_source;
+use talaria_apps::source::{GitSource, parse_source};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -221,7 +221,9 @@ async fn handle(
     Ok(())
 }
 
-/// Credentials as a test sets them: a GitHub answer and one named secret.
+/// Credentials as a test sets them: one registered host's answer (at
+/// github.com — any other origin has no host registered) and one named
+/// secret.
 struct Mock {
     github: Result<Option<String>, String>,
     secret: Option<(&'static str, String, String)>,
@@ -229,9 +231,17 @@ struct Mock {
 }
 
 impl Credentials for Mock {
-    async fn github_read_token(&self, repo: &str) -> Result<Option<String>, String> {
-        self.asked.lock().unwrap().push(format!("github:{repo}"));
-        self.github.clone()
+    async fn host_read_login(&self, src: &GitSource) -> Result<Option<(String, String)>, String> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push(format!("host:{}/{}", src.host, src.repo));
+        if src.host != "github.com" {
+            return Ok(None);
+        }
+        self.github
+            .clone()
+            .map(|t| t.map(|t| ("x-access-token".to_string(), t)))
     }
 
     async fn secret_login(&self, name: &str, host: &str) -> Result<(String, String), String> {
@@ -424,7 +434,7 @@ async fn a_github_repository_gets_the_connections_read_token() {
     }
     assert_eq!(
         *creds.asked.lock().unwrap(),
-        ["github:acme/talaria-app-crm"]
+        ["host:github.com/acme/talaria-app-crm"]
     );
 
     // Not configured: anonymous, nothing to say. Refused: anonymous, and the
@@ -447,7 +457,8 @@ async fn a_github_repository_gets_the_connections_read_token() {
     assert_eq!(auth, GitAuth::Anonymous);
     assert!(note.unwrap().contains("422"));
 
-    // Another host never asks the GitHub connection; a named secret wins.
+    // An origin no host is registered at fetches anonymously; a named secret
+    // wins over any registered host.
     let gl = parse_source("https://gitlab.example.com/acme/crm", false).unwrap();
     let creds = mock("glpat");
     assert_eq!(
@@ -458,9 +469,14 @@ async fn a_github_repository_gets_the_connections_read_token() {
     assert!(
         matches!(auth, GitAuth::Login { ref host, ref password, .. } if host == "gitlab.example.com" && password == "glpat")
     );
+    // The registry was asked about the anonymous fetch (and had no host
+    // there); the named secret was spent without asking it.
     assert_eq!(
         *creds.asked.lock().unwrap(),
-        ["secret:deploy@gitlab.example.com"]
+        [
+            "host:gitlab.example.com/acme/crm",
+            "secret:deploy@gitlab.example.com"
+        ]
     );
     let err = auth_for(&creds, &gl, Some("nope")).await.unwrap_err();
     assert!(err.contains("no workspace secret named"), "{err}");

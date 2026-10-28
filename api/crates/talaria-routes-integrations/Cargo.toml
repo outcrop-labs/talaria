@@ -17,7 +17,7 @@ talaria-body = { workspace = true }
 talaria-claim = { workspace = true }
 talaria-chips = { workspace = true }
 talaria-error = { workspace = true }
-talaria-github = { workspace = true }
+talaria-git-hosts = { workspace = true }
 talaria-invites = { workspace = true }
 talaria-me = { workspace = true }
 talaria-org-domains = { workspace = true }

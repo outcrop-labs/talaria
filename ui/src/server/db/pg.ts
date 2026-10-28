@@ -4385,6 +4385,109 @@ alter table tasks drop column if exists conversation_id`,
                where key = 'apps_catalog_url' and jsonb_typeof(value) = 'string'),
              'https://raw.githubusercontent.com/outcrop-labs/talaria-apps/main/index.json') as url) c
     where not exists (select 1 from app_catalogs)`,
+  // ── The Hermes thread a conversation's completions turns open on ────────
+  // Hermes files a header-less /v1/chat/completions turn under a session it
+  // derives from the turn's opening (the system rows and the first user
+  // message), so a conversation keeps one derived session for life. When the
+  // agent dies mid-turn, v0.22 fences that session's head as `unknown` and
+  // refuses every later turn on it, keeping each refusal queued behind it.
+  // The gateway's repair sends the refused turn again with one more system
+  // row in its opening (talaria-gateway `fleet_chat::Thread`), which lands it
+  // on a fresh derived session, and this is the number in that row: 0 is the
+  // opening as Talaria sends it, so every conversation that never lost a
+  // turn keeps the session it always had. Kept here so the conversation's
+  // next turn opens on the fresh session instead of being refused once more.
+  //
+  // AT THE END, not beside the conversations table: MIGRATIONS is append-only
+  // and keyed by INDEX.
+  `alter table conversations add column if not exists hermes_epoch integer not null default 0`,
+  // A THREAD SCHEDULE'S QUIET RUNS. The cron prompt tells an agent to answer
+  // exactly [SILENT] when there is nothing new, and Hermes then skips its own
+  // delivery; Talaria's two roads for a thread schedule's report (the
+  // talaria-events push and the cron-output pull) see the text before or
+  // without that decision, so they read the sentinel themselves, land no
+  // message, and record the run here as delivered silent. The pull reads
+  // these rows as "already delivered", exactly like a message row, so a quiet
+  // run is never taken for a report the push lost.
+  //
+  // KEYED (conversation_id, run_key): run_key is what the two roads dedupe
+  // on, the Hermes session id, or the push's own marker when the plugin sent
+  // no session. job_id serves the pull's window check for those. Rows older
+  // than the pull's look-back can never be consulted again; the pull drops
+  // them each pass (created_at index). Cascade-deleted with the thread.
+  //
+  // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
+  `create table if not exists cron_silent_runs (
+     conversation_id uuid not null references conversations(id) on delete cascade,
+     run_key text not null,
+     job_id text not null,
+     agent_model text not null,
+     via text not null,
+     created_at timestamptz not null default now(),
+     primary key (conversation_id, run_key)
+   )`,
+  `create index if not exists cron_silent_runs_created_idx on cron_silent_runs (created_at)`,
+  // ── Git hosts: the git providers an operator chose (2026-10-27) ─────────
+  // OPERATORS CHOOSE THEIR PROVIDERS. Each row is one git host Talaria works
+  // repositories on (talaria-git-hosts): a kind with an adapter ('github' —
+  // github.com or an Enterprise Server — or 'forgejo', which serves Gitea
+  // too), a display name, the web origin git and the credential helper name
+  // it by (one row per origin), an optional REST origin override, the orgs
+  // agents may ask for new repositories under, and `auth`. A GitHub row's
+  // `auth` is its App / PAT config with the secrets SEALED (the shape
+  // `app_settings.github_config` held); every other kind names a workspace
+  // secret there (`{"secret": "<name>"}`) and the token stays in the secret
+  // store. `id` is the short slug the workbench tables reference.
+  `create table if not exists git_hosts (
+     id text primary key check (id ~ '^[a-z0-9][a-z0-9-]{0,39}$'),
+     kind text not null check (kind in ('github', 'forgejo')),
+     name text not null,
+     base_url text not null,
+     api_url text,
+     auth jsonb not null default '{}'::jsonb,
+     repo_creation_orgs text[] not null default '{}',
+     created_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  // EXISTING INSTALLS KEEP WORKING WITH NO OPERATOR ACTION: the one GitHub
+  // connection becomes the `github` row — its sealed config moved as is, its
+  // repo-creation orgs into the column — and a fresh install gets the same
+  // row unconfigured, which is what the GitHub panel always showed before it
+  // was connected. An operator who works only elsewhere removes it.
+  `insert into git_hosts (id, kind, name, base_url, auth, repo_creation_orgs)
+   select 'github', 'github', 'GitHub', 'https://github.com',
+          coalesce((select case when jsonb_typeof(value) = 'object' then value - 'repoCreationOrgs' end
+                      from app_settings where key = 'github_config'), '{}'::jsonb),
+          coalesce((select array(select jsonb_array_elements_text(value -> 'repoCreationOrgs'))
+                      from app_settings where key = 'github_config'
+                       and jsonb_typeof(value -> 'repoCreationOrgs') = 'array'), '{}')
+   on conflict (id) do nothing`,
+  // The credential lives in exactly one place: the row now holds it.
+  `delete from app_settings where key = 'github_config'`,
+  // EVERY WORKBENCH ROW THAT NAMES A REPO NAMES ITS HOST — the same owner/name
+  // on two hosts is two repositories. Backfilled to the `github` row (every
+  // repo before the registry was on GitHub), then the default is dropped: a
+  // new row says which host it means.
+  `alter table workbench_repos add column if not exists host_id text not null default 'github' references git_hosts(id)`,
+  `alter table workbench_repos alter column host_id drop default`,
+  `alter table workbench_repos drop constraint if exists workbench_repos_pkey`,
+  `alter table workbench_repos add constraint workbench_repos_pkey primary key (agent_id, host_id, repo)`,
+  `alter table workbench_repo_flow add column if not exists host_id text not null default 'github' references git_hosts(id)`,
+  `alter table workbench_repo_flow alter column host_id drop default`,
+  `alter table workbench_repo_flow drop constraint if exists workbench_repo_flow_pkey`,
+  `alter table workbench_repo_flow add constraint workbench_repo_flow_pkey primary key (host_id, repo)`,
+  `alter table workbench_jobs add column if not exists host_id text not null default 'github' references git_hosts(id)`,
+  `alter table workbench_jobs alter column host_id drop default`,
+  `alter table workbench_repo_requests add column if not exists host_id text not null default 'github' references git_hosts(id)`,
+  `alter table workbench_repo_requests alter column host_id drop default`,
+  `alter table app_install_requests add column if not exists host_id text not null default 'github' references git_hosts(id)`,
+  `alter table app_install_requests alter column host_id drop default`,
+  // A plugin's `git_host_id` (filled 'github' or null before the registry)
+  // now references a real row.
+  `update plugins set git_host_id = null
+    where git_host_id is not null and git_host_id not in (select id from git_hosts)`,
+  `alter table plugins add constraint plugins_git_host_id_fkey foreign key (git_host_id) references git_hosts(id)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

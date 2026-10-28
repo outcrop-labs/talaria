@@ -98,7 +98,40 @@ export interface AgentDef {
    *  derived view of one block inside it. Null (or absent, on an older api)
    *  means the def says nothing and Hermes' own defaults are in force. */
   compression?: AgentCompression | null
+  /** Null unless another agent holds this one's department too — only ever a
+   *  pair from before a department became one agent's (absent on an older
+   *  api). */
+  departmentShare?: DepartmentShare | null
   latest: AgentVersion | null
+}
+
+/** A department two agents hold. A department names one container and one
+ *  memory volume, so the render runs the OLDER agent there and leaves the
+ *  other out; nothing is merged. */
+export interface DepartmentShare {
+  /** Whether this agent is the one running in the department's container. */
+  runs: boolean
+  /** The one that is — null when the render runs none of them. */
+  runner: DepartmentPeer | null
+  /** Every other agent holding the department. */
+  others: DepartmentPeer[]
+}
+
+export interface DepartmentPeer {
+  id: string
+  slug: string
+  displayName: string
+}
+
+/** The agent's OWN containers. They are found by department, and where two
+ *  agents share one the container is the runner's: the other agent has none,
+ *  and must not read the runner's state as its own. */
+export function containersOf(
+  def: Pick<AgentDef, 'department' | 'departmentShare'>,
+  byDept: Map<string, AgentContainers>,
+): AgentContainers | null {
+  if (def.departmentShare && !def.departmentShare.runs) return null
+  return byDept.get(def.department) ?? null
 }
 
 /** One of an agent's managers. `role` is their org role, so the roster can
@@ -339,19 +372,51 @@ export async function saveAgentEdit(
   created?: boolean
   applied?: boolean
   /** The route's own remarks about what it did with the edit — e.g. a
-   *  threshold Hermes will floor on this model, or a change saved without a
-   *  roll. Optional: an api that reports none simply shows nothing. */
+   *  threshold Hermes will floor on this model. Optional: an api that
+   *  reports none simply shows nothing. */
   notes?: string[]
+  /** Why an asked-for apply did not land (`applied: false`): the roll
+   *  failed (a step threw, or the container never reported healthy), found
+   *  the department mid-roll or no agent to roll, or the agent has no
+   *  container of its own. The version is saved either way. */
+  warning?: string
   error?: string
 }> {
   try {
-    return await postJson<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean; notes?: string[] }>(
+    return await postJson<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean; notes?: string[]; warning?: string }>(
       `/api/fleet/defs/${id}/edit`,
       edit,
     )
   } catch (e) {
     return { error: errorMessage(e) }
   }
+}
+
+/** A version this editor saw saved and not applied, and the route's reason. */
+export interface UnappliedVersion {
+  version: number
+  why: string
+}
+
+/** The sentence a config save owes the person when its apply did not land,
+ *  or null when there is none. A saved version that is not running is not a
+ *  success to close on: the editor shows this in place instead.
+ *
+ *  `unapplied` is the version this editor already saw saved and not applied,
+ *  passed only for a save that asked to apply. A second Save & apply of that
+ *  same draft creates nothing, and the route applies only a version it just
+ *  created, so it answers with no warning at all: read alone, that silence
+ *  closed the form as if the earlier version were now running. */
+export function editNotApplied(
+  r: { version?: number; created?: boolean; applied?: boolean; warning?: string },
+  unapplied: UnappliedVersion | null = null,
+): string | null {
+  const why = r.warning?.trim()
+  if (why) return r.version ? `Saved as version ${r.version}, not applied: ${why}` : `Saved, not applied: ${why}`
+  if (unapplied && r.version === unapplied.version && r.created === false && r.applied !== true) {
+    return `Version ${unapplied.version} is still not applied, and nothing changed since it was saved, so Save & apply had nothing new to apply. Roll the agent to put it on once this clears: ${unapplied.why}`
+  }
+  return null
 }
 
 export type FleetAction = 'up' | 'stop' | 'restart' | 'roll' | 'retire' | 'unretire' | 'delete'

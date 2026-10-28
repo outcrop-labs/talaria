@@ -9,6 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+redis = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
@@ -16,3 +17,4 @@ talaria-agent-auth = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-secretbox = { workspace = true }
 talaria-uploads = { workspace = true }
+tracing = { workspace = true }

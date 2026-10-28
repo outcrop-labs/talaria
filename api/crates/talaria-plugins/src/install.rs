@@ -1,7 +1,8 @@
 // An agent asks for its app to be installed; an admin decides.
 //
-// THE REQUEST (`file_request`) is the agent's: a repo it was granted, a ref,
-// why, and the ticket it is working — the ticket's board is where the
+// THE REQUEST (`file_request`) is the agent's: a repo it was granted (on one
+// of the operator's registered git hosts), a ref, why, and the ticket it is
+// working — the ticket's board is where the
 // plugin's maintenance tickets will go, and the ticket's person is who the
 // plugin is for. Nothing is fetched or built at request time; the request is
 // a row, raised as an `app_install` approval in the census.
@@ -30,15 +31,10 @@ use talaria_apps::{AppHost, InstallError, InstallRequest, KeptDataChoice, KeptDa
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_tasks::log_activity;
 
-use crate::{NewPlugin, git_host_of, record_plugin, short_sha};
+use crate::{NewPlugin, record_plugin, short_sha};
 
-/// The URL a granted GitHub repository installs from.
-pub fn github_url(repo: &str) -> String {
-    format!("https://github.com/{repo}")
-}
-
-/// `owner/name`, as GitHub spells a repository: one slash, each half made of
-/// letters, digits, `.`, `_` and `-`.
+/// `owner/name`, as git hosts spell a repository: one slash, each half made
+/// of letters, digits, `.`, `_` and `-`.
 pub fn repo_ok(repo: &str) -> bool {
     let mut parts = repo.split('/');
     let ok = |s: &str| {
@@ -56,8 +52,13 @@ pub fn repo_ok(repo: &str) -> bool {
 pub struct InstallAsk<'a> {
     pub agent_id: &'a str,
     pub agent_model: &'a str,
-    /// `owner/name` on GitHub — a repo granted to the agent.
+    /// The registered git host the repo is on (`git_hosts.id`).
+    pub host_id: &'a str,
+    /// `owner/name` on that host — a repo granted to the agent.
     pub repo: &'a str,
+    /// The repo's page on its host, which the install fetches
+    /// (`GitHost::repo_url`).
+    pub url: &'a str,
     /// A branch, tag or commit; None is the default branch.
     pub git_ref: Option<&'a str>,
     pub why: &'a str,
@@ -93,17 +94,19 @@ pub async fn ticket_owner(pg: &PgPool, task_id: &str) -> Option<String> {
 /// File the request. Err is the sentence the agent reads.
 pub async fn file_request(pg: &PgPool, ask: &InstallAsk<'_>) -> Result<String, String> {
     if !repo_ok(ask.repo) {
-        return Err(format!(
-            "repo must be owner/name on GitHub — got \"{}\"",
-            ask.repo
-        ));
+        return Err(format!("repo must be owner/name — got \"{}\"", ask.repo));
     }
     if let Some(r) = ask.git_ref {
         ref_ok(r)?;
     }
+    let hostname = url::Url::parse(ask.url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_lowercase))
+        .unwrap_or_default();
     let installed: Option<String> = sqlx::query_scalar(
-        "select slug from app_sources where host = 'github.com' and lower(repo) = lower($1) limit 1",
+        "select slug from app_sources where host = $1 and lower(repo) = lower($2) limit 1",
     )
+    .bind(&hostname)
     .bind(ask.repo)
     .fetch_optional(pg)
     .await
@@ -116,9 +119,11 @@ pub async fn file_request(pg: &PgPool, ask: &InstallAsk<'_>) -> Result<String, S
     }
     let pending: Option<String> = sqlx::query_scalar(
         "select id::text from app_install_requests \
-         where agent_id = $1::uuid and lower(repo) = lower($2) and status in ('pending', 'installing') limit 1",
+         where agent_id = $1::uuid and host_id = $2 and lower(repo) = lower($3) \
+           and status in ('pending', 'installing') limit 1",
     )
     .bind(ask.agent_id)
+    .bind(ask.host_id)
     .bind(ask.repo)
     .fetch_optional(pg)
     .await
@@ -131,13 +136,14 @@ pub async fn file_request(pg: &PgPool, ask: &InstallAsk<'_>) -> Result<String, S
     }
     sqlx::query_scalar(
         "insert into app_install_requests \
-           (agent_id, agent_model, repo, url, git_ref, why, task_id, board_id, owner_user_id) \
-         values ($1::uuid, $2, $3, $4, $5, $6, $7::uuid, $8::uuid, $9::uuid) returning id::text",
+           (agent_id, agent_model, host_id, repo, url, git_ref, why, task_id, board_id, owner_user_id) \
+         values ($1::uuid, $2, $3, $4, $5, $6, $7, $8::uuid, $9::uuid, $10::uuid) returning id::text",
     )
     .bind(ask.agent_id)
     .bind(ask.agent_model)
+    .bind(ask.host_id)
     .bind(ask.repo)
-    .bind(github_url(ask.repo))
+    .bind(ask.url)
     .bind(ask.git_ref)
     .bind(ask.why)
     .bind(ask.task_id)
@@ -156,6 +162,8 @@ pub struct InstallRequestRow {
     pub agent_id: String,
     pub agent_model: String,
     pub agent_name: Option<String>,
+    /// The registered git host the repo is on.
+    pub host_id: String,
     pub repo: String,
     pub url: String,
     #[serde(rename = "ref")]
@@ -171,30 +179,34 @@ pub struct InstallRequestRow {
     pub created_at: String,
 }
 
-type RequestRow = (
-    String,
-    String,
-    String,
-    Option<String>,
-    String,
-    String,
-    Option<String>,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    String,
-    i64,
-);
+#[derive(sqlx::FromRow)]
+struct RequestRow {
+    id: String,
+    agent_id: String,
+    agent_model: String,
+    agent_name: Option<String>,
+    host_id: String,
+    repo: String,
+    url: String,
+    git_ref: Option<String>,
+    why: String,
+    task_id: Option<String>,
+    ticket_ref: Option<String>,
+    board_id: Option<String>,
+    board_name: Option<String>,
+    owner_user_id: Option<String>,
+    owner_name: Option<String>,
+    status: String,
+    created_ms: i64,
+}
 
-const REQUEST_SELECT: &str = "select r.id::text, r.agent_id::text, r.agent_model, d.display_name, \
-        r.repo, r.url, r.git_ref, r.why, r.task_id::text, \
-        case when t.ticket_no is not null then coalesce(tb.ticket_prefix, 'TASK') || '-' || t.ticket_no end, \
-        r.board_id::text, b.name, r.owner_user_id::text, coalesce(nullif(u.name, ''), u.email), \
-        r.status, (trunc(extract(epoch from r.created_at) * 1000))::bigint \
+const REQUEST_SELECT: &str = "select r.id::text as id, r.agent_id::text as agent_id, r.agent_model, \
+        d.display_name as agent_name, r.host_id, r.repo, r.url, r.git_ref, r.why, \
+        r.task_id::text as task_id, \
+        case when t.ticket_no is not null then coalesce(tb.ticket_prefix, 'TASK') || '-' || t.ticket_no end as ticket_ref, \
+        r.board_id::text as board_id, b.name as board_name, r.owner_user_id::text as owner_user_id, \
+        coalesce(nullif(u.name, ''), u.email) as owner_name, \
+        r.status, (trunc(extract(epoch from r.created_at) * 1000))::bigint as created_ms \
      from app_install_requests r \
      left join agent_defs d on d.id = r.agent_id \
      left join tasks t on t.id = r.task_id \
@@ -204,22 +216,23 @@ const REQUEST_SELECT: &str = "select r.id::text, r.agent_id::text, r.agent_model
 
 fn request_of(r: RequestRow) -> InstallRequestRow {
     InstallRequestRow {
-        id: r.0,
-        agent_id: r.1,
-        agent_model: r.2,
-        agent_name: r.3,
-        repo: r.4,
-        url: r.5,
-        git_ref: r.6,
-        why: r.7,
-        task_id: r.8,
-        ticket_ref: r.9,
-        board_id: r.10,
-        board_name: r.11,
-        owner_user_id: r.12,
-        owner_name: r.13,
-        status: r.14,
-        created_at: epoch_ms_to_iso(r.15),
+        id: r.id,
+        agent_id: r.agent_id,
+        agent_model: r.agent_model,
+        agent_name: r.agent_name,
+        host_id: r.host_id,
+        repo: r.repo,
+        url: r.url,
+        git_ref: r.git_ref,
+        why: r.why,
+        task_id: r.task_id,
+        ticket_ref: r.ticket_ref,
+        board_id: r.board_id,
+        board_name: r.board_name,
+        owner_user_id: r.owner_user_id,
+        owner_name: r.owner_name,
+        status: r.status,
+        created_at: epoch_ms_to_iso(r.created_ms),
     }
 }
 
@@ -237,6 +250,7 @@ pub async fn pending_requests(pg: &PgPool) -> Result<Vec<InstallRequestRow>, sql
 pub async fn requests_by_agent(pg: &PgPool, agent_id: &str) -> Result<Vec<Value>, sqlx::Error> {
     let rows: Vec<(
         String,
+        String,
         Option<String>,
         String,
         Option<String>,
@@ -244,7 +258,7 @@ pub async fn requests_by_agent(pg: &PgPool, agent_id: &str) -> Result<Vec<Value>
         Option<String>,
         i64,
     )> = sqlx::query_as(
-        "select repo, git_ref, status, result, decision_note, app_slug, \
+        "select host_id, repo, git_ref, status, result, decision_note, app_slug, \
                     (trunc(extract(epoch from updated_at) * 1000))::bigint \
              from app_install_requests \
              where agent_id = $1::uuid and created_at > now() - interval '30 days' \
@@ -255,8 +269,9 @@ pub async fn requests_by_agent(pg: &PgPool, agent_id: &str) -> Result<Vec<Value>
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(repo, git_ref, status, result, note, slug, at)| {
+        .map(|(host_id, repo, git_ref, status, result, note, slug, at)| {
             json!({
+                "host": host_id,
                 "repo": repo,
                 "ref": git_ref,
                 "status": status,
@@ -373,14 +388,15 @@ pub async fn decide(
     let claimed: Option<RequestClaim> = sqlx::query_as(
         "update app_install_requests set status = 'installing', updated_at = now() \
          where id = $1::uuid and status = 'pending' \
-         returning agent_id::text, agent_model, repo, url, git_ref, task_id::text, \
+         returning agent_id::text, agent_model, host_id, repo, url, git_ref, task_id::text, \
                    board_id::text, owner_user_id::text",
     )
     .bind(id)
     .fetch_optional(pg)
     .await
     .map_err(|e| DecideError::Db(format!("request claim failed: {e}")))?;
-    let Some((agent_id, agent_model, repo, url, git_ref, task_id, board_id, owner)) = claimed
+    let Some((agent_id, agent_model, host_id, repo, url, git_ref, task_id, board_id, owner)) =
+        claimed
     else {
         return Err(DecideError::NotFound);
     };
@@ -465,15 +481,11 @@ pub async fn decide(
     .await;
     match installed {
         Ok(installed) => {
-            let host_name = url::Url::parse(&url)
-                .ok()
-                .and_then(|u| u.host_str().map(str::to_lowercase))
-                .unwrap_or_default();
             let warning = record_plugin(
                 pg,
                 &NewPlugin {
                     slug: &installed.slug,
-                    git_host_id: git_host_of(&host_name),
+                    git_host_id: Some(&host_id),
                     maintainer_agent_id: Some(&agent_id),
                     owner_user_id: owner.as_deref(),
                     board_id: board_id.as_deref(),
@@ -595,6 +607,7 @@ type RequestClaim = (
     String,
     String,
     String,
+    String,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -622,7 +635,6 @@ mod tests {
         ] {
             assert!(!repo_ok(bad), "{bad}");
         }
-        assert_eq!(github_url("acme/crm"), "https://github.com/acme/crm");
     }
 
     #[test]

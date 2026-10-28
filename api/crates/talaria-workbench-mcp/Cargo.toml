@@ -28,6 +28,7 @@ talaria-fleet-budget = { workspace = true }
 talaria-fleet-docker = { workspace = true }
 talaria-fleet-layout = { workspace = true }
 talaria-gateway = { workspace = true }
+talaria-git-hosts = { workspace = true }
 talaria-github = { workspace = true }
 talaria-mcp-jsonrpc = { workspace = true }
 talaria-plugins = { workspace = true }

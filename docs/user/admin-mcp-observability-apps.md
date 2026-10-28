@@ -77,7 +77,11 @@ estimates rather than provider invoices, and models without prices set on the
 [Models](./admin-models.md) page show as unattributed — the "ledger priced" alert is the
 honesty check. **Admin → Settings** also carries rolling-window LLM budgets (org-wide and
 per-caller token/$ ceilings, checked before every gateway call) and a minimum cron interval;
-both are unlimited/unset by default.
+both are unlimited/unset by default. An agent that reaches its budget ends the turn and says
+when the window reopens. If you raise the limit before then, the agent works again at once.
+One exception: a conversation in which the agent had switched to its fallback model stays on
+the fallback until that time, until it has been idle for about an hour, or until you restart
+the agent. New conversations use the main model.
 
 ## Apps (admin)
 

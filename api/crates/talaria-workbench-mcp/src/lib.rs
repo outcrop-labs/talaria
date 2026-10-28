@@ -6,8 +6,10 @@
 // The git-flow contract (why it never gets messy): Talaria cuts the branch
 // (talaria/<ticket-ref>-<slug>, or under the repo grant's configured branch
 // prefix when its branch law requires one — the name satisfies
-// github::push_allowed, which the sandbox push check enforces) from default
-// at start_job, the harness works
+// git_hosts::push_allowed, which the sandbox push check enforces) from
+// default at start_job, on whichever registered git host the repo lives on
+// (talaria-git-hosts — GitHub, Forgejo, the operator's choice), the harness
+// works
 // ONLY inside that branch via the authenticated clone URL, finish_job opens
 // the PR with the templated ticket-linked body. No raw pushes to default —
 // the workbench token is the only credential in the sandbox, and every
@@ -27,7 +29,8 @@
 // nothing to count.
 //
 // The dispatcher consumes mcp_jsonrpc (the shared envelope); the verbs ride
-// github.rs's REST half and omp's model roles.
+// the git host registry (each repo's own host, through the `GitHost`
+// interface) and omp's model roles.
 
 use axum::http::StatusCode;
 use serde_json::{Map, Value, json};
@@ -42,8 +45,8 @@ use talaria_body::truncate_utf16;
 use talaria_fleet_docker::{docker_exec, managed_container};
 use talaria_fleet_layout::describe_agent;
 use talaria_gateway::usage as gw_usage;
-use talaria_github as gh;
-use talaria_github::github_status;
+use talaria_git_hosts as hosts;
+use talaria_git_hosts::GitHost;
 use talaria_mcp_jsonrpc::{ListedTool, ToolOutcome, dispatch_jsonrpc};
 use talaria_realtime::RealtimeDeps;
 use talaria_runs_define::run_definition;
@@ -63,7 +66,7 @@ use talaria_workbench_harnesses::{
 use teardown::{Teardown, spawn_teardown};
 
 /// Everything a verb reaches for past its own SQL: the pool, the secretbox
-/// (GitHub credentials unseal through it), and the optional Redis the task
+/// (git host credentials unseal through it), and the optional Redis the task
 /// notification/dispatch edges degrade without — the trio `task_deps()`
 /// packages for tasks.rs callers, held once so the fire-and-forget legs can
 /// take a copy into their own task.
@@ -97,6 +100,8 @@ pub struct WorkbenchJob {
     pub agent_id: String,
     pub agent_model: String,
     pub task_id: Option<String>,
+    /// The registered git host the repo is on (`git_hosts.id`).
+    pub host_id: String,
     pub repo: String,
     pub branch: String,
     pub effort: String,
@@ -121,53 +126,58 @@ pub struct WorkbenchJob {
 /// ticket strip answers a different column set and shapes its own row in
 /// the route). queued_at/queued_reason ride every read so job_status can
 /// answer a queued job with its place and its reason.
-const JOB_COLS: &str = "id::text, agent_id::text, agent_model, task_id::text, repo, branch, \
+const JOB_COLS: &str = "id::text as id, agent_id::text as agent_id, agent_model, \
+                        task_id::text as task_id, host_id, repo, branch, \
                         effort, plan, status, pr_url, summary, \
-                        (trunc(extract(epoch from queued_at) * 1000))::bigint, queued_reason, \
-                        (trunc(extract(epoch from created_at) * 1000))::bigint, \
-                        (trunc(extract(epoch from updated_at) * 1000))::bigint, pr_number";
+                        (trunc(extract(epoch from queued_at) * 1000))::bigint as queued_ms, queued_reason, \
+                        (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
+                        (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms, pr_number";
 
 /// Runaway guard only. Host packing (`fleet::budget`) is the real queue.
 pub const MAX_CONCURRENT_JOBS_PER_AGENT: usize = talaria_fleet_budget::MAX_LIVE_JOBS_PER_AGENT;
 
-type JobRow = (
-    String,
-    String,
-    String,
-    Option<String>,
-    String,
-    String,
-    String,
-    String,
-    String,
-    Option<String>,
-    String,
-    Option<i64>,
-    Option<String>,
-    i64,
-    i64,
-    Option<i64>,
-);
+/// One `workbench_jobs` row as JOB_COLS reads it.
+#[derive(sqlx::FromRow)]
+struct JobRow {
+    id: String,
+    agent_id: String,
+    agent_model: String,
+    task_id: Option<String>,
+    host_id: String,
+    repo: String,
+    branch: String,
+    effort: String,
+    plan: String,
+    status: String,
+    pr_url: Option<String>,
+    summary: String,
+    queued_ms: Option<i64>,
+    queued_reason: Option<String>,
+    created_ms: i64,
+    updated_ms: i64,
+    pr_number: Option<i64>,
+}
 
 impl WorkbenchJob {
     fn of(r: JobRow) -> WorkbenchJob {
         WorkbenchJob {
-            id: r.0,
-            agent_id: r.1,
-            agent_model: r.2,
-            task_id: r.3,
-            repo: r.4,
-            branch: r.5,
-            effort: r.6,
-            plan: r.7,
-            status: r.8,
-            pr_url: r.9,
-            pr_number: r.15,
-            summary: r.10,
-            queued_at_ms: r.11,
-            queued_reason: r.12,
-            created_at: epoch_ms_to_iso(r.13),
-            updated_at: epoch_ms_to_iso(r.14),
+            id: r.id,
+            agent_id: r.agent_id,
+            agent_model: r.agent_model,
+            task_id: r.task_id,
+            host_id: r.host_id,
+            repo: r.repo,
+            branch: r.branch,
+            effort: r.effort,
+            plan: r.plan,
+            status: r.status,
+            pr_url: r.pr_url,
+            pr_number: r.pr_number,
+            summary: r.summary,
+            queued_at_ms: r.queued_ms,
+            queued_reason: r.queued_reason,
+            created_at: epoch_ms_to_iso(r.created_ms),
+            updated_at: epoch_ms_to_iso(r.updated_ms),
         }
     }
 
@@ -186,6 +196,7 @@ impl WorkbenchJob {
                 .map(Value::String)
                 .unwrap_or(Value::Null),
         );
+        out.insert("host".into(), json!(self.host_id));
         out.insert("repo".into(), json!(self.repo));
         out.insert("branch".into(), json!(self.branch));
         out.insert("effort".into(), json!(self.effort));
@@ -231,7 +242,7 @@ impl WorkbenchJob {
     /// from before the column).
     pub fn pr_number(&self) -> Option<i64> {
         self.pr_number
-            .or_else(|| self.pr_url.as_deref().and_then(gh::pr_number_from_url))
+            .or_else(|| self.pr_url.as_deref().and_then(hosts::pr_number_from_url))
     }
 }
 
@@ -263,12 +274,12 @@ pub fn workbench_tools() -> Vec<Value> {
     vec![
         json!({
             "name": "doctor",
-            "description": "Diagnose YOUR workbench end to end: the Oh My Pi harness (with a probe command to run in your shell), GitHub connection, repo grants, omp's model roles, and pass-through config locations. Run this first when anything about your workbench misbehaves, or before your first job.",
+            "description": "Diagnose YOUR workbench end to end: the Oh My Pi harness (with a probe command to run in your shell), the git hosts your repos live on and whether each is connected, repo grants, omp's model roles, and pass-through config locations. Run this first when anything about your workbench misbehaves, or before your first job.",
             "inputSchema": { "type": "object", "properties": {} },
         }),
         json!({
             "name": "list_repos",
-            "description": "The repositories YOUR workbench is granted. Work only these — anything else is out of bounds.",
+            "description": "The repositories YOUR workbench is granted, and the git host each lives on (`grants`: {host, repo}). Work only these — anything else is out of bounds. When the same owner/name is granted on two hosts, pass `host` to start_job and request_app_install.",
             "inputSchema": { "type": "object", "properties": {} },
         }),
         json!({
@@ -279,6 +290,7 @@ pub fn workbench_tools() -> Vec<Value> {
                 "properties": {
                     "taskId": { "type": "string", "description": "The ticket this job implements — id or ref (PLAT-118), from list_tickets or the assignment title. A bare number is not an id. ALWAYS pass it when the work came from a ticket; it links the branch, audit trail, plan gate, and PR to the ticket. Refused if that ticket is one you may not work: a board you are not allowed on, a closed ticket (done / failed / cancelled), an archived ticket, or a ticket on an archived board (ask for it to be reopened, or work the follow-up ticket); or a workchain step whose earlier step is still open (it starts once that step is signed off)." },
                     "repo": { "type": "string", "description": "owner/name — must be one of your granted repos" },
+                    "host": { "type": "string", "description": "The git host the repo is on (list_repos' grants[].host). Needed only when the same owner/name is granted to you on more than one host." },
                     "effort": { "type": "string", "enum": ["light", "standard", "heavy"], "description": "How hard this work is. Omitted means standard. standard and heavy require `plan` and are refused without it; light does not. heavy then waits for human approval before a clone URL exists." },
                     "plan": { "type": "string", "description": "Required unless effort is light. Approach, files touched, test strategy. Omitting effort counts as standard, so a call with no plan is refused." },
                 },
@@ -292,11 +304,12 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "request_repo",
-            "description": "Request a NEW repository in an approved org — a human approves before anything is created, and the GitHub App creates it and grants it to you (it then shows in list_repos). doctor's repoCreation says whether this instance can create repos at all and lists the approved orgs: a request for any other org, or on an instance without the GitHub App connection, is refused. list_repos shows each of your requests and its outcome; a rejection's reason also lands on the ticket. Use only when the work genuinely needs a fresh repo; explain why.",
+            "description": "Request a NEW repository in an approved org on one of this instance's git hosts — a human approves before anything is created, and the host's connection creates it and grants it to you (it then shows in list_repos). doctor's repoCreation says which hosts can create repos and lists each one's approved orgs: a request for any other org, or on a host whose connection cannot create repos, is refused. list_repos shows each of your requests and its outcome; a rejection's reason also lands on the ticket. Use only when the work genuinely needs a fresh repo; explain why.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "org": { "type": "string", "description": "The GitHub org — one of doctor's repoCreation.orgs" },
+                    "org": { "type": "string", "description": "The org (owner) — one of doctor's repoCreation.hosts[].orgs" },
+                    "host": { "type": "string", "description": "The git host to create it on (doctor's repoCreation.hosts[].id). Needed only when the org is approved on more than one host." },
                     "name": { "type": "string", "description": "Repo name (lowercase, dashes)" },
                     "description": { "type": "string", "description": "One-line repo description" },
                     "why": { "type": "string", "description": "Why this work needs a new repo" },
@@ -337,6 +350,7 @@ pub fn workbench_tools() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "repo": { "type": "string", "description": "owner/name — one of your granted repos (list_repos), holding talaria.json at its root" },
+                    "host": { "type": "string", "description": "The git host the repo is on (list_repos' grants[].host). Needed only when the same owner/name is granted to you on more than one host." },
                     "ref": { "type": "string", "description": "A branch, tag or commit to install. Omitted means the default branch, which is what updates then follow." },
                     "why": { "type": "string", "description": "What the app does and who asked for it, for the approver" },
                     "taskId": { "type": "string", "description": "The ticket the app was built for — id or ref. Required: its board is where the plugin's maintenance tickets go, and its person is who the plugin is for. Same rule as start_job: a ticket you may not work is refused." },
@@ -393,6 +407,7 @@ async fn record_eval_session(pg: &PgPool, job_id: &str, task_id: Option<&str>) -
         source: "workbench".into(),
         ref_id: Some(job_id.to_string()),
         task_id: task_id.map(str::to_string),
+        attended: false,
     };
     match gw_usage::record_attribution(&flow, &key).await {
         Ok(()) => Some(devenv::eval_session_json(&key, job_id)),
@@ -662,8 +677,8 @@ async fn call_tool(
             // a call at 300 s, and an answer that arrives after that is a
             // timeout to the agent, not a diagnosis.
             let started = std::time::Instant::now();
-            let gh_status = github_status(pg, &deps.sb).await;
-            let repos = gh::granted_repos(pg, &agent.id).await;
+            let host_rows = hosts::list_hosts(pg).await;
+            let repos = hosts::granted_repos(pg, &agent.id).await;
             let mut checks: Vec<String> = Vec::new();
             checks.push("developer agent: on, dev sandbox attached".into());
             // RUN the probe, do not print it. This answer used to say
@@ -752,28 +767,34 @@ async fn call_tool(
             if let Some(why) = sandbox_stale(pg, &agent.department).await {
                 checks.push(format!("sandbox: STALE — {why}"));
             }
-            checks.push(match gh_status.configured {
-                true => format!(
-                    "github: connected{}",
-                    gh_status
-                        .account
-                        .as_deref()
-                        .map(|a| format!(" as {a}"))
-                        .unwrap_or_default()
-                ),
-                false => "github: NOT connected — jobs cannot start (an admin connects it in Admin → Org)"
-                    .into(),
-            });
+            // Each host the agent's repos live on (every registered host
+            // when it has no grant yet), asked live: a host whose connection
+            // is down is a job that cannot start.
+            let mut connected: Vec<(hosts::HostRow, Option<String>)> = Vec::new();
+            if host_rows.is_empty() {
+                checks.push(
+                    "git hosts: none registered — jobs cannot start (an admin adds one in Admin → Git hosts)"
+                        .into(),
+                );
+            }
+            for row in &host_rows {
+                let host = hosts::connect(pg, &deps.sb, row).await;
+                let ours = repos.iter().any(|g| g.host_id == row.id);
+                if ours || repos.is_empty() {
+                    let st = host.status().await;
+                    checks.push(host_status_line(row, &st));
+                }
+                connected.push((row.clone(), host.repo_creation_blocker()));
+            }
             // request_repo's own door, asked the same way: an agent learns
             // the approved orgs and whether creation can work here before it
             // asks, instead of by being refused.
-            let (repo_creation, repo_creation_line) =
-                repo_creation_answer(&gh::get_github_config(pg).await);
+            let (repo_creation, repo_creation_line) = repo_creation_answer(&connected);
             checks.push(repo_creation_line);
             checks.push(if repos.is_empty() {
                 "repos: none granted — ask an admin to grant repos on your agent settings".into()
             } else {
-                format!("repos: {}", repos.join(", "))
+                format!("repos: {}", repos_line(&repos))
             });
             let models = roles.wire();
             // A coding account changes which models a job actually runs on, so
@@ -826,7 +847,7 @@ async fn call_tool(
         }
 
         "list_repos" => {
-            let repos = gh::granted_repos(pg, &agent.id).await;
+            let grants = hosts::granted_repos(pg, &agent.id).await;
             let models = match omp_roles(pg).await {
                 Ok(r) => r.wire(),
                 Err(e) => return thrown(e),
@@ -836,7 +857,7 @@ async fn call_tool(
             let requests: Result<Vec<RepoRequestRow>, sqlx::Error> = sqlx::query_as(
                 "select org, name, status, decision_note, visibility, app_slug, \
                         (trunc(extract(epoch from created_at) * 1000))::bigint, \
-                        (trunc(extract(epoch from updated_at) * 1000))::bigint \
+                        (trunc(extract(epoch from updated_at) * 1000))::bigint, host_id \
                  from workbench_repo_requests \
                  where agent_id = $1::uuid and created_at > now() - interval '30 days' \
                  order by created_at desc limit 10",
@@ -845,7 +866,8 @@ async fn call_tool(
             .fetch_all(pg)
             .await;
             let mut out = json!({
-                "repos": repos,
+                "repos": grants.iter().map(|g| g.repo.clone()).collect::<Vec<_>>(),
+                "grants": grants,
                 "models": models,
                 "note": "Pick effort by the size of the work: light = quick fixes, standard = regular features (plan required), heavy = hard cross-cutting work (plan required, waits for human approval, used sparingly). Effort decides planning and how much room the job reserves; Oh My Pi picks its own models from the roles above as it works.",
             });
@@ -864,21 +886,25 @@ async fn call_tool(
         }
 
         "start_job" => {
-            let repo = arg_str(args, "repo");
             let effort = match args.get("effort").and_then(Value::as_str) {
                 Some(e) if e == "light" || e == "heavy" => e.to_string(),
                 _ => "standard".to_string(),
             };
             let plan = truncate_utf16(&arg_str(args, "plan"), 20_000).to_string();
-            if !gh::granted_repos(pg, &agent.id)
-                .await
-                .iter()
-                .any(|r| r == &repo)
+            // The grant names the repo AND the host it lives on; the same
+            // owner/name on two hosts is two repos, and `host` picks one.
+            let grant = match hosts::resolve_grant(
+                pg,
+                &agent.id,
+                &arg_str(args, "repo"),
+                args.get("host").and_then(Value::as_str),
+            )
+            .await
             {
-                return CallOutcome::Fail(format!(
-                    "repo \"{repo}\" is not granted to you — list_repos shows yours"
-                ));
-            }
+                Ok(g) => g,
+                Err(e) => return CallOutcome::Fail(e),
+            };
+            let repo = grant.repo.clone();
             if effort != "light" && plan.trim().is_empty() {
                 return CallOutcome::Fail(
                     "standard/heavy work requires a plan first — describe approach, files, and test strategy in `plan`"
@@ -969,7 +995,7 @@ async fn call_tool(
             // is still there). A fresh job here meant a second workdir on the
             // same branch and a finish_job that tried to open a second PR.
             let resume = match &task_id {
-                Some(task_id) => resumable_job(deps, &agent.id, task_id, &repo).await,
+                Some(task_id) => resumable_job(deps, &agent.id, task_id, &grant).await,
                 None => None,
             };
             // Mint the branch under the repo's own branch law: a grant with a
@@ -982,7 +1008,7 @@ async fn call_tool(
                     job_branch_name(
                         pg,
                         &agent.id,
-                        &repo,
+                        &grant,
                         &ticket_ref,
                         &if slugify(&title).is_empty() {
                             "work".to_string()
@@ -993,8 +1019,18 @@ async fn call_tool(
                     .await
                 }
             };
-            let created_branch = match gh::create_branch(pg, &deps.sb, &repo, &branch, None).await {
-                Ok(cb) => cb,
+            // The repo's own host, through the registry: whatever the
+            // operator connected it with.
+            let host = match hosts::host(pg, &deps.sb, &grant.host_id).await {
+                Ok(h) => h,
+                Err(e) => return CallOutcome::Fail(e),
+            };
+            let base = match hosts::effective_base(pg, &host, &repo).await {
+                Ok(b) => b,
+                Err(e) => return thrown(e),
+            };
+            let branch_created = match host.create_branch(&repo, &branch, &base).await {
+                Ok(created) => created,
                 Err(e) => return thrown(e),
             };
             // Plan-first, gated by effort: light auto-proceeds; standard
@@ -1040,9 +1076,9 @@ async fn call_tool(
                     sqlx::query_as(sqlx::AssertSqlSafe(format!(
                         "insert into workbench_jobs \
                      (agent_id, agent_model, task_id, repo, branch, effort, plan, status, \
-                      queued_at, queued_reason) \
+                      queued_at, queued_reason, host_id) \
                      values ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, $8, \
-                             case when $8 = 'queued' then now() end, $9) \
+                             case when $8 = 'queued' then now() end, $9, $10) \
                      returning {JOB_COLS}"
                     )))
                     .bind(&agent.id)
@@ -1054,6 +1090,7 @@ async fn call_tool(
                     .bind(&plan)
                     .bind(status)
                     .bind(queue_reason.as_deref())
+                    .bind(&grant.host_id)
                     .fetch_one(pg)
                     .await
                 }
@@ -1292,10 +1329,7 @@ async fn call_tool(
             let clone = if gated {
                 Value::Null
             } else {
-                match gh::clone_url(pg, &deps.sb, &repo).await {
-                    Ok(url) => url.map(Value::String).unwrap_or(Value::Null),
-                    Err(e) => return thrown(e),
-                }
+                Value::String(host.clone_url(&repo))
             };
             let rules = if gated {
                 "Heavy work waits for a human: your plan is on the ticket for approval. Poll job_status — once approved it returns the clone URL. Do NOT begin building."
@@ -1305,7 +1339,6 @@ async fn call_tool(
                     "This job RESUMES your open PR #{number} ({url}) for a revise round: same branch ({branch}), same workdir. The earlier round's checkout may still be in {workdir} — if {workdir}/.git exists, `git -C {workdir} pull` and keep working there; otherwise clone the URL above INTO {workdir} (mkdir -p first) and check out {branch}. The clone URL carries no credential and needs none. Never touch {base}. Call prepare_env with this jobId once the checkout is there (it writes this project's env, if it has one, to {workdir}/{env_file}). Drive Oh My Pi as before (continueJsonRun keeps its context). Push your fixes to {branch}: that updates the PR. finish_job then keeps the PR (it never opens a second one) and posts your summary on it.",
                     number = pr.number,
                     url = pr.url,
-                    base = created_branch.base,
                     env_file = devenv::JOB_ENV_FILE,
                 )
             } else {
@@ -1315,18 +1348,18 @@ async fn call_tool(
                 // repo's own .talaria/ and excluded from git.
                 format!(
                     "Clone with the URL above INTO your workdir (mkdir -p {workdir} first). It carries no credential and needs none: your sandbox's git asks Talaria for one when it pushes, so never add a token to a remote URL. One workspace per job: never work outside it. Work ONLY on {branch}; the branch name satisfies this repo's branch rules, so pushes to it are accepted. Commit and push as you go; commits are authored as YOU. Never touch {base}. Once cloned, call prepare_env with this jobId: it installs the repo's toolchains and system packages (never install them yourself) and writes this project's env, if it has one, to {workdir}/{env_file} — load it before you build or test. You are the orchestrator: Oh My Pi (harnesses[0]) is the pair programmer. First turn: jsonRun (or run) with ONE scoped ask, not the whole ticket. Later turns: continueJsonRun / continueRun (`-c`) against sessionDir so the harness keeps context. Read structured results, then steer. Git over https:// just works. Do not override its --model; omp switches between its roles itself. When the change is right, finish_job. Talaria opens the PR.",
-                    base = created_branch.base,
                     env_file = devenv::JOB_ENV_FILE,
                 )
             };
             let mut value = Map::new();
             value.insert("jobId".into(), json!(job.id));
+            value.insert("host".into(), json!(grant.host_id));
             value.insert("repo".into(), json!(repo));
             value.insert("branch".into(), json!(branch));
-            value.insert("base".into(), json!(created_branch.base));
+            value.insert("base".into(), json!(base));
             value.insert(
                 "resumed".into(),
-                json!(!created_branch.created || resumed_pr.is_some()),
+                json!(!branch_created || resumed_pr.is_some()),
             );
             if let Some(pr) = &resumed_pr {
                 value.insert("prUrl".into(), json!(pr.url));
@@ -1403,9 +1436,9 @@ async fn call_tool(
                 let job = WorkbenchJob::of(row);
                 let mut wire = job.wire();
                 if job.status == "started" {
-                    let clone = match gh::clone_url(pg, &deps.sb, &job.repo).await {
-                        Ok(url) => url.map(Value::String).unwrap_or(Value::Null),
-                        Err(e) => return thrown(e),
+                    let clone = match hosts::host(pg, &deps.sb, &job.host_id).await {
+                        Ok(host) => Value::String(host.clone_url(&job.repo)),
+                        Err(e) => return CallOutcome::Fail(e),
                     };
                     let obj = wire.as_object_mut().expect("wire is an object");
                     obj.insert("cloneUrl".into(), clone);
@@ -1538,14 +1571,23 @@ async fn call_tool(
         }
 
         "request_repo" => {
-            let cfg = gh::get_github_config(pg).await;
             let org = arg_str(args, "org").trim().to_string();
             let repo_name = sanitize_repo_name(&arg_str(args, "name"));
             // Refused UP FRONT for anything the approval could never do: no
-            // approved orgs, an org off the list, or a connection that is not
-            // the GitHub App (a PAT cannot create org repos here). These used
-            // to be accepted and then fail in the admin's hands.
-            if let Some(why) = gh::repo_creation_refusal(&cfg, &org) {
+            // host with approved orgs, an org off the host's list, or a
+            // connection that cannot create repos (a GitHub PAT cannot create
+            // org repos here). These used to be accepted and then fail in the
+            // admin's hands.
+            let row = match repo_creation_host(
+                &hosts::list_hosts(pg).await,
+                &org,
+                args.get("host").and_then(Value::as_str),
+            ) {
+                Ok(row) => row,
+                Err(why) => return CallOutcome::Fail(why),
+            };
+            let host = hosts::connect(pg, &deps.sb, &row).await;
+            if let Some(why) = host.repo_creation_blocker() {
                 return CallOutcome::Fail(why);
             }
             if repo_name.is_empty() {
@@ -1557,8 +1599,8 @@ async fn call_tool(
                 .map(str::trim)
                 .filter(|v| !v.is_empty())
             {
-                None => gh::RepoVisibility::Private,
-                Some(v) => match gh::RepoVisibility::parse(v) {
+                None => hosts::RepoVisibility::Private,
+                Some(v) => match hosts::RepoVisibility::parse(v) {
                     Some(v) => v,
                     None => {
                         return CallOutcome::Fail(format!(
@@ -1591,11 +1633,13 @@ async fn call_tool(
             };
             let dup = sqlx::query_scalar::<_, i32>(
                 "select 1 from workbench_repo_requests \
-                 where agent_id = $1::uuid and org = $2 and name = $3 and status = 'pending' limit 1",
+                 where agent_id = $1::uuid and host_id = $4 and org = $2 and name = $3 \
+                   and status = 'pending' limit 1",
             )
             .bind(&agent.id)
             .bind(&org)
             .bind(&repo_name)
+            .bind(&row.id)
             .fetch_optional(pg)
             .await;
             if matches!(dup, Ok(Some(_))) {
@@ -1603,18 +1647,17 @@ async fn call_tool(
                     "you already have a pending request for this repo — a human will decide".into(),
                 );
             }
-            // Ask GitHub whether the App is on that org NOW: an org it is not
-            // installed on can never be approved, and the agent should hear
-            // that, not an admin later. GitHub failing to answer is not a
+            // Ask the host whether a repo can be created under that org NOW
+            // (on GitHub: is the App installed there): an org it can never
+            // create in can never be approved, and the agent should hear
+            // that, not an admin later. The host failing to answer is not a
             // "no" — the request is filed and the approval asks again.
-            match gh::org_installation(pg, &deps.sb, &org).await {
-                Ok(installation) => {
-                    if let Some(why) = installation.refusal(&org) {
-                        return CallOutcome::Fail(why);
-                    }
-                }
+            match host.repo_creation_refusal(&org).await {
+                Ok(Some(why)) => return CallOutcome::Fail(why),
+                Ok(None) => {}
                 Err(e) => tracing::warn!(
-                    "[workbench] request_repo could not ask GitHub about {org}'s installation ({e}) — filing anyway; approval checks again"
+                    "[workbench] request_repo could not ask {} about {org} ({e}) — filing anyway; approval checks again",
+                    row.id
                 ),
             }
             // The human the agent answers to (the attribution ladder: the
@@ -1628,8 +1671,8 @@ async fn call_tool(
             let filed: Result<String, sqlx::Error> = sqlx::query_scalar(
                 "insert into workbench_repo_requests \
                    (agent_id, agent_model, org, name, description, why, task_id, \
-                    visibility, app_slug, responsible_user_id) \
-                 values ($1::uuid, $2, $3, $4, $5, $6, $7::uuid, $8, $9, $10::uuid) \
+                    visibility, app_slug, responsible_user_id, host_id) \
+                 values ($1::uuid, $2, $3, $4, $5, $6, $7::uuid, $8, $9, $10::uuid, $11) \
                  returning id::text",
             )
             .bind(&agent.id)
@@ -1642,6 +1685,7 @@ async fn call_tool(
             .bind(visibility.as_str())
             .bind(&app_slug)
             .bind(&responsible)
+            .bind(&row.id)
             .fetch_one(pg)
             .await;
             let filed = match filed {
@@ -1653,8 +1697,9 @@ async fn call_tool(
                 task_id.as_deref(),
                 &WorkbenchActor::Agent(subject.clone()),
                 &format!(
-                    "requested a new {} repo: {org}/{repo_name}{} — awaiting human approval",
+                    "requested a new {} repo on {}: {org}/{repo_name}{} — awaiting human approval",
                     visibility.as_str(),
+                    row.name,
                     app_slug
                         .as_deref()
                         .map(|s| format!(" for the app \"{s}\""))
@@ -1668,6 +1713,7 @@ async fn call_tool(
             announce_raised(deps, format!("repo_request:{filed}"));
             CallOutcome::Ok(json!({
                 "status": "pending",
+                "host": row.id,
                 "repo": format!("{org}/{repo_name}"),
                 "visibility": visibility.as_str(),
                 "appSlug": app_slug,
@@ -1780,7 +1826,11 @@ async fn call_tool(
                 return CallOutcome::Fail(format!("job is already {}", job.status));
             }
             let summary = truncate_utf16(&arg_str(args, "summary"), 20_000).to_string();
-            let base = match gh::effective_base(pg, &deps.sb, &job.repo).await {
+            let host = match hosts::host(pg, &deps.sb, &job.host_id).await {
+                Ok(h) => h,
+                Err(e) => return CallOutcome::Fail(e),
+            };
+            let base = match hosts::effective_base(pg, &host, &job.repo).await {
                 Ok(base) => base,
                 Err(e) => return thrown(e),
             };
@@ -1788,17 +1838,17 @@ async fn call_tool(
             // would accept a push for at all. Jobs minted before start_job
             // obeyed the grant's branch prefix carry a name the sandbox push
             // check refuses forever — no push can ever land, and finishing
-            // would only end in GitHub's 404 on the compare. Say so, and
+            // would only end in the host's 404 on the compare. Say so, and
             // point at the recovery: abandon and restart, which mints a
             // compliant branch.
-            if let Some(rule) = gh::repo_rule(pg, &agent.id, &job.repo).await
-                && let Err(sentence) = gh::push_allowed(&rule, &base, &job.branch)
+            if let Some(rule) = hosts::repo_rule(pg, &agent.id, &job.host_id, &job.repo).await
+                && let Err(sentence) = hosts::push_allowed(&rule, &base, &job.branch)
             {
                 return CallOutcome::Fail(format!(
                     "this job's branch can never be pushed: {sentence} — abandon this job and start_job again; the new job's branch obeys the rule"
                 ));
             }
-            let ahead = match gh::branch_ahead(pg, &deps.sb, &job.repo, &base, &job.branch).await {
+            let ahead = match host.branch_ahead(&job.repo, &base, &job.branch).await {
                 Ok(ahead) => ahead,
                 Err(e) => return thrown(e),
             };
@@ -1861,8 +1911,9 @@ async fn call_tool(
             };
             // A revise round's branch already has its PR open: the push
             // updated it, so the PR is KEPT and this round's summary is left
-            // on it as a comment. Opening a second one is GitHub's 422, which
-            // threw here and left the job `started` holding its reservation.
+            // on it as a comment. Opening a second one is the host's refusal,
+            // which threw here and left the job `started` holding its
+            // reservation.
             let update_note = format!(
                 "🔧 Updated by **{}** (`{}`) via the Talaria workbench ({} effort).\n\n{}",
                 agent.display_name,
@@ -1874,20 +1925,19 @@ async fn call_tool(
                     summary.as_str()
                 },
             );
-            let pr = match gh::open_or_update_pull_request(
-                pg,
-                &deps.sb,
-                &job.repo,
-                &gh::PullRequestAsk {
-                    head: &job.branch,
-                    base: &base,
-                    title: &title,
-                    body: &body,
-                    draft: false,
-                    update_note: &update_note,
-                },
-            )
-            .await
+            let pr = match host
+                .open_or_update_pull_request(
+                    &job.repo,
+                    &hosts::PullRequestAsk {
+                        head: &job.branch,
+                        base: &base,
+                        title: &title,
+                        body: &body,
+                        draft: false,
+                        update_note: &update_note,
+                    },
+                )
+                .await
             {
                 Ok(pr) => pr,
                 Err(e) => return thrown(e),
@@ -1970,11 +2020,16 @@ async fn call_tool(
             // Every call underneath is a GET. Nothing here merges, comments,
             // approves or re-runs: a person merges, and the job row is not
             // touched either.
-            let mut status = match gh::pull_request_status(pg, &deps.sb, &job.repo, number).await {
+            let host = match hosts::host(pg, &deps.sb, &job.host_id).await {
+                Ok(h) => h,
+                Err(e) => return CallOutcome::Fail(e),
+            };
+            let mut status = match host.pull_request_status(&job.repo, number).await {
                 Ok(v) => v,
                 Err(e) => return thrown(e),
             };
             let next = pr_next_step(&status);
+            status["host"] = json!(job.host_id);
             status["jobId"] = json!(job.id);
             status["jobStatus"] = json!(job.status);
             status["next"] = json!(next);
@@ -1982,23 +2037,34 @@ async fn call_tool(
         }
 
         "request_app_install" => {
-            let repo = arg_str(args, "repo").trim().to_string();
-            if !talaria_plugins::install::repo_ok(&repo) {
+            let asked = arg_str(args, "repo").trim().to_string();
+            if !talaria_plugins::install::repo_ok(&asked) {
                 return CallOutcome::Fail(format!(
-                    "repo must be owner/name, one of your granted repos (list_repos) — got \"{repo}\""
+                    "repo must be owner/name, one of your granted repos (list_repos) — got \"{asked}\""
                 ));
             }
             // A plugin is installed from a repo its maintainer can push to:
             // the agent asking is the agent that will keep it working.
-            if !gh::granted_repos(pg, &agent.id)
-                .await
-                .iter()
-                .any(|r| r.eq_ignore_ascii_case(&repo))
+            let grant = match hosts::resolve_grant(
+                pg,
+                &agent.id,
+                &asked,
+                args.get("host").and_then(Value::as_str),
+            )
+            .await
             {
-                return CallOutcome::Fail(format!(
-                    "repo \"{repo}\" is not granted to you — list_repos shows yours. An app is installed from a repo you maintain."
-                ));
-            }
+                Ok(g) => g,
+                Err(e) => {
+                    return CallOutcome::Fail(format!(
+                        "{e}. An app is installed from a repo you maintain."
+                    ));
+                }
+            };
+            let repo = grant.repo.clone();
+            let url = match hosts::host(pg, &deps.sb, &grant.host_id).await {
+                Ok(h) => h.repo_url(&repo),
+                Err(e) => return CallOutcome::Fail(e),
+            };
             let git_ref = args
                 .get("ref")
                 .and_then(Value::as_str)
@@ -2039,7 +2105,9 @@ async fn call_tool(
                 &talaria_plugins::install::InstallAsk {
                     agent_id: &agent.id,
                     agent_model: &agent.model,
+                    host_id: &grant.host_id,
                     repo: &repo,
+                    url: &url,
                     git_ref: git_ref.as_deref(),
                     why: &why,
                     task_id: &task_id,
@@ -2069,6 +2137,7 @@ async fn call_tool(
             CallOutcome::Ok(json!({
                 "requestId": filed,
                 "status": "pending",
+                "host": grant.host_id,
                 "repo": repo,
                 "ref": git_ref,
                 "note": "An admin decides in Manage → Apps. The outcome is a line on this ticket, and plugin_status (no slug) lists the request. Approval installs the app disabled; an admin enables it.",
@@ -2241,7 +2310,9 @@ async fn harness_probe(pg: &PgPool, department: &str) -> Result<String, String> 
 /// how a harness with no key read as healthy. So, in the agent's terminal
 /// shell ([`agent_terminal_argv`]), every name Hermes strips
 /// (talaria-agent-secrets' snapshot of the pinned image) is unset first, and
-/// what is left is what omp has when the agent starts it.
+/// so is every `CONFIG_*` credential sealed out of the agent's config (the
+/// sealed manifest has Hermes strip those too), and what is left is what omp
+/// has when the agent starts it.
 ///
 /// Ok is the model's reply; Err is omp's own last word on why not.
 async fn harness_auth_probe(
@@ -2255,6 +2326,7 @@ async fn harness_auth_probe(
     // The stripped names arrive as positional args, never inside the script.
     let script = format!(
         "for n do unset \"$n\" 2>/dev/null || true; done\n\
+         {UNSET_SEALED}\n\
          out=$({line} 2>&1 </dev/null); rc=$?\n\
          printf '%s\\n{AUTH_EXIT_MARK}%s\\n' \"$out\" \"$rc\""
     );
@@ -2265,6 +2337,11 @@ async fn harness_auth_probe(
         .map_err(|e| format!("the model call could not be run in the sandbox: {e}"))?;
     auth_probe_verdict(&format!("{stdout}\n{stderr}"))
 }
+
+/// Unset every `CONFIG_*` name in the probe's shell, by prefix (bash's
+/// `${!prefix@}`): whatever the container holds, the agent's terminal holds
+/// none of them.
+const UNSET_SEALED: &str = "for n in ${!CONFIG_@}; do unset \"$n\" 2>/dev/null || true; done";
 
 /// What the auth probe's output says. omp exits non-zero when the call
 /// fails; either way the line that matters is its LAST one that is not noise
@@ -2622,30 +2699,158 @@ fn app_slug_ok(s: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
-/// doctor's repo-creation answer: whether `request_repo` can work on this
-/// instance, the orgs it may name, and the one line the checks list
-/// carries. The same decision `request_repo` refuses with.
-fn repo_creation_answer(cfg: &gh::GithubConfig) -> (Value, String) {
-    let blocker = gh::repo_creation_blocker(cfg);
-    let line = match &blocker {
+/// doctor's line for one git host: connected (and as whom), or why not.
+fn host_status_line(row: &hosts::HostRow, st: &hosts::HostStatus) -> String {
+    let label = format!("git host {} ({}, {})", row.id, row.name, row.base_url);
+    match (st.configured, &st.error) {
+        (true, None) => format!(
+            "{label}: connected{}",
+            st.account
+                .as_deref()
+                .map(|a| format!(" as {a}"))
+                .unwrap_or_default()
+        ),
+        (true, Some(e)) => format!(
+            "{label}: connected but REFUSED — {e} (jobs on it cannot start; an admin fixes it in Admin → Git hosts)"
+        ),
+        (false, e) => format!(
+            "{label}: NOT connected{} — jobs on it cannot start (an admin connects it in Admin → Git hosts)",
+            e.as_deref().map(|e| format!(" ({e})")).unwrap_or_default()
+        ),
+    }
+}
+
+/// The granted repos as one line: bare `owner/name` when every grant is on
+/// one host, `host:owner/name` when they span several.
+fn repos_line(grants: &[hosts::RepoRef]) -> String {
+    let one_host = grants.windows(2).all(|w| w[0].host_id == w[1].host_id);
+    grants
+        .iter()
+        .map(|g| {
+            if one_host {
+                g.repo.clone()
+            } else {
+                format!("{}:{}", g.host_id, g.repo)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The host `request_repo` files on: the one named, else the one whose
+/// approved orgs include `org`. Err is the refusal the agent reads — the
+/// same allowlist the approval enforces.
+fn repo_creation_host(
+    rows: &[hosts::HostRow],
+    org: &str,
+    host: Option<&str>,
+) -> Result<hosts::HostRow, String> {
+    if let Some(id) = host.map(str::trim).filter(|h| !h.is_empty()) {
+        let row = rows.iter().find(|r| r.id == id).ok_or_else(|| {
+            format!("there is no git host \"{id}\" — doctor's repoCreation lists the hosts")
+        })?;
+        return match row.repo_creation_allowlist_refusal(org) {
+            Some(why) => Err(why),
+            None => Ok(row.clone()),
+        };
+    }
+    let approved: Vec<&hosts::HostRow> = rows
+        .iter()
+        .filter(|r| r.repo_creation_allowlist_refusal(org).is_none())
+        .collect();
+    match approved.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => {
+            let creating: Vec<&hosts::HostRow> = rows
+                .iter()
+                .filter(|r| !r.repo_creation_orgs.is_empty())
+                .collect();
+            Err(match creating.as_slice() {
+                [] => "repo creation is off — no org is approved for it on any git host (an admin lists orgs on a host in Admin → Git hosts)".to_string(),
+                [one] => one.repo_creation_allowlist_refusal(org).unwrap_or_default(),
+                many => format!(
+                    "org \"{org}\" is not approved for repo creation on any git host (approved: {})",
+                    many.iter()
+                        .map(|r| format!("{} on {}", r.repo_creation_orgs.join(", "), r.id))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
+            })
+        }
+        many => Err(format!(
+            "org \"{org}\" is approved on more than one git host ({}) — pass host",
+            many.iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// doctor's repo-creation answer: which hosts `request_repo` can file on,
+/// the orgs each may name, and the one line the checks list carries. The
+/// same decision `request_repo` refuses with. `hosts` pairs each row with
+/// its connection's own blocker (`GitHost::repo_creation_blocker`).
+fn repo_creation_answer(hosts: &[(hosts::HostRow, Option<String>)]) -> (Value, String) {
+    let mut entries: Vec<Value> = Vec::new();
+    let mut able: Vec<String> = Vec::new();
+    let mut orgs: Vec<String> = Vec::new();
+    let mut reasons: Vec<String> = Vec::new();
+    for (row, blocker) in hosts {
+        let why = if row.repo_creation_orgs.is_empty() {
+            row.repo_creation_allowlist_refusal("")
+        } else {
+            blocker.clone()
+        };
+        if why.is_none() {
+            able.push(format!(
+                "{} on {} (host {})",
+                row.repo_creation_orgs.join(", "),
+                row.name,
+                row.id
+            ));
+            orgs.extend(row.repo_creation_orgs.iter().cloned());
+        } else if !row.repo_creation_orgs.is_empty()
+            && let Some(w) = &why
+        {
+            reasons.push(w.clone());
+        }
+        entries.push(json!({
+            "id": row.id,
+            "name": row.name,
+            "kind": row.kind.as_str(),
+            "orgs": row.repo_creation_orgs,
+            "possible": why.is_none(),
+            "reason": why,
+        }));
+    }
+    let possible = !able.is_empty();
+    let reason = if possible {
+        None
+    } else if reasons.is_empty() {
+        Some("repo creation is off — no org is approved for it on any git host (an admin lists orgs on a host in Admin → Git hosts)".to_string())
+    } else {
+        Some(reasons.join("; "))
+    };
+    let line = match &reason {
         None => format!(
             "repo creation: request_repo may ask for new repos in {} — a human approves each one",
-            cfg.repo_creation_orgs.join(", ")
+            able.join("; ")
         ),
         Some(why) => format!("repo creation: unavailable — {why}"),
     };
     let wire = json!({
-        "possible": blocker.is_none(),
-        "mode": cfg.mode,
-        "orgs": cfg.repo_creation_orgs,
-        "reason": blocker,
+        "possible": possible,
+        "orgs": orgs,
+        "hosts": entries,
+        "reason": reason,
     });
     (wire, line)
 }
 
 /// One of this agent's repo requests, as list_repos reports it: org, name,
 /// status, the decision's note, visibility, app slug, created and decided
-/// (updated_at) as epoch ms.
+/// (updated_at) as epoch ms, and the host it was asked of.
 type RepoRequestRow = (
     String,
     String,
@@ -2655,10 +2860,12 @@ type RepoRequestRow = (
     Option<String>,
     i64,
     i64,
+    String,
 );
 
 fn repo_request_wire(r: &RepoRequestRow) -> Value {
     let mut out = json!({
+        "host": r.8,
         "repo": format!("{}/{}", r.0, r.1),
         "status": r.2,
         "visibility": r.4,
@@ -2674,7 +2881,7 @@ fn repo_request_wire(r: &RepoRequestRow) -> Value {
 
 /// finish_job's note: what happened to the PR, in the words the agent
 /// repeats in its report.
-fn finish_note(pr: &gh::OpenedPullRequest) -> String {
+fn finish_note(pr: &hosts::OpenedPullRequest) -> String {
     match (pr.reused, pr.commented) {
         (false, _) => "Include this PR link in your outcome report.".into(),
         (true, true) => "This branch already had this PR open, so it was kept: your pushes updated it and your summary is posted on it as a comment. Include the PR link in your outcome report.".into(),
@@ -2719,7 +2926,7 @@ async fn resume_job_row(
     pg: &PgPool,
     job_id: &str,
     round: &JobResume<'_>,
-    pr: &gh::PullRequestRef,
+    pr: &hosts::PullRequestRef,
 ) -> Option<JobRow> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "update workbench_jobs set status = $2, effort = $3, plan = $4, \
@@ -2743,36 +2950,41 @@ async fn resume_job_row(
 }
 
 /// The job a revise round resumes: this agent's newest `pr_open` job on the
-/// ticket and repo, while its branch still obeys the grant's branch law and
-/// its PR is still open on GitHub. Anything else — no such job, a branch
-/// the law now refuses, a PR merged or closed, GitHub not answering — is an
-/// ordinary new job, which is what start_job did before resuming existed.
+/// ticket and repo (on its host), while its branch still obeys the grant's
+/// branch law and its PR is still open on the host. Anything else — no such
+/// job, a branch the law now refuses, a PR merged or closed, the host not
+/// answering — is an ordinary new job, which is what start_job did before
+/// resuming existed.
 async fn resumable_job(
     deps: &WorkbenchDeps,
     agent_id: &str,
     task_id: &str,
-    repo: &str,
-) -> Option<(WorkbenchJob, gh::PullRequestRef)> {
+    grant: &hosts::RepoRef,
+) -> Option<(WorkbenchJob, hosts::PullRequestRef)> {
     let pg = &deps.pg;
     let row: Option<JobRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select {JOB_COLS} from workbench_jobs \
-         where agent_id = $1::uuid and task_id = $2::uuid and repo = $3 and status = 'pr_open' \
+         where agent_id = $1::uuid and task_id = $2::uuid and host_id = $3 and repo = $4 \
+           and status = 'pr_open' \
          order by updated_at desc limit 1"
     )))
     .bind(agent_id)
     .bind(task_id)
-    .bind(repo)
+    .bind(&grant.host_id)
+    .bind(&grant.repo)
     .fetch_optional(pg)
     .await
     .ok()
     .flatten();
     let job = WorkbenchJob::of(row?);
-    if let Some(rule) = gh::repo_rule(pg, agent_id, repo).await
-        && gh::push_allowed(&rule, "", &job.branch).is_err()
+    if let Some(rule) = hosts::repo_rule(pg, agent_id, &grant.host_id, &grant.repo).await
+        && hosts::push_allowed(&rule, "", &job.branch).is_err()
     {
         return None;
     }
-    let pr = gh::find_open_pull_request(pg, &deps.sb, repo, &job.branch)
+    let host = hosts::host(pg, &deps.sb, &grant.host_id).await.ok()?;
+    let pr = host
+        .find_open_pull_request(&grant.repo, &job.branch)
         .await
         .ok()
         .flatten()?;
@@ -2887,14 +3099,14 @@ fn join_branch(prefix: Option<&str>, body: &str) -> String {
 async fn job_branch_name(
     pg: &PgPool,
     agent_id: &str,
-    repo: &str,
+    grant: &hosts::RepoRef,
     ticket_ref: &str,
     title_slug: &str,
 ) -> String {
-    let prefix = gh::repo_rule(pg, agent_id, repo)
+    let prefix = hosts::repo_rule(pg, agent_id, &grant.host_id, &grant.repo)
         .await
         .and_then(|r| r.branch_prefix);
-    composed_job_branch(prefix.as_deref(), repo, ticket_ref, title_slug)
+    composed_job_branch(prefix.as_deref(), &grant.repo, ticket_ref, title_slug)
 }
 
 // ── JSON-RPC surface (the shared dispatcher; this surface's tools + call) ────
@@ -3105,6 +3317,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_probe_shell_unsets_every_sealed_config_name() {
+        // Real bash, as the probe runs: the prefix expansion must clear every
+        // CONFIG_* the container holds and nothing else.
+        let out = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!("{UNSET_SEALED}\nenv"))
+            .env_clear()
+            .env("CONFIG_PLATFORMS_TELEGRAM_TOKEN", "tg")
+            .env("CONFIG_DASHBOARD_BASIC_AUTH_PASSWORD", "pw")
+            .env("FIGMA_TOKEN", "keep")
+            .env("MY_CONFIG_X", "keep")
+            .output()
+            .expect("bash runs");
+        let env = String::from_utf8_lossy(&out.stdout);
+        assert!(!env.contains("CONFIG_PLATFORMS"), "{env}");
+        assert!(!env.contains("CONFIG_DASHBOARD"), "{env}");
+        assert!(env.contains("FIGMA_TOKEN=keep"), "{env}");
+        assert!(env.contains("MY_CONFIG_X=keep"), "{env}");
+        // With none set, the loop is a no-op, not an error.
+        let none = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!("set -u; {UNSET_SEALED}; echo ok"))
+            .env_clear()
+            .output()
+            .expect("bash runs");
+        assert_eq!(String::from_utf8_lossy(&none.stdout).trim(), "ok");
+    }
+
+    #[test]
     fn an_eval_session_key_is_one_the_relay_keeps() {
         let key = workbench_eval_key([0xab; 16]);
         assert_eq!(key, format!("wbeval_{}", "ab".repeat(16)));
@@ -3236,7 +3477,8 @@ mod tests {
         );
         // The self-referential contract: a minted branch passes the very
         // branch law it was minted for.
-        let rule = gh::RepoRule {
+        let rule = hosts::RepoRule {
+            host_id: "github".into(),
             repo: "outcrop-labs/talaria".into(),
             base_branch: None,
             push_mode: "branches_only".into(),
@@ -3248,23 +3490,24 @@ mod tests {
             "TALA-37",
             "fix-the-thing",
         );
-        gh::push_allowed(&rule, "main", &format!("refs/heads/{branch}"))
+        hosts::push_allowed(&rule, "main", &format!("refs/heads/{branch}"))
             .expect("a minted job branch must pass its own repo's push rule");
         // The old shape fails that same law — the bug this closes.
-        gh::push_allowed(&rule, "main", "refs/heads/talaria/tala-37-fix-the-thing")
+        hosts::push_allowed(&rule, "main", "refs/heads/talaria/tala-37-fix-the-thing")
             .expect_err("a talaria/* branch under an agent/* rule is the dead end");
         // Ticketless mint under a stored "agent/" — the Sep log shape
         // `agent//job-outcrop-labs-talaria-…`. Same join as the ticket slug.
         let job = composed_job_branch(Some("agent/"), "outcrop-labs/talaria", "", "");
         assert!(job.starts_with("agent/job-outcrop-labs-talaria-"), "{job}");
         assert!(!job.contains("//"), "{job}");
-        let slashed = gh::RepoRule {
+        let slashed = hosts::RepoRule {
+            host_id: "github".into(),
             repo: "outcrop-labs/talaria".into(),
             base_branch: None,
             push_mode: "branches_only".into(),
             branch_prefix: Some("agent/".into()),
         };
-        gh::push_allowed(&slashed, "main", &format!("refs/heads/{job}"))
+        hosts::push_allowed(&slashed, "main", &format!("refs/heads/{job}"))
             .expect("a ticketless mint under agent/ must pass the stored prefix");
         // Ticketless mint keeps the random suffix and the 80-char budget.
         let job = composed_job_branch(Some("agent"), "o/some-repo", "", "");
@@ -3380,7 +3623,7 @@ mod tests {
             .keys()
             .map(|s| s.as_str())
             .collect();
-        assert_eq!(props, vec!["taskId", "repo", "effort", "plan"]);
+        assert_eq!(props, vec!["taskId", "repo", "host", "effort", "plan"]);
         assert_eq!(
             tool("start_job")["inputSchema"]["required"],
             json!(["repo"])
@@ -3427,6 +3670,7 @@ mod tests {
             agent_id: "a".into(),
             agent_model: "m".into(),
             task_id: None,
+            host_id: "github".into(),
             repo: "o/r".into(),
             branch: "b".into(),
             effort: "standard".into(),
@@ -3458,6 +3702,7 @@ mod tests {
                 "agentId",
                 "agentModel",
                 "taskId",
+                "host",
                 "repo",
                 "branch",
                 "effort",
@@ -3481,6 +3726,7 @@ mod tests {
             agent_id: "a".into(),
             agent_model: "m".into(),
             task_id: None,
+            host_id: "github".into(),
             repo: "o/r".into(),
             branch: "b".into(),
             effort: "standard".into(),
@@ -3498,39 +3744,117 @@ mod tests {
         assert_eq!(job.wire()["prNumber"], 12);
         job.pr_number = Some(13);
         assert_eq!(job.pr_number(), Some(13), "the column wins");
+        // A Forgejo PR page reads the same way.
+        job.pr_number = None;
+        job.pr_url = Some("https://git.example.com/o/r/pulls/14".into());
+        assert_eq!(job.pr_number(), Some(14));
+        assert_eq!(job.wire()["host"], "github");
     }
 
-    fn cfg(mode: Option<&str>, orgs: &[&str]) -> gh::GithubConfig {
-        gh::GithubConfig {
-            mode: mode.map(String::from),
-            pat_token_enc: None,
-            app_id: "1".into(),
-            installation_ids: vec!["2".into()],
-            private_key_enc: Some("sealed".into()),
+    fn row(id: &str, kind: hosts::HostKind, orgs: &[&str]) -> hosts::HostRow {
+        hosts::HostRow {
+            id: id.into(),
+            kind,
+            name: id.to_uppercase(),
+            base_url: format!("https://{id}.example.com"),
+            api_url: None,
+            auth: json!({}),
             repo_creation_orgs: orgs.iter().map(|s| s.to_string()).collect(),
+            created_at: String::new(),
+            updated_at: String::new(),
         }
     }
 
     #[test]
     fn doctor_says_where_repos_may_be_created_and_whether_they_can_be() {
-        let (wire, line) = repo_creation_answer(&cfg(Some("app"), &["acme", "acme-plugins"]));
+        use hosts::HostKind::{Forgejo, Github};
+        let gh_app = row("github", Github, &["acme", "acme-plugins"]);
+        let (wire, line) = repo_creation_answer(&[(gh_app.clone(), None)]);
         assert_eq!(wire["possible"], true);
         assert_eq!(wire["orgs"], json!(["acme", "acme-plugins"]));
         assert_eq!(wire["reason"], Value::Null);
-        assert!(line.contains("acme, acme-plugins"), "{line}");
+        assert_eq!(wire["hosts"][0]["id"], "github");
+        assert!(line.contains("acme, acme-plugins on GITHUB"), "{line}");
 
-        // PAT mode lists the orgs and says they cannot be used — the request
-        // that would have been accepted and then failed at approval.
-        let (wire, line) = repo_creation_answer(&cfg(Some("pat"), &["acme"]));
+        // A PAT connection lists the orgs and says they cannot be used — the
+        // request that would have been accepted and then failed at approval.
+        let pat = Some("repo creation on GitHub needs the GitHub App connection".to_string());
+        let (wire, line) = repo_creation_answer(&[(row("github", Github, &["acme"]), pat)]);
         assert_eq!(wire["possible"], false);
-        assert_eq!(wire["mode"], "pat");
-        assert_eq!(wire["orgs"], json!(["acme"]));
+        assert_eq!(wire["hosts"][0]["orgs"], json!(["acme"]));
         assert!(wire["reason"].as_str().unwrap().contains("GitHub App"));
         assert!(line.starts_with("repo creation: unavailable"), "{line}");
 
-        let (wire, _) = repo_creation_answer(&cfg(Some("app"), &[]));
+        let (wire, _) = repo_creation_answer(&[(row("github", Github, &[]), None)]);
         assert_eq!(wire["possible"], false);
         assert!(wire["reason"].as_str().unwrap().contains("off"));
+
+        // Two hosts: each says for itself, and the orgs of the ones that can.
+        let (wire, line) = repo_creation_answer(&[
+            (row("github", Github, &[]), None),
+            (row("forge", Forgejo, &["plugins"]), None),
+        ]);
+        assert_eq!(wire["possible"], true);
+        assert_eq!(wire["orgs"], json!(["plugins"]));
+        assert_eq!(wire["hosts"][0]["possible"], false);
+        assert_eq!(wire["hosts"][1]["kind"], "forgejo");
+        assert!(line.contains("plugins on FORGE (host forge)"), "{line}");
+    }
+
+    #[test]
+    fn request_repo_files_on_the_host_whose_orgs_include_the_org() {
+        use hosts::HostKind::{Forgejo, Github};
+        let rows = vec![
+            row("github", Github, &["acme"]),
+            row("forge", Forgejo, &["plugins", "shared"]),
+            row("forge2", Forgejo, &["shared"]),
+        ];
+        assert_eq!(
+            repo_creation_host(&rows, "acme", None).unwrap().id,
+            "github"
+        );
+        assert_eq!(
+            repo_creation_host(&rows, "plugins", None).unwrap().id,
+            "forge"
+        );
+        let both = repo_creation_host(&rows, "shared", None).unwrap_err();
+        assert!(
+            both.contains("pass host") && both.contains("forge, forge2"),
+            "{both}"
+        );
+        assert_eq!(
+            repo_creation_host(&rows, "shared", Some("forge2"))
+                .unwrap()
+                .id,
+            "forge2"
+        );
+        let nowhere = repo_creation_host(&rows, "other", None).unwrap_err();
+        assert!(nowhere.contains("acme on github"), "{nowhere}");
+        let off_list = repo_creation_host(&rows, "acme", Some("forge")).unwrap_err();
+        assert!(off_list.contains("approved: plugins, shared"), "{off_list}");
+        assert!(
+            repo_creation_host(&rows, "acme", Some("nope"))
+                .unwrap_err()
+                .contains("no git host \"nope\"")
+        );
+        let none = repo_creation_host(&[row("github", Github, &[])], "acme", None).unwrap_err();
+        assert!(none.contains("off"), "{none}");
+    }
+
+    #[test]
+    fn the_repos_line_names_hosts_only_when_there_are_several() {
+        let g = |h: &str, r: &str| hosts::RepoRef {
+            host_id: h.into(),
+            repo: r.into(),
+        };
+        assert_eq!(
+            repos_line(&[g("github", "acme/a"), g("github", "acme/b")]),
+            "acme/a, acme/b"
+        );
+        assert_eq!(
+            repos_line(&[g("forge", "acme/a"), g("github", "acme/a")]),
+            "forge:acme/a, github:acme/a"
+        );
     }
 
     #[test]
@@ -3555,8 +3879,10 @@ mod tests {
             Some("notes".into()),
             1_700_000_000_000,
             1_700_000_360_000,
+            "github".into(),
         );
         let wire = repo_request_wire(&rejected);
+        assert_eq!(wire["host"], "github");
         assert_eq!(wire["repo"], "acme/talaria-app-notes");
         assert_eq!(wire["status"], "rejected");
         assert_eq!(wire["note"], "use the existing notes repo");
@@ -3571,7 +3897,7 @@ mod tests {
 
     #[test]
     fn finish_says_whether_the_pr_was_opened_or_kept() {
-        let pr = |reused, commented| gh::OpenedPullRequest {
+        let pr = |reused, commented| hosts::OpenedPullRequest {
             url: "u".into(),
             number: 1,
             reused,
@@ -3732,8 +4058,8 @@ mod tests {
 
         async fn job(pg: &PgPool, agent_id: &str, task_id: &str, status: &str) -> String {
             sqlx::query_scalar(
-                "insert into workbench_jobs (agent_id, agent_model, task_id, repo, branch, effort, plan, status) \
-                 values ($1::uuid, $2, $3::uuid, $4, $5, 'light', '', $6) returning id::text",
+                "insert into workbench_jobs (agent_id, agent_model, task_id, host_id, repo, branch, effort, plan, status) \
+                 values ($1::uuid, $2, $3::uuid, 'github', $4, $5, 'light', '', $6) returning id::text",
             )
             .bind(agent_id)
             .bind(MODEL)
@@ -3780,22 +4106,33 @@ mod tests {
                 HashMap::from([(1u32, talaria_secretbox::new_dek().unwrap())]),
                 Some(1),
             );
-            // A PAT connection the test's own box sealed, restored after.
-            let prior: Option<Value> =
-                sqlx::query_scalar("select value from app_settings where key = 'github_config'")
-                    .fetch_optional(&pg)
-                    .await
-                    .unwrap();
-            let config =
-                json!({ "mode": "pat", "pat": { "tokenEnc": sb.seal("pat-test").unwrap() } });
-            sqlx::query(
-                "insert into app_settings (key, value) values ('github_config', $1) \
-                 on conflict (key) do update set value = excluded.value",
+            // A PAT connection on the `github` host row, sealed by the test's
+            // own box, restored after.
+            let prior: (Value, Vec<String>) = sqlx::query_as(
+                "select auth, repo_creation_orgs from git_hosts where id = 'github'",
             )
-            .bind(&config)
-            .execute(&pg)
+            .fetch_one(&pg)
             .await
             .unwrap();
+            let set_host = |auth: Value, orgs: Vec<String>| {
+                let pg = pg.clone();
+                async move {
+                    sqlx::query(
+                        "update git_hosts set auth = $1, repo_creation_orgs = $2 where id = 'github'",
+                    )
+                    .bind(auth)
+                    .bind(orgs)
+                    .execute(&pg)
+                    .await
+                    .unwrap();
+                    hosts::forget("github");
+                }
+            };
+            set_host(
+                json!({ "mode": "pat", "pat": { "tokenEnc": sb.seal("pat-test").unwrap() } }),
+                vec![],
+            )
+            .await;
 
             let agent_id: String = sqlx::query_scalar(
                 "insert into agent_defs (slug, department, model, display_name, developer) \
@@ -3806,7 +4143,9 @@ mod tests {
             .fetch_one(&pg)
             .await
             .unwrap();
-            sqlx::query("insert into workbench_repos (agent_id, repo) values ($1::uuid, $2)")
+            sqlx::query(
+                "insert into workbench_repos (agent_id, host_id, repo) values ($1::uuid, 'github', $2)",
+            )
                 .bind(&agent_id)
                 .bind(REPO)
                 .execute(&pg)
@@ -3841,7 +4180,7 @@ mod tests {
             let me = AgentSubject::Model(MODEL.into());
             let (base, seen) = stub(github).await;
 
-            gh::with_api_base(base, async {
+            talaria_github::with_api_base(base, async {
                 // 1. A started job whose branch already has PR #41 open:
                 //    finish_job keeps #41, records its number, comments the
                 //    summary, and never asks GitHub for a second PR.
@@ -3884,7 +4223,11 @@ mod tests {
 
                 // 2. The next round on that ticket resumes THAT job: it is the
                 //    newest pr_open job, its PR is open, its branch is lawful.
-                let (resumed, pr) = resumable_job(&deps, &agent_id, &task_id, REPO)
+                let grant = hosts::RepoRef {
+                    host_id: "github".into(),
+                    repo: REPO.into(),
+                };
+                let (resumed, pr) = resumable_job(&deps, &agent_id, &task_id, &grant)
                     .await
                     .expect("the pr_open job is resumable");
                 assert_eq!((resumed.id.as_str(), pr.number), (first.as_str(), 41));
@@ -3964,13 +4307,11 @@ mod tests {
 
                 // 6. request_repo. In PAT mode it is refused up front: the
                 //    approval could never create the repo.
-                sqlx::query(
-                    "update app_settings set value = value || '{\"repoCreationOrgs\":[\"acme\",\"ghost\"]}'::jsonb \
-                     where key = 'github_config'",
-                )
-                .execute(&pg)
-                .await
-                .unwrap();
+                let pat: Value = sqlx::query_scalar("select auth from git_hosts where id = 'github'")
+                    .fetch_one(&pg)
+                    .await
+                    .unwrap();
+                set_host(pat, vec!["acme".into(), "ghost".into()]).await;
                 let ask = |org: &str, extra: Value| {
                     let mut a = json!({ "org": org, "name": "talaria-app-notes", "why": "a home for the notes app" });
                     for (k, v) in extra.as_object().cloned().unwrap_or_default() {
@@ -3987,13 +4328,8 @@ mod tests {
                 let app = json!({
                     "mode": "app",
                     "app": { "appId": "4242", "installationIds": ["70001"], "privateKeyEnc": deps.sb.seal(pem).unwrap() },
-                    "repoCreationOrgs": ["acme", "ghost"],
                 });
-                sqlx::query("update app_settings set value = $1 where key = 'github_config'")
-                    .bind(&app)
-                    .execute(&pg)
-                    .await
-                    .unwrap();
+                set_host(app, vec!["acme".into(), "ghost".into()]).await;
                 for (org, extra, expect) in [
                     ("other", json!({}), "not approved"),
                     ("acme", json!({ "visibility": "internal" }), "visibility must be"),
@@ -4013,6 +4349,7 @@ mod tests {
                 )
                 .await);
                 assert_eq!(filed["status"], "pending");
+                assert_eq!(filed["host"], "github");
                 assert_eq!(filed["visibility"], "public");
                 let (vis, slug): (String, Option<String>) = sqlx::query_as(
                     "select visibility, app_slug from workbench_repo_requests \
@@ -4034,27 +4371,17 @@ mod tests {
                 .unwrap();
                 let listed = ok(call_tool(&deps, &me, "list_repos", &Map::new()).await);
                 assert_eq!(listed["repos"], json!([REPO]));
+                assert_eq!(
+                    listed["grants"],
+                    json!([{ "host": "github", "repo": REPO }])
+                );
                 assert_eq!(listed["repoRequests"][0]["repo"], "acme/talaria-app-notes");
                 assert_eq!(listed["repoRequests"][0]["status"], "rejected");
                 assert_eq!(listed["repoRequests"][0]["note"], "use acme/wiki instead");
             })
             .await;
 
-            match prior {
-                Some(v) => {
-                    sqlx::query("update app_settings set value = $1 where key = 'github_config'")
-                        .bind(v)
-                        .execute(&pg)
-                        .await
-                        .unwrap();
-                }
-                None => {
-                    sqlx::query("delete from app_settings where key = 'github_config'")
-                        .execute(&pg)
-                        .await
-                        .unwrap();
-                }
-            }
+            set_host(prior.0, prior.1).await;
             reset(&pg).await;
         }
     }
@@ -4090,6 +4417,7 @@ mod tests {
             agent_id: "a".into(),
             agent_model: "m".into(),
             task_id: None,
+            host_id: "github".into(),
             repo: "o/r".into(),
             branch: "b".into(),
             effort: "standard".into(),

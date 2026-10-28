@@ -17,6 +17,11 @@ use talaria_agent_defs::{
     apply_config_edits, list_versions,
 };
 use talaria_fleet_create::{CreateAgentInput, create_agent, ensure_agent_key, restamp_slug};
+
+/// Whether a create refusal is the one-agent-per-department rule: the
+/// handle's department (`personal-<handle>`) is already another agent's
+/// (talaria-agent-defs, "A department is one agent's key").
+pub use talaria_agent_defs::is_department_taken;
 use talaria_fleet_docker::{
     ANSWER_WITHIN, Detached, container_status, fleet_up, run_detached, wait_healthy,
 };
@@ -28,6 +33,12 @@ use talaria_state::AppState;
 
 use futures_util::future::BoxFuture;
 use std::sync::{Arc, OnceLock};
+
+/// Why a retired assistant cannot come back: another agent shares its
+/// department (a pair from before a department became one agent's) and runs
+/// in its container. Said without naming that agent — any signed-in user
+/// reaches this door — and pointing at who can untie it.
+pub const ASSISTANT_DISPLACED: &str = "your assistant cannot come back: another agent runs in its container now — ask an admin to untie the two";
 
 pub static SYNC_PRIVATE_DOCS: OnceLock<
     Arc<dyn Fn(sqlx::PgPool, String) -> BoxFuture<'static, ()> + Send + Sync>,
@@ -152,8 +163,16 @@ pub async fn personal_agent_for(
         return Ok(None);
     };
     let departments = vec![department.clone()];
-    let (latest, containers) = tokio::join!(list_versions(pg, &id), container_status(&departments));
+    let (latest, containers, displaced) = tokio::join!(
+        list_versions(pg, &id),
+        container_status(&departments),
+        talaria_agent_defs::runner_instead_of(pg, &id, &department)
+    );
     let latest = latest?.into_iter().next();
+    // The container is found by department; where another agent shares this
+    // one's and runs there, it is not this assistant's, and its state is not
+    // this assistant's either.
+    let own_container = displaced?.is_none();
     let containers = containers.unwrap_or_default();
     let main = latest.as_ref().and_then(|v| v.config.get("main")).cloned();
     let main_target: Option<ModelTarget> = main
@@ -196,18 +215,19 @@ pub async fn personal_agent_for(
         display_name,
         enabled,
         personality: latest.as_ref().and_then(|v| personality_of(&v.soul)),
-        running: containers
-            .first()
-            .and_then(|c| c.managed.as_ref())
-            .is_some_and(|m| m.state == "running"),
+        running: own_container
+            && containers
+                .first()
+                .and_then(|c| c.managed.as_ref())
+                .is_some_and(|m| m.state == "running"),
         current_model: main_target.as_ref().map(|t| t.model.clone()),
         tiers,
     }))
 }
 
-/// slug + department derived from the user — BOTH must be unique per user,
-/// since the department names the container (agent-<department>). `create_agent`
-/// enforces slug uniqueness and errs on collision.
+/// slug + department derived from the user — BOTH must be unique, since the
+/// department names the container (agent-<department>) and its memory.
+/// `create_agent` refuses a taken slug and a taken department alike.
 fn personal_identity(email: Option<&str>, name: Option<&str>) -> (String, String) {
     let raw = email
         .map(|e| e.split('@').next().unwrap_or(""))
@@ -352,6 +372,20 @@ async fn create_whole(
         .map_err(|e| e.to_string())?
     {
         if !existing.enabled {
+            // ONE CONTAINER PER DEPARTMENT. Where another agent holds this
+            // assistant's department too (a pair from before a department
+            // became one agent's) and runs in its container, bringing this
+            // one back would take that container from it at the next render
+            // when this one is the older — the takeover the control route's
+            // unretire refuses — or leave it with no container at all. So it
+            // stays retired, and the owner is told without naming the other.
+            if talaria_agent_defs::runner_instead_of(pg, &existing.id, &existing.department)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_some()
+            {
+                return Err(ASSISTANT_DISPLACED.to_string());
+            }
             sqlx::query(
                 "update agent_defs set enabled = true, updated_at = now() where id = $1::uuid",
             )
@@ -828,6 +862,31 @@ async fn update_whole(
             // caller that goes away mid-roll no longer takes the compose verb
             // with it. A render that fails still fails the PATCH.
             rf(pg.clone(), sb.clone()).await?;
+            // The container is the department's, and where another agent
+            // shares this one's department and runs there (a pair from
+            // before a department became one agent's), it is THAT agent's:
+            // the render left this one out, and applying here would roll
+            // somebody else's agent for this owner's edit. The version
+            // stands for when the two are untied.
+            if let Some(runner) = talaria_agent_defs::runner_instead_of(pg, &id, &department)
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                tracing::warn!(
+                    "[personal-agent] {}: saved, not applied — {}",
+                    row.slug,
+                    talaria_agent_defs::shared_department_refusal(
+                        "roll",
+                        &display_name,
+                        &department,
+                        &runner.display_name,
+                    )
+                );
+                return personal_agent_for(pg, user.id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "assistant vanished during update".to_string());
+            }
             for (_, verdict) in apply_after_render(pg, &sb, std::slice::from_ref(&department)).await
             {
                 match verdict {

@@ -286,7 +286,7 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/cron_output.rs`](../../api/
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `agent` | — | `{ok, messageId}` | 200, 400, 404 | — |
+| POST | `agent` | — | `{ok, messageId, silent}` | 200, 400, 404 | — |
 
 ## `/api/agents/subagent-events`
 
