@@ -12,10 +12,12 @@
 
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
 import { argvOf, bucketUploadsPath, clientFor, dbLabel, liftAppEnv, localAppDataDir, manifestGet, pgQuery, rcloneRun, storageFromManifest, verifySums } from '../backup/lib'
+import { envFileText, envValue } from '../envfile'
+import { inside, refuseForeignCheckout } from '../stack'
 
 
 export type RestoreWhat = 'all' | 'db' | 'uploads'
@@ -30,17 +32,84 @@ function chmodDbEnvs(dir: string): void {
   }
 }
 
+/** Where a restore inside a worktree would write somewhere that is not the
+ *  worktree's own, or null when every target is. A worktree owns its
+ *  database, its checkout's dirs and nothing else:
+ *
+ *   · a DATABASE_URL in the shell that is not ui/.env's, with no --target,
+ *     leaves which database is meant a guess;
+ *   · blobs in internal mode would land in the main stack's object storage,
+ *     which a worktree's app shares (it has none of its own), and in s3 mode in
+ *     whatever bucket the snapshot names, unless the operator names one
+ *     (TALARIA_BACKUP_S3_BUCKET / _ENDPOINT);
+ *   · an uploads or app-data dir outside the checkout is inherited from main's
+ *     env and is main's.
+ *
+ *  Pure apart from reading the manifest's mode, so each rule is testable. */
+export function worktreeRestoreProblem(
+  ctx: Ctx,
+  env: Record<string, string | undefined>,
+  manifest: string,
+  opts: { target?: string; what: RestoreWhat },
+): string | null {
+  const fileEnv = envFileText(ctx, ctx.env.TALARIA_ENV_FILE || 'ui/.env')
+  const worktree = envValue(fileEnv, 'TALARIA_WORKTREE')
+  if (!worktree) return null
+  const own = `this is worktree "${worktree}"`
+  const fileDb = envValue(fileEnv, 'DATABASE_URL')
+  if (!opts.target && ctx.env.DATABASE_URL !== undefined && ctx.env.DATABASE_URL !== fileDb) {
+    return (
+      `${own}: DATABASE_URL in the environment (${dbLabel(ctx.env.DATABASE_URL)}) is not its ui/.env's ` +
+      `(${fileDb ? dbLabel(fileDb) : 'unset'}). Pass --target to say which database you mean, or unset DATABASE_URL.`
+    )
+  }
+  if (opts.what !== 'db') {
+    const mode = manifestGet(manifest, 'storage_mode')
+    if (mode === 'internal') {
+      return (
+        `${own}, and it has no object storage of its own: its app keeps blobs in the main stack's. ` +
+        'Restoring the blobs here would write into main\'s bucket. Use --db-only, or restore the blobs from the checkout that owns that storage.'
+      )
+    }
+    if (mode === 's3' && !ctx.env.TALARIA_BACKUP_S3_BUCKET && !ctx.env.TALARIA_BACKUP_S3_ENDPOINT) {
+      return (
+        `${own}: the snapshot's blobs go to bucket ${manifestGet(manifest, 'storage_bucket') || '(unnamed)'}, which is the bucket ` +
+        'its source used and not this worktree\'s. Name the bucket with TALARIA_BACKUP_S3_BUCKET (and _ENDPOINT), or use --db-only.'
+      )
+    }
+    if (mode === 'local') {
+      // resolve() is cwd-relative, as the extract below is.
+      const dir = resolve(env.TALARIA_UPLOADS_DIR || join(ctx.root, 'api/.uploads'))
+      if (!inside(ctx.root, dir)) {
+        return `${own}, but the uploads dir ${dir} is outside it (TALARIA_UPLOADS_DIR, inherited from main's env). Unset it, or use --db-only.`
+      }
+    }
+  }
+  if (opts.what === 'all') {
+    const dir = resolve(localAppDataDir(ctx, env))
+    if (!inside(ctx.root, dir)) {
+      return `${own}, but the app-data dir ${dir} is outside it (TALARIA_APP_DATA_DIR, inherited from main's env). Unset it, or use --db-only.`
+    }
+  }
+  return null
+}
+
 export async function runRestore(
   ctx: Ctx,
   snap: string,
   opts: { target?: string; what: RestoreWhat; yes?: boolean },
 ): Promise<number> {
+  // Run through the shim from another checkout, the default target and every
+  // dir below would be the shim's checkout's.
+  refuseForeignCheckout(ctx, 'restore')
   snap = snap.replace(/\/+$/, '')
   const manifestPath = join(snap, 'manifest.txt')
   if (!existsSync(manifestPath)) ctx.log.die(`${snap} is not a Talaria snapshot (no manifest.txt)`)
   const manifest = readFileSync(manifestPath, 'utf8')
 
   const env = liftAppEnv(ctx)
+  const problem = worktreeRestoreProblem(ctx, env, manifest, opts)
+  if (problem) ctx.log.die(`${problem}\n  Nothing was changed.`)
   const target = opts.target || env.DATABASE_URL
   if (!target) ctx.log.die('no target database — pass --target, or set DATABASE_URL')
 

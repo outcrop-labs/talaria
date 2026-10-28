@@ -8,8 +8,34 @@ import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Group, Leaf, ParsedArgs } from '../../cli'
 import { COMPOSE_BASE, SIDECARS_COMPOSE } from '../../compose'
-import { readEnvFile } from '../../envfile'
-import { credsCommand, downCommand, logsCommand, statusCommand, UPDATE_RESUMED_KEY, updateCommand, upCommand } from './actions'
+import { envFileText, envValue, readEnvFile } from '../../envfile'
+import { refuseForeignCheckout } from '../../stack'
+import {
+  credsCommand, DEFAULT_DEPLOY_PROJECT, deployProject, downCommand, logsCommand, statusCommand, UPDATE_RESUMED_KEY, updateCommand,
+  upCommand,
+} from './actions'
+
+/** A worktree owns no production stack. The deploy compose project defaults
+ *  to the file's own `talaria`, which on a host that runs one is the host's
+ *  production stack, so `deploy up`/`down` in a worktree would rebuild or stop
+ *  it from this checkout's code. In a worktree the project must be named
+ *  explicitly (COMPOSE_PROJECT_NAME, in the shell or docker/.env), and not as
+ *  that default. The same rule covers `service`, which wraps the same project.
+ *  The shim case comes first: run from another checkout, every target here
+ *  would be that checkout's. */
+export function refuseDeployTargets(ctx: Ctx, command: string): void {
+  refuseForeignCheckout(ctx, command)
+  const worktree = envValue(envFileText(ctx, 'ui/.env'), 'TALARIA_WORKTREE')
+  if (!worktree) return
+  const project = deployProject(ctx)
+  if (project !== DEFAULT_DEPLOY_PROJECT) return
+  ctx.log.die(
+    `this is worktree "${worktree}", and \`talaria ${command}\` would act on compose project '${project}', ` +
+      "the production compose file's default and not this worktree's. Refusing rather than guess.\n" +
+      `  To deploy from this worktree, name a project of its own: COMPOSE_PROJECT_NAME=talaria-${worktree}-deploy ` +
+      '(in docker/.env, or exported).',
+  )
+}
 
 /** CONTAINER.md's one habit, enforced: a variable you override on the
  *  command line belongs in docker/.env, because interpolation happens on
@@ -56,12 +82,13 @@ export function warnEnvDrift(ctx: Ctx): void {
   )
 }
 
-/** Every deploy leaf gets the drift warning first — declared once here, not
- *  six times in actions. Not twice for one update: the half `runUpdate`
+/** Every deploy leaf gets the target guard and the drift warning first —
+ *  declared once here, not six times in actions. Not twice for one update: the half `runUpdate`
  *  re-launches after a sync that moved the checkout has already had it. */
 const prelude = (leaf: Leaf): Leaf => ({
   ...leaf,
   run: (ctx: Ctx, args: ParsedArgs) => {
+    refuseDeployTargets(ctx, `deploy ${leaf.name}`)
     if (!ctx.env[UPDATE_RESUMED_KEY]) warnEnvDrift(ctx)
     return leaf.run(ctx, args)
   },

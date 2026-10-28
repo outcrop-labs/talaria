@@ -104,6 +104,68 @@ describe('talaria deploy — group', () => {
   })
 })
 
+describe('talaria deploy — inside a worktree, the project must be its own', () => {
+  const inWorktree = (dockerEnv?: string) => {
+    const root = makeDeployTree(dockerEnv)
+    mkdirSync(join(root, 'ui'), { recursive: true })
+    writeFileSync(join(root, 'ui/.env'), 'TALARIA_WORKTREE=demo\nDATABASE_URL=x\n')
+    return root
+  }
+  const leaf = (name: string) => deployCommand.children.find((c) => c.name === name)! as Leaf
+
+  for (const name of ['up', 'down', 'update', 'logs', 'status']) {
+    test(`${name}: the default project 'talaria' is refused before any docker or git call`, async () => {
+      const ctx = fakeCtx()
+      ctx.root = inWorktree()
+      const msg = await attempt(async () => leaf(name).run(ctx, NO_ARGS))
+      expect(msg).toContain('worktree "demo"')
+      expect(msg).toContain("compose project 'talaria'")
+      expect(msg).toContain('COMPOSE_PROJECT_NAME=talaria-demo-deploy')
+      expect(ctx.calls).toHaveLength(0)
+    })
+  }
+
+  test('an explicit project of its own, in docker/.env or the shell, passes', async () => {
+    const fromFile = fakeCtx()
+    fromFile.root = inWorktree('COMPOSE_PROJECT_NAME=talaria-demo-deploy\n')
+    await leaf('status').run(fromFile, NO_ARGS)
+    expect(fromFile.calls.some((c) => c.args.includes('ps'))).toBe(true)
+    const fromShell = fakeCtx({ env: { COMPOSE_PROJECT_NAME: 'talaria-demo-deploy' } })
+    fromShell.root = inWorktree()
+    await leaf('status').run(fromShell, NO_ARGS)
+    expect(fromShell.calls.some((c) => c.args.includes('ps'))).toBe(true)
+  })
+
+  test("naming the default explicitly is still the default: refused", async () => {
+    const ctx = fakeCtx({ env: { COMPOSE_PROJECT_NAME: 'talaria' } })
+    ctx.root = inWorktree()
+    expect(await attempt(async () => leaf('down').run(ctx, NO_ARGS))).toContain("compose project 'talaria'")
+  })
+
+  test('the primary (no marker) keeps the default, as it always has', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree()
+    await leaf('status').run(ctx, NO_ARGS)
+    expect(ctx.calls.some((c) => c.args.includes('ps'))).toBe(true)
+  })
+
+  test("the shim run from inside another checkout refuses: every target would be the shim's checkout's", async () => {
+    const primary = makeDeployTree()
+    mkdirSync(join(primary, '.git'))
+    mkdirSync(join(primary, 'cli/bin'), { recursive: true })
+    writeFileSync(join(primary, 'cli/bin/talaria.ts'), '')
+    const wt = inWorktree()
+    writeFileSync(join(wt, '.git'), 'gitdir: /x/.git/worktrees/demo\n')
+    mkdirSync(join(wt, 'cli/bin'), { recursive: true })
+    writeFileSync(join(wt, 'cli/bin/talaria.ts'), '')
+    const ctx = fakeCtx({ cwd: wt })
+    ctx.root = primary
+    const msg = await attempt(async () => leaf('down').run(ctx, NO_ARGS))
+    expect(msg).toContain(`cd ${wt} && bun talaria deploy down`)
+    expect(ctx.calls).toHaveLength(0)
+  })
+})
+
 describe('talaria deploy up — argv parity with CONTAINER.md', () => {
   test('runs exactly the documented command, from the repo root', async () => {
     const root = makeDeployTree()
