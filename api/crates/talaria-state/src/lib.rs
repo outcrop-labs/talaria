@@ -433,22 +433,43 @@ mod live_db {
         drop_schema(&url, &schema).await;
     }
 
+    fn loaded_at(state: &AppState) -> Instant {
+        state.sb.get().unwrap().read().unwrap().loaded
+    }
+
     #[tokio::test]
     #[ignore = "needs a Postgres (DATABASE_URL)"]
-    async fn a_rotation_installed_during_a_retry_is_not_overwritten() {
+    async fn a_rotation_installed_while_a_retry_reads_is_not_overwritten() {
         let (pg, schema, url) = isolated().await;
         let state = AppState::new(pg.clone(), test_config(&url, ROOT));
         assert!(state.secretbox().await.unwrap().failure_is_transient());
+        let first_load = loaded_at(&state);
 
-        // A box installed by hand (what a rotation does) replaces the failed
-        // one; the retry machinery then has nothing to retry.
-        let kek = derive_kek(ROOT);
+        // Hold both connections `isolated` lets the pool open, so the retry's
+        // read of secret_keys waits on acquire: the window between claiming a
+        // retry and installing what it read, which is where a rotation can land.
+        let held = (pg.acquire().await.unwrap(), pg.acquire().await.unwrap());
+        past_the_window().await;
+        let retry = tokio::spawn({
+            let state = state.clone();
+            async move { state.secretbox().await }
+        });
+        // Claiming the retry stamps a new load time before the read begins.
+        while loaded_at(&state) == first_load {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // A rotation commits and installs its box while that read waits...
         let mut deks = HashMap::new();
         deks.insert(7u32, [7u8; 32]);
-        state.install_secretbox(SecretBox::from_parts(kek, deks, Some(7)));
-        past_the_window().await;
+        state.install_secretbox(SecretBox::from_parts(derive_kek(ROOT), deks, Some(7)));
+        // ...then the read answers. This schema still has no table, so what it
+        // read is a failed box, and installing it would undo the rotation.
+        drop(held);
+        let sb = retry.await.unwrap().unwrap();
+        assert_eq!(sb.active_key_version(), Some(7), "{:?}", sb.failure());
         let sb = state.secretbox().await.unwrap();
-        assert!(sb.failure().is_none());
+        assert!(sb.failure().is_none(), "{:?}", sb.failure());
         assert_eq!(sb.active_key_version(), Some(7));
 
         drop_schema(&url, &schema).await;
