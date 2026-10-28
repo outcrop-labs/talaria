@@ -141,10 +141,18 @@ export function devStack(ctx: Ctx, uiEnv: string = envFileText(ctx, 'ui/.env'), 
   const worktree = envValue(uiEnv, 'TALARIA_WORKTREE') || null
   const shellWorktree = ctx.env.TALARIA_WORKTREE
   if (shellWorktree && shellWorktree !== (worktree ?? '')) {
+    // Most often a shell under that worktree's `talaria dev`: it inherited
+    // the worktree's whole stack, not only the marker (WORKTREE_INHERITED_VARS),
+    // and in the primary the shell wins over ui/.env. So the way out unsets
+    // all of it; `unset TALARIA_WORKTREE` alone would pass this check and run
+    // on the worktree's DATABASE_URL, fleet project and ports.
     ctx.log.die(
       `TALARIA_WORKTREE=${shellWorktree} in the environment, but ${join(ctx.root, 'ui/.env')} ` +
         (worktree ? `marks worktree "${worktree}"` : 'carries no worktree marker') +
-        '. Refusing rather than guess which stack you meant: unset it, or run from that worktree.',
+        ". A shell under a worktree's `talaria dev` inherits that worktree's stack lines with it " +
+        '(its DATABASE_URL, fleet project and ports among them), so this refuses rather than guess which stack you meant.\n' +
+        `  Run it without them: ${inheritedUnsetCommand(ctx, ['TALARIA_WORKTREE'], command)}\n` +
+        '  or run it from that worktree.',
     )
   }
 
@@ -311,6 +319,27 @@ export const ALL_PRIMARY_CONTAINER_VARS = Object.keys(PRIMARY_CONTAINER_VARS) as
  *  a shell started under it inherits (cmd/dev.ts, the worktree branch). */
 export const WORKTREE_DEV_EXPORTS = ['TALARIA_PG_CONTAINER', 'TALARIA_PG_PORT', 'TALARIA_REDIS_CONTAINER', 'TALARIA_REDIS_PORT'] as const
 
+/** Everything a shell under a worktree's `talaria dev` inherits that names
+ *  that worktree's stack: the exports above, which dev sets in its own
+ *  process, and the lines `talaria worktree` writes into its ui/.env
+ *  (TALARIA_WORKTREE and WORKTREE_OWN_VARS, worktree.ts WORKTREE_ENV_KEYS).
+ *  vite loads that file into its process.env (ui/vite.config.ts apiDev) and
+ *  apiEnv lifts the same lines into the api's, so every process the app or
+ *  the api starts carries them. */
+export const WORKTREE_INHERITED_VARS = [...WORKTREE_DEV_EXPORTS, 'TALARIA_WORKTREE', ...WORKTREE_OWN_VARS] as const
+
+/** The command a refusal of an inherited worktree shell prints: `env -u` for
+ *  `keys`, then for every WORKTREE_INHERITED_VARS variable the shell sets,
+ *  then `bun talaria <command>`. Unsetting one this checkout's ui/.env carries
+ *  costs nothing (apiEnv and vite fall back to the file), and one it does not
+ *  carry is an inherited line that would otherwise win: the primary keeps the
+ *  shell as its override point, so a worktree's DATABASE_URL, fleet project
+ *  or api url there would put main's servers on the worktree's stack. */
+export function inheritedUnsetCommand(ctx: Ctx, keys: readonly string[], command?: string): string {
+  const all = [...new Set([...keys, ...WORKTREE_INHERITED_VARS.filter((k) => ctx.env[k] !== undefined)])]
+  return `env ${all.map((k) => `-u ${k}`).join(' ')} bun talaria ${command ?? '<command>'}`
+}
+
 /** A compose project that is another stack's, never main's: a worktree's
  *  (`talaria-wt-*`, its infra and its fleet) or a devbox's (`devbox-*`). */
 export const isSideProject = (project: string): boolean => project.startsWith('talaria-wt-') || project.startsWith('devbox-')
@@ -369,19 +398,19 @@ export async function containerProject(ctx: Ctx, name: string): Promise<string |
 
 /** The refusal for `found`: each variable with what it names, the
  *  inherited-from-a-worktree reading, and the command to run instead. The
- *  `env -u` list carries every WORKTREE_DEV_EXPORTS variable the shell sets
- *  too: the ports ride with the container names, and a primary compose `up`
- *  with a worktree's TALARIA_PG_PORT would republish main's postgres there. */
+ *  `env -u` list carries every WORKTREE_INHERITED_VARS variable the shell
+ *  sets too (inheritedUnsetCommand): the ports ride with the container names,
+ *  and a primary compose `up` with a worktree's TALARIA_PG_PORT would
+ *  republish main's postgres there; the worktree's ui/.env lines ride with
+ *  them, and the primary's `talaria dev` would let them win. */
 export function sideStackRefusal(ctx: Ctx, found: readonly SideStackOverride[], command?: string): string {
-  const keys = [...new Set([...found.map((f) => f.key), ...WORKTREE_DEV_EXPORTS.filter((k) => ctx.env[k] !== undefined)])]
   const lines = found.map((f) => `    ${f.key}=${f.value}   (${f.whose})`)
-  const unset = keys.map((k) => `-u ${k}`).join(' ')
   return (
     "the environment names another stack's container where this command means the primary dev stack's (main's):\n" +
     `${lines.join('\n')}\n` +
     "  A worktree's `talaria dev` sets these for itself, and every process it starts (its app, harness runs, their shells) " +
     "inherits them. Acting on them here would read or start that stack's container as if it were main's, so this refuses rather than guess.\n" +
-    `  Run it without them: env ${unset} bun talaria ${command ?? '<command>'}`
+    `  Run it without them: ${inheritedUnsetCommand(ctx, found.map((f) => f.key), command)}`
   )
 }
 

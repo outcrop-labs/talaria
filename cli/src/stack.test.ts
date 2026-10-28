@@ -9,8 +9,10 @@ import { join } from 'node:path'
 import {
   ALL_PRIMARY_CONTAINER_VARS, checkoutAt, composeFileProject, containerProject, devStack, inside, isSideProject, physical,
   primaryContainer, printable, projectContainers, refuseForeignCheckout, refuseSideStackContainers, refuseWorktreeEnvOverride,
-  sideStackContainers, sideStackOfName, verifyPostgres, worktreeStackNames, type DevStack,
+  sideStackContainers, sideStackOfName, verifyPostgres, WORKTREE_INHERITED_VARS, WORKTREE_OWN_VARS, worktreeStackNames,
+  type DevStack,
 } from './stack'
+import { WORKTREE_ENV_KEYS } from './cmd/worktree'
 import { fakeCtx, type FakeCtx } from './testing'
 import { CliError } from './ui'
 
@@ -200,6 +202,32 @@ describe('devStack — in the primary', () => {
     const ctx = fakeCtx()
     ctx.root = checkout('DATABASE_URL=postgres://talaria:talaria@postgres:5432/talaria\nTALARIA_DEVBOX=b1\n')
     expect(attempt(() => devStack(ctx))).toContain('devbox "b1"')
+  })
+
+  test("a shell TALARIA_WORKTREE dies, and the way out unsets everything that worktree's shell carries", () => {
+    // A shell under a worktree's `talaria dev` holds its ui/.env too (vite
+    // loads it into process.env). `unset TALARIA_WORKTREE` alone would pass
+    // and leave the primary on the worktree's DATABASE_URL and fleet.
+    const ctx = fakeCtx({
+      env: {
+        TALARIA_WORKTREE: 'demo',
+        DATABASE_URL: 'postgres://talaria:talaria@127.0.0.1:5605/talaria',
+        TALARIA_FLEET_PROJECT: 'talaria-wt-demo-fleet',
+        TALARIA_RUST_API_URL: 'http://127.0.0.1:5405',
+        TALARIA_PG_CONTAINER: 'talaria-pg-demo',
+        TALARIA_PG_PORT: '5605',
+        HOME: '/home/someone',
+      },
+    })
+    ctx.root = checkout('DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5544/talaria\n')
+    const msg = attempt(() => devStack(ctx, undefined, 'reset database'))
+    expect(msg).toContain('TALARIA_WORKTREE=demo in the environment')
+    expect(msg).toContain('carries no worktree marker')
+    expect(msg).toContain(
+      'env -u TALARIA_WORKTREE -u TALARIA_PG_CONTAINER -u TALARIA_PG_PORT -u DATABASE_URL -u TALARIA_RUST_API_URL ' +
+        '-u TALARIA_FLEET_PROJECT bun talaria reset database',
+    )
+    expect(msg).not.toContain('-u HOME')
   })
 })
 
@@ -461,6 +489,29 @@ describe("main's containers named by the shell (box seed, box new, the primary's
     ])
     expect(sideStackContainers(fakeCtx({ env: { TALARIA_REDIS_CONTAINER: 'talaria-redis-dev' } }), ALL_PRIMARY_CONTAINER_VARS)).toEqual([])
     expect(sideStackContainers(fakeCtx(), ALL_PRIMARY_CONTAINER_VARS)).toEqual([])
+    expect(ctx.calls).toHaveLength(0)
+  })
+
+  test("every line `talaria worktree` writes into ui/.env is one an inherited shell is told to unset", () => {
+    for (const key of [...WORKTREE_ENV_KEYS, ...WORKTREE_OWN_VARS]) expect(WORKTREE_INHERITED_VARS).toContain(key)
+  })
+
+  test("the hint unsets the worktree's ui/.env lines the shell carries too: the primary's dev lets the shell win", async () => {
+    const ctx = fakeCtx({
+      env: {
+        ...INHERITED,
+        TALARIA_WORKTREE: 'demo',
+        DATABASE_URL: 'postgres://talaria:talaria@127.0.0.1:5605/talaria',
+        TALARIA_API_PORT: '5405',
+        HOME: '/home/someone',
+      },
+    })
+    const msg = await attemptAsync(() => refuseSideStackContainers(ctx, ['TALARIA_PG_CONTAINER'], 'dev'))
+    expect(msg).toContain(
+      'env -u TALARIA_PG_CONTAINER -u TALARIA_PG_PORT -u TALARIA_REDIS_CONTAINER -u TALARIA_REDIS_PORT ' +
+        '-u TALARIA_WORKTREE -u DATABASE_URL -u TALARIA_API_PORT bun talaria dev',
+    )
+    expect(msg).not.toContain('-u HOME')
     expect(ctx.calls).toHaveLength(0)
   })
 

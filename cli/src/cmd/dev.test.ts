@@ -432,6 +432,93 @@ describe('talaria dev — gates', () => {
     expect(own.calls.some((c) => c.args[0] === 'exec' && c.args[1] === 'my-main-pg')).toBe(true)
   })
 
+  test("the primary refuses a shell that inherited a worktree's whole env, and the command it prints is complete", async () => {
+    // A worktree's `talaria dev` exports its container names and ports; its
+    // vite loads its ui/.env into process.env, and its api gets the same
+    // lines through apiEnv. A shell under any of them carries all of it, and
+    // the primary's `talaria dev` lets the shell win (apiEnv, vite's loader).
+    // Unsetting only the container names would start main's app and api on
+    // the worktree's database, fleet project and api port.
+    const INHERITED: Record<string, string> = {
+      TALARIA_PG_CONTAINER: 'talaria-pg-demo',
+      TALARIA_PG_PORT: '5605',
+      TALARIA_REDIS_CONTAINER: 'talaria-redis-demo',
+      TALARIA_REDIS_PORT: '6505',
+      TALARIA_WORKTREE: 'demo',
+      DATABASE_URL: 'postgres://talaria:talaria@127.0.0.1:5605/talaria',
+      REDIS_URL: 'redis://127.0.0.1:6505',
+      PORT: '5305',
+      TALARIA_API_PORT: '5405',
+      TALARIA_RUST_API_URL: 'http://127.0.0.1:5405',
+      TALARIA_GATEWAY_SELF_URL: 'http://host.docker.internal:5305/api/llm/v1',
+      TALARIA_FLEET_PROJECT: 'talaria-wt-demo-fleet',
+      TALARIA_MCP_PORT: '5285',
+      TALARIA_OMP_AUTH_PORT: '5277',
+      TALARIA_GATEWAY_PORT_BASE: '8905',
+    }
+    const root = makeTree({ uiEnv: 'DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5544/talaria\nREDIS_URL=redis://127.0.0.1:6379\n' })
+    const ctx = fakeCtx({ env: { ...INHERITED, TALARIA_API: 'off', HOME: '/home/someone' } })
+    ctx.root = root
+    const msg = await attempt(ctx)
+    expect(msg).toContain('TALARIA_WORKTREE=demo in the environment')
+    expect(ctx.calls.filter((c) => c.cmd === 'docker')).toHaveLength(0)
+    const hint = /env ((?:-u \S+ )+)bun talaria dev/.exec(msg)
+    expect(hint).not.toBeNull()
+    const unset = hint![1]!.trim().split(/\s+/).filter((w) => w !== '-u')
+    expect(unset.sort()).toEqual(Object.keys(INHERITED).sort())
+
+    // Run what it printed: nothing of the worktree is left for compose, the
+    // probes, vite or the api to read, and the boot reaches main's stack.
+    const env: Record<string, string> = { TALARIA_API: 'off', HOME: '/home/someone' }
+    for (const [k, v] of Object.entries({ ...INHERITED })) if (!unset.includes(k)) env[k] = v
+    const rerun = fakeCtx({ env })
+    rerun.root = root
+    plantInfra(rerun)
+    await runDev(rerun)
+    expect(Object.values(rerun.env).some((v) => v?.includes('demo') || v?.includes('5605'))).toBe(false)
+    expect(rerun.calls.some((c) => c.args.some((a) => a.includes('demo')))).toBe(false)
+    expect(rerun.calls.some((c) => c.args[0] === 'exec' && c.args[1] === 'talaria-postgres-dev')).toBe(true)
+    expect(rerun.calls.some((c) => c.cmd === 'bun' && c.args[1] === 'dev' && c.opts?.cwd === join(root, 'ui'))).toBe(true)
+  })
+
+  test("the primary refuses a shell TALARIA_WORKTREE or a worktree's fleet project on its own, before any docker call", async () => {
+    const root = makeTree({ uiEnv: 'DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5544/talaria\nREDIS_URL=y\n' })
+    const marked = fakeCtx({ env: { TALARIA_WORKTREE: 'demo', DATABASE_URL: 'postgres://talaria:talaria@127.0.0.1:5605/talaria', TALARIA_API: 'off' } })
+    marked.root = root
+    expect(await attempt(marked)).toContain('env -u TALARIA_WORKTREE -u DATABASE_URL bun talaria dev')
+    expect(marked.calls.filter((c) => c.cmd === 'docker')).toHaveLength(0)
+
+    const fleet = fakeCtx({ env: { TALARIA_FLEET_PROJECT: 'talaria-wt-demo-fleet', TALARIA_API: 'off' } })
+    fleet.root = root
+    const msg = await attempt(fleet)
+    expect(msg).toContain("talaria-wt-demo-fleet is a worktree's fleet project")
+    expect(msg).toContain('`talaria dev` would start its api rendering agents there')
+    expect(fleet.calls.filter((c) => c.cmd === 'docker')).toHaveLength(0)
+  })
+
+  test('a ui/.env that marks a devbox, with no TALARIA_DEVBOX in the shell, is refused rather than run as the primary', async () => {
+    // The box branch reads the shell only; without this, the primary path
+    // brought up main's dev compose from a box's checkout.
+    const root = makeTree({ uiEnv: 'TALARIA_DEVBOX=b1\nDATABASE_URL=postgres://talaria:talaria@postgres:5432/talaria\n' })
+    const ctx = fakeCtx({ env: { TALARIA_API: 'off' } })
+    ctx.root = root
+    expect(await attempt(ctx)).toContain('this checkout is devbox "b1"')
+    expect(ctx.calls.filter((c) => c.cmd === 'docker')).toHaveLength(0)
+  })
+
+  test("an empty TALARIA_PG_CONTAINER in the primary probes main's default, the container compose creates", async () => {
+    // dev-compose.yml reads `${TALARIA_PG_CONTAINER:-talaria-postgres-dev}`:
+    // empty is the default. `?? PG_CONTAINER` probed a container named ''.
+    const root = makeTree()
+    const ctx = fakeCtx({ env: { TALARIA_PG_CONTAINER: '', TALARIA_REDIS_CONTAINER: '', TALARIA_API: 'off' } })
+    ctx.root = root
+    plantInfra(ctx)
+    expect(await attempt(ctx)).toBe('')
+    expect(ctx.calls.some((c) => c.args[0] === 'exec' && c.args[1] === 'talaria-postgres-dev')).toBe(true)
+    expect(ctx.calls.some((c) => c.args[0] === 'exec' && c.args[1] === 'talaria-redis-dev')).toBe(true)
+    expect(ctx.calls.some((c) => c.args[0] === 'exec' && c.args[1] === '')).toBe(false)
+  })
+
   test('missing ui/.env dies pointing at setup', async () => {
     const ctx = fakeCtx()
     ctx.root = mkdtempSync(join(tmpdir(), 'talaria-empty-'))

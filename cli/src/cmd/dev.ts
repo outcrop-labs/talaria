@@ -8,11 +8,10 @@ import { join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
 import { compose, stackComposeFiles, waitFor } from '../compose'
-import { PG_CONTAINER, REDIS_CONTAINER } from '../containers'
 import { envValue } from '../envfile'
 import { anyNewer } from '../paths'
 import { API_PORT } from '../ports'
-import { ALL_PRIMARY_CONTAINER_VARS, devStack, refuseForeignCheckout, refuseSideStackContainers, refuseWorktreeEnvOverride } from '../stack'
+import { ALL_PRIMARY_CONTAINER_VARS, devStack, refuseForeignCheckout, refuseSideStackContainers, refuseWorktreeEnvOverride, type DevStack } from '../stack'
 
 const DEV_COMPOSE = 'docker/dev-compose.yml'
 
@@ -342,21 +341,27 @@ export async function runDev(ctx: Ctx): Promise<number> {
   // still read the worktree's DB via ui/.env, but "stop my stack" and the
   // health gates would have been reaching into main. Container names come from
   // the marker, ports from the URLs `talaria worktree` wrote.
-  const worktree = envValue(uiEnv, 'TALARIA_WORKTREE')
+  //
+  // stack.ts names them, and refuses a shell var that names another stack's
+  // container instead of letting it win. The same holds for every line a
+  // worktree's ui/.env owns: apiEnv and vite both let the shell win, so a
+  // stale DATABASE_URL, REDIS_URL or fleet project from another stack's shell
+  // would put this worktree's servers on that stack. And a worktree with no
+  // fleet project of its own renders its agents into main's: refused too.
+  // The primary goes through the same door. Its shell is its override point,
+  // but a shell that carries TALARIA_WORKTREE was started under a worktree's
+  // `talaria dev` and holds that worktree's whole ui/.env (vite loads it into
+  // process.env), and a `talaria-wt-*` fleet project is a worktree's: either
+  // would start main's app and api on the worktree's database or fleet.
+  const stack = devStack(ctx, uiEnv, 'dev')
+  refuseWorktreeEnvOverride(ctx, stack, uiEnv, 'dev')
+  if (stack.fleetProblem) {
+    ctx.log.die(`${stack.fleetProblem}\n  \`talaria dev\` would start its api rendering agents there, so it refuses.`)
+  }
+  const worktree = stack.worktree
   if (worktree) {
-    // stack.ts names them, and refuses a shell var that names another
-    // stack's container instead of letting it win. The same holds for every
-    // line ui/.env owns: apiEnv and vite both let the shell win, so a stale
-    // DATABASE_URL, REDIS_URL or fleet project from another stack's shell
-    // would put this worktree's servers on that stack. And a worktree with no
-    // fleet project of its own renders its agents into main's: refused too.
-    const own = devStack(ctx, uiEnv)
-    refuseWorktreeEnvOverride(ctx, own, uiEnv, 'dev')
-    if (own.fleetProblem) {
-      ctx.log.die(`${own.fleetProblem}\n  \`talaria dev\` would start its api rendering agents there, so it refuses.`)
-    }
-    ctx.env.TALARIA_PG_CONTAINER = own.pgContainer
-    ctx.env.TALARIA_REDIS_CONTAINER = own.redisContainer
+    ctx.env.TALARIA_PG_CONTAINER = stack.pgContainer
+    ctx.env.TALARIA_REDIS_CONTAINER = stack.redisContainer
     // The ports compose publishes come from the URLs. A shell port that is
     // not the URL's used to win (`??=`): the worktree's postgres then took,
     // say, main's 5544 while its own app dialled the URL's, and main's app,
@@ -376,7 +381,7 @@ export async function runDev(ctx: Ctx): Promise<number> {
     ctx.log.say(`infra (this worktree's postgres + redis — sidecars are the main stack's)`)
     const code = await compose(ctx, { files: stackComposeFiles(ctx.root, DEV_COMPOSE), project: `talaria-wt-${worktree}` }, ['up', '-d', 'postgres', 'redis'])
     if (code !== 0) ctx.log.die('worktree infra failed to start (run `bun talaria worktree` again? it was torn down?)')
-    return await waitThenRunApp(ctx, uiEnv)
+    return await waitThenRunApp(ctx, uiEnv, stack)
   }
 
   // The primary: the shell's TALARIA_*_CONTAINER is its override point, but
@@ -436,14 +441,17 @@ export async function runDev(ctx: Ctx): Promise<number> {
     ctx.log.warn('Continuing without it; see docker/dev-compose.yml + issue #151.')
   }
 
-  return await waitThenRunApp(ctx, uiEnv)
+  return await waitThenRunApp(ctx, uiEnv, stack)
 }
 
 /** The shared boot tail: infra readiness, deps, the fleet toolkit, then the
- *  vite process (this function's return IS dev's exit code). */
-async function waitThenRunApp(ctx: Ctx, uiEnv: string): Promise<number> {
+ *  vite process (this function's return IS dev's exit code). The probes exec
+ *  into the containers devStack named: a worktree's own, or main's as
+ *  compose reads the shell (an empty TALARIA_PG_CONTAINER is the default
+ *  there, so `?? PG_CONTAINER` would have probed a container named ''). */
+async function waitThenRunApp(ctx: Ctx, uiEnv: string, stack: DevStack): Promise<number> {
   ctx.log.say('waiting for postgres…')
-  const pg = ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER
+  const pg = stack.pgContainer
   const pgReady = await waitFor(
     ctx,
     'postgres',
@@ -460,7 +468,7 @@ async function waitThenRunApp(ctx: Ctx, uiEnv: string): Promise<number> {
   if (!pgReady) ctx.log.die('postgres never became ready')
 
   ctx.log.say('waiting for redis…')
-  const redis = ctx.env.TALARIA_REDIS_CONTAINER ?? REDIS_CONTAINER
+  const redis = stack.redisContainer
   // No death on timeout here, deliberately (parity with dev.sh): redis that
   // is merely slow must not abort the boot; the app retries connections.
   await waitFor(
