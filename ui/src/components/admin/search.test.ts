@@ -87,10 +87,13 @@ describe('agentProbeNote: the from-agents line under the dots', () => {
     })
   })
   // The withheld sentence once opened "not handed to the agents", so the
-  // line read "From the agents: not handed to the agents: …". The server's
-  // sentence (talaria-agent-web-search probe.rs WITHHELD_LOOPBACK) now says
-  // what the render did, so the prefix is said once.
-  it('reads the withheld-loopback reason without repeating its prefix', () => {
+  // line read "From the agents: not handed to the agents: …". The fix is in
+  // the server's sentence, and the server pins it: probe.rs's
+  // the_withheld_reason_does_not_repeat_the_panels_prefix. The sentence below
+  // is a copy, so this case does not catch the server rewording it. What it
+  // covers is the composition: the panel prints the reason verbatim after
+  // its one prefix, with no rewording of its own that could say it twice.
+  it('prints the withheld-loopback reason verbatim after its one prefix', () => {
     const withheld =
       'the render withholds a loopback URL, since to an agent it is the app container itself; give the search URL an address the agents can reach'
     const note = agentProbeNote(ep({ agentReachable: null, agentError: withheld, probedFrom: null, agentUrl: null }))

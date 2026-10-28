@@ -5,6 +5,7 @@
   import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import { cn } from '@/lib/cn'
   import { putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import HealthDot from './HealthDot.svelte'
@@ -55,18 +56,20 @@
         SEARXNG_URL. It is tested from both places: the app, and inside a running agent.
       </p>
       <div class="flex flex-wrap items-center gap-3">
-        <!-- Disabled reads disabled: Button's dim reading (opacity 50, which
-             keeps the URL legible in both themes) and a not-allowed cursor.
-             It rides here because the Input primitive has no disabled state
-             of its own, and giving it one would also dim every board viewer's
-             read-only ticket title, labels and statuses. -->
+        <!-- Locked by SEARXNG_URL reads locked: Button's dim reading (opacity
+             50, which keeps the URL legible in both themes) and a not-allowed
+             cursor. It keys on fromEnv, not on `disabled`: the field is also
+             disabled for the length of a save, and dimming it then would only
+             flicker. It rides here because the Input primitive has no
+             disabled state of its own, and giving it one would also dim every
+             board viewer's read-only ticket title, labels and statuses. -->
         <Input
           size="sm"
           value={s.fromEnv ? s.url : s.stored}
           disabled={s.fromEnv || busy}
           onblur={(e) => e.currentTarget.value.trim() !== s.stored && void save(e.currentTarget.value.trim())}
           placeholder="https://search.example.com"
-          class="w-96 font-[var(--font-mono)] disabled:cursor-not-allowed disabled:opacity-50"
+          class={cn('w-96 font-[var(--font-mono)]', s.fromEnv && 'cursor-not-allowed opacity-50')}
         />
         {#if s.url}
           <HealthDot ok={s.reachable} label="from app" />
