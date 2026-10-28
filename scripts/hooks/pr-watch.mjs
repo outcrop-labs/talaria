@@ -71,7 +71,12 @@
 // checkout's copy stands in only if one of its remotes is the target, and
 // failing that the name is `CI`. Either fallback is said, in the pending
 // reason and the proof line: a guessed name is not a read one. `gh run list`
-// and the failed-job logs go to the same repository.
+// and the failed-job logs go to the same repository, and every `gh api` read
+// (the ci.yml, the branch's head, the compare) names that repository's host
+// with `--hostname`: `gh api` takes no `--repo`, and left to itself it asks
+// GH_HOST or gh's one logged-in host, not the PR's. `gh run list` and
+// `gh run view` get `--repo HOST/OWNER/REPO` for the same reason: gh reads a
+// bare `OWNER/REPO` against GH_HOST too.
 //
 // BOUNDS. First poll is immediate. Then exponential backoff from 20s, capped
 // at 2min, until a 45-minute wall clock. The skill quotes these numbers; they
@@ -479,10 +484,29 @@ export function targetRepoOf(pr, repoFlag) {
   return parseRepo(pr?.url) || parseRepo(repoFlag)
 }
 
-/** gh's `--repo` spelling of a parsed repository. */
+/** A parsed repository as the verdict names it: `OWNER/REPO` on github.com,
+ *  `HOST/OWNER/REPO` elsewhere. Words only — gh gets repoArgOf(). */
 export function repoFlagOf(target) {
   if (!target) return null
   return target.host === 'github.com' ? target.slug : `${target.host}/${target.slug}`
+}
+
+/** The target as `--repo` for `gh run list` and `gh run view`: always
+ *  `HOST/OWNER/REPO`. gh resolves a bare `OWNER/REPO` against GH_HOST (or its
+ *  one logged-in host), so a github.com PR's runs were read from another host
+ *  whenever GH_HOST named one. */
+export function repoArgOf(target) {
+  return target ? `${target.host}/${target.slug}` : null
+}
+
+/** A `gh api` call to the target's host. `gh api` does not take `--repo`:
+ *  left to itself it asks GH_HOST, or the one host gh is logged in to, else
+ *  github.com — not the PR's. A GitHub Enterprise PR's branch-head and
+ *  compare reads went to github.com, and a GH_HOST naming another host moved a
+ *  github.com PR's. So the host is always named, github.com included. With no
+ *  target there is none to name, and gh's own default stands. */
+export function ghApiArgs(target, path, ...rest) {
+  return ['api', path, ...(target?.host ? ['--hostname', target.host] : []), ...rest]
 }
 
 /** The CI workflow's name for this PR: the target repository's ci.yml at the
@@ -496,10 +520,8 @@ export function resolveCiWorkflow(pr, target, io) {
   let why
   if (!target) why = `no repository in --repo or the PR URL (${pr.url || 'none'})`
   else {
-    const args = ['api', `repos/${target.slug}/contents/.github/workflows/ci.yml?ref=${encodeURIComponent(head)}`]
-    if (target.host !== 'github.com') args.push('--hostname', target.host)
-    args.push('-H', 'Accept: application/vnd.github.raw')
-    const run = io.gh(args, 60_000)
+    const path = `repos/${target.slug}/contents/.github/workflows/ci.yml?ref=${encodeURIComponent(head)}`
+    const run = io.gh(ghApiArgs(target, path, '-H', 'Accept: application/vnd.github.raw'), 60_000)
     if (run.status === 0) {
       const name = workflowNameOf(run.stdout)
       if (name) return { name, source: `${repoFlagOf(target)}@${short(head)}`, note: '' }
@@ -532,12 +554,13 @@ function headRepoPath(pr) {
   return owner && name ? `${owner}/${name}` : null
 }
 
-/** The branch's head on GitHub, from the git ref API. */
-function readRemoteHead(pr, io) {
+/** The branch's head on GitHub, from the git ref API. A head repository
+ *  (a fork included) lives on the PR's host, so `target`'s host is asked. */
+function readRemoteHead(pr, target, io) {
   const path = headRepoPath(pr)
   if (!path) return { noHeadRepo: true }
   const ref = String(pr.headRefName).split('/').map(encodeURIComponent).join('/')
-  const run = io.gh(['api', `repos/${path}/git/ref/heads/${ref}`, '--jq', '.object.sha'], 60_000)
+  const run = io.gh(ghApiArgs(target, `repos/${path}/git/ref/heads/${ref}`, '--jq', '.object.sha'), 60_000)
   if (run.status !== 0) return { remote: null, remoteError: ghFailure(run).split('\n')[0] }
   return { remote: String(run.stdout).trim() }
 }
@@ -550,7 +573,7 @@ const RELATIONS = new Set(['ahead', 'behind', 'diverged'])
  *  when both commits are in this clone. This script never fetches, so a head
  *  pushed from another checkout often is not, and `merge-base` exits 128 —
  *  which is not a "no". GitHub's compare answers that case. */
-function relationOf(pr, local, want, io) {
+function relationOf(pr, local, want, target, io) {
   const ancestor = (a, b) => io.git(['merge-base', '--is-ancestor', a, b]).status
   const up = ancestor(local, want)
   if (up === 0) return { relation: 'ahead' }
@@ -561,7 +584,7 @@ function relationOf(pr, local, want, io) {
   }
   const path = headRepoPath(pr)
   if (!path) return { relation: null, compareError: 'the head repository is gone' }
-  const run = io.gh(['api', `repos/${path}/compare/${local}...${want}?per_page=1`, '--jq', '.status'], 60_000)
+  const run = io.gh(ghApiArgs(target, `repos/${path}/compare/${local}...${want}?per_page=1`, '--jq', '.status'), 60_000)
   if (run.status !== 0) return { relation: null, compareError: `compare: ${ghFailure(run).split('\n')[0]}` }
   const status = String(run.stdout).trim()
   if (status === 'identical') return { relation: 'ahead' }
@@ -569,21 +592,22 @@ function relationOf(pr, local, want, io) {
   return { relation: null, compareError: `compare answered ${status || 'nothing'}` }
 }
 
-/** What headCheck() needs, read from this checkout and GitHub. `io` is the
+/** What headCheck() needs, read from this checkout and GitHub. `target` is
+ *  targetRepoOf(): its host is the one GitHub's answers come from. `io` is the
  *  git and gh runners and the current branch, injected so the test can drive
  *  the real git reads against a scratch repository. */
-export function readHeadFacts(pr, io = { branch: currentBranch(), git, gh }) {
+export function readHeadFacts(pr, target, io = { branch: currentBranch(), git, gh }) {
   const want = String(pr.headRefOid)
-  if (io.branch !== pr.headRefName) return { onBranch: false, ...readRemoteHead(pr, io) }
+  if (io.branch !== pr.headRefName) return { onBranch: false, ...readRemoteHead(pr, target, io) }
   const local = io.git(['rev-parse', 'HEAD']).out
   const tracking = io.git(['rev-parse', '--verify', '-q', `refs/remotes/origin/${pr.headRefName}`])
   const facts = { onBranch: true, local, tracking: tracking.ok ? tracking.out : null }
   if (local === want) return facts
-  Object.assign(facts, relationOf(pr, local, want, io))
+  Object.assign(facts, relationOf(pr, local, want, target, io))
   // Settled without GitHub's branch: the PR contains HEAD, HEAD is not pushed,
   // or the PR is an older commit of HEAD's own history (the push not registered).
   if (facts.relation === 'ahead' || facts.relation === 'behind' || facts.tracking !== local) return facts
-  return { ...facts, ...readRemoteHead(pr, io) }
+  return { ...facts, ...readRemoteHead(pr, target, io) }
 }
 
 function readRuns(sha, repoFlag) {
@@ -684,7 +708,7 @@ function branchNote(pr) {
 }
 
 function redBody(pr, result) {
-  const repoFlag = repoFlagOf(targetRepoOf(pr, repo))
+  const repoFlag = repoArgOf(targetRepoOf(pr, repo))
   const logs = result.failing.slice(0, 3).map((c) => {
     const tail = logTail(c.url, repoFlag)
     return `--- log: ${c.name} (last ${logLines} lines) ---\n${tail}`
@@ -763,11 +787,11 @@ async function main() {
     const ctx = {}
     let ci = null
     if (open) {
-      ctx.head = headCheck(pr, readHeadFacts(pr))
+      ctx.head = headCheck(pr, readHeadFacts(pr, target))
       if (ctx.head.ok) {
         ci = ciByHead.get(pr.headRefOid) ?? resolveCiWorkflow(pr, target, { gh, git, localCi: localCiFile })
         if (!ci.note) ciByHead.set(pr.headRefOid, ci)
-        Object.assign(ctx, { ciWorkflow: ci.name, ciNote: ci.note }, readRuns(pr.headRefOid, repoFlagOf(target)))
+        Object.assign(ctx, { ciWorkflow: ci.name, ciNote: ci.note }, readRuns(pr.headRefOid, repoArgOf(target)))
       }
     }
     const result = classify(pr, ctx)

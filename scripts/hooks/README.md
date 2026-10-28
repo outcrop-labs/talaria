@@ -41,7 +41,9 @@ Three entry points:
   that head has finished, and the PR is mergeable against `rc`. The CI workflow's name comes
   from the PR's own repository (the one gh's PR URL names, else `--repo`): its `ci.yml` at
   the PR head, read from GitHub. Only when GitHub cannot answer does this checkout's copy (if it is
-  that repository) or `CI` stand in, and the verdict says so;
+  that repository) or `CI` stand in, and the verdict says so. Every `gh` read names the PR's
+  host (`--hostname` on `gh api`, `HOST/OWNER/REPO` on `--repo`), so a GitHub Enterprise PR,
+  or a `GH_HOST` set for another host, does not send it elsewhere;
   exit 2 names `red`, `conflict`, `pending`, `timeout`, `closed`, or `base` on stderr
   (`pending` comes at once, not at the wall clock, when only a push or a reconcile can
   change the head). It does not edit or push. Not wired as a Stop hook — [`ship-a-change`](../../.claude/skills/ship-a-change/SKILL.md)

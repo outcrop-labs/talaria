@@ -17,7 +17,9 @@ import {
   latestRuns,
   normalize,
   parseRepo,
+  ghApiArgs,
   readHeadFacts,
+  repoArgOf,
   repoFlagOf,
   resolveCiWorkflow,
   targetRepoOf,
@@ -289,6 +291,17 @@ check('parseRepo reads every spelling gh and git use for a repository', () => {
   eq(repoFlagOf({ host: 'ghe.example.com', slug: 'team/app' }), 'ghe.example.com/team/app')
 })
 
+check('gh is always told the host: --hostname on every gh api, HOST/OWNER/REPO on every --repo', () => {
+  // gh resolves a bare OWNER/REPO, and a gh api with no --hostname, against GH_HOST (or its one
+  // logged-in host) — not the PR's. github.com is named too, so a GH_HOST elsewhere cannot move it.
+  const gh = { host: 'github.com', slug: 'outcrop-labs/talaria' }
+  const ghe = { host: 'ghe.example.com', slug: 'team/app' }
+  eq(ghApiArgs(gh, 'repos/x/y', '--jq', '.a'), ['api', 'repos/x/y', '--hostname', 'github.com', '--jq', '.a'])
+  eq(ghApiArgs(ghe, 'repos/x/y'), ['api', 'repos/x/y', '--hostname', 'ghe.example.com'])
+  eq(ghApiArgs(null, 'repos/x/y'), ['api', 'repos/x/y']) // no target: no host to name, gh's default
+  eq([repoArgOf(gh), repoArgOf(ghe), repoArgOf(null)], ['github.com/outcrop-labs/talaria', 'ghe.example.com/team/app', null])
+})
+
 check('the target repository is the one the PR URL names, else --repo', () => {
   const pr = { url: 'https://github.com/other-org/other-repo/pull/9' }
   eq(targetRepoOf(pr, undefined), { host: 'github.com', slug: 'other-org/other-repo' })
@@ -328,6 +341,8 @@ check('the CI workflow is named by the target repository\'s ci.yml at the PR hea
   eq(x.calls.gh, [[
     'api',
     `repos/other-org/other-repo/contents/.github/workflows/ci.yml?ref=${'a'.repeat(40)}`,
+    '--hostname',
+    'github.com',
     '-H',
     'Accept: application/vnd.github.raw',
   ]])
@@ -397,20 +412,26 @@ const C = sgit(['commit-tree', '--no-gpg-sign', `${A}^{tree}`, '-p', A, '-m', 'c
 const U = 'e'.repeat(40) // pushed from elsewhere; never in this clone
 sgit(['update-ref', `refs/remotes/origin/${BRANCH}`, B]) // B is pushed
 
-/** A fake `gh` that answers the compare and git-ref reads, and records them. */
+/** A fake `gh` that answers the compare and git-ref reads, and records each
+ *  path in `calls` and the `--hostname` it was sent to (or null) in `hosts`. */
 function io({ compare, ref } = {}) {
   const calls = []
+  const hosts = []
   const answer = (a) => (a === undefined ? { status: 1, stderr: 'not asked for' } : typeof a === 'string' ? { status: 0, stdout: `${a}\n` } : a)
   return {
     calls,
+    hosts,
     branch: BRANCH,
     git: sgit,
     gh: (args) => {
       calls.push(args[1])
+      const at = args.indexOf('--hostname')
+      hosts.push(at === -1 ? null : args[at + 1])
       return answer(/\/compare\//.test(args[1]) ? compare : ref)
     },
   }
 }
+const TARGET = { host: 'github.com', slug: 'outcrop-labs/talaria' }
 const prAt = (sha) => ({ headRefName: BRANCH, headRefOid: sha, headRepository: { name: 'talaria' }, headRepositoryOwner: { login: 'outcrop-labs' } })
 
 check('the scratch repository is what the cases below assume', () => {
@@ -421,9 +442,10 @@ check('the scratch repository is what the cases below assume', () => {
 
 check('a PR head ahead of this checkout but not in this clone passes: GitHub compare says it contains HEAD', () => {
   const x = io({ compare: 'ahead' })
-  const facts = readHeadFacts(prAt(U), x)
+  const facts = readHeadFacts(prAt(U), TARGET, x)
   eq([facts.local, facts.tracking, facts.relation], [B, B, 'ahead'])
   eq(x.calls, [`repos/outcrop-labs/talaria/compare/${B}...${U}?per_page=1`])
+  eq(x.hosts, ['github.com'])
   const head = headCheck(prAt(U), facts)
   eq(head.ok, true)
   ok(/ahead of this checkout/.test(head.note), head.note)
@@ -433,15 +455,28 @@ check('a PR head ahead of this checkout but not in this clone passes: GitHub com
 
 check('a PR head that dropped this checkout\'s pushed HEAD cannot be waited out', () => {
   const x = io({ compare: 'diverged', ref: U })
-  const head = headCheck(prAt(U), readHeadFacts(prAt(U), x))
+  const head = headCheck(prAt(U), readHeadFacts(prAt(U), TARGET, x))
   eq([head.ok, head.needsAction], [false, true])
   ok(/does not contain this checkout's HEAD .* git fetch origin wt\/x/.test(head.why), head.why)
   eq(x.calls.length, 2)
 })
 
+check('a GitHub Enterprise PR\'s compare and branch-head reads go to its own host', () => {
+  // Before, these two gh api calls named no host: gh sent them to github.com (or GH_HOST).
+  const GHE = { host: 'ghe.example.com', slug: 'team/app' }
+  const x = io({ compare: 'diverged', ref: U })
+  readHeadFacts(prAt(U), GHE, x)
+  eq([x.calls.length, x.hosts], [2, ['ghe.example.com', 'ghe.example.com']])
+  ok(/\/compare\//.test(x.calls[0]) && /\/git\/ref\/heads\/wt\/x$/.test(x.calls[1]), x.calls.join(' '))
+  // Off the PR's branch, only the branch head is read — from the same host.
+  const off = io({ ref: U })
+  readHeadFacts(prAt(U), GHE, { ...off, branch: 'main' })
+  eq(off.hosts, ['ghe.example.com'])
+})
+
 check('a compare that does not answer is pending with a fetch hint, and still waited on', () => {
   const x = io({ compare: { status: 1, stderr: 'HTTP 502: Bad Gateway' }, ref: U })
-  const head = headCheck(prAt(U), readHeadFacts(prAt(U), x))
+  const head = headCheck(prAt(U), readHeadFacts(prAt(U), TARGET, x))
   eq([head.ok, Boolean(head.needsAction)], [false, false])
   ok(/could not tell .*HTTP 502.* git fetch origin wt\/x/.test(head.why), head.why)
 })
@@ -449,23 +484,23 @@ check('a compare that does not answer is pending with a fetch hint, and still wa
 check('a PR head in this clone is settled by git, and GitHub is asked only what git cannot say', () => {
   // A is B's parent: the PR has not caught up with the push. No gh call at all.
   const older = io()
-  const lag = headCheck(prAt(A), readHeadFacts(prAt(A), older))
+  const lag = headCheck(prAt(A), readHeadFacts(prAt(A), TARGET, older))
   eq([lag.ok, Boolean(lag.needsAction), older.calls], [false, false, []])
   ok(/has not registered the push of .* the PR still reads/.test(lag.why), lag.why)
   // C sits beside B. Where the branch is on GitHub decides which story is true.
-  const moved = headCheck(prAt(C), readHeadFacts(prAt(C), io({ ref: C })))
+  const moved = headCheck(prAt(C), readHeadFacts(prAt(C), TARGET, io({ ref: C })))
   eq([moved.ok, moved.needsAction], [false, true])
-  const pushed = headCheck(prAt(C), readHeadFacts(prAt(C), io({ ref: B })))
+  const pushed = headCheck(prAt(C), readHeadFacts(prAt(C), TARGET, io({ ref: B })))
   eq([pushed.ok, Boolean(pushed.needsAction)], [false, false])
   ok(/has not registered the push/.test(pushed.why), pushed.why)
-  const later = headCheck(prAt(C), readHeadFacts(prAt(C), io({ ref: U })))
+  const later = headCheck(prAt(C), readHeadFacts(prAt(C), TARGET, io({ ref: U })))
   ok(/wt\/x is at eeeeeeeeeeee and the PR still reads/.test(later.why), later.why)
 })
 
 check('an unpushed HEAD exits pending at once, without --once, instead of polling to the wall clock', () => {
   sgit(['update-ref', `refs/remotes/origin/${BRANCH}`, A]) // B was never pushed
   try {
-    const head = headCheck(prAt(A), readHeadFacts(prAt(A), io()))
+    const head = headCheck(prAt(A), readHeadFacts(prAt(A), TARGET, io()))
     eq([head.ok, head.needsAction], [false, true])
     // End to end: a fake gh on PATH serves the PR; the real watcher runs in the scratch repo.
     const bin = mkdtempSync(join(tmpdir(), 'pr-watch-bin-'))
@@ -542,7 +577,9 @@ check('end to end: --repo, or a PR URL, sends the CI name read and gh run list t
       eq([run.status, run.stderr], [0, ''])
       const out = JSON.parse(run.stdout)
       eq([out.token, out.ciWorkflow], ['green', { name: 'Pipeline', source: `other-org/other-repo@${B.slice(0, 12)}`, note: '' }])
-      ok(run.calls.includes(`run list --commit ${B} --limit 100 --json databaseId,workflowName,event,status,conclusion,headSha,createdAt,url --repo other-org/other-repo`), run.calls.join('\n'))
+      ok(run.calls.includes(`run list --commit ${B} --limit 100 --json databaseId,workflowName,event,status,conclusion,headSha,createdAt,url --repo github.com/other-org/other-repo`), run.calls.join('\n'))
+      const api = run.calls.filter((c) => c.startsWith('api '))
+      ok(api.length > 0 && api.every((c) => c.includes(' --hostname github.com')), api.join('\n'))
     }
     const line = watch('--repo', 'other-org/other-repo', '--pr', '1')
     eq(line.status, 0)
@@ -568,6 +605,75 @@ check('end to end: --repo, or a PR URL, sends the CI name read and gh run list t
   } finally {
     rmSync(bin, { recursive: true, force: true })
     rmSync(join(scratch, '.github'), { recursive: true, force: true })
+  }
+})
+
+/** A fake gh that picks a host the way gh does, and answers only on `host`:
+ *  `gh api` asks `--hostname`, else GH_HOST, else github.com; `gh run` asks
+ *  `--repo`'s HOST/ part, else GH_HOST, else github.com. `gh pr` answers
+ *  `pr.json` wherever it is asked (a PR URL names its host itself). */
+function fakeGh(dir) {
+  const { appendFileSync, readFileSync } = require('node:fs')
+  const args = process.argv.slice(2)
+  appendFileSync(`${dir}/calls.log`, `${args.join(' ')}\n`)
+  const flagOf = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : null)
+  const fallback = process.env.GH_HOST || 'github.com'
+  const repo = flagOf('--repo')
+  const host = args[0] === 'api' ? flagOf('--hostname') || fallback : repo && repo.split('/').length === 3 ? repo.split('/')[0] : fallback
+  const out = (text) => {
+    process.stdout.write(text)
+    process.exit(0)
+  }
+  if (args[0] === 'pr') out(readFileSync(`${dir}/pr.json`, 'utf8'))
+  if (host !== readFileSync(`${dir}/host`, 'utf8')) {
+    process.stderr.write(`error connecting to ${host}\n`)
+    process.exit(1)
+  }
+  if (args[0] === 'run') out(readFileSync(`${dir}/runs.json`, 'utf8'))
+  if (args[0] === 'api' && args[1].includes('/contents/')) out('name: Pipeline\non: pull_request\n')
+  if (args[0] === 'api' && args[1].includes('/git/ref/heads/')) out(`${readFileSync(`${dir}/sha`, 'utf8')}\n`)
+  process.stderr.write(`unexpected: gh ${args.join(' ')}\n`)
+  process.exit(1)
+}
+
+check('end to end: every gh read reaches the PR\'s host — GitHub Enterprise, and github.com under a GH_HOST for another', () => {
+  const bin = mkdtempSync(join(tmpdir(), 'pr-watch-bin-'))
+  try {
+    writeFileSync(join(bin, 'gh.cjs'), `(${fakeGh.toString()})(${JSON.stringify(bin)})\n`)
+    writeFileSync(join(bin, 'gh'), `#!/bin/sh\nexec "${process.execPath}" "${join(bin, 'gh.cjs')}" "$@"\n`, { mode: 0o755 })
+    writeFileSync(join(bin, 'sha'), B)
+    writeFileSync(join(bin, 'runs.json'), JSON.stringify(RUNS599.map((r) => ({ ...r, headSha: B, workflowName: r.workflowName === 'CI' ? 'Pipeline' : r.workflowName }))))
+    // Off the PR's branch (this clone is on wt/x), so the branch's head is read from GitHub too:
+    // all three gh api reads, and gh run list, are asked.
+    const watch = ({ url, host, owner, name, env = {} }) => {
+      const pr = { ...asOpen(PR599), ...prAt(B), headRefName: 'wt/elsewhere', number: 1, url, baseRefName: 'rc', headRepository: { name }, headRepositoryOwner: { login: owner } }
+      writeFileSync(join(bin, 'pr.json'), JSON.stringify(pr))
+      writeFileSync(join(bin, 'host'), host)
+      writeFileSync(join(bin, 'calls.log'), '')
+      const clean = Object.fromEntries(Object.entries(cleanEnv).filter(([k]) => k !== 'GH_HOST'))
+      const run = spawnSync(process.execPath, [join(HERE, 'pr-watch.mjs'), '--once', '--json', '--pr', url], {
+        cwd: scratch,
+        encoding: 'utf8',
+        timeout: 20_000,
+        env: { ...clean, ...env, PATH: `${bin}:${process.env.PATH}` },
+      })
+      return { ...run, calls: readFileSync(join(bin, 'calls.log'), 'utf8').trim().split('\n') }
+    }
+    const cases = [
+      { url: 'https://ghe.example.com/team/app/pull/1', host: 'ghe.example.com', owner: 'team', name: 'app' },
+      { url: 'https://github.com/other-org/other-repo/pull/1', host: 'github.com', owner: 'other-org', name: 'other-repo', env: { GH_HOST: 'ghe.example.invalid' } },
+    ]
+    for (const c of cases) {
+      const run = watch(c)
+      eq([run.status, run.stderr], [0, ''])
+      eq(JSON.parse(run.stdout).token, 'green')
+      const api = run.calls.filter((l) => l.startsWith('api '))
+      eq(api.length, 2) // the branch head and the ci.yml; on the head, no compare is needed
+      ok(api.every((l) => l.includes(` --hostname ${c.host}`)), api.join('\n'))
+      ok(run.calls.some((l) => l.startsWith('run list ') && l.endsWith(`--repo ${c.host}/${c.owner}/${c.name}`)), run.calls.join('\n'))
+    }
+  } finally {
+    rmSync(bin, { recursive: true, force: true })
   }
 })
 
