@@ -149,7 +149,7 @@
           />
         </div>
       {/if}
-      {#if !bindingsAll && firstNotice(teamsList, usersList)}
+      {#if !bindingsAll && firstNotice(teamsList.notice, usersList.notice)}
         <div transition:slide={{ duration: 150 }} class="space-y-1">
           {#if teamsList.notice}<QueryError {...teamsList.notice} />{/if}
           {#if usersList.notice}<QueryError {...usersList.notice} />{/if}

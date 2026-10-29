@@ -37,7 +37,7 @@
      why the ticket did not open. Both lists' flags are read before they are
      combined (query-state.ts, anyLoading). -->
 {#if !board && [boardsList.failed, archivedList.failed].includes(true)}
-  {@const notice = firstNotice(boardsList, archivedList)}
+  {@const notice = firstNotice(boardsList.notice, archivedList.notice)}
   <Modal open onClose={close} width="max-w-sm">
     {#if notice}<QueryError {...notice} />{/if}
   </Modal>

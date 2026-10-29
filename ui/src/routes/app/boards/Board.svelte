@@ -512,7 +512,7 @@
       {/if}
       <!-- A filter bar with a facet missing looks like a board that has no
            such thing. These say which read is the one that is missing. -->
-      {#if firstNotice(membersList, labelsList, statusesList)}
+      {#if firstNotice(membersList.notice, labelsList.notice, statusesList.notice)}
         <div class="flex flex-wrap items-center gap-3">
           {#if membersList.notice}<QueryError {...membersList.notice} />{/if}
           {#if labelsList.notice}<QueryError {...labelsList.notice} />{/if}

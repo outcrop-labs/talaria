@@ -272,8 +272,12 @@ function crossQueryShortCircuits(text: string): { line: number; queries: string[
       at.push([i, queries])
       return '#'.padEnd(m.length, '_')
     }
-    let masked = expr.replace(new RegExp(String.raw`\b(?:${EAGER})\(([^()]*)\)`, 'g'), (m, args: string, i: number) =>
-      mask(m, i, new Set(args.split(',').map((a) => a.trim()).filter((a) => /^\w+$/.test(a)).map(query))),
+    // A helper's argument is a query (`anyLoading(a, b)`) or reads one
+    // (`firstNotice(a.notice, b.notice)`); either way it is read first.
+    const args = (text: string) =>
+      text.split(',').flatMap((a) => (/^\w+$/.test(a.trim()) ? [query(a.trim())] : reads(a).at.flatMap(([, queries]) => [...queries])))
+    let masked = expr.replace(new RegExp(String.raw`\b(?:${EAGER})\(([^()]*)\)`, 'g'), (m, inner: string, i: number) =>
+      mask(m, i, new Set(args(inner))),
     )
     masked = masked.replace(/\[([^[\]]*)\]\.includes\(true\)/g, (m, inner: string, i: number) =>
       mask(m, i, new Set(reads(inner).at.flatMap(([, queries]) => [...queries]))),
@@ -350,11 +354,13 @@ test('the scan catches every shape that left a surface unread', () => {
     `${LISTS}{#if !bindingsAll && (teamsList.notice || usersList.notice)}`,
     `${LISTS}{@const notice = usersList.notice ?? teamsList.notice}`,
     `${LISTS}{#if !board && (usersList.failed || teamsList.failed)}`,
+    // An eager read of two lists deciding whether a third query is read.
+    `${LISTS}{#if firstNotice(usersList.notice, teamsList.notice) || agentsQuery.isError}`,
     // A `$derived` with a compound body is its query's flag where it is read.
     'const fleetFailed = $derived(fleetQuery.isError && fleetQuery.data === undefined)\nconst threadsFailed = $derived(conversationsQuery.isError && conversationsQuery.data === undefined)\nconst showAgents = $derived(!view.searching || fleetFailed || threadsFailed)',
     // An eager read deciding whether another query's flag is read.
     'const listsLoading = $derived(anyLoading(boardsQuery, archivedQuery))\n{#if listsLoading || (board && tasksQuery.isLoading)}',
-    "const boardList = listQuery(boardsQuery, { title: 'boards' })\nconst tasksPending = $derived(taskQueries.some((result) => result.isPending))\nconst loading = $derived(boardList.pending || tasksPending)",
+    `${LISTS}const tasksPending = $derived(taskQueries.some((result) => result.isPending))\nconst loading = $derived(usersList.pending || tasksPending)`,
   ]
   for (const shape of shapes) expect(crossQueryShortCircuits(shape).length, shape).toBeGreaterThan(0)
   const fine = [
@@ -363,7 +369,8 @@ test('the scan catches every shape that left a surface unread', () => {
     'const failed = $derived(anyFailed(configQuery, fleetQuery))',
     'const failed = $derived(firstError(catalogQuery, prefsQuery))',
     `${LISTS}const loading = $derived([usersList.pending, agentsQuery.isLoading, teamsList.pending].includes(true))`,
-    `${LISTS}{#if !bindingsAll && firstNotice(teamsList, usersList)}`,
+    `${LISTS}{#if !bindingsAll && firstNotice(teamsList.notice, usersList.notice)}`,
+    `${LISTS}{@const notice = firstNotice(usersList.notice, teamsList.notice)}`,
     `${LISTS}{#if usersList.failed && usersList.notice}`,
     'const x = $derived(!view.searching || [fleetFailed, threadsFailed].includes(true))',
     // One query's own flags may short-circuit: the path only changes when a
