@@ -263,7 +263,12 @@ nothing names it, its project has no container left, `../devboxes/<name>/box.env
 gone, and it is at least ten minutes old. Its app databases (`talaria-appdb-*`,
 which run on `restart: unless-stopped`) outlive it the same way: `--apply` removes one
 whose cluster is mounted from a box whose `box.env` is gone, and leaves its data
-directory. The shared tools layer (`../devboxes/shared`) is a cache — it stays.
+directory. Its MCP packages do too: a package container and its `talaria-mcp-<box>`
+network are made outside any compose project, so the api labels both with their owner
+(`talaria.mcp.owner=devbox`), and `--apply` removes them once the box's `box.env` is
+gone, the network only when nothing else names it. One made before the labels is named
+in the report and left alone. The shared tools layer (`../devboxes/shared`) is a
+cache — it stays.
 
 ## Troubleshooting
 

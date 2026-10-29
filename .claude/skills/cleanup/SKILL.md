@@ -81,7 +81,11 @@ databases**: a `talaria-appdb-*` container whose cluster is mounted from a sibli
 `talaria-<name>` directory that is gone, or from a box whose `box.env` is gone. A
 directory still on disk keeps its databases, checkout or not. A box removed without `talaria box rm`, or a worktree removed while its app ran,
 leaves them running, and each one holds the network it joined. The container goes; its
-data directory stays (postgres's uid owns it). It will not remove the primary,
+data directory stays (postgres's uid owns it). And **orphan MCP packages**: a
+`talaria-mcp-*` container, and its package network once nothing else names it, whose
+owner labels name a sibling `talaria-<name>` checkout that is gone or a box whose
+`box.env` is gone. One without labels (made before the api wrote them) is named in the
+report and left alone. It will not remove the primary,
 the checkout you are in, a running stack, a dirty or unpushed tree, a `.talaria-keep`,
 the shared external `talaria` network, any network outside a `talaria-*` or
 `devbox-*` project, or an app database mounted from anywhere else.

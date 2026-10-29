@@ -14,7 +14,10 @@ import {
   checkoutStands,
   classify,
   formatReport,
+  mcpPkgOwner,
   orphanAppDbs,
+  orphanMcpPackages,
+  ownerKey,
   orphanNetworks,
   parseDockerTime,
   parseLabels,
@@ -496,6 +499,101 @@ check('the executor removes an app database only by its name and a docker id, ne
   eq(r({ containerId: 'x; rm -rf /' }), false)
   eq(r({ containerId: undefined }), false)
   eq(r({ path: '/w/talaria-gone/app-data' }), false)
+})
+
+// ── MCP packages a gone worktree or box left running (UB3) ─────────────────
+const pkgRoots = { siblingParent: '/w' }
+const wtLabels = (dir, inst = 'gone') => ({ 'talaria.mcp.instance': inst, 'talaria.mcp.owner': 'worktree', 'talaria.mcp.checkout': dir })
+const boxLabels = (name) => ({ 'talaria.mcp.instance': name, 'talaria.mcp.owner': 'devbox' })
+const pkgC = (over = {}) => ({ id: 'c1c1c1c1c1c1c1c1', name: 'talaria-mcp-gone-search', labels: wtLabels('/w/talaria-gone'), running: true, createdMs: NOW - 2 * DAY, ...over })
+const pkgN = (over = {}) => ({ id: 'n1n1n1n1n1n1'.replace(/n/g, 'a'), name: 'talaria-mcp-gone', labels: wtLabels('/w/talaria-gone'), createdMs: old, attached: [], ...over })
+
+check("an MCP package's owner is read from its labels: a sibling checkout, a box, or nobody", () => {
+  const o = (labels) => JSON.stringify(mcpPkgOwner(labels, pkgRoots))
+  eq(o(wtLabels('/w/talaria-gone')), JSON.stringify({ kind: 'checkout', dir: '/w/talaria-gone' }))
+  eq(o(boxLabels('b1')), JSON.stringify({ kind: 'box', name: 'b1' }))
+  // The primary and an image install label themselves `instance`: never placed.
+  eq(o({ 'talaria.mcp.instance': 'talaria', 'talaria.mcp.owner': 'instance' }), 'null')
+  // A worktree label that names no checkout, or one outside the sibling root,
+  // or a sibling that is not `talaria-<x>`: nothing to place it by.
+  eq(o({ 'talaria.mcp.instance': 'x', 'talaria.mcp.owner': 'worktree' }), 'null')
+  eq(o(wtLabels('/elsewhere/talaria-gone')), 'null')
+  eq(o(wtLabels('/w/talaria-gone/nested')), 'null')
+  eq(o(wtLabels('/w/talaria')), 'null')
+  eq(o(wtLabels('/w/other-repo')), 'null')
+  eq(o(boxLabels('shared')), 'null')
+  eq(o(boxLabels('')), 'null')
+  eq(o({}), 'null')
+  eq(o(undefined), 'null')
+})
+
+check('a package whose worktree or box is gone is a row, containers before their network; a live owner keeps its own', () => {
+  const { rows, unmarked } = orphanMcpPackages({
+    containers: [
+      pkgC(),
+      pkgC({ id: 'c2c2c2c2c2c2c2c2', name: 'talaria-mcp-gonebox-fetch', labels: boxLabels('gonebox'), running: false }),
+      pkgC({ id: 'c3c3c3c3c3c3c3c3', name: 'talaria-mcp-live-search', labels: wtLabels('/w/talaria-live', 'live') }),
+      pkgC({ id: 'c4c4c4c4c4c4c4c4', name: 'talaria-mcp-livebox-x', labels: boxLabels('livebox') }),
+      pkgC({ id: 'c5c5c5c5c5c5c5c5', name: 'talaria-mcp-talaria-x', labels: { 'talaria.mcp.instance': 'talaria', 'talaria.mcp.owner': 'instance' } }),
+      pkgC({ id: 'c6c6c6c6c6c6c6c6', name: 'talaria-mcp-old-x', labels: {} }),
+      pkgC({ id: 'c7c7c7c7c7c7c7c7', name: 'talaria-postgres-dev' }),
+    ],
+    networks: [
+      // Only the gone package is attached, and it goes first: removable.
+      pkgN({ attached: ['c1c1c1c1c1c1c1c1'] }),
+      // Something else still names it, running or stopped: kept.
+      pkgN({ id: 'bbbbbbbbbbbb', name: 'talaria-mcp-gonebox', labels: boxLabels('gonebox'), attached: ['c2c2c2c2c2c2c2c2', 'ffffffffffff'] }),
+      // Too young: compose-style race guard.
+      pkgN({ id: 'cccccccccccc', name: 'talaria-mcp-gone2', labels: wtLabels('/w/talaria-gone2'), createdMs: NOW - 1000 }),
+      pkgN({ id: 'dddddddddddd', name: 'talaria-mcp-live', labels: wtLabels('/w/talaria-live', 'live') }),
+      pkgN({ id: 'eeeeeeeeeeee', name: 'talaria-mcp-older', labels: {} }),
+    ],
+    roots: pkgRoots,
+    liveCheckout: (dir) => dir === '/w/talaria-live',
+    liveBox: (name) => name === 'livebox',
+    now: NOW,
+  })
+  eq(rows.map((r) => `${r.kind}:${r.id}`).join(','), 'orphan-mcp-container:talaria-mcp-gone-search,orphan-mcp-container:talaria-mcp-gonebox-fetch,orphan-mcp-network:talaria-mcp-gone')
+  eq(rows[0].why, '/w/talaria-gone is gone')
+  eq(rows[1].why, 'box gonebox is gone')
+  eq(rows[1].running, false)
+  eq(rows[0].path, '')
+  eq(rows[0].owner, ownerKey(wtLabels('/w/talaria-gone')))
+  eq(ageDays(rows[0].ageMs), '2d')
+  eq(unmarked.join(','), 'container talaria-mcp-old-x,network talaria-mcp-older')
+})
+
+check('a caller that cannot say whether an owner lives keeps every package', () => {
+  eq(orphanMcpPackages({ containers: [pkgC()], networks: [pkgN()], roots: pkgRoots, now: NOW }).rows.length, 0)
+})
+
+check('orphan MCP packages go on --apply only, never from the stop gate, and the report says why', () => {
+  const { rows } = orphanMcpPackages({ containers: [pkgC()], networks: [pkgN({ attached: ['c1c1c1c1c1c1c1c1'] })], roots: pkgRoots, liveCheckout: () => false, now: NOW })
+  eq(rows.length, 2)
+  for (const r of rows) eq(classify(r), 'remove')
+  const marked = rows.map((r) => ({ ...r, action: 'remove' }))
+  eq(selectRemoval(marked, 'gate').length, 0)
+  eq(selectRemoval(marked, 'apply').length, 2)
+  eq(selectRemoval(marked, 'report').length, 0)
+  eq(verdict(marked, { usedPct: 10 }).exit, 0)
+  const text = formatReport({ pressure: { usedPct: 10, avail: 1 }, remaining: marked, removed: [], notes: [] })
+  if (!text.includes('orphan-mcp-container talaria-mcp-gone-search') || !text.includes('orphan-mcp-network talaria-mcp-gone')) throw new Error(text)
+  if (!text.includes('/w/talaria-gone is gone')) throw new Error(text)
+})
+
+check('the executor removes a package only by its name and a docker id, never a path', () => {
+  const c = (over) => removalAllowed({ kind: 'orphan-mcp-container', id: 'talaria-mcp-gone-search', containerId: 'a1b2c3d4e5f6', path: '', ...over }, roots)
+  eq(c({}), true)
+  eq(c({ containerId: 'zz1b2c3d4e5f6' }), false)
+  eq(c({ containerId: undefined }), false)
+  eq(c({ containerId: 'a1b2c3d4e5f6', id: 'talaria-postgres-dev' }), false)
+  eq(c({ containerId: 'a1b2c3d4e5f6', id: 'talaria-mcp-' }), false)
+  eq(c({ containerId: 'a1b2c3d4e5f6', path: '/w/talaria-gone' }), false)
+  const n = (over) => removalAllowed({ kind: 'orphan-mcp-network', id: 'talaria-mcp-gone', networkId: 'a1b2c3d4e5f6', path: '', ...over }, roots)
+  eq(n({}), true)
+  eq(n({ id: 'talaria' }), false)
+  eq(n({ id: 'talaria-dev_default' }), false)
+  eq(n({ networkId: 'x; rm -rf /' }), false)
 })
 
 check('build caches are reported at any disk reading', () => {
