@@ -21,7 +21,7 @@ export const cleanupCommand: Leaf = {
     {
       name: 'apply',
       kind: 'bool',
-      desc: 'remove the safe set (stale clean worktrees and boxes, old /tmp/talaria-*, orphan compose projects and networks)',
+      desc: 'remove the safe set (stale clean worktrees and boxes, old /tmp/talaria-*, orphan compose projects, networks and app databases)',
     },
   ],
   run: (ctx, args) => runCleanup(ctx, args.flags.apply === true),

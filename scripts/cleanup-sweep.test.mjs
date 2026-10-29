@@ -7,9 +7,11 @@ import { fileURLToPath } from 'node:url'
 import {
   POLICY,
   ageDays,
+  appDbOwner,
   boxProjectOwners,
   classify,
   formatReport,
+  orphanAppDbs,
   orphanNetworks,
   parseDockerTime,
   parseLabels,
@@ -386,6 +388,88 @@ check('an age prints in minutes under an hour — an orphan network qualifies at
   eq(ageDays(3 * DAY), '3d')
   eq(ageDays(-1), '?')
   eq(ageDays(Number.NaN), '?')
+})
+
+// ── App databases a gone checkout or box left running (N9) ─────────────────
+const dbRoots = { siblingParent: '/w', devboxHome: '/w/devboxes' }
+const appdb = (over = {}) => ({
+  id: 'a1b2c3d4e5f6a1b2c3d4e5f6',
+  name: 'talaria-appdb-gone-notes',
+  project: 'talaria-appdb-gone-notes',
+  running: true,
+  createdMs: NOW - 3 * DAY,
+  source: '/w/talaria-gone/app-data/notes/pg',
+  ...over,
+})
+
+check("an app database's owner is read from its cluster's mount: a sibling checkout, a box, or nobody", () => {
+  const o = (src) => JSON.stringify(appDbOwner(src, dbRoots))
+  eq(o('/w/talaria-gone/app-data/notes/pg'), JSON.stringify({ kind: 'checkout', dir: '/w/talaria-gone' }))
+  eq(o('/w/devboxes/b1/state/app-data/notes/pg'), JSON.stringify({ kind: 'box', name: 'b1', dir: '/w/devboxes/b1' }))
+  // The primary is `talaria`, not `talaria-<x>`: never placed, never swept.
+  eq(o('/w/talaria/app-data/notes/pg'), 'null')
+  eq(o('/w/devboxes/shared/x/pg'), 'null')
+  eq(o('/w/devboxes/.hidden/pg'), 'null')
+  eq(o('/w/other-repo/app-data/notes/pg'), 'null')
+  eq(o('/var/lib/docker/volumes/x/_data'), 'null')
+  eq(o('/data/app-data/notes/pg'), 'null')
+  eq(o('/w/talaria-gone'), JSON.stringify({ kind: 'checkout', dir: '/w/talaria-gone' }))
+  eq(o(''), 'null')
+})
+
+check("an app database whose checkout or box is gone is a row, running or stopped; a live owner's stays", () => {
+  const rows = orphanAppDbs({
+    dbs: [
+      appdb(),
+      appdb({ name: 'talaria-appdb-gonebox-notes', source: '/w/devboxes/gonebox/state/app-data/notes/pg', running: false }),
+      appdb({ name: 'talaria-appdb-live-notes', source: '/w/talaria-live/app-data/notes/pg' }),
+      appdb({ name: 'talaria-appdb-livebox-notes', source: '/w/devboxes/livebox/state/app-data/notes/pg' }),
+      appdb({ name: 'talaria-appdb-talaria-notes', source: '/w/talaria/app-data/notes/pg' }),
+      appdb({ name: 'talaria-appdb-image-notes', source: '/data/app-data/notes/pg' }),
+      appdb({ name: 'not-an-appdb', source: '/w/talaria-gone/app-data/x/pg' }),
+      appdb({ name: 'talaria-appdb-nomount-x', source: '' }),
+    ],
+    roots: dbRoots,
+    liveCheckout: (dir) => dir === '/w/talaria-live',
+    liveBox: (name) => name === 'livebox',
+    now: NOW,
+  })
+  eq(rows.map((r) => r.id).join(','), 'talaria-appdb-gone-notes,talaria-appdb-gonebox-notes')
+  eq(rows[0].kind, 'orphan-appdb')
+  eq(rows[0].path, '')
+  eq(rows[0].why, '/w/talaria-gone is gone; its data stays at /w/talaria-gone/app-data/notes/pg')
+  eq(rows[1].why, 'box gonebox is gone; its data stays at /w/devboxes/gonebox/state/app-data/notes/pg')
+  eq(rows[1].running, false)
+  eq(ageDays(rows[0].ageMs), '3d')
+})
+
+check('a caller that cannot say whether an owner lives keeps every app database', () => {
+  eq(orphanAppDbs({ dbs: [appdb()], roots: dbRoots, now: NOW }).length, 0)
+})
+
+check('orphan app databases go on --apply only, never from the stop gate, and the report says why', () => {
+  const [row] = orphanAppDbs({ dbs: [appdb()], roots: dbRoots, liveCheckout: () => false, now: NOW })
+  eq(classify(row), 'remove')
+  const rows = [{ ...row, action: 'remove' }]
+  eq(selectRemoval(rows, 'gate').length, 0)
+  eq(selectRemoval(rows, 'apply').length, 1)
+  eq(selectRemoval(rows, 'report').length, 0)
+  // Weighs nothing on disk: listed, never a reason for the gate to block.
+  eq(verdict(rows, { usedPct: 10 }).exit, 0)
+  const text = formatReport({ pressure: { usedPct: 10, avail: 1 }, remaining: rows, removed: [], notes: [] })
+  if (!text.includes('orphan-appdb talaria-appdb-gone-notes') || !text.includes('/w/talaria-gone is gone')) throw new Error(text)
+  if (!text.includes('bun talaria cleanup --apply')) throw new Error(text)
+})
+
+check('the executor removes an app database only by its name and a docker id, never a path', () => {
+  const r = (over) => removalAllowed({ kind: 'orphan-appdb', id: 'talaria-appdb-gone-notes', containerId: 'a1b2c3d4e5f6', path: '', ...over }, roots)
+  eq(r({}), true)
+  eq(r({ id: 'talaria-postgres-dev' }), false)
+  eq(r({ id: 'talaria-appdb-' }), false)
+  eq(r({ id: 'devbox-b1-postgres' }), false)
+  eq(r({ containerId: 'x; rm -rf /' }), false)
+  eq(r({ containerId: undefined }), false)
+  eq(r({ path: '/w/talaria-gone/app-data' }), false)
 })
 
 check('build caches are reported at any disk reading', () => {

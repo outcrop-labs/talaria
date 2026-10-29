@@ -24,6 +24,10 @@
 //     ~30 address pools, and with parallel stacks they ran out (follow-ups A8,
 //     R20). Also a pool probe network the CLI failed to remove (label
 //     talaria.pool-probe)
+//   - (--apply only) an app database's container (`talaria-appdb-*`) whose
+//     cluster is mounted from a sibling `talaria-<name>` checkout that is no
+//     longer a checkout, or from a box whose box.env is gone (N9). The
+//     container only: its data directory stays
 //
 // WHAT IT WILL NOT:
 //   - the primary checkout, the checkout this process is running in
@@ -39,6 +43,9 @@
 //   - the shared external `talaria` network, or any network compose did not
 //     make for a `talaria-*` or `devbox-*` project (supabase_*, a person's
 //     own), or a box project's network named outside `devbox-*`
+//   - an app database mounted from anywhere but a sibling `talaria-*`
+//     checkout or a box (an image install's, a TALARIA_APP_DATA_DIR
+//     elsewhere), or one whose checkout or box still exists
 //
 // "MERGED" MEANS THE PULL REQUEST MERGED, and nothing else. Ancestry is not
 // the test: a worktree cut an hour ago from main also has a HEAD that is an
@@ -236,6 +243,88 @@ export function orphanNetworks({ networks, containers, liveWorktree, liveBox = (
   return rows
 }
 
+/** An app database's container name: `talaria-appdb-<instance>-<slug>`
+ *  (ui/src/server/app-db.ts appDbContainer). */
+export const APP_DB_NAME_RE = /^talaria-appdb-[a-z0-9][a-z0-9_.-]*$/
+
+/** Where an app database keeps its cluster inside its container: the bind
+ *  mount whose host side says which checkout or box the database is. */
+export const APP_DB_DATA = '/var/lib/postgresql/data'
+
+/**
+ * Which checkout or box an app database belongs to, read from the host
+ * directory its cluster is mounted from — `<owner>/app-data/<slug>/pg` for a
+ * checkout, `<box>/state/app-data/<slug>/pg` for a box — or null when the
+ * mount is anywhere else (an image install's volume, a TALARIA_APP_DATA_DIR
+ * outside both roots). Null is never swept: what the sweep cannot place is
+ * not its to remove. Paths are compared as given; the caller spells both
+ * sides physically.
+ *
+ *   { kind: 'box', name, dir }       under `<devboxHome>/<name>/` (not shared/)
+ *   { kind: 'checkout', dir }        under `<siblingParent>/talaria-<x>/`
+ */
+export function appDbOwner(source, { siblingParent, devboxHome }) {
+  const under = (root, p) => {
+    if (!root || !p) return null
+    const r = root.endsWith(sep) ? root : root + sep
+    if (!p.startsWith(r)) return null
+    const first = p.slice(r.length).split(sep)[0]
+    return first || null
+  }
+  const box = under(devboxHome, source)
+  if (box) return box === 'shared' || box.startsWith('.') ? null : { kind: 'box', name: box, dir: join(devboxHome, box) }
+  const checkout = under(siblingParent, source)
+  if (checkout && /^talaria-[a-z0-9][a-z0-9_.-]*$/.test(checkout)) return { kind: 'checkout', dir: join(siblingParent, checkout) }
+  return null
+}
+
+/**
+ * App databases whose checkout or box is gone, as sweep rows (follow-up N9).
+ * Pure: the inventory hands it what docker said.
+ *
+ *   dbs           [{ id, name, project, running, createdMs, source }] —
+ *                 every `talaria-appdb-*` container, running or stopped,
+ *                 with the host side of its APP_DB_DATA mount
+ *   roots         { siblingParent, devboxHome } in their physical spelling
+ *   liveCheckout(dir) — is that directory still a checkout (a listed git
+ *                 worktree, or a .git in it)
+ *   liveBox(name)     — does that box's box.env exist
+ *
+ * A box removed without `talaria box rm`, or a worktree removed while its
+ * app ran, leaves its app databases running (`restart: unless-stopped`):
+ * each one keeps a postgres in memory and holds the network it joined, so
+ * that network never reads as an orphan either. Only a database the sweep
+ * can place (appDbOwner) and whose owner is gone is a row. Defaults are the
+ * safe reading: a caller that cannot say keeps everything.
+ */
+export function orphanAppDbs({ dbs, roots, liveCheckout = () => true, liveBox = () => true, now = Date.now() }) {
+  const rows = []
+  for (const db of dbs) {
+    if (!APP_DB_NAME_RE.test(db?.name ?? '') || !db.source) continue
+    const owner = appDbOwner(db.source, roots)
+    if (!owner) continue
+    if (owner.kind === 'box' ? liveBox(owner.name) : liveCheckout(owner.dir)) continue
+    rows.push({
+      kind: 'orphan-appdb',
+      id: db.name,
+      containerId: db.id,
+      project: db.project ?? '',
+      source: db.source,
+      why: `${owner.kind === 'box' ? `box ${owner.name}` : owner.dir} is gone; its data stays at ${db.source}`,
+      path: '',
+      bytes: 0,
+      ageMs: db.createdMs > 0 ? now - db.createdMs : 0,
+      running: Boolean(db.running),
+      dirty: false,
+      unpushed: false,
+      kept: false,
+      current: false,
+      primary: false,
+    })
+  }
+  return rows
+}
+
 export function classify(artifact, policy = POLICY) {
   if (artifact.kind === 'target') {
     // The primary's build dir is a warm cache: named when oversized, never
@@ -246,7 +335,7 @@ export function classify(artifact, policy = POLICY) {
     if (artifact.ageMs >= policy.staleTargetMs) return 'remove'
     return artifact.bytes >= policy.oversizedTargetBytes ? 'flag' : 'keep'
   }
-  if (artifact.kind === 'orphan-compose' || artifact.kind === 'orphan-network') return 'remove'
+  if (artifact.kind === 'orphan-compose' || artifact.kind === 'orphan-network' || artifact.kind === 'orphan-appdb') return 'remove'
   // A stack row exists only for a worktree whose work is finished (its branch
   // reached the base) or which has gone stale. Stopping it frees RAM and CPU
   // and is reversible by `talaria dev`; the checkout itself is never touched.
@@ -307,6 +396,11 @@ export function removalAllowed(artifact, roots) {
       /^[0-9a-f]{12,64}$/.test(artifact.networkId ?? '') &&
       !artifact.path
     )
+  }
+  // An app database: its container, by an app database's name and a docker
+  // id. Never a path — its data directory stays (postgres's uid owns it).
+  if (artifact.kind === 'orphan-appdb') {
+    return APP_DB_NAME_RE.test(artifact.id) && /^[0-9a-f]{12,64}$/.test(artifact.containerId ?? '') && !artifact.path
   }
   // A stack removes containers, never a directory — so it carries no path,
   // and the compose project name is the whole of what may be acted on.
@@ -371,7 +465,7 @@ export function formatReport({ pressure, remaining, removed, notes, policy = POL
         (v.budgetHigh ? ` — over the ${formatBytes(policy.staleBudgetBytes)} line` : ''),
     )
     lines.push('remove with `bun talaria cleanup --apply`:')
-    for (const a of toRemove) lines.push(`  ${a.kind} ${a.id}  ${formatBytes(a.bytes)}  ${ageDays(a.ageMs)}  ${a.path || ''}`)
+    for (const a of toRemove) lines.push(`  ${a.kind} ${a.id}  ${formatBytes(a.bytes)}  ${ageDays(a.ageMs)}  ${a.path || a.why || ''}`)
   }
   if (flagged.length) {
     lines.push('flagged, not removed (dirty, unpushed, or a warm cache — a human decides):')
@@ -803,7 +897,78 @@ export function inventory(root, now = Date.now(), { scanNetworks = true } = {}) 
     }
   }
 
+  // App databases a gone checkout or box left running (N9): --apply's alone,
+  // like the networks, so the gate does not pay for the docker reads.
+  if (projects && scanNetworks) {
+    const dbs = appDbFacts()
+    if (dbs) {
+      const listedPaths = new Set(listed.map((w) => real(w.path)))
+      artifacts.push(
+        ...orphanAppDbs({
+          dbs,
+          roots: { siblingParent: physical(dirname(primary)), devboxHome: physical(home) },
+          liveCheckout: (dir) => listedPaths.has(dir) || existsSync(join(dir, '.git')),
+          liveBox: (name) => existsSync(join(home, name, 'box.env')),
+          now,
+        }),
+      )
+    } else {
+      notes.push('docker app database scan failed — orphan app databases not scanned')
+    }
+  }
+
   return { artifacts, notes, roots: { primary, current, siblingParent: dirname(primary), devboxHome: home, tmp: process.env.TALARIA_CLEANUP_TMP || tmpdir() } }
+}
+
+/** `p` (absolute) in its physical spelling, even when it no longer exists:
+ *  the nearest ancestor that does is realpath'd and the rest re-appended. A
+ *  gone checkout's mount must compare against a realpath'd root (cli
+ *  stack.ts `physical`, the same rule). */
+export function physical(p) {
+  const rest = []
+  let d = resolve(p)
+  for (let i = 0; i < 64; i++) {
+    try {
+      return join(realpathSync(d), ...rest.reverse())
+    } catch {
+      const parent = dirname(d)
+      if (parent === d) return resolve(p)
+      rest.push(basename(d))
+      d = parent
+    }
+  }
+  return resolve(p)
+}
+
+/** Every `talaria-appdb-*` container with what orphanAppDbs reads, or null
+ *  when docker did not answer (fail closed: no rows). Two reads: the names,
+ *  then one inspect of all of them. */
+function appDbFacts() {
+  const ps = dockerOut(['ps', '-a', '--filter', 'name=talaria-appdb-', '--format', '{{.ID}}\t{{.Names}}'])
+  if (ps === null) return null
+  const ids = ps
+    .split('\n')
+    .map((l) => l.split('\t'))
+    .filter(([id, name]) => id && APP_DB_NAME_RE.test((name ?? '').trim()))
+    .map(([id]) => id.trim())
+  if (ids.length === 0) return []
+  const out = dockerOut(['inspect', ...ids])
+  if (out === null) return null
+  try {
+    return JSON.parse(out).map((c) => {
+      const mount = (c.Mounts ?? []).find((m) => m.Destination === APP_DB_DATA)
+      return {
+        id: String(c.Id ?? ''),
+        name: String(c.Name ?? '').replace(/^\//, ''),
+        project: c.Config?.Labels?.['com.docker.compose.project'] ?? '',
+        running: c.State?.Running === true,
+        createdMs: Date.parse(c.Created ?? '') || 0,
+        source: mount?.Type === 'bind' && mount.Source ? physical(mount.Source) : '',
+      }
+    })
+  } catch {
+    return null
+  }
 }
 
 /** One docker read, or null — never '' for a failure. The network scan must
@@ -815,6 +980,24 @@ function dockerOut(args, timeoutMs = 30_000) {
   } catch {
     return null
   }
+}
+
+/** null when the docker command succeeded, else its stderr (or the error)
+ *  in one line. */
+function dockerErr(args, timeoutMs = 30_000) {
+  try {
+    execFileSync('docker', args, { encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] })
+    return null
+  } catch (e) {
+    return String(e?.stderr || e?.message || e).trim().split('\n')[0]
+  }
+}
+
+/** True only when docker says the container does not exist — a timeout or
+ *  a daemon that did not answer is not "gone". */
+function containerGone(id) {
+  const why = dockerErr(['inspect', '--format', '{{.Id}}', id])
+  return why !== null && /no such (object|container)/i.test(why)
 }
 
 /** True only when docker says the network does not exist — a timeout or a
@@ -961,6 +1144,37 @@ export function removeArtifact(artifact, roots) {
     if (dockerOut(['network', 'rm', artifact.networkId], 120_000) === null && !networkGone(artifact.networkId)) {
       throw new Error(`docker network rm ${artifact.id} failed`)
     }
+    return
+  }
+  if (artifact.kind === 'orphan-appdb') {
+    // Asked again at the moment of removal, by id: it must still be that
+    // database, on that data directory. Anything else and it stays.
+    const out = dockerOut(['inspect', artifact.containerId])
+    let now
+    try {
+      now = out === null ? null : JSON.parse(out)[0]
+    } catch {
+      now = null
+    }
+    const mount = (now?.Mounts ?? []).find((m) => m.Destination === APP_DB_DATA)
+    if (!now || String(now.Name ?? '').replace(/^\//, '') !== artifact.id || !mount?.Source || physical(mount.Source) !== artifact.source) {
+      throw new Error(`app database ${artifact.id} changed since the scan (or docker did not answer) — left in place`)
+    }
+    // A daemon busy with other stacks can fail a removal half way (the
+    // container is left `Dead`) or answer after the client gave up, so a
+    // failed rm asks whether the container is still there, and tries once
+    // more before it reports docker's own words.
+    let why = ''
+    for (let attempt = 0; attempt < 2; attempt++) {
+      why = dockerErr(['rm', '-f', artifact.containerId], 120_000)
+      if (why === null || containerGone(artifact.containerId)) break
+    }
+    if (why !== null && !containerGone(artifact.containerId)) throw new Error(`docker rm ${artifact.id} failed: ${why}`)
+    // Its own compose project (app-db.ts runs one per database, named for
+    // it) may still hold the `<name>_default` network an older app DB was
+    // made with. An external network it joined (a box's) is not labelled
+    // with this project and stays for the network sweep.
+    if (artifact.project === artifact.id) dockerByLabel(artifact.project)
     return
   }
   if (artifact.kind === 'tmp') {
@@ -1115,7 +1329,12 @@ function main() {
   } else {
     process.stdout.write(report)
   }
-  process.exit(v.exit)
+  // exitCode, never exit(): a write to a pipe is asynchronous, and exit()
+  // drops whatever has not drained. A host with many stacks has a report
+  // over 64 KiB, so a piped `talaria cleanup` (an agent reading it), the
+  // stop gate's stderr and `--json` all ended at byte 65536, and the rows
+  // appended last never arrived.
+  process.exitCode = v.exit
 }
 
 if (invokedDirectly()) main()
