@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-probe-instance"
+description = "Enables the probe_instance command without any pre-configured scope."
+commands.allow = ["probe_instance"]
+
+[[permission]]
+identifier = "deny-probe-instance"
+description = "Denies the probe_instance command without any pre-configured scope."
+commands.deny = ["probe_instance"]

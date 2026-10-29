@@ -6,7 +6,10 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "list_instances",
+            "get_shell_state",
             "add_instance",
+            "cancel_add_instance",
+            "probe_instance",
             "activate_instance",
             "show_welcome",
             "remove_instance",
