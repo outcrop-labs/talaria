@@ -135,6 +135,57 @@ export function sendRoute(ctx: {
   return ctx.intent === 'send-now' && !ctx.hasAttachments ? 'steer' : 'queue'
 }
 
+/** The longest a Stop pressed on a new thread's first turn waits for the
+ *  response to name the conversation, before it hangs up regardless. It is
+ *  the server's own longest wait for an agent to open a turn's stream
+ *  (talaria-gateway HEADERS_WINDOW, 300 s): a send to an agent that is coming
+ *  up is held for up to two minutes and then answered, so the server ends the
+ *  wait first. This bound only covers a response that never comes at all. */
+export const STOP_NAME_WAIT_MS = 300_000
+
+/** A Stop pressed before its turn's conversation has an id.
+ *
+ *  A new thread's id rides the response headers, and the server sends those
+ *  only once the agent has taken the turn. The stop route needs that id, so a
+ *  Stop pressed in that gap used to hang up the reader and tell the server
+ *  nothing: the turn ran to the end in the agent. Hanging up first cannot
+ *  work, because the abort ends the request that would have brought the id.
+ *  So the stop waits for the id, however long the agent takes to answer, the
+ *  way the server holds a stop for a turn that has not named itself yet:
+ *  `named` sends it to the server, then hangs up. A response that names no
+ *  turn of ours (a queued ack) is only hung up on. A response that names
+ *  nothing inside `waitMs` is hung up on all the same. Each of these acts at
+ *  most once. */
+export function stopOnceNamed(hangUp: () => void, waitMs = STOP_NAME_WAIT_MS) {
+  let done = false
+  const timer = setTimeout(() => {
+    if (done) return
+    done = true
+    hangUp()
+  }, waitMs)
+  const settle = () => {
+    if (done) return false
+    done = true
+    clearTimeout(timer)
+    return true
+  }
+  return {
+    /** The response named the conversation. `ownTurn` is false for a queued
+     *  ack: that answer is about a turn someone else is streaming, which this
+     *  Stop never meant. */
+    named(conversationId: string, ownTurn: boolean, sendStop: (conversationId: string) => void) {
+      if (!settle()) return
+      if (ownTurn) sendStop(conversationId)
+      hangUp()
+    },
+    /** The turn ended some other way (it failed, or the view hung up): drop
+     *  the wait without acting. */
+    cancel() {
+      settle()
+    },
+  }
+}
+
 const isMe = (viewer: Viewer, actor: string, type: string | undefined): boolean =>
   (type ?? 'user') === 'user' && (actor === viewer.id || actor === viewer.email)
 

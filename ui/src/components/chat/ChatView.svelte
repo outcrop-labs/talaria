@@ -44,6 +44,7 @@
     reactionChips,
     sendRoute,
     stampFromServer,
+    stopOnceNamed,
     toDisplay,
     toggleReactionLocal,
     turnTime,
@@ -687,6 +688,41 @@
     }
   }
 
+  // The streaming row is not always the LAST row: a message sent mid-turn —
+  // queued behind the reply, or steered into it — lands beneath it, and a
+  // patch that only ever looked at the tail dropped the rest of the reply on
+  // the floor (the transcript froze the moment you typed into it). Walk back
+  // to the newest assistant row instead.
+  const patchLast = (fn: (m: DisplayMessage) => DisplayMessage) => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i]
+      if (m?.role === 'assistant') {
+        messages[i] = fn(m)
+        return
+      }
+    }
+  }
+
+  /** Stop means stop: freeze whatever arrived as this turn's final word (see
+   *  `userStopped`). An empty stop is an error bubble, same as an empty
+   *  stream — a silent frozen chat reads as broken. */
+  const freezeStopped = () => {
+    userStopped = true
+    patchLast((m) => ({
+      ...m,
+      // Stamped on the row at once, not waited for: the server writes the
+      // same `stopped` into the turn's metadata, but the person who just
+      // pressed stop should read "stopped" now rather than a beat later.
+      stopped: true,
+      status: m.content || m.reasoning?.trim() || m.tools?.length ? 'complete' : 'error',
+    }))
+  }
+
+  /** A Stop pressed on a new thread's first turn before its response named
+   *  the conversation (see `stop`). Keyed by the turn's own controller, so a
+   *  later turn never answers for it. */
+  let pendingStop: { ctrl: AbortController; latch: ReturnType<typeof stopOnceNamed> } | null = null
+
   /** One streamed assistant turn. `shown` says the user's message is already
    *  in the transcript (the flush path put it there when it was sent). */
   const startTurn = async (text: string, atts: Attachment[], shown: boolean) => {
@@ -697,21 +733,6 @@
     messages.push({ role: 'assistant', content: '', reasoning: '', tools: [], status: 'streaming', createdAt: now })
     streaming = true
     userStopped = false
-
-    // The streaming row is not always the LAST row: a message sent mid-turn —
-    // queued behind the reply, or steered into it — lands beneath it, and a
-    // patch that only ever looked at the tail dropped the rest of the reply on
-    // the floor (the transcript froze the moment you typed into it). Walk back
-    // to the newest assistant row instead.
-    const patchLast = (fn: (m: DisplayMessage) => DisplayMessage) => {
-      for (let i = messages.length - 1; i >= 0; i -= 1) {
-        const m = messages[i]
-        if (m?.role === 'assistant') {
-          messages[i] = fn(m)
-          return
-        }
-      }
-    }
 
     const ctrl = new AbortController()
     abortCtrl = ctrl
@@ -725,6 +746,15 @@
             // The hold can drain the instant the id exists — the turn is
             // streaming, so everything lands in the server's queue.
             void flushHeld()
+          }
+          // A Stop pressed before this answer named the thread: the server
+          // hears it now, then the reader hangs up. This runs before the
+          // stream yields anything, so nothing more reaches the transcript.
+          // An empty message id is the queued ack, which is not this turn.
+          if (pendingStop?.ctrl === ctrl) {
+            const { latch } = pendingStop
+            pendingStop = null
+            latch.named(meta.conversationId, meta.messageId !== '', (id) => void stopChat(id).catch(() => {}))
           }
         },
         ctrl.signal,
@@ -752,21 +782,15 @@
         status: m.content || m.reasoning?.trim() || m.tools?.length ? 'complete' : 'error',
       }))
     } catch (e) {
-      if ((e as Error).name === 'AbortError') {
-        // Stop means stop: freeze whatever arrived as this turn's final word
-        // (see `userStopped`). An empty stop is an error bubble, same as an
-        // empty stream — a silent frozen chat reads as broken.
-        userStopped = true
-        patchLast((m) => ({
-          ...m,
-          // Stamped on the row at once, not waited for: the server writes the
-          // same `stopped` into the turn's metadata, but the person who just
-          // pressed stop should read "stopped" now rather than a beat later.
-          stopped: true,
-          status: m.content || m.reasoning?.trim() || m.tools?.length ? 'complete' : 'error',
-        }))
-      } else error = (e as Error).message
+      if ((e as Error).name === 'AbortError') freezeStopped()
+      else error = (e as Error).message
     } finally {
+      // A turn that ended before its answer named it (a refusal, a network
+      // failure) leaves the pending stop nothing to do.
+      if (pendingStop?.ctrl === ctrl) {
+        pendingStop.latch.cancel()
+        pendingStop = null
+      }
       streaming = false
       abortCtrl = null
       // Pick up whatever happened meanwhile: queued messages, and the
@@ -790,11 +814,27 @@
    *  was waiting for. So the run is told first and the reader hangs up second;
    *  the call is fire-and-forget because the transcript must freeze on the
    *  keypress, not on a round trip, and a 409 (the turn finished on its own)
-   *  is nothing to report. Everything `userStopped` means is unchanged. */
+   *  is nothing to report. Everything `userStopped` means is unchanged.
+   *
+   *  A new thread's first turn has no id to stop yet: it rides the response
+   *  headers, which the server sends once the agent has taken the turn. A
+   *  hang-up then would end the very request that brings the id, and the
+   *  turn would run on in the agent with nobody told. So the transcript
+   *  freezes now, the request stays open, and the stop goes out the moment
+   *  the answer names the thread (`stopOnceNamed`). Until then the composer
+   *  keeps its stop face, and a message sent meanwhile is held, as for any
+   *  first turn that has no id yet; it queues behind the stopped turn. */
   const stop = () => {
     const id = convId
-    if (id) void stopChat(id).catch(() => {})
-    abortCtrl?.abort()
+    const ctrl = abortCtrl
+    if (id) {
+      void stopChat(id).catch(() => {})
+      ctrl?.abort()
+      return
+    }
+    if (!ctrl || pendingStop?.ctrl === ctrl) return
+    freezeStopped()
+    pendingStop = { ctrl, latch: stopOnceNamed(() => ctrl.abort()) }
   }
 
   /** Merge the server's identity fields onto what is on screen — never its
