@@ -43,6 +43,30 @@ pub fn uuid_shaped(s: &str) -> bool {
     matches!((braced, rest), (true, [b'}']) | (false, []))
 }
 
+/// The id as Postgres prints it back (`uuid_out`): 32 lower-case hex digits
+/// in 8-4-4-4-12 groups. Some for exactly the spellings [`uuid_shaped`]
+/// passes. A caller that keys, compares or publishes by the id's TEXT wants
+/// this rather than the spelling it was handed: `{6113B5BC…}` and
+/// `6113b5bc-6935-…` are one row to the cast, and must be one key here too.
+pub fn uuid_canonical(s: &str) -> Option<String> {
+    if !uuid_shaped(s) {
+        return None;
+    }
+    let hex: Vec<u8> = s
+        .bytes()
+        .filter(u8::is_ascii_hexdigit)
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
+    let mut out = String::with_capacity(36);
+    for (i, b) in hex.iter().enumerate() {
+        if matches!(i, 8 | 12 | 16 | 20) {
+            out.push('-');
+        }
+        out.push(char::from(*b));
+    }
+    Some(out)
+}
+
 pub fn uuid_gate(module: &str, action: &str, id: &str) -> Option<Response> {
     if uuid_shaped(id) {
         return None;
@@ -110,6 +134,34 @@ mod tests {
             "６113b5bc-6935-46e1-a67c-60bd58daf4f0",
         ] {
             assert!(!uuid_shaped(id), "{id}");
+        }
+    }
+
+    /// Every spelling the cast takes prints back as the one canonical text,
+    /// which is what `select '<id>'::uuid` answers on postgres 16 for each of
+    /// them; nothing the cast refuses gets a canonical form.
+    #[test]
+    fn the_canonical_text_is_what_postgres_prints_back() {
+        let canonical = "6113b5bc-6935-46e1-a67c-60bd58daf4f0";
+        for id in [
+            "6113b5bc-6935-46e1-a67c-60bd58daf4f0",
+            "6113B5BC-6935-46E1-A67C-60BD58DAF4F0",
+            "{6113b5bc-6935-46e1-a67c-60bd58daf4f0}",
+            "6113b5bc693546e1a67c60bd58daf4f0",
+            "{6113B5BC693546E1A67C60BD58DAF4F0}",
+            "6113-b5bc-6935-46e1-a67c-60bd-58da-f4f0",
+            "6113b5bc6935-46e1a67c-60bd58daf4f0",
+        ] {
+            assert_eq!(uuid_canonical(id).as_deref(), Some(canonical), "{id}");
+        }
+        for id in [
+            "",
+            "not-a-uuid",
+            "urn:uuid:6113b5bc-6935-46e1-a67c-60bd58daf4f0",
+            "6113b5bc-6935-46e1-a67c-60bd58daf4f",
+            " 6113b5bc-6935-46e1-a67c-60bd58daf4f0",
+        ] {
+            assert_eq!(uuid_canonical(id), None, "{id}");
         }
     }
 

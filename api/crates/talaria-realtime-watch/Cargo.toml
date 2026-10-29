@@ -14,6 +14,7 @@ sqlx = { workspace = true }
 talaria-boards = { workspace = true }
 talaria-channels = { workspace = true }
 talaria-conversations = { workspace = true }
+talaria-params = { workspace = true }
 talaria-realtime = { workspace = true }
 talaria-runs-run = { workspace = true }
 talaria-runs-store = { workspace = true }
