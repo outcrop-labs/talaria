@@ -399,9 +399,8 @@ pub async fn capability_keys_for(pg: &sqlx::PgPool, model: &str) -> Vec<String> 
 // ── The context ──────────────────────────────────────────────────────────────
 
 /// What the CALLER knows about where this turn's spend belongs. The runner
-/// fills in the rest of `LedgerAttribution` — `agent_model` is the resolved
-/// base model and `tier` is `RunContext.tier`, neither of which a caller
-/// should have to restate.
+/// fills in the rest of `LedgerAttribution` — `agent_model`, the resolved
+/// base model, which a caller should not have to restate.
 #[derive(Debug, Clone, Default)]
 pub struct RunLedger {
     pub source: Option<LedgerSource>,
@@ -1106,10 +1105,9 @@ pub async fn execute(
     let mut tool_names: Vec<String>;
 
     // The flow this turn's spend belongs to, resolved ONCE. `agent_model` is
-    // the base persona, the name the relay books the agent's calls under;
-    // `tier` is the alias name, kept for the tests that pin it — the relay
-    // prices the model each call actually ran on, so the ledger no longer
-    // reads it.
+    // the base persona, the name the relay books the agent's calls under —
+    // a tier's calls too: the relay prices the model each call actually ran
+    // on, so the tier itself is not part of the attribution.
     let ledger = LedgerAttribution {
         agent_model: model.clone(),
         source: ctx
@@ -1119,7 +1117,6 @@ pub async fn execute(
             .unwrap_or(LedgerSource::Chat),
         ref_id: ctx.ledger.as_ref().and_then(|l| l.ref_id.clone()),
         task_id: ctx.ledger.as_ref().and_then(|l| l.task_id.clone()),
-        tier: ctx.tier.clone(),
     };
 
     loop {
@@ -3765,7 +3762,6 @@ mod tests {
         assert_eq!(ledger.source, LedgerSource::Chat);
         assert_eq!(ledger.ref_id, None);
         assert_eq!(ledger.task_id, None);
-        assert_eq!(ledger.tier, None);
     }
 
     #[tokio::test]
@@ -3789,7 +3785,6 @@ mod tests {
         assert_eq!(ledger.source, LedgerSource::Research);
         assert_eq!(ledger.ref_id, Some("run-9".into()));
         assert_eq!(ledger.task_id, None);
-        assert_eq!(ledger.tier, None);
     }
 
     #[tokio::test]
@@ -3850,7 +3845,6 @@ mod tests {
         assert_eq!(req_at(&r, 0).model, "engineer-engineering-opus");
         let ledger = req_at(&r, 0).ledger.expect("ledger");
         assert_eq!(ledger.agent_model, "engineer-engineering");
-        assert_eq!(ledger.tier, Some("opus".into()));
         // The RESULT names the id that answered, because that is the model
         // the fitness matrix is scoring.
         assert_eq!(res.model, Some("engineer-engineering-opus".into()));

@@ -3,7 +3,8 @@
 // blast radius; retry with force:true to cascade (agents get new versions
 // with the tier stripped). DELETE → remove the endpoint, same double-opt-in
 // flow (?force=1). An agent's MAIN model is never cascaded — reassign it
-// first.
+// first. An id that names no endpoint is a 404 on both: a PUT to nothing
+// wrote nothing, and a DELETE of nothing removed nothing.
 
 use crate::fleet::fleet_endpoints::price_record;
 use axum::Json;
@@ -13,7 +14,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_api_facades::fleet::cascade::{ModelUsage, cascade_removal, model_usage};
 use talaria_api_facades::gateway::registry::{
-    EndpointPatch, delete_endpoint, list_endpoints, update_endpoint,
+    EndpointPatch, LlmEndpoint, delete_endpoint, list_endpoints, update_endpoint,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
@@ -53,19 +54,22 @@ pub async fn put(
         Ok(p) => p,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    let eps = match list_endpoints(&state.pg).await {
+        Ok(e) => e,
+        Err(e) => return Ok(internal("[fleet] list_endpoints failed", e)),
+    };
+    let Some(ep) = endpoint_named(&eps, &id) else {
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
+    };
+    // The row's own id from here: the writes and the audit name it as the
+    // registry does, whatever spelling the path used.
+    let id = ep.id.clone();
 
     // One batched cascade: one new version per agent, one render, one apply
     // wave (a running agent rolls, a stopped one stays stopped) — decided by
     // the CATALOG delta before anything is written.
     let mut cascade: (Vec<String>, Option<String>) = (Vec::new(), None);
     if let Some(models) = &patch.models {
-        let eps = match list_endpoints(&state.pg).await {
-            Ok(e) => e,
-            Err(e) => return Ok(internal("[fleet] list_endpoints failed", e)),
-        };
-        let Some(ep) = eps.iter().find(|e| e.id == id) else {
-            return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
-        };
         let removed: Vec<String> = ep
             .models
             .iter()
@@ -172,10 +176,10 @@ pub async fn delete(
         Ok(e) => e,
         Err(e) => return Ok(internal("[fleet] list_endpoints failed", e)),
     };
-    let Some(ep) = eps.iter().find(|e| e.id == id) else {
-        // Unknown id → ok:true, no body fields beyond it.
-        return Ok(Json(json!({ "ok": true })).into_response());
+    let Some(ep) = endpoint_named(&eps, &id) else {
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
+    let id = ep.id.clone();
 
     let usage = match model_usage(&state.pg, &ep.name, None).await {
         Ok(u) => u,
@@ -242,6 +246,15 @@ pub async fn delete(
         .await;
     });
     Ok(Json(cascade_body(true, &cascade)).into_response())
+}
+
+/// The endpoint a path id names: the registry's row whose id is the path's,
+/// in any spelling Postgres' uuid input takes. None for an id no endpoint
+/// has, a malformed one included (whose `::uuid` cast in the writes below
+/// would otherwise have been a 500).
+fn endpoint_named<'a>(eps: &'a [LlmEndpoint], id: &str) -> Option<&'a LlmEndpoint> {
+    let key = talaria_params::uuid_canonical(id)?;
+    eps.iter().find(|e| e.id == key)
 }
 
 /// `{ok, cascaded, error?}` — the error key rides last, only on a render

@@ -111,6 +111,9 @@ pub async fn get(
     headers: HeaderMap,
 ) -> Result<Response, Response> {
     let user = require_agent_reader(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let def = match load_def(&state.pg, &id).await {
         Ok(d) => d,
         Err(e) => return Ok(internal("[fleet/defs/mcp] def read failed", e)),
@@ -385,6 +388,9 @@ pub async fn post(
     }
     .unwrap_or(true);
 
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let def = match load_def(&state.pg, &id).await {
         Ok(d) => d,
         Err(e) => return Ok(internal("[fleet/defs/mcp] def read failed", e)),

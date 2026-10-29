@@ -42,6 +42,9 @@ pub async fn get(
     // Reading the history is not rewriting it — a fleet-wide reader keeps
     // the view they always had; the rollback below is managers only.
     require_agent_reader(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let def = match get_agent_def_wire(&state.pg, &id).await {
         Ok(d) => d,
         Err(e) => return Ok(internal("[fleet/defs/versions] def read failed", e)),
@@ -84,6 +87,9 @@ pub async fn post(
         ));
     }
     let revert_to = revert_to as i64;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let def: Option<(String,)> =
         match sqlx::query_as("select id::text from agent_defs where id = $1::uuid")
             .bind(&id)

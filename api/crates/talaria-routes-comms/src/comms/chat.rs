@@ -23,8 +23,8 @@ use talaria_body::{
     optional_uuid_member, string_member, string_msg, uuid_member, zod_type_name,
 };
 use talaria_chat_persist::{
-    PersistMeta, PlanMeta, TurnMeta, continue_conversation, persist_assistant_stream, pinned_turn,
-    send_turn,
+    OpeningTurn, PersistMeta, PlanMeta, TurnMeta, continue_conversation, persist_assistant_stream,
+    pinned_turn, send_turn,
 };
 use talaria_conversations::{
     accessible_conversation, active_streaming_assistant, create_conversation,
@@ -181,6 +181,7 @@ pub async fn post(
     // Which research prompt this conversation's agent speaks with, set while
     // resolving the conversation below — None everywhere but research.
     let mut research_prompt: Option<&'static str> = None;
+    let mut opening: Option<OpeningTurn> = None;
     if let Some(cid) = conv_id.as_deref() {
         let conv = match accessible_conversation(&state.pg, &user.id, cid).await {
             Ok(c) => c,
@@ -189,6 +190,10 @@ pub async fn post(
         let Some(conv) = conv else {
             return Ok(house_error(StatusCode::NOT_FOUND, "conversation not found"));
         };
+        // A stop pressed the moment this was sent can arrive before the
+        // reply row exists: from here it waits for this turn to name itself
+        // instead of missing it (talaria-chat-persist `OpeningTurn`).
+        opening = Some(OpeningTurn::take(cid));
         agent_model = conv.agent_model;
         kind = conv.kind;
         plan_title = conv.title;
@@ -609,6 +614,9 @@ pub async fn post(
         Vec::new()
     };
     if queued {
+        // Not this send's turn to open: let go first, so the chained turn
+        // below can claim the thread for its own.
+        drop(opening);
         // If the stream ended between the client's view and this landing,
         // nothing would pick the message up — chain the next turn ourselves.
         if in_flight.is_none() {
@@ -796,6 +804,9 @@ pub async fn post(
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let assistant_id_header = assistant_id.clone();
     let persist_conv_id = conv_id.clone();
+    // A new conversation's id was made just now: no stop can name it before
+    // its headers, but the drain holds the opening all the same.
+    let opening = opening.unwrap_or_else(|| OpeningTurn::take(&conv_id));
     tokio::spawn(async move {
         persist_assistant_stream(
             state,
@@ -804,6 +815,7 @@ pub async fn post(
             persist_conv_id,
             Some(persist_meta),
             Some(tx),
+            opening,
         )
         .await;
     });

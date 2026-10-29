@@ -86,11 +86,11 @@ async fn department_for(
     .bind(def_id)
     .fetch_optional(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| talaria_error::store_fault("[memory] agent read failed", e))?;
     let (department, display_name) = row.ok_or_else(|| "not a managed agent".to_string())?;
     if let Some(runner) = talaria_agent_defs::runner_instead_of(pg, def_id, &department)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| talaria_error::store_fault("[memory] department share read failed", e))?
     {
         return Err(talaria_agent_defs::shared_department_refusal(
             doing,

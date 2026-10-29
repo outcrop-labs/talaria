@@ -40,6 +40,9 @@ pub async fn post(
         Ok(d) => d,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let row = match load_approval(&state.pg, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),

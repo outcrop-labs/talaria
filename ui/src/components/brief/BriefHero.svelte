@@ -11,8 +11,13 @@
    * canvas behind this heading; Mercury forbids glow and blur, which leaves a
    * flat fill and nothing else — so the house substitute is the Bayer field
    * (`lib/dither.ts`), where the gradient exists statistically and no light is
-   * ever painted. A slow horizontal wave under a top edge reads as depth
-   * without becoming an animation anyone has to watch.
+   * ever painted. A horizontal crest under a top edge reads as depth.
+   *
+   * THE CREST HOLDS STILL (speed 0). It drifted at 9 px/s, which kept the
+   * engine re-evaluating the whole field about twelve times a second for as
+   * long as anyone sat on Home: measured in Chromium at 1440×900, 21% of the
+   * main thread and 63k dots rewritten a second, on a document that is never
+   * rewritten. A still wave is the same bands, painted once (N11).
    *
    * THE LEDE IS NEVER REWRITTEN, which is why it is rendered plainly and
    * without a regenerating affordance. There is deliberately no "refresh" here:
@@ -24,7 +29,7 @@
   // Ambient, not decorative-loud: one drifting crest plus an edge, both well
   // under half strength, so the words stay the brightest thing in the box.
   const FIELD: DitherSource[] = [
-    { id: 'crest', kind: 'wave', axis: 'x', wavelength: 320, speed: 9, strength: 0.34, tone: 'accent' },
+    { id: 'crest', kind: 'wave', axis: 'x', wavelength: 320, speed: 0, strength: 0.34, tone: 'accent' },
     { id: 'top', kind: 'edge', side: 'top', depth: 120, strength: 0.3 },
     { id: 'grain', kind: 'uniform', strength: 0.06 },
   ]

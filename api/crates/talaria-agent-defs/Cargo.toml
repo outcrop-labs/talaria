@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 talaria-gateway = { workspace = true }
 talaria-agent-auth = { workspace = true }
+talaria-error = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }

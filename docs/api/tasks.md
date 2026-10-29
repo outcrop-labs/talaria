@@ -263,14 +263,14 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/workflows.rs`](../../api/cr
 Source: [`api/crates/talaria-routes-boards/src/tasks/workflows_id.rs`](../../api/crates/talaria-routes-boards/src/tasks/workflows_id.rs)
 
 > /api/workflows/{id}. PUT patch and DELETE, both agents.manage. Gate
-> order: perm, body, then the SQL bind — so a member with a bad body gets
-> the 403, and a non-uuid id only reaches the bind when a field is PRESENT
-> (an empty patch runs no SQL and answers ok even for a non-uuid id).
+> order: perm, body, then the id — so a member with a bad body gets the 403,
+> a non-uuid id the house 400 ("not a uuid"), and a well-formed id that
+> names no workflow a 404 on the PUT, an empty patch included: a write to
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| PUT | `session` + `perm:agents.manage` | [body](#put-apiworkflowsid-body) | `{ok}` | 200, 400 | — |
+| PUT | `session` + `perm:agents.manage` | [body](#put-apiworkflowsid-body) | `{ok}` | 200, 400, 404 | — |
 | DELETE | `session` + `perm:agents.manage` | — | `{ok}` | 200 | — |
 
 ### PUT `/api/workflows/{id}` body

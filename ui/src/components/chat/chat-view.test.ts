@@ -2,14 +2,16 @@
 // shape — the stored→display mapping, the reaction-chip mapping, the
 // optimistic toggle, and the stamp merge that brings server ids/timestamps
 // onto rows the client drew itself.
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { StoredMessage } from '@/lib/conversations.svelte'
 import {
   cronJobFromMarker,
   foldToolVerdicts,
   reactionChips,
   sendRoute,
+  STOP_NAME_WAIT_MS,
   stampFromServer,
+  stopOnceNamed,
   toDisplay,
   toggleReactionLocal,
   turnTime,
@@ -210,6 +212,62 @@ describe('sendRoute', () => {
   it('attachments go the queue: the steer wire carries text only', () => {
     expect(ctx({ intent: 'send-now', hasAttachments: true })).toBe('queue')
     expect(ctx({ hasAttachments: true })).toBe('queue')
+  })
+})
+
+// A Stop pressed on a new thread's first turn, before the response headers
+// name the conversation: the stop waits for the id instead of hanging up the
+// request that would bring it.
+describe('stopOnceNamed', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('sends the stop for the conversation the response names, then hangs up', () => {
+    const order: string[] = []
+    const latch = stopOnceNamed(() => order.push('hang up'))
+    expect(order).toEqual([])
+    latch.named('c-1', true, (id) => order.push(`stop ${id}`))
+    // The server is told before the reader hangs up, as on a thread that
+    // already has its id.
+    expect(order).toEqual(['stop c-1', 'hang up'])
+    // Once only: the wait's own timer and a second naming do nothing more.
+    vi.advanceTimersByTime(STOP_NAME_WAIT_MS * 2)
+    latch.named('c-1', true, (id) => order.push(`stop ${id}`))
+    expect(order).toEqual(['stop c-1', 'hang up'])
+  })
+
+  it('a queued ack names no turn of ours: hang up, send nothing', () => {
+    const sent: string[] = []
+    const hangUp = vi.fn()
+    stopOnceNamed(hangUp).named('c-1', false, (id) => sent.push(id))
+    expect(sent).toEqual([])
+    expect(hangUp).toHaveBeenCalledTimes(1)
+  })
+
+  it('a response that names nothing is hung up on at the wait, once', () => {
+    const hangUp = vi.fn()
+    const sent: string[] = []
+    const latch = stopOnceNamed(hangUp)
+    vi.advanceTimersByTime(STOP_NAME_WAIT_MS - 1)
+    expect(hangUp).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(hangUp).toHaveBeenCalledTimes(1)
+    // An id arriving after the wait gave up sends nothing: the reader has
+    // already hung up.
+    latch.named('c-1', true, (id) => sent.push(id))
+    expect(sent).toEqual([])
+    expect(hangUp).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancel drops the wait without acting', () => {
+    const hangUp = vi.fn()
+    const sent: string[] = []
+    const latch = stopOnceNamed(hangUp)
+    latch.cancel()
+    vi.advanceTimersByTime(STOP_NAME_WAIT_MS * 2)
+    latch.named('c-1', true, (id) => sent.push(id))
+    expect(hangUp).not.toHaveBeenCalled()
+    expect(sent).toEqual([])
   })
 })
 

@@ -98,7 +98,9 @@ export interface WaveSource extends SourceBase {
   kind: 'wave'
   axis: 'x' | 'y'
   wavelength: number
-  /** px per second. */
+  /** px per second. 0 is a STILL crest: the same bands, painted once. A field
+   *  on a surface where nothing is happening should not move (N11), and a
+   *  speed-0 wave is how it keeps the wave's shape without the loop. */
   speed: number
 }
 
@@ -591,7 +593,9 @@ export class DitherEngine {
       else if (entry.ghost) this.entries.delete(id)
     }
 
-    const hasWave = !this.reduced && [...this.entries.values()].some((e) => e.to.kind === 'wave')
+    // Only a wave that travels needs frames: a speed-0 crest is a still
+    // picture, built once like any other static field.
+    const hasWave = !this.reduced && [...this.entries.values()].some((e) => e.to.kind === 'wave' && e.to.speed !== 0)
     const shimmering = !this.reduced && this.opts.shimmer > 0 && this.entries.size > 0
 
     // Shimmer repaints on its own slow clock (~6/s); don't burn full-rate
@@ -823,7 +827,13 @@ export class DitherEngine {
         // BRIGHTENS it (0.016 over 0.063 reads 0.078), and every shimmer flip
         // or passing wave crest stacked another layer: the field crept past its
         // own maxAlpha into blotch. The clear makes the write absolute — the
-        // same pixels a full clear-and-redraw would have left.
+        // same pixels a full clear-and-redraw would have left. Not quite, at
+        // a fractional device position: the clear antialiases like the fill,
+        // erasing an edge pixel only by its coverage, so a live field still
+        // creeps brighter than a full rebuild over its first seconds.
+        // Clearing the whole device pixels the dot touched ends that, and
+        // makes every live field look fainter than it does today, so it waits
+        // for an owner's call (#624, N11).
         ctx.clearRect(cx * pitch - this.fx + off, top, size, size)
         ctx.fillStyle = this.styleOf(packed)
         ctx.fillRect(cx * pitch - this.fx + off, top, size, size)

@@ -235,8 +235,21 @@ pub async fn list_agent_secrets(
         .collect())
 }
 
+/// Why a secret was not set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretWriteError {
+    /// The name or value broke the rule: the sentence is the route's 400.
+    Refused(String),
+    /// No agent has this id. The route answers 404.
+    NoAgent,
+    /// Sealing or writing failed on this side. The error is for the server
+    /// log only: the route logs it and answers the house 500, none of its
+    /// text.
+    Fault(String),
+}
+
 /// Set (or overwrite) one secret. Validation is the API contract — the
-/// messages are what the route returns.
+/// `Refused` messages are what the route returns.
 pub async fn set_agent_secret(
     pg: &PgPool,
     sb: &SecretBox,
@@ -244,25 +257,28 @@ pub async fn set_agent_secret(
     name: &str,
     value: &str,
     actor: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), SecretWriteError> {
+    use SecretWriteError::{Fault, NoAgent, Refused};
     if !name_ok(name) {
-        return Err("secret names are UPPER_SNAKE (2–64 chars, starting with a letter)".into());
+        return Err(Refused(
+            "secret names are UPPER_SNAKE (2–64 chars, starting with a letter)".into(),
+        ));
     }
     if let Some(why) = reserved(name) {
-        return Err(why);
+        return Err(Refused(why));
     }
     if value.is_empty() || value.len() > 8192 {
-        return Err("value required (max 8 KB)".into());
+        return Err(Refused("value required (max 8 KB)".into()));
     }
     if value.contains('\n') || value.contains('\r') {
-        return Err("value cannot contain newlines".into());
+        return Err(Refused("value cannot contain newlines".into()));
     }
     let sealed = sb
         .seal(value)
-        .map_err(|e| format!("secret seal failed: {e}"))?;
+        .map_err(|e| Fault(format!("{agent_id}: sealing {name} failed: {e}")))?;
     // `updated_by` is TEXT and the route passes the actor's email (or name):
     // a `$4::uuid` cast here refused every write from a person with an email.
-    sqlx::query(
+    let written = sqlx::query(
         "insert into agent_secrets (agent_id, name, value_enc, updated_by) \
          values ($1::uuid, $2, $3, $4) \
          on conflict (agent_id, name) do update \
@@ -273,9 +289,25 @@ pub async fn set_agent_secret(
     .bind(&sealed)
     .bind(actor)
     .execute(pg)
-    .await
-    .map_err(|e| format!("secret write failed: {e}"))?;
-    Ok(())
+    .await;
+    match written {
+        Ok(_) => Ok(()),
+        // The row's agent_id references agent_defs: an id no agent has is
+        // the foreign key refusing it, which is a miss, not a fault. Read
+        // from the error's code rather than a lookup first, so an agent
+        // retired between the two is the same 404.
+        Err(e) if names_no_agent(&e) => Err(NoAgent),
+        Err(e) => Err(Fault(format!("{agent_id}: writing {name} failed: {e}"))),
+    }
+}
+
+/// Is this the foreign key refusing a row for an agent that does not exist?
+/// Postgres' `foreign_key_violation` (SQLSTATE 23503); `agent_id` is the
+/// table's only foreign key.
+fn names_no_agent(e: &sqlx::Error) -> bool {
+    e.as_database_error()
+        .and_then(|db| db.code())
+        .is_some_and(|code| code == "23503")
 }
 
 pub async fn delete_agent_secret(
@@ -302,7 +334,7 @@ pub async fn passthrough_names(pg: &PgPool, agent_id: &str) -> Result<Vec<String
     .bind(agent_id)
     .fetch_all(pg)
     .await
-    .map_err(|e| format!("agent secrets read failed: {e}"))?;
+    .map_err(|e| talaria_error::store_fault("[agent-secrets] passthrough names read failed", e))?;
     Ok(names.into_iter().filter(|n| passes_through(n)).collect())
 }
 
@@ -411,7 +443,7 @@ pub async fn materialize_agent_secrets(
     .bind(agent_id)
     .fetch_all(pg)
     .await
-    .map_err(|e| format!("agent secrets read failed: {e}"))?;
+    .map_err(|e| talaria_error::store_fault("[agent-secrets] agent secrets read failed", e))?;
     let agent_dir = talaria_fleet_layout::fleet_dir().join("agents").join(slug);
     let path = agent_dir.join("secrets.env");
     let (lines, mut out) = env_lines(rows, |enc| sb.open(enc).map_err(|e| e.to_string()))?;

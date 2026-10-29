@@ -11,6 +11,7 @@
   import { getJson, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import { useModels } from '@/lib/muse.svelte'
+  import { anyPending } from '@/components/ui/query-state'
   import CapabilityTags from '@/components/models/CapabilityTags.svelte'
   import { useModelCapabilities } from '@/components/models/fitness-queries'
 
@@ -94,9 +95,10 @@
     title="Member access"
     info="Which models non-admins may pick for AI drafting and as their preferred model. Keep the expensive ones for deliberate, admin-configured use. Agents' own brains are set per agent and unaffected."
   />
-  {#if catalogQuery.isPending || settingsQuery.isPending}
+  {#if anyPending(catalogQuery, settingsQuery)}
     <!-- The restrict toggle and the list both seed from these queries — hold
-         them with skeletons so the checkbox never flips after load. -->
+         them with skeletons so the checkbox never flips after load. Both
+         flags are read every time (anyPending, query-state.ts says why). -->
     <div class="space-y-3">
       <div class="flex items-center gap-2">
         <Skeleton class="h-4 w-4" />

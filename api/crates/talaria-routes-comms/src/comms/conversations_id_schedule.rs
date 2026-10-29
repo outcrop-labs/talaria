@@ -23,7 +23,7 @@ use talaria_agent_crons::schedule_from_conversation;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, trimmed_string_member};
 use talaria_conversations::accessible_conversation;
-use talaria_error::{house_error, internal, object_or_400};
+use talaria_error::{house_error, internal, object_or_400, store_answer};
 use talaria_session::{actor_of, require_agent_manager_by_model, require_user};
 use talaria_state::AppState;
 
@@ -122,7 +122,7 @@ pub async fn post(
             }
             // Hermes is the validator for the schedule's own grammar and the
             // frequency floor, and its refusal is the one worth reading.
-            Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+            Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
         },
     )
 }
