@@ -1359,7 +1359,15 @@ pub async fn get(
     }
     if !(200..300).contains(&status) {
         let text = upstream.text().await.unwrap_or_default();
-        talaria_error::log_upstream_error(&format!("mcp-gw-get:{server_name}"), status, &text);
+        if is_answered_probe(&headers, status) {
+            // Hermes' preflight, answered the way the transport says it must
+            // be: expected on every connect, so it is not an upstream error.
+            tracing::debug!(
+                "[mcp-gw-get:{server_name}] the agent's preflight probe: upstream answered {status}"
+            );
+        } else {
+            talaria_error::log_upstream_error(&format!("mcp-gw-get:{server_name}"), status, &text);
+        }
         return Ok(house_error(
             StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
             &upstream_error_message(status),
@@ -1376,6 +1384,30 @@ pub async fn get(
         .header(header::CONTENT_TYPE, ct)
         .body(Body::from_stream(upstream.bytes_stream()))
         .unwrap_or_else(|e| internal("[fleet] response build failed", e)))
+}
+
+/// HERMES' PREFLIGHT, ANSWERED AS EXPECTED. Before every connect to an HTTP
+/// server, Hermes v0.22.4 probes its URL (`_preflight_content_type` in
+/// tools/mcp_tool_transport.py) so a URL that is a web page fails fast
+/// instead of hanging the SDK: a HEAD — which reaches this handler as a GET —
+/// then a GET if that answered 405 or 501, with the server's configured
+/// headers and httpx's default `Accept: */*`, and no session. That is no
+/// notification stream: a streamable-HTTP server answers it 406 (the SDK's
+/// "Client must accept text/event-stream") or 405 (no stream offered at
+/// all), and Hermes takes either and goes on to `initialize`. Only that pair
+/// of answers, to a request of exactly that shape — no `mcp-session-id`, an
+/// Accept without `text/event-stream` — is the probe. A real stream request
+/// names both, so its every failure, like any other status to the probe, is
+/// still an upstream error.
+/// A request with no Accept at all is not it: the relay asks the upstream for
+/// `text/event-stream` on its behalf.
+fn is_answered_probe(headers: &HeaderMap, status: u16) -> bool {
+    let Some(accept) = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    matches!(status, 405 | 406)
+        && !headers.contains_key("mcp-session-id")
+        && !accept.to_ascii_lowercase().contains("text/event-stream")
 }
 
 /// The streamable-HTTP transport's request headers besides the session id
@@ -1614,6 +1646,51 @@ fn filter_sse_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn request(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (name, value) in pairs {
+            h.insert(*name, value.parse().unwrap());
+        }
+        h
+    }
+
+    /// Hermes' preflight is the one shape whose 405 or 406 is quiet: its
+    /// configured headers, httpx's `Accept: */*`, no session. A real stream
+    /// request, a request with no Accept, and every other status to the probe
+    /// are still upstream errors.
+    #[test]
+    fn only_the_preflight_answered_405_or_406_is_quiet() {
+        let probe = request(&[
+            ("accept", "*/*"),
+            ("x-agent-name", "ada-ops"),
+            ("x-api-key", "tak_x"),
+        ]);
+        assert!(is_answered_probe(&probe, 406));
+        assert!(is_answered_probe(&probe, 405));
+        for status in [400, 401, 403, 404, 500, 502, 503] {
+            assert!(!is_answered_probe(&probe, status), "{status}");
+        }
+        // The notification stream the SDK opens after `initialize`.
+        let stream = request(&[("accept", "text/event-stream"), ("mcp-session-id", "s-1")]);
+        assert!(!is_answered_probe(&stream, 405));
+        assert!(!is_answered_probe(&stream, 406));
+        // Either half of the stream's shape is enough to make it real.
+        assert!(!is_answered_probe(
+            &request(&[("accept", "*/*"), ("mcp-session-id", "s-1")]),
+            406
+        ));
+        assert!(!is_answered_probe(
+            &request(&[("accept", "Text/Event-Stream")]),
+            405
+        ));
+        assert!(!is_answered_probe(
+            &request(&[("accept", "application/json, text/event-stream")]),
+            406
+        ));
+        // No Accept at all: the relay asked the upstream for the stream.
+        assert!(!is_answered_probe(&request(&[]), 405));
+    }
 
     /// The diagnostic serde's own error produces for these bytes — the
     /// window, the offset recovery, and the hex/ASCII rendering.
