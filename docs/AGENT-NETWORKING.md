@@ -163,7 +163,10 @@ those local and skips the check for them. So with the terminal closed, the rende
 `browser` toolset for an agent whose config picks one of them (`fleet_browser_local_close`),
 and the grid says so on that agent. A CDP endpoint (`browser.cdp_url`, or a `BROWSER_CDP_URL`
 secret on the agent, which Hermes reads first) or a hosted provider (`browser.cloud_provider`)
-keeps Hermes' check and is left alone. The render reads the terminal where Hermes does: the
+keeps Hermes' check and is left alone. So does this machine's browser for a def that runs its
+terminal elsewhere: Hermes bridges `terminal.backend` into `TERMINAL_ENV`, and any backend but
+`local` (docker, ssh, singularity, modal, daytona, vercel_sandbox) keeps the check for it.
+Camofox stays local whatever the terminal. The render reads the terminal where Hermes does: the
 toolset grid's list, and a `platform_toolsets.api_server` list a def authored, which replaces
 Hermes' default bundle (the grid does not show that one). A hosted provider's credentials are
 not a way around this: `BROWSER_USE_API_KEY` and `BROWSERBASE_API_KEY` are refused as an

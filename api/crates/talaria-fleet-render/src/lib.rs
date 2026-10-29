@@ -2762,8 +2762,10 @@ fn fleet_disabled_toolsets(
 /// whether the session has a terminal. So a terminal-less agent given those
 /// tools could open the host, other agents' containers and the LAN, which its
 /// own `web_extract` refuses; no setting restores the check for a local
-/// browser, and `TERMINAL_ENV` cannot move off `local` (the file tools run
-/// through it). With the terminal on, Hermes's premise holds: the shell
+/// browser, and Talaria cannot move `TERMINAL_ENV` off `local` for it (the
+/// file tools run through it; a def that authors `terminal.backend` moves
+/// its whole shell, and Hermes then keeps the check: [`hermes_browser`]).
+/// With the terminal on, Hermes's premise holds: the shell
 /// already reaches all of it. So only that agent gets the engine, and with it
 /// Hermes's default `browser_exec`. A terminal-less agent with `browser`
 /// ticked and no `browser:` block of its own renders exactly what it rendered
@@ -2871,8 +2873,9 @@ enum HermesBrowser {
     /// machine's Chromium through the engine, or Camofox), for which it
     /// skips the private-address check (`_is_local_backend`).
     Local,
-    /// The built-in tools on a CDP endpoint or a hosted provider, which keep
-    /// Hermes's check.
+    /// The built-in tools on a CDP endpoint or a hosted provider, or on this
+    /// machine's Chromium while the agent's terminal runs elsewhere (a
+    /// `terminal.backend` other than local): each keeps Hermes's check.
     Remote,
 }
 
@@ -2888,6 +2891,33 @@ fn py_text(v: &Value) -> String {
         Value::Array(a) if a.is_empty() => String::new(),
         Value::Object(o) if o.is_empty() => String::new(),
         other => other.to_string(),
+    }
+}
+
+/// Whether Hermes v0.22.4 reads this agent's terminal as local, the last
+/// question `_is_local_backend` asks: `TERMINAL_ENV`, stripped and lower
+/// case, is `local` or empty.
+///
+/// For a Talaria agent that variable comes from the config alone. Its own
+/// secrets cannot carry it (`TERMINAL_*` is refused and skipped at
+/// materialize), the image and the compose service set none, and the
+/// api_server platform binds no per-turn terminal scope (that is the local
+/// session's, `policy_for_source`). The gateway's bridge
+/// (`_bridge_terminal_config_to_env`, and `apply_terminal_config_to_env`
+/// on every env reload) writes `terminal.backend` into it whenever the key
+/// is present: `str()` of the value, JSON for a list or a map. So a null is
+/// `None`, a bool `True`/`False`, a number its digits, and only a string can
+/// read as local. With no `terminal` map, or no `backend` in it, the
+/// variable is the default `local`.
+fn hermes_terminal_local(routed: &Map<String, Value>) -> bool {
+    match routed
+        .get("terminal")
+        .and_then(Value::as_object)
+        .and_then(|t| t.get("backend"))
+    {
+        None => true,
+        Some(Value::String(s)) => matches!(s.trim().to_lowercase().as_str(), "local" | ""),
+        Some(_) => false,
     }
 }
 
@@ -2910,6 +2940,13 @@ fn py_text(v: &Value) -> String {
 /// (`talaria_agent_secrets::reserved`), so Hermes never finds them in an
 /// agent's env either. What Talaria cannot see at all (a live `/browser
 /// connect`) it reads as absent, which errs toward `Local`.
+///
+/// After those, `_is_local_backend` asks where the terminal runs
+/// ([`hermes_terminal_local`]): "when terminal runs in a container, browser
+/// on host can access internal networks the terminal can't", so a docker,
+/// ssh or other sandboxed terminal keeps the check for this machine's
+/// browser. Camofox is asked before that and stays local whatever the
+/// terminal.
 fn hermes_browser(routed: &Map<String, Value>, secret_names: &[String]) -> HermesBrowser {
     let cfg = routed.get("browser").and_then(Value::as_object);
     let get = |key: &str| cfg.and_then(|c| c.get(key));
@@ -2953,7 +2990,7 @@ fn hermes_browser(routed: &Map<String, Value>, secret_names: &[String]) -> Herme
         let key = py_text(v).trim().to_lowercase();
         !key.is_empty() && key != "local" && key != "camofox"
     });
-    if hosted {
+    if hosted || !hermes_terminal_local(routed) {
         HermesBrowser::Remote
     } else {
         HermesBrowser::Local
@@ -2964,7 +3001,9 @@ fn hermes_browser(routed: &Map<String, Value>, secret_names: &[String]) -> Herme
 /// browser Hermes would give it is a local one ([`hermes_browser`]): a def
 /// that authored a backend other than `browser-use`, or Camofox. Hermes
 /// skips its private-address check for that browser, and with no terminal
-/// nothing else of the agent's reaches those networks. Talaria installs no
+/// nothing else of the agent's reaches those networks. A def whose
+/// `terminal.backend` runs the shell elsewhere keeps the check, so it is
+/// left alone too. Talaria installs no
 /// engine for such an agent, but one that an earlier start with the terminal
 /// open left on the volume would still run the built-in tools, so the render
 /// closes the toolset rather than relying on the engine being absent. A CDP
@@ -5229,6 +5268,135 @@ service:
             ),
             both
         );
+    }
+
+    /// `_is_local_backend`'s last question is the terminal's backend, which
+    /// the gateway bridges from `terminal.backend` into `TERMINAL_ENV` as
+    /// `str()` of the value. Every backend v0.22.4 ships
+    /// (`_BUILTIN_BACKENDS`) but `local` keeps the private-address check for
+    /// this machine's browser, so the render leaves the toolset open for
+    /// them; Camofox is asked first and stays local whatever the terminal.
+    #[test]
+    fn a_terminal_that_runs_elsewhere_keeps_hermes_check() {
+        let local_browser = json!({ "backend": "off" });
+        let with_terminal = |terminal: Option<Value>, browser: &Value| {
+            let mut routed = merged(&["terminal"]);
+            routed.insert("browser".into(), browser.clone());
+            if let Some(t) = terminal {
+                routed.insert("terminal".into(), t);
+            }
+            routed
+        };
+        let terminal_closed = merged(&["terminal"])["agent"]["disabled_toolsets"]
+            .as_array()
+            .unwrap()
+            .clone();
+        // Local, as Hermes reads it: no terminal map, no backend in it, or a
+        // string that strips and lower-cases to `local` or nothing.
+        for terminal in [
+            None,
+            Some(json!({})),
+            Some(json!({ "env_passthrough": ["A_TOKEN"] })),
+            Some(json!("docker")),
+            Some(json!(null)),
+            Some(json!({ "backend": "local" })),
+            Some(json!({ "backend": " LOCAL " })),
+            Some(json!({ "backend": "" })),
+            Some(json!({ "backend": "  " })),
+        ] {
+            let label = format!("{terminal:?}");
+            let routed = with_terminal(terminal, &local_browser);
+            assert!(hermes_terminal_local(&routed), "{label}");
+            assert_eq!(
+                hermes_browser(&routed, &[]),
+                HermesBrowser::Local,
+                "{label}"
+            );
+            let mut closed = routed.clone();
+            fleet_browser_local_close(&mut closed, &[]);
+            assert_eq!(
+                closed["agent"]["disabled_toolsets"]
+                    .as_array()
+                    .unwrap()
+                    .last(),
+                Some(&json!("browser")),
+                "{label}"
+            );
+        }
+        // Elsewhere: every other built-in backend, in any case, and every
+        // value that is not a string (`None`, `True`, `0`, JSON).
+        for backend in [
+            json!("docker"),
+            json!("singularity"),
+            json!("modal"),
+            json!("daytona"),
+            json!("vercel_sandbox"),
+            json!("ssh"),
+            json!(" Docker "),
+            json!("SSH"),
+            json!("a-plugin-backend"),
+            json!(null),
+            json!(false),
+            json!(true),
+            json!(0),
+            json!(["local"]),
+            json!({ "name": "local" }),
+        ] {
+            let terminal = json!({ "backend": backend });
+            let routed = with_terminal(Some(terminal.clone()), &local_browser);
+            assert!(!hermes_terminal_local(&routed), "{terminal}");
+            assert_eq!(
+                hermes_browser(&routed, &[]),
+                HermesBrowser::Remote,
+                "{terminal}"
+            );
+            let mut closed = routed.clone();
+            fleet_browser_local_close(&mut closed, &[]);
+            assert_eq!(
+                closed["agent"]["disabled_toolsets"].as_array().unwrap(),
+                &terminal_closed,
+                "{terminal}"
+            );
+            // Camofox stays local whatever the terminal, and Hermes's
+            // default and a CDP endpoint are what they were.
+            for (browser, secrets, want) in [
+                (
+                    json!({ "cloud_provider": "camofox" }),
+                    vec![],
+                    HermesBrowser::Local,
+                ),
+                // A backend that only names Camofox is not Camofox mode
+                // (that is the provider selection): it is this machine's
+                // browser, and the terminal decides.
+                (
+                    json!({ "backend": " Camofox " }),
+                    vec![],
+                    HermesBrowser::Remote,
+                ),
+                (
+                    json!({}),
+                    vec!["CAMOFOX_URL".to_string()],
+                    HermesBrowser::Local,
+                ),
+                (
+                    json!({ "backend": "browser-use" }),
+                    vec![],
+                    HermesBrowser::Exec,
+                ),
+                (
+                    json!({ "backend": "off" }),
+                    vec!["BROWSER_CDP_URL".to_string()],
+                    HermesBrowser::Remote,
+                ),
+            ] {
+                let routed = with_terminal(Some(terminal.clone()), &browser);
+                assert_eq!(
+                    hermes_browser(&routed, &secrets),
+                    want,
+                    "{terminal} {browser}"
+                );
+            }
+        }
     }
 
     /// `hermes_browser` reads `BROWSER_CDP_URL` from the agent's secrets and
