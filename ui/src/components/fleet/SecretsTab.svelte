@@ -115,6 +115,9 @@
     try {
       // A 404 is an agent that no longer exists, and its secrets went with it.
       await delJsonGone(`/api/fleet/agents/${agentId}/secrets`, { name: s.name, removeSetting: used.length > 0 })
+      // Off the list now, not only after the re-read: for an agent that is
+      // gone, that re-read fails, and a failed refetch keeps the last list.
+      qc.setQueryData<SecretMeta[]>(key(), (rows) => rows?.filter((r) => r.name !== s.name))
     } catch (e) {
       // Fire-and-forget from a row button; the err line belongs to the form.
       toastError('Remove failed', e)
