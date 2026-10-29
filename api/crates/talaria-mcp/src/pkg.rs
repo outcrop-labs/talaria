@@ -160,12 +160,37 @@ pub fn container_name(server_name: &str) -> String {
     format!("talaria-mcp-{}-{}", instance(), server_name)
 }
 
-/// Is THIS api running inside the product image? In-image, published
-/// loopback ports are unreachable (they bind the host), so the api joins
-/// the package network and dials by container DNS.
-fn in_image() -> bool {
-    std::env::var("TALARIA_INSTALL").ok().as_deref() == Some("image")
-        || std::env::var("TALARIA_RUNTIME").ok().as_deref() == Some("prod-server")
+/// Does THIS api reach oci-http packages by container DNS on the package
+/// network, rather than on the loopback port each one publishes?
+///
+/// Wherever the api itself runs in a container that shares the host's docker
+/// daemon but not the host's network namespace, a published port binds the
+/// HOST's loopback, and `127.0.0.1:<port>` dialled from in here is the
+/// container's own: nothing answers. Two places do that:
+///
+///   - the product image (`TALARIA_INSTALL=image`, or the prod-server
+///     runtime);
+///   - a devbox: its api runs in the box container, whose compose sets
+///     `TALARIA_DEVBOX` (docker/devbox.compose.yml). The same class as an app
+///     database dialled from a box (F21, ui/src/server/app-db.ts).
+///
+/// There the api joins the package network, by its own `HOSTNAME` (docker's
+/// default hostname is the container's id), and dials the package by name. A
+/// host-run api sets none of these and keeps the loopback port.
+fn dials_by_name() -> bool {
+    let var = |k: &str| std::env::var(k).ok();
+    dials_by_name_in(
+        var("TALARIA_INSTALL").as_deref(),
+        var("TALARIA_RUNTIME").as_deref(),
+        var("TALARIA_DEVBOX").as_deref(),
+    )
+}
+
+/// `dials_by_name`, over the three variables it reads. Pure for the tests.
+fn dials_by_name_in(install: Option<&str>, runtime: Option<&str>, devbox: Option<&str>) -> bool {
+    install == Some("image")
+        || runtime == Some("prod-server")
+        || devbox.is_some_and(|b| !b.is_empty())
 }
 
 /// The bridge network oci-http package containers live on — theirs alone,
@@ -176,11 +201,11 @@ pub fn pkg_network() -> String {
     format!("talaria-mcp-{}", instance())
 }
 
-/// Create the package network if it is missing, and — when this api runs
-/// in-image — join it, so container DNS resolves the package from here.
-/// The join is idempotent (`inspect` first; a lost race on `connect` is
-/// re-checked the same way). On the host nothing joins: the relay dials
-/// the loopback-published port.
+/// Create the package network if it is missing, and — when this api runs in
+/// a container (`dials_by_name`: the image, a devbox) — join it, so container
+/// DNS resolves the package from here. The join is idempotent (`inspect`
+/// first; a lost race on `connect` is re-checked the same way). On the host
+/// nothing joins: the relay dials the loopback-published port.
 async fn ensure_pkg_network() -> Result<String, String> {
     let name = pkg_network();
     let inspect = || async {
@@ -199,8 +224,9 @@ async fn ensure_pkg_network() -> Result<String, String> {
                 .map_err(|e| format!("package network {name} unavailable: {e}"))?;
         }
     }
-    if in_image() {
-        let self_id = std::env::var("HOSTNAME").map_err(|_| "HOSTNAME unset in-image")?;
+    if dials_by_name() {
+        let self_id = std::env::var("HOSTNAME")
+            .map_err(|_| "HOSTNAME is unset, so this api cannot name its own container")?;
         let joined = || async {
             talaria_fleet_docker::docker(
                 &[
@@ -423,13 +449,24 @@ fn hardening(argv: &mut Vec<String>, dns: &[String]) {
 
 /// The full `docker run` argv for a package. Errors carry the route's 400
 /// sentence (allowlist violations name the flag). Pure.
+///
+/// `http_network` is the package network an oci-http package runs detached
+/// on (ensure_http); None is a stdio package, run interactively on the
+/// default bridge. The network is a docker FLAG, so it goes with the flags,
+/// before the image: everything after the image is the package's own argv.
+/// ensure_http used to append it to the finished argv, which handed
+/// `--network talaria-mcp-<instance>` to the package's entry point and left
+/// the container on the default bridge. A package that rejects unknown
+/// arguments exited at once (node: `bad option: --network`), and one that
+/// ignored them was never on the network the image's api dials it on.
 pub fn pkg_argv(
     spec: &PkgSpec,
     sealed: &SealedDoc,
     container: &str,
     dns: &[String],
-    http_detached: bool,
+    http_network: Option<&str>,
 ) -> Result<Vec<String>, String> {
+    let http_detached = http_network.is_some();
     let mut argv = vec![
         "run".to_string(),
         "--rm".to_string(),
@@ -464,13 +501,17 @@ pub fn pkg_argv(
         argv.push(flag.to_string());
         argv.push(v);
     }
-    if http_detached {
-        // oci-http: the transport names its in-container port; the caller
-        // appends network args (topology-dependent, see ensure_http).
+    if let Some(network) = http_network {
+        // oci-http: the transport names its in-container port, published on
+        // loopback for a host-run api; and the package runs on its own
+        // network, never the api's internal one (see the header), where an
+        // api in a container reaches it by name (ensure_http).
         if let Some(port) = spec.container_port {
             argv.push("-p".into());
             argv.push(format!("127.0.0.1::{port}"));
         }
+        argv.push("--network".into());
+        argv.push(network.to_string());
     }
     // The image (or stock runner) and its entry point. The runner images
     // carry their own ENTRYPOINT (uv's is `uv`), so the entry command rides
@@ -571,7 +612,7 @@ async fn spawn_stdio_child(
     // A stray from a previous api life would steal the name.
     let _ = talaria_fleet_docker::docker(&["rm", "-f", &container], Duration::from_secs(30)).await;
     let dns = pinned_dns().await;
-    let argv = pkg_argv(spec, sealed, &container, &dns, false)?;
+    let argv = pkg_argv(spec, sealed, &container, &dns, None)?;
     let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     let mut child = tokio::process::Command::new("docker")
         .args(&argv_refs)
@@ -850,8 +891,8 @@ pub async fn pkg_call(
 // ── oci-http: detached container + resolved URL ─────────────────────────────
 
 /// Ensure the detached oci-http container runs — on the package network —
-/// and return the URL this api relays to (container DNS in-image, loopback
-/// publish on the host).
+/// and return the URL this api relays to (container DNS from the image or a
+/// devbox, the loopback publish on the host; `dials_by_name`).
 pub async fn ensure_http(
     sb: &SecretBox,
     server: &McpServer,
@@ -875,14 +916,13 @@ pub async fn ensure_http(
             None => SealedDoc::default(),
         };
         let dns = pinned_dns().await;
-        let mut argv = pkg_argv(spec, &sealed, &container, &dns, true)?;
         // Its own network, never the api's internal one (see the header).
-        argv.push("--network".into());
-        argv.push(ensure_pkg_network().await?);
+        let network = ensure_pkg_network().await?;
+        let argv = pkg_argv(spec, &sealed, &container, &dns, Some(&network))?;
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
         talaria_fleet_docker::docker(&argv_refs, Duration::from_secs(120)).await?;
     }
-    if in_image() {
+    if dials_by_name() {
         Ok(format!("http://{container}:{port}{path}"))
     } else {
         let (out, _) = talaria_fleet_docker::docker(
@@ -1116,7 +1156,7 @@ mod tests {
             &sealed(&[("API_KEY", "sk-1")]),
             "talaria-mcp-talaria-x",
             DNS,
-            false,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1151,7 +1191,7 @@ mod tests {
     #[test]
     fn pypi_argv_pins_version_with_double_equals() {
         let spec = PkgSpec::of(&spec_json("pypi", "stdio")).unwrap();
-        let argv = pkg_argv(&spec, &SealedDoc::default(), "c", DNS, false).unwrap();
+        let argv = pkg_argv(&spec, &SealedDoc::default(), "c", DNS, None).unwrap();
         // The uv image ships only `uv`, so uvx runs as `uv tool run`.
         let ep = argv.iter().position(|a| a == "--entrypoint").unwrap();
         assert_eq!(argv[ep + 1], "/usr/local/bin/uv");
@@ -1169,17 +1209,44 @@ mod tests {
     #[test]
     fn oci_http_runs_detached_and_publishes_the_declared_port() {
         let spec = PkgSpec::of(&spec_json("oci", "http")).unwrap();
-        let argv = pkg_argv(&spec, &SealedDoc::default(), "c", DNS, true).unwrap();
+        let argv = pkg_argv(
+            &spec,
+            &SealedDoc::default(),
+            "c",
+            DNS,
+            Some("talaria-mcp-test"),
+        )
+        .unwrap();
         assert!(argv.contains(&"-d".to_string()));
         assert!(!argv.contains(&"-i".to_string()));
         assert!(argv.windows(2).any(|w| w == ["-p", "127.0.0.1::8080"]));
         assert!(argv.contains(&"ghcr.io/example/srv".to_string()));
+        // The network is a docker flag, so it precedes the image; anything
+        // after the image is the package's own argv.
+        let image = argv
+            .iter()
+            .position(|a| a == "ghcr.io/example/srv")
+            .unwrap();
+        let network = argv
+            .windows(2)
+            .position(|w| w == ["--network", "talaria-mcp-test"])
+            .unwrap();
+        assert!(network < image, "--network after the image: {argv:?}");
+        assert!(!argv[image..].iter().any(|a| a == "--network"));
+    }
+
+    #[test]
+    fn a_stdio_package_names_no_network() {
+        let spec = PkgSpec::of(&spec_json("oci", "stdio")).unwrap();
+        let argv = pkg_argv(&spec, &SealedDoc::default(), "c", DNS, None).unwrap();
+        assert!(!argv.iter().any(|a| a == "--network"));
+        assert!(argv.contains(&"-i".to_string()));
     }
 
     #[test]
     fn oci_stdio_runs_the_pinned_image_interactively() {
         let spec = PkgSpec::of(&spec_json("oci", "stdio")).unwrap();
-        let argv = pkg_argv(&spec, &SealedDoc::default(), "c", DNS, false).unwrap();
+        let argv = pkg_argv(&spec, &SealedDoc::default(), "c", DNS, None).unwrap();
         assert!(argv.contains(&"-i".to_string()));
         assert_eq!(argv.last().unwrap(), "ghcr.io/example/srv");
     }
@@ -1196,11 +1263,11 @@ mod tests {
             "pull": { "state": "ready" },
         });
         let spec = PkgSpec::of(&doc).unwrap();
-        let err = pkg_argv(&spec, &SealedDoc::default(), "c", DNS, false).unwrap_err();
+        let err = pkg_argv(&spec, &SealedDoc::default(), "c", DNS, None).unwrap_err();
         assert!(err.contains("--privileged"), "{err}");
         doc["runArgs"].as_array_mut().unwrap().remove(0);
         let spec = PkgSpec::of(&doc).unwrap();
-        let argv = pkg_argv(&spec, &sealed(&[]), "c", DNS, false).unwrap();
+        let argv = pkg_argv(&spec, &sealed(&[]), "c", DNS, None).unwrap();
         assert!(
             argv.windows(2)
                 .any(|w| w == ["-v", "talaria-mcp-cfg:/cfg:ro"])
@@ -1270,10 +1337,10 @@ mod tests {
         let spec = PkgSpec::of(&doc).unwrap();
         let mut filled = SealedDoc::default();
         filled.args.insert(0, "/etc:/etc".to_string());
-        let err = pkg_argv(&spec, &filled, "c", DNS, false).unwrap_err();
+        let err = pkg_argv(&spec, &filled, "c", DNS, None).unwrap_err();
         assert!(err.contains("/etc:/etc"), "{err}");
         filled.args.insert(0, "talaria-mcp-data:/data".to_string());
-        let argv = pkg_argv(&spec, &filled, "c", DNS, false).unwrap();
+        let argv = pkg_argv(&spec, &filled, "c", DNS, None).unwrap();
         assert!(
             argv.windows(2)
                 .any(|w| w == ["-v", "talaria-mcp-data:/data"])
@@ -1294,7 +1361,7 @@ mod tests {
         let spec = PkgSpec::of(&doc).unwrap();
         let mut sealed_doc = SealedDoc::default();
         sealed_doc.args.insert(2, "/data:/data".to_string());
-        let argv = pkg_argv(&spec, &sealed_doc, "c", DNS, false).unwrap();
+        let argv = pkg_argv(&spec, &sealed_doc, "c", DNS, None).unwrap();
         assert!(argv.windows(2).any(|w| w == ["-p", "127.0.0.1:9999:80"]));
         let image_at = argv.iter().position(|a| a == "ghcr.io/x/y").unwrap();
         assert_eq!(argv[image_at + 1], "serve");
@@ -1312,6 +1379,21 @@ mod tests {
         let doc = SealedDoc::open(&sb, &enc).unwrap();
         assert_eq!(doc.env.get("TOKEN").map(String::as_str), Some("t1"));
         assert_eq!(doc.args.get(&2).map(String::as_str), Some("8080:8080"));
+    }
+
+    #[test]
+    fn package_urls_go_by_container_name_from_the_image_and_a_devbox_only() {
+        // The product image, either spelling.
+        assert!(dials_by_name_in(Some("image"), None, None));
+        assert!(dials_by_name_in(None, Some("prod-server"), None));
+        // A devbox: its compose sets TALARIA_DEVBOX to the box's name (an
+        // older template set '1'). Its published loopback port is the host's.
+        assert!(dials_by_name_in(None, None, Some("fixui-n8")));
+        assert!(dials_by_name_in(None, None, Some("1")));
+        // The host: none set, or set empty — the loopback port answers there.
+        assert!(!dials_by_name_in(None, None, None));
+        assert!(!dials_by_name_in(None, None, Some("")));
+        assert!(!dials_by_name_in(Some("checkout"), Some("dev"), None));
     }
 
     fn test_box() -> SecretBox {

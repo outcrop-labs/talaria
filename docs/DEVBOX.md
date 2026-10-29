@@ -111,6 +111,13 @@ the symlink spelling never leaks into config the box must resolve.
 - **talaradev** — the primary dev stack's network, joined read-only in
   spirit. Boxes only dial the one stateless service on it
   (`TALARIA_EMBED_URL` by container name).
+- **packages** — `talaria-mcp-<name>`, joined on demand. An MCP package
+  served over HTTP (an oci package with an http transport) runs on its own
+  network, never the box's default one, where postgres and redis are. The
+  box's api joins that network by the box container's own hostname and dials
+  the package by container name, as the product image does
+  (`api/crates/talaria-mcp/src/pkg.rs`, `dials_by_name`): the loopback port
+  the package publishes is the host's, not the box's.
 - **fleet** — `devbox-<name>-fleet`, this box's private agent network.
   Spawned agents attach to it and reach the box container-to-container:
   `devbox:5273` for the MCP gateway (`TALARIA_MCP_GW_URL`), `devbox:5274` for
