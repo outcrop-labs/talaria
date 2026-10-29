@@ -10,7 +10,7 @@ use serde_json::json;
 use talaria_agent_crons::{create_cron_job, list_cron_jobs};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, trimmed_string_member};
-use talaria_error::{house_error, object_or_400};
+use talaria_error::{house_error, object_or_400, store_answer};
 use talaria_session::{actor_of, require_agent_manager, require_agent_reader};
 use talaria_state::AppState;
 pub async fn get(
@@ -24,7 +24,7 @@ pub async fn get(
     }
     Ok(match list_cron_jobs(&state.pg, &id).await {
         Ok(jobs) => Json(json!({ "jobs": jobs })).into_response(),
-        Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+        Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
     })
 }
 
@@ -79,7 +79,7 @@ pub async fn post(
                 // wire shape — { ok, id }, id after ok.
                 Json(json!({ "ok": true, "id": created })).into_response()
             }
-            Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+            Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
         },
     )
 }

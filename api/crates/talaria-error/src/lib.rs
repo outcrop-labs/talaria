@@ -199,6 +199,33 @@ pub fn object_or_400(
     }
 }
 
+/// What a store hands up in place of a database error's own text, where its
+/// errors are sentences a route puts on the wire. A sqlx error's Display is
+/// the database talking — a constraint name, a cast it refused, the pool's
+/// state — and none of that is the caller's to read
+/// (docs/API-CONVENTIONS.md, "Shapes"). The full error is logged where it
+/// happened ([`store_fault`]); the route answers this one the house 500
+/// ([`store_answer`]).
+pub const STORE_FAULT: &str = "the database could not complete this request";
+
+/// Log a store's database error with its context, and hand up
+/// [`STORE_FAULT`] in its place — the `.map_err` for a store whose `Err` is
+/// a sentence a person reads.
+pub fn store_fault(context: &str, e: impl std::fmt::Display) -> String {
+    tracing::error!("{context}: {e}");
+    STORE_FAULT.to_string()
+}
+
+/// A store's sentence as a route answers it: [`STORE_FAULT`] is the house
+/// 500 (already logged where it happened), and any other sentence is the
+/// route's own refusal, with `status`.
+pub fn store_answer(status: StatusCode, sentence: &str) -> Response {
+    if sentence == STORE_FAULT {
+        return thrown_internal_error();
+    }
+    house_error(status, sentence)
+}
+
 /// The bare Postgres sentence under a sqlx error — the message
 /// catch-and-answer routes put on the wire. sqlx's own Display wraps it
 /// ("error returned from database: … at line N"), which the wire never
@@ -676,6 +703,30 @@ fn scrub_prefixed_key(s: &str, i: usize) -> Option<(String, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A store's fault crosses as the house 500 (the text/plain envelope,
+    /// nothing of the database's text); any other sentence is the route's
+    /// own refusal.
+    #[test]
+    fn a_store_fault_is_the_house_500_and_names_no_sql() {
+        let sentence = store_fault(
+            "[test] write",
+            "error returned from database: insert or update on table \"agent_secrets\" violates foreign key constraint",
+        );
+        assert_eq!(sentence, STORE_FAULT);
+        let r = store_answer(StatusCode::BAD_REQUEST, &sentence);
+        assert_eq!(r.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            r.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "text/plain"
+        );
+        let r = store_answer(StatusCode::BAD_REQUEST, "not a running managed agent");
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            r.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+    }
 
     /// A model that will not switch its thinking off says so in prose the
     /// boundary never forwards — so the boundary says it in ITS words,

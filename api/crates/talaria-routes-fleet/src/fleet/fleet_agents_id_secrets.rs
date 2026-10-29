@@ -1,6 +1,7 @@
 // /api/fleet/agents/{id}/secrets. Per-agent secrets, write-only. GET →
 // names + timestamps (never values), and for a CONFIG_* secret where the
-// current config names it (usedAt). PUT { name, value } → set/replace.
+// current config names it (usedAt). PUT { name, value } → set/replace; a
+// well-formed id that names no agent is a 404.
 // DELETE { name, removeSetting? } → remove; a CONFIG_* secret the current
 // config still names is a 409 { error, usedAt } unless removeSetting is true,
 // which first writes a new version without those settings. Admin, or the
@@ -14,8 +15,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_defs::{NewVersion, add_version_if_changed, list_versions};
 use talaria_agent_secrets::{
-    CONFIG_SECRET_PREFIX, config_secret_paths, delete_agent_secret, list_agent_secrets,
-    set_agent_secret, withhold_config_secret,
+    CONFIG_SECRET_PREFIX, SecretWriteError, config_secret_paths, delete_agent_secret,
+    list_agent_secrets, set_agent_secret, withhold_config_secret,
 };
 use talaria_audit::{AuditEntry, log_audit, spawn_audit};
 use talaria_body::{
@@ -77,7 +78,11 @@ pub async fn put(
                 );
                 Json(json!({ "ok": true })).into_response()
             }
-            Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+            Err(SecretWriteError::Refused(why)) => house_error(StatusCode::BAD_REQUEST, &why),
+            // A well-formed id no agent has: the foreign key refused the row.
+            Err(SecretWriteError::NoAgent) => house_error(StatusCode::NOT_FOUND, "not found"),
+            // Logged in full here; nothing of it crosses.
+            Err(SecretWriteError::Fault(e)) => internal("[fleet] secret write failed", e),
         },
     )
 }

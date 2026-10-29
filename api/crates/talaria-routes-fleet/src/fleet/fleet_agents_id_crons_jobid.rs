@@ -14,7 +14,7 @@ use talaria_agent_crons::{
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{enum_member, optional_max_string_member, parse};
-use talaria_error::{house_error, object_or_400};
+use talaria_error::{house_error, object_or_400, store_answer};
 use talaria_session::{actor_of, require_agent_manager};
 use talaria_state::AppState;
 pub async fn delete(
@@ -37,7 +37,7 @@ pub async fn delete(
             );
             Json(json!({ "ok": true })).into_response()
         }
-        Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+        Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
     })
 }
 
@@ -114,7 +114,7 @@ pub async fn put(
                 );
                 Json(json!({ "ok": true })).into_response()
             }
-            Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+            Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
         },
     )
 }
@@ -151,7 +151,7 @@ pub async fn post(
             );
             Json(json!({ "ok": true })).into_response()
         }
-        Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+        Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
     })
 }
 

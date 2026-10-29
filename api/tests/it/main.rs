@@ -15,6 +15,7 @@
 
 mod support;
 
+mod absent_path_ids;
 mod agent_managers;
 mod agent_reply_notify;
 mod app_mcp_sync_live;
