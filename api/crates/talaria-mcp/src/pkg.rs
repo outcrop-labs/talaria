@@ -1415,6 +1415,11 @@ mod tests {
             "data:/data",
             "talaria-mcp-a",
             "talaria-mcp-a:/x:ro:extra",
+            // A CA bundle from the host, the bind that made dockerd create
+            // /etc/pki/tls/certs/ca-bundle.crt as a directory on a host
+            // without one (follow-up UB4): a host path like any other.
+            "/etc/pki/tls/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro",
+            "/etc/ssl/certs:/etc/ssl/certs:ro",
         ] {
             let err = check_run_flag("-v", Some(bad)).unwrap_err();
             assert!(err.contains("not allowed"), "{bad} → {err}");
@@ -1423,6 +1428,13 @@ mod tests {
         // Mounts and hosts: refused by name, whatever the value.
         assert!(check_run_flag("--mount", Some("type=volume,src=talaria-mcp-a,dst=/a")).is_err());
         assert!(check_run_flag("--mount", None).is_err());
+        assert!(
+            check_run_flag(
+                "--mount",
+                Some("type=bind,src=/etc/pki/tls/certs/ca-bundle.crt,dst=/etc/ssl/cert.pem")
+            )
+            .is_err()
+        );
         assert!(check_run_flag("--add-host", Some("host.docker.internal:host-gateway")).is_err());
         assert!(check_run_flag("--network", Some("host")).is_err());
         // Ports: loopback only.
