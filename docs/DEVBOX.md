@@ -59,9 +59,14 @@ branch on the host.
    writes is dropped from the copied file first, and so is everything that names
    a worktree's stack (`TALARIA_WORKTREE`, its api, toolkit, auth-bridge and
    gateway ports): `box new` run with a worktree's CLI copies that worktree's
-   `ui/.env`, and the first match wins. `TALARIA_EMBED_URL` names the embeddings
-   container step 1 started, the shell's `TALARIA_EMBED_CONTAINER` when it sets
-   one.
+   `ui/.env`, and the first match wins. So are `TALARIA_APP_DATA_DIR` and
+   `TALARIA_APP_BUILDS_DIR`, which a primary may set by hand: the box derives
+   both from its own `TALARIA_APPS_DIR`, as `state/app-data` and
+   `state/app-builds`. `TALARIA_EMBED_URL` names the embeddings container step 1
+   started, the shell's `TALARIA_EMBED_CONTAINER` when it sets one. The Rust api
+   reads no `.env` file, so the box's `talaria dev` hands it every line of this
+   block it reads: the dial, the fleet, apps and uploads dirs, the gateway URLs,
+   and the qdrant, embeddings and storage addresses.
 7. Seeds starter data from the primary (below).
 8. Runs any `--setup` hooks inside the fresh box (provisioning; `npm i -g`
    hooks land in the shared tools layer, below), then installs deps and
