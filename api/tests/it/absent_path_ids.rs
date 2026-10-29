@@ -187,7 +187,12 @@ async fn a_well_formed_id_that_names_nothing_is_a_404_and_never_the_database() {
                 None,
                 Some(cookie.as_str()),
             ),
-            ("DELETE", format!("/api/keys/{id}"), None, Some(cookie.as_str())),
+            (
+                "DELETE",
+                format!("/api/keys/{id}"),
+                None,
+                Some(cookie.as_str()),
+            ),
             (
                 "DELETE",
                 format!("/api/rag/collections/{id}"),
@@ -489,7 +494,11 @@ async fn the_five_deletes_still_delete_what_is_there() {
     let upper = |id: &str| id.to_ascii_uppercase();
     let braced = |id: &str| format!("%7B{id}%7D");
     let cases: Vec<(String, Option<Value>, &str)> = vec![
-        (format!("/api/workflows/{}", upper(&workflow)), None, "task_workflows"),
+        (
+            format!("/api/workflows/{}", upper(&workflow)),
+            None,
+            "task_workflows",
+        ),
         (format!("/api/keys/{}", braced(&key)), None, "llm_api_keys"),
         (
             format!("/api/rag/collections/{}", upper(&collection)),
@@ -524,7 +533,11 @@ async fn the_five_deletes_still_delete_what_is_there() {
         }
     };
     assert_eq!(
-        gone("select count(*) from task_workflows where id = $1::uuid", workflow.clone()).await,
+        gone(
+            "select count(*) from task_workflows where id = $1::uuid",
+            workflow.clone()
+        )
+        .await,
         0
     );
     assert_eq!(
@@ -536,11 +549,19 @@ async fn the_five_deletes_still_delete_what_is_there() {
         0
     );
     assert_eq!(
-        gone("select count(*) from rag_collections where id = $1::uuid", collection.clone()).await,
+        gone(
+            "select count(*) from rag_collections where id = $1::uuid",
+            collection.clone()
+        )
+        .await,
         0
     );
     assert_eq!(
-        gone("select count(*) from artifact_folders where id = $1::uuid", folder.clone()).await,
+        gone(
+            "select count(*) from artifact_folders where id = $1::uuid",
+            folder.clone()
+        )
+        .await,
         0
     );
     assert_eq!(
