@@ -227,6 +227,10 @@ they are wire contract, pinned by its tests.
 - Mutations: `{ ok: true }`, or the created/updated object (`{ folder }`).
 - Never leak `(e as Error).message` with a 500: `console.error('[route]', e)` server-side, return a
   generic line. 400-level messages may carry the business reason.
+- A database error is never a 400's message either. In the Rust api, a store whose `Err` is a
+  sentence a route puts on the wire hands a database failure up as `talaria_error::store_fault`
+  (logged where it happened, with the sqlx text), and the route answers that sentence with
+  `store_answer`: the house 500. Every other sentence keeps its 400.
 - Secrets: sealed at rest, **never echoed** — GETs return set-flags (`passSet`) or masked keys.
   An empty string on a round-tripped masked field means "keep", not "clear".
 
@@ -235,6 +239,15 @@ they are wire contract, pinned by its tests.
 - **GET** reads. **POST** creates and *actions* (verify, test-send, install, rotate).
 - **PUT/PATCH** config and edits — config writes are PUT, not POST.
 - **DELETE** takes ids in the path, small selectors in a JSON body (matching the PUT transport).
+- **A well-formed path id that names nothing is a 404** (`not found`): on a GET, on a PUT/PATCH,
+  and on a DELETE that addresses the row by its own id. The exception is a family whose rule is
+  *forbidden, not hidden* (boards, channels, teams, workchains, kb comments, the run views): a
+  caller who may not see a row gets 403 whether it exists or not, so an absent id gets that 403
+  too. A few older DELETEs still answer 200 for an absent id (workflows, keys, rag collections,
+  artifact folders, agent secrets); new routes do not copy them.
+- **A malformed path id is a 404 as well**, wherever the route casts it with `$N::uuid`: gate it
+  with `talaria_params::uuid_gate_404`, after the route's auth (and after its body checks, where
+  those come first). No row can carry it, so the 404 hides nothing, even in a 403 family.
 - Authorization comes BEFORE body parsing unless the decision depends on the body (say so in a
   comment).
 
