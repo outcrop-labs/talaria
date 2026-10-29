@@ -357,7 +357,6 @@ export class DitherEngine {
   private ghostSeq = 0
   private wCss = 0
   private hCss = 0
-  private dpr = 1
   // Position on the page-wide lattice — see `latticeOrigin`.
   private fx = 0
   private fy = 0
@@ -456,7 +455,6 @@ export class DitherEngine {
     this.fy = gy.frac
     this.ox = gx.cell
     this.oy = gy.cell
-    this.dpr = dpr
     this.canvas.width = Math.round(wCss * dpr)
     this.canvas.height = Math.round(hCss * dpr)
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -665,32 +663,6 @@ export class DitherEngine {
     const bucket = Math.floor(now / 160)
     const t = now / 1000
 
-    // ERASE A DOT BY THE DEVICE PIXELS IT TOUCHED, not by its own rect. A dot
-    // sits at a fractional device position (the half-pitch offset, the page
-    // lattice's `frac`), so its fill antialiases into the pixels along its
-    // edges, and a clearRect over the same fractional rect antialiases too: it
-    // clears an edge pixel only by its coverage. Each rewrite then composited
-    // over what the clear left, and a live field crept up to four to seven
-    // times the alpha a full rebuild of the same frame paints (measured: the
-    // EmptyState vignette after 15 s of shimmer, a card's travelling wash, a
-    // streaming tail). Snapping the clear outward to whole device pixels
-    // erases exactly what this dot drew. Dots never share a device pixel
-    // here: the gap (pitch − dot) is at least one CSS px on every field, so
-    // the snapped box stops short of the neighbour. Cover mode tiles cells
-    // edge to edge, where a snapped clear WOULD reach the neighbour, so it
-    // keeps the plain rect.
-    const d = this.dpr
-    const snap = !cover && (pitch - dot) * d >= 1
-    const clearCell = (x: number, y: number): void => {
-      if (!snap) {
-        ctx.clearRect(x, y, size, size)
-        return
-      }
-      const x0 = Math.floor(x * d) / d
-      const y0 = Math.floor(y * d) / d
-      ctx.clearRect(x0, y0, Math.ceil((x + size) * d) / d - x0, Math.ceil((y + size) * d) / d - y0)
-    }
-
     // THE CANVAS IS THE STATE. `painted` is what is on it, cell by cell, packed
     // into the same 8 bits per channel the canvas stores — so two cells that
     // pack equal are two cells that PAINT equal, and the frame can write only
@@ -816,7 +788,7 @@ export class DitherEngine {
         // are left exactly as they are.
         if (density <= 0.002) {
           if (painted[i] !== 0) {
-            clearCell(cx * pitch - this.fx + off, top)
+            ctx.clearRect(cx * pitch - this.fx + off, top, size, size)
             painted[i] = 0
           }
           continue
@@ -855,9 +827,14 @@ export class DitherEngine {
         // BRIGHTENS it (0.016 over 0.063 reads 0.078), and every shimmer flip
         // or passing wave crest stacked another layer: the field crept past its
         // own maxAlpha into blotch. The clear makes the write absolute — the
-        // same pixels a full clear-and-redraw would have left — as long as it
-        // reaches every pixel the dot's fill touched (`clearCell`).
-        clearCell(cx * pitch - this.fx + off, top)
+        // same pixels a full clear-and-redraw would have left. Not quite, at
+        // a fractional device position: the clear antialiases like the fill,
+        // erasing an edge pixel only by its coverage, so a live field still
+        // creeps brighter than a full rebuild over its first seconds.
+        // Clearing the whole device pixels the dot touched ends that, and
+        // makes every live field look fainter than it does today, so it waits
+        // for an owner's call (#624, N11).
+        ctx.clearRect(cx * pitch - this.fx + off, top, size, size)
         ctx.fillStyle = this.styleOf(packed)
         ctx.fillRect(cx * pitch - this.fx + off, top, size, size)
         painted[i] = packed
