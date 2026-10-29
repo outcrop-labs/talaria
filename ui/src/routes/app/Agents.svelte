@@ -97,7 +97,11 @@
   // failure sentence, the disabled Roll control — and the strip above the
   // roster reads the whole.
   const rollQuery = useFleetRoll(() => isAdmin)
-  const rollByDept = $derived(new Map((rollQuery.data?.rolls ?? []).map((r) => [r.department, r])))
+  // By slug, not department: the picture has one row per agent, and an agent
+  // left out of a department another agent runs in (a pair from before the
+  // one-agent rule) reads idle there — keyed by department, it wore the
+  // runner's chip and its Roll control followed the runner's roll.
+  const rollBySlug = $derived(new Map((rollQuery.data?.rolls ?? []).map((r) => [r.slug, r])))
   const anyRolling = $derived(rollQuery.data?.rolling ?? false)
   // The confirm step lives in the page, above the roster, not in a dialog:
   // what is about to happen is visible beside the agents it happens to.
@@ -478,9 +482,9 @@
               {@const brainByAgent = new Map((data.brains ?? []).map((b) => [b.agent, b]))}
               {#each data.defs as d (d.id)}
                 {#if view === 'grid'}
-                  <AgentTile def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
+                  <AgentTile def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} onDuplicate={() => (duplicateFrom = d)} />
                 {:else}
-                  <AgentListRow def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
+                  <AgentListRow def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} onDuplicate={() => (duplicateFrom = d)} />
                 {/if}
               {/each}
             {/snippet}

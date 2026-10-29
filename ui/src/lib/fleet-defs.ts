@@ -281,9 +281,23 @@ export interface FleetRollRow {
   batch: string | null
 }
 
+/** The note on a `rolling` row whose container was recreated and had not
+ *  reported healthy when the roll's health wait passed (talaria-fleet-reconcile
+ *  STILL_STARTING). The roll's steps are over: only its verdict is to come. */
+export const ROLL_STILL_STARTING = 'still starting'
+
+/** Whether a row's roll is in its steps — what holds the Roll controls. A row
+ *  noted `still starting` is not: its roll has let go of its locks (the route
+ *  accepts a new one), and the late wait only writes its verdict, for up to
+ *  twelve minutes. Its chip still reads *starting*. */
+export function rollInProgress(row: FleetRollRow | null | undefined): boolean {
+  return row?.state === 'rolling' && row.detail !== ROLL_STILL_STARTING
+}
+
 export interface FleetRollPicture {
   ok: boolean
-  /** Whether any department is mid-roll right now. */
+  /** Whether any department's roll is in its steps right now — rows noted
+   *  `still starting` do not count (`rollInProgress`). */
   rolling: boolean
   /** The most recent batch on record, if any. */
   batch: string | null

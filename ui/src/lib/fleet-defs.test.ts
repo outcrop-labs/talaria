@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { containersOf, editNotApplied, type AgentContainers, type DepartmentShare } from './fleet-defs'
+import { containersOf, editNotApplied, ROLL_STILL_STARTING, rollInProgress, type AgentContainers, type DepartmentShare, type FleetRollRow } from './fleet-defs'
 
 // Containers are found by department, and a department is one container. Where
 // two agents hold one (a pair from before a department became one agent's), the
@@ -118,5 +118,38 @@ describe('editNotApplied', () => {
     expect(editNotApplied({ version: 4, created: true, applied: false, warning: 'no managed agent in department "desk"' }, held)).toBe(
       'Saved as version 4, not applied: no managed agent in department "desk"',
     )
+  })
+})
+
+// A roll's row holds the Roll controls only while the roll is in its steps. A
+// row noted `still starting` has let go of its locks (the route takes a new
+// roll), and its late wait can run twelve minutes: it must not hold them.
+describe('rollInProgress', () => {
+  const row = (state: FleetRollRow['state'], detail: string | null = null): FleetRollRow => ({
+    slug: 'ava',
+    department: 'research',
+    displayName: 'Ava',
+    state,
+    since: 1,
+    detail,
+    batch: null,
+  })
+
+  it('is a roll in its steps, queued ones included', () => {
+    expect(rollInProgress(row('rolling'))).toBe(true)
+    expect(rollInProgress(row('rolling', 'queued'))).toBe(true)
+  })
+
+  it('is not a roll whose container is still starting', () => {
+    expect(ROLL_STILL_STARTING).toBe('still starting')
+    expect(rollInProgress(row('rolling', ROLL_STILL_STARTING))).toBe(false)
+  })
+
+  it('is not a finished roll, or no row at all', () => {
+    expect(rollInProgress(row('done'))).toBe(false)
+    expect(rollInProgress(row('failed', 'the recreated container stopped running before it reported healthy'))).toBe(false)
+    expect(rollInProgress(row('idle'))).toBe(false)
+    expect(rollInProgress(undefined)).toBe(false)
+    expect(rollInProgress(null)).toBe(false)
   })
 })

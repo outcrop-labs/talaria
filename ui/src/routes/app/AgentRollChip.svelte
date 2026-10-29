@@ -1,6 +1,6 @@
 <script lang="ts">
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
-  import type { FleetRollRow } from '@/lib/fleet-defs'
+  import { ROLL_STILL_STARTING, type FleetRollRow } from '@/lib/fleet-defs'
 
   // One agent's place in a roll, as the roster shows it: the same outline
   // chip idiom as AgentDraftChip and AgentBrainChip (spec §8). Rolling is a
@@ -15,8 +15,9 @@
   // Recreated, and slower to report healthy than the roll waits: the row
   // stays rolling with this note until the container is up (done) or the
   // late wait gives up (failed) — never a lasting "failed" for an agent that
-  // then comes up (talaria-fleet-reconcile STILL_STARTING).
-  const starting = $derived(state === 'rolling' && detail === 'still starting')
+  // then comes up (talaria-fleet-reconcile STILL_STARTING). Its roll's steps
+  // are over, so the Roll controls are not held for it (rollInProgress).
+  const starting = $derived(state === 'rolling' && detail === ROLL_STILL_STARTING)
 </script>
 
 {#if roll && state !== 'idle'}

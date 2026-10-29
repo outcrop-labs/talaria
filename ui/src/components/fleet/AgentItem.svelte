@@ -9,8 +9,9 @@
     openManage: () => void
     /** The frame root's `oncontextmenu` (the manage/duplicate/lifecycle menu). */
     onContextMenu: (e: MouseEvent) => void
-    /** The department is mid-roll — its own roll or the fleet-wide batch —
-     *  so the Roll control is disabled and the frame can say so. */
+    /** The department's roll is in its steps — its own roll or the fleet-wide
+     *  batch — so the Roll control is disabled and the frame can say so. A
+     *  roll whose container is still starting is not (`rollInProgress`). */
     rolling: boolean
   }
 </script>
@@ -18,7 +19,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import type { AgentContainers, AgentDef, FleetRollRow, LlmEndpoint } from '@/lib/fleet-defs'
+  import { rollInProgress, type AgentContainers, type AgentDef, type FleetRollRow, type LlmEndpoint } from '@/lib/fleet-defs'
   import AgentRetireModal from '@/routes/app/AgentRetireModal.svelte'
   import { healthOf, useAgentMenu } from '@/routes/app/agents.svelte'
   import AgentManageModal from './AgentManageModal.svelte'
@@ -48,7 +49,7 @@
   let manage = $state(false)
   const openManage = () => (manage = true)
   const running = $derived(healthOf(d, containers).running)
-  const rolling = $derived(roll?.state === 'rolling')
+  const rolling = $derived(rollInProgress(roll))
   const am = useAgentMenu(() => d, () => running, openManage, () => onDuplicate(), () => rolling)
 </script>
 
