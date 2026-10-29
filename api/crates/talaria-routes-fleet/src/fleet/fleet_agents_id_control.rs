@@ -50,7 +50,7 @@ use talaria_api_facades::fleet::docker::{
     ANSWER_WITHIN, Detached, Observed, fleet_remove, fleet_restart, fleet_stop, fleet_up,
     is_timeout, observe, remove_stopped, run_detached, settle, up_landed,
 };
-use talaria_api_facades::fleet::reconcile::roll_running_agent;
+use talaria_api_facades::fleet::reconcile::{RollOutcome, roll_running_agent_outcome};
 use talaria_api_facades::fleet::render::render_fleet;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{enum_member, parse};
@@ -178,9 +178,17 @@ async fn start_roll(state: &AppState, actor: &str, def: &AgentDefRow) -> Respons
             // that never changed anything and no reason for it. The audit
             // entry is the same shape mcp-apply writes when its own roll
             // fails.
-            let error = match roll_running_agent(&pg, &sb, &dept).await {
-                Ok(None) => return,
-                Ok(Some(warning)) => warning,
+            let error = match roll_running_agent_outcome(&pg, &sb, &dept).await {
+                Ok(RollOutcome::Rolled | RollOutcome::LeftAlone) => return,
+                // Recreated and still booting past the roll's health wait:
+                // not a failure unless the late wait says so (its registry
+                // row reads "still starting" meanwhile).
+                Ok(RollOutcome::StillStarting { late, .. }) => match late.await {
+                    Ok(None) => return,
+                    Ok(Some(failed)) => failed,
+                    Err(e) => format!("its late health wait was lost: {e}"),
+                },
+                Ok(RollOutcome::Soft(warning)) => warning,
                 Err(thrown) => thrown,
             };
             tracing::warn!("[fleet] roll of {label} ({dept}) failed: {error}");

@@ -241,6 +241,9 @@ async fn ensure_fleet_network() -> Result<(), String> {
 /// (trimmed), which on success carries its progress/warnings — the run logs
 /// nothing of it.
 pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
+    // Not mid-way through a legacy agent's move home: wait for one to end,
+    // so the `up` addresses wherever the agent is then.
+    let _moving = lock_move(department).await;
     compose_up(pg, department, &["up", "-d"], verb_timeout(120), false)
         .await
         .map(UpOutcome::into_stderr)
@@ -801,6 +804,76 @@ async fn lock_service(svc: &str) -> tokio::sync::OwnedMutexGuard<()> {
     lock.lock_owned().await
 }
 
+// ── A legacy `-b` agent moving home ─────────────────────────────────────────
+//
+// The roll that moves a legacy `-b` agent home (fleet-reconcile) points the
+// def at its home service BEFORE the render and the pull, and retires `-b`
+// only after them — minutes, for a new pin. Every verb here resolves the
+// agent's service from the def, so a stop sent in that window addressed the
+// home service, which has no container yet: compose stopped nothing and
+// answered success, `-b` kept serving, and the roll then retired it and
+// started the home container. The stop was never seen.
+//
+// So the move holds its department's MOVE LOCK from before it first reads
+// `-b` until the home container is up, and every control verb takes the same
+// lock before it resolves the service (`compose_verb`, `fleet_up`): a verb
+// sent mid-move waits for the move to end and then addresses wherever the
+// agent is. A stop (or a retire's remove) also leaves a STOP INTENT before it
+// waits, which the move reads just before the retire that lets the home
+// container start: one that arrived during the move abandons it, puts the
+// def back on `-b`, and the waiting stop then stops `-b` — nothing is started.
+
+/// Each department's move lock (above). Never held by anything but a legacy
+/// `-b` agent's move home and the verbs that wait for one.
+static MOVE_LOCKS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Take a department's move lock (see "A legacy `-b` agent moving home").
+/// The roll that moves an agent home holds it across the move; a control
+/// verb holds it for its own run, so a move never starts in the middle of a
+/// stop either. Never taken inside `compose_up`, which the move itself calls.
+pub async fn lock_move(department: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = MOVE_LOCKS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(department.to_string())
+        .or_default()
+        .clone();
+    lock.lock_owned().await
+}
+
+/// How many stop-shaped verbs (stop, a retire's remove) have been asked of
+/// each department in this process — what a move compares, before and after,
+/// to see whether a person asked the agent to stop while it ran.
+static STOP_INTENTS: LazyLock<Mutex<HashMap<String, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The department's stop count now: a move reads it when it starts, and
+/// [`stopped_since`] compares against it.
+pub fn stop_mark(department: &str) -> u64 {
+    STOP_INTENTS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(department)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Whether a stop was asked of the department after `mark` was read.
+pub fn stopped_since(department: &str, mark: u64) -> bool {
+    stop_mark(department) != mark
+}
+
+/// Leave a stop intent for the department — before the verb waits for the
+/// move lock, so a move in progress sees it.
+fn note_stop(department: &str) {
+    *STOP_INTENTS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(department.to_string())
+        .or_default() += 1;
+}
+
 /// An `up` that would replace a running container failed — compose's error,
 /// or its deadline. What it leaves depends on how far it got. A stranded
 /// replacement (`stranded`) means compose had created the new container, so
@@ -1126,6 +1199,75 @@ pub async fn wait_healthy(pg: &PgPool, department: &str, timeout_ms: u64) -> boo
     false
 }
 
+/// How a roll's wait for its recreated container to report healthy ended
+/// ([`wait_health`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealthWait {
+    /// Docker reports it healthy.
+    Healthy,
+    /// The deadline passed with the container running and its healthcheck
+    /// still `starting`.
+    Starting,
+    /// The deadline passed with the container running and docker calling it
+    /// `unhealthy` — which is also how a boot slower than the healthcheck's
+    /// start period and retries reads (about 135 s with the chassis'), and
+    /// docker turns it healthy at the first probe that passes.
+    Unhealthy,
+    /// The deadline passed with no running container (it exited, is
+    /// restarting, or docker would not describe it).
+    Down,
+}
+
+/// What one `{{.State.Status}} {{.State.Health.Status}}` reading says.
+pub fn health_reading(stdout: &str) -> Option<HealthWait> {
+    let mut parts = stdout.split_whitespace();
+    match (parts.next(), parts.next()) {
+        (Some("running"), Some("healthy")) => Some(HealthWait::Healthy),
+        (Some("running"), Some("unhealthy")) => Some(HealthWait::Unhealthy),
+        (Some("running"), _) => Some(HealthWait::Starting),
+        (Some(_), _) => Some(HealthWait::Down),
+        (None, _) => None,
+    }
+}
+
+/// Wait up to `timeout_ms` for the department's container to report healthy,
+/// and answer the last reading when it does not. Unlike [`wait_healthy`], an
+/// `unhealthy` reading does not end the wait: a boot slower than the
+/// healthcheck's start period and retries reads unhealthy from about 135 s
+/// with the chassis' healthcheck (measured with an image that boots 240 s
+/// late), and docker turns it healthy at the first probe that passes — under
+/// heavy IO a recreated agent took about four minutes to come up. What a
+/// reading was when the deadline passed is for the caller to judge.
+pub async fn wait_health(pg: &PgPool, department: &str, timeout_ms: u64) -> HealthWait {
+    let name = managed_container(pg, department).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    let mut last = HealthWait::Down;
+    while tokio::time::Instant::now() < deadline {
+        if let Ok((stdout, _)) = docker(
+            &[
+                "inspect",
+                "-f",
+                // `index`, not `.State.Health`: docker formats a container
+                // with no health state yet (one just created) as a map with no
+                // `Health` key, and a plain field read is a template error.
+                "{{.State.Status}} {{with index .State \"Health\"}}{{.Status}}{{end}}",
+                &name,
+            ],
+            Duration::from_secs(10),
+        )
+        .await
+        {
+            match health_reading(&stdout) {
+                Some(HealthWait::Healthy) => return HealthWait::Healthy,
+                Some(seen) => last = seen,
+                None => {}
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+    last
+}
+
 /// Which departments have a RUNNING agent container right now — the
 /// running-state half of container_status's projection (either service
 /// name counts, so an agent still in a legacy `-b` container is rolled
@@ -1336,6 +1478,9 @@ async fn compose_verb(
     verb_args: &[&str],
     timeout: Duration,
 ) -> Result<String, String> {
+    // A legacy agent's move home re-points the def mid-flight: wait for one
+    // in progress, so the slot below is wherever the agent is when it ends.
+    let _moving = lock_move(department).await;
     let slot = active_slot(pg, department).await;
     let container = slot_container(department, slot);
     let svc = slot_service(department, slot);
@@ -1381,6 +1526,9 @@ pub async fn remove_volume(name: &str) -> bool {
 /// Stop a managed agent. The CLI timeout outlasts the service's
 /// `stop_grace_period`, or a draining agent would read as a failed stop.
 pub async fn fleet_stop(pg: &PgPool, department: &str) -> Result<String, String> {
+    // Before the move lock: a legacy agent's move home in progress reads it,
+    // and leaves the agent in `-b` for this stop instead of starting it home.
+    note_stop(department);
     compose_verb(
         pg,
         department,
@@ -1407,6 +1555,8 @@ pub async fn fleet_restart(pg: &PgPool, department: &str) -> Result<String, Stri
 }
 
 pub async fn fleet_remove(pg: &PgPool, department: &str) -> Result<String, String> {
+    // A retire stops the agent too ([`fleet_stop`]'s intent).
+    note_stop(department);
     compose_verb(
         pg,
         department,
@@ -1852,6 +2002,63 @@ mod tests {
             settle_window("docker compose failed: Error response from daemon: conflict"),
             Duration::from_secs(6)
         );
+    }
+
+    #[test]
+    fn a_health_reading_says_running_and_how() {
+        assert_eq!(
+            health_reading("running healthy\n"),
+            Some(HealthWait::Healthy)
+        );
+        assert_eq!(
+            health_reading("running unhealthy"),
+            Some(HealthWait::Unhealthy)
+        );
+        assert_eq!(
+            health_reading("running starting"),
+            Some(HealthWait::Starting)
+        );
+        // Running with no health state yet: still starting.
+        assert_eq!(health_reading("running "), Some(HealthWait::Starting));
+        // A container that is not running is down, whatever its last health.
+        assert_eq!(health_reading("exited unhealthy"), Some(HealthWait::Down));
+        assert_eq!(health_reading("created "), Some(HealthWait::Down));
+        assert_eq!(
+            health_reading("restarting starting"),
+            Some(HealthWait::Down)
+        );
+        assert_eq!(health_reading(""), None);
+    }
+
+    #[test]
+    fn a_stop_leaves_an_intent_a_move_in_progress_can_see() {
+        let before = stop_mark("intent-ops");
+        assert!(!stopped_since("intent-ops", before));
+        note_stop("intent-ops");
+        assert!(stopped_since("intent-ops", before));
+        // Per department: another agent's stop says nothing about this one.
+        let other = stop_mark("intent-eng");
+        note_stop("intent-ops");
+        assert!(!stopped_since("intent-eng", other));
+    }
+
+    #[tokio::test]
+    async fn a_verb_waits_for_a_move_in_progress() {
+        let moving = lock_move("move-ops").await;
+        let waited = tokio::spawn(async {
+            let _verb = lock_move("move-ops").await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waited.is_finished(), "a verb ran in the middle of a move");
+        // Another department's verb does not wait on this move.
+        let _eng = tokio::time::timeout(Duration::from_secs(1), lock_move("move-eng"))
+            .await
+            .expect("another department's lock is free");
+        drop(moving);
+        tokio::time::timeout(Duration::from_secs(1), waited)
+            .await
+            .expect("the verb runs once the move ends")
+            .expect("its task");
     }
 
     #[test]

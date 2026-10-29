@@ -34,8 +34,10 @@ terminal, background processes and `execute_code` all start without them, while 
 process keeps them to expand the handles. Configs stored before federation sealed them can be
 sealed after the fact: `POST /api/fleet/seal-configs` (the federation dialog's last line) reports
 first, then seals the current values, rolls each running agent that gains secrets (a stopped
-one's container is removed, so its next start creates one that holds them), and rewrites every
-stored version in place. Backups taken before that still hold the literals. A handle whose secret
+one's container is removed, so its next start creates one that holds them, and so is the
+container of an agent that stopped between the report and its roll, which the roll leaves alone:
+its row says `rolled: false, removedStoppedContainer: true`), and rewrites every stored version
+in place. Backups taken before that still hold the literals. A handle whose secret
 is gone, whichever way it went, is left out of the rendered `config.yaml` with a render warning,
 so Hermes never reads `${CONFIG_…}` itself as a value; setting the secret again under that name
 brings the setting back. Inline credentials the
