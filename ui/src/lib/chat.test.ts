@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ChatEvent, ChatMeta } from '@/lib/chat'
-import { queueChatMessage, steerChat, stopChat, streamChat } from '@/lib/chat'
+import { queueChatMessage, steerChat, stopChat, stopTurn, streamChat } from '@/lib/chat'
 import { HttpError } from '@/lib/fetch-json'
 
 // streamChat is where the `queued` ChatEvent actually comes from — the parser
@@ -134,6 +134,32 @@ describe('stopChat — the half of a stop that reaches the run', () => {
   it('rejects when nothing is streaming — the caller fires and forgets', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonRes({ error: 'nothing is streaming' }, 409)))
     await expect(stopChat('c1')).rejects.toThrow('nothing is streaming')
+  })
+
+  it('names the page’s own send when it has one, and outlives the page', async () => {
+    const fetchMock = vi.fn(async () => jsonRes({ ok: true, hermes: false, held: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await stopChat('c1', 't-1')).toEqual({ ok: true, hermes: false, held: true })
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(init.body).toBe(JSON.stringify({ turnId: 't-1' }))
+    expect(init.keepalive).toBe(true)
+    // Without a name the body stays empty, as before.
+    await stopChat('c1')
+    const [, bare] = fetchMock.mock.calls[1] as unknown as [string, RequestInit]
+    expect(bare.body).toBeUndefined()
+  })
+})
+
+describe('stopTurn — a stop by the send’s own name', () => {
+  it('posts to the turn, with no body, and outlives the page', async () => {
+    const fetchMock = vi.fn(async () => jsonRes({ ok: true, hermes: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await stopTurn('3f2b0c1e-0000-4000-8000-000000000001')).toEqual({ ok: true, hermes: true })
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/chat/turns/3f2b0c1e-0000-4000-8000-000000000001/stop')
+    expect(init.method).toBe('POST')
+    expect(init.keepalive).toBe(true)
+    expect(init.body).toBeUndefined()
   })
 })
 

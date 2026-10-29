@@ -24,7 +24,7 @@ use talaria_body::{
 };
 use talaria_chat_persist::{
     OpeningTurn, PersistMeta, PlanMeta, TurnMeta, continue_conversation, persist_assistant_stream,
-    pinned_turn, send_turn,
+    pinned_turn, send_turn, turn_sent,
 };
 use talaria_conversations::{
     accessible_conversation, active_streaming_assistant, create_conversation,
@@ -70,6 +70,11 @@ struct ChatBody {
     /// The file open in the teammate's pane (work turns only; validated for
     /// every kind, read only for `work`). Null and absent both mean none.
     focus: Option<PaneFocus>,
+    /// The page's own name for this turn, a uuid it drew: a stop that names
+    /// it reaches this turn before the api has read this send, and on a new
+    /// thread before the page knows the thread (talaria-chat-persist
+    /// `turn_stop`).
+    turn_id: Option<String>,
 }
 
 /// `focus: { kind: 'artifact' | 'google', id, title? } | null`. The kind is
@@ -134,6 +139,7 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<ChatBody, String> {
     // { kind: artifact|google, id, title? } or null — the file open in the
     // teammate's pane; read on work turns only
     let focus = focus_member(obj, "focus")?;
+    let turn_id = optional_uuid_member(obj, "turnId")?;
     Ok(ChatBody {
         model,
         conversation_id,
@@ -146,6 +152,7 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<ChatBody, String> {
         template_id,
         queue,
         focus,
+        turn_id,
     })
 }
 
@@ -425,6 +432,28 @@ pub async fn post(
         }
     }
     let conv_id = conv_id.expect("created or resolved above");
+
+    // A new thread's opening is claimed as soon as its id exists. And from
+    // here a stop that names this send's turn (`turnId`) finds it: the
+    // caller's access is checked and the thread's opening claimed. A stop
+    // that came first and outlived its wait is handed to the opening, whose
+    // drain sends it the moment the turn names itself.
+    let mut opening = opening.unwrap_or_else(|| OpeningTurn::take(&conv_id));
+    if let Some(turn_id) = body.turn_id.as_deref() {
+        let sent = turn_sent(turn_id, &user.id, &conv_id);
+        if sent.stop_held() {
+            if opening.hold_stop_here() {
+                tracing::info!(
+                    "[chat] {conv_id}: a person's stop for this turn came before the send did; it is held until the agent opens the turn"
+                );
+            } else {
+                tracing::info!(
+                    "[chat] {conv_id}: a person's stop for this turn came before the send did, and another turn holds the thread: nothing of this send's to stop"
+                );
+            }
+        }
+        opening.keep_turn(sent);
+    }
 
     // Claude-style flow: while a reply is streaming, new messages QUEUE into
     // history instead of interrupting — the completing turn (or the
@@ -804,9 +833,6 @@ pub async fn post(
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let assistant_id_header = assistant_id.clone();
     let persist_conv_id = conv_id.clone();
-    // A new conversation's id was made just now: no stop can name it before
-    // its headers, but the drain holds the opening all the same.
-    let opening = opening.unwrap_or_else(|| OpeningTurn::take(&conv_id));
     tokio::spawn(async move {
         persist_assistant_stream(
             state,

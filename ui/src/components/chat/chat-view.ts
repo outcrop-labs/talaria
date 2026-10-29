@@ -135,6 +135,19 @@ export function sendRoute(ctx: {
   return ctx.intent === 'send-now' && !ctx.hasAttachments ? 'steer' : 'queue'
 }
 
+/** A fresh name for a turn this page sends (`turnId` on /api/chat): a v4
+ *  uuid. A Stop carries it, so the server can place a stop that reaches it
+ *  before the send does, or before the page knows the send's thread.
+ *  `crypto.getRandomValues`, not `randomUUID`: an instance served over plain
+ *  http on a LAN is not a secure context, and `randomUUID` is absent there. */
+export function newTurnId(): string {
+  const b = crypto.getRandomValues(new Uint8Array(16))
+  b[6] = (b[6]! & 0x0f) | 0x40
+  b[8] = (b[8]! & 0x3f) | 0x80
+  const hex = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 /** The longest a Stop pressed on a new thread's first turn waits for the
  *  response to name the conversation, before it hangs up regardless. It is
  *  the server's own longest wait for an agent to open a turn's stream

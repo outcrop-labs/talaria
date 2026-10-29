@@ -7,6 +7,7 @@ import type { StoredMessage } from '@/lib/conversations.svelte'
 import {
   cronJobFromMarker,
   foldToolVerdicts,
+  newTurnId,
   reactionChips,
   sendRoute,
   STOP_NAME_WAIT_MS,
@@ -218,6 +219,18 @@ describe('sendRoute', () => {
 // A Stop pressed on a new thread's first turn, before the response headers
 // name the conversation: the stop waits for the id instead of hanging up the
 // request that would bring it.
+describe('newTurnId', () => {
+  it('draws a v4 uuid the api’s uuid check takes, fresh each time', () => {
+    const seen = new Set<string>()
+    for (let i = 0; i < 200; i++) {
+      const id = newTurnId()
+      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+      seen.add(id)
+    }
+    expect(seen.size).toBe(200)
+  })
+})
+
 describe('stopOnceNamed', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
