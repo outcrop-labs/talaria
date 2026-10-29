@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { containersOf, editNotApplied, ROLL_STILL_STARTING, rollInProgress, rollRowsBySlug, type AgentContainers, type DepartmentShare, type FleetRollRow } from './fleet-defs'
+import { containersOf, editNotApplied, editStillApplying, ROLL_STILL_STARTING, rollInProgress, rollRowsBySlug, type AgentContainers, type DepartmentShare, type FleetRollRow } from './fleet-defs'
 
 // Containers are found by department, and a department is one container. Where
 // two agents hold one (a pair from before a department became one agent's), the
@@ -118,6 +118,23 @@ describe('editNotApplied', () => {
     expect(editNotApplied({ version: 4, created: true, applied: false, warning: 'no managed agent in department "desk"' }, held)).toBe(
       'Saved as version 4, not applied: no managed agent in department "desk"',
     )
+  })
+})
+
+// A save whose apply outlived the route's answer (a 202, `pending`): saved,
+// and the apply goes on. Never "failed", never "not applied".
+describe('editStillApplying', () => {
+  it('says the version is saved and the apply goes on', () => {
+    const said = editStillApplying({ version: 7, created: true, applied: false, pending: true } as { version: number; pending: boolean })
+    expect(said).toMatch(/^Saved as version 7\. Applying it is taking longer than this form waits/)
+    expect(said).toContain('it goes on')
+    expect(said).not.toMatch(/fail|not applied/i)
+    expect(editStillApplying({ pending: true })).toMatch(/^Saved\. /)
+  })
+
+  it('is silent for every answer that is not a 202', () => {
+    expect(editStillApplying({ version: 7 })).toBeNull()
+    expect(editStillApplying({ version: 7, pending: false })).toBeNull()
   })
 })
 

@@ -5,12 +5,14 @@
   import Generating from '@/components/ui/Generating.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { submitOnEnter } from '@/components/ui/control'
   import InternalEditorModal from '@/components/fleet/InternalEditorModal.svelte'
   import TargetRow from '@/components/fleet/TargetRow.svelte'
   import { fade, listStagger, slide } from '@/lib/motion'
   import { pushToast } from '@/lib/toast.svelte'
-  import { COMPACTION_BOUNDS, editNotApplied, saveAgentEdit, type AgentDef, type LlmEndpoint, type ModelTarget, type UnappliedVersion } from '@/lib/fleet-defs'
+  import { COMPACTION_BOUNDS, editNotApplied, editStillApplying, saveAgentEdit, type AgentDef, type LlmEndpoint, type ModelTarget, type UnappliedVersion } from '@/lib/fleet-defs'
+  import { noteStillWorking } from '@/routes/app/agents.svelte'
 
   type AliasRow = ModelTarget & { name: string }
 
@@ -56,7 +58,20 @@
   // to apply and answers with no warning, and the form must not read that
   // silence as the earlier version now running.
   let unapplied = $state<UnappliedVersion | null>(null)
-  const settle = (r: { version?: number; created?: boolean; applied?: boolean; inEffect?: boolean; warning?: string }) => {
+  // A save whose apply outlived the route's answer (a 202): saved, and the
+  // apply goes on. Said in the form, which stays open, and noted on the
+  // roster's tile (`still applying`) until it lands. Not a failure: the
+  // proxy used to cut this request off at 300 s with a 502 for a save that
+  // had landed.
+  let stillApplying = $state<string | null>(null)
+  const settle = (r: { version?: number; created?: boolean; applied?: boolean; inEffect?: boolean; warning?: string; pending?: boolean }) => {
+    stillApplying = editStillApplying(r)
+    if (stillApplying) {
+      unapplied = null
+      notApplied = null
+      noteStillWorking(def.id, 'apply')
+      return stillApplying
+    }
     notApplied = editNotApplied(r, unapplied)
     if (r.applied || r.inEffect === true) unapplied = null
     else if (r.version && r.warning?.trim()) unapplied = { version: r.version, why: r.warning.trim() }
@@ -66,6 +81,7 @@
   const save = async (apply: boolean) => {
     err = null
     notApplied = null
+    stillApplying = null
     // A ratio outside the range is a typo, not an instruction: Hermes would
     // read 50 as "fifty times the context" and never compact. Caught here
     // rather than at the api so the form keeps the draft.
@@ -249,7 +265,13 @@
           // The workspace stays open over the form, so a soul that saved but
           // did not apply is said where the person is looking, and again in
           // the form for when they close it.
-          if (settle(r)) pushToast({ title: `${def.displayName} · soul saved, not applied`, body: r.warning?.trim() || notApplied || undefined, tone: 'danger' })
+          if (settle(r)) {
+            pushToast(
+              stillApplying
+                ? { title: `${def.displayName} · soul saved, still applying`, body: stillApplying }
+                : { title: `${def.displayName} · soul saved, not applied`, body: r.warning?.trim() || notApplied || undefined, tone: 'danger' },
+            )
+          }
           await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
         }}
         history={{ kind: 'soul', id: def.id }}
@@ -259,6 +281,12 @@
   </section>
 
   {#if err}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{err}</div>{/if}
+  {#if stillApplying}
+    <div transition:slide={{ duration: 150 }} class="flex items-start gap-2 rounded-lg border border-line bg-surface p-3 text-sm text-fg" data-testid="config-still-applying">
+      <WaitingMark site="fleet/agent-controls" size={12} class="mt-0.5 shrink-0 text-muted" />
+      <span>{stillApplying}</span>
+    </div>
+  {/if}
   {#if notApplied}
     <div transition:slide={{ duration: 150 }} class="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/5 p-3 text-sm text-fg" data-testid="config-not-applied">
       <AlertTriangle size={13} class="mt-0.5 shrink-0 text-warning" aria-hidden="true" />

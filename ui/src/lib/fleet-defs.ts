@@ -1,7 +1,7 @@
 // Harness registry client (admin): agent definitions + LLM endpoints.
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
-import { errorMessage, getJson, getList, patchJson, postJson, putJson } from '@/lib/fetch-json'
+import { errorMessage, getJson, getList, HttpError, patchJson, postJson, putJson } from '@/lib/fetch-json'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
@@ -410,8 +410,12 @@ export async function saveAgentEdit(
    *  agent does not run the current version. */
   warning?: string
   /** Only on a Save & apply with nothing changed: whether the agent runs the
-   *  current version (or, stopped, will on its next start). */
+   *  current version (or, stopped, will on its next start). A version that
+   *  was not in effect is applied, and this says whether it now is. */
   inEffect?: boolean
+  /** A 202: the version is saved, and its apply (the render, a roll) was
+   *  still going when the route stopped waiting (210 s). It goes on. */
+  pending?: boolean
   error?: string
 }> {
   try {
@@ -423,6 +427,7 @@ export async function saveAgentEdit(
       notes?: string[]
       warning?: string
       inEffect?: boolean
+      pending?: boolean
     }>(
       `/api/fleet/defs/${id}/edit`,
       edit,
@@ -430,6 +435,16 @@ export async function saveAgentEdit(
   } catch (e) {
     return { error: errorMessage(e) }
   }
+}
+
+/** The sentence for a save whose apply outlived the route's answer (a 202,
+ *  `pending`), or null for any other answer. The version IS saved — never
+ *  "failed" — and its render and roll go on; the roster notes the agent
+ *  *still applying* until it lands. */
+export function editStillApplying(r: { version?: number; pending?: boolean }): string | null {
+  if (!r.pending) return null
+  const saved = r.version ? `Saved as version ${r.version}.` : 'Saved.'
+  return `${saved} Applying it is taking longer than this form waits (a roll's recreate and health check), and it goes on: the roster shows the agent when it lands.`
 }
 
 /** A version this editor saw saved and not applied, and the route's reason. */
@@ -555,12 +570,16 @@ export interface ControlAnswer {
   pending?: boolean
   state?: 'running' | 'stopped' | 'gone' | 'unknown'
   error?: string
+  /** With `error`: the HTTP status it came with (none when the request never
+   *  got an answer). A 503 is a verb docker has not confirmed yet — it may
+   *  still land — which is not a refusal. */
+  status?: number
 }
 
 export async function controlAgent(id: string, action: FleetAction): Promise<ControlAnswer> {
   try {
     return await postJson<ControlAnswer>(`/api/fleet/agents/${id}/control`, { action })
   } catch (e) {
-    return { error: errorMessage(e) }
+    return { error: errorMessage(e), ...(e instanceof HttpError ? { status: e.status } : {}) }
   }
 }

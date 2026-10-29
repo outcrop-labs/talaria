@@ -19,6 +19,7 @@ talaria-agent-secrets = { workspace = true }
 talaria-capability = { workspace = true }
 talaria-agent-web-search = { workspace = true }
 talaria-coding-accounts = { workspace = true }
+talaria-error = { workspace = true }
 talaria-fleet-docker = { workspace = true }
 talaria-fleet-layout = { workspace = true }
 talaria-guard-coaching = { workspace = true }

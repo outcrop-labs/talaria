@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Archive, Copy, Play, Repeat, RotateCw, SlidersHorizontal, Square, Trash2, UserPlus } from '@lucide/svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
-  import type { AgentContainers, AgentDef } from '@/lib/fleet-defs'
+  import type { AgentContainers, AgentDef, FleetRollRow } from '@/lib/fleet-defs'
   import IconButton from '@/components/ui/IconButton.svelte'
   import AgentRetireModal from './AgentRetireModal.svelte'
   import {
@@ -20,6 +20,7 @@
     containers,
     running,
     rolling = false,
+    roll,
     onManage,
     onDuplicate,
   }: {
@@ -29,6 +30,9 @@
     /** Mid-roll (this agent's own, or the fleet-wide batch): the Roll control
      *  stays visible and disabled — the route would answer 409 anyway. */
     rolling?: boolean
+    /** This agent's row in the roll picture (admins see it): an apply still
+     *  going on reads its verdict there. */
+    roll?: FleetRollRow
     onManage: () => void
     onDuplicate: () => void
   } = $props()
@@ -49,7 +53,7 @@
   // the roster's next reading shows the state it was for (agents.svelte.ts).
   const working = $derived(stillWorkingOf(d.id))
   $effect(() => {
-    settleStillWorking(d, containers)
+    settleStillWorking(d, containers, roll)
   })
 </script>
 

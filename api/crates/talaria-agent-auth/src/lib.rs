@@ -114,7 +114,7 @@ pub async fn rotate_agent_api_key(
     .bind(&sealed)
     .execute(pg)
     .await
-    .map_err(|e| format!("agent key write failed: {e}"))?;
+    .map_err(|e| talaria_error::store_fault("[agent-auth] agent key write failed", e))?;
     Ok(secret)
 }
 
@@ -131,7 +131,7 @@ pub async fn ensure_agent_api_key(
             .bind(agent_id)
             .fetch_optional(pg)
             .await
-            .map_err(|e| format!("agent key read failed: {e}"))?;
+            .map_err(|e| talaria_error::store_fault("[agent-auth] agent key read failed", e))?;
     match existing {
         // The BARE secretbox message, no wrapper sentence — /api/me/assistant
         // PATCH's 400 body carries it verbatim.
