@@ -56,9 +56,9 @@
   // to apply and answers with no warning, and the form must not read that
   // silence as the earlier version now running.
   let unapplied = $state<UnappliedVersion | null>(null)
-  const settle = (r: { version?: number; created?: boolean; applied?: boolean; warning?: string }) => {
+  const settle = (r: { version?: number; created?: boolean; applied?: boolean; inEffect?: boolean; warning?: string }) => {
     notApplied = editNotApplied(r, unapplied)
-    if (r.applied) unapplied = null
+    if (r.applied || r.inEffect === true) unapplied = null
     else if (r.version && r.warning?.trim()) unapplied = { version: r.version, why: r.warning.trim() }
     return notApplied
   }

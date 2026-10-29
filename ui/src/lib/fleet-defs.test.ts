@@ -81,9 +81,32 @@ describe('editNotApplied', () => {
   })
 
   it('says nothing for a no-op apply when the form saw no version fail', () => {
-    // A fresh form cannot tell an unchanged running config from one that
-    // never applied, so it closes as it always did.
+    // An answer that carries no `inEffect` either way (an api from before
+    // the route could tell) closes a fresh form, as it always did.
     expect(editNotApplied({ version: 3, created: false, applied: false })).toBeNull()
+  })
+
+  // The route now tells a no-op Save & apply whether the agent runs the
+  // current version — so a fresh form no longer closes on one that never
+  // applied, and an old memory no longer outranks the route.
+  it('says why a no-op apply did not put the current version on', () => {
+    expect(
+      editNotApplied({
+        version: 6,
+        created: false,
+        applied: false,
+        inEffect: false,
+        warning: 'it was saved and never applied — Bob still runs version 5; nothing changed since, so Save & apply had nothing new to apply. Roll the agent to put it on',
+      }),
+    ).toBe(
+      'Version 6 is not applied: it was saved and never applied — Bob still runs version 5; nothing changed since, so Save & apply had nothing new to apply. Roll the agent to put it on',
+    )
+  })
+
+  it('closes quietly on a no-op apply the route says is in effect, whatever the form remembers', () => {
+    expect(editNotApplied({ version: 3, created: false, applied: false, inEffect: true })).toBeNull()
+    // Rolled from the roster since the form saw version 3 fail.
+    expect(editNotApplied({ version: 3, created: false, applied: false, inEffect: true }, held)).toBeNull()
   })
 
   it('says nothing once a new version applied, or for a different version', () => {

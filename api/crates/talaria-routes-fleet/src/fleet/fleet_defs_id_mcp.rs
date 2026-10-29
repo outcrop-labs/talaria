@@ -572,7 +572,15 @@ pub async fn post(
         match verdict {
             Ok(None) => applied = true,
             Ok(Some(w)) => warning = Some(w),
-            Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
+            // A step that threw (the render, the image pull, the recreate)
+            // is an apply that did not land, and the assignment or the new
+            // version above is already written: answered like a soft
+            // failure, the reason in `warning` — the edit route's answer
+            // (its decision 12). A bare 400 said nothing of the saved change.
+            Err(e) => {
+                tracing::warn!("[fleet/defs/mcp] roll of {} failed: {e}", def.department);
+                warning = Some(format!("the roll failed — {e}"));
+            }
         }
     } else if touched_registry || created {
         // Not applying: still re-render so the next start carries the change.
