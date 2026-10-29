@@ -112,7 +112,10 @@ Each agent's row shows where its roll stands: rolling, rolled, or failed with th
 agent mid-roll cannot be rolled again until it finishes. A roll waits three minutes for the fresh
 container to report healthy; one that is still booting then (a slow disk can take longer) shows
 *starting* rather than *failed*, and turns to rolled once it is up — or to failed, with the
-reason, if it never comes up or stops running. Two agents that share a department (a pair from
+reason, if it is not up twelve minutes later or stops running for half a minute on its own.
+Stopping or retiring it while it starts clears the chip rather than calling the roll failed.
+A *starting* agent's roll has done its part, so **Roll** and **Roll all** stay available: rolling
+it again recreates its container and starts its boot over. Two agents that share a department (a pair from
 before a department became one agent's) are rolled once, as the agent that runs in its
 container; the other is listed as skipped. The strip above the roster keeps the tally and every
 failure sentence until you dismiss it.

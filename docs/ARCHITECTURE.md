@@ -285,7 +285,14 @@ multiplexer.
   the boot outlasted the start period and retries) is not called failed: its roll-registry row
   stays `rolling`, noted `still starting`, and a task off every caller's path watches it up to
   twelve more minutes, then writes `done` (healthy) or `failed` with the reason — never over a
-  newer roll's row. An apply that rolled such a container has applied; the control route's roll,
+  newer roll's row. Either wait ends early on a container that is not running: at once, and
+  `idle` rather than `failed`, when a stop or retire was asked of the agent since its roll
+  started (`stop_mark`, `talaria-fleet-docker`); `failed` once it has read not running for 30s
+  in a row with no stop asked (it exited, or keeps crashing), so a restart's or a crash's
+  few seconds down do not end it. A `still starting` row's roll has released its locks: the
+  roll picture's `rolling` flag leaves it out, and the agent can be rolled again. If the api
+  restarts mid-wait, its row drops off the picture once the late wait could no longer be
+  running. An apply that rolled such a container has applied; the control route's roll,
   the fleet roll batch and the MCP queue audit `roll_failed` only if that late wait fails. The old container's gateway is drained first, through
   its own supervisor (`s6-svc -d` then `s6-svwait -D` inside the container): a plain `docker
   stop` never drains Hermes, because s6-overlay revives the SIGTERMed gateway and KILLs
@@ -307,7 +314,9 @@ multiplexer.
   service while `-b` still served — a stop that stopped nothing, after which the move started
   the home container. A stop or a retire leaves a stop intent before it waits; the move reads
   it before the retire, and one that arrived puts the def back on `-b` and leaves the agent
-  there, for the waiting stop to stop. A stop, restart or recreate
+  there, for the waiting stop to stop. The move lock and the stop intents (like the per-service
+  verb locks) live in one api process: a stop sent through a second api instance against the
+  same fleet is not seen by a move or a health wait running in the first. A stop, restart or recreate
   that fails before it reaches the container brings the drained gateway back up
   (`s6-svc -u`), so a failed step never leaves an agent running without one.
 - **A compose verb's exit is not the container's state** (`talaria-fleet-docker`). A CLI

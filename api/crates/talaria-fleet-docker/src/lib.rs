@@ -822,6 +822,18 @@ async fn lock_service(svc: &str) -> tokio::sync::OwnedMutexGuard<()> {
 // waits, which the move reads just before the retire that lets the home
 // container start: one that arrived during the move abandons it, puts the
 // def back on `-b`, and the waiting stop then stops `-b` — nothing is started.
+// A roll's health wait reads the same intents ([`wait_health`]): a stop asked
+// while its container is still starting ends the wait as a stop, not a
+// failure.
+//
+// ONE API PROCESS. The move lock and the stop intents live in this process,
+// like the service locks above. The roll itself is serialized across api
+// instances (fleet-reconcile's advisory lock) and its registry is mirrored
+// through Redis, but a stop sent through a SECOND api instance is not seen
+// here: during a legacy move it addresses the home service again (the bug
+// this closes), and during a health wait it reads as the container going
+// down on its own (`failed` once that settles). Carry the intent through
+// Postgres or Redis before running more than one api against one fleet.
 
 /// Each department's move lock (above). Never held by anything but a legacy
 /// `-b` agent's move home and the verbs that wait for one.
