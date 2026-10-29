@@ -8,9 +8,11 @@
 //         and named.
 //   GET   the live picture — one row per managed agent: rolling / idle /
 //         failed / done, since when, and the failure sentence; an agent left
-//         out of a shared department reads idle. This instance's registry
-//         merged with the Redis hash every instance's rolls write, so a
-//         second api answers the same.
+//         out of a shared department reads idle. `rolling` is whether a roll
+//         is in its steps anywhere: a row noted `still starting` has
+//         released its locks (a new roll of it is accepted), so it does not
+//         count. This instance's registry merged with the Redis hash every
+//         instance's rolls write, so a second api answers the same.
 
 use axum::Json;
 use axum::extract::State;
@@ -20,7 +22,7 @@ use redis::AsyncCommands;
 use serde_json::{Value, json};
 use talaria_api_facades::fleet::reconcile::{
     ROLL_OUTCOME_TTL_MS, ROLL_REGISTRY_KEY, ROLL_SINK, RollFailure, RollRecord, RollState,
-    merge_roll_records, roll_records, start_roll_batch,
+    STILL_STARTING, merge_roll_records, roll_records, start_roll_batch,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{optional_boolean_member, parse};
@@ -126,7 +128,13 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             .get(department.as_str())
             .copied()
             .filter(|_| *runner);
-        if record.is_some_and(|r| r.state == RollState::Rolling) {
+        // A roll whose container is still starting has finished its steps
+        // and let go of its locks: the late wait only writes its verdict.
+        // Counted as rolling, it would hold every Roll control (and the
+        // picture's fast poll) for up to the late wait's twelve minutes.
+        if record.is_some_and(|r| {
+            r.state == RollState::Rolling && r.detail.as_deref() != Some(STILL_STARTING)
+        }) {
             rolling = true;
         }
         // An idle row is an apply's roll that found its agent stopped and

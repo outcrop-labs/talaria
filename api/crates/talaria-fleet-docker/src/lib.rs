@@ -1213,9 +1213,17 @@ pub enum HealthWait {
     /// start period and retries reads (about 135 s with the chassis'), and
     /// docker turns it healthy at the first probe that passes.
     Unhealthy,
-    /// The deadline passed with no running container (it exited, is
-    /// restarting, or docker would not describe it).
+    /// The container was not running, reading after reading, for
+    /// [`DOWN_SETTLE`] (it exited, keeps restarting, or is gone) with no stop
+    /// asked of it — or was not running when the deadline passed.
     Down,
+    /// A stop was asked of the department ([`fleet_stop`], [`fleet_remove`])
+    /// since the caller's mark, and the container is not running: a person
+    /// stopped it, not a failed boot.
+    Stopped,
+    /// Docker did not describe the container once in the whole wait (every
+    /// inspect timed out or failed) — not known to be up or down.
+    Unreadable,
 }
 
 /// What one `{{.State.Status}} {{.State.Health.Status}}` reading says.
@@ -1230,20 +1238,98 @@ pub fn health_reading(stdout: &str) -> Option<HealthWait> {
     }
 }
 
+/// One health inspect's answer, as a reading: a container docker says does
+/// not exist is down; a failed inspect (a timeout on an IO-bound host above
+/// all) says nothing.
+pub fn health_answer(result: &Result<(String, String), String>) -> Option<HealthWait> {
+    match result {
+        Ok((stdout, _)) => health_reading(stdout),
+        Err(_) => match parse_inspect(result) {
+            Inspected::Absent => Some(HealthWait::Down),
+            _ => None,
+        },
+    }
+}
+
+/// How long a container must read not running, reading after reading,
+/// before a health wait calls it down rather than waiting on. Under the
+/// chassis' `restart: unless-stopped` a crash reads `restarting` for a
+/// backoff that starts at 100 ms, and a restart or a newer roll's recreate
+/// reads exited or gone for a few seconds; a container down for this long is
+/// stopped, or crash-looping long enough that docker's restart backoff
+/// (100 ms, doubling) has grown past it.
+pub const DOWN_SETTLE: Duration = Duration::from_secs(30);
+
+/// What a health wait has read so far ([`wait_health`]): when a reading ends
+/// the wait, and what the deadline answers. Kept apart from docker so the
+/// rules are tested without one.
+#[derive(Debug, Default)]
+pub struct HealthWatch {
+    last: Option<HealthWait>,
+    /// When the current run of not-running readings began, from the wait's
+    /// start.
+    down_from: Option<Duration>,
+}
+
+impl HealthWatch {
+    /// Fold in one reading taken `at` into the wait (`None`: docker did not
+    /// answer, which says nothing either way). `stop_asked` is whether a stop
+    /// was asked of the department since the caller's mark. `Some` ends the
+    /// wait with that answer: healthy; down with a stop asked (at once — a
+    /// person stopped it); or down for [`DOWN_SETTLE`] with none.
+    pub fn see(
+        &mut self,
+        reading: Option<HealthWait>,
+        at: Duration,
+        stop_asked: bool,
+    ) -> Option<HealthWait> {
+        let seen = reading?;
+        self.last = Some(seen);
+        match seen {
+            HealthWait::Healthy => Some(HealthWait::Healthy),
+            HealthWait::Down if stop_asked => Some(HealthWait::Stopped),
+            HealthWait::Down => {
+                let from = *self.down_from.get_or_insert(at);
+                (at.saturating_sub(from) >= DOWN_SETTLE).then_some(HealthWait::Down)
+            }
+            _ => {
+                self.down_from = None;
+                None
+            }
+        }
+    }
+
+    /// What the wait answers when its deadline passes: the last reading, or
+    /// [`HealthWait::Unreadable`] when docker never gave one.
+    pub fn at_deadline(&self) -> HealthWait {
+        self.last.unwrap_or(HealthWait::Unreadable)
+    }
+}
+
 /// Wait up to `timeout_ms` for the department's container to report healthy,
 /// and answer the last reading when it does not. Unlike [`wait_healthy`], an
 /// `unhealthy` reading does not end the wait: a boot slower than the
 /// healthcheck's start period and retries reads unhealthy from about 135 s
 /// with the chassis' healthcheck (measured with an image that boots 240 s
 /// late), and docker turns it healthy at the first probe that passes — under
-/// heavy IO a recreated agent took about four minutes to come up. What a
-/// reading was when the deadline passed is for the caller to judge.
-pub async fn wait_health(pg: &PgPool, department: &str, timeout_ms: u64) -> HealthWait {
+/// heavy IO a recreated agent took about four minutes to come up. A container
+/// that is not running ends it early ([`HealthWatch::see`]): at once as
+/// [`HealthWait::Stopped`] when a stop was asked of the department since
+/// `stops_before` (a [`stop_mark`] the caller took when its roll started), or
+/// as [`HealthWait::Down`] once it has stayed down for [`DOWN_SETTLE`]. What
+/// a reading was when the deadline passed is for the caller to judge.
+pub async fn wait_health(
+    pg: &PgPool,
+    department: &str,
+    timeout_ms: u64,
+    stops_before: u64,
+) -> HealthWait {
     let name = managed_container(pg, department).await;
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
-    let mut last = HealthWait::Down;
+    let started = tokio::time::Instant::now();
+    let deadline = started + Duration::from_millis(timeout_ms);
+    let mut watch = HealthWatch::default();
     while tokio::time::Instant::now() < deadline {
-        if let Ok((stdout, _)) = docker(
+        let answer = docker(
             &[
                 "inspect",
                 "-f",
@@ -1255,17 +1341,17 @@ pub async fn wait_health(pg: &PgPool, department: &str, timeout_ms: u64) -> Heal
             ],
             Duration::from_secs(10),
         )
-        .await
-        {
-            match health_reading(&stdout) {
-                Some(HealthWait::Healthy) => return HealthWait::Healthy,
-                Some(seen) => last = seen,
-                None => {}
-            }
+        .await;
+        if let Some(end) = watch.see(
+            health_answer(&answer),
+            started.elapsed(),
+            stopped_since(department, stops_before),
+        ) {
+            return end;
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
-    last
+    watch.at_deadline()
 }
 
 /// Which departments have a RUNNING agent container right now — the
@@ -2028,6 +2114,98 @@ mod tests {
             Some(HealthWait::Down)
         );
         assert_eq!(health_reading(""), None);
+    }
+
+    #[test]
+    fn a_health_answer_reads_a_gone_container_as_down_and_a_failed_inspect_as_nothing() {
+        assert_eq!(
+            health_answer(&Ok(("running healthy\n".into(), String::new()))),
+            Some(HealthWait::Healthy)
+        );
+        assert_eq!(
+            health_answer(&Err(
+                "docker inspect failed: Error: no such object: talaria-agent-ops".into()
+            )),
+            Some(HealthWait::Down)
+        );
+        assert_eq!(
+            health_answer(&Err("docker inspect …: timed out after 10s".into())),
+            None
+        );
+    }
+
+    #[test]
+    fn a_health_wait_ends_on_healthy_and_otherwise_answers_its_last_reading() {
+        let s = Duration::from_secs;
+        let mut w = HealthWatch::default();
+        assert_eq!(w.see(Some(HealthWait::Starting), s(0), false), None);
+        assert_eq!(w.see(Some(HealthWait::Unhealthy), s(140), false), None);
+        assert_eq!(w.at_deadline(), HealthWait::Unhealthy);
+        assert_eq!(
+            w.see(Some(HealthWait::Healthy), s(240), false),
+            Some(HealthWait::Healthy)
+        );
+        // Docker never answered: not known to be down.
+        let mut silent = HealthWatch::default();
+        assert_eq!(silent.see(None, s(0), false), None);
+        assert_eq!(silent.see(None, s(90), false), None);
+        assert_eq!(silent.at_deadline(), HealthWait::Unreadable);
+        // A failed inspect after a reading keeps the reading.
+        let mut w = HealthWatch::default();
+        w.see(Some(HealthWait::Starting), s(0), false);
+        w.see(None, s(3), false);
+        assert_eq!(w.at_deadline(), HealthWait::Starting);
+    }
+
+    #[test]
+    fn a_health_wait_ends_on_a_settled_down_and_not_on_a_blip() {
+        let s = Duration::from_secs;
+        // A crash docker restarts at once, or a restart's few seconds down:
+        // the run of down readings ends before it settles.
+        let mut w = HealthWatch::default();
+        assert_eq!(w.see(Some(HealthWait::Starting), s(0), false), None);
+        assert_eq!(w.see(Some(HealthWait::Down), s(3), false), None);
+        assert_eq!(w.see(Some(HealthWait::Down), s(27), false), None);
+        assert_eq!(w.see(Some(HealthWait::Starting), s(30), false), None);
+        // The run starts over: 30 s from its own first reading.
+        assert_eq!(w.see(Some(HealthWait::Down), s(33), false), None);
+        assert_eq!(w.see(Some(HealthWait::Down), s(60), false), None);
+        assert_eq!(
+            w.see(Some(HealthWait::Down), s(63), false),
+            Some(HealthWait::Down)
+        );
+        // A docker that stops answering does not break the run.
+        let mut w = HealthWatch::default();
+        w.see(Some(HealthWait::Down), s(0), false);
+        w.see(None, s(15), false);
+        assert_eq!(
+            w.see(Some(HealthWait::Down), s(30), false),
+            Some(HealthWait::Down)
+        );
+        // Down when the deadline passes, unsettled: still down.
+        let mut w = HealthWatch::default();
+        w.see(Some(HealthWait::Down), s(170), false);
+        assert_eq!(w.at_deadline(), HealthWait::Down);
+    }
+
+    #[test]
+    fn a_health_wait_ends_at_once_on_a_stop_a_person_asked_for() {
+        let s = Duration::from_secs;
+        let mut w = HealthWatch::default();
+        // Asked, and still draining: the container runs, so the wait goes on.
+        assert_eq!(w.see(Some(HealthWait::Starting), s(200), true), None);
+        assert_eq!(
+            w.see(Some(HealthWait::Down), s(230), true),
+            Some(HealthWait::Stopped)
+        );
+        // A stop that landed before the roll started it again: running, and
+        // the wait goes on to its health.
+        let mut w = HealthWatch::default();
+        assert_eq!(w.see(Some(HealthWait::Starting), s(0), true), None);
+        assert_eq!(
+            w.see(Some(HealthWait::Healthy), s(90), true),
+            Some(HealthWait::Healthy)
+        );
     }
 
     #[test]
