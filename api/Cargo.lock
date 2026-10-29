@@ -3568,6 +3568,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-error",
  "talaria-gateway",
  "tokio",
  "tracing",
@@ -3606,6 +3607,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "sqlx",
+ "talaria-params",
  "talaria-permissions",
 ]
 
@@ -3637,6 +3639,7 @@ version = "0.1.0"
 dependencies = [
  "sqlx",
  "talaria-agent-defs",
+ "talaria-error",
  "talaria-fleet-docker",
  "talaria-internal-history",
  "tokio",
@@ -3661,6 +3664,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-error",
  "talaria-fleet-brain",
  "talaria-fleet-layout",
  "talaria-secretbox",
@@ -4491,6 +4495,7 @@ dependencies = [
  "talaria-gateway",
  "talaria-model-efforts",
  "talaria-notify",
+ "talaria-params",
  "talaria-plan-doc",
  "talaria-retrieval-embed",
  "talaria-retrieval-index",
@@ -4515,6 +4520,7 @@ dependencies = [
  "sqlx",
  "talaria-body",
  "talaria-notify",
+ "talaria-params",
  "talaria-realtime",
  "tokio",
 ]
@@ -6542,6 +6548,7 @@ dependencies = [
  "talaria-boards",
  "talaria-channels",
  "talaria-conversations",
+ "talaria-params",
  "talaria-realtime",
  "talaria-runs-run",
  "talaria-runs-store",

@@ -76,12 +76,14 @@ export async function queueChatMessage(params: {
 
 /** What a stop did. `hermes` says the agent's RUN was told to stop (by its run
  *  id on a session turn, by its completion id on a completions turn), not
- *  merely this reader's stream. Callers fire and forget; the field is named
- *  because the route answers it and the wire is worth reading in a devtools
- *  log. */
+ *  merely this reader's stream. `held` says the agent had not opened the turn
+ *  within the route's wait, and the server sends the stop when it does.
+ *  Callers fire and forget; the fields are named because the route answers
+ *  them and the wire is worth reading in a devtools log. */
 export interface StopResult {
   ok: true
   hermes: boolean
+  held?: true
 }
 
 /** Stop the turn a conversation is streaming. A reader's abort is LOCAL — it

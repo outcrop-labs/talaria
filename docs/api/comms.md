@@ -670,7 +670,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_stop.rs`](.
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `session` | — | `{ok, hermes}` | 200, 403, 409, 502 | — |
 
-**POST** — Interrupt the reply streaming in this thread, on either arm: a session turn by its run id, a completions turn by its completion id. `hermes` says whether the agent's own run was interrupted, or whether hanging up was the whole stop (a completions turn whose id is not known, which a drain in another process would be). Nothing is streaming → 409.
+**POST** — Interrupt the reply streaming in this thread, on either arm: a session turn by its run id, a completions turn by its completion id. A turn this instance is still opening (sent, but not yet named by the agent) is waited for, up to 10 s. `hermes` says whether the agent's own run was interrupted, or whether hanging up was the whole stop (a completions turn a drain in another process reads). `held` says the agent had not opened the turn within the wait, and the stop is sent when it does. Nothing is streaming → 409.
 
 ## `/api/conversations/{id}/teams`
 

@@ -625,6 +625,9 @@ async fn continue_inner(
         },
         None => None,
     };
+    // From here a person's stop on this thread waits for this turn to name
+    // itself rather than missing it (`OpeningTurn`).
+    let opening = OpeningTurn::take(conversation_id);
     let assistant_id = match resume {
         Some(row) => match resurrect_streaming_assistant(&state.pg, row).await {
             Ok(()) => row.to_string(),
@@ -716,6 +719,7 @@ async fn continue_inner(
         assistant_id,
         conversation_id.to_string(),
         usage_meta,
+        opening,
     );
 }
 
@@ -726,6 +730,7 @@ fn spawn_persist(
     message_id: String,
     conversation_id: String,
     usage_meta: PersistMeta,
+    opening: OpeningTurn,
 ) {
     tokio::spawn(async move {
         persist_assistant_stream(
@@ -735,6 +740,7 @@ fn spawn_persist(
             conversation_id,
             Some(usage_meta),
             None,
+            opening,
         )
         .await;
     });
@@ -819,17 +825,20 @@ impl OpenCompletion {
         }
     }
 
-    fn note(&mut self, completion: Option<&str>) {
+    /// True when the stream named a completion this drain had not noted.
+    fn note(&mut self, completion: Option<&str>) -> bool {
         let Some(completion) = completion else {
-            return;
+            return false;
         };
         if self.noted.as_deref() == Some(completion) {
-            return;
+            return false;
         }
         self.noted = Some(completion.to_string());
         if let Ok(mut open) = OPEN_COMPLETIONS.lock() {
             open.insert(self.message_id.clone(), completion.to_string());
         }
+        TURN_NAMED.notify_waiters();
+        true
     }
 }
 
@@ -839,6 +848,270 @@ impl Drop for OpenCompletion {
             && let Ok(mut open) = OPEN_COMPLETIONS.lock()
         {
             open.remove(&self.message_id);
+        }
+        TURN_NAMED.notify_waiters();
+    }
+}
+
+/// THE TURN EACH CONVERSATION IS OPENING IN THIS PROCESS, from the moment
+/// its send is accepted to the end of its drain's read: what a person's stop
+/// waits on when it arrives before the turn has named itself to Hermes.
+///
+/// A stop can land before the drain has read the first chunk naming the
+/// completion, or before the reply row exists at all: the page offers Stop
+/// the moment it sends. Without this, that stop found no handle and answered
+/// `hermes: false`, and the turn ran on. With it, the stop route waits —
+/// bounded by the control window — for the opening to name its reply row and
+/// its handle (the completion id, or the session's run id), then stops that
+/// (`/api/conversations/{id}/stop`).
+///
+/// Keyed by conversation: a conversation drives one turn at a time (a send
+/// while one streams is queued behind it). The first claim holds the key and
+/// a later one while it does is inert, so a queued send never hides the turn
+/// it queued behind. In memory, for the same reason as [`OPEN_COMPLETIONS`]:
+/// the handle means something only while this process holds the request.
+static OPENING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Opening>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Woken whenever an opening or an open completion changes, so a waiting
+/// stop reads again rather than polling.
+static TURN_NAMED: std::sync::LazyLock<tokio::sync::Notify> =
+    std::sync::LazyLock::new(tokio::sync::Notify::new);
+
+static OPENING_CLAIMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The thread's key in [`OPENING`]: its canonical text, so the send and the
+/// stop find one entry whichever spelling of the id each was given.
+fn opening_key(conversation_id: &str) -> String {
+    talaria_params::uuid_canonical(conversation_id).unwrap_or_else(|| conversation_id.to_string())
+}
+
+struct Opening {
+    claim: u64,
+    message_id: Option<String>,
+    run_id: Option<String>,
+    /// A person's stop outlived its wait: the drain sends it the moment the
+    /// turn names itself ([`hold_stop`]).
+    stop_held: bool,
+}
+
+/// One send's hold on its conversation's [`OPENING`] entry, dropped when the
+/// turn's drain stops reading (or when the send ends without one: queued,
+/// refused, failed). Inert when another opening already holds the key.
+pub struct OpeningTurn {
+    conversation_id: String,
+    claim: Option<u64>,
+}
+
+impl OpeningTurn {
+    /// Claim the conversation's opening. Taken by the send as soon as the
+    /// conversation is known and the caller's access checked, and by a
+    /// chained or resumed drive just before its row exists.
+    pub fn take(conversation_id: &str) -> Self {
+        let conversation_id = opening_key(conversation_id);
+        let claim = OPENING.lock().ok().and_then(|mut open| {
+            if open.contains_key(&conversation_id) {
+                return None;
+            }
+            let claim = OPENING_CLAIMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            open.insert(
+                conversation_id.clone(),
+                Opening {
+                    claim,
+                    message_id: None,
+                    run_id: None,
+                    stop_held: false,
+                },
+            );
+            Some(claim)
+        });
+        OpeningTurn {
+            conversation_id,
+            claim,
+        }
+    }
+
+    /// Change this claim's entry; `f` answers whether a held stop is now
+    /// this turn's to send (taken once). Under the same lock [`hold_stop`]
+    /// holds a stop under, so a stop is either held before the turn names
+    /// itself and sent here, or finds the name there and is sent by the route.
+    fn update(&self, f: impl FnOnce(&mut Opening) -> bool) -> bool {
+        let Some(claim) = self.claim else {
+            return false;
+        };
+        let mut send = false;
+        if let Ok(mut open) = OPENING.lock()
+            && let Some(entry) = open.get_mut(&self.conversation_id)
+            && entry.claim == claim
+        {
+            send = f(entry);
+        }
+        TURN_NAMED.notify_waiters();
+        send
+    }
+
+    /// The reply row the turn streams into.
+    fn row(&self, message_id: &str) {
+        self.update(|o| {
+            o.message_id = Some(message_id.to_string());
+            false
+        });
+    }
+
+    /// The session's run id, from `run.started`: the session arm's handle.
+    /// True when a held stop is now this drain's to send.
+    fn run(&self, run_id: &str) -> bool {
+        self.update(|o| {
+            o.run_id = Some(run_id.to_string());
+            std::mem::take(&mut o.stop_held)
+        })
+    }
+
+    /// The drain's completion is in [`OPEN_COMPLETIONS`] now. True when a
+    /// held stop is this drain's to send.
+    fn named(&self) -> bool {
+        self.update(|o| std::mem::take(&mut o.stop_held))
+    }
+}
+
+impl Drop for OpeningTurn {
+    fn drop(&mut self) {
+        let Some(claim) = self.claim else {
+            return;
+        };
+        if let Ok(mut open) = OPENING.lock()
+            && open
+                .get(&self.conversation_id)
+                .is_some_and(|o| o.claim == claim)
+        {
+            open.remove(&self.conversation_id);
+        }
+        TURN_NAMED.notify_waiters();
+    }
+}
+
+/// How a turn is addressed in Hermes, once it has named itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnHandle {
+    /// A completions turn: its reply row, and the completion the drain of
+    /// that row is reading ([`open_completion`] asks it again before every
+    /// send).
+    Completion { message_id: String },
+    /// A session turn: its run id.
+    Run { run_id: String },
+}
+
+/// What [`await_turn_handle`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Awaited {
+    Named(TurnHandle),
+    /// Nothing is opening in this conversation in this process, or the
+    /// opening ended (its drain stopped reading) before it named a handle.
+    Gone,
+    /// Still opening at the deadline: the agent had not answered the turn's
+    /// request with a stream naming it.
+    TimedOut,
+}
+
+/// A stop that waited out the control window: where it stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeldStop {
+    /// The turn named itself after all: stop it now.
+    Now(TurnHandle),
+    /// Held on the opening. The drain sends it the moment the turn names
+    /// itself.
+    Held,
+    /// Nothing is opening here any more.
+    Gone,
+}
+
+/// Hold a person's stop on the turn this process is opening in
+/// `conversation_id`, for its drain to send once the turn names itself.
+/// Under the opening's lock, so a turn that named itself while the stop
+/// waited is answered `Now`, never held for a drain that has already looked.
+pub fn hold_stop(conversation_id: &str) -> HeldStop {
+    let conversation_id = opening_key(conversation_id);
+    let Ok(mut open) = OPENING.lock() else {
+        return HeldStop::Gone;
+    };
+    let Some(entry) = open.get_mut(&conversation_id) else {
+        return HeldStop::Gone;
+    };
+    if let Some(run_id) = &entry.run_id {
+        return HeldStop::Now(TurnHandle::Run {
+            run_id: run_id.clone(),
+        });
+    }
+    if let Some(message_id) = &entry.message_id
+        && open_completion(message_id).is_some()
+    {
+        return HeldStop::Now(TurnHandle::Completion {
+            message_id: message_id.clone(),
+        });
+    }
+    entry.stop_held = true;
+    HeldStop::Held
+}
+
+/// Send a held stop from the drain, on its own task: the drain keeps reading
+/// the stream the stop is about to end.
+fn send_held_stop(agent_model: String, conversation_id: String, handle: TurnHandle) {
+    tokio::spawn(async move {
+        let done = match &handle {
+            TurnHandle::Completion { message_id } => {
+                let message_id = message_id.clone();
+                talaria_gateway::fleet_chat::stop_completion(&agent_model, move || {
+                    open_completion(&message_id)
+                })
+                .await
+                .map(|done| done.unwrap_or_else(|| "already over".into()))
+            }
+            TurnHandle::Run { run_id } => {
+                talaria_gateway::fleet_chat::stop_run(&agent_model, run_id)
+                    .await
+                    .map(|()| "told to stop".into())
+            }
+        };
+        match done {
+            Ok(done) => tracing::info!(
+                "[chat_persist] {conversation_id}: a person's stop, held until the agent opened the turn: the turn was {done}"
+            ),
+            Err(why) => tracing::warn!(
+                "[chat_persist] {conversation_id}: a person's stop, held until the agent opened the turn, was refused: {why}"
+            ),
+        }
+    });
+}
+
+/// Wait, until `deadline`, for the turn this process is opening in
+/// `conversation_id` to name itself: its reply row, and the completion its
+/// drain read or the run its session announced.
+pub async fn await_turn_handle(conversation_id: &str, deadline: tokio::time::Instant) -> Awaited {
+    let conversation_id = opening_key(conversation_id);
+    loop {
+        // Registered before the read, so a change between the read and the
+        // wait still wakes it.
+        let changed = TURN_NAMED.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        let state = OPENING.lock().ok().and_then(|open| {
+            open.get(&conversation_id)
+                .map(|o| (o.message_id.clone(), o.run_id.clone()))
+        });
+        let Some((message_id, run_id)) = state else {
+            return Awaited::Gone;
+        };
+        if let Some(run_id) = run_id {
+            return Awaited::Named(TurnHandle::Run { run_id });
+        }
+        if let Some(message_id) = message_id
+            && open_completion(&message_id).is_some()
+        {
+            return Awaited::Named(TurnHandle::Completion { message_id });
+        }
+        tokio::select! {
+            () = &mut changed => {}
+            () = tokio::time::sleep_until(deadline) => return Awaited::TimedOut,
         }
     }
 }
@@ -856,6 +1129,7 @@ pub async fn persist_assistant_stream(
     conversation_id: String,
     usage_meta: Option<PersistMeta>,
     forward: Option<mpsc::Sender<Result<Bytes, std::io::Error>>>,
+    opening: OpeningTurn,
 ) {
     let mut content = String::new();
     let mut reasoning = String::new();
@@ -879,8 +1153,10 @@ pub async fn persist_assistant_stream(
     let mut last_flush: Option<Instant> = None;
     let mut parser = AgentStreamParser::new();
     let mut stream = body;
-    // What a person's stop names while this reads a completions turn.
+    // What a person's stop names while this reads a completions turn, and
+    // the opening it waits on until the stream names it.
     let mut open = OpenCompletion::new(&message_id);
+    opening.row(&message_id);
 
     macro_rules! flush {
         ($status:expr) => {
@@ -988,12 +1264,32 @@ pub async fn persist_assistant_stream(
                         // either makes sense.
                         AgentStreamEvent::RunStarted { run_id } => {
                             let _ = set_message_run_id(&state.pg, &message_id, &run_id).await;
+                            if opening.run(&run_id)
+                                && let Some(meta) = &usage_meta
+                            {
+                                send_held_stop(
+                                    meta.agent_model.clone(),
+                                    conversation_id.clone(),
+                                    TurnHandle::Run { run_id },
+                                );
+                            }
                         }
                         // Interrupted. The flag is read once, after the loops.
                         AgentStreamEvent::Stopped => stopped = true,
                     }
                 }
-                open.note(parser.completion());
+                if open.note(parser.completion())
+                    && opening.named()
+                    && let Some(meta) = &usage_meta
+                {
+                    send_held_stop(
+                        meta.agent_model.clone(),
+                        conversation_id.clone(),
+                        TurnHandle::Completion {
+                            message_id: message_id.clone(),
+                        },
+                    );
+                }
                 // Stamped per CHUNK, not per parsed event: a keep-alive-only
                 // stretch still proves the writer is alive, and streamed_at —
                 // not created_at — is what the stale sweep and the working
@@ -1031,6 +1327,7 @@ pub async fn persist_assistant_stream(
     // The stream has ended, and with it the request the completion id named
     // a run through: a stop from here on has nothing to interrupt.
     drop(open);
+    drop(opening);
     for ev in parser.finish() {
         match ev {
             AgentStreamEvent::Content { text } => content.push_str(&text),
@@ -1342,6 +1639,123 @@ mod tests {
         assert_eq!(open_completion(row).as_deref(), Some("chatcmpl-b2"));
         drop(open);
         assert_eq!(open_completion(row), None);
+    }
+
+    /// A stop that arrives while the thread's turn is still opening waits
+    /// for it to name itself: the completion its drain reads, or the run its
+    /// session announces. One that arrives with nothing opening, or after
+    /// the opening ended unnamed, is not kept waiting.
+    #[tokio::test]
+    async fn a_stop_waits_for_the_opening_turn_to_name_itself() {
+        let soon = || tokio::time::Instant::now() + Duration::from_secs(5);
+        let thread = "3c0a7e52-0d1b-4a8e-9b3a-5f6e7d8c9b01";
+        assert_eq!(await_turn_handle(thread, soon()).await, Awaited::Gone);
+
+        // Completions arm: the send claims the thread, the drain names the
+        // row and then the completion, while the stop is already waiting.
+        let opening = OpeningTurn::take(thread);
+        let waiting = tokio::spawn(async move { await_turn_handle(thread, soon()).await });
+        tokio::task::yield_now().await;
+        let row = "3c0a7e52-0d1b-4a8e-9b3a-5f6e7d8c9b02";
+        opening.row(row);
+        let mut open = OpenCompletion::new(row);
+        open.note(Some("chatcmpl-c3"));
+        assert_eq!(
+            waiting.await.unwrap(),
+            Awaited::Named(TurnHandle::Completion {
+                message_id: row.into()
+            })
+        );
+        // A queued send while it streams holds nothing, and its drop does
+        // not take the live turn's entry with it; nor does a spelling.
+        drop(OpeningTurn::take(&thread.to_ascii_uppercase()));
+        assert!(matches!(
+            await_turn_handle(&format!("{{{thread}}}"), soon()).await,
+            Awaited::Named(_)
+        ));
+        drop(open);
+        drop(opening);
+        assert_eq!(await_turn_handle(thread, soon()).await, Awaited::Gone);
+
+        // Session arm: the run id is the handle.
+        let opening = OpeningTurn::take(thread);
+        opening.row(row);
+        opening.run("run_42");
+        assert_eq!(
+            await_turn_handle(thread, soon()).await,
+            Awaited::Named(TurnHandle::Run {
+                run_id: "run_42".into()
+            })
+        );
+        drop(opening);
+
+        // An opening that ends without a name (the send failed, the stream
+        // never named the turn) releases the stop at once.
+        let opening = OpeningTurn::take(thread);
+        let waiting = tokio::spawn(async move { await_turn_handle(thread, soon()).await });
+        tokio::task::yield_now().await;
+        drop(opening);
+        assert_eq!(waiting.await.unwrap(), Awaited::Gone);
+
+        // One that never names itself is waited for to the deadline only.
+        let opening = OpeningTurn::take(thread);
+        let started = tokio::time::Instant::now();
+        let deadline = started + Duration::from_millis(200);
+        assert_eq!(await_turn_handle(thread, deadline).await, Awaited::TimedOut);
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        drop(opening);
+    }
+
+    /// A stop that waited out the window is held on the opening, and the
+    /// drain is told to send it exactly once, when the turn names itself; a
+    /// turn that named itself first is stopped by the route instead.
+    #[test]
+    fn a_held_stop_is_the_drains_to_send_once_the_turn_names_itself() {
+        let thread = "5d1e0c2b-7a3f-4e9d-8c6b-0a1b2c3d4e01";
+        assert_eq!(hold_stop(thread), HeldStop::Gone);
+
+        // Completions arm: held before the completion, sent by the drain.
+        let opening = OpeningTurn::take(thread);
+        let row = "5d1e0c2b-7a3f-4e9d-8c6b-0a1b2c3d4e02";
+        opening.row(row);
+        assert_eq!(hold_stop(thread), HeldStop::Held);
+        let mut open = OpenCompletion::new(row);
+        assert!(open.note(Some("chatcmpl-d4")));
+        assert!(opening.named(), "the held stop is the drain's to send");
+        assert!(!opening.named(), "and only once");
+        // Named now: a later stop is the route's own, nothing is held.
+        assert_eq!(
+            hold_stop(thread),
+            HeldStop::Now(TurnHandle::Completion {
+                message_id: row.into()
+            })
+        );
+        assert!(!opening.named());
+        drop(open);
+        drop(opening);
+
+        // Session arm: the run id carries it.
+        let opening = OpeningTurn::take(thread);
+        opening.row(row);
+        assert_eq!(hold_stop(thread), HeldStop::Held);
+        assert!(opening.run("run_7"), "the held stop rides the run's name");
+        assert_eq!(
+            hold_stop(thread),
+            HeldStop::Now(TurnHandle::Run {
+                run_id: "run_7".into()
+            })
+        );
+        drop(opening);
+
+        // An inert claim (a queued send) never carries a held stop.
+        let live = OpeningTurn::take(thread);
+        let queued = OpeningTurn::take(thread);
+        assert_eq!(hold_stop(thread), HeldStop::Held);
+        assert!(!queued.named());
+        assert!(live.named());
+        drop(queued);
+        drop(live);
+        assert_eq!(hold_stop(thread), HeldStop::Gone);
     }
 
     /// The pinned turn is cut from the same list the full-history path
