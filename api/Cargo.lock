@@ -3593,6 +3593,7 @@ dependencies = [
  "sha2 0.11.0",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-error",
  "talaria-gateway",
  "thiserror",
  "tokio",

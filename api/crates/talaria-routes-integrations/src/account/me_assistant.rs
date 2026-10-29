@@ -13,7 +13,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_body::{optional_max_string_member, parse, string_msg, zod_type_name};
-use talaria_error::{house_error, internal, object_or_400};
+use talaria_error::{house_error, internal, object_or_400, store_answer};
 use talaria_personal_agent::{
     ASSISTANT_DISPLACED, HANDLE_RE_NOTE, PersonalAgent, PersonalAgentInput, PersonalAgentPatch,
     PersonalUser, create_personal_agent, handle_ok, is_department_taken, personal_agent_for,
@@ -118,6 +118,8 @@ async fn answer(state: &AppState, user_id: &str, assistant: Option<PersonalAgent
 }
 
 /// "agent "x" already exists" (slug collision) → something a person can act on.
+/// The store's fault sentence passes through untouched, so `store_answer`
+/// still makes it the house 500.
 fn friendly(msg: &str) -> String {
     if msg.contains("already exists") {
         "that handle is taken — pick another".into()
@@ -182,7 +184,7 @@ pub async fn post(
             // A retired assistant whose department another agent shares and
             // runs in (a pair from before the one-agent rule) stays retired.
             Err(e) if e == ASSISTANT_DISPLACED => house_error(StatusCode::CONFLICT, &e),
-            Err(e) => house_error(StatusCode::BAD_REQUEST, &friendly(&e)),
+            Err(e) => store_answer(StatusCode::BAD_REQUEST, &friendly(&e)),
         },
     )
 }
@@ -258,7 +260,7 @@ pub async fn patch(
         .await
         {
             Ok(assistant) => answer(&state, &user.id, Some(assistant)).await,
-            Err(e) => house_error(StatusCode::BAD_REQUEST, &friendly(&e)),
+            Err(e) => store_answer(StatusCode::BAD_REQUEST, &friendly(&e)),
         },
     )
 }
