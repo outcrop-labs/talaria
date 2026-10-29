@@ -15,7 +15,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
-import { stackComposeFiles, type ComposeSpec } from '../../compose'
+import { compose, stackComposeFiles, type ComposeSpec } from '../../compose'
 import { devboxHome, NAME_RE } from '../../paths'
 
 export const IMAGE = 'talaria-devbox:latest'
@@ -67,6 +67,20 @@ export function toolsExec(name: string, cmd: string): string[] {
     'sh', '-lc', 'exec flock /work/tools/.lock -c "$0"',
     cmd,
   ]
+}
+
+/** `up -d --no-recreate` for one of the PRIMARY dev stack's services: the
+ *  seed source (postgres) and the shared embeddings a box dials. A box only
+ *  needs the service to be running, and the primary stack is someone else's
+ *  (the owner's, and every other box's and worktree's seed source). A plain
+ *  `up -d` recreates a container whose compose config differs from the one
+ *  that started it, and the checkout running `box new` is often not the one
+ *  that started the primary: rc changed postgres's healthcheck, so a box made
+ *  from an rc worktree recreated `talaria-postgres-dev` (follow-up N7). With
+ *  `--no-recreate` a running service is left exactly as it is, a stopped one
+ *  is started as it was, and only a missing one is created. */
+export function primaryUp(ctx: Ctx, svc: string): Promise<number> {
+  return compose(ctx, { files: stackComposeFiles(ctx.root, 'docker/dev-compose.yml') }, ['up', '-d', '--no-recreate', svc])
 }
 
 /** The repeated tuple: the shared sidecar plane, then this template, this

@@ -5,8 +5,8 @@ import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
-import { compose, stackComposeFiles } from '../../compose'
-import { boxComposeSpec, boxDir, boxFleetNetwork, IMAGE, requireBox } from './shared'
+import { compose } from '../../compose'
+import { boxComposeSpec, boxDir, boxFleetNetwork, IMAGE, primaryUp, requireBox } from './shared'
 import { runBuild } from './new'
 
 export function runStop(ctx: Ctx, name: string): Promise<number> {
@@ -18,9 +18,9 @@ export async function runStart(ctx: Ctx, name: string): Promise<number> {
   requireBox(ctx, name)
   // The shared stateless service is outside this project — nudge it (the
   // box would run degraded without it, but that's the `talaria dev` posture).
-  const devSpec = { files: stackComposeFiles(ctx.root, 'docker/dev-compose.yml') }
+  // Started if stopped, never recreated: it is the primary's (primaryUp).
   for (const svc of ['embeddings']) {
-    if ((await compose(ctx, devSpec, ['up', '-d', svc])) !== 0) {
+    if ((await primaryUp(ctx, svc)) !== 0) {
       ctx.log.warn(`${svc} didn't start — box runs degraded without it`)
     }
   }
