@@ -38,7 +38,7 @@
   import { listStagger } from '@/lib/motion'
   import { useBoards, useArchivedBoards, moveBoardWithPreview } from '@/lib/boards.svelte'
   import { useTeams } from '@/lib/teams'
-  import { anyLoading } from '@/components/ui/query-state'
+  import { anyError, anyLoading } from '@/components/ui/query-state'
   import { navigate, p } from '@/router'
 
   let { activePath, onNew, onTeams }: { activePath: string; onNew: () => void; onTeams: () => void } = $props()
@@ -102,7 +102,7 @@
   }
   // Either read failing makes the rail's grouping suspect (teams supply the
   // group names), so one marker covers both — named for whichever broke.
-  const staleFailure = $derived(boardsQuery.isError || teamsQuery.isError)
+  const staleFailure = $derived(anyError(boardsQuery, teamsQuery))
 </script>
 
 {#snippet boardLink(b: Board)}

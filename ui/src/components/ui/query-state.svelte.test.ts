@@ -117,25 +117,100 @@ test('anyPending does the same for isPending', async () => {
   }
 })
 
-test('no component gates on two queries with a `||` of their loading flags', () => {
+/** Every `.svelte` / `.svelte.ts` file under ui/src, tests excluded. */
+function componentSources(): { src: string; files: string[] } {
   const src = join(import.meta.dirname, '../..')
   const files: string[] = []
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name)
       if (entry.isDirectory()) walk(path)
-      else if (entry.name.endsWith('.svelte') || entry.name.endsWith('.svelte.ts')) files.push(path)
+      else if ((entry.name.endsWith('.svelte') || entry.name.endsWith('.svelte.ts')) && !entry.name.includes('.test.')) files.push(path)
     }
   }
   walk(src)
-  const gate = /\b(\w+)\.(isLoading|isPending)\s*\|\|\s*(\w+)\.(isLoading|isPending)\b/g
+  return { src, files }
+}
+
+/** The file's lines with an expression's continuation lines joined on: a line
+ *  that ends in `(`, `||` or `&&`, or a next line that starts with `||`, `&&`,
+ *  `?`, `:` or `)`. Each entry is [first line number, the joined text]. */
+function logicalLines(text: string): [number, string][] {
+  const lines = text.split('\n')
+  const out: [number, string][] = []
+  for (let i = 0; i < lines.length; i++) {
+    const at = i + 1
+    let joined = lines[i]!
+    while (i + 1 < lines.length && (/(\(|\|\||&&)\s*$/.test(joined) || /^\s*(\|\||&&|\?|:|\))/.test(lines[i + 1]!))) {
+      joined += ` ${lines[++i]!.trim()}`
+    }
+    out.push([at, joined])
+  }
+  return out
+}
+
+const FLAG = 'isLoading|isPending|isError|isFetching|isSuccess'
+
+/** Where a short-circuit (`||`, `&&`, `?:`) reads the flags of two different
+ *  queries in one expression: the second query's flag goes unread whenever
+ *  the first decides the answer. A `$derived` that is only a query's flag
+ *  (`const fleetLoading = $derived(fleetQuery.isLoading)`) counts as that
+ *  query's flag where it is read. `anyLoading`, `anyPending`, `anyError`,
+ *  `anyFailed` and `firstError` read every flag before they combine, and so
+ *  does `[...].includes(true)`. */
+function crossQueryShortCircuits(text: string): { line: number; queries: string[]; expr: string }[] {
+  const alias = new RegExp(String.raw`const (\w+) = \$derived\(\s*!?\s*(\w+)\??\.(?:${FLAG})\s*\)`, 'g')
+  const aliases = new Map<string, string>()
+  for (const m of text.matchAll(alias)) aliases.set(m[1]!, m[2]!)
+  const flag = new RegExp(String.raw`\b(\w+)\??\.(?:${FLAG})\b`, 'g')
+  const word = aliases.size ? new RegExp(String.raw`\b(${[...aliases.keys()].join('|')})\b`, 'g') : null
+  const found: { line: number; queries: string[]; expr: string }[] = []
+  for (const [line, expr] of logicalLines(text)) {
+    if (new RegExp(alias.source).test(expr)) continue
+    const eager = expr
+      .replace(/\b(?:anyLoading|anyPending|anyError|anyFailed|firstError)\([^()]*\)/g, '_')
+      .replace(/\[[^[\]]*\]\.includes\(true\)/g, '_')
+    if (!/\|\||&&|\?(?![.?])/.test(eager)) continue
+    const queries = new Set<string>()
+    for (const m of eager.matchAll(flag)) queries.add(m[1]!)
+    if (word) for (const m of eager.matchAll(word)) queries.add(aliases.get(m[1]!)!)
+    if (queries.size > 1) found.push({ line, queries: [...queries].sort(), expr: expr.trim() })
+  }
+  return found
+}
+
+test('the scan catches every shape that left a surface unread', () => {
+  const shapes = [
+    'const gate = $derived(defsQuery.isLoading || containersQuery.isLoading)',
+    'const failed = $derived(a.isError || b.isError)',
+    '{#if statuses.isError || labels?.isError}',
+    'const failed = $derived(catalogQuery.isError ? catalogQuery : prefsQuery.isError ? prefsQuery : null)',
+    'const failed = $derived(\n  (configQuery.isError && config === undefined) ||\n    (fleetQuery.isError && fleet === undefined),\n)',
+    'const configLoading = $derived(configQuery.isLoading)\nconst fleetLoading = $derived(fleetQuery.isLoading)\n{:else if configLoading || fleetLoading}',
+    'const isLoading = $derived(boardsQuery.isLoading)\nconst archivedLoading = $derived(archivedQuery.isLoading)\n{#if isLoading || archivedLoading || (board && tasksLoading)}',
+  ]
+  for (const shape of shapes) expect(crossQueryShortCircuits(shape).length, shape).toBeGreaterThan(0)
+  const fine = [
+    'const gate = $derived(anyLoading(defsQuery, containersQuery))',
+    '{:else if anyError(defsQuery, containersQuery)}',
+    'const failed = $derived(anyFailed(configQuery, fleetQuery))',
+    'const failed = $derived(firstError(catalogQuery, prefsQuery))',
+    'const loading = $derived([usersList.pending, agentsQuery.isLoading, teamsList.pending].includes(true))',
+    // One query's own flags may short-circuit: the path only changes when a
+    // flag already read changes, and that change is what tells the component.
+    '{#if query.isError && query.data === undefined}',
+    'const loading = $derived(history.data === undefined && !history.isError)',
+    'title={boardsQuery.isError ? boardsQuery.error : teamsQuery.error}',
+  ]
+  for (const shape of fine) expect(crossQueryShortCircuits(shape), shape).toEqual([])
+})
+
+test("no component short-circuits across two queries' flags", () => {
+  const { src, files } = componentSources()
   const found: string[] = []
   for (const file of files) {
-    const text = readFileSync(file, 'utf8')
-    for (const m of text.matchAll(gate)) {
-      if (m[1] === m[3]) continue
-      const line = text.slice(0, m.index).split('\n').length
-      found.push(`${relative(src, file)}:${line}: ${m[0]} (use anyLoading/anyPending)`)
+    for (const f of crossQueryShortCircuits(readFileSync(file, 'utf8'))) {
+      found.push(`${relative(src, file)}:${f.line}: [${f.queries.join(', ')}] ${f.expr} (read every flag first: anyLoading/anyPending/anyError/anyFailed/firstError)`)
     }
   }
   expect(found).toEqual([])

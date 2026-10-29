@@ -71,8 +71,10 @@
   const agentsQuery = useAgents()
   const teamsList = listQuery(useTeamsDirectory(), { title: 'Could not load teams', variant: 'inline' })
   // Until both principal lists resolve, grants would render as raw ids and the
-  // add picker would be empty — hold the list's shape instead.
-  const principalsLoading = $derived(usersList.pending || agentsQuery.isLoading || teamsList.pending)
+  // add picker would be empty — hold the list's shape instead. All three are
+  // read before they are combined (query-state.ts, anyLoading): an `||` that
+  // stopped at the first still-pending list never read the others.
+  const principalsLoading = $derived([usersList.pending, agentsQuery.isLoading, teamsList.pending].includes(true))
   // svelte-ignore state_referenced_locally -- reason: draft seeded from the prop; the reopen effect below re-seeds it
   let vis = $state<Visibility>(visibility)
   // `save()` PUTs the grant list back WHOLESALE, so this list is never allowed

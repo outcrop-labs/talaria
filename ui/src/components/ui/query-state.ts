@@ -151,5 +151,32 @@ export function anyPending(...queries: ReadonlyArray<{ readonly isPending: boole
   return flags.includes(true)
 }
 
+/** `anyLoading` for `isError`: did any of these reads fail? Every flag is read
+ *  before they are combined. `a.isError || b.isError` leaves `b.isError`
+ *  unread while `a` has failed, so when `a` recovers the `||` reads `b`'s
+ *  flag from whatever result the component was last sent. `undefined` stands
+ *  for a read the surface does not have (an optional prop). */
+export function anyError(...queries: ReadonlyArray<{ readonly isError: boolean } | undefined>): boolean {
+  const flags = queries.map((q) => q?.isError === true)
+  return flags.includes(true)
+}
+
+/** Did any of these reads fail with nothing to show (`isError` and no
+ *  `data`)? The "render the error instead of the surface" test for a
+ *  surface gated on several reads, read whole for each query before any
+ *  is judged (`anyLoading` says why). */
+export function anyFailed(...queries: ReadonlyArray<{ readonly isError: boolean; readonly data: unknown }>): boolean {
+  const failed = queries.map((q) => [q.isError, q.data === undefined] as const)
+  return failed.some(([isError, none]) => isError && none)
+}
+
+/** The first of these reads that failed, or null — every flag read first.
+ *  For a surface that shows ONE failure (its error and its retry). */
+export function firstError<Qs extends ReadonlyArray<{ readonly isError: boolean }>>(...queries: Qs): Qs[number] | null {
+  const flags = queries.map((q) => q.isError)
+  const i = flags.indexOf(true)
+  return i === -1 ? null : queries[i]!
+}
+
 /** Default emptiness test for QueryState: "empty array or null". */
 export const isEmptyValue = (d: unknown): boolean => (Array.isArray(d) ? d.length === 0 : d === null)

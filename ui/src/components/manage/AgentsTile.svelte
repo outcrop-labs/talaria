@@ -1,5 +1,6 @@
 <script lang="ts">
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import { anyError } from '@/components/ui/query-state'
   import StatCard from '@/components/ui/StatCard.svelte'
   import { containersOf, useFleetContainers, useFleetDefs } from '@/lib/fleet-defs'
   import { useHasPerm } from '@/lib/session'
@@ -43,7 +44,7 @@
 <StatCard label="Agents up" href={p('/agents')} {sub}>
   {#snippet value()}
     {#if counts}{counts.up}<span class="text-muted">{' / '}{live}</span>
-    {:else if defsQuery.isError || containersQuery.isError}—
+    {:else if anyError(defsQuery, containersQuery)}—
     {:else}<Skeleton class="h-5 w-16 rounded-full" />{/if}
   {/snippet}
 </StatCard>
