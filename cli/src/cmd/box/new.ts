@@ -3,7 +3,7 @@
 // primary dev environment, its own private fleet, and the agent CLIs inside.
 // Port of scripts/devbox `new` + `build`. Full story: docs/DEVBOX.md.
 
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf, ParsedArgs } from '../../cli'
@@ -129,6 +129,22 @@ export function boxUiEnv(
   return `${kept}
 
 ${block}`
+}
+
+/** What `box new` copies into the clone for `rel` (a gitignored tree under
+ *  the checkout): the directory it resolves to, or null when there is none.
+ *  `talaria worktree` links a worktree's ui/node_modules to the primary's,
+ *  and `cp -a` copies a link as a link: the box got one naming a host path
+ *  its container does not have, `bun install` stopped at "could not open the
+ *  node_modules directory", and `box new` from any worktree failed there
+ *  (found proving UB1). The resolved directory is the same snapshot a
+ *  primary's `box new` takes. */
+export function snapshotSource(root: string, rel: string): string | null {
+  try {
+    return realpathSync(join(root, rel))
+  } catch {
+    return null
+  }
 }
 
 /** A YAML single-quoted scalar — all this file's values are plain strings, and
@@ -287,11 +303,10 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
   // local builds — copy them or the box's builds silently differ from the
   // primary's. Same for the installed node_modules (snapshot; bun install
   // below reconciles lockfile drift). btrfs reflinks make these near-free —
-  // hence cp, not fs.cp.
+  // hence cp, not fs.cp. From what each one RESOLVES to (snapshotSource).
   for (const p of ['apps/leadworks', 'apps/waypoint', 'ui/node_modules', 'mcp/node_modules']) {
-    if (existsSync(join(root, p))) {
-      await ctx.exec('cp', ['-a', '--reflink=auto', join(root, p), join(hostRepo, p)], { timeoutMs: 600_000 })
-    }
+    const src = snapshotSource(root, p)
+    if (src) await ctx.exec('cp', ['-a', '--reflink=auto', src, join(hostRepo, p)], { timeoutMs: 600_000 })
   }
   const head = (await ctx.exec('git', ['-C', hostRepo, 'log', '--oneline', '-1'])).stdout.split('\n')[0]!.slice(0, 60)
   ctx.log.ok(`cloned ${head}`)

@@ -5,10 +5,10 @@
 // process behavior is planted.
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { boxUiEnv, overrideYaml, parseEnvFlags, composeEnvTpl, runNew } from './new'
+import { boxUiEnv, overrideYaml, parseEnvFlags, composeEnvTpl, runNew, snapshotSource } from './new'
 import { repointChassis, seedFleetEnv, runSeed } from './seed'
 import { runEnter } from './enter'
 import { runInstall } from './install'
@@ -137,6 +137,28 @@ TALARIA_PG_PORT=5605
     const out = boxUiEnv(stale, { name: 'demo', state: '/s', s3: { bucket: 'b', key: 'k', secret: 's' } })
     expect(out).not.toContain('=stale-')
     expect(keysOf(out)).toEqual(keysOf(block))
+  })
+
+  // Found proving UB1: a `talaria worktree` checkout links ui/node_modules to
+  // the primary's, and `cp -a` copied the link, which names a host path the
+  // box's container does not have. The snapshot is taken from the directory.
+  test('the snapshot copies come from what each tree resolves to, never a link', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'talaria-box-snap-'))
+    try {
+      const primary = join(tmp, 'primary', 'ui', 'node_modules')
+      mkdirSync(join(primary, '.bin'), { recursive: true })
+      const wt = join(tmp, 'talaria-wt')
+      mkdirSync(join(wt, 'ui'), { recursive: true })
+      mkdirSync(join(wt, 'mcp', 'node_modules'), { recursive: true })
+      symlinkSync(primary, join(wt, 'ui', 'node_modules'))
+      symlinkSync(join(tmp, 'nowhere'), join(wt, 'apps-gone'))
+      expect(snapshotSource(wt, 'ui/node_modules')).toBe(realpathSync(primary))
+      expect(snapshotSource(wt, 'mcp/node_modules')).toBe(realpathSync(join(wt, 'mcp', 'node_modules')))
+      expect(snapshotSource(wt, 'apps/leadworks')).toBeNull()
+      expect(snapshotSource(wt, 'apps-gone')).toBeNull()
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
   })
 
   // UB2: `talaria setup` never writes these two, but an operator may set them
