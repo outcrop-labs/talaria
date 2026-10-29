@@ -28,6 +28,9 @@ pub async fn patch(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     Ok(
         match set_resolved(&state.pg, &id, resolved, &user.id).await {
             Ok(true) => Json(json!({ "ok": true })).into_response(),
@@ -43,6 +46,9 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     Ok(match delete_comment(&state.pg, &id, &user.id).await {
         Ok(true) => Json(json!({ "ok": true })).into_response(),
         Ok(false) => house_error(StatusCode::FORBIDDEN, "forbidden"),

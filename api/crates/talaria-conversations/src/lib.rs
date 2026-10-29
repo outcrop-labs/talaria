@@ -9,6 +9,9 @@ use sqlx::PgPool;
 
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_gateway::fleet_chat::ToolCall;
+// Checked before a cast is asked for: a plugin's session id is anything the
+// container made up.
+use talaria_params::uuid_shaped;
 use talaria_secretbox::SecretBox;
 
 use std::sync::OnceLock;
@@ -1277,8 +1280,8 @@ pub async fn message_run_id(pg: &PgPool, message_id: &str) -> Result<Option<Stri
 /// reader looking at right now", and the reader is looking at a spinner over
 /// exactly this row — killing it out from under a stop would answer "nothing is
 /// streaming" to a person who can see that something is. The run id is absent
-/// for a turn that went through the full-history chat arm, which Hermes
-/// addresses by nothing either route could name.
+/// for a turn that went through the full-history chat arm: a stop names its
+/// completion id instead, which only its drain knows (talaria-chat-persist).
 pub async fn streaming_run(
     pg: &PgPool,
     conversation_id: &str,
@@ -1803,16 +1806,6 @@ fn plain_call_id(id: &str) -> Option<&str> {
     .then_some(id)
 }
 
-/// The hyphenated uuid shape Postgres casts, checked before the cast is
-/// asked for: a plugin's session id is anything the container made up.
-fn uuid_shaped(s: &str) -> bool {
-    s.len() == 36
-        && s.bytes().enumerate().all(|(i, b)| match i {
-            8 | 13 | 18 | 23 => b == b'-',
-            _ => b.is_ascii_hexdigit(),
-        })
-}
-
 /// When a verdict's call finished, in epoch ms: the plugin's own `at`, which
 /// is when the call ended in the container, not when the post reached the
 /// door (a backed-up queue delivers late). Never later than `now`, since no
@@ -2096,15 +2089,15 @@ mod tests {
         );
     }
 
-    /// Only a hyphenated uuid is cast: a completions session (`api-…`) and
+    /// Only what the cast takes is cast: a completions session (`api-…`) and
     /// anything else a container made up go to the attribution lookup.
     #[test]
     fn only_a_uuid_session_is_read_as_a_conversation_id() {
         assert!(uuid_shaped("c0ffee00-0000-4000-8000-00000000000A"));
+        assert!(uuid_shaped("c0ffee00000040008000000000000001"));
         for not in [
             "api-6bc93538c8727c5a",
             "",
-            "c0ffee00000040008000000000000001",
             "c0ffee00-0000-4000-8000-00000000000g",
             "c0ffee00-0000-4000-8000-0000000000011",
         ] {

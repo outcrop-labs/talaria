@@ -1,4 +1,18 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
+/* IBM Plex ships INSIDE the app (fontsource woff2, Latin and Latin Extended,
+ * the two weights the launcher sets). It used to be a render-blocking
+ * @import from fonts.googleapis.com: ~240 ms of every cold start, a ping to
+ * Google on every launch, and a blank window for as long as the network took
+ * to fail — 135 s with the font host black-holed. The launcher makes no
+ * network request before its first paint now. Other scripts fall back to the
+ * system font below. */
+@import '@fontsource/ibm-plex-sans/latin-400.css';
+@import '@fontsource/ibm-plex-sans/latin-ext-400.css';
+@import '@fontsource/ibm-plex-sans/latin-600.css';
+@import '@fontsource/ibm-plex-sans/latin-ext-600.css';
+@import '@fontsource/ibm-plex-mono/latin-400.css';
+@import '@fontsource/ibm-plex-mono/latin-ext-400.css';
+@import '@fontsource/ibm-plex-mono/latin-600.css';
+@import '@fontsource/ibm-plex-mono/latin-ext-600.css';
 @import 'tailwindcss';
 
 /* Mercury foundations (docs/design/mercury-spec.md): near-black instrument
@@ -24,6 +38,24 @@
   --font-display: var(--font-mono);
 }
 
+/* Classic, styled scrollbars instead of WebKitGTK's overlay ones. The overlay
+ * scrollbar fades in and out on every scroll, and on a software renderer (no
+ * GPU: a VM, llvmpipe) that fade composited the whole window at full rate for
+ * about 3 s — 300–400 % CPU after each scroll of a long instance list,
+ * measured. A styled scrollbar has no fade: 0 %. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-hairline);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-hairline-strong);
+}
+
 html,
 body,
 #app {
@@ -37,8 +69,8 @@ body,
   user-select: none;
 }
 
-/* The dither engine (lib/dither.ts, ported from ui/) resolves live dot colors
- * from these --theme-* names — same tokens the product UI defines. */
+/* The ambient field (lib/dither-field.ts, on ui's dither engine) resolves dot
+ * colours from these --theme-* names — the same tokens the product UI defines. */
 :root {
   --theme-text: #e7e2db;
   --theme-accent: #c8b46c;

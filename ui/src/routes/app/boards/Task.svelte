@@ -4,7 +4,7 @@
   import TaskDetail from '@/components/board/TaskDetail.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { listQuery } from '@/components/ui/query-state'
+  import { firstNotice, listQuery } from '@/components/ui/query-state'
   import { useBoards, useArchivedBoards } from '@/lib/boards.svelte'
 
   // Directly-linkable ticket route — the OVERLAY only. BoardLayout (the
@@ -34,9 +34,10 @@
      broke. `&&` here meant a failed archived read fell through to the silent
      render-nothing below — the same blank modal this branch exists to replace.
      The board page behind this modal reports the failure for itself; this says
-     why the ticket did not open. -->
-{#if !board && (boardsList.failed || archivedList.failed)}
-  {@const notice = boardsList.notice ?? archivedList.notice}
+     why the ticket did not open. Both lists' flags are read before they are
+     combined (query-state.ts, anyLoading). -->
+{#if !board && [boardsList.failed, archivedList.failed].includes(true)}
+  {@const notice = firstNotice(boardsList.notice, archivedList.notice)}
   <Modal open onClose={close} width="max-w-sm">
     {#if notice}<QueryError {...notice} />{/if}
   </Modal>

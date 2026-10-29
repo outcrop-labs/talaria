@@ -1,9 +1,8 @@
 // /api/workflows/{id}. PUT patch and DELETE, both agents.manage. Gate
-// order: perm, body, then the SQL bind — so a member with a bad body gets
-// the 403, and a non-uuid id only reaches the bind when a field is PRESENT
-// (an empty patch runs no SQL and answers ok even for a non-uuid id).
-// No 404: a missed id updates or deletes nothing and the route still
-// answers ok.
+// order: perm, body, then the id — so a member with a bad body gets the 403,
+// a non-uuid id the house 400 ("not a uuid"), and a well-formed id that
+// names no workflow a 404 on the PUT, an empty patch included: a write to
+// nothing is not an ok. The DELETE still answers ok for a missed id.
 
 use super::workflows::{match_json, toolkits_json, validate_workflow_body};
 use axum::Json;
@@ -39,21 +38,16 @@ pub async fn put(
         skills: body.skills.as_ref().map(|v| json!(v)),
         toolkits: toolkits_json(&body.toolkits),
     };
-    // The uuid bind only happens when a statement runs — an empty patch
-    // never reaches SQL, so it answers ok for any id spelling.
-    let runs_sql = patch.name.is_some()
-        || patch.description.is_some()
-        || patch.enabled.is_some()
-        || patch.match_v.is_some()
-        || patch.skills.is_some()
-        || patch.toolkits.is_some();
-    if runs_sql && let Some(gate) = uuid_gate("workflows", "PUT", &id) {
+    // The workflow is looked up even for an empty patch, so the id is
+    // checked before every one.
+    if let Some(gate) = uuid_gate("workflows", "PUT", &id) {
         return Ok(gate);
     }
-    if let Err(e) = update_workflow(&state.pg, &id, &patch).await {
-        return Ok(internal("[workflows] update failed", e));
+    match update_workflow(&state.pg, &id, &patch).await {
+        Ok(true) => Ok(Json(json!({ "ok": true })).into_response()),
+        Ok(false) => Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => Ok(internal("[workflows] update failed", e)),
     }
-    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn delete(

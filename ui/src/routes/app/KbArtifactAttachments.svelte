@@ -20,7 +20,8 @@
   const allList = listQuery(useArtifacts(), { title: 'Could not load your artifacts', variant: 'inline' })
   const attached = $derived(attachedList.rows)
   const all = $derived(allList.rows)
-  const loading = $derived(attachedList.pending || allList.pending)
+  // Both flags read before they are combined (query-state.ts, anyLoading).
+  const loading = $derived([attachedList.pending, allList.pending].includes(true))
   const attachedIds = $derived(new Set(attached.map((a) => a.id)))
   const options = $derived(all.filter((a) => !attachedIds.has(a.id)).map((a) => ({ value: a.id, label: a.title, sub: a.kind })))
   const refresh = () => qc.invalidateQueries({ queryKey: ['artifacts-for', 'kb-doc', docId] })

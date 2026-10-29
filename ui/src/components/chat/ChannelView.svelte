@@ -100,11 +100,15 @@
   // the query away on the line that made it: the degradation was reasoned
   // about, but nothing downstream could ever SAY it was degraded.
   const usersList = listQuery(useUsers(), { title: 'Names may be showing as email addresses', variant: 'inline' })
-  /** Degraded reads worth saying out loud — they show above the zero state too. */
+  /** Degraded reads worth saying out loud — they show above the zero state too.
+   *  Each read's flags are read before they are combined (query-state.ts,
+   *  anyLoading): a `||` across them leaves the later reads unread. */
   const notices = $derived(
-    (messagesQuery.isError && messagesQuery.data !== undefined) ||
-      detailFailed ||
-      (usersList.failed && !!usersList.notice),
+    [
+      messagesQuery.isError && messagesQuery.data !== undefined,
+      detailFailed,
+      usersList.failed && !!usersList.notice,
+    ].includes(true),
   )
   const sessionQuery = useSession()
 

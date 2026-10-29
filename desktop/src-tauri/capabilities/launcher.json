@@ -7,7 +7,10 @@
   "permissions": [
     "core:default",
     "allow-list-instances",
+    "allow-get-shell-state",
     "allow-add-instance",
+    "allow-cancel-add-instance",
+    "allow-probe-instance",
     "allow-activate-instance",
     "allow-show-welcome",
     "allow-remove-instance",

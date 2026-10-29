@@ -15,6 +15,7 @@
 
 mod support;
 
+mod absent_path_ids;
 mod agent_managers;
 mod agent_reply_notify;
 mod app_mcp_sync_live;
@@ -43,6 +44,7 @@ mod github_pem_repair;
 mod group_dm_live;
 mod internal_routes;
 mod llm_models;
+mod malformed_path_ids;
 mod me_threads_sent_live;
 mod notifications_reads;
 mod office_export_live;

@@ -1,6 +1,7 @@
 // /api/fleet/agents/{id}/secrets. Per-agent secrets, write-only. GET →
 // names + timestamps (never values), and for a CONFIG_* secret where the
-// current config names it (usedAt). PUT { name, value } → set/replace.
+// current config names it (usedAt). PUT { name, value } → set/replace; a
+// well-formed id that names no agent is a 404.
 // DELETE { name, removeSetting? } → remove; a CONFIG_* secret the current
 // config still names is a 409 { error, usedAt } unless removeSetting is true,
 // which first writes a new version without those settings. Admin, or the
@@ -14,8 +15,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_defs::{NewVersion, add_version_if_changed, list_versions};
 use talaria_agent_secrets::{
-    CONFIG_SECRET_PREFIX, config_secret_paths, delete_agent_secret, list_agent_secrets,
-    set_agent_secret, withhold_config_secret,
+    CONFIG_SECRET_PREFIX, SecretWriteError, config_secret_paths, delete_agent_secret,
+    list_agent_secrets, set_agent_secret, withhold_config_secret,
 };
 use talaria_audit::{AuditEntry, log_audit, spawn_audit};
 use talaria_body::{
@@ -31,6 +32,9 @@ pub async fn get(
     headers: HeaderMap,
 ) -> Result<Response, Response> {
     require_agent_manager(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     Ok(match list_agent_secrets(&state.pg, &id).await {
         Ok(secrets) => Json(json!({ "secrets": secrets })).into_response(),
         Err(e) => internal("[fleet] list_agent_secrets failed", e),
@@ -55,6 +59,9 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let sb = secretbox_or_500(&state, "[fleet] secretbox failed").await?;
     let actor = user.email.clone().or_else(|| user.name.clone());
     Ok(
@@ -71,7 +78,11 @@ pub async fn put(
                 );
                 Json(json!({ "ok": true })).into_response()
             }
-            Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+            Err(SecretWriteError::Refused(why)) => house_error(StatusCode::BAD_REQUEST, &why),
+            // A well-formed id no agent has: the foreign key refused the row.
+            Err(SecretWriteError::NoAgent) => house_error(StatusCode::NOT_FOUND, "not found"),
+            // Logged in full here; nothing of it crosses.
+            Err(SecretWriteError::Fault(e)) => internal("[fleet] secret write failed", e),
         },
     )
 }
@@ -84,6 +95,9 @@ pub async fn delete(
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
     let user = require_agent_manager(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     // Body { name } — matches PUT's transport. When the body doesn't parse
     // (unparseable JSON, wrong shape, failed validation), the old ?name=
     // query spelling still works, and THAT path is only length-checked by

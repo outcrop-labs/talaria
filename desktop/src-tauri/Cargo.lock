@@ -3809,6 +3809,7 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
+ "webkit2gtk",
  "webpki-root-certs",
 ]
 

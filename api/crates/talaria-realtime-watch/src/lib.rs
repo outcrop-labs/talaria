@@ -104,7 +104,7 @@ pub fn real_watch_deps(pg: sqlx::PgPool) -> RunWatchDeps {
                 // meant (the bind-cast trap in docs/RUST-MIGRATION.md). The
                 // shape is checked before the cast can see it; anything else
                 // is "no such task", which is what it is.
-                if !uuid_shaped(&task_id) {
+                if !talaria_params::uuid_shaped(&task_id) {
                     return Ok(None);
                 }
                 let row: Option<(String,)> =
@@ -139,22 +139,9 @@ pub fn real_watch_deps(pg: sqlx::PgPool) -> RunWatchDeps {
     }
 }
 
-/// Is this string shaped like a uuid? Checked in Rust because the only
-/// alternatives are adding a dependency or dropping the primary-key index by
-/// comparing `id::text`, and the question is eight hyphens and thirty-two
-/// hex digits.
-fn uuid_shaped(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 36
-        && b.iter().enumerate().all(|(i, c)| match i {
-            8 | 13 | 18 | 23 => *c == b'-',
-            _ => c.is_ascii_hexdigit(),
-        })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::uuid_shaped;
+    use talaria_params::uuid_shaped;
 
     #[test]
     fn only_a_uuid_shaped_subject_reaches_the_cast() {
@@ -163,9 +150,11 @@ mod tests {
         // version nibble must not be part of the test.
         assert!(uuid_shaped("ce077850-d91b-8c9a-ae81-882d44dbe8a1"));
         assert!(uuid_shaped("E83E6699-938E-474F-A90E-9B90048C69D4"));
+        // The cast takes these spellings too, and finds the same task.
+        assert!(uuid_shaped("e83e6699938e474fa90e9b90048c69d4"));
+        assert!(uuid_shaped("{e83e6699-938e-474f-a90e-9b90048c69d4}"));
         assert!(!uuid_shaped(""));
         assert!(!uuid_shaped("not-a-uuid"));
-        assert!(!uuid_shaped("e83e6699938e474fa90e9b90048c69d4"));
         assert!(!uuid_shaped("e83e6699-938e-474f-a90e-9b90048c69d"));
         assert!(!uuid_shaped("e83e6699-938e-474f-a90e-9b90048c69d4x"));
         assert!(!uuid_shaped("e83e6699_938e_474f_a90e_9b90048c69d4"));

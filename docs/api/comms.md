@@ -662,15 +662,15 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_stop.rs`](.
 
 > /api/conversations/{id}/stop.
 > POST → interrupt the reply that is streaming in this thread right now. The
-> stop button, server-side: Hermes addresses a running turn by its own run id,
-> and the assistant row is the only place that says which one this is.
+> stop button, server-side: Hermes addresses a running turn by its own run id.
+> A session turn's run id is on its assistant row (stamped from
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `session` | — | `{ok, hermes}` | 200, 403, 409, 502 | — |
 
-**POST** — Interrupt the reply streaming in this thread. `hermes` says whether the agent's own run was interrupted, or whether hanging up was the whole stop. Nothing is streaming → 409.
+**POST** — Interrupt the reply streaming in this thread, on either arm: a session turn by its run id, a completions turn by its completion id. A turn this instance is still opening (sent, but not yet named by the agent) is waited for, up to 10 s. `hermes` says whether the agent's own run was interrupted, or whether hanging up was the whole stop (a completions turn a drain in another process reads). `held` says the agent had not opened the turn within the wait, and the stop is sent when it does. Nothing is streaming → 409.
 
 ## `/api/conversations/{id}/teams`
 

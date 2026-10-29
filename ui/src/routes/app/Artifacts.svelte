@@ -41,6 +41,7 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import ArtifactsBrowser from './ArtifactsBrowser.svelte'
   import SecretsVault from './SecretsVault.svelte'
   import ArtifactsProperties from './ArtifactsProperties.svelte'
+  import { anyFailed, anyLoading } from '@/components/ui/query-state'
   import {
     AGENTS_ROOT,
     ancestry,
@@ -75,13 +76,17 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
   const foldersQuery = useFolders()
   const artifacts = $derived(artifactsQuery.data ?? [])
   const folders = $derived(foldersQuery.data ?? [])
-  const failure = $derived(
-    artifactsQuery.isError && artifactsQuery.data === undefined
+  // Both reads are judged before either answers (query-state.ts, anyLoading):
+  // a ternary that stopped at a failed files read never read the folders'
+  // flag, and the files read recovering then got it from a stale result.
+  const failure = $derived.by(() => {
+    const failed = [anyFailed(artifactsQuery), anyFailed(foldersQuery)]
+    return failed[0]
       ? { title: 'Could not load your files', error: artifactsQuery.error, retry: () => void artifactsQuery.refetch() }
-      : foldersQuery.isError && foldersQuery.data === undefined
+      : failed[1]
         ? { title: 'Could not load your folders', error: foldersQuery.error, retry: () => void foldersQuery.refetch() }
-        : null,
-  )
+        : null
+  })
 
   // The URL IS the selection: /artifacts/<place>, then ?f= folder and ?a= the
   // open file. Place is a PLACE — the same kind of thing as a tab — so it is a
@@ -146,7 +151,8 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
     }
     // Each roster is passed only once loaded; validating against a list that
     // has not arrived would drop a good part of the memory for no reason.
-    if (foldersQuery.isLoading || artifactsQuery.isLoading) return
+    // Both flags, every run (anyLoading, query-state.ts says why).
+    if (anyLoading(foldersQuery, artifactsQuery)) return
     restored = true
     const saved = restorableArtifactsSelection(readArtifactsSelection(), {
       folderIds: foldersQuery.isSuccess ? folders.map((f) => f.id) : null,
@@ -709,7 +715,7 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
       {/if}
       <ArtifactsBrowser
         {rows}
-        loading={place === 'drive' ? driveQuery.isLoading : artifactsQuery.isLoading || foldersQuery.isLoading}
+        loading={place === 'drive' ? driveQuery.isLoading : anyLoading(artifactsQuery, foldersQuery)}
         {failure}
         {view}
         {sortKey}

@@ -79,6 +79,9 @@ pub async fn post(
         Ok(a) => a,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let def = match agent_def_by_id(&state.pg, &id).await {
         Ok(Some(d)) => d,
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),

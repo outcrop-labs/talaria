@@ -115,10 +115,20 @@ the symlink spelling never leaks into config the box must resolve.
 - **default** — the box's own project network. The app reaches its sidecars
   by service DNS (`postgres:5432`, `redis:6379`, …). Nothing is published:
   several of these services are unauthenticated, the box network is the
-  boundary.
+  boundary. The app databases the box's app starts join it too
+  (`TALARIA_APP_DB_NETWORK`), dialled by container name,
+  `talaria-appdb-<box>-<slug>` ([`APPS.md`](./APPS.md)): a port they published
+  would be on the host's loopback, which the box cannot reach.
 - **talaradev** — the primary dev stack's network, joined read-only in
   spirit. Boxes only dial the one stateless service on it
   (`TALARIA_EMBED_URL` by container name).
+- **packages** — `talaria-mcp-<name>`, joined on demand. An MCP package
+  served over HTTP (an oci package with an http transport) runs on its own
+  network, never the box's default one, where postgres and redis are. The
+  box's api joins that network by the box container's own hostname and dials
+  the package by container name, as the product image does
+  (`api/crates/talaria-mcp/src/pkg.rs`, `dials_by_name`): the loopback port
+  the package publishes is the host's, not the box's.
 - **fleet** — `devbox-<name>-fleet`, this box's private agent network.
   Spawned agents attach to it and reach the box container-to-container:
   `devbox:5273` for the MCP gateway (`TALARIA_MCP_GW_URL`), `devbox:5274` for
@@ -237,7 +247,13 @@ with no prompt, run it from a TTY.
 
 `bun talaria box rm demo` refuses while the clone has uncommitted changes or
 commits no remote has (`--force` overrides) — those are the only things in a
-box that can't be recreated. A box left behind is the sweep's business too:
+box that can't be recreated. It removes the box's app databases with the box:
+those on the box's network, and those with a mount in its state (a box made
+before the network named them `talaria-appdb-1-<slug>`, on the default
+bridge). It empties the box's state from a root container on the box's image,
+never pulled: an app database's files belong to the postgres image's user,
+which yours cannot delete. If the directory still outlives that, `box rm` says
+so and exits 1. A box left behind is the sweep's business too:
 [`bun talaria cleanup`](../.claude/skills/cleanup/SKILL.md) flags a stopped box
 untouched for a week, and `--apply` removes it only when the clone is clean and
 pushed. A box whose containers went without `box rm` (or an interrupted `box new`)

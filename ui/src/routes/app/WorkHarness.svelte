@@ -1455,7 +1455,7 @@
                         onRetry={() => void filesQuery.refetch()}
                       />
                     </div>
-                  {:else if filesPending || paneKind === null || runsQuery.isLoading}
+                  {:else if [filesPending, paneKind === null, runsQuery.isLoading].includes(true)}
                     <!-- Until the list lands we do not know what stands here;
                          the document shape is the honest stand-in for a pane
                          that will most likely hold one. -->

@@ -166,8 +166,8 @@ pub struct ToolCall {
 ///
 /// Hence `agent_model` is the BASE persona id — the name the relay books an
 /// agent's key under — never the routed id `TransportRequest.model` calls.
-/// `tier` is the alias NAME the turn was routed to; the relay prices the
-/// model each call actually ran on, so the ledger no longer reads it.
+/// No tier rides here: the relay prices the model each call actually ran
+/// on, and books a tier's calls under its base agent.
 #[derive(Debug, Clone)]
 pub struct LedgerAttribution {
     /// The agent as the ledger names it: the base persona id, never a tier id.
@@ -177,8 +177,6 @@ pub struct LedgerAttribution {
     pub ref_id: Option<String>,
     /// The ticket this spend belongs to, so it reaches the ticket's cost.
     pub task_id: Option<String>,
-    /// The alias NAME (`opus`) the turn was routed to.
-    pub tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,7 +353,6 @@ pub fn ledger_of(req: &TransportRequest) -> LedgerAttribution {
         source: LedgerSource::Chat,
         ref_id: None,
         task_id: None,
-        tier: None,
     })
 }
 
@@ -1359,8 +1356,7 @@ fn clamp_label(label: &str) -> String {
 /// The flow a persona turn's spend belongs to, for the transport to record:
 /// every call the agent makes for the turn is then metered at the relay
 /// under this source, conversation or run, and ticket. The relay prices the
-/// model that actually served each call, so the ledger's `tier` is not
-/// needed here.
+/// model that actually served each call.
 fn turn_attribution(pg: &sqlx::PgPool, req: &TransportRequest) -> TurnAttribution {
     let led = ledger_of(req);
     TurnAttribution {
@@ -1963,7 +1959,7 @@ mod tests {
         let led = ledger_of(&req(false));
         assert_eq!(led.agent_model, "pl-main");
         assert_eq!(led.source.as_str(), "chat");
-        assert!(led.ref_id.is_none() && led.task_id.is_none() && led.tier.is_none());
+        assert!(led.ref_id.is_none() && led.task_id.is_none());
     }
 
     #[test]
@@ -1974,14 +1970,13 @@ mod tests {
             source: LedgerSource::Ticket,
             ref_id: Some("r-9".into()),
             task_id: Some("t-41".into()),
-            tier: Some("opus".into()),
         });
         let led = ledger_of(&r);
         // The BASE persona id, never the routed id — a routed id here prices
         // as an agent that does not exist, which means no price at all.
         assert_eq!(led.agent_model, "engineer-engineering");
         assert_eq!(led.source.as_str(), "ticket");
-        assert_eq!(led.tier.as_deref(), Some("opus"));
+        assert_eq!(led.task_id.as_deref(), Some("t-41"));
     }
 
     #[test]
