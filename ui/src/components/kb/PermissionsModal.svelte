@@ -268,7 +268,7 @@
               Sharing can’t be saved until this loads; saving now would write an empty list over the real one.
             </p>
           </div>
-        {:else if principalsLoading || !known}
+        {:else if [principalsLoading, !known].includes(true)}
           <SkeletonRows rows={3} avatar class="px-1 py-2" />
         {:else}
           <div class="space-y-1" use:listStagger>

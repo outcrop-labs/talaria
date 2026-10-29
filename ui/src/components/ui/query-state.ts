@@ -178,5 +178,17 @@ export function firstError<Qs extends ReadonlyArray<{ readonly isError: boolean 
   return i === -1 ? null : queries[i]!
 }
 
+/** The first of these list reads' notices (`listQuery(...).notice`), or null:
+ *  every list's notice is read before one is picked. `a.notice || b.notice`
+ *  and `a.notice ?? b.notice` leave `b` unread while `a` has one, the same
+ *  stale read `anyLoading` describes. A `listQuery` result's `pending`,
+ *  `failed`, `stale` and `notice` are its query's flags under other names, so
+ *  they follow the same rule: read every list's flag first, as
+ *  `[a.pending, b.pending].includes(true)` or this. */
+export function firstNotice(...lists: ReadonlyArray<{ readonly notice: QueryErrorProps | null }>): QueryErrorProps | null {
+  const notices = lists.map((l) => l.notice)
+  return notices.find((n) => n !== null) ?? null
+}
+
 /** Default emptiness test for QueryState: "empty array or null". */
 export const isEmptyValue = (d: unknown): boolean => (Array.isArray(d) ? d.length === 0 : d === null)

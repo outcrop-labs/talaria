@@ -17,7 +17,7 @@
   import { BOARD_MENU_GROUP, filtersActive, type BoardFilters } from '@/components/board/filter-bar'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { anyLoading, listQuery } from '@/components/ui/query-state'
+  import { anyLoading, firstError, firstNotice, listQuery } from '@/components/ui/query-state'
   import Input from '@/components/ui/Input.svelte'
   import FieldPill from '@/components/ui/FieldPill.svelte'
   import Chip from '@/components/ui/Chip.svelte'
@@ -313,7 +313,10 @@
   // offers a retry. The archived list matters too: this board may be an
   // archived one, and a failed archived read would otherwise land on the same
   // false "not found".
-  const boardListQuery = $derived(boardsQuery.isError ? boardsQuery : archivedQuery)
+  // `firstError` reads both lists' flags before it picks one (query-state.ts):
+  // `boardsQuery.isError ? boardsQuery : archivedQuery` read the archived
+  // list's flags only while the active list was fine.
+  const boardListQuery = $derived(firstError(boardsQuery, archivedQuery) ?? archivedQuery)
 
   // ── The layout you picked, per board ────────────────────────────────────
   //
@@ -380,7 +383,7 @@
      — It may have been deleted" for as long as that request takes: the exact
      false-deletion sentence this whole path exists to prevent. Neither list has
      spoken until both have. -->
-{#if listsLoading || (board && !showArchived && tasksLoading)}
+{#if [listsLoading, !!board && !showArchived && tasksLoading].includes(true)}
   <BoardSkeleton {view} />
 {:else if !board && boardListQuery.isError && boardListQuery.data === undefined}
   <QueryError
@@ -509,7 +512,7 @@
       {/if}
       <!-- A filter bar with a facet missing looks like a board that has no
            such thing. These say which read is the one that is missing. -->
-      {#if membersList.notice || labelsList.notice || statusesList.notice}
+      {#if firstNotice(membersList, labelsList, statusesList)}
         <div class="flex flex-wrap items-center gap-3">
           {#if membersList.notice}<QueryError {...membersList.notice} />{/if}
           {#if labelsList.notice}<QueryError {...labelsList.notice} />{/if}

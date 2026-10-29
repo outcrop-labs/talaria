@@ -5,7 +5,7 @@
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { listQuery } from '@/components/ui/query-state'
+  import { firstNotice, listQuery } from '@/components/ui/query-state'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { slide } from '@/lib/motion'
   import { useAgents } from '@/lib/agents'
@@ -33,7 +33,12 @@
   const teams = $derived(teamsList.rows)
   // Until the directories land the comboboxes would misrepresent the bindings
   // (zero options, nothing selected) — hold their slots with bars instead.
-  const pickersPending = $derived(agentsQuery.isPending || usersList.pending || teamsList.pending)
+  // Every read's flag is read before they are combined (query-state.ts,
+  // anyLoading): `agentsQuery.isPending || usersList.pending || …` left the
+  // directories' flags unread while the agents loaded, and the notices below
+  // read only their `isError`, so directories that answered first told this
+  // row nothing and the pickers stayed on their bars for good.
+  const pickersPending = $derived([agentsQuery.isPending, usersList.pending, teamsList.pending].includes(true))
   const bindingsAll = $derived(col.bindings.some((b) => b.principalType === 'all'))
   const boundUsers = $derived(col.bindings.filter((b) => b.principalType === 'user').map((b) => b.principalId!).filter(Boolean))
   const boundAgents = $derived(col.bindings.filter((b) => b.principalType === 'agent').map((b) => b.principalId!).filter(Boolean))
@@ -144,7 +149,7 @@
           />
         </div>
       {/if}
-      {#if !bindingsAll && (teamsList.notice || usersList.notice)}
+      {#if !bindingsAll && firstNotice(teamsList, usersList)}
         <div transition:slide={{ duration: 150 }} class="space-y-1">
           {#if teamsList.notice}<QueryError {...teamsList.notice} />{/if}
           {#if usersList.notice}<QueryError {...usersList.notice} />{/if}
