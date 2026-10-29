@@ -346,6 +346,58 @@ function lerpSource(from: DitherSource, to: DitherSource, e: number): DitherSour
   return out
 }
 
+/* ── The shared ticker ─────────────────────────────────────────────────── */
+
+// ONE requestAnimationFrame FOR EVERY ENGINE ON THE PAGE. A live field (a
+// travelling wave, a shimmer, a tween) wants every frame, because it paints
+// on the first frame past each bucket boundary and has to look at each frame
+// to find it. With a loop per engine that was one wake-up per field per frame:
+// a board with four working cards mounts eight fields (a wash and a trace
+// each), which was 480 rAF callbacks a second to paint at about 12 Hz
+// (follow-up UB5). Here an engine asks for the next frame and the ticker runs
+// every engine that asked, in the order they asked, in one callback.
+//
+// It paints exactly what the per-engine loops painted. Every rAF callback of
+// one frame is handed the same timestamp, so an engine run by the ticker sees
+// the `now` its own callback would have seen, makes the same bucket decision
+// and writes the same cells. An engine that asks again from inside its own
+// frame lands in the next frame, as a rAF requested inside a rAF callback
+// does. The order fields paint in within a frame changes nothing on screen:
+// each one owns its canvas.
+//
+// Not `subscribeToClock` (lib/motion.ts): this file imports nothing, because
+// the desktop launcher aliases it directly (see the note at the top), and the
+// motion clock runs whenever anything subscribes while an engine needs a
+// frame only while it is live.
+interface TickerClient {
+  tick(now: number): void
+}
+
+const tickerQueue = new Set<TickerClient>()
+let tickerHandle = 0
+
+function tickerFrame(now: number): void {
+  tickerHandle = 0
+  const due = [...tickerQueue]
+  tickerQueue.clear()
+  for (const client of due) client.tick(now)
+}
+
+/** Run `client.tick` on the next frame. Asking twice before it runs is one tick. */
+function requestTick(client: TickerClient): void {
+  tickerQueue.add(client)
+  if (tickerHandle === 0) tickerHandle = requestAnimationFrame(tickerFrame)
+}
+
+/** Take back a request; the last one out cancels the frame. */
+function cancelTick(client: TickerClient): void {
+  tickerQueue.delete(client)
+  if (tickerQueue.size === 0 && tickerHandle !== 0) {
+    cancelAnimationFrame(tickerHandle)
+    tickerHandle = 0
+  }
+}
+
 /* ── Engine ────────────────────────────────────────────────────────────── */
 
 export class DitherEngine {
@@ -362,7 +414,8 @@ export class DitherEngine {
   private fy = 0
   private ox = 0
   private oy = 0
-  private raf = 0
+  // This engine's place in the shared ticker's queue (see above).
+  private readonly ticker: TickerClient = { tick: (now) => this.frame(now) }
   private reduced = false
   private lastShimmerBucket = -1
   private lastWaveBucket = -1
@@ -545,7 +598,7 @@ export class DitherEngine {
 
   destroy(): void {
     this.destroyed = true
-    cancelAnimationFrame(this.raf)
+    cancelTick(this.ticker)
     this.io?.disconnect()
     this.io = null
     if (this.onDocVisibility && typeof document !== 'undefined') {
@@ -573,12 +626,11 @@ export class DitherEngine {
     return lerpSource(entry.from, entry.to, e)
   }
 
+  /** Ask the shared ticker for the next frame. Asking again before it runs
+   *  changes nothing, as the per-engine `raf` guard did. */
   private schedule(): void {
-    if (this.destroyed || this.raf) return
-    this.raf = requestAnimationFrame((now) => {
-      this.raf = 0
-      this.frame(now)
-    })
+    if (this.destroyed) return
+    requestTick(this.ticker)
   }
 
   private frame(now: number): void {

@@ -52,7 +52,13 @@ beforeEach(() => {
   })
 })
 
+// Every engine a test makes is destroyed after it, as an unmount does: the
+// shared ticker is module state, and an engine left queued would hold the
+// frame the next test's engines wait on (a test's `frames = []` drops it).
+const made: DitherEngine[] = []
+
 afterEach(() => {
+  for (const e of made.splice(0)) e.destroy()
   Object.assign(globalThis, saved)
 })
 
@@ -73,6 +79,7 @@ function drive(from: number, step: number, limit: number): number {
 function engine(sources: DitherSource[], opts: DitherEngineOptions, at: { left: number; top: number; dpr: number }) {
   const { canvas, calls } = recordingCanvas(at.left, at.top)
   const e = new DitherEngine(canvas, opts)
+  made.push(e)
   e.setSize(240, 120, at.dpr)
   e.setSources(sources, { immediate: true })
   return { e, calls }
@@ -107,4 +114,66 @@ test('a shimmer field keeps its loop, and reduced motion parks it', () => {
   e.setReducedMotion(true)
   drive(performance.now() + 2000, 16, 30)
   assert.equal(frames.length, 0)
+})
+
+// UB5: the shared ticker. Every live engine used to run its own rAF loop, so
+// a board of working cards woke the page once per field per frame.
+const drift: DitherSource = { id: 'w', kind: 'wave', axis: 'x', wavelength: 200, speed: 12, strength: 0.3 }
+
+test('every live engine on the page rides one frame request', () => {
+  const live = [0, 1, 2, 3].map((i) => engine([edge, { ...drift, id: `w${i}` }], { shimmer: i % 2 ? 0.1 : 0 }, { left: 10, top: 10 + 130 * i, dpr: 1 }))
+  // Four engines asked for a frame on mount, and asked once between them.
+  assert.equal(frames.length, 1)
+  const t0 = performance.now() + 1000
+  for (let f = 0; f < 60; f++) {
+    frames.shift()!(t0 + f * 16)
+    assert.equal(frames.length, 1, `frame ${f} left ${frames.length} requests`)
+  }
+  for (const { calls } of live) assert.ok(calls.some((c) => c.op === 'fillRect'), 'every field painted')
+})
+
+test('an engine beside others paints exactly what it paints alone, frame by frame', () => {
+  const at = { left: 11, top: 7, dpr: 1 }
+  const sources = [edge, drift]
+  const t0 = performance.now() + 1000
+  // One string per frame: what the subject drew in it. Compared as strings so
+  // a regression names its first differing frame instead of asking assert to
+  // diff 90 frames of calls, which takes minutes.
+  const run = (company: number): string[] => {
+    frames = []
+    const subject = engine(sources, { shimmer: 0.1 }, at)
+    for (let i = 0; i < company; i++) engine([{ ...drift, id: `c${i}`, speed: 7 + i }], { shimmer: 0.05 }, { left: 300, top: 40 * i, dpr: 1 })
+    const perFrame: string[] = []
+    for (let f = 0; f < 90; f++) {
+      const before = subject.calls.length
+      const next = frames.shift()
+      if (!next) break
+      next(t0 + f * 16.667)
+      perFrame.push(subject.calls.slice(before).map((c) => `${c.op}:${c.x},${c.y},${c.w},${c.h}`).join(' '))
+    }
+    for (const e of made.splice(0)) e.destroy()
+    return perFrame
+  }
+  const alone = run(0)
+  const beside = run(5)
+  assert.equal(alone.length, 90)
+  assert.ok(alone.some((f) => f !== '') && alone.some((f) => f === ''), 'it painted on bucket frames only')
+  const first = alone.findIndex((f, i) => beside[i] !== f)
+  assert.equal(first, -1, `frame ${first} differs beside other engines`)
+  assert.equal(beside.length, alone.length)
+})
+
+test('the last engine out cancels the frame it was waiting on', () => {
+  const cancelled: number[] = []
+  Object.assign(globalThis, { cancelAnimationFrame: (h: number) => cancelled.push(h) })
+  const a = engine([edge, drift], {}, { left: 10, top: 10, dpr: 1 })
+  const b = engine([edge, { ...drift, id: 'w2' }], {}, { left: 10, top: 200, dpr: 1 })
+  assert.equal(frames.length, 1)
+  a.e.destroy()
+  assert.deepEqual(cancelled, [], 'b still waits on it')
+  b.e.destroy()
+  assert.equal(cancelled.length, 1)
+  // A new engine asks for a fresh frame.
+  engine([edge, drift], {}, { left: 10, top: 10, dpr: 1 })
+  assert.equal(frames.length, 2)
 })
