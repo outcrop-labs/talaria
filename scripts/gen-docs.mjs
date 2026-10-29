@@ -28,9 +28,11 @@
 // WHAT IS EXACT vs HEURISTIC. Path literals, methods, auth guards, body
 // member tables, audit/SSE markers and literal status codes are read from
 // the route source (see extractors below). The Returns column is a heuristic
-// — the top-level keys of the first success-shaped `json!({…})` literal,
-// `…` when the shape isn't a literal — and is marked as such in every file's
-// banner. Where the extractor would have to guess, it prints `…` instead.
+// — the top-level keys of the first success-shaped `json!({…})` literal (or,
+// for a handler that answers through same-file helpers, each shape those
+// helpers answer), `…` when the shape isn't a literal — and is marked as such
+// in every file's banner. Where the extractor would have to guess, it prints
+// `…` instead.
 // Never trust a doc over the code; this tool exists to make that cheap.
 //
 // USAGE
@@ -660,6 +662,39 @@ function returnsShapeRust(handlerStripped) {
   return '…'
 }
 
+/** The Returns cell when the handler's own body has no success literal: the
+ *  handler hands its answer to same-file helpers (a verb per arm, a 202
+ *  builder), so the shapes live there. Only a literal a helper ANSWERS with —
+ *  `Json(json!({…}))` — counts: a helper's other `json!` values are upstream
+ *  payloads, audit diffs and stored rows, not responses. Every distinct
+ *  success shape is listed, in source order, joined by ` or ` (a pipe would
+ *  split the table cell); `…` when no
+ *  helper answers a literal either. */
+function returnsShapeHelpers(parts) {
+  const shapes = []
+  for (const { text } of parts) {
+    let i = 0
+    while (true) {
+      const idx = text.indexOf('json!(', i)
+      if (idx === -1) break
+      i = idx + 6
+      if (!/\bJson\s*\(\s*$/.test(text.slice(Math.max(0, idx - 20), idx))) continue
+      let j = idx + 6
+      while (j < text.length && /\s/.test(text[j])) j++
+      if (text[j] !== '{') continue
+      const close = matchDelimRust(text, j)
+      const keys = splitTop(text.slice(j + 1, close))
+        .map((p) => /^\s*(?:"((?:[^"\\]|\\.)*)"|([A-Za-z_$][\w$]*))\s*:/.exec(p))
+        .filter(Boolean)
+        .map((m) => m[1] ?? m[2])
+      if (!keys.length || keys.includes('error')) continue
+      const shape = '{' + keys.join(', ') + '}'
+      if (!shapes.includes(shape)) shapes.push(shape)
+    }
+  }
+  return shapes.length ? shapes.join(' or ') : '…'
+}
+
 const STATUS_NAMES = {
   OK: 200, CREATED: 201, ACCEPTED: 202, NO_CONTENT: 204,
   MOVED_PERMANENTLY: 301, FOUND: 302, SEE_OTHER: 303, TEMPORARY_REDIRECT: 307, PERMANENT_REDIRECT: 308,
@@ -752,7 +787,10 @@ function extractRustRoute(file, entries) {
       method: e.method,
       ...auth,
       body: bodySchemaRust(combined, sigText, raw),
-      returns: returnsShapeRust(stripped.slice(span.start, span.end)),
+      returns: (() => {
+        const own = returnsShapeRust(stripped.slice(span.start, span.end))
+        return own === '…' ? returnsShapeHelpers(combined.parts.slice(1)) : own
+      })(),
       statuses: statusListRust(combined.text, sse),
       sse,
       audit: combined.text.includes('log_audit('),
@@ -1139,9 +1177,10 @@ function renderApiIndex(groupRoutes) {
   lines.push(AUTH_LEGEND, '')
   lines.push('---', '')
   lines.push('The **Returns** column everywhere in this reference is a heuristic: the top-level')
-  lines.push('keys of the first success-shaped `json!({…})` literal in the handler. `…` means the')
-  lines.push('shape is computed, not literal. Where a row matters to you, the source link at the')
-  lines.push('top of its section is the truth.')
+  lines.push('keys of the first success-shaped `json!({…})` literal in the handler — or, for a')
+  lines.push('handler that answers through same-file helpers, every `Json(json!({…}))` shape they')
+  lines.push('answer, joined by `or`. `…` means the shape is computed, not literal. Where a row')
+  lines.push('matters to you, the source link at the top of its section is the truth.')
   lines.push('')
   return lines.join('\n')
 }

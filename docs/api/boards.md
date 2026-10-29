@@ -113,7 +113,7 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_agent_requests.r
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `{requests}` | 200, 401, 403 | — |
-| POST | `dual` | [body](#post-apiboardsidagent-requests-body) | `…` | 200, 400, 403, 404 | audit |
+| POST | `dual` | [body](#post-apiboardsidagent-requests-body) | `{ok, alreadyPending}` | 200, 400, 403, 404 | audit |
 | PUT | `dual` | [body](#put-apiboardsidagent-requests-body) | `{ok, agentModel, status}` | 200, 400, 401, 403, 404 | audit |
 
 ### POST `/api/boards/{id}/agent-requests` body
