@@ -30,6 +30,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_error::store_fault;
 use talaria_gateway::fleet_chat::{Method, agent_request};
 use talaria_gateway::settings::get_setting;
 
@@ -55,7 +56,7 @@ async fn agent_for(pg: &PgPool, def_id: &str) -> Result<String, String> {
     .bind(def_id)
     .fetch_optional(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[crons] agent read failed", e))?;
     model.ok_or_else(|| "not a running managed agent".to_string())
 }
 
@@ -757,14 +758,14 @@ pub async fn schedule_from_conversation(
             .bind(conversation_id)
             .fetch_optional(pg)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| store_fault("[crons] conversation read failed", e))?;
     // A thread with no agent, a thread that is gone, and a thread whose agent
     // was retired all land on the same sentence: the only thing the caller can
     // do about any of them is pick a different thread.
     let model = model.unwrap_or_default();
     let Some(def_id) = managed_def_for_model(pg, &model)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| store_fault("[crons] agent read failed", e))?
     else {
         return Err("this conversation's agent is not a running managed agent".to_string());
     };
@@ -798,7 +799,7 @@ pub async fn schedule_from_conversation(
         if let Err(undo) = remove_cron_job(pg, &def_id, &job).await {
             tracing::error!("[crons] orphan job {job} on {model} could not be removed: {undo}");
         }
-        return Err(e.to_string());
+        return Err(store_fault("[crons] schedule row write failed", e));
     }
     Ok(job)
 }
@@ -822,13 +823,13 @@ pub async fn unschedule_from_conversation(
     .bind(job_id)
     .fetch_optional(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[crons] schedule read failed", e))?;
     let Some((model,)) = row else {
         return Err("this thread has no such schedule".to_string());
     };
     let removed = match managed_def_for_model(pg, &model)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| store_fault("[crons] agent read failed", e))?
     {
         Some(def_id) => remove_cron_job(pg, &def_id, job_id).await,
         None => Err("this conversation's agent is not a running managed agent".to_string()),
@@ -843,7 +844,7 @@ pub async fn unschedule_from_conversation(
     .bind(job_id)
     .execute(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[crons] schedule row delete failed", e))?;
     Ok(())
 }
 
@@ -1031,7 +1032,7 @@ pub async fn schedules_for_conversation(
 pub async fn live_jobs_for_model(pg: &PgPool, agent_model: &str) -> Result<Vec<CronJob>, String> {
     let Some(def_id) = managed_def_for_model(pg, agent_model)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| store_fault("[crons] agent read failed", e))?
     else {
         return Err("this conversation's agent is not a running managed agent".to_string());
     };

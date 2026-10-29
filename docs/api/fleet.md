@@ -141,14 +141,14 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_secrets.rs`]
 
 > /api/fleet/agents/{id}/secrets. Per-agent secrets, write-only. GET →
 > names + timestamps (never values), and for a CONFIG_* secret where the
-> current config names it (usedAt). PUT { name, value } → set/replace.
-> DELETE { name, removeSetting? } → remove; a CONFIG_* secret the current
+> current config names it (usedAt). PUT { name, value } → set/replace; a
+> well-formed id that names no agent is a 404.
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `agent-manager` | — | `{secrets}` | 200 | — |
-| PUT | `session` + `agent-manager` | [body](#put-apifleetagentsidsecrets-body) | `{ok}` | 200, 400 | — |
+| PUT | `session` + `agent-manager` | [body](#put-apifleetagentsidsecrets-body) | `{ok}` | 200, 400, 404 | — |
 | DELETE | `session` + `agent-manager` | [body](#delete-apifleetagentsidsecrets-body) | `{ok}` | 200, 400, 409 | audit |
 
 ### PUT `/api/fleet/agents/{id}/secrets` body
@@ -447,7 +447,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_endpoints_id.rs`](../.
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | PUT | `admin` | [body](#put-apifleetendpointsid-body) | `{needsForce, affected}` | 200, 400, 404, 409 | audit |
-| DELETE | `admin` | — | `{needsForce, affected}` | 200, 400, 409 | audit |
+| DELETE | `admin` | — | `{needsForce, affected}` | 200, 400, 404, 409 | audit |
 
 ### PUT `/api/fleet/endpoints/{id}` body
 

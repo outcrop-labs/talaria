@@ -1139,12 +1139,18 @@ fn turn_knob<T: Into<Value>>(block: &mut Map<String, Value>, key: &str, knob: Kn
 /// rendering reflects the edit: model/base_url/api_key come from the endpoint
 /// registry; extra raw keys (e.g. context_length env refs) survive when the
 /// endpoint is unchanged.
+///
+/// Its `Err` is a sentence the routes answer: an edit refusal, or
+/// [`talaria_error::STORE_FAULT`] when the registry read failed — the
+/// database's own text stays in the log.
 pub async fn apply_config_edits(
     pg: &PgPool,
     prev: &Value,
     edits: &ConfigEdits,
 ) -> Result<Value, String> {
-    let endpoints = list_endpoints(pg).await.map_err(|e| e.to_string())?;
+    let endpoints = list_endpoints(pg)
+        .await
+        .map_err(|e| talaria_error::store_fault("[agent-defs] endpoint registry read failed", e))?;
     apply_config_edits_over(&endpoints, prev, edits)
 }
 
@@ -2033,6 +2039,35 @@ mod tests {
                 "others": [{"id": "zed", "slug": "zed", "displayName": "ZED"}],
             })
         );
+    }
+
+    /// A registry read that fails hands up the store's fault sentence, never
+    /// the database's own text: the edit route and the assistant's model
+    /// change answer this `Err`, and `store_answer` makes only this sentence
+    /// the house 500. No database here — the pool points at a closed port,
+    /// and the serve window is dropped first so the read reaches it.
+    #[tokio::test]
+    async fn a_registry_read_fault_is_the_store_fault_never_the_databases_text() {
+        talaria_gateway::registry::invalidate_endpoints_cache();
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(300))
+            .connect_lazy("postgres://nobody@127.0.0.1:9/none")
+            .unwrap();
+        let edits = ConfigEdits {
+            main: ModelTarget {
+                endpoint: "mock".into(),
+                model: "mock-1".into(),
+                context_length: None,
+                effort: None,
+            },
+            aliases: Vec::new(),
+            fallbacks: Vec::new(),
+            compression: CompressionEdits::default(),
+        };
+        let err = apply_config_edits(&pg, &Value::Object(Map::new()), &edits)
+            .await
+            .unwrap_err();
+        assert_eq!(err, talaria_error::STORE_FAULT);
     }
 
     /// The one-agent rule against a migrated database: a second agent is

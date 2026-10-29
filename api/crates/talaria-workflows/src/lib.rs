@@ -105,12 +105,23 @@ pub struct WorkflowPatch {
     pub toolkits: Option<serde_json::Value>,
 }
 
+/// `Ok(false)` when no workflow has this id: nothing was written, and the
+/// route answers 404. Asked first, under the row's lock, so an empty patch
+/// says so too and a delete racing the patch cannot land between the two.
 pub async fn update_workflow(
     pg: &PgPool,
     id: &str,
     patch: &WorkflowPatch,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
     let mut tx = pg.begin().await?;
+    let found: Option<(i32,)> =
+        sqlx::query_as("select 1 from task_workflows where id = $1::uuid for update")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if found.is_none() {
+        return Ok(false);
+    }
     if let Some(v) = &patch.name {
         sqlx::query("update task_workflows set name = $1, updated_at = now() where id = $2::uuid")
             .bind(v)
@@ -162,7 +173,7 @@ pub async fn update_workflow(
         .await?;
     }
     tx.commit().await?;
-    Ok(())
+    Ok(true)
 }
 
 /// No 404 — a missed id deletes nothing and the route still answers ok.

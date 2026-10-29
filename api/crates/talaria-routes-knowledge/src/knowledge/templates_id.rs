@@ -34,6 +34,9 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let author = user.email.as_deref().or(user.name.as_deref());
     Ok(
         match update_template(
@@ -74,6 +77,9 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     require_perm(&state, &headers, "templates.manage").await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     Ok(match get_template(&state.pg, &id).await {
         Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
         Ok(Some(_)) => match delete_template(&state.pg, &id).await {
