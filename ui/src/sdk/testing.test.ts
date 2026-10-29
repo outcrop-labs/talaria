@@ -20,16 +20,28 @@ const fences = [...DOC.matchAll(/^```ts\n([\s\S]*?)^```$/gm)].map((m) => m[1]!)
 const scratch = mkdtempSync(join(UI, '.sdk-doc-examples-mcp-'))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
-/** Each fence that defines an mcp.ts, loaded as its module's default export. */
-async function docModules(): Promise<AppMcp[]> {
-  const out: AppMcp[] = []
-  for (const [i, code] of fences.entries()) {
-    if (!code.includes('defineAppMcp(')) continue
-    const file = join(scratch, `mcp-${i}.ts`)
-    writeFileSync(file, code)
-    out.push(((await import(/* @vite-ignore */ pathToFileURL(file).href)) as { default: AppMcp }).default)
-  }
-  return out
+/** Each fence that defines an mcp.ts, loaded as its module's default export.
+ *
+ *  ONCE, into files that did not exist, and every test shares the answer.
+ *  Each test used to write all three files again before importing them, and
+ *  the import was the module cache's anyway. A rewrite truncates a file
+ *  written moments before, and on XFS (this repo's dev hosts) closing a
+ *  truncated file starts its writeback: under heavy host IO that one
+ *  `writeFileSync` waited on the disk for 37 s, measured, against under 2 ms
+ *  for a write to a new file. That was the 10 s timeout, not the work. */
+let loaded: Promise<AppMcp[]> | undefined
+function docModules(): Promise<AppMcp[]> {
+  loaded ??= (async () => {
+    const out: AppMcp[] = []
+    for (const [i, code] of fences.entries()) {
+      if (!code.includes('defineAppMcp(')) continue
+      const file = join(scratch, `mcp-${i}.ts`)
+      writeFileSync(file, code, { flag: 'wx' })
+      out.push(((await import(/* @vite-ignore */ pathToFileURL(file).href)) as { default: AppMcp }).default)
+    }
+    return out
+  })()
+  return loaded
 }
 
 describe("docs/sdk/mcp.md's examples", () => {
