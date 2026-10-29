@@ -294,6 +294,16 @@ export function rollInProgress(row: FleetRollRow | null | undefined): boolean {
   return row?.state === 'rolling' && row.detail !== ROLL_STILL_STARTING
 }
 
+/** The roll picture's rows by agent slug — what each tile and row reads its
+ *  own line from. Not by department: the picture has one row per agent, and
+ *  an agent left out of a department another agent runs in (a pair from
+ *  before the one-agent rule) has its own row there, idle. Keyed by
+ *  department, it wore the runner's chip and its Roll control followed the
+ *  runner's roll. */
+export function rollRowsBySlug(rows: FleetRollRow[] | null | undefined): Map<string, FleetRollRow> {
+  return new Map((rows ?? []).map((r) => [r.slug, r]))
+}
+
 export interface FleetRollPicture {
   ok: boolean
   /** Whether any department's roll is in its steps right now — rows noted

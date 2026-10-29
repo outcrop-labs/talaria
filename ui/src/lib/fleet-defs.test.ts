@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { containersOf, editNotApplied, ROLL_STILL_STARTING, rollInProgress, type AgentContainers, type DepartmentShare, type FleetRollRow } from './fleet-defs'
+import { containersOf, editNotApplied, ROLL_STILL_STARTING, rollInProgress, rollRowsBySlug, type AgentContainers, type DepartmentShare, type FleetRollRow } from './fleet-defs'
 
 // Containers are found by department, and a department is one container. Where
 // two agents hold one (a pair from before a department became one agent's), the
@@ -151,5 +151,28 @@ describe('rollInProgress', () => {
     expect(rollInProgress(row('idle'))).toBe(false)
     expect(rollInProgress(undefined)).toBe(false)
     expect(rollInProgress(null)).toBe(false)
+  })
+})
+
+// The roster reads each agent's own row. A pair that shares a department has
+// two rows with one department: the runner's roll, and the left-out agent's
+// idle row. Keyed by department, the last one won and both tiles read it.
+describe('rollRowsBySlug', () => {
+  const runner: FleetRollRow = { slug: 'pippa', department: 'personal-pip', displayName: 'Pippa', state: 'rolling', since: 5, detail: null, batch: 'b1' }
+  const leftOut: FleetRollRow = { slug: 'pipdup', department: 'personal-pip', displayName: 'Pip Dup', state: 'idle', since: null, detail: null, batch: null }
+
+  it('gives each agent of a shared department its own row, in either order', () => {
+    for (const rows of [[runner, leftOut], [leftOut, runner]]) {
+      const bySlug = rollRowsBySlug(rows)
+      expect(bySlug.get('pippa')).toBe(runner)
+      expect(bySlug.get('pipdup')).toBe(leftOut)
+      expect(rollInProgress(bySlug.get('pippa'))).toBe(true)
+      expect(rollInProgress(bySlug.get('pipdup'))).toBe(false)
+    }
+  })
+
+  it('is empty with no picture yet', () => {
+    expect(rollRowsBySlug(undefined).size).toBe(0)
+    expect(rollRowsBySlug(null).size).toBe(0)
   })
 })

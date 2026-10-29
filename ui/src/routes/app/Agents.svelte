@@ -26,7 +26,7 @@
   import { useFleet } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { fly, slide, staggerIn } from '@/lib/motion'
-  import { containersOf, rollFleet, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
+  import { containersOf, rollFleet, rollRowsBySlug, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import AgentListRow from './AgentListRow.svelte'
@@ -97,11 +97,9 @@
   // failure sentence, the disabled Roll control — and the strip above the
   // roster reads the whole.
   const rollQuery = useFleetRoll(() => isAdmin)
-  // By slug, not department: the picture has one row per agent, and an agent
-  // left out of a department another agent runs in (a pair from before the
-  // one-agent rule) reads idle there — keyed by department, it wore the
-  // runner's chip and its Roll control followed the runner's roll.
-  const rollBySlug = $derived(new Map((rollQuery.data?.rolls ?? []).map((r) => [r.slug, r])))
+  // By slug, not department (`rollRowsBySlug`): an agent left out of a shared
+  // department reads its own idle row, not the runner's.
+  const rollBySlug = $derived(rollRowsBySlug(rollQuery.data?.rolls))
   const anyRolling = $derived(rollQuery.data?.rolling ?? false)
   // The confirm step lives in the page, above the roster, not in a dialog:
   // what is about to happen is visible beside the agents it happens to.
