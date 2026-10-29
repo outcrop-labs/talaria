@@ -57,16 +57,19 @@ The registry is `~/.local/share/app.talaria.desktop/instances.json` (atomic writ
 instance's session data lives beside it in `instances/<id>/webview/`. Removing an instance
 deletes its data dir — the saved session dies with it; the instance itself is untouched. The
 closed webview's WebKit network process can recreate its storage dir while it shuts down, so
-the remove deletes again 2 s and 10 s later, and every launch sweeps `instances/` for
-uuid-named dirs no registered instance owns (only when the registry loaded as written).
+the remove deletes again 2 s and 10 s later. The registry also records the removal
+(`removed`), and each launch deletes a recorded dir that came back; a removal is dropped
+once a launch finds its dir gone. Nothing else under `instances/` is ever deleted: a dir no
+entry owns and no remove recorded may be the session of an entry a damaged registry lost.
 
 Neither file can stop the app from starting. A registry or `settings.json` that does not
 parse is moved aside next to itself (`instances.json.corrupt-<ms>`), whatever entries still
-parse are kept, and the launcher says what happened; a settings value this build does not
-know (a newer build wrote it) reads as the default. The registry also records `lastView`,
-the instance the window last showed or `null` for the launcher, so a relaunch lands where
-the person left. A registry from before that field reopens the most recently opened
-instance, and only one that was actually opened.
+parse are kept, and the launcher says what happened. The clean file written in its place
+records no removals, so no later launch deletes a data dir on the damaged file's word. A
+settings value this build does not know (a newer build wrote it) reads as the default. The
+registry also records `lastView`, the instance the window last showed or `null` for the
+launcher, so a relaunch lands where the person left. A registry from before that field
+reopens the most recently opened instance, and only one that was actually opened.
 
 ### Opening an instance, and when it does not load
 
@@ -74,6 +77,14 @@ An instance with no webview yet (the first open of a session, a relaunch) is pro
 from the launcher, which shows "Opening X…" with a way to stay. An unreachable instance is
 then a sentence with Retry on the launcher, not a blank window or WebKit's error page — in
 the themed titlebar mode the only chrome is drawn by the page, so that page was a trap.
+The card also offers **Open anyway**, because the check is not the webview: it is the
+shell's own HTTP client, with no cookies and its own proxy lookup and TLS trust (on Linux,
+the proxy comes only from the environment). An instance behind a sign-in gate that refuses
+the beacon without a session, or one reachable only through a proxy set in the desktop's
+settings, fails the check and still loads in the webview. Open anyway opens it without the
+check; on Linux a page that then fails comes back as a load failure (below), and on macOS
+and Windows the person gets what the platform webview shows for a failed load, as every open
+did before the probe.
 
 **Linux only:** each instance webview's WebKitGTK `load-failed` signal is watched
 (`commands.rs::watch_load_failures`; the `webkit2gtk` crate is a Linux-only dependency). An
