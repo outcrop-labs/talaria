@@ -22,7 +22,7 @@ use talaria_body::{
     optional_max_string_member, parse, string_member, string_msg, too_big_msg, too_small_msg,
     utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, internal, object_or_400};
+use talaria_error::{house_error, internal, object_or_400, store_answer};
 use talaria_session::{actor_of, require_agent_manager, secretbox_or_500};
 use talaria_state::AppState;
 
@@ -221,6 +221,9 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
 
     let def: Option<(String, String, bool, String, String, bool)> = match sqlx::query_as(
         "select id::text, department, managed, display_name, slug, enabled from agent_defs where id = $1::uuid",
@@ -310,7 +313,9 @@ pub async fn post(
     }
 
     // apply_config_edits' refusal ("cannot edit what has no models" and
-    // friends) is the 400; the version write beneath it is a db error → 500.
+    // friends) is the 400; its registry re-read failing (the auto-register
+    // above dropped the cache) is the store's fault sentence → the house 500,
+    // and so is the version write beneath it.
     let edits = ConfigEdits {
         main,
         aliases,
@@ -319,7 +324,7 @@ pub async fn post(
     };
     let config = match apply_config_edits(&state.pg, &latest.config, &edits).await {
         Ok(c) => c,
-        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        Err(msg) => return Ok(store_answer(StatusCode::BAD_REQUEST, &msg)),
     };
     let created_by = user
         .email

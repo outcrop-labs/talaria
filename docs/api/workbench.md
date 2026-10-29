@@ -252,7 +252,7 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_coding_log
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{phase, accountId, provider, email, orgName}` | 200, 403, 404, 500, 502 | — |
 | PUT | `session` | [body](#put-apiworkbenchcodingloginid-body) | `…` | 200, 400, 404, 500, 502 | — |
-| DELETE | `session` | — | `{ok}` | 200, 500 | — |
+| DELETE | `session` | — | `{ok}` | 200, 404, 500 | — |
 
 **GET** — Poll a sign-in. A finished flow is sealed into this instance in the same request that reads it — the bridge serves a credential once.
 
@@ -264,7 +264,7 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_coding_log
 | :--- | :--- | :--- |
 | `value` | `string(1, 4096)` |  |
 
-**DELETE** — Abandon a sign-in in flight.
+**DELETE** — Abandon a sign-in in flight. A session this instance is not running (finished, failed, expired, or never started) is a 404, as on the poll.
 
 ## `/api/workbench/coding/pin/{taskId}`
 

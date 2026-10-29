@@ -26,9 +26,13 @@ use serde_json::Value;
 use talaria_body::{optional_boolean_member, trimmed_string_member};
 use talaria_conversations::{get_conversation, set_pinned_files};
 use talaria_error::{house_error, internal, object_or_400};
+// A truncated or mangled link is the same 404 as a thread the caller cannot
+// see, instead of a 500 from the read's `$1::uuid` cast (which the pane read
+// as nothing to show, and opened an empty thread).
 use talaria_notify::{
     NotifyDeps, conversation_audience_ids, fan_conversation_event, fan_known_conversation,
 };
+use talaria_params::uuid_shaped;
 use talaria_plan_drafts::drop_draft;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -45,7 +49,7 @@ pub async fn get(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
-    if !could_be_uuid(&id) {
+    if !uuid_shaped(&id) {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     }
     Ok(match get_conversation(&state.pg, &user.id, &id).await {
@@ -135,7 +139,7 @@ async fn visible_role(
     id: &str,
     where_: &str,
 ) -> Result<String, Response> {
-    if !could_be_uuid(id) {
+    if !uuid_shaped(id) {
         return Err(house_error(StatusCode::NOT_FOUND, "not found"));
     }
     match get_conversation(&state.pg, user_id, id).await {
@@ -143,28 +147,6 @@ async fn visible_role(
         Ok(None) => Err(house_error(StatusCode::NOT_FOUND, "not found")),
         Err(e) => Err(internal(where_, e)),
     }
-}
-
-/// Whether a path id can name a conversation at all. A truncated or mangled
-/// link is then the same 404 as a thread the caller cannot see, instead of a
-/// 500 from the read's `$1::uuid` cast (which the pane read as nothing to
-/// show, and opened an empty thread). Never stricter than Postgres' own uuid
-/// input: braces, upper case and the 32-digit form pass, and the odd shape it
-/// lets through that Postgres refuses still fails the read as before.
-fn could_be_uuid(id: &str) -> bool {
-    let inner = id
-        .strip_prefix('{')
-        .and_then(|s| s.strip_suffix('}'))
-        .unwrap_or(id);
-    let mut digits = 0;
-    for c in inner.chars() {
-        match c {
-            '-' => {}
-            c if c.is_ascii_hexdigit() => digits += 1,
-            _ => return false,
-        }
-    }
-    digits == 32
 }
 
 async fn fan(state: &AppState, id: &str) {
@@ -407,32 +389,4 @@ pub async fn delete(
         fan(&state, &id).await;
     }
     Ok((StatusCode::OK, Json(OkTrue { ok: true })).into_response())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::could_be_uuid;
-
-    #[test]
-    fn a_link_that_cannot_name_a_conversation_is_not_read() {
-        for id in [
-            "6113b5bc-6935-46e1-a67c-60bd58daf4f0",
-            "6113B5BC-6935-46E1-A67C-60BD58DAF4F0",
-            "{6113b5bc-6935-46e1-a67c-60bd58daf4f0}",
-            "6113b5bc693546e1a67c60bd58daf4f0",
-        ] {
-            assert!(could_be_uuid(id), "{id}");
-        }
-        for id in [
-            "",
-            "6113b5bc-6935-46e1-a67c-60bd58daf4f",
-            "6113b5bc-6935-46e1-a67c-60bd58daf4f0a",
-            "6113b5bc-6935-46e1-a67c-60bd58daf4fg",
-            "not-a-thread",
-            "6113b5bc-6935-46e1-a67c-60bd58daf4f0;drop",
-            "{6113b5bc-6935-46e1-a67c-60bd58daf4f0",
-        ] {
-            assert!(!could_be_uuid(id), "{id}");
-        }
-    }
 }

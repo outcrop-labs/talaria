@@ -29,6 +29,9 @@ pub async fn post(
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let sb = state.secretbox().await.unwrap_or_default();
     let outcome = match decide_action(
         &state.pg,

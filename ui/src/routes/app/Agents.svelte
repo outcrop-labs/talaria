@@ -12,6 +12,7 @@
   import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
+  import { anyLoading } from '@/components/ui/query-state'
   import Segmented from '@/components/ui/Segmented.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
@@ -157,8 +158,10 @@
 
   // Defs AND containers gate the roster together: tiles built from
   // `containers: null` read every agent as stopped, then flip. (A disabled
-  // containers query — non-admin — is never `isLoading`.)
-  const rosterLoading = $derived(defsQuery.isLoading || containersQuery.isLoading)
+  // containers query — non-admin — is never `isLoading`.) Through
+  // `anyLoading`, never `||`: with `||` the roster stayed on its skeletons
+  // for good whenever containers answered before defs (anyLoading says why).
+  const rosterLoading = $derived(anyLoading(defsQuery, containersQuery))
   const gridClasses = 'grid grid-cols-2 gap-3 sm:grid-cols-3'
   const listClasses = 'divide-y divide-line overflow-hidden rounded-lg border border-line bg-panel'
   // The list container classes only apply while there are items (or their

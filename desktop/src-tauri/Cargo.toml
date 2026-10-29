@@ -31,6 +31,15 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 webpki-root-certs = "1.0.9"
+# Already Tauri's runtime: these are the features it builds with, so naming
+# them adds no compile. `time` bounds the notification post, `rt` gives the
+# add's probe an abort handle.
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+
+# WebKitGTK's `load-failed` signal (commands.rs::watch_load_failures). The
+# same crate and version wry links; Tauri exposes the WebView, not its signals.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

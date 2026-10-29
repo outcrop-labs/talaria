@@ -75,7 +75,10 @@ use serde_json::Value;
 use talaria_fleet_layout::ManifestEntry;
 use tokio::time::Instant;
 
-use crate::fleet_chat::{ByteStream, CONTROL_WINDOW, ChatStream, HEADERS_WINDOW, agent_post};
+use crate::fleet_chat::{
+    ByteStream, CONTROL_WINDOW, ChatStream, HEADERS_WINDOW, agent_post, completion_id_of,
+    transport_error,
+};
 
 /// The longest frame read for its id. A chunk is a few hundred bytes; a
 /// frame past this is not one the guard understands, so it stops reading
@@ -230,11 +233,9 @@ fn completion_of(frame: &[u8]) -> Frame {
         return Frame::Other;
     }
     match serde_json::from_str::<Value>(&data) {
-        Ok(json) => match json.get("id").and_then(Value::as_str) {
-            Some(id) if id.starts_with("chatcmpl-") && id.len() > "chatcmpl-".len() => {
-                Frame::Named(id.to_string())
-            }
-            _ => Frame::Other,
+        Ok(json) => match completion_id_of(&json) {
+            Some(id) => Frame::Named(id.to_string()),
+            None => Frame::Other,
         },
         Err(_) => Frame::Other,
     }
@@ -317,8 +318,9 @@ async fn settle(entry: ManifestEntry, mut inner: ByteStream, mut frames: Frames,
             match stop(&entry, &run, Instant::now() + w.control).await {
                 Stop::Landed(status) => {
                     tracing::info!(
-                        "[fleet] {}: a turn its reader let go of was stopped in the agent ({run}: {status})",
-                        entry.model
+                        "[fleet] {}: a turn its reader let go of was {} ({run})",
+                        entry.model,
+                        landed_as(status.as_deref())
                     );
                     settled = Some(run);
                     unplaced = None;
@@ -371,8 +373,9 @@ async fn settle(entry: ManifestEntry, mut inner: ByteStream, mut frames: Frames,
 
 /// What the agent answered a stop.
 enum Stop {
-    /// The run's status as Hermes answers it.
-    Landed(String),
+    /// Hermes took it. The run's status as Hermes answers it, which is none
+    /// at all for a turn cancelled while queued ([`landed_as`]).
+    Landed(Option<String>),
     /// Hermes cannot place the run yet: its id is not bound to an admission
     /// (409 `not_found`) or its store was busy (503 `storage_unavailable`).
     /// Sent again while the stream is open.
@@ -389,7 +392,7 @@ async fn stop(entry: &ManifestEntry, run: &str, deadline: Instant) -> Stop {
             .await
         {
             Ok(res) => res,
-            Err(e) => return Stop::Refused(e.without_url().to_string()),
+            Err(e) => return Stop::Refused(transport_error(e)),
         };
         let status = res.status().as_u16();
         let body = res.json::<Value>().await.ok();
@@ -397,8 +400,7 @@ async fn stop(entry: &ManifestEntry, run: &str, deadline: Instant) -> Stop {
             return Stop::Landed(
                 body.as_ref()
                     .and_then(|b| b["status"].as_str())
-                    .unwrap_or("stopped")
-                    .to_string(),
+                    .map(str::to_string),
             );
         }
         // The code only, as control_failure does: the prose never travels.
@@ -418,6 +420,71 @@ async fn stop(entry: &ManifestEntry, run: &str, deadline: Instant) -> Stop {
     })
     .await;
     asked.unwrap_or_else(|_| Stop::Refused("no answer inside the control window".into()))
+}
+
+/// What a stop Hermes took did to the turn, said so a log line can read
+/// "the turn was …". `status` is the `status` of Hermes' answer
+/// (`stop_run` in api_server_authority_runs.py, v0.22.4):
+///
+/// - `stopping`: the turn had started, and Hermes interrupts it.
+/// - none: the turn was still QUEUED behind another one of this agent's
+///   turns, and its admission was cancelled, so it never ran. Hermes answers
+///   that cancel with the run's projection, read after it, and the read
+///   finds nothing: settling the cancelled admission wakes the turn's own
+///   request, which ends and drops the binding of its completion id to the
+///   admission (`run_api_turn`), and the read looks the run up by that
+///   binding. So the body is `null`.
+/// - `cancelled`: the same cancel, read before the binding went, or a turn
+///   an earlier stop had already ended.
+/// - `completed`, `failed`, `incomplete`: the turn had already ended that
+///   way, and nothing was stopped.
+/// - anything else is passed on as Hermes said it.
+pub(crate) fn landed_as(status: Option<&str>) -> String {
+    match status {
+        None => "cancelled in the agent while still queued: it never ran".into(),
+        Some("stopping") => "interrupted in the agent while it ran".into(),
+        Some("cancelled") => "cancelled in the agent".into(),
+        Some(done @ ("completed" | "failed" | "incomplete")) => {
+            format!("already {done} in the agent: nothing was stopped")
+        }
+        Some(other) => format!("sent its stop, and the agent reports it {other}"),
+    }
+}
+
+/// Stop a completions turn a person is still reading, by its completion id
+/// (see the header: while the turn's request is open that id is its Hermes
+/// run id). `current` names the completion the turn is on right now, or
+/// None once its stream has ended, and is asked again before each send, so
+/// a turn the lost-turn watch moved is stopped on the session it moved to.
+///
+/// A stop Hermes cannot place yet (the id is not bound to its admission
+/// yet, or the store is busy) is sent again, backing off, until `deadline`.
+/// `Ok(Some(words))` is what the stop did ([`landed_as`]); `Ok(None)` is a
+/// stream that ended before a stop could land, so there was nothing left to
+/// stop; `Err` is why Hermes would not take it, in the closed vocabulary
+/// `stop` builds (never the body's prose, never the dial URL).
+pub(crate) async fn stop_open_completion(
+    entry: &ManifestEntry,
+    current: impl Fn() -> Option<String>,
+    deadline: Instant,
+) -> Result<Option<String>, String> {
+    let mut wait = LIVE.retry;
+    loop {
+        let Some(run) = current() else {
+            return Ok(None);
+        };
+        match stop(entry, &run, deadline).await {
+            Stop::Landed(status) => return Ok(Some(landed_as(status.as_deref()))),
+            Stop::Refused(why) => return Err(why),
+            Stop::NotYet(why) => {
+                if Instant::now() + wait >= deadline {
+                    return Err(why);
+                }
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(LIVE.retry_max);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -876,5 +943,177 @@ mod tests {
             completion_of(b"data: {\"id\": \"chatcmpl-\"}\n\n"),
             Frame::Other
         );
+    }
+
+    /// A stop door that answers from a script, one answer per stop, and
+    /// keeps the run each stop named.
+    async fn scripted(
+        answers: Vec<(u16, &'static str)>,
+    ) -> (ManifestEntry, Arc<Mutex<Vec<String>>>) {
+        let named: Arc<Mutex<Vec<String>>> = Default::default();
+        let answers = Arc::new(Mutex::new(std::collections::VecDeque::from(answers)));
+        let kept = named.clone();
+        let app = axum::Router::new().route(
+            "/v1/runs/{run}/stop",
+            axum::routing::post(
+                move |axum::extract::Path(run): axum::extract::Path<String>| {
+                    let (kept, answers) = (kept.clone(), answers.clone());
+                    async move {
+                        kept.lock().unwrap().push(run);
+                        let (status, body) = answers.lock().unwrap().pop_front().expect("scripted");
+                        (
+                            axum::http::StatusCode::from_u16(status).unwrap(),
+                            [(axum::http::header::CONTENT_TYPE, "application/json")],
+                            body,
+                        )
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (
+            ManifestEntry {
+                model: "ada-ops".into(),
+                url,
+                key: None,
+            },
+            named,
+        )
+    }
+
+    const NOT_FOUND: &str = r#"{"error": {"message": "not_found", "code": "not_found"}}"#;
+
+    /// What each answer Hermes gives a stop says happened to the turn. The
+    /// `null` is v0.22.4's answer to the stop of a queued turn: the cancel
+    /// ends the turn's request, which drops the binding the projection
+    /// after it reads (`stop_run` in api_server_authority_runs.py). It used
+    /// to log as `(chatcmpl-…: stopped)`.
+    #[tokio::test]
+    async fn each_answer_to_a_stop_says_what_it_did() {
+        let (entry, _) = scripted(vec![
+            (200, "null"),
+            (
+                200,
+                r#"{"run_id": "chatcmpl-a1", "status": "stopping", "admission_id": "ad1"}"#,
+            ),
+            (200, r#"{"run_id": "chatcmpl-a1", "status": "cancelled"}"#),
+            (200, r#"{"run_id": "chatcmpl-a1", "status": "completed"}"#),
+        ])
+        .await;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut said = Vec::new();
+        for _ in 0..4 {
+            let Stop::Landed(status) = stop(&entry, "chatcmpl-a1", deadline).await else {
+                panic!("a 200 is a stop Hermes took");
+            };
+            said.push(landed_as(status.as_deref()));
+        }
+        assert_eq!(
+            said,
+            [
+                "cancelled in the agent while still queued: it never ran",
+                "interrupted in the agent while it ran",
+                "cancelled in the agent",
+                "already completed in the agent: nothing was stopped",
+            ]
+        );
+    }
+
+    /// A person's stop is sent again while Hermes cannot place it yet, names
+    /// the completion the turn is on at each send (a moved turn's fresh
+    /// one), and lands.
+    #[tokio::test]
+    async fn an_open_completion_is_stopped_once_hermes_can_place_it() {
+        let (entry, named) = scripted(vec![
+            (409, NOT_FOUND),
+            (409, NOT_FOUND),
+            (200, r#"{"status": "stopping"}"#),
+        ])
+        .await;
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let current = || {
+            let n = asked.fetch_add(1, Ordering::SeqCst);
+            Some(if n == 0 { "chatcmpl-a1" } else { "chatcmpl-b2" }.to_string())
+        };
+        let done =
+            stop_open_completion(&entry, current, Instant::now() + Duration::from_secs(5)).await;
+        assert_eq!(
+            done,
+            Ok(Some("interrupted in the agent while it ran".into()))
+        );
+        assert_eq!(
+            *named.lock().unwrap(),
+            ["chatcmpl-a1", "chatcmpl-b2", "chatcmpl-b2"]
+        );
+    }
+
+    /// A stream that ended while the stop could not be placed has nothing
+    /// left to stop; a refusal, or a stop never placed by the deadline, is
+    /// the reason Hermes gave.
+    #[tokio::test]
+    async fn an_open_completion_stop_ends_with_the_stream_or_the_reason() {
+        let (entry, named) = scripted(vec![(409, NOT_FOUND)]).await;
+        let open = AtomicBool::new(true);
+        let current = || {
+            open.swap(false, Ordering::SeqCst)
+                .then(|| "chatcmpl-a1".to_string())
+        };
+        let done =
+            stop_open_completion(&entry, current, Instant::now() + Duration::from_secs(5)).await;
+        assert_eq!(done, Ok(None));
+        assert_eq!(named.lock().unwrap().len(), 1);
+
+        let (entry, _) = scripted(vec![(
+            409,
+            r#"{"error": {"message": "the agent's words", "code": "unknown_execution"}}"#,
+        )])
+        .await;
+        let done = stop_open_completion(
+            &entry,
+            || Some("chatcmpl-a1".into()),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(done, Err("409 unknown_execution".into()));
+
+        let (entry, _) = scripted(vec![(409, NOT_FOUND); 8]).await;
+        let done = stop_open_completion(
+            &entry,
+            || Some("chatcmpl-a1".into()),
+            Instant::now() + Duration::from_millis(600),
+        )
+        .await;
+        assert_eq!(done, Err("409 not_found".into()));
+    }
+
+    /// A stop that never reached the agent reads as what broke, never where:
+    /// reqwest's own Display names the dial URL.
+    #[tokio::test]
+    async fn an_unreachable_agent_refuses_the_stop_without_the_dial_url() {
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let entry = ManifestEntry {
+            model: "ada-ops".into(),
+            url: format!("http://127.0.0.1:{port}"),
+            key: Some("k".into()),
+        };
+        let Stop::Refused(why) = stop(
+            &entry,
+            "chatcmpl-a1",
+            Instant::now() + Duration::from_secs(5),
+        )
+        .await
+        else {
+            panic!("nothing listens there");
+        };
+        assert!(!why.contains("127.0.0.1"), "{why}");
+        assert!(!why.contains(&port.to_string()), "{why}");
+        assert!(!why.contains("for url"), "{why}");
+        assert!(!why.contains("/v1/runs"), "{why}");
+        assert!(why.to_ascii_lowercase().contains("refused"), "{why}");
     }
 }

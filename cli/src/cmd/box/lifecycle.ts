@@ -2,11 +2,11 @@
 // corresponding arms of scripts/devbox.
 
 import { existsSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
 import { compose, stackComposeFiles } from '../../compose'
-import { boxComposeSpec, boxDir, boxFleetNetwork, IMAGE, requireBox } from './shared'
+import { boxComposeSpec, boxDir, boxFleetNetwork, boxNetwork, boxState, IMAGE, requireBox } from './shared'
 import { runBuild } from './new'
 
 export function runStop(ctx: Ctx, name: string): Promise<number> {
@@ -57,10 +57,18 @@ ${unpushed}
 push them (or --force to discard)`)
     }
   }
-  ctx.log.say(`Tearing down devbox ${name} (project, volumes, fleet, directory)`)
+  ctx.log.say(`Tearing down devbox ${name} (project, volumes, fleet, app databases, directory)`)
   // Each teardown step is best-effort (`|| true` in the bash): the goal is
   // the directory gone, and a step that already ran itself clean — or failed
   // on a half-torn-down box — must not shield the rest.
+  //
+  // The app databases go first. Each is a compose project of its own
+  // (ui/src/server/app-db.ts) on the box's default network, so the box
+  // project's `down` neither removes them nor can remove the network they
+  // hold an endpoint on.
+  for (const db of await boxAppDbs(ctx, name)) {
+    await ctx.exec('docker', ['rm', '-f', '-v', db]).catch(() => {})
+  }
   await compose(ctx, boxComposeSpec(ctx, name), ['down', '-v', '--remove-orphans']).catch(() => {})
   await ctx
     .exec('docker', ['compose', '-p', boxFleetNetwork(name), 'down', '-v', '--remove-orphans'])
@@ -69,9 +77,104 @@ push them (or --force to discard)`)
   // while fleet containers hold endpoints on it, and the fleet compose declares
   // it EXTERNAL (the renderer's shape) so its own `down` never touches it.
   await ctx.exec('docker', ['network', 'rm', boxFleetNetwork(name)]).catch(() => {})
-  rmSync(box, { recursive: true, force: true })
+  await clearState(ctx, name)
+  try {
+    rmSync(box, { recursive: true, force: true })
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? String(e)
+    ctx.log.fail(`${box} is still there (${code}): files a container wrote in it are not yours to delete`)
+    ctx.log.say(`  everything else is down; remove it as root: sudo rm -rf ${box}`)
+    return 1
+  }
   ctx.log.ok('gone')
   return 0
+}
+
+/** The app databases a box's app started, by either of two marks, stopped
+ *  ones included:
+ *  - on the box's default network (`TALARIA_APP_DB_NETWORK` in
+ *    docker/devbox.compose.yml), named `talaria-appdb-<box>-<slug>`. Found by
+ *    the network, not by a name prefix, because box `a`'s prefix
+ *    `talaria-appdb-a-` is also box `a-b`'s; a stopped container keeps its
+ *    network;
+ *  - with a mount inside the box's state, where its cluster lives
+ *    (`<state>/app-data/<slug>/pg`). That finds the ones a box made before it
+ *    set the network: `talaria-appdb-1-<slug>` on the default bridge, which
+ *    `restart: unless-stopped` would keep running on a directory this
+ *    removes.
+ *  An answer docker could not give is no databases, like every other
+ *  best-effort teardown step. */
+export async function boxAppDbs(ctx: Ctx, name: string): Promise<string[]> {
+  const ps = async (filters: string[]): Promise<string[]> => {
+    try {
+      const { stdout } = await ctx.exec('docker', ['ps', '-a', ...filters, '--format', '{{.Names}}'])
+      return stdout.split('\n').map((s) => s.trim()).filter(Boolean)
+    } catch {
+      return []
+    }
+  }
+  const found = new Set(await ps(['--filter', `network=${boxNetwork(name)}`, '--filter', 'name=^talaria-appdb-']))
+  const rest = (await ps(['--filter', 'name=^talaria-appdb-'])).filter((n) => !found.has(n))
+  if (rest.length > 0) {
+    try {
+      const { stdout } = await ctx.exec('docker', ['inspect', '-f', '{{.Name}}\t{{json .Mounts}}', ...rest])
+      for (const db of mountedUnder(stdout, boxState(ctx, name))) found.add(db)
+    } catch {
+      /* none found this way */
+    }
+  }
+  return [...found]
+}
+
+/** Of `inspect -f '{{.Name}}\t{{json .Mounts}}'` lines, the containers with a
+ *  mount source at or under `dir`. Pure. */
+export function mountedUnder(inspectLines: string, dir: string): string[] {
+  const root = resolve(dir)
+  const out: string[] = []
+  for (const line of inspectLines.split('\n')) {
+    const tab = line.indexOf('\t')
+    if (tab < 0) continue
+    let mounts: unknown
+    try {
+      mounts = JSON.parse(line.slice(tab + 1))
+    } catch {
+      continue
+    }
+    if (!Array.isArray(mounts)) continue
+    const under = mounts.some((m) => {
+      const src = (m as { Source?: unknown } | null)?.Source
+      if (typeof src !== 'string') return false
+      const at = resolve(src)
+      return at === root || at.startsWith(`${root}/`)
+    })
+    if (under) out.push(line.slice(0, tab).replace(/^\//, ''))
+  }
+  return out
+}
+
+/** Empty the box's state directory from a root container on the box's own
+ *  image. What a container wrote there is that container's user's: an app
+ *  database's cluster is the postgres image's uid 70 at mode 0700, so this
+ *  user can neither list nor delete it: the directory removal threw EACCES
+ *  and left the box's directory, its stack already down, for every later
+ *  `rm` to fail on the same way. No network, and never a pull: the image is
+ *  built here (`box build`) and named on no registry, so an image pruned
+ *  since the box's container went would have sent `run` to Docker Hub for a
+ *  name that is not this one. Best effort like the rest; runRm says so when
+ *  the directory outlives it. */
+export async function clearState(ctx: Ctx, name: string): Promise<void> {
+  const state = boxState(ctx, name)
+  if (!existsSync(state)) return
+  await ctx
+    .exec(
+      'docker',
+      [
+        'run', '--rm', '--pull', 'never', '--network', 'none', '--user', '0:0',
+        '-v', `${state}:/state`, '--entrypoint', 'find', IMAGE, '/state', '-mindepth', '1', '-delete',
+      ],
+      { timeoutMs: 300_000 },
+    )
+    .catch(() => {})
 }
 
 export const stopCommand: Leaf = {

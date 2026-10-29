@@ -22,8 +22,9 @@ use std::collections::HashMap;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::classify_href;
 use crate::google_file::{GoogleFile, GoogleType, google_id_ok, parse_google_file_url};
-use crate::{classify_href, is_uuid};
+use talaria_params::uuid_canonical;
 
 /// How many files one session answers with.
 pub const MAX_SESSION_FILES: usize = 100;
@@ -129,8 +130,12 @@ fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 /// relative, absolute, with other parameters), else a Google file.
 fn file_named_by(url: &str) -> Option<FileRef> {
     if let Some(link) = classify_href(url) {
-        return (link.entity == "document" && is_uuid(&link.id))
-            .then(|| FileRef::Artifact(link.id.to_ascii_lowercase()));
+        if link.entity != "document" {
+            return None;
+        }
+        // Keyed by the id's canonical text, the one the artifacts read
+        // answers with: every spelling of one document is one file here.
+        return uuid_canonical(&link.id).map(FileRef::Artifact);
     }
     parse_google_file_url(url).map(FileRef::Google)
 }
@@ -246,9 +251,9 @@ pub fn candidates(
             continue;
         };
         let title = str_of(pin, "title").map(str::to_string);
-        let file = match str_of(pin, "kind") {
-            Some("artifact") if is_uuid(id) => FileRef::Artifact(id.to_ascii_lowercase()),
-            Some("google") if google_id_ok(id) => FileRef::Google(GoogleFile {
+        let file = match (str_of(pin, "kind"), uuid_canonical(id)) {
+            (Some("artifact"), Some(id)) => FileRef::Artifact(id),
+            (Some("google"), _) if google_id_ok(id) => FileRef::Google(GoogleFile {
                 id: id.to_string(),
                 kind: GoogleType::from_mime(str_of(pin, "mime")),
             }),
@@ -279,8 +284,8 @@ pub fn candidates(
         }
     }
 
-    if let Some(id) = living.filter(|id| is_uuid(id)) {
-        let file = FileRef::Artifact(id.to_ascii_lowercase());
+    if let Some(id) = living.and_then(uuid_canonical) {
+        let file = FileRef::Artifact(id);
         if !at.contains_key(&file.key()) {
             out.push(Candidate {
                 file,
@@ -477,9 +482,14 @@ mod tests {
                 { "kind": "link", "href": format!("https://talaria.example.com/artifacts?x=1&a={A1}") },
                 { "kind": "link", "href": format!("/artifacts?a={}", A1.to_uppercase()) },
                 { "kind": "link", "href": format!("/artifacts/?a={A1}") },
+                // The hyphen-less spelling the cast takes is the same row.
+                { "kind": "link", "href": format!("/artifacts?a={}", A1.replace('-', "")) },
             ]),
         )];
-        let c = candidates(&messages, &json!([]), None);
+        // A pin and the living document in other spellings join it too.
+        let pinned = json!([{ "kind": "artifact", "id": format!("{{{}}}", A1.to_uppercase()) }]);
+        let living = A1.replace('-', "");
+        let c = candidates(&messages, &pinned, Some(&living));
         assert_eq!(c.len(), 1, "{c:?}");
         assert_eq!(c[0].file, FileRef::Artifact(A1.to_string()));
     }

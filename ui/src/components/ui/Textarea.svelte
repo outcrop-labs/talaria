@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { HTMLTextareaAttributes } from 'svelte/elements'
   import { cn } from '@/lib/cn'
+  import { disabledControl } from './control'
 
   type Props = HTMLTextareaAttributes & {
     /** Grow downward with content: starts at `rows`, expands as the user types,
@@ -37,6 +38,7 @@
     // Spec §8: raised tile bg, hairline border, radius 6, gold focus ring.
     'w-full resize-none rounded-md border border-line bg-[var(--theme-input)] px-3 py-2.5 font-sans text-sm text-fg outline-none transition-colors',
     'placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent-soft',
+    disabledControl,
     autoGrow && 'overflow-y-auto',
     className,
   )}

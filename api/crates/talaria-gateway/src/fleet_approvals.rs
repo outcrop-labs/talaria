@@ -90,7 +90,9 @@ use futures_util::Stream;
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 
-use crate::fleet_chat::{ByteStream, CONTROL_WINDOW, ChatStream, agent_post, control_failure};
+use crate::fleet_chat::{
+    ByteStream, CONTROL_WINDOW, ChatStream, agent_post, control_failure, transport_error,
+};
 use crate::usage::TurnAttribution;
 use talaria_fleet_layout::{ManifestEntry, read_manifest};
 
@@ -686,25 +688,11 @@ async fn deliver(entry: &ManifestEntry, asked: &ApprovalAsked, choice: Choice) -
             Delivery::NotPending(control_failure(res).await)
         }
         Ok(Ok(res)) => Delivery::Failed(control_failure(res).await),
-        Ok(Err(e)) => Delivery::Failed(transport_failure(e)),
+        // A request that never reached the agent, in words the
+        // `agent.approval_*` audit row may keep: never the agent's dial URL.
+        Ok(Err(e)) => Delivery::Failed(transport_error(e)),
         Err(_) => Delivery::Failed("the agent did not answer the approval".into()),
     }
-}
-
-/// A request that never reached the agent, in words an audit row may keep.
-/// reqwest's Display names the URL it was sending to ("error sending request
-/// for url (http://agent-x:8642/v1/runs/…/approval)"), which is the agent's
-/// dial address: the fleet's topology, and nothing an admin reading the
-/// `agent.approval_*` row needs. The failure text lands in that row (through
-/// `RECORD_APPROVAL` and the card's own record), so the URL is dropped here.
-/// The full error goes to the server log once.
-///
-/// #615 adds `fleet_chat::transport_error`, which does the same for every
-/// agent call and also keeps the innermost cause; whichever of the two PRs
-/// merges second can route this through it.
-fn transport_failure(e: reqwest::Error) -> String {
-    tracing::debug!("[approvals] agent transport: {e}");
-    e.without_url().to_string()
 }
 
 /// Answer a request a card is holding, through the agent's manifest row.
@@ -766,7 +754,7 @@ async fn refuse_unanswerable(
         Ok(Err(e)) => tracing::info!(
             "[approvals] {agent_model}: the note did not reach the run ({}): {}",
             why.reason(),
-            transport_failure(e)
+            transport_error(e)
         ),
         Err(_) => tracing::info!(
             "[approvals] {agent_model}: the run did not answer the note ({})",
@@ -1539,5 +1527,31 @@ mod tests {
         let tapped = tap_approvals(stream, &entry, "nobody", ApprovalTurn::default());
         let read: Vec<Bytes> = tapped.body.map(|c| c.unwrap()).collect().await;
         assert_eq!(read.concat(), chunks.concat().as_bytes());
+    }
+
+    /// An answer that never reached the agent fails in words the audit row
+    /// may keep: what broke and why, never the agent's dial address.
+    /// reqwest's own Display would have been "error sending request for url
+    /// (http://127.0.0.1:<port>/v1/runs/chatcmpl-…/approval)".
+    #[tokio::test]
+    async fn an_unreachable_agent_fails_the_answer_without_the_dial_url() {
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let entry = ManifestEntry {
+            model: "dex".into(),
+            url: format!("http://127.0.0.1:{port}"),
+            key: Some("k".into()),
+        };
+        let asked = approval_asked(COMPLETIONS_FRAME).expect("completions frame");
+        let Delivery::Failed(text) = deliver(&entry, &asked, Choice::Deny).await else {
+            panic!("nothing listens there");
+        };
+        assert!(!text.contains("127.0.0.1"), "{text}");
+        assert!(!text.contains(&port.to_string()), "{text}");
+        assert!(!text.contains("for url"), "{text}");
+        assert!(!text.contains("/v1/runs"), "{text}");
+        assert!(text.to_ascii_lowercase().contains("refused"), "{text}");
     }
 }

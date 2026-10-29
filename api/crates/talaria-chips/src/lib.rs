@@ -100,18 +100,6 @@ fn is_id(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-fn is_uuid(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 36
-        && b[8] == b'-'
-        && b[13] == b'-'
-        && b[18] == b'-'
-        && b[23] == b'-'
-        && b.iter()
-            .enumerate()
-            .all(|(i, c)| matches!(i, 8 | 13 | 18 | 23) || c.is_ascii_hexdigit())
-}
-
 /// Path-shaped recognition. An absolute URL keeps only its path and query.
 /// Unrecognized URLs return None — the caller leaves them as links.
 pub fn classify_href(raw: &str) -> Option<PlatformLink> {
@@ -1116,14 +1104,14 @@ impl Target {
 /// plugin stamps on every event (for a pinned agent that session id IS the
 /// conversation id), else a subagent hook's `parentSessionId`. Only a UUID
 /// counts: a Hermes session on the completions arm carries the harness's own
-/// id, which names no conversation and must not be mistaken for an address.
+/// id (`api-<16 hex>`), which names no conversation and must not be mistaken
+/// for an address. The id comes back in its canonical text, the spelling
+/// every conversation key and channel is written in.
 pub fn conversation_hint(body: &Value) -> Option<String> {
     ["conversationId", "sessionId", "parentSessionId"]
         .iter()
         .filter_map(|key| body.get(*key).and_then(Value::as_str))
-        .map(str::trim)
-        .find(|s| is_uuid(s))
-        .map(str::to_string)
+        .find_map(|s| talaria_params::uuid_canonical(s.trim()))
 }
 
 /// The rule, pure: one candidate is the target, several are an ambiguity,
@@ -1188,8 +1176,8 @@ pub async fn landing_target(
     agent: &str,
     conversation_id: Option<&str>,
 ) -> Result<Target, sqlx::Error> {
-    if let Some(id) = conversation_id.map(str::trim).filter(|s| is_uuid(s)) {
-        return addressed_target(pg, agent, id).await;
+    if let Some(id) = conversation_id.and_then(|s| talaria_params::uuid_canonical(s.trim())) {
+        return addressed_target(pg, agent, &id).await;
     }
     let mut live: Vec<Landed> = sqlx::query_as::<_, (String, String)>(
         "select m.id::text, m.conversation_id::text \
@@ -2008,7 +1996,7 @@ async fn lookup_title(
     link: &PlatformLink,
 ) -> Result<Option<String>, sqlx::Error> {
     // Fixture-shaped ids (b-1) are not rows. Only a uuid is worth a lookup.
-    if !is_uuid(&link.id) {
+    if !talaria_params::uuid_shaped(&link.id) {
         return Ok(None);
     }
     let title: Option<String> = match link.entity {
@@ -2185,6 +2173,29 @@ mod tests {
             );
             assert_eq!(
                 conversation_hint(&json!({ "sessionId": "20261020_143500_ab12" })),
+                None
+            );
+            // The completions arm's derived session (Hermes v0.22.4's
+            // `_derive_chat_session_id`): 16 hex digits, never an address.
+            assert_eq!(
+                conversation_hint(&json!({ "sessionId": "api-3f2504e04f8911d3" })),
+                None
+            );
+            // Every spelling the cast takes is the same conversation, and it
+            // comes back as the one text its rows and channels are keyed by.
+            for spelling in [
+                "22F1E3A0-0000-4000-8000-000000000001",
+                "{22f1e3a0-0000-4000-8000-000000000001}",
+                "22f1e3a0000040008000000000000001",
+            ] {
+                assert_eq!(
+                    conversation_hint(&json!({ "conversationId": spelling })).as_deref(),
+                    Some(id),
+                    "{spelling}"
+                );
+            }
+            assert_eq!(
+                conversation_hint(&json!({ "conversationId": format!("urn:uuid:{id}") })),
                 None
             );
             assert_eq!(conversation_hint(&json!({ "sessionId": "" })), None);

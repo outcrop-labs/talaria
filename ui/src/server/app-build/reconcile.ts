@@ -3,7 +3,7 @@
 // that app, mark it failed, and drop it from the enabled set. An app an
 // update holds (update.ts) is left alone until the update lets go.
 import { existsSync, watch } from 'node:fs'
-import { appSql, stopAppDatabase } from '../app-db'
+import { appSql, recreateIfAliased, stopAppDatabase } from '../app-db'
 import { isolateApp } from '../app-isolate'
 import { failHealth, probeLoad } from '../app-health'
 import { buildApp } from './build'
@@ -45,8 +45,15 @@ export async function reconcileAll(): Promise<void> {
   for (const slug of live) await reconcileApp(slug)
 }
 
-/** Host boot: compile + spawn DBs, then watch the apps dir. Never throws. */
+/** Host boot: compile + spawn DBs, then watch the apps dir. Never throws.
+ *  An app DB from before its compose service was named for its container
+ *  answers to `postgres` beside the platform's own, and can take the
+ *  platform's connections; those go first, by docker alone, before a build
+ *  or a store reads anything from the platform's database. */
 export async function startAppBuilds(): Promise<void> {
+  for (const app of listInstalledApps()) {
+    await isolateApp(app.slug, 'database alias', () => recreateIfAliased(app.slug))
+  }
   const swept = await isolateApp('_host', 'app-build sweep', reconcileAll)
   if (!swept.ok) console.error('[app-build] sweep', swept.error)
   try {
