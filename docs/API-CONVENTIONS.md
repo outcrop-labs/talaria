@@ -245,9 +245,12 @@ they are wire contract, pinned by its tests.
   caller who may not see a row gets 403 whether it exists or not, so an absent id gets that 403
   too. A few older DELETEs still answer 200 for an absent id (workflows, keys, rag collections,
   artifact folders, agent secrets); new routes do not copy them.
-- **A malformed path id is a 404 as well**, wherever the route casts it with `$N::uuid`: gate it
-  with `talaria_params::uuid_gate_404`, after the route's auth (and after its body checks, where
-  those come first). No row can carry it, so the 404 hides nothing, even in a 403 family.
+- **A malformed path id is a 404 as well**, on a new route and on every route that casts it with
+  `$N::uuid` unguarded: gate it with `talaria_params::uuid_gate_404`, after the route's auth (and
+  after its body checks, where those come first). No row can carry it, so the 404 hides nothing,
+  even in a 403 family. The older families that gate with `talaria_params::uuid_gate` (boards,
+  teams, plans, research, workchains, workflows, rag collections and keys) answered its 400
+  *not a uuid* first and keep it; a route added to one of them follows its siblings.
 - Authorization comes BEFORE body parsing unless the decision depends on the body (say so in a
   comment).
 
