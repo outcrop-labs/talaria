@@ -155,13 +155,17 @@ function pyText(v: unknown): string {
  *   (`browser.cdp_url`) or a hosted provider (`browser.cloud_provider`),
  *   which keep that check.
  *
- * It mirrors talaria-fleet-render's `hermes_browser` over the config alone
- * (the renderer also reads a `CAMOFOX_URL` secret, which this cannot see).
+ * It mirrors talaria-fleet-render's `hermes_browser`: the config, and the
+ * names of the agent's own secrets, which reach Hermes as its env. A
+ * `BROWSER_CDP_URL` secret is the same CDP override as `browser.cdp_url`
+ * (Hermes reads it first). With no names (a viewer who cannot read the
+ * agent's secrets) it reads the config alone; the renderer also reads a
+ * `CAMOFOX_URL` secret, which this does not.
  * `via` is the setting that decided it, as the grid's line names it.
  */
 export type AuthoredBrowser = { kind: 'exec' | 'local' | 'cdp' | 'hosted'; via: string }
 
-export function authoredBrowser(config: unknown): AuthoredBrowser | null {
+export function authoredBrowser(config: unknown, secretNames: readonly string[] = []): AuthoredBrowser | null {
   const raw = (config as { raw?: unknown } | null | undefined)?.raw
   const browser = (raw as { browser?: unknown } | null | undefined)?.browser
   if (!browser || typeof browser !== 'object' || Array.isArray(browser)) return null
@@ -169,7 +173,8 @@ export function authoredBrowser(config: unknown): AuthoredBrowser | null {
   // get_browser_backend: YAML 1.1's bare `off` is `false`, a choice; `true` is unset.
   const backend =
     cfg.backend === false ? 'off' : cfg.backend === true ? '' : pyText(cfg.backend).trim().toLowerCase()
-  const cdp = pyText(cfg.cdp_url).trim() !== ''
+  const cdpSecret = secretNames.includes('BROWSER_CDP_URL')
+  const cdp = cdpSecret || pyText(cfg.cdp_url).trim() !== ''
   const provider = cfg.cloud_provider
   const selection =
     provider === null || provider === undefined
@@ -181,7 +186,7 @@ export function authoredBrowser(config: unknown): AuthoredBrowser | null {
   if (!camofox && (backend === '' || backend === 'browser-use')) {
     return backend ? { kind: 'exec', via: 'browser.backend: browser-use' } : null
   }
-  if (cdp) return { kind: 'cdp', via: 'browser.cdp_url' }
+  if (cdp) return { kind: 'cdp', via: cdpSecret ? 'a BROWSER_CDP_URL secret' : 'browser.cdp_url' }
   if (camofox) return { kind: 'local', via: 'browser.cloud_provider: camofox' }
   const hosted = pyText(provider).trim().toLowerCase()
   if (hosted && hosted !== 'local' && hosted !== 'camofox') {
@@ -220,7 +225,8 @@ export function browserNote(rows: readonly ToolsetRow[], authored: AuthoredBrows
   const terminal = rows.find((r) => r.name === 'terminal')?.on ?? false
   if (!terminal) {
     if (authored?.kind === 'cdp') {
-      return `Browser: the built-in browser tools on the CDP endpoint this agent’s config sets (${authored.via}). Hermes keeps its private-address check for a remote browser, so it does not need the terminal.`
+      const where = authored.via === 'browser.cdp_url' ? 'this agent’s config sets' : 'this agent’s secrets supply'
+      return `Browser: the built-in browser tools on the CDP endpoint ${where} (${authored.via}). Hermes keeps its private-address check for a remote browser, so it does not need the terminal.`
     }
     if (authored?.kind === 'hosted') {
       return `Browser: the built-in browser tools on the hosted browser this agent’s config sets (${authored.via}), which keeps Hermes’ private-address check. They need the browser engine, which Talaria installs only while the terminal is open.`

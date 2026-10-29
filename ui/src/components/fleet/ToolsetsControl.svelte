@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { useQueryClient } from '@tanstack/svelte-query'
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
+  import { getList } from '@/lib/fetch-json'
   import { patchAgentMeta, useFleetDefs, type AgentDef } from '@/lib/fleet-defs'
   import { toastError } from '@/lib/toast.svelte'
   import {
@@ -54,7 +55,18 @@
   // Follows the pending edit, so ticking `terminal` shows the browser it
   // brings before Apply (with the terminal closed there is none, and the
   // line says why); a browser the def's own config chose is named.
-  const browser = $derived(browserNote(rows, authoredBrowser(def.latest?.config)))
+  // The agent's secret names, which reach Hermes as its env: a
+  // `BROWSER_CDP_URL` among them is a CDP endpoint, as the renderer reads it.
+  // The Secrets tab's own query (same key, so one fetch), read only by
+  // someone who may manage the agent; anyone else gets the config alone.
+  const secretsQuery = createQuery(() => ({
+    queryKey: ['agent-secrets', def.id],
+    queryFn: (): Promise<{ name: string; refused?: string }[]> =>
+      getList<{ name: string; refused?: string }>(`/api/fleet/agents/${def.id}/secrets`, 'secrets'),
+    enabled: canManage,
+  }))
+  const secretNames = $derived((secretsQuery.data ?? []).filter((s) => !s.refused).map((s) => s.name))
+  const browser = $derived(browserNote(rows, authoredBrowser(def.latest?.config, secretNames)))
   // Only Talaria's own pair is stripped from what gets stored. An org-closed
   // name stays in the def's list if its managers put it there, so lifting the
   // floor later gives this agent back exactly what they chose.

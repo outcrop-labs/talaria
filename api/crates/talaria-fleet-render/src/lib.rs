@@ -2893,10 +2893,23 @@ fn py_text(v: &Value) -> String {
 
 /// The browser Hermes v0.22.4 would give this agent, mirroring
 /// `is_browser_use_cli_mode`, `is_camofox_mode` and `_is_local_backend`.
-/// Where Talaria cannot see a setting (a live `/browser connect`, a
-/// `BROWSER_CDP_URL` or cloud credential in the agent's env), it reads it as
-/// absent, which errs toward `Local`; the one env name read is `CAMOFOX_URL`,
-/// which selects Camofox when no `browser.cloud_provider` is written.
+///
+/// The agent's own secrets reach Hermes as its env, and `secret_names` are
+/// the ones that do (`passthrough_names`). Two env names change what Hermes
+/// picks:
+/// - `BROWSER_CDP_URL` is a CDP override, exactly as `browser.cdp_url` is
+///   (`_get_cdp_override_raw`: a live `/browser connect`, then this env name,
+///   then the config key). It beats a Camofox selection and is never local.
+/// - `CAMOFOX_URL` selects Camofox when no `browser.cloud_provider` is
+///   written.
+///
+/// The hosted providers Hermes finds by their credentials when no provider
+/// is written (`_autodetect_cloud_provider`: `BROWSER_USE_API_KEY`, or
+/// `BROWSERBASE_API_KEY` with `BROWSERBASE_PROJECT_ID`) are not read: those
+/// names are refused as per-agent secrets and skipped at materialize
+/// (`talaria_agent_secrets::reserved`), so Hermes never finds them in an
+/// agent's env either. What Talaria cannot see at all (a live `/browser
+/// connect`) it reads as absent, which errs toward `Local`.
 fn hermes_browser(routed: &Map<String, Value>, secret_names: &[String]) -> HermesBrowser {
     let cfg = routed.get("browser").and_then(Value::as_object);
     let get = |key: &str| cfg.and_then(|c| c.get(key));
@@ -2907,7 +2920,11 @@ fn hermes_browser(routed: &Map<String, Value>, secret_names: &[String]) -> Herme
         Some(Value::Bool(true)) | None => String::new(),
         Some(v) => py_text(v).trim().to_lowercase(),
     };
-    let cdp = get("cdp_url").is_some_and(|v| !py_text(v).trim().is_empty());
+    let has_secret = |name: &str| secret_names.iter().any(|n| n == name);
+    // A stored secret is never empty (the secrets route refuses an empty
+    // value), so its name is the override.
+    let cdp = has_secret("BROWSER_CDP_URL")
+        || get("cdp_url").is_some_and(|v| !py_text(v).trim().is_empty());
     // read_selection("browser"): the written `cloud_provider`, if any.
     let selection = get("cloud_provider")
         .filter(|v| !v.is_null())
@@ -2919,7 +2936,7 @@ fn hermes_browser(routed: &Map<String, Value>, secret_names: &[String]) -> Herme
     let camofox = !cdp
         && match &selection {
             Some(s) => s == "camofox",
-            None => secret_names.iter().any(|n| n == "CAMOFOX_URL"),
+            None => has_secret("CAMOFOX_URL"),
         };
     if !camofox && (backend.is_empty() || backend == "browser-use") {
         return HermesBrowser::Exec;
@@ -2951,7 +2968,8 @@ fn hermes_browser(routed: &Map<String, Value>, secret_names: &[String]) -> Herme
 /// engine for such an agent, but one that an earlier start with the terminal
 /// open left on the volume would still run the built-in tools, so the render
 /// closes the toolset rather than relying on the engine being absent. A CDP
-/// endpoint or a hosted provider keeps Hermes's check and is left alone, and
+/// endpoint (in the config, or a `BROWSER_CDP_URL` secret) or a hosted
+/// provider keeps Hermes's check and is left alone, and
 /// so is Hermes's default (`browser_exec`, which needs the terminal anyway),
 /// so a def with no `browser:` block renders exactly what it did before.
 /// The def's own `browser:` block is never rewritten, and the toolset grid
@@ -5172,6 +5190,32 @@ service:
             &["CAMOFOX_URL"],
         );
         assert_eq!(written, terminal_closed);
+        // A CDP endpoint supplied only as the agent's `BROWSER_CDP_URL`
+        // secret is the same override as `browser.cdp_url`: never local, and
+        // it beats a Camofox selection (`is_camofox_mode`).
+        for block in [
+            Some(json!({ "backend": "off" })),
+            Some(json!({ "backend": false })),
+            Some(json!({ "backend": "off", "cloud_provider": "local" })),
+            Some(json!({ "backend": "off", "cdp_url": "" })),
+            Some(json!({ "cloud_provider": "camofox" })),
+            Some(json!({ "backend": " Camofox " })),
+        ] {
+            let label = format!("{block:?}");
+            assert_eq!(
+                closed_for(&["terminal"], block, &["BROWSER_CDP_URL"]),
+                terminal_closed,
+                "{label}"
+            );
+        }
+        // A secret that configures nothing Hermes selects by, a Browserbase
+        // base URL with no key or project, leaves the local browser closed.
+        let base_only = closed_for(
+            &["terminal"],
+            Some(json!({ "backend": "off" })),
+            &["BROWSERBASE_BASE_URL", "FIGMA_TOKEN"],
+        );
+        assert_eq!(base_only.last(), Some(&json!("browser")));
         // A browser already closed is not listed twice.
         let both = merged(&["terminal", "browser"])["agent"]["disabled_toolsets"]
             .as_array()
@@ -5185,6 +5229,28 @@ service:
             ),
             both
         );
+    }
+
+    /// `hermes_browser` reads `BROWSER_CDP_URL` from the agent's secrets and
+    /// not the hosted providers' credentials, because those can never be an
+    /// agent's secret: refused on write, skipped at materialize, so Hermes's
+    /// auto-detect never finds them in the env either. If one of these ever
+    /// becomes a secret an agent can hold, `hermes_browser` must read it as
+    /// v0.22.4 does (`_autodetect_cloud_provider`, `is_camofox_mode`).
+    #[test]
+    fn the_browser_selecting_names_a_secret_can_carry_are_the_ones_read() {
+        for refused in [
+            "BROWSER_USE_API_KEY",
+            "BROWSERBASE_API_KEY",
+            "BROWSERBASE_PROJECT_ID",
+            "CAMOFOX_URL",
+        ] {
+            assert!(
+                talaria_agent_secrets::reserved(refused).is_some(),
+                "{refused} can be an agent secret now: hermes_browser must read it"
+            );
+        }
+        assert_eq!(talaria_agent_secrets::reserved("BROWSER_CDP_URL"), None);
     }
 
     #[test]
