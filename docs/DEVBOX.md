@@ -229,9 +229,13 @@ with no prompt, run it from a TTY.
 
 `bun talaria box rm demo` refuses while the clone has uncommitted changes or
 commits no remote has (`--force` overrides) — those are the only things in a
-box that can't be recreated. It removes the box's app databases with the box, and
-empties the box's state from a root container first: an app database's files
-belong to the postgres image's user, which yours cannot delete. A box left behind is the sweep's business too:
+box that can't be recreated. It removes the box's app databases with the box:
+those on the box's network, and those with a mount in its state (a box made
+before the network named them `talaria-appdb-1-<slug>`, on the default
+bridge). It empties the box's state from a root container on the box's image,
+never pulled: an app database's files belong to the postgres image's user,
+which yours cannot delete. If the directory still outlives that, `box rm` says
+so and exits 1. A box left behind is the sweep's business too:
 [`bun talaria cleanup`](../.claude/skills/cleanup/SKILL.md) flags a stopped box
 untouched for a week, and `--apply` removes it only when the clone is clean and
 pushed. A box whose containers went without `box rm` (or an interrupted `box new`)

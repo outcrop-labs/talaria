@@ -381,8 +381,10 @@ async function occupants(slug: string, name: string): Promise<Occupant[]> {
   if (!ps.ok) return []
   const others = ps.stdout.split('\n').map((s) => s.trim()).filter((n) => n && n !== name)
   if (others.length === 0) return []
+  // Read even when inspect fails: one that went between the two calls fails
+  // the whole command, and the rest are still printed.
   const r = await docker(['inspect', '-f', '{{.Name}}\t{{.State.Running}}\t{{json .Mounts}}', ...others], 15_000)
-  return r.ok ? occupantsOf(r.stdout, join(appDataDir(slug), 'pg')) : []
+  return occupantsOf(r.stdout, join(appDataDir(slug), 'pg'))
 }
 
 /** Stop a database cleanly (the postgres image stops on SIGINT, a fast

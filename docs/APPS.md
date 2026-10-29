@@ -286,6 +286,18 @@ rather than failing to build it.
   container's own loopback and a port the host publishes cannot be reached. The box's name is
   its `TALARIA_DEVBOX`, so two boxes running one app name two databases, and `talaria box rm`
   removes a box's app databases with it.
+- The DB's compose service is named for its container, never `postgres`: compose aliases a
+  service by its name on every network it joins, and on the image's `internal` (or a box's
+  network) `postgres` is the platform's own database, so a lookup of `postgres` answered with
+  both and the platform's connections could reach an app's database and fail its password. One
+  made before the rename keeps that alias while it runs, so host boot recreates it under its
+  own name, by docker alone, before anything reads the platform's database, from the password in
+  its `db.env`; its data is a bind mount and stays.
+- Two databases on one cluster corrupt it: in two containers neither postmaster sees the other's
+  lock. Before it starts an app DB, the host looks for another `talaria-appdb-*` container with
+  that app's `pg` directory mounted. In a devbox, `talaria-appdb-1-<slug>` is the box's own
+  database from before its instance was the box's name, and it is stopped and removed. Any
+  other one that runs is refused with its name: some other stack has this data directory.
 - An app DB reached on its loopback port runs on docker's default `bridge`, so it takes no
   network of its own: a compose file that names none got a `<project>_default` network made for
   it, one subnet per app from the daemon's ~30 address pools. Nothing dials an app DB over a
