@@ -1248,6 +1248,29 @@ pub async fn stop_completion(
     .await
 }
 
+/// [`stop_completion`] for a stop nobody is waiting on: a person's stop that
+/// was held for a turn still opening, sent from the turn's drain once the
+/// turn names itself (talaria-chat-persist `hold_stop`). Hermes writes the
+/// role chunk before it binds the completion id to the turn's admission, and
+/// on a starved agent store the id has stayed unbound for minutes after it.
+/// The control window is a waiting caller's bound; a held stop has no
+/// caller, so it is placed with the patience the abandoned-turn guard gives
+/// the same stop: the headers window.
+pub async fn stop_completion_held(
+    agent_model: &str,
+    current: impl Fn() -> Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(entry) = agent_entry(agent_model).await else {
+        return Err("no such agent".into());
+    };
+    crate::fleet_abandoned::stop_open_completion(
+        &entry,
+        current,
+        tokio::time::Instant::now() + HEADERS_WINDOW,
+    )
+    .await
+}
+
 /// This agent's manifest row, looked up once. The control calls do not hold
 /// for a container coming up the way a turn does, so a missing row is the
 /// answer here rather than something to wait out.

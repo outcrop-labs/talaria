@@ -1085,13 +1085,15 @@ pub fn hold_stop(conversation_id: &str) -> HeldStop {
 }
 
 /// Send a held stop from the drain, on its own task: the drain keeps reading
-/// the stream the stop is about to end.
+/// the stream the stop is about to end. Nobody waits for it, so a completion
+/// Hermes has not bound yet is placed with the headers window's patience
+/// (`stop_completion_held`), not a waiting caller's control window.
 fn send_held_stop(agent_model: String, conversation_id: String, handle: TurnHandle) {
     tokio::spawn(async move {
         let done = match &handle {
             TurnHandle::Completion { message_id } => {
                 let message_id = message_id.clone();
-                talaria_gateway::fleet_chat::stop_completion(&agent_model, move || {
+                talaria_gateway::fleet_chat::stop_completion_held(&agent_model, move || {
                     open_completion(&message_id)
                 })
                 .await
