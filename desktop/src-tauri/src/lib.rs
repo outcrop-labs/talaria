@@ -24,10 +24,11 @@
 // exists, and without a later set_bounds the launcher stays 1×1 and Wayland
 // never maps the undecorated window. Full story: docs/DESKTOP.md.
 //
-// Nothing in setup may stop the window from opening. An unreadable registry
-// or settings file, or a grant that fails, becomes a notice on the launcher;
-// an `Err` out of setup is a panic in Tauri and, from a .desktop launch, an
-// app that silently never appears.
+// An unreadable registry or settings file, or a grant that fails, must not
+// stop the window from opening: each becomes a notice on the launcher. An
+// `Err` out of setup is a panic in Tauri and, from a .desktop launch, an app
+// that silently never appears. The one failure setup still returns is an app
+// data dir that cannot be found or created, where nothing could be saved.
 
 mod beacon;
 mod commands;
@@ -69,11 +70,19 @@ pub struct AddAttempt {
     pub abort: tokio::task::AbortHandle,
 }
 
+/// Lock discipline: no code holds one of these mutexes while it takes another,
+/// except `adding`, which an add holds through registration, and which nothing
+/// takes while holding another. Async commands run on tokio workers while sync
+/// ones run on the main thread, so two locks taken in opposite orders on the
+/// two sides would freeze the GTK loop every webview paints from.
 pub struct ShellState {
     registry_path: PathBuf,
     settings_path: PathBuf,
     data_root: PathBuf,
     instances: Mutex<Vec<registry::Instance>>,
+    /// Removed instances whose data dir the next launch deletes again
+    /// (registry::sweep_removed).
+    removed: Mutex<Vec<String>>,
     settings: Mutex<settings::DesktopSettings>,
     active: Mutex<Option<String>>,
     view: Mutex<View>,
@@ -105,9 +114,14 @@ impl ShellState {
     /// Write the registry with the view the window shows now, so a relaunch
     /// lands there.
     fn persist(&self) -> Result<(), String> {
-        let instances = self.instances.lock().unwrap();
+        // `active` and `removed` are read first, each guard dropping at its
+        // own `;`, so `instances` is the only lock held when it is taken (see
+        // the lock discipline above). It stays held through the write, so two
+        // writes cannot land out of order.
         let active = self.active.lock().unwrap().clone();
-        registry::save(&self.registry_path, &instances, active.as_deref())
+        let removed = self.removed.lock().unwrap().clone();
+        let instances = self.instances.lock().unwrap();
+        registry::save(&self.registry_path, &instances, active.as_deref(), &removed)
     }
 }
 
@@ -191,12 +205,24 @@ pub fn run() {
                     ));
                 }
             }
-            // Only a registry that loaded as written can say which data dirs
-            // are orphans. A recovered one may have lost entries whose
-            // sessions are still on disk.
-            if loaded.trusted {
-                for dir in registry::sweep_orphans(&data_root, &loaded.instances) {
-                    eprintln!("talaria-desktop: removed orphaned {}", dir.display());
+            // The data dirs of instances the person removed, which a closing
+            // WebKit process re-created. Nothing else: a dir no entry owns may
+            // be the session of one a damaged registry lost.
+            let reopen = loaded.resume.target(&loaded.instances);
+            let swept = registry::sweep_removed(&data_root, &loaded.removed, &loaded.instances);
+            for dir in &swept.deleted {
+                eprintln!("talaria-desktop: deleted removed {}", dir.display());
+            }
+            if swept.pending != loaded.removed {
+                // The view to resume is written as it was read: the state
+                // below has no active instance yet.
+                if let Err(e) = registry::save(
+                    &registry_path,
+                    &loaded.instances,
+                    reopen.as_deref(),
+                    &swept.pending,
+                ) {
+                    eprintln!("talaria-desktop: {e}");
                 }
             }
             if let Some(window) = app.get_window("main") {
@@ -214,12 +240,12 @@ pub fn run() {
                     eprintln!("talaria-desktop: {e}");
                 }
             }
-            let reopen = loaded.resume.target(&loaded.instances);
             app.manage(ShellState {
                 registry_path,
                 settings_path,
                 data_root,
                 instances: Mutex::new(loaded.instances),
+                removed: Mutex::new(swept.pending),
                 settings: Mutex::new(loaded_settings),
                 active: Mutex::new(None),
                 view: Mutex::new(View::Welcome),

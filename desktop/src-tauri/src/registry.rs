@@ -6,6 +6,12 @@
 //! a disk that lied — is moved aside next to itself (`instances.json.corrupt-
 //! <ms>`), whatever entries still parse are kept, and the launcher says what
 //! happened. The old behavior was a panic in setup and no window at all.
+//!
+//! Data dirs are deleted only for an instance the person removed. The file
+//! records each removal (`removed`) until a launch finds its dir gone, because
+//! a closing WebKit process can re-create the dir after the remove deleted
+//! it. A dir that no entry owns and no removal recorded is never touched: it
+//! may be the session of an entry a damaged file lost.
 
 use std::{
     fs,
@@ -65,6 +71,10 @@ struct RegistryFile {
     /// older build (see `Resume::Legacy`). Older builds ignore the field.
     #[serde(default, deserialize_with = "present")]
     last_view: Option<Option<String>>,
+    /// Local ids of removed instances whose data dir may still come back (see
+    /// `sweep_removed`). Older builds ignore the field and drop it on save.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    removed: Vec<String>,
 }
 
 /// Distinguish an absent field (None, from `default`) from `null`.
@@ -77,9 +87,9 @@ pub struct Loaded {
     pub resume: Resume,
     /// What went wrong reading the file, in words for the launcher.
     pub notice: Option<String>,
-    /// The file existed and parsed as written, so the data dirs beside it can
-    /// be trusted to be the only live ones (see `sweep_orphans`).
-    pub trusted: bool,
+    /// Removals whose data dir the next sweep deletes. Always empty for a file
+    /// that did not parse: what it recorded is not trusted with a delete.
+    pub removed: Vec<String>,
 }
 
 pub fn load(path: &Path) -> Loaded {
@@ -90,7 +100,7 @@ pub fn load(path: &Path) -> Loaded {
                 instances: Vec::new(),
                 resume: Resume::Launcher,
                 notice: None,
-                trusted: false,
+                removed: Vec::new(),
             };
         }
         Err(e) => {
@@ -101,7 +111,7 @@ pub fn load(path: &Path) -> Loaded {
                     "The instance list at {} could not be read ({e}), so none are shown",
                     path.display()
                 )),
-                trusted: false,
+                removed: Vec::new(),
             };
         }
     };
@@ -114,7 +124,7 @@ pub fn load(path: &Path) -> Loaded {
                 Some(Some(id)) => Resume::Instance(id),
             },
             notice: None,
-            trusted: true,
+            removed: file.removed,
         },
         Err(strict) => {
             let (instances, total) = salvage(&raw);
@@ -129,8 +139,10 @@ pub fn load(path: &Path) -> Loaded {
             };
             // Write what survived so the next launch reads a clean file. If the
             // move failed, leave the original alone rather than overwrite it.
+            // The rewrite records no removals, so no launch after it deletes a
+            // data dir on the damaged file's word.
             if aside.is_ok() {
-                let _ = save(path, &instances, None);
+                let _ = save(path, &instances, None, &[]);
             }
             Loaded {
                 instances,
@@ -138,7 +150,7 @@ pub fn load(path: &Path) -> Loaded {
                 notice: Some(format!(
                     "The instance list could not be read ({strict}); {moved}, and {kept}"
                 )),
-                trusted: false,
+                removed: Vec::new(),
             }
         }
     }
@@ -172,12 +184,19 @@ pub fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
     Ok(to)
 }
 
-/// `last_view`: the instance on screen, or None for the launcher.
-pub fn save(path: &Path, instances: &[Instance], last_view: Option<&str>) -> Result<(), String> {
+/// `last_view`: the instance on screen, or None for the launcher. `removed`:
+/// the removals still waiting on a sweep.
+pub fn save(
+    path: &Path,
+    instances: &[Instance],
+    last_view: Option<&str>,
+    removed: &[String],
+) -> Result<(), String> {
     let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_string_pretty(&RegistryFile {
         instances: instances.to_vec(),
         last_view: Some(last_view.map(str::to_string)),
+        removed: removed.to_vec(),
     })
     .map_err(|e| format!("serializing registry: {e}"))?;
     fs::write(&tmp, json).map_err(|e| format!("writing {}: {e}", tmp.display()))?;
@@ -185,27 +204,39 @@ pub fn save(path: &Path, instances: &[Instance], last_view: Option<&str>) -> Res
     Ok(())
 }
 
-/// Delete data dirs under `root` that no registered instance owns. A removed
-/// instance's WebKit network process can recreate its storage dir while it
-/// shuts down, after the remove already deleted it; this is the sweep that
-/// catches those. Only run it against a registry that loaded as written.
-pub fn sweep_orphans(root: &Path, instances: &[Instance]) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(root) else {
-        return Vec::new();
-    };
-    let mut removed = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        // Only dirs this shell made: uuid-named. Anything else is left alone.
-        if uuid::Uuid::parse_str(&name).is_err() || instances.iter().any(|i| i.id == name) {
+/// What a boot sweep did: the dirs it deleted, and the removals to keep.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Swept {
+    pub deleted: Vec<PathBuf>,
+    pub pending: Vec<String>,
+}
+
+/// Delete the data dirs of removed instances (`removed`). A removed
+/// instance's WebKit network process can re-create its storage dir while it
+/// shuts down, after the remove deleted it; this is the sweep that catches
+/// those. A removal stays pending until a launch finds its dir already gone,
+/// so a dir re-created during the sweep is caught by the one after.
+///
+/// Only those dirs: one no registered instance owns but no remove recorded is
+/// left alone. It may hold the session of an entry a damaged registry lost,
+/// which the corrupt copy beside the registry can still restore. An id that
+/// is not a uuid, or that a registered instance owns, is dropped untouched.
+pub fn sweep_removed(root: &Path, removed: &[String], instances: &[Instance]) -> Swept {
+    let mut swept = Swept::default();
+    for id in removed {
+        if uuid::Uuid::parse_str(id).is_err() || instances.iter().any(|i| &i.id == id) {
             continue;
         }
-        let path = entry.path();
-        if path.is_dir() && fs::remove_dir_all(&path).is_ok() {
-            removed.push(path);
+        let dir = root.join(id);
+        if !dir.exists() {
+            continue;
         }
+        if fs::remove_dir_all(&dir).is_ok() {
+            swept.deleted.push(dir);
+        }
+        swept.pending.push(id.clone());
     }
-    removed
+    swept
 }
 
 pub fn now_ms() -> i64 {
@@ -245,7 +276,7 @@ mod tests {
         let loaded = load(&dir.join("instances.json"));
         assert!(loaded.instances.is_empty());
         assert!(loaded.notice.is_none());
-        assert!(!loaded.trusted);
+        assert!(loaded.removed.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -256,13 +287,20 @@ mod tests {
         let mut a = sample("a", "11111111-1111-1111-1111-111111111111");
         a.last_opened_at = Some(2_000);
         let b = sample("b", "22222222-2222-2222-2222-222222222222");
-        save(&path, &[a.clone(), b.clone()], Some("b")).unwrap();
+        let gone = vec!["33333333-3333-3333-3333-333333333333".to_string()];
+        save(&path, &[a.clone(), b.clone()], Some("b"), &gone).unwrap();
         let loaded = load(&path);
         assert_eq!(loaded.instances, vec![a.clone(), b.clone()]);
         assert_eq!(loaded.resume, Resume::Instance("b".into()));
-        assert!(loaded.trusted);
-        save(&path, &[a, b], None).unwrap();
-        assert_eq!(load(&path).resume, Resume::Launcher);
+        assert_eq!(loaded.removed, gone);
+        save(&path, &[a, b], None, &[]).unwrap();
+        let loaded = load(&path);
+        assert_eq!(loaded.resume, Resume::Launcher);
+        assert!(loaded.removed.is_empty());
+        assert!(
+            !fs::read_to_string(&path).unwrap().contains("removed"),
+            "an empty list is not written, so older builds see the file they know"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -274,6 +312,7 @@ mod tests {
             &path,
             &[sample("a", "11111111-1111-1111-1111-111111111111")],
             None,
+            &[],
         )
         .unwrap();
         assert!(path.exists());
@@ -288,7 +327,7 @@ mod tests {
         fs::write(&path, r#"{"instances": ["#).unwrap();
         let loaded = load(&path);
         assert!(loaded.instances.is_empty());
-        assert!(!loaded.trusted);
+        assert!(loaded.removed.is_empty());
         let notice = loaded.notice.expect("a notice");
         assert!(notice.contains("could not be read"), "{notice}");
         assert!(
@@ -307,7 +346,9 @@ mod tests {
             r#"{"instances": ["#
         );
         // And the registry is valid again for the next launch.
-        assert!(load(&path).trusted);
+        let again = load(&path);
+        assert!(again.notice.is_none());
+        assert!(again.removed.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -357,17 +398,61 @@ mod tests {
     }
 
     #[test]
-    fn the_sweep_removes_only_unowned_uuid_dirs() {
-        let root = temp_dir("sweep");
+    fn the_sweep_deletes_only_recorded_removals() {
+        let base = temp_dir("sweep");
+        let root = base.join("instances");
         let kept = uuid::Uuid::new_v4().to_string();
-        let orphan = uuid::Uuid::new_v4().to_string();
+        let back = uuid::Uuid::new_v4().to_string();
+        let gone = uuid::Uuid::new_v4().to_string();
+        let unrecorded = uuid::Uuid::new_v4().to_string();
         fs::create_dir_all(root.join(&kept).join("webview")).unwrap();
-        fs::create_dir_all(root.join(&orphan).join("webview/storage")).unwrap();
+        fs::create_dir_all(root.join(&back).join("webview/storage")).unwrap();
+        fs::create_dir_all(root.join(&unrecorded).join("webview")).unwrap();
         fs::create_dir_all(root.join("not-ours")).unwrap();
-        let removed = sweep_orphans(&root, &[sample(&kept, "1")]);
-        assert_eq!(removed, vec![root.join(&orphan)]);
-        assert!(root.join(&kept).exists());
+        fs::create_dir_all(base.join("escape-test")).unwrap();
+        let removed = vec![
+            back.clone(),
+            gone.clone(),
+            kept.clone(),
+            "../escape-test".to_string(),
+        ];
+        let swept = sweep_removed(&root, &removed, &[sample(&kept, "1")]);
+        // The re-created dir is deleted, and its removal stays pending until a
+        // launch finds it gone; one already gone is dropped.
+        assert_eq!(
+            swept,
+            Swept {
+                deleted: vec![root.join(&back)],
+                pending: vec![back.clone()],
+            }
+        );
+        assert!(!root.join(&back).exists());
+        assert!(root.join(&kept).exists(), "a registered instance's dir");
+        assert!(root.join(&unrecorded).exists(), "no remove recorded it");
         assert!(root.join("not-ours").exists());
-        fs::remove_dir_all(&root).unwrap();
+        assert!(base.join("escape-test").exists(), "not a uuid");
+        let next = sweep_removed(&root, &swept.pending, &[sample(&kept, "1")]);
+        assert_eq!(next, Swept::default());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// A damaged registry loses entries whose sessions are still on disk. No
+    /// launch after the recovery may delete them — not the first, and not the
+    /// next one, which reads the file the recovery rewrote.
+    #[test]
+    fn a_recovered_registry_never_costs_a_session_on_any_later_launch() {
+        let dir = temp_dir("recovered");
+        let path = dir.join("instances.json");
+        let root = dir.join("instances");
+        let lost = "11111111-2222-3333-4444-555555555555";
+        fs::create_dir_all(root.join(lost).join("webview")).unwrap();
+        fs::write(&path, r#"{"instances": ["#).unwrap();
+        for launch in 1..=3 {
+            let loaded = load(&path);
+            let swept = sweep_removed(&root, &loaded.removed, &loaded.instances);
+            assert!(swept.deleted.is_empty(), "launch {launch}");
+            assert!(root.join(lost).exists(), "launch {launch}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

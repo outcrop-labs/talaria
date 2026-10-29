@@ -100,15 +100,26 @@ fn snapshot(app: &AppHandle) -> ShellSnapshot {
                 .collect()
         })
         .unwrap_or_default();
+    // One lock at a time, each guard dropping at its own `;`. Read inside the
+    // struct literal, every guard lived to its end: view, active and settings
+    // were held while instances was taken, the reverse of `persist`, which an
+    // add runs on a tokio worker while the main thread reads this.
+    let view = *state.view.lock().unwrap();
+    let active_id = state.active.lock().unwrap().clone();
+    let titlebar = state.settings.lock().unwrap().titlebar;
+    let instances = state.instances.lock().unwrap().clone();
+    let notices = state.notices.lock().unwrap().clone();
+    let reopen = state.reopen.lock().unwrap().clone();
+    let failure = state.failure.lock().unwrap().clone();
     ShellSnapshot {
-        view: *state.view.lock().unwrap(),
-        active_id: state.active.lock().unwrap().clone(),
-        titlebar: state.settings.lock().unwrap().titlebar,
-        instances: state.instances.lock().unwrap().clone(),
+        view,
+        active_id,
+        titlebar,
+        instances,
         loaded,
-        notices: state.notices.lock().unwrap().clone(),
-        reopen: state.reopen.lock().unwrap().clone(),
-        failure: state.failure.lock().unwrap().clone(),
+        notices,
+        reopen,
+        failure,
     }
 }
 
@@ -451,7 +462,17 @@ pub fn remove_instance(app: AppHandle, id: String) -> Result<Vec<Instance>, Stri
     if was_active {
         *state.active.lock().unwrap() = None;
     }
-    state.instances.lock().unwrap().retain(|i| i.id != id);
+    let registered = {
+        let mut instances = state.instances.lock().unwrap();
+        let before = instances.len();
+        instances.retain(|i| i.id != id);
+        instances.len() != before
+    };
+    // Recorded before the write, so the next launch deletes the dir again if
+    // the closing network process re-creates it after the deletes below.
+    if registered {
+        state.removed.lock().unwrap().push(id.clone());
+    }
     {
         let mut failure = state.failure.lock().unwrap();
         if failure.as_ref().is_some_and(|f| f.id == id) {
@@ -465,7 +486,8 @@ pub fn remove_instance(app: AppHandle, id: String) -> Result<Vec<Instance>, Stri
     }
     // The closed webview's WebKit network process can recreate its storage
     // dir while it shuts down, after the delete above. Delete again once it
-    // has; the boot sweep (registry::sweep_orphans) is the backstop.
+    // has; the next launch's sweep of recorded removals
+    // (registry::sweep_removed) is the backstop.
     tauri::async_runtime::spawn(async move {
         for wait in [2, 8] {
             tokio::time::sleep(Duration::from_secs(wait)).await;

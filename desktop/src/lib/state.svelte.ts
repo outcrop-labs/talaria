@@ -25,6 +25,11 @@ export interface Problem {
   id: string
   label: string
   message: string
+  /** The shell's own check said no, not the page: the card offers "Open
+   * anyway". The check is not the webview — no cookies, its own proxy lookup
+   * and TLS trust — so an instance behind a sign-in gate, or behind a proxy
+   * only the webview uses, can fail it and still load. */
+  probe: boolean
 }
 
 export const shell = $state({
@@ -79,7 +84,7 @@ function sync(s: ShellSnapshot) {
 function applyFailure(failure: LoadFailure | null) {
   if (!failure || failure.seq <= dismissedFailure) return
   dismissedFailure = failure.seq
-  shell.problem = { id: failure.id, label: failure.label, message: failure.message }
+  shell.problem = { id: failure.id, label: failure.label, message: failure.message, probe: false }
 }
 
 export async function refresh() {
@@ -102,8 +107,8 @@ const painted = () =>
 /**
  * Open an instance. One without a live webview is probed first, so an
  * unreachable one becomes a message with a retry here instead of a blank
- * window, or WebKit's error page with no way back. `fresh` skips the probe
- * (the add just made it).
+ * window, or WebKit's error page with no way back. `fresh` skips the probe:
+ * the add just made it, or the person chose "Open anyway" over its answer.
  *
  * Before Rust hides this webview, the launcher is put at rest and painted:
  * WebKitGTK presents a hidden view's LAST frame when it is shown again, so a
@@ -125,7 +130,7 @@ export async function open(id: string, o: { fresh?: boolean; settle?: boolean } 
     } catch (e) {
       if (seq !== openSeq) return
       shell.opening = null
-      shell.problem = { id, label: instance.label, message: errorText(e) }
+      shell.problem = { id, label: instance.label, message: errorText(e), probe: true }
       return
     }
     if (seq !== openSeq) return

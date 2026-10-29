@@ -125,6 +125,19 @@
             <button type="button" class="rounded px-2 py-0.5 text-muted hover:bg-hover hover:text-readout" onclick={() => (shell.problem = null)}>
               Dismiss
             </button>
+            {#if problem.probe}
+              <!-- The check is not the page: an instance behind a sign-in gate,
+                   or reachable only through a proxy the webview knows, can
+                   fail it and still load. On Linux a page that really does
+                   not load comes back here as a load failure. -->
+              <button
+                type="button"
+                class="rounded px-2 py-0.5 text-muted hover:bg-hover hover:text-readout"
+                onclick={() => void open(problem.id, { fresh: true, settle: true })}
+              >
+                Open anyway
+              </button>
+            {/if}
             <button type="button" class="rounded border border-hairline-strong px-2 py-0.5 text-readout hover:bg-hover" onclick={() => void open(problem.id)}>
               Retry
             </button>
