@@ -15,10 +15,15 @@ Two views, one window:
 
 - **welcome** — the launcher (webview label `main`, local content from `desktop/src`) fills the
   window: the wing mark on the signature dither field, the instance list, add. The dither
-  ENGINE is not copied — `desktop/vite.config.ts` aliases `@dither` onto ui's
-  `dither-engine.ts` (which imports nothing, so it is safe to share), and only the
-  launcher-shaped wrappers (`WingMark.svelte`, `DitherLayer.svelte`) are per-side. Typography
-  is Mercury's IBM Plex pair.
+  material is not copied — `desktop/vite.config.ts` aliases `@dither` onto ui's
+  `dither-engine.ts` (which imports nothing, so it is safe to share) — but the launcher does
+  not run the live engine. `desktop/src/lib/dither-field.ts` paints the same field (ui's
+  `evalSource`, Bayer matrix, two-tier rule, clump hash and page lattice) ONCE, as pixels
+  through one `putImageData`, and `DitherField.svelte` repaints it only after its box or the
+  device pixel ratio has stopped changing. "The launcher's cost" below says why.
+  Typography is Mercury's IBM Plex pair, shipped inside the app (`@fontsource`, Latin and
+  Latin Extended, the two weights the launcher sets): the launcher makes no network request
+  before its first paint.
 - **active** — the instance's webview IS the window; the launcher is hidden (but alive).
   Switching happens **inside the instance UI**: the desktop switcher
   (`ui/src/components/app/DesktopSwitcher.svelte`) wears the current instance's identity
@@ -39,9 +44,55 @@ credentials/paths stripped — an instance IS its origin), then probes the insta
 what makes a URL "a Talaria instance"; the uuid is also the dedupe key. The label comes from
 `companyName`, falling back to host(:port).
 
+The probe has two bounds (`desktop/src-tauri/src/beacon.rs`): 5 s to connect, so a
+black-holed address fails in seconds, and 20 s in total, so a slow but live instance is
+added rather than refused. A failure is classified from the error's source chain — refused,
+does not resolve, timed out, unreachable, untrusted certificate, TLS failed — instead of
+reqwest's one sentence for all of them, and a TLS failure on a bare host suggests the
+`http://` address. Cancel and Escape work while the probe runs: `cancel_add_instance` aborts
+it, and a cancelled add never reaches the registry, even if the instance answers a moment
+later.
+
 The registry is `~/.local/share/app.talaria.desktop/instances.json` (atomic writes), and each
 instance's session data lives beside it in `instances/<id>/webview/`. Removing an instance
-deletes its data dir — the saved session dies with it; the instance itself is untouched.
+deletes its data dir — the saved session dies with it; the instance itself is untouched. The
+closed webview's WebKit network process can recreate its storage dir while it shuts down, so
+the remove deletes again 2 s and 10 s later, and every launch sweeps `instances/` for
+uuid-named dirs no registered instance owns (only when the registry loaded as written).
+
+Neither file can stop the app from starting. A registry or `settings.json` that does not
+parse is moved aside next to itself (`instances.json.corrupt-<ms>`), whatever entries still
+parse are kept, and the launcher says what happened; a settings value this build does not
+know (a newer build wrote it) reads as the default. The registry also records `lastView`,
+the instance the window last showed or `null` for the launcher, so a relaunch lands where
+the person left. A registry from before that field reopens the most recently opened
+instance, and only one that was actually opened.
+
+### Opening an instance, and when it does not load
+
+An instance with no webview yet (the first open of a session, a relaunch) is probed first,
+from the launcher, which shows "Opening X…" with a way to stay. An unreachable instance is
+then a sentence with Retry on the launcher, not a blank window or WebKit's error page — in
+the themed titlebar mode the only chrome is drawn by the page, so that page was a trap.
+
+**Linux only:** each instance webview's WebKitGTK `load-failed` signal is watched
+(`commands.rs::watch_load_failures`; the `webkit2gtk` crate is a Linux-only dependency). An
+http(s) main-frame load that fails — the instance went away mid-session, a full reload
+while it is down — closes that webview and returns to the launcher with WebKit's reason and
+Retry. A navigation that was replaced, a download, a link WebKit hands elsewhere (`mailto:`)
+or content it cannot show inline is answered "handled", so the page the person is on stays;
+left to WebKit, a `mailto:` link replaced the whole instance with "The URL can't be shown".
+macOS and Windows rely on the probe before a cold open.
+
+### The launcher follows the shell
+
+The launcher mirrors Rust's state rather than reading it once: Rust emits `shell-state` to
+the launcher webview on every change (view, active instance, titlebar, the registry, load
+failures), and the launcher re-reads it whenever it becomes visible. An instance's switcher,
+its Settings → Profile titlebar choice and a notification click all change that state while
+the launcher is hidden. Inside instances, ui's `desktop-settings.svelte.ts` re-reads the
+titlebar mode each time its webview is shown, for the same reason: the window is shared, and
+a choice made in one instance reaches the others.
 
 ## Security posture
 
@@ -68,7 +119,11 @@ children can be misplaced ([tauri#10420]) and `auto_resize` breaks across resize
 VERTICALLY in the GTK container. The design leans on none of it: exactly ONE webview is
 visible at a time (`hide()`/`show()` decide who renders; bounds calls are belt-and-suspenders
 in logical units, applied once at the end of setup and again on every `WindowEvent::Resized`),
-so there is no side-by-side layout to get wrong. The setup pass matters: the first resize can
+so there is no side-by-side layout to get wrong. Visibility changes hide everything else FIRST,
+then show the one webview. And the shell never calls `Window::show()` on a window that is
+already visible: on Linux tao's show is gtk `show_all`, which re-shows every hidden child
+webview, and the vertical GtkBox then split the window between them (a notification click
+did exactly this). The setup pass matters: the first resize can
 arrive before shell state exists, and a missed `set_bounds` leaves the launcher webview at
 WebKitGTK's default 1×1. An undecorated window that never paints is not mapped on Wayland —
 the process is alive and the launch looks silent. `tauri` is exact-pinned (`=2.11.5`) in
@@ -84,6 +139,38 @@ The engine is WebKitGTK, so the instance UI runs under WebKit (Safari-family) se
 Blink. APIs Chrome has that WebKit lacks (e.g. `requestIdleCallback`) are landmines in ui/
 code even for browser Safari — feature-detect with `typeof x === 'function'`, never a bare
 reference (a bare global throws ReferenceError before `??` can fall back).
+
+## The launcher's cost
+
+Measured on a headless WebKitGTK 2.52 with no GPU (Mesa llvmpipe), 2026-10-28; the numbers
+and the rig are in the PR that made these changes. Three things made the launcher slow, and
+each has a rule now:
+
+- **No live canvas field.** ui's live engine over the whole window, with a shimmer and a
+  uniform grain, re-rolled about half of ~246 000 cells every 160 ms as individual 1-px
+  `clearRect` + `fillRect` pairs. WebKit's web process main thread sat at 97 %, a frame took
+  ~0.5 s, and every click, keystroke and IPC reply waited behind it (opening the add dialog
+  took 0.54–0.61 s to show). The static field idles at ~0 % and the same click shows in
+  ~80 ms. WebKit's renderer switches (`WEBKIT_DISABLE_COMPOSITING_MODE`,
+  `WEBKIT_DISABLE_DMABUF_RENDERER`, Skia CPU) changed nothing, so no env default is set.
+- **No overlay scrollbars.** WebKitGTK's overlay scrollbar fades in and out on every scroll,
+  and on a software renderer that fade composited the whole window at full rate for ~3 s —
+  300–400 % CPU after each scroll of a long instance list. The launcher styles
+  `::-webkit-scrollbar`, which has no fade.
+- **Nothing that waits on another process runs on the main thread.** A sync command runs on
+  the main thread in Tauri v2, which is also the GTK loop every webview paints from.
+  `desktop_notify` was sync, and a notification server that took 30 s to answer froze the
+  whole app for 30 s; it is async now, the D-Bus post runs on a blocking thread, and the page
+  gets its answer within 2 s.
+
+The window and every instance webview paint the launcher's ground (`#090a09`) until their
+page does, instead of GTK's grey and WebKit's white.
+
+Each OPENED instance keeps its webview, and with it a WebKit web process and, because of its
+own data directory, its own network process: about 110 MB + 13 MB for a trivial page, ~690
+MB for the real UI (2 web processes). 25 opened mock instances were 3.07 GB. Nothing is
+discarded, by design (sessions and SSE survive a switch); a cold open of an instance is
+~0.7 s of WebKit starting those two processes.
 
 ## Development: the box builds, the host runs
 
@@ -222,14 +309,22 @@ The window ships `decorations: false`. Three titlebar modes live in
 default on every OS**: custom min/max/close drawn in the webview (traffic-light side follows
 the OS — left on macOS, right elsewhere) and a bar you can drag. OS turns native decorations
 on. None hides both. Settings → Profile (inside the desktop app) and the launcher welcome
-screen both set it.
+screen both set it. Turning the OS titlebar on keeps the window's outer size (the content
+loses the titlebar's height), and the shell re-places the visible webview straight away
+rather than a frame later, which used to flash a band of bare window.
+
+The window opens at 1280×800, shrunk to fit the monitor it opens on when that is smaller
+(`layout::fit`: a 1440×900 panel at 167 % is 864×540 logical, and the fixed size put the
+themed min/max/close off-screen). The minimum is 760×480, also shrunk to fit.
 
 ## Updates
 
 A stable GitHub Release carries `latest.json` plus minisign signatures of the AppImage,
 the universal `.app.tar.gz`, and the NSIS installer. The running app checks
 `/releases/latest/download/latest.json` (Settings → Profile, or the launcher), verifies
-the payload against the pubkey in `tauri.conf.json`, replaces itself, and relaunches.
+the payload against the pubkey in `tauri.conf.json`, replaces itself, and relaunches. The
+check is bounded at 10 s (the plugin's default is no bound); the install is not, because the
+plugin applies one timeout to the check and to the whole download.
 RCs do not publish `latest.json` — `/releases/latest` is GitHub's stable pointer.
 
 Signing uses `TAURI_SIGNING_PRIVATE_KEY` (a GitHub Actions secret). Losing that key
@@ -244,7 +339,9 @@ there is no site-settings page inside the shell, so a page cannot grant it. The 
 through the OS notification service — the same path other desktop apps use. A click focuses
 this window, brings that instance forward, and opens the notification's path when it is a
 same-origin path. The app has to be running; a quit process is not listening. Tray and
-delivery after quit stay deferred.
+delivery after quit stay deferred. The post is off the main thread (see "The launcher's
+cost"), and the click never calls `show()` on the already-visible window (see the geometry
+section).
 
 ## Deferred on purpose
 
