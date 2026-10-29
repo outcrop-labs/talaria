@@ -55,13 +55,14 @@ Source: [`api/crates/talaria-routes-fleet/src/models/keys.rs`](../../api/crates/
 Source: [`api/crates/talaria-routes-fleet/src/models/keys_id.rs`](../../api/crates/talaria-routes-fleet/src/models/keys_id.rs)
 
 > /api/keys/{id}. DELETE revokes one of MY keys (the hash stays for audit);
-> PUT sets my key's self-imposed policy (#265). A non-uuid {id} logs and
-> answers the house envelope 500 — not a thrown platform error.
+> PUT sets my key's self-imposed policy (#265). A non-uuid {id} answers the
+> family's 400 ("not a uuid"); a well-formed id that names none of my keys
+> is a 404 on both, with no audit row.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | PUT | `session` | [body](#put-apikeysid-body) | `{ok, policy}` | 200, 400, 404 | audit |
-| DELETE | `session` | — | `{ok}` | 200 | audit |
+| DELETE | `session` | — | `{ok}` | 200, 404 | audit |
 
 ### PUT `/api/keys/{id}` body
 

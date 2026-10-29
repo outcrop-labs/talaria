@@ -271,7 +271,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/workflows_id.rs`](../../api
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | PUT | `session` + `perm:agents.manage` | [body](#put-apiworkflowsid-body) | `{ok}` | 200, 400, 404 | — |
-| DELETE | `session` + `perm:agents.manage` | — | `{ok}` | 200 | — |
+| DELETE | `session` + `perm:agents.manage` | — | `{ok}` | 200, 404 | — |
 
 ### PUT `/api/workflows/{id}` body
 

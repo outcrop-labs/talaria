@@ -11,7 +11,7 @@
   import { useAgents } from '@/lib/agents'
   import { useUsers } from '@/lib/users'
   import { useTeams } from '@/lib/teams'
-  import { delJson, putJson } from '@/lib/fetch-json'
+  import { delJsonGone, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import type { Binding, RagCollection } from './retrieval'
 
@@ -57,7 +57,8 @@
   const del = async () => {
     if (!(await confirm({ title: 'Delete collection', message: `Delete the "${col.name}" collection and its index?`, confirmLabel: 'Delete', danger: true }))) return
     try {
-      await delJson(`/api/rag/collections/${col.id}`)
+      // A collection another admin already deleted is a 404: gone, as asked.
+      await delJsonGone(`/api/rag/collections/${col.id}`)
     } catch (e) {
       toastError('Delete collection failed', e)
       return

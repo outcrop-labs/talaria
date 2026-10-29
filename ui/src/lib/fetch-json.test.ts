@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { HttpError, delJson, getJson, postJson, postJsonOr, postStream, putJson, readJson } from '@/lib/fetch-json'
+import { HttpError, delJson, delJsonGone, getJson, postJson, postJsonOr, postStream, putJson, readJson } from '@/lib/fetch-json'
 
 // The mutation door. The whole point of this file's subjects is the ERROR
 // CONTRACT — before they existed, 134 hand-rolled stanzas each decided for
@@ -86,6 +86,24 @@ describe('postJsonOr — statuses that are answers, not errors', () => {
     const stale = jsonResponse(409, { status: 'stale' })
     await expect(readJson(stale, [409])).resolves.toEqual({ status: 'stale' })
     await expect(readJson(jsonResponse(409, { status: 'stale' }), [422])).rejects.toBeInstanceOf(HttpError)
+  })
+})
+
+describe('delJsonGone — a delete whose 404 is already gone', () => {
+  it('resolves on a 200 and on a 404, and still rejects anything else', async () => {
+    await expect(delJsonGone('/api/x/1')).resolves.toBeUndefined()
+    expect(lastInit().method).toBe('DELETE')
+    fetchMock.mockImplementationOnce(async () => jsonResponse(404, { error: 'not found' }))
+    await expect(delJsonGone('/api/x/1')).resolves.toBeUndefined()
+    fetchMock.mockImplementationOnce(async () => jsonResponse(403, { error: 'forbidden' }))
+    await expect(delJsonGone('/api/x/1')).rejects.toMatchObject({ status: 403, message: 'forbidden' })
+    fetchMock.mockImplementationOnce(async () => jsonResponse(400, { error: 'auto collections cannot be deleted' }))
+    await expect(delJsonGone('/api/x/1')).rejects.toMatchObject({ status: 400 })
+  })
+
+  it('sends its body, as the secrets delete does', async () => {
+    await delJsonGone('/api/x/1/secrets', { name: 'A_TOKEN' })
+    expect(lastInit().body).toBe(JSON.stringify({ name: 'A_TOKEN' }))
   })
 })
 

@@ -1,7 +1,9 @@
 // /api/fleet/agents/{id}/secrets. Per-agent secrets, write-only. GET →
 // names + timestamps (never values), and for a CONFIG_* secret where the
-// current config names it (usedAt). PUT { name, value } → set/replace; a
-// well-formed id that names no agent is a 404.
+// current config names it (usedAt). PUT { name, value } → set/replace.
+// A well-formed id that names no agent is a 404 on all three, and the
+// DELETE then audits nothing. The id is read by its canonical text, so every
+// spelling the gate lets through names the same agent (and its audit rows).
 // DELETE { name, removeSetting? } → remove; a CONFIG_* secret the current
 // config still names is a 409 { error, usedAt } unless removeSetting is true,
 // which first writes a new version without those settings. Admin, or the
@@ -35,6 +37,10 @@ pub async fn get(
     if let Some(gate) = talaria_params::uuid_gate_404(&id) {
         return Ok(gate);
     }
+    let id = talaria_params::uuid_canonical(&id).unwrap_or(id);
+    if let Some(miss) = no_agent(&state, &id).await {
+        return Ok(miss);
+    }
     Ok(match list_agent_secrets(&state.pg, &id).await {
         Ok(secrets) => Json(json!({ "secrets": secrets })).into_response(),
         Err(e) => internal("[fleet] list_agent_secrets failed", e),
@@ -62,6 +68,7 @@ pub async fn put(
     if let Some(gate) = talaria_params::uuid_gate_404(&id) {
         return Ok(gate);
     }
+    let id = talaria_params::uuid_canonical(&id).unwrap_or(id);
     let sb = secretbox_or_500(&state, "[fleet] secretbox failed").await?;
     let actor = user.email.clone().or_else(|| user.name.clone());
     Ok(
@@ -97,6 +104,10 @@ pub async fn delete(
     let user = require_agent_manager(&state, &headers, &id).await?;
     if let Some(gate) = talaria_params::uuid_gate_404(&id) {
         return Ok(gate);
+    }
+    let id = talaria_params::uuid_canonical(&id).unwrap_or(id);
+    if let Some(miss) = no_agent(&state, &id).await {
+        return Ok(miss);
     }
     // Body { name } — matches PUT's transport. When the body doesn't parse
     // (unparseable JSON, wrong shape, failed validation), the old ?name=
@@ -218,6 +229,18 @@ pub async fn delete(
         out["removed"] = json!(removed);
     }
     Ok(Json(out).into_response())
+}
+
+/// The 404 for an id no agent has, or the 500 when the read fails; None
+/// for a real agent. The PUT needs no read of its own: the foreign key is
+/// its answer. An agent retired after this read loses its secrets with it
+/// (the rows cascade), so a DELETE racing that is still the honest ok.
+async fn no_agent(state: &AppState, id: &str) -> Option<Response> {
+    match talaria_agent_defs::agent_def_by_id(&state.pg, id).await {
+        Ok(Some(_)) => None,
+        Ok(None) => Some(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => Some(internal("[fleet] secrets: agent read failed", e)),
+    }
 }
 
 /// Query lookup — the FIRST value for the key.

@@ -243,8 +243,8 @@ they are wire contract, pinned by its tests.
   and on a DELETE that addresses the row by its own id. The exception is a family whose rule is
   *forbidden, not hidden* (boards, channels, teams, workchains, kb comments, the run views): a
   caller who may not see a row gets 403 whether it exists or not, so an absent id gets that 403
-  too. A few older DELETEs still answer 200 for an absent id (workflows, keys, rag collections,
-  artifact folders, agent secrets); new routes do not copy them.
+  too. A client deleting something that turns out to be gone reads that 404 as done (ui's
+  `delJsonGone`): another tab or another person deleted it first.
 - **A malformed path id is a 404 as well**, on a new route and on every route that casts it with
   `$N::uuid` unguarded: gate it with `talaria_params::uuid_gate_404`, after the route's auth (and
   after its body checks, where those come first). No row can carry it, so the 404 hides nothing,

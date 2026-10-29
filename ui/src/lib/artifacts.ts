@@ -1,6 +1,6 @@
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
-import { delJson, getJsonOr404, getList, postJson, putJson } from '@/lib/fetch-json'
+import { delJson, delJsonGone, getJsonOr404, getList, postJson, putJson } from '@/lib/fetch-json'
 import type { EditPolicy, KbEditor, Visibility } from '@/lib/kb'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
@@ -129,7 +129,9 @@ export const updateFolder = (
 export const duplicateFolder = (id: string) =>
   postJson<{ folder: ArtifactFolder }>(`/api/artifact-folders/${id}/duplicate`).then((r) => r.folder)
 
-export const deleteFolder = (id: string) => delJson<{ ok: true }>(`/api/artifact-folders/${id}`)
+/** A folder another tab already deleted is a 404, and gone is what this
+ *  asked for. */
+export const deleteFolder = (id: string) => delJsonGone(`/api/artifact-folders/${id}`)
 
 /** Upload a file (reuses the shared uploads store) → returns its id + metadata.
  *  Rejects with the server's sentence on failure, like every other mutation. */
