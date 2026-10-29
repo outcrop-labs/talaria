@@ -31,7 +31,7 @@
 // socket), a publish may only bind loopback, and `--mount`/`--add-host`
 // are refused outright (`check_run_flag`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -201,10 +201,32 @@ pub fn pkg_network() -> String {
     format!("talaria-mcp-{}", instance())
 }
 
+/// The package networks THIS api process has joined (`ensure_pkg_network`).
+///
+/// A package container outlives the container of the api that started it.
+/// When a devbox's container is recreated (a `box start` after a template
+/// change) or the image's api container is replaced, the package keeps
+/// running and the new api container is on none of its networks, so a URL
+/// by name does not resolve from it. The new container is a new process
+/// here, with nothing in this set: its first relay to a running package
+/// joins, and every later one costs no docker call.
+fn joined_networks() -> &'static Mutex<HashSet<String>> {
+    static JOINED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+    &JOINED
+}
+
+/// Does a relay to an already-running package have to join its network
+/// first? Only an api that dials by name, and only once per process. Pure
+/// for the tests.
+fn join_before_relay(running: bool, by_name: bool, joined_here: bool) -> bool {
+    running && by_name && !joined_here
+}
+
 /// Create the package network if it is missing, and — when this api runs in
 /// a container (`dials_by_name`: the image, a devbox) — join it, so container
 /// DNS resolves the package from here. The join is idempotent (`inspect`
-/// first; a lost race on `connect` is re-checked the same way). On the host
+/// first; a lost race on `connect` is re-checked the same way), and a joined
+/// network is remembered for this process (`joined_networks`). On the host
 /// nothing joins: the relay dials the loopback-published port.
 async fn ensure_pkg_network() -> Result<String, String> {
     let name = pkg_network();
@@ -253,6 +275,10 @@ async fn ensure_pkg_network() -> Result<String, String> {
                 ));
             }
         }
+        joined_networks()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(name.clone());
     }
     Ok(name)
 }
@@ -921,6 +947,17 @@ pub async fn ensure_http(
         let argv = pkg_argv(spec, &sealed, &container, &dns, Some(&network))?;
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
         talaria_fleet_docker::docker(&argv_refs, Duration::from_secs(120)).await?;
+    } else if join_before_relay(
+        running,
+        dials_by_name(),
+        joined_networks()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(&pkg_network()),
+    ) {
+        // The package outlived the api container that started it
+        // (`joined_networks`): join before dialling it by name.
+        ensure_pkg_network().await?;
     }
     if dials_by_name() {
         Ok(format!("http://{container}:{port}{path}"))
@@ -1379,6 +1416,19 @@ mod tests {
         let doc = SealedDoc::open(&sb, &enc).unwrap();
         assert_eq!(doc.env.get("TOKEN").map(String::as_str), Some("t1"));
         assert_eq!(doc.args.get(&2).map(String::as_str), Some("8080:8080"));
+    }
+
+    #[test]
+    fn a_running_package_is_joined_once_per_process_and_only_by_name() {
+        // An api that dials by name, on a package started by an earlier
+        // container of itself: it joins before the first relay.
+        assert!(join_before_relay(true, true, false));
+        // Joined already in this process: no docker call.
+        assert!(!join_before_relay(true, true, true));
+        // A host-run api dials the loopback port and never joins.
+        assert!(!join_before_relay(true, false, false));
+        // A package that is not running is started, which joins on its own.
+        assert!(!join_before_relay(false, true, false));
     }
 
     #[test]
