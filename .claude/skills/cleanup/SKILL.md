@@ -78,8 +78,8 @@ Each such network holds a subnet from docker's ~30 predefined address pools, and
 they run out every `compose up` fails with `all predefined address pools have been fully
 subnetted` — the CLI names that error and points here. It also removes **orphan app
 databases**: a `talaria-appdb-*` container whose cluster is mounted from a sibling
-`talaria-<name>` checkout that is no longer a checkout, or from a box whose `box.env` is
-gone. A box removed without `talaria box rm`, or a worktree removed while its app ran,
+`talaria-<name>` directory that is gone, or from a box whose `box.env` is gone. A
+directory still on disk keeps its databases, checkout or not. A box removed without `talaria box rm`, or a worktree removed while its app ran,
 leaves them running, and each one holds the network it joined. The container goes; its
 data directory stays (postgres's uid owns it). It will not remove the primary,
 the checkout you are in, a running stack, a dirty or unpushed tree, a `.talaria-keep`,

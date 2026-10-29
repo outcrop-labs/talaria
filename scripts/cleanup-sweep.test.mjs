@@ -2,13 +2,16 @@
 // when the stop gate has to say no. A wrong answer here fills the disk or
 // removes someone else's checkout. Run by `bun run check`.
 import { spawnSync } from 'node:child_process'
-import { dirname, resolve } from 'node:path'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   POLICY,
   ageDays,
   appDbOwner,
   boxProjectOwners,
+  checkoutStands,
   classify,
   formatReport,
   orphanAppDbs,
@@ -441,6 +444,29 @@ check("an app database whose checkout or box is gone is a row, running or stoppe
   eq(rows[1].why, 'box gonebox is gone; its data stays at /w/devboxes/gonebox/state/app-data/notes/pg')
   eq(rows[1].running, false)
   eq(ageDays(rows[0].ageMs), '3d')
+})
+
+check('a checkout directory still on disk keeps its app databases, listed by git or not, .git or not', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'talaria-sweep-test-'))
+  try {
+    // A sibling that still exists but is no git worktree: half removed, or
+    // copied by hand. Its running database is not the sweep's.
+    mkdirSync(join(parent, 'talaria-stray', 'app-data', 'notes', 'pg'), { recursive: true })
+    eq(checkoutStands(join(parent, 'talaria-stray')), true)
+    eq(checkoutStands(join(parent, 'talaria-gone')), false)
+    const rows = orphanAppDbs({
+      dbs: [
+        appdb({ name: 'talaria-appdb-stray-notes', source: join(parent, 'talaria-stray', 'app-data', 'notes', 'pg') }),
+        appdb({ name: 'talaria-appdb-gone-notes', source: join(parent, 'talaria-gone', 'app-data', 'notes', 'pg') }),
+      ],
+      roots: { siblingParent: parent, devboxHome: join(parent, 'devboxes') },
+      liveCheckout: checkoutStands,
+      now: NOW,
+    })
+    eq(rows.map((r) => r.id).join(','), 'talaria-appdb-gone-notes')
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
 })
 
 check('a caller that cannot say whether an owner lives keeps every app database', () => {

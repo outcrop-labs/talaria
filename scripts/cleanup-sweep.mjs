@@ -286,8 +286,7 @@ export function appDbOwner(source, { siblingParent, devboxHome }) {
  *                 every `talaria-appdb-*` container, running or stopped,
  *                 with the host side of its APP_DB_DATA mount
  *   roots         { siblingParent, devboxHome } in their physical spelling
- *   liveCheckout(dir) — is that directory still a checkout (a listed git
- *                 worktree, or a .git in it)
+ *   liveCheckout(dir) — is that checkout still there (checkoutStands)
  *   liveBox(name)     — does that box's box.env exist
  *
  * A box removed without `talaria box rm`, or a worktree removed while its
@@ -297,6 +296,18 @@ export function appDbOwner(source, { siblingParent, devboxHome }) {
  * can place (appDbOwner) and whose owner is gone is a row. Defaults are the
  * safe reading: a caller that cannot say keeps everything.
  */
+/**
+ * Is the checkout an app database was placed under (appDbOwner) still there?
+ * Only a directory that is gone makes its databases orphans. A sibling
+ * `talaria-<x>` still on disk keeps them whether or not git lists it or a
+ * `.git` sits in it (a worktree half removed, a copy made by hand): a
+ * running database under a directory that exists is not the sweep's to
+ * remove.
+ */
+export function checkoutStands(dir) {
+  return existsSync(dir)
+}
+
 export function orphanAppDbs({ dbs, roots, liveCheckout = () => true, liveBox = () => true, now = Date.now() }) {
   const rows = []
   for (const db of dbs) {
@@ -902,12 +913,11 @@ export function inventory(root, now = Date.now(), { scanNetworks = true } = {}) 
   if (projects && scanNetworks) {
     const dbs = appDbFacts()
     if (dbs) {
-      const listedPaths = new Set(listed.map((w) => real(w.path)))
       artifacts.push(
         ...orphanAppDbs({
           dbs,
           roots: { siblingParent: physical(dirname(primary)), devboxHome: physical(home) },
-          liveCheckout: (dir) => listedPaths.has(dir) || existsSync(join(dir, '.git')),
+          liveCheckout: checkoutStands,
           liveBox: (name) => existsSync(join(home, name, 'box.env')),
           now,
         }),

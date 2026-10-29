@@ -244,9 +244,9 @@ recut, or check the new `ui/.env` against step 4.
 - **So are app databases left behind.** An app database (`talaria-appdb-*`) runs on
   `restart: unless-stopped`, so a worktree removed while its app ran leaves it running.
   `bun talaria cleanup` lists one whose cluster is mounted from a sibling
-  `talaria-<name>` directory that is no longer a checkout (no `.git`, not in
-  `git worktree list`); `--apply` removes the container and leaves the data directory.
-  One mounted from anywhere else is never touched.
+  `talaria-<name>` directory that is gone; `--apply` removes the container and leaves
+  the data directory. A directory still on disk keeps its databases, whether or not
+  git still lists it, and one mounted from anywhere else is never touched.
 - **The app's port is strict.** `talaria dev` hands vite this worktree's `PORT` with
   `--strictPort` (the primary's `5273` too), and checks the port before anything
   starts: a port already taken stops it with the holder's pid and command (or the
