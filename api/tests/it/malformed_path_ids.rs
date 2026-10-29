@@ -40,22 +40,25 @@ const MALFORMED: [&str; 3] = [
     "urn:uuid:6113b5bc-6935-46e1-a67c-60bd58daf4f0",
 ];
 
-async fn cleanup(pg: &PgPool) {
+/// Each test sweeps only the rows its own `tag` made: the tests in a file run
+/// concurrently, and one test's sweep deleting a sibling's admin mid-flight
+/// failed that sibling's channel insert on the foreign key.
+async fn cleanup(pg: &PgPool, tag: &str) {
     sqlx::query("delete from channels where name like $1")
-        .bind(format!("{PREFIX}-%"))
+        .bind(format!("{PREFIX}-{tag}-%"))
         .execute(pg)
         .await
         .unwrap();
     sqlx::query("delete from users where sub like $1")
-        .bind(format!("{PREFIX}:%"))
+        .bind(format!("{PREFIX}:{tag}:%"))
         .execute(pg)
         .await
         .unwrap();
 }
 
 /// An admin with a session minted the way the auth routes mint one.
-async fn minted_admin(state: &AppState) -> (String, String) {
-    let sub = format!("{PREFIX}:{}", uuid::Uuid::new_v4());
+async fn minted_admin(state: &AppState, tag: &str) -> (String, String) {
+    let sub = format!("{PREFIX}:{tag}:{}", uuid::Uuid::new_v4());
     let (id,): (String,) =
         sqlx::query_as("insert into users (sub, role) values ($1, 'admin') returning id::text")
             .bind(&sub)
@@ -79,11 +82,11 @@ async fn minted_admin(state: &AppState) -> (String, String) {
 
 /// A channel with the admin in it, so its message routes reach the message
 /// id rather than refusing a non-member first.
-async fn channel(pg: &PgPool, member: &str) -> String {
+async fn channel(pg: &PgPool, member: &str, tag: &str) -> String {
     let (id,): (String,) = sqlx::query_as(
         "insert into channels (name, kind) values ($1, 'channel') returning id::text",
     )
-    .bind(format!("{PREFIX}-{}", uuid::Uuid::new_v4()))
+    .bind(format!("{PREFIX}-{tag}-{}", uuid::Uuid::new_v4()))
     .fetch_one(pg)
     .await
     .unwrap();
@@ -270,9 +273,9 @@ fn routes(channel: &str) -> Vec<(&'static str, String, Option<Value>)> {
 #[ignore = "needs a live dev database and redis (source ui/.env)"]
 async fn a_malformed_path_id_is_a_miss_on_every_route_that_casts_it() {
     let state = live_app_state().await;
-    cleanup(&state.pg).await;
-    let (admin, cookie) = minted_admin(&state).await;
-    let ch = channel(&state.pg, &admin).await;
+    cleanup(&state.pg, "miss").await;
+    let (admin, cookie) = minted_admin(&state, "miss").await;
+    let ch = channel(&state.pg, &admin, "miss").await;
 
     let mut wrong = Vec::new();
     for (method, path, body) in routes(&ch) {
@@ -290,7 +293,7 @@ async fn a_malformed_path_id_is_a_miss_on_every_route_that_casts_it() {
             }
         }
     }
-    cleanup(&state.pg).await;
+    cleanup(&state.pg, "miss").await;
     assert!(
         wrong.is_empty(),
         "these answered something other than a plain 404:\n{}",
@@ -305,8 +308,8 @@ async fn a_malformed_path_id_is_a_miss_on_every_route_that_casts_it() {
 #[ignore = "needs a live dev database and redis (source ui/.env)"]
 async fn a_well_formed_id_still_reaches_the_read() {
     let state = live_app_state().await;
-    cleanup(&state.pg).await;
-    let (_admin, cookie) = minted_admin(&state).await;
+    cleanup(&state.pg, "read").await;
+    let (_admin, cookie) = minted_admin(&state, "read").await;
     let absent = uuid::Uuid::new_v4().to_string();
     for id in [
         absent.clone(),
@@ -329,7 +332,7 @@ async fn a_well_formed_id_still_reaches_the_read() {
             assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path} → {answer}");
         }
     }
-    cleanup(&state.pg).await;
+    cleanup(&state.pg, "read").await;
 }
 
 /// Who may ask is answered before the id is: with no session, a malformed id
