@@ -56,11 +56,21 @@ const lineKey = (line: string): string | null => /^\s*(?:export\s+)?([A-Za-z_][A
  *    worktree's CLI reads THAT worktree's ui/.env, and these lines are not in
  *    the block, so they rode into the box: its api bound the worktree's
  *    :54xx, and TALARIA_WORKTREE made the box name its app databases and MCP
- *    packages after the worktree.
+ *    packages after the worktree;
+ *  - the app data and build directories (BOX_OWN_DIRS), which `talaria
+ *    setup` never writes and an operator may set by hand. Inherited, they
+ *    point the box's app databases and builds at the primary's own
+ *    directories. Stripped, both readers derive them from the block's
+ *    TALARIA_APPS_DIR, as `<state>/app-data` and `<state>/app-builds`
+ *    (talaria-users `app_data_dir`, ui/src/server/app-build/paths.ts).
  *
  *  Everything else rides verbatim: TALARIA_SECRET_KEY/AUTH_* MUST, or sealed
  *  secrets seeded from the primary couldn't decrypt (the worktree rule). */
-const stripsAlso = (key: string): boolean => key.startsWith('TALARIA_S3_') || (WORKTREE_INHERITED_VARS as readonly string[]).includes(key)
+export const BOX_OWN_DIRS = ['TALARIA_APP_DATA_DIR', 'TALARIA_APP_BUILDS_DIR'] as const
+const stripsAlso = (key: string): boolean =>
+  key.startsWith('TALARIA_S3_') ||
+  (WORKTREE_INHERITED_VARS as readonly string[]).includes(key) ||
+  (BOX_OWN_DIRS as readonly string[]).includes(key)
 
 /** The block `talaria box new` appends to the box's ui/.env. */
 function boxBlock(o: { name: string; state: string; s3: { bucket: string; key: string; secret: string }; embedContainer: string }): string {

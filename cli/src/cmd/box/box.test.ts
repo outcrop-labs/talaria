@@ -5,7 +5,7 @@
 // process behavior is planted.
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { boxUiEnv, overrideYaml, parseEnvFlags, composeEnvTpl, runNew } from './new'
@@ -137,6 +137,74 @@ TALARIA_PG_PORT=5605
     const out = boxUiEnv(stale, { name: 'demo', state: '/s', s3: { bucket: 'b', key: 'k', secret: 's' } })
     expect(out).not.toContain('=stale-')
     expect(keysOf(out)).toEqual(keysOf(block))
+  })
+
+  // UB2: `talaria setup` never writes these two, but an operator may set them
+  // by hand in the primary's ui/.env. Inherited, they pointed the box's app
+  // databases and builds at the primary's directories.
+  test("boxUiEnv drops the primary's app data and build directories, in every spelling a reader accepts", () => {
+    const primary = [
+      'TALARIA_SECRET_KEY=keep-exactly-this-root',
+      'TALARIA_APP_DATA_DIR=/home/op/talaria/app-data',
+      'export TALARIA_APP_BUILDS_DIR=/home/op/talaria/app-builds',
+      'TALARIA_APP_DATA_DIR =/home/op/elsewhere',
+      '  TALARIA_APP_BUILDS_DIR= /home/op/elsewhere',
+      'TALARIA_APP_DATA_DIRS_NOTE=not-this-one',
+    ].join('\n')
+    const out = boxUiEnv(primary, { name: 'demo', state: '/phys/state', s3: { bucket: 'b', key: 'k', secret: 's' } })
+    expect(out).not.toContain('/home/op/')
+    expect(keysOf(out)).not.toContain('TALARIA_APP_DATA_DIR')
+    expect(keysOf(out)).not.toContain('TALARIA_APP_BUILDS_DIR')
+    // Only the exact keys: a longer name that starts the same rides.
+    expect(out.split('\n')).toContain('TALARIA_APP_DATA_DIRS_NOTE=not-this-one')
+    expect(out.split('\n')).toContain('TALARIA_SECRET_KEY=keep-exactly-this-root')
+    // With both gone, the box's own apps dir is what both readers derive them from.
+    expect(out.split('\n')).toContain('TALARIA_APPS_DIR=/phys/state/apps')
+  })
+
+  // UB1: the api has no .env loader, so a box's api sees a block line only if
+  // `talaria dev` lifts it (dev.ts API_ENV_VARS). Read from the api's own
+  // source: a block key any crate reads that the lift leaves out fails here.
+  test("every line of the box block the Rust api reads reaches the box's api", async () => {
+    const { apiEnv, API_ENV_KEYS } = await import('../dev')
+    const block = boxUiEnv('', { name: 'demo', state: '/phys/state', s3: { bucket: 'b', key: 'k', secret: 's' } })
+    const apiRoot = join(import.meta.dir, '../../../../api')
+    const sources: string[] = []
+    const walk = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.name === 'target' || e.name.startsWith('.')) continue
+        const p = join(dir, e.name)
+        if (e.isDirectory()) walk(p)
+        else if (e.name.endsWith('.rs')) sources.push(readFileSync(p, 'utf8'))
+      }
+    }
+    walk(apiRoot)
+    expect(sources.length).toBeGreaterThan(100)
+    // The box compose sets TALARIA_DEVBOX in the container's own environment,
+    // which the api inherits; ui/.env's copy is for `talaria dev`'s branch.
+    const fromCompose = new Set(['TALARIA_DEVBOX'])
+    const read = keysOf(block).filter((k) => sources.some((s) => s.includes(`"${k}"`)))
+    expect(read).toContain('TALARIA_AGENT_DIAL')
+    expect(read).toContain('TALARIA_FLEET_DIR')
+    for (const k of read) {
+      if (fromCompose.has(k)) continue
+      expect(API_ENV_KEYS).toContain(k)
+    }
+    // And the values the box's api then runs with are the block's.
+    const api = apiEnv({ TALARIA_DEVBOX: 'demo' }, block)
+    expect(api).toMatchObject({
+      TALARIA_AGENT_DIAL: 'container',
+      TALARIA_FLEET_DIR: '/phys/state/fleet',
+      TALARIA_APPS_DIR: '/phys/state/apps',
+      TALARIA_UPLOADS_DIR: '/phys/state/uploads',
+      TALARIA_MCP_GW_URL: 'http://devbox:5273/api/mcp/gw',
+      TALARIA_QDRANT_URL: 'http://qdrant:6333',
+      TALARIA_S3_URL: 'http://storage:9000',
+      TALARIA_S3_BUCKET: 'b',
+      TALARIA_S3_ACCESS_KEY: 'k',
+      TALARIA_S3_SECRET_KEY: 's',
+      TALARIA_EMBED_URL: 'http://talaria-embeddings-dev:80',
+    })
   })
 
   test("F19: TALARIA_EMBED_URL dials the primary's embeddings container as `box new` started it", () => {

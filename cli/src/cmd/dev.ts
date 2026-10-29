@@ -116,6 +116,19 @@ const API_ENV_VARS = [
   'TALARIA_OMP_AUTH_PORT',
   'TALARIA_GATEWAY_PORT_BASE',
   'TALARIA_APPS_LOCAL_SOURCES',
+  // A devbox's own block (box/new.ts boxBlock): every line of it the api
+  // reads. The last paragraph below says why.
+  'TALARIA_AGENT_DIAL',
+  'TALARIA_MCP_GW_URL',
+  'TALARIA_FLEET_DIR',
+  'TALARIA_APPS_DIR',
+  'TALARIA_UPLOADS_DIR',
+  'TALARIA_QDRANT_URL',
+  'TALARIA_EMBED_URL',
+  'TALARIA_S3_URL',
+  'TALARIA_S3_BUCKET',
+  'TALARIA_S3_ACCESS_KEY',
+  'TALARIA_S3_SECRET_KEY',
 ] as const
 
 /** The connection facts the Rust api reads, lifted out of ui/.env with the
@@ -168,7 +181,25 @@ const API_ENV_VARS = [
  *  TALARIA_APPS_LOCAL_SOURCES=1 lets the api install and update apps from a
  *  repository on this machine (file://, or http:// to loopback) — a dev
  *  stack's way to exercise the git install and update path without a
- *  remote. The api is the one that reads it, so ui/.env has to reach it. */
+ *  remote. The api is the one that reads it, so ui/.env has to reach it.
+ *
+ *  A devbox's block rides for the reason every line here does: the api has
+ *  no .env loader, and in a box nothing else hands those lines over. The box
+ *  compose's environment carries only TALARIA_DEVBOX and the app database
+ *  network, `box enter` sources nothing, and the devbox branch of runDev
+ *  skips the S3 lift the primary's compose call makes. So a box's api read
+ *  TALARIA_AGENT_DIAL as unset, published loopback ports for its agents and
+ *  dialled them on the box's own loopback. It took its fleet dir from its
+ *  cwd, /work/talaria/fleet, a path only the box container has: every bind
+ *  mount it rendered named a host path that did not exist, which the host's
+ *  daemon makes as an empty root-owned directory. It handed agents the
+ *  host's MCP gateway URL, and dialled qdrant, embeddings and object storage
+ *  on 127.0.0.1. `box/box.test.ts` pins every block key the api reads to
+ *  this list. The primary and a worktree write none of these lines but the
+ *  S3 pair, which their `talaria dev` already exports before the api starts,
+ *  so nothing changes there. */
+export const API_ENV_KEYS: readonly string[] = API_ENV_VARS
+
 export function apiEnv(shell: Record<string, string | undefined>, uiEnv: string): Record<string, string> {
   const env: Record<string, string> = {}
   for (const varName of API_ENV_VARS) {
