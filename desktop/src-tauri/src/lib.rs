@@ -23,6 +23,11 @@
 // pass is load-bearing: the initial Resized can arrive before ShellState
 // exists, and without a later set_bounds the launcher stays 1×1 and Wayland
 // never maps the undecorated window. Full story: docs/DESKTOP.md.
+//
+// Nothing in setup may stop the window from opening. An unreadable registry
+// or settings file, or a grant that fails, becomes a notice on the launcher;
+// an `Err` out of setup is a panic in Tauri and, from a .desktop launch, an
+// app that silently never appears.
 
 mod beacon;
 mod commands;
@@ -30,16 +35,38 @@ mod layout;
 mod notify;
 mod registry;
 mod settings;
-use std::{fs, path::PathBuf, sync::Mutex, time::Duration};
+use std::{fs, path::PathBuf, sync::Mutex};
 
+use serde::Serialize;
 use tauri::Manager;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum View {
     /// The launcher fills the window: brand, instance list, add.
     Welcome,
     /// The active instance fills the window; the launcher is hidden.
     Active,
+}
+
+/// An instance whose page failed to load (WebKit's `load-failed`, Linux). The
+/// launcher shows it with a retry until the next activation.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadFailure {
+    /// Increments per failure, so the launcher can tell a new one from one
+    /// the person already dismissed.
+    pub seq: u64,
+    pub id: String,
+    pub label: String,
+    pub message: String,
+}
+
+/// The add in flight: Cancel aborts its probe, so a cancelled add can never
+/// land in the registry after the dialog closed.
+pub struct AddAttempt {
+    pub seq: u64,
+    pub abort: tokio::task::AbortHandle,
 }
 
 pub struct ShellState {
@@ -51,6 +78,17 @@ pub struct ShellState {
     active: Mutex<Option<String>>,
     view: Mutex<View>,
     http: reqwest::Client,
+    /// What went wrong at startup, for the launcher to say.
+    notices: Mutex<Vec<String>>,
+    /// The instance to reopen at boot. Offered to the launcher until the
+    /// first view change, so a launcher reload never reopens it twice.
+    reopen: Mutex<Option<String>>,
+    failure: Mutex<Option<LoadFailure>>,
+    // Written by the WebKitGTK load-failed hook, which is Linux-only.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    failure_seq: std::sync::atomic::AtomicU64,
+    adding: Mutex<Option<AddAttempt>>,
+    add_seq: std::sync::atomic::AtomicU64,
 }
 
 impl ShellState {
@@ -62,6 +100,14 @@ impl ShellState {
             .find(|i| i.id == id)
             .cloned()
             .ok_or_else(|| format!("no such instance: {id}"))
+    }
+
+    /// Write the registry with the view the window shows now, so a relaunch
+    /// lands there.
+    fn persist(&self) -> Result<(), String> {
+        let instances = self.instances.lock().unwrap();
+        let active = self.active.lock().unwrap().clone();
+        registry::save(&self.registry_path, &instances, active.as_deref())
     }
 }
 
@@ -91,10 +137,15 @@ fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Resu
 /// runtime whose probe paths are empty. That error aborts setup, and a
 /// `.desktop` launch (`Terminal=false`) shows nothing. Mozilla's roots
 /// still verify the beacon.
+///
+/// Two bounds, not one: a short connect timeout so a black-holed address
+/// fails in seconds, and a longer total so a slow-but-alive instance is not
+/// refused (beacon.rs has the numbers and why).
 fn http_client() -> reqwest::Client {
     let build = || {
         reqwest::Client::builder()
-            .timeout(Duration::from_secs(8))
+            .connect_timeout(beacon::CONNECT_TIMEOUT)
+            .timeout(beacon::TOTAL_TIMEOUT)
             .redirect(reqwest::redirect::Policy::limited(3))
     };
     match build().build() {
@@ -123,23 +174,62 @@ pub fn run() {
             fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
             let registry_path = dir.join("instances.json");
             let settings_path = dir.join("settings.json");
-            let instances = registry::load(&registry_path)?;
-            let loaded_settings = settings::load(&settings_path)?;
-            for instance in &instances {
-                grant_switcher(app.handle(), instance)?;
+            let data_root = dir.join("instances");
+            let mut notices = Vec::new();
+
+            let loaded = registry::load(&registry_path);
+            notices.extend(loaded.notice.clone());
+            let (loaded_settings, settings_notice) = settings::load(&settings_path);
+            notices.extend(settings_notice);
+
+            for instance in &loaded.instances {
+                if let Err(e) = grant_switcher(app.handle(), instance) {
+                    eprintln!("talaria-desktop: {}: {e}", instance.url);
+                    notices.push(format!(
+                        "{} cannot use the in-app switcher this session ({e}); Ctrl+Shift+H still returns here",
+                        instance.label
+                    ));
+                }
+            }
+            // Only a registry that loaded as written can say which data dirs
+            // are orphans. A recovered one may have lost entries whose
+            // sessions are still on disk.
+            if loaded.trusted {
+                for dir in registry::sweep_orphans(&data_root, &loaded.instances) {
+                    eprintln!("talaria-desktop: removed orphaned {}", dir.display());
+                }
             }
             if let Some(window) = app.get_window("main") {
-                settings::apply(&window, loaded_settings.titlebar)?;
+                // tauri.conf.json's size and minimum, shrunk to the monitor
+                // when it is smaller.
+                if let Some(config) = app.config().app.windows.first() {
+                    let want = (config.width, config.height);
+                    let min = (
+                        config.min_width.unwrap_or(0.0),
+                        config.min_height.unwrap_or(0.0),
+                    );
+                    layout::fit_to_monitor(&window, want, min);
+                }
+                if let Err(e) = settings::apply(&window, loaded_settings.titlebar) {
+                    eprintln!("talaria-desktop: {e}");
+                }
             }
+            let reopen = loaded.resume.target(&loaded.instances);
             app.manage(ShellState {
                 registry_path,
                 settings_path,
-                data_root: dir.join("instances"),
-                instances: Mutex::new(instances),
+                data_root,
+                instances: Mutex::new(loaded.instances),
                 settings: Mutex::new(loaded_settings),
                 active: Mutex::new(None),
                 view: Mutex::new(View::Welcome),
                 http: http_client(),
+                notices: Mutex::new(notices),
+                reopen: Mutex::new(reopen),
+                failure: Mutex::new(None),
+                failure_seq: Default::default(),
+                adding: Mutex::new(None),
+                add_seq: Default::default(),
             });
             // After state exists, and after decorations (they change the
             // client rect). The initial Resized often already happened.
@@ -155,7 +245,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_instances,
+            commands::get_shell_state,
             commands::add_instance,
+            commands::cancel_add_instance,
+            commands::probe_instance,
             commands::activate_instance,
             commands::show_welcome,
             commands::remove_instance,
