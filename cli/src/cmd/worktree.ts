@@ -11,9 +11,8 @@ import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
 import { compose, waitForPostgres, worktreeComposeFiles } from '../compose'
 import { envValue } from '../envfile'
-import { PG_CONTAINER } from '../containers'
 import { NAME_RE, portTaken } from '../paths'
-import { worktreeStackNames } from '../stack'
+import { containerProject, primaryContainer, refuseSideStackContainers, worktreeStackNames } from '../stack'
 
 /** The shared port slot: first c in 1..89 with app/api/pg/redis
  *  (53xx/54xx/56xx/65xx) all free, so any number of worktrees run at once
@@ -204,25 +203,6 @@ export async function tableCount(ctx: Ctx, pgc: string): Promise<number | null> 
   }
 }
 
-/** The compose project a container was started under: '' for none, null when
- *  docker does not know the container. */
-export async function composeProjectOf(ctx: Ctx, container: string): Promise<string | null> {
-  try {
-    const out = (
-      await ctx.exec('docker', ['inspect', '-f', '{{index .Config.Labels "com.docker.compose.project"}}', container])
-    ).stdout.trim()
-    return out === '<no value>' ? '' : out
-  } catch {
-    return null
-  }
-}
-
-/** A compose project that is some other stack's, never main's: a worktree's
- *  (`talaria-wt-*`, its fleet too) or a box's (`devbox-*`). */
-export function isSideStack(project: string): boolean {
-  return project.startsWith('talaria-wt-') || project.startsWith('devbox-')
-}
-
 /** Clears the gateway ports a seed copied from main (see the seed step). */
 export const CLEAR_SEEDED_GATEWAY_PORTS =
   "do $$ begin if to_regclass('public.agent_defs') is not null then " +
@@ -247,23 +227,20 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   if (!existsSync(join(root, 'ui/.env'))) {
     ctx.log.die('run `bun talaria setup` in the main checkout first (need ui/.env)')
   }
-  const mainPgc = ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER
-  const mainProject = await composeProjectOf(ctx, mainPgc)
-  if (mainProject === null) ctx.log.die(`main Postgres (${mainPgc}) isn't running — start the main stack first`)
   // The seed reads whatever TALARIA_PG_CONTAINER names, and `talaria dev` in
   // a worktree sets exactly that variable to the worktree's own Postgres — in
   // its own process, which every child inherits: the app, its harness runs,
   // and any shell they open. A `talaria worktree` run from there copied that
   // worktree's database and called it "a point-in-time copy of main". The
   // variable stays an operator's override for main's container; one that
-  // names another stack's is refused, before anything exists (R22).
-  if (isSideStack(mainProject)) {
-    ctx.log.die(
-      `TALARIA_PG_CONTAINER=${mainPgc} is the Postgres of compose project ${mainProject}, not main's, ` +
-        `so the seed would copy that stack instead of main. This shell most likely inherited it from that ` +
-        `stack's \`talaria dev\`. Run it without: env -u TALARIA_PG_CONTAINER bun talaria worktree ${name}`,
-    )
-  }
+  // names another stack's, by its name's shape or by the compose project
+  // docker puts it in, is refused before anything exists (R22). The same
+  // predicate `box new`, `box seed` and the primary's `talaria dev` use
+  // (stack.ts), so the commands that read main's containers cannot disagree
+  // about which one is main's.
+  await refuseSideStackContainers(ctx, ['TALARIA_PG_CONTAINER'], `worktree ${name}`)
+  const mainPgc = primaryContainer(ctx, 'TALARIA_PG_CONTAINER')
+  if ((await containerProject(ctx, mainPgc)) === null) ctx.log.die(`main Postgres (${mainPgc}) isn't running — start the main stack first`)
   // `inspect` only proves the CONTAINER exists. The seed below runs pg_dump
   // against the `talaria` DATABASE, and a just-started postgres has not created
   // it yet (the image's entrypoint does that during init), so a worktree
