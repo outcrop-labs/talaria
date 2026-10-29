@@ -5,6 +5,7 @@
   import Radio from '@/components/ui/Radio.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import { anyFailed, anyLoading } from '@/components/ui/query-state'
   import type { Board } from '@/lib/boards.svelte'
   import { listStagger } from '@/lib/motion'
   import { setBoardTemplates, useBoardTemplates, useTemplates } from '@/lib/templates'
@@ -22,12 +23,11 @@
   const bindingsQuery = useBoardTemplates(() => board.id)
   const templates = $derived(templatesQuery.data ?? [])
   const bindings = $derived(bindingsQuery.data ?? [])
-  const templatesLoading = $derived(templatesQuery.isLoading)
-  const bindingsLoading = $derived(bindingsQuery.isLoading)
-  const templatesFailed = $derived(
-    (templatesQuery.isError && templatesQuery.data === undefined) ||
-      (bindingsQuery.isError && bindingsQuery.data === undefined),
-  )
+  // Both reads gate the section: every flag of both is read before they are
+  // combined (query-state.ts, anyLoading), or the bindings answering first
+  // left it on its skeleton for good.
+  const templatesFailed = $derived(anyFailed(templatesQuery, bindingsQuery))
+  const templatesLoading = $derived(anyLoading(templatesQuery, bindingsQuery))
   const ticketTemplates = $derived(templates.filter((t) => t.kind === 'ticket'))
   const bound = $derived(new Set(bindings.map((b) => b.templateId)))
   const defaultId = $derived(bindings.find((b) => b.isDefault)?.templateId ?? null)
@@ -62,7 +62,7 @@
         void bindingsQuery.refetch()
       }}
     />
-  {:else if templatesLoading || bindingsLoading}
+  {:else if templatesLoading}
     <SkeletonRows rows={3} class="rounded-lg border border-line p-2" />
   {:else if ticketTemplates.length === 0}
     <div class="font-sans text-xs text-muted">No ticket templates in the library yet. Create one to templatize this board's tickets.</div>

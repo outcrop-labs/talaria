@@ -1,5 +1,6 @@
 <script lang="ts">
   import QueryError from '@/components/ui/QueryError.svelte'
+  import { anyError } from '@/components/ui/query-state'
 
   // The one banner the board lenses show when a REFERENCE read — the status
   // set behind the columns, the labels behind the pills — failed while the
@@ -49,7 +50,7 @@
   )
 </script>
 
-{#if statuses.isError || labels?.isError}
+{#if anyError(statuses, labels)}
   <QueryError
     variant="inline"
     class="border-b border-line-subtle px-4 py-2"
