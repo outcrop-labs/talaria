@@ -123,7 +123,10 @@ failure sentence until you dismiss it.
 Start, stop, restart, retire and re-hire wait up to three and a half minutes for docker. When
 docker is slower than that (an image pull, a starved disk), the control stops waiting but the
 action goes on, and the row says so — *still stopping*, *still starting* and so on — until the
-roster shows the agent in its new state.
+roster shows the agent in its new state. A control that is refused (the agent is mid-roll, is not
+running, or shares its department with an older agent; you no longer manage it) or that fails says
+so in a notice, with the reason; one docker has not confirmed yet reads *not confirmed yet*, since
+it may still land.
 
 ### Config
 
