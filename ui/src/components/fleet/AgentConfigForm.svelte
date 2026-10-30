@@ -12,7 +12,7 @@
   import { fade, listStagger, slide } from '@/lib/motion'
   import { pushToast } from '@/lib/toast.svelte'
   import { COMPACTION_BOUNDS, editNotApplied, editStillApplying, saveAgentEdit, type AgentDef, type LlmEndpoint, type ModelTarget, type UnappliedVersion } from '@/lib/fleet-defs'
-  import { noteStillWorking } from '@/routes/app/agents.svelte'
+  import { noteStillApplying } from '@/routes/app/agents.svelte'
 
   type AliasRow = ModelTarget & { name: string }
 
@@ -64,12 +64,14 @@
   // proxy used to cut this request off at 300 s with a 502 for a save that
   // had landed.
   let stillApplying = $state<string | null>(null)
-  const settle = (r: { version?: number; created?: boolean; applied?: boolean; inEffect?: boolean; warning?: string; pending?: boolean }) => {
+  // `sentAt`: when the save's request went out, taken before the call, so
+  // the roster's note reads only a roll that began after it as this apply's.
+  const settle = (r: { version?: number; created?: boolean; applied?: boolean; inEffect?: boolean; warning?: string; pending?: boolean }, sentAt: number) => {
     stillApplying = editStillApplying(r)
     if (stillApplying) {
       unapplied = null
       notApplied = null
-      noteStillWorking(def.id, 'apply')
+      noteStillApplying(def.id, sentAt)
       return stillApplying
     }
     notApplied = editNotApplied(r, unapplied)
@@ -101,6 +103,7 @@
       return
     }
     busy = apply ? 'apply' : 'save'
+    const sentAt = Date.now()
     try {
       const r = await saveAgentEdit(def.id, {
         soul,
@@ -129,7 +132,7 @@
       await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
       // Only an apply speaks to whether a version is running: a plain Save
       // version answers no warning, and closes as it always did.
-      if (apply && settle(r)) return
+      if (apply && settle(r, sentAt)) return
       onSaved?.()
     } finally {
       busy = false
@@ -252,6 +255,7 @@
           // Soul-only publish: model targets come from the LAST SAVED
           // version, not the form — pending model edits stay drafts.
           const base = def.latest?.config
+          const sentAt = Date.now()
           const r = await saveAgentEdit(def.id, {
             soul: md,
             main: base?.main ?? main,
@@ -265,7 +269,7 @@
           // The workspace stays open over the form, so a soul that saved but
           // did not apply is said where the person is looking, and again in
           // the form for when they close it.
-          if (settle(r)) {
+          if (settle(r, sentAt)) {
             pushToast(
               stillApplying
                 ? { title: `${def.displayName} · soul saved, still applying`, body: stillApplying }

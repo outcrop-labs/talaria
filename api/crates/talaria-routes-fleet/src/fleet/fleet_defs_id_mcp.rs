@@ -44,7 +44,7 @@ use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_agent_manager, require_agent_reader, secretbox_or_500};
 use talaria_state::AppState;
 
-use super::fleet_defs_id_edit::{BoundedApply, bounded_apply};
+use super::fleet_defs_id_edit::{BoundedApply, bounded_apply, bounded_render};
 
 /// The def columns this route reads.
 struct Def {
@@ -565,7 +565,15 @@ pub async fn post(
     };
     if let Some(runner) = &runs_instead {
         let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
-        let _ = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb).await;
+        // Bounded like the apply below (`bounded_render`): the change is
+        // written, and the answer does not wait on a render past the bound.
+        bounded_render(
+            &state,
+            sb,
+            ANSWER_WITHIN.saturating_sub(started.elapsed()),
+            "[fleet/defs/mcp]",
+        )
+        .await;
         warning = Some(talaria_agent_defs::shared_department_refusal(
             "roll",
             &def.display_name,
@@ -599,9 +607,16 @@ pub async fn post(
             BoundedApply::StillApplying => pending = true,
         }
     } else if touched_registry || created {
-        // Not applying: still re-render so the next start carries the change.
+        // Not applying: still re-render so the next start carries the change,
+        // within the same bound (`bounded_render`).
         let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
-        let _ = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb).await;
+        bounded_render(
+            &state,
+            sb,
+            ANSWER_WITHIN.saturating_sub(started.elapsed()),
+            "[fleet/defs/mcp]",
+        )
+        .await;
     }
     let mut out = Map::new();
     out.insert("ok".into(), json!(true));

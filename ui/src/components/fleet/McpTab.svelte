@@ -16,7 +16,7 @@
   import type { AgentDef } from '@/lib/fleet-defs'
   import { listStagger } from '@/lib/motion'
   import { pushToast, toastError } from '@/lib/toast.svelte'
-  import { noteStillWorking } from '@/routes/app/agents.svelte'
+  import { noteStillApplying } from '@/routes/app/agents.svelte'
   import { p } from '@/router'
   import McpAddServerModal from '@/routes/app/McpAddServerModal.svelte'
   import McpMarketplaceModal from '@/routes/app/McpMarketplaceModal.svelte'
@@ -87,6 +87,9 @@
 
   const edit = async (body: { assign?: Array<{ serverId: string; tools: string[] | null }>; unassign?: string[]; removeLegacy?: string[] }) => {
     busy = true
+    // Before the call: the roster's note reads only a roll that began after
+    // the request went out as this change's.
+    const sentAt = Date.now()
     try {
       const r = await postJson<{ ok: true; applied: boolean; warning?: string; pending?: boolean }>(`/api/fleet/defs/${def.id}/mcp`, body)
       if (r.warning) toastError('Applied to the config; the roll did not finish', new Error(r.warning))
@@ -94,7 +97,7 @@
       // still going when the route stopped waiting. It goes on — never a
       // failure — and the roster notes the agent `still applying`.
       if (r.pending) {
-        noteStillWorking(def.id, 'apply')
+        noteStillApplying(def.id, sentAt)
         pushToast({
           title: `${def.displayName} · MCP change saved, still applying`,
           body: 'Applying it is taking longer than this tab waits (a roll’s recreate and health check), and it goes on: the roster shows the agent when it lands.',

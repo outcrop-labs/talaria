@@ -10,6 +10,7 @@ vi.mock('@/lib/session', () => ({ useSession: vi.fn() }))
 
 import {
   controlAnswerToast,
+  noteStillApplying,
   noteStillWorking,
   settleStillWorking,
   STILL_WORKING_LABEL,
@@ -116,6 +117,28 @@ describe('a saved change whose apply is still going on', () => {
     expect(stillWorkingArrived(w, d, box('exited'), at + 1_000, row('failed', at - 200_000))).toBe(true)
     // An older roll's row says nothing of this apply: the bounce rule decides.
     expect(stillWorkingArrived(w, d, box('running', 'healthy'), at + 1_000, row('done', at - 900_000))).toBe(false)
+  })
+
+  // A roll that ended just before the Save & apply is not this apply's:
+  // its row's `since` is before the request went out. Only a roll that
+  // began after the send (with the server's clock a little behind the
+  // browser's) is read as the apply's verdict.
+  it('reads only a roll that began after its request went out', () => {
+    const sentAt = 2_000_000_000
+    const at = sentAt + 212_000 // the 202, at the route's bound
+    noteStillApplying('p3', sentAt, at)
+    const d = def({ id: 'p3' })
+    const w = stillWorkingOf('p3')!
+    expect(w.sentAt).toBe(sentAt)
+    // Done 30 s before the save: an older roll, whatever the 300 s window
+    // would have said.
+    expect(stillWorkingArrived(w, d, box('running', 'healthy'), at + 1_000, row('done', sentAt - 90_000))).toBe(false)
+    expect(stillWorkingArrived(w, d, box('running', 'healthy'), at + 1_000, row('failed', sentAt - 30_000))).toBe(false)
+    // Began after the send: this apply's roll.
+    expect(stillWorkingArrived(w, d, box('running', 'healthy'), at + 1_000, row('done', sentAt + 40_000))).toBe(true)
+    expect(stillWorkingArrived(w, d, box('running', 'starting'), at + 1_000, row('rolling', sentAt + 40_000))).toBe(false)
+    // A server clock a few seconds behind the browser's still reads as it.
+    expect(stillWorkingArrived(w, d, box('running', 'healthy'), at + 1_000, row('done', sentAt - 5_000))).toBe(true)
   })
 
   it('without the roll picture, holds through the bounce until the agent is healthy again', () => {

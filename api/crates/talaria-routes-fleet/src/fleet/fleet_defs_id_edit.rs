@@ -424,6 +424,23 @@ pub async fn post(
             }
             return Ok(Json(out).into_response());
         }
+        // This apply can recreate the agent's container, as the Roll it
+        // stands in for does, and no `agent.edit` is written for it (no
+        // version was made): audited here, before the act, as the control
+        // route audits a roll, so the trail says who put the version on.
+        log_audit(
+            &state.pg,
+            AuditEntry {
+                actor: &actor_of(&user),
+                action: "agent.apply",
+                target_type: "agent",
+                target_id: Some(&def_id),
+                target_label: Some(&display_name),
+                before: None,
+                after: Some(json!({ "version": version, "reapply": true })),
+            },
+        )
+        .await;
     }
     if created && apply && managed {
         // ONE CONTAINER PER DEPARTMENT. The apply below reaches the container
@@ -625,6 +642,41 @@ pub(crate) async fn bounded_apply(
             );
             BoundedApply::StillApplying
         }
+    }
+}
+
+/// Re-render the fleet on a task of its own, waiting at most `within`: a
+/// change saved without an apply, rendered so the agent's next start carries
+/// it, or one an older agent's share of the department keeps from applying.
+/// The caller's answer does not depend on the render (the change is written,
+/// and every start renders again), so past the bound the request answers and
+/// the render goes on. Awaited with no bound, a render that took minutes
+/// under heavy IO could pass the app proxy's 300 s, which answers a 502 for
+/// a change that was written. The render's own failure is logged here,
+/// because nobody else hears it.
+pub(crate) async fn bounded_render(
+    state: &AppState,
+    sb: talaria_secretbox::SecretBox,
+    within: std::time::Duration,
+    route: &'static str,
+) {
+    let pg = state.pg.clone();
+    let began = std::time::Instant::now();
+    let op = async move {
+        if let Err(e) = talaria_api_facades::fleet::render::render_fleet(&pg, &sb).await {
+            tracing::warn!(
+                "{route} render failed ({}s): {e}",
+                began.elapsed().as_secs()
+            );
+        }
+    };
+    match run_detached(op, within).await {
+        Detached::Settled(()) => {}
+        Detached::Lost(why) => tracing::warn!("{route} the render's task failed: {why}"),
+        Detached::StillRunning => tracing::warn!(
+            "{route} render still running after {}s — answering; it goes on, and logs a failure if it has one",
+            began.elapsed().as_secs()
+        ),
     }
 }
 

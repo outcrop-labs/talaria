@@ -72,6 +72,8 @@ export interface StillWorking {
   action: StillWorkingAction
   /** Epoch ms of the 202. */
   since: number
+  /** An apply's: epoch ms its request was sent (`noteStillApplying`). */
+  sentAt?: number
   /** A restart's (or an apply's roll's) agent seen down or warming since —
    *  its bounce, so the next reading is the new container, not the one
    *  before it. */
@@ -101,10 +103,16 @@ export const STILL_WORKING_LABEL: Record<StillWorkingAction, string> = {
   apply: 'still applying',
 }
 
-/** How long before its 202 an apply's roll can have started: the route's
- *  bound (210 s) with a margin. A roll row that started earlier is an older
- *  roll's, not this apply's. */
+/** For an apply noted without its send time: how long before its 202 its
+ *  roll can have started, the route's bound (210 s) with a margin. */
 const APPLY_ROLL_WINDOW_MS = 300_000
+
+/** The roll picture's `since` is the server's clock and `sentAt` the
+ *  browser's: a roll this apply started reads as up to this much before the
+ *  send on a skewed clock. A roll that started earlier still, and has a
+ *  verdict, is an older roll's (its drain, stop, recreate and health check
+ *  take longer than this). */
+const APPLY_CLOCK_SKEW_MS = 15_000
 
 /** Whether the roster now shows what a pending verb was for. `roll` is the
  *  agent's row in the roll picture, when the viewer sees it (admins). */
@@ -120,10 +128,12 @@ export function stillWorkingArrived(
   switch (w.action) {
     case 'apply':
       // The apply's roll has its verdict on the roll picture: done, failed
-      // or idle, for a roll that began in this apply's window. Without the
-      // picture: the agent bounced and is healthy again. An apply that ends
-      // in place never bounces, and the note gives up at the cap.
-      if (roll?.since != null && roll.since >= w.since - APPLY_ROLL_WINDOW_MS) return roll.state !== 'rolling'
+      // or idle, for a roll that began once its request was sent. A roll
+      // row from before the send is an older roll's, and its verdict is not
+      // this apply's. Without the picture: the agent bounced and is healthy
+      // again. An apply that ends in place never bounces, and the note gives
+      // up at the cap.
+      if (roll?.since != null && roll.since >= applySince(w)) return roll.state !== 'rolling'
       return w.bounced && health === 'up'
     case 'up':
     case 'unretire':
@@ -139,10 +149,22 @@ export function stillWorkingArrived(
   }
 }
 
+/** The earliest `since` a roll row can carry and be an apply's own. */
+function applySince(w: StillWorking): number {
+  return w.sentAt != null ? w.sentAt - APPLY_CLOCK_SKEW_MS : w.since - APPLY_ROLL_WINDOW_MS
+}
+
 /** Note a verb the route answered 202 for: `state` is the container as the
  *  202 described it (a restart already caught down has bounced). */
 export function noteStillWorking(id: string, action: StillWorkingAction, state?: string, now = Date.now()): void {
   stillWorkingById[id] = { action, since: now, bounced: state !== undefined && state !== 'running' }
+}
+
+/** Note a saved change whose apply the route answered 202 for: `sentAt` is
+ *  when its request was sent (taken before the call), so a roll that ended
+ *  just before the save cannot read as this apply's verdict. */
+export function noteStillApplying(id: string, sentAt: number, now = Date.now()): void {
+  stillWorkingById[id] = { action: 'apply', since: now, bounced: false, sentAt }
 }
 
 /** Fold the roster's latest reading into an agent's note: a restart's bounce
