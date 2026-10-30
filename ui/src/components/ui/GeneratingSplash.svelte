@@ -44,7 +44,9 @@
      flex) so the DitherLayer canvas below the centre line stays symmetric
      about the status row. -->
 <div class={cn('relative flex min-h-72 items-center justify-center overflow-hidden rounded-lg', className)}>
-  <DitherLayer sources={splashSources} alphaFloor={0.03} maxAlpha={0.32} />
+  <!-- Alphas tuned to the look the splash had while its dots built up (N11):
+       see LIVE_FIELD_TUNING in lib/dither-engine.ts. -->
+  <DitherLayer sources={splashSources} alphaFloor={0.375} maxAlpha={0.5} />
   <div class="relative flex items-center gap-2 px-4 font-sans text-sm text-muted">
     <WaitingMark {site} class="text-accent" />
     <span role="status">{text}</span>
