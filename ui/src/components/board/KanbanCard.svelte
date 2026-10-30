@@ -107,15 +107,18 @@
   >
   {#if session || wait}
     <div class="pointer-events-none absolute inset-0 z-[5]" aria-hidden="true">
+      <!-- Tuned to the weight this wash carried a few seconds in, when the
+           engine still let its dots build up (N11, round 7): see
+           LIVE_FIELD_TUNING in lib/dither-engine.ts. -->
       <DitherLayer
         sources={[
-          { id: 'lull', kind: 'edge', side: 'top', depth: 34, strength: 0.16 },
-          { id: 'drift', kind: 'wave', axis: 'x', wavelength: 200, speed: 12, strength: 0.3 },
+          { id: 'lull', kind: 'edge', side: 'top', depth: 34, strength: 0.18 },
+          { id: 'drift', kind: 'wave', axis: 'x', wavelength: 200, speed: 12, strength: 0.35 },
         ]}
         pitch={4}
-        dot={1.4}
-        alphaFloor={0.04}
-        maxAlpha={0.26}
+        dot={2}
+        alphaFloor={0.18}
+        maxAlpha={0.45}
       />
     </div>
     <!-- The trace: while a session is LIVE, the same field the wash renders
@@ -125,13 +128,13 @@
     {#if session}
       <DitherBorder
         sources={[
-          { id: 'trace', kind: 'edge', side: 'top', depth: 30, strength: 0.22 },
-          { id: 'trace-drift', kind: 'wave', axis: 'x', wavelength: 200, speed: 12, strength: 0.5 },
+          { id: 'trace', kind: 'edge', side: 'top', depth: 30, strength: 0.4 },
+          { id: 'trace-drift', kind: 'wave', axis: 'x', wavelength: 200, speed: 12, strength: 0.9 },
         ]}
         pitch={4}
-        dot={1.4}
-        alphaFloor={0.06}
-        maxAlpha={0.5}
+        dot={2}
+        alphaFloor={0.13}
+        maxAlpha={0.85}
       />
     {/if}
     {#if wait}

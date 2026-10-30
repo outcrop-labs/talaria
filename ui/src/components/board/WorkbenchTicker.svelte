@@ -47,15 +47,17 @@
 
 {#if live || wait}
   <div class="relative overflow-hidden rounded-lg border border-line">
+    <!-- Tuned to its built-up weight of a few seconds in (N11, round 7): see
+         LIVE_FIELD_TUNING in lib/dither-engine.ts. -->
     <DitherLayer
       sources={[
-        { id: 'lull', kind: 'edge', side: 'top', depth: 30, strength: 0.14 },
-        { id: 'drift', kind: 'wave', axis: 'x', wavelength: 190, speed: 16, strength: 0.34 },
+        { id: 'lull', kind: 'edge', side: 'top', depth: 30, strength: 0.175 },
+        { id: 'drift', kind: 'wave', axis: 'x', wavelength: 190, speed: 16, strength: 0.43 },
       ]}
       pitch={4}
-      dot={1.4}
-      alphaFloor={0.04}
-      maxAlpha={0.3}
+      dot={2}
+      alphaFloor={0.11}
+      maxAlpha={0.75}
     />
     <div class="relative flex flex-wrap items-center gap-2 px-3 py-2">
       <WaitingMark site="ticket/work-watch" class="text-accent" size={13} />

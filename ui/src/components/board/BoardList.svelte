@@ -542,18 +542,21 @@
                           <!-- The trace: the strip's own field masked to a
                                hairline ring while a session is LIVE —
                                additive with the wash, same z, under the
-                               row's controls. -->
+                               row's controls. Both are tuned to their
+                               built-up weight of a few seconds in (N11,
+                               round 7): see LIVE_FIELD_TUNING in
+                               lib/dither-engine.ts. -->
                           {#if working(t.id)}
                             <DitherBorder
                               radius="rounded-md"
                               sources={[
-                                { id: 'trace', kind: 'edge', side: 'left', depth: 22, strength: 0.3 },
-                                { id: 'trace-drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.6 },
+                                { id: 'trace', kind: 'edge', side: 'left', depth: 22, strength: 0.45 },
+                                { id: 'trace-drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.9 },
                               ]}
                               pitch={3}
-                              dot={1.2}
-                              alphaFloor={0.08}
-                              maxAlpha={0.55}
+                              dot={2}
+                              alphaFloor={0.13}
+                              maxAlpha={0.85}
                             />
                           {/if}
                           <DitherLayer
@@ -562,9 +565,9 @@
                               { id: 'drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.5 },
                             ]}
                             pitch={3}
-                            dot={1.2}
-                            alphaFloor={0.06}
-                            maxAlpha={0.4}
+                            dot={2}
+                            alphaFloor={0.11}
+                            maxAlpha={0.9}
                           />
                           <div class="relative flex min-w-0 flex-1 items-center gap-2">
                             {#if working(t.id)}
