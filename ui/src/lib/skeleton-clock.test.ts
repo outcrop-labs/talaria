@@ -9,7 +9,9 @@ import { PITCH, attachSkeletonField, passesBayer, staticDensity, tickBucket } fr
 // These run the clock and a skeleton against a virtual 60 Hz display: frames
 // at each vsync, timers firing on time before the frame they precede.
 
-const VSYNC = 1000 / 60
+let VSYNC = 1000 / 60
+/** How late every timer fires, in ms: a busy main thread. */
+let LATE = 0
 let now = 0
 let nextVsync = 0
 let rafs = new Map<number, (t: number) => void>()
@@ -42,6 +44,8 @@ const GLOBALS = ['performance', 'requestAnimationFrame', 'cancelAnimationFrame',
 
 beforeEach(() => {
   for (const k of GLOBALS) saved[k] = (globalThis as Record<string, unknown>)[k]
+  VSYNC = 1000 / 60
+  LATE = 0
   now = 1000
   nextVsync = Math.ceil(now / VSYNC) * VSYNC
   rafs = new Map()
@@ -55,7 +59,7 @@ beforeEach(() => {
     },
     cancelAnimationFrame: (id: number) => rafs.delete(id),
     setTimeout: (cb: () => void, ms = 0) => {
-      timers.push({ id: ++seq, at: now + Math.max(0, ms), cb })
+      timers.push({ id: ++seq, at: now + Math.max(0, ms) + LATE, cb })
       return seq
     },
     clearTimeout: (id: number) => {
@@ -186,4 +190,48 @@ test('a loading skeleton paints once per 8 Hz bucket, the dots its bucket calls 
   }
   assert.equal(dots.length, lit)
   assert.ok(dots.every((d) => d.op === 'fill' && /^rgba\(231,226,219,0\.\d+\)$/.test(d.style!)))
+})
+
+// The same frames at other refresh rates, and with timers firing late, up to
+// the clock's one-frame lead (a later timer lands a frame late, as a stall
+// that long delays an every-frame loop too).
+for (const [hz, late] of [[30, 0], [120, 0], [144, 0], [60, 5], [60, 12], [120, 6]] as const) {
+  test(`a periodic subscriber picks the every-frame loop's frames at ${hz} Hz, timers ${late} ms late`, () => {
+    VSYNC = 1000 / hz
+    LATE = late
+    const run = (every: number) => {
+      now = 1000
+      nextVsync = Math.ceil(now / VSYNC) * VSYNC
+      rafs = new Map()
+      timers = []
+      rafRuns = 0
+      const seen: number[] = []
+      let last = 0
+      let f = 0
+      const off = subscribeToClock((elapsed) => {
+        const b = tickBucket(elapsed)
+        if (b !== last) seen.push(f)
+        last = b
+      }, every)
+      for (f = 0; f < hz * 3; f++) frame()
+      off()
+      return { seen, frames: rafRuns }
+    }
+    const reference = run(0)
+    const periodic = run(125)
+    assert.deepEqual(periodic.seen, reference.seen)
+    assert.ok(periodic.frames < reference.frames / 2, `${periodic.frames} of ${reference.frames} frames`)
+  })
+}
+
+test('the last subscriber unsubscribing inside its own callback leaves nothing pending', () => {
+  let n = 0
+  let off: () => void = () => {}
+  off = subscribeToClock(() => {
+    n++
+    if (n === 3) off()
+  })
+  for (let f = 0; f < 10; f++) frame()
+  assert.equal(n, 3)
+  assert.equal(rafs.size + timers.length, 0, 'no orphaned frame loop')
 })

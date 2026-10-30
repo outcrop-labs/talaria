@@ -160,37 +160,38 @@ export interface DitherEngineOptions {
    * Only the cells within this many CSS px of the canvas edge can show: the
    * caller hides the rest (DitherBorder's ring mask shows 2 px). 0 (default)
    * is the whole canvas. A cell entirely inside the band's inner edge is never
-   * evaluated or drawn, so a ring costs its perimeter, not its area. Pass at
-   * least the visible width plus a dot, so every dot that can show is drawn.
+   * evaluated or drawn, so a ring costs its perimeter, not its area. Pass the
+   * visible width; the engine adds two device pixels of slack, as it does for
+   * a mask.
    */
   edgeBand?: number
 }
 
-/* LIVE_FIELD_TUNING — why five live fields carry heavier numbers than their
- * siblings (#624's N11, round 7).
+/* LIVE_FIELD_TUNING — why the live fields' call sites carry heavier numbers
+ * than they were designed with (#624's N11, round 7).
  *
  * Until `drawChanged` erased whole device pixels, a live field built up: every
- * rewrite of a dot left ink in the pixels its fill half covered. In Chromium
- * that ink only grows (it rounds the erase to whole pixels and skips them), so
- * a working card held about 6x its own alpha after five seconds and 28x after
- * a minute; WebKit settles at 2 to 4x within seconds. The owner asked for the
- * fix without losing the look people had been seeing, so the fields that
- * built up at the usual HiDPI positions in Chromium were re-tuned to carry,
- * from their first frame, the ink and the visible-dot area they had there
- * between 4 and 6 seconds in: a dot of 2 px (the footprint the build-up grew
- * a 1.4 or 1.2 px dot into), with alpha and strength fitted to match.
+ * rewrite of a dot left ink in the device pixels its fill half covered. How
+ * much depended on everything — the engine (Chromium never stops adding,
+ * WebKit settles at 2 to 4x), the DPR and the canvas's sub-pixel position (a
+ * dot on whole device pixels builds nothing) — so people saw anything from
+ * the designed look to a solid slab.
  *
- *   field (call site)                  dot      alphaFloor  maxAlpha  strengths
- *   card wash (KanbanCard)             1.4 → 2  .04 → .18   .26 → .45  .16/.30 → .18/.35
- *   card trace (KanbanCard)            1.4 → 2  .06 → .13   .50 → .85  .22/.50 → .40/.90
- *   ticket strip (WorkbenchTicker)     1.4 → 2  .04 → .11   .30 → .75  .14/.34 → .175/.43
- *   list strip wash (BoardList)        1.2 → 2  .06 → .11   .40 → .90  unchanged
- *   list strip trace (BoardList)       1.2 → 2  .08 → .13   .55 → .85  .30/.60 → .45/.90
- *
- * The pitch-2 live fields (generating blocks, the design splash, the stream
- * tail, drafting ghosts) and every idle field kept their numbers: at those
- * positions their dots already sit on whole device pixels, so they never built
- * up there and the correct render is the look they had.
+ * The owner asked for the fix without the UI going faint. So each live field
+ * (the card wash and trace, the ticket strip, the list strip's wash and trace,
+ * generating blocks, the design splash, the stream tail, drafting ghosts) is
+ * tuned to the MEDIAN of that look, 4 to 6 s after mount, over 8 sub-pixel
+ * positions at DPR 1, 1.5 and 2 in Chromium and WebKitGTK: about 2 to 3 times
+ * its designed ink. Each matches that median's ink and visible-dot area, and
+ * the spread of dots across a wave's crest, shoulders and troughs, within 10
+ * to 20% (the drafting ghost reaches three quarters of its ink: at the house
+ * grain its paths saturate first); a wash that meets text puts no more weight
+ * over it than that median did. The dot keeps its designed size, the finest
+ * that reaches the weight — the build-up's look was a fringe, not a bigger
+ * dot — and where the build-up had left an even scatter between crests, a
+ * faint uniform `grain` source carries it. The numbers live at the call
+ * sites; the method and the measurements are in #633. Idle fields keep their
+ * designed numbers: they never built up past their entrance.
  */
 
 /* ── Bayer 8×8 ─────────────────────────────────────────────────────────── */
@@ -490,7 +491,10 @@ export class DitherEngine {
   // The cells a frame rewrites, collected before any of them is drawn (see `paint`).
   private changed: Int32Array | null = null
   // Which cells can show at all (see `cellsThatShow`), or null for every one.
+  // Recomputed whenever `invalidate` has cleared it: geometry, the mask and
+  // the band only change through there.
   private shows: Uint8Array | null = null
+  private showsValid = false
   private styles = new Map<number, string>()
   private cacheDirty = true
   private drew = false
@@ -678,6 +682,8 @@ export class DitherEngine {
   private invalidate(): void {
     this.cacheDirty = true
     this.painted = null
+    this.shows = null
+    this.showsValid = false
   }
 
   /** Where an in-flight tween currently sits — retargeting starts from here,
@@ -836,9 +842,13 @@ export class DitherEngine {
     let changed = this.changed
     if (!changed || changed.length !== cells) changed = this.changed = new Int32Array(cells)
     let nChanged = 0
-    // Geometry, the mask and the band only change through `invalidate`, which
-    // makes this a fresh frame.
-    if (fresh || (this.shows !== null && this.shows.length !== cells)) this.shows = this.cellsThatShow(cols, rows, size, off)
+    // Computed on the first frame that draws after an `invalidate` — not only
+    // on a fresh one: a fade-in's first frame can return early with nothing
+    // to draw, and the frames after it are not fresh.
+    if (!this.showsValid || (this.shows !== null && this.shows.length !== cells)) {
+      this.shows = this.cellsThatShow(cols, rows, size, off)
+      this.showsValid = true
+    }
     const shows = this.shows
 
     for (let cy = 0; cy < rows; cy++) {
@@ -975,7 +985,10 @@ export class DitherEngine {
         const x0 = cx * pitch - this.fx + off
         const x1 = x0 + size
         let ok = true
-        if (band > 0) ok = x0 < band || y0 < band || x1 > this.wCss - band || y1 > this.hCss - band
+        if (band > 0) {
+          const b = band + slack
+          ok = x0 < b || y0 < b || x1 > this.wCss - b || y1 > this.hCss - b
+        }
         if (ok && mask && mask.length > 0) {
           ok = false
           for (const r of mask) {
@@ -1028,9 +1041,10 @@ export class DitherEngine {
    * filled inside the clip, as a full rebuild fills them.
    *
    * That is exact whenever no two dots share a device pixel, which holds when
-   * the gap between them is at least one device pixel: every live and idle
-   * field in the product (pitch 2 / dot 1, 3 / 1.2, 4 / 1.4, 4 / 1.6) at any
-   * DPR of 1 or more. Cover mode (dots that touch) and a page zoomed out far
+   * the gap between them (pitch − dot) is at least one device pixel. Every
+   * field in the product keeps its dots at least a CSS px apart, so that holds
+   * at any DPR of 1 or more; a field tuned past that would take the rebuild
+   * below. Cover mode (dots that touch) and a page zoomed out far
    * enough that the gap is under a device pixel break it, and there a frame
    * that changes anything is drawn as a full rebuild: exact, and dearer, and
    * only there. (Redrawing just the erased footprint, clipped to it, was tried:
@@ -1052,7 +1066,9 @@ export class DitherEngine {
       ctx.clip()
     }
 
-    if (fresh || (pitch - size) * dpr >= 1) {
+    // `1 - SNAP_EPS`: a gap of exactly one device pixel (pitch 3 / dot 2 at
+    // DPR 1) is disjoint, and float error must not tip it into the rebuild.
+    if (fresh || (pitch - size) * dpr >= 1 - SNAP_EPS) {
       if (!fresh) {
         // One erase per RUN of a row's rewritten dots, not one per dot: the
         // pixels between two footprints belong to no dot and are always clear,

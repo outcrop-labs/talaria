@@ -350,14 +350,17 @@ function buildUp(
 }
 
 const SHAPES: Array<{ name: string; sources: DitherSource[]; opts: DitherEngineOptions; mask?: Array<{ x: number; y: number; w: number; h: number }> }> = [
-  // A working card's wash, before and after its re-tune (pitch 4, a fractional dot).
+  // A working card's wash, as designed and as shipped (pitch 4, a fractional dot, a uniform grain).
   { name: 'card wash 1.4', opts: { pitch: 4, dot: 1.4, alphaFloor: 0.04, maxAlpha: 0.26 }, sources: [{ id: 'l', kind: 'edge', side: 'top', depth: 34, strength: 0.16 }, { ...drift, strength: 0.3 }] },
-  { name: 'card wash 2', opts: { pitch: 4, dot: 2, alphaFloor: 0.18, maxAlpha: 0.45 }, sources: [{ id: 'l', kind: 'edge', side: 'top', depth: 34, strength: 0.18 }, { ...drift, strength: 0.35 }] },
+  { name: 'card wash (shipped)', opts: { pitch: 4, dot: 1.4, alphaFloor: 0.037, maxAlpha: 0.25 }, sources: [{ id: 'l', kind: 'edge', side: 'top', depth: 34, strength: 0.2 }, { ...drift, strength: 0.375 }, { id: 'g', kind: 'uniform', strength: 0.056 }] },
   // A list strip (pitch 3), the house grain with two crossing waves (generating), a shimmer.
   { name: 'strip', opts: { pitch: 3, dot: 1.2, alphaFloor: 0.06, maxAlpha: 0.4 }, sources: [{ id: 'l', kind: 'edge', side: 'left', depth: 26, strength: 0.4 }, { ...drift, wavelength: 160, strength: 0.5 }] },
+  { name: 'strip (shipped)', opts: { pitch: 3, dot: 1.2, alphaFloor: 0.12, maxAlpha: 0.4 }, sources: [{ id: 'l', kind: 'edge', side: 'left', depth: 26, strength: 0.6 }, { ...drift, wavelength: 160, strength: 0.75 }, { id: 'g', kind: 'uniform', strength: 0.112 }] },
   { name: 'generating', opts: { alphaFloor: 0.03, maxAlpha: 0.32 }, sources: [{ id: 'a', kind: 'wave', axis: 'x', wavelength: 150, speed: 26, strength: 0.4 }, { id: 'b', kind: 'wave', axis: 'y', wavelength: 64, speed: -14, strength: 0.22 }] },
   // The stream tail: masked to fractional line fragments, with shimmer.
   { name: 'stream (masked)', opts: { alphaFloor: 0.06, maxAlpha: 0.4, shimmer: 0.15 }, sources: [{ id: 'v', kind: 'uniform', strength: 0.22 }, { ...drift, strength: 0.08 }], mask: [{ x: 40.4, y: 10.2, w: 120.6, h: 21.5 }, { x: 0, y: 33.7, w: 61.3, h: 21.5 }] },
+  // Pitch 3 / dot 2: a gap of exactly one device pixel at DPR 1, the disjoint path's edge.
+  { name: 'pitch 3 dot 2', opts: { pitch: 3, dot: 2, alphaFloor: 0.11, maxAlpha: 0.9 }, sources: [{ id: 'l', kind: 'edge', side: 'left', depth: 26, strength: 0.4 }, { ...drift, wavelength: 160, strength: 0.5 }] },
   // Dots that touch (cover mode): the full-rebuild path.
   { name: 'cover', opts: { cover: true }, sources: [{ id: 'r', kind: 'ramp', axis: 'x', from: 0, to: 180, fromLevel: 0.1, toLevel: 0.6, strength: 0.6 }, { ...drift, speed: 18 }] },
 ]
@@ -387,4 +390,117 @@ test('a page zoomed out (dots closer than a device pixel) rebuilds instead of dr
     assert.equal(r.differ, 0, `dpr ${dpr}`)
     for (const e of made.splice(0)) e.destroy()
   }
+})
+
+// The cell skip. A ring trace (`edgeBand`) and a mask only stop cells that
+// cannot show from being drawn: inside the ring the pixels are the ones a full
+// field leaves, and the skip holds from a fade-in mount whose first frame
+// lands before anything is drawn (its first frame returns early, and the
+// frames after it are not fresh). The clock is pinned so two runs paint the
+// same frames: a wave's phase is the absolute time.
+let clock = 0
+function pinClock(fn: () => void) {
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'performance')!
+  Object.defineProperty(globalThis, 'performance', { value: { now: () => clock }, configurable: true, writable: true })
+  try {
+    fn()
+  } finally {
+    Object.defineProperty(globalThis, 'performance', saved)
+  }
+}
+
+function trackPaint(e: DitherEngine) {
+  const p = e as unknown as Painter
+  const at = { t: 0 }
+  const paint = p.paint.bind(p)
+  p.paint = (now, isLive) => {
+    at.t = now
+    paint(now, isLive)
+  }
+  return at
+}
+
+function ringRun(opts: DitherEngineOptions, firstAtMount: boolean) {
+  const canvasOf = rasterCanvas(30.25, 20.5, 'round')
+  const fills = { n: 0 }
+  const ctx = canvasOf.canvas.getContext('2d') as unknown as { fillRect: (...a: number[]) => void }
+  const fill = ctx.fillRect
+  ctx.fillRect = (...a: number[]) => {
+    fills.n++
+    fill(...a)
+  }
+  clock = 50_000
+  const e = new DitherEngine(canvasOf.canvas, opts)
+  made.push(e)
+  e.setSize(180, 60, 2)
+  // A fade-in, as DitherLayer mounts every field.
+  e.setSources([{ id: 't', kind: 'edge', side: 'top', depth: 30, strength: 0.4 }, { ...drift, strength: 0.9 }])
+  for (let f = 0; f < 90; f++) {
+    const next = frames.shift()
+    if (!next) break
+    clock = 50_000 + 16.667 * (firstAtMount ? f : f + 1)
+    next(clock)
+  }
+  return { px: canvasOf.pixels(), fills: fills.n, w: 360, h: 120 }
+}
+
+for (const firstAtMount of [true, false]) {
+  test(`a ring trace paints its ring exactly and skips the rest — first frame ${firstAtMount ? 'at' : 'after'} the mount`, () => {
+    pinClock(() => {
+      frames = []
+      const full = ringRun({ pitch: 4, dot: 1.6, alphaFloor: 0.1, maxAlpha: 0.6 }, firstAtMount)
+      for (const e of made.splice(0)) e.destroy()
+      frames = []
+      const ring = ringRun({ pitch: 4, dot: 1.6, alphaFloor: 0.1, maxAlpha: 0.6, edgeBand: 2 }, firstAtMount)
+      const r = 4 // the 2 px ring at DPR 2
+      let ringDiff = 0
+      let inside = 0
+      for (let y = 0; y < full.h; y++) {
+        for (let x = 0; x < full.w; x++) {
+          const i = y * full.w + x
+          const inRing = x < r || y < r || x >= full.w - r || y >= full.h - r
+          if (inRing && full.px[i] !== ring.px[i]) ringDiff++
+          // Past the ring and its slack, nothing is drawn.
+          if (x >= 4 * r && y >= 4 * r && x < full.w - 4 * r && y < full.h - 4 * r && ring.px[i]! > 0) inside++
+        }
+      }
+      assert.equal(ringDiff, 0, 'the ring shows the same pixels')
+      assert.equal(inside, 0, 'nothing past the band')
+      assert.ok(ring.fills < full.fills / 3, `${ring.fills} fills against ${full.fills}`)
+    })
+  })
+}
+
+test('a mask set during a fade-in skips the cells it hides from then on, and paints what a rebuild paints', () => {
+  pinClock(() => {
+    frames = []
+    const mask = [{ x: 10.3, y: 8.6, w: 50.2, h: 12.5 }]
+    const sources: DitherSource[] = [{ id: 'v', kind: 'uniform', strength: 0.3 }, { ...drift, strength: 0.2 }]
+    const live = rasterCanvas(30.25, 20.5, 'round')
+    clock = 50_000
+    const e = new DitherEngine(live.canvas, { alphaFloor: 0.06, maxAlpha: 0.4 })
+    made.push(e)
+    e.setSize(180, 60, 2)
+    e.setSources(sources)
+    const painted = trackPaint(e)
+    for (let f = 0; f < 60; f++) {
+      if (f === 5) e.setMask(mask)
+      const next = frames.shift()
+      if (!next) break
+      clock = 50_000 + f * 16.667
+      next(clock)
+    }
+    const fresh = rasterCanvas(30.25, 20.5, 'round')
+    const r = new DitherEngine(fresh.canvas, { alphaFloor: 0.06, maxAlpha: 0.4 })
+    made.push(r)
+    r.setSize(180, 60, 2)
+    r.setMask(mask)
+    r.setSources(sources, { immediate: true })
+    ;(r as unknown as Painter).paint(painted.t, true)
+    const a = live.pixels()
+    const b = fresh.pixels()
+    let differ = 0
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) differ++
+    assert.equal(differ, 0)
+  })
 })

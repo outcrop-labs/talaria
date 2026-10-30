@@ -26,8 +26,9 @@
  * ONE TICKER, MANY ELEMENTS. Every `<Skeleton>` on the page registers here and
  * is painted from the app's single rAF loop (`lib/motion`'s page clock), as a
  * periodic 8Hz subscriber: the clock wakes for the first frame of each bucket
- * and sleeps between them, so a page whose only motion is a skeleton runs
- * about 16 frames a second, not 60. A pane full of skeleton rows is one
+ * and sleeps between them, so a page whose only motion is a skeleton runs two
+ * or three frames per bucket (about 24 a second, measured in Chromium), not
+ * 60. A pane full of skeleton rows is one
  * subscription and one set of observers, not forty. Offscreen fields don't
  * paint at all, and a background tab stops the clock for everyone because rAF
  * stops.

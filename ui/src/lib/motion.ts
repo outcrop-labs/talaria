@@ -134,7 +134,10 @@ function requestClockFrame(): void {
  * frames a second to find the 8 that change anything was the whole of its
  * idle cost (UB6). The frames the subscribers see are the same ones: a
  * periodic subscriber still runs on the first frame past its boundary, with
- * that frame's clock reading.
+ * that frame's clock reading — as long as the timer fires within the
+ * `CLOCK_LEAD_MS` lead. A timer later than that (a main thread busy for more
+ * than a frame) lands it on the next frame instead, as such a stall delays an
+ * every-frame loop too.
  */
 function scheduleClock(): void {
   if (clockSubs.size === 0 || clockHandle !== 0 || clockTimer !== null) return
