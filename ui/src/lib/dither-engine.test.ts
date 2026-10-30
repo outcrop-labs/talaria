@@ -33,7 +33,7 @@ function recordingCanvas(left: number, top: number) {
 
 beforeEach(() => {
   frames = []
-  for (const k of ['document', 'window', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame']) {
+  for (const k of ['document', 'window', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame', 'queueMicrotask']) {
     saved[k] = (globalThis as Record<string, unknown>)[k]
   }
   const scratch = { fillStyle: '' }
@@ -82,7 +82,7 @@ function engine(sources: DitherSource[], opts: DitherEngineOptions, at: { left: 
   made.push(e)
   e.setSize(240, 120, at.dpr)
   e.setSources(sources, { immediate: true })
-  return { e, calls }
+  return { e, calls, canvas }
 }
 
 const edge: DitherSource = { id: 'top', kind: 'edge', side: 'top', depth: 60, strength: 0.4 }
@@ -176,4 +176,27 @@ test('the last engine out cancels the frame it was waiting on', () => {
   // A new engine asks for a fresh frame.
   engine([edge, drift], {}, { left: 10, top: 10, dpr: 1 })
   assert.equal(frames.length, 2)
+})
+
+test('a field that throws stops only itself: the rest keep painting, and its error is still reported', () => {
+  const reported: unknown[] = []
+  Object.assign(globalThis, { queueMicrotask: (cb: () => void) => { try { cb() } catch (err) { reported.push(err) } } })
+  const bad = engine([edge, drift], {}, { left: 10, top: 10, dpr: 1 })
+  const good = engine([edge, { ...drift, id: 'w2' }], {}, { left: 10, top: 200, dpr: 1 })
+  const boom = new Error('boom')
+  const ctx = bad.canvas.getContext('2d') as unknown as { fillRect: () => void }
+  ctx.fillRect = () => {
+    throw boom
+  }
+  assert.equal(frames.length, 1)
+  const t0 = performance.now() + 1000
+  frames.shift()!(t0)
+  assert.deepEqual(reported, [boom])
+  // The one after it in the queue painted, and asked for the next frame.
+  assert.ok(good.calls.some((c) => c.op === 'fillRect'))
+  assert.equal(frames.length, 1)
+  const painted = good.calls.length
+  for (let f = 1; f <= 30 && frames.length > 0; f++) frames.shift()!(t0 + f * 16)
+  assert.ok(good.calls.length > painted, 'the field after the thrower kept its loop')
+  assert.equal(reported.length, 1, 'the thrower never ran again: it stopped itself')
 })

@@ -380,7 +380,19 @@ function tickerFrame(now: number): void {
   tickerHandle = 0
   const due = [...tickerQueue]
   tickerQueue.clear()
-  for (const client of due) client.tick(now)
+  for (const client of due) {
+    // A field that throws stops only itself, as its own loop did: it never
+    // reached its schedule(), and every field after it still paints this
+    // frame and asks for the next. Its error is still reported as uncaught,
+    // once this frame's paints are done.
+    try {
+      client.tick(now)
+    } catch (err) {
+      queueMicrotask(() => {
+        throw err
+      })
+    }
+  }
 }
 
 /** Run `client.tick` on the next frame. Asking twice before it runs is one tick. */
