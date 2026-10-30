@@ -162,11 +162,16 @@ a `CAMOFOX_URL` secret with no provider written) needs no engine at all. Hermes 
 those local and skips the check for them. So with the terminal closed, the render closes the
 `browser` toolset for an agent whose config picks one of them (`fleet_browser_local_close`),
 and the grid says so on that agent. A CDP endpoint (`browser.cdp_url`, or a `BROWSER_CDP_URL`
-secret on the agent, which Hermes reads first) or a hosted provider (`browser.cloud_provider`)
-keeps Hermes' check and is left alone. So does this machine's browser for a def that runs its
-terminal elsewhere: Hermes bridges `terminal.backend` into `TERMINAL_ENV`, and any backend but
-`local` (docker, ssh, singularity, modal, daytona, vercel_sandbox) keeps the check for it.
-Camofox stays local whatever the terminal. The render reads the terminal where Hermes does: the
+secret on the agent, which Hermes reads first) keeps Hermes' check and is left alone. So does
+this machine's browser for a def that runs its terminal elsewhere: Hermes bridges
+`terminal.backend` into `TERMINAL_ENV`, and any backend but `local` (docker, ssh, singularity,
+modal, daytona, vercel_sandbox) keeps the check for it. Camofox stays local whatever the
+terminal. A hosted provider (`browser.cloud_provider`) keeps the check only with
+`browser.auto_local_for_private_urls` off: while it is on, which is Hermes' default, Hermes
+sends every private address to a local Chromium beside the provider and skips the check for
+it, so the render closes the toolset for that agent too. Any of these is closed the same way
+when the def turns the check off (`browser.allow_private_urls` or
+`security.allow_private_urls`). The render reads the terminal where Hermes does: the
 toolset grid's list, and a `platform_toolsets.api_server` list a def authored, which replaces
 Hermes' default bundle (the grid does not show that one). A hosted provider's credentials are
 not a way around this: `BROWSER_USE_API_KEY` and `BROWSERBASE_API_KEY` are refused as an

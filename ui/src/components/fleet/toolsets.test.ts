@@ -276,7 +276,9 @@ describe('authoredBrowser: the def’s own browser, as Hermes reads it', () => {
 
   it('reads a remote browser, and the default spelled out', () => {
     expect(authoredBrowser(cfg({ backend: 'off', cdp_url: 'http://chrome:9222' }))).toEqual({ kind: 'cdp', via: 'browser.cdp_url' })
-    expect(authoredBrowser(cfg({ backend: 'off', cloud_provider: 'Browserbase' }))).toEqual({
+    expect(
+      authoredBrowser(cfg({ backend: 'off', cloud_provider: 'Browserbase', auto_local_for_private_urls: false })),
+    ).toEqual({
       kind: 'hosted',
       via: 'browser.cloud_provider: browserbase',
     })
@@ -284,6 +286,79 @@ describe('authoredBrowser: the def’s own browser, as Hermes reads it', () => {
       kind: 'exec',
       via: 'browser.backend: browser-use',
     })
+  })
+
+  it('reads a browser Hermes lets reach private addresses as local, as the renderer does', () => {
+    const SIDECAR =
+      'Hermes sends its private addresses to a local Chromium while browser.auto_local_for_private_urls is on, as it is by default'
+    // A hosted provider's sidecar: on when absent, and for anything
+    // Python's bool() reads as true, the string "false" included.
+    for (const provider of ['browserbase', 'Browser-Use', 'nous', 'firecrawl', 'a-plugin']) {
+      const via = `browser.cloud_provider: ${provider.toLowerCase()}`
+      for (const sidecar of [undefined, true, 'false', 'no', 1, ['x']]) {
+        const browser: Record<string, unknown> = { backend: 'off', cloud_provider: provider }
+        if (sidecar !== undefined) browser.auto_local_for_private_urls = sidecar
+        expect(authoredBrowser(cfg(browser))).toEqual({ kind: 'local', via, unchecked: SIDECAR })
+      }
+      for (const off of [false, null, 0, '', [], {}]) {
+        expect(
+          authoredBrowser(cfg({ backend: 'off', cloud_provider: provider, auto_local_for_private_urls: off })),
+        ).toEqual({ kind: 'hosted', via })
+      }
+    }
+    // The check turned off, under either key, for each browser that would
+    // otherwise keep it.
+    const kept: [Record<string, unknown>, Record<string, unknown>, string[], AuthoredBrowser][] = [
+      [{ backend: 'off', cdp_url: 'http://chrome:9222' }, {}, [], { kind: 'cdp', via: 'browser.cdp_url' }],
+      [{ backend: 'off' }, {}, ['BROWSER_CDP_URL'], { kind: 'cdp', via: 'a BROWSER_CDP_URL secret' }],
+      [
+        { backend: 'off', cloud_provider: 'browserbase', auto_local_for_private_urls: false },
+        {},
+        [],
+        { kind: 'hosted', via: 'browser.cloud_provider: browserbase' },
+      ],
+      [
+        { backend: 'off' },
+        { terminal: { backend: 'docker' } },
+        [],
+        { kind: 'checked', via: 'browser.backend: off', terminal: 'terminal.backend: docker' },
+      ],
+    ]
+    for (const [browser, extra, secrets, want] of kept) {
+      expect(authoredBrowser({ raw: { browser, ...extra } }, secrets)).toEqual(want)
+      for (const on of [true, 'true', ' Yes ', 'ON', '1', 1]) {
+        expect(authoredBrowser({ raw: { browser: { ...browser, allow_private_urls: on }, ...extra } }, secrets)).toEqual({
+          kind: 'local',
+          via: want.via,
+          unchecked: 'browser.allow_private_urls',
+        })
+        expect(
+          authoredBrowser({ raw: { browser, ...extra, security: { allow_private_urls: on } } }, secrets),
+        ).toEqual({ kind: 'local', via: want.via, unchecked: 'security.allow_private_urls' })
+      }
+      // Falsy as is_truthy_value reads it, or not in a mapping.
+      for (const off of [false, null, 'false', 'off', '2', 0]) {
+        expect(authoredBrowser({ raw: { browser: { ...browser, allow_private_urls: off }, ...extra } }, secrets)).toEqual(want)
+        expect(authoredBrowser({ raw: { browser, ...extra, security: { allow_private_urls: off } } }, secrets)).toEqual(want)
+      }
+      expect(authoredBrowser({ raw: { browser, ...extra, security: ['allow_private_urls'] } }, secrets)).toEqual(want)
+    }
+    // Hermes' default stays the default; Camofox and a plain local backend
+    // are local already.
+    expect(authoredBrowser(cfg({ allow_private_urls: true }))).toBeNull()
+    expect(authoredBrowser(cfg({ cloud_provider: 'camofox', allow_private_urls: true }))).toEqual({
+      kind: 'local',
+      via: 'browser.cloud_provider: camofox',
+    })
+    // The grid line, with the terminal closed.
+    const terminalClosed = toolsetRows([...GOVERNED, 'terminal'].sort(), FLOOR, ['terminal'])
+    expect(browserNote(terminalClosed, authoredBrowser(cfg({ backend: 'off', cloud_provider: 'browserbase' })))).toBe(
+      `Browser: none while the terminal is closed. On this image, Hermes’ own browser skips its private-address check, on the grounds that the terminal already reaches this machine, other agents and your LAN. That holds only with a terminal, so Talaria gives an agent the browser only with the terminal open. This agent’s config sets a browser (browser.cloud_provider: browserbase) that Hermes lets reach private addresses (${SIDECAR}), so Talaria closes the browser toolset for it until the terminal opens.`,
+    )
+    const cdpAllowed = authoredBrowser(cfg({ backend: 'off', cdp_url: 'http://chrome:9222', allow_private_urls: true }))
+    expect(browserNote(terminalClosed, cdpAllowed)).toContain(
+      'This agent’s config sets a browser (browser.cdp_url) that Hermes lets reach private addresses (browser.allow_private_urls), so Talaria closes the browser toolset for it until the terminal opens.',
+    )
   })
 
   it('reads a BROWSER_CDP_URL secret as the CDP endpoint, as the renderer does', () => {

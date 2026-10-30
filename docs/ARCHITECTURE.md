@@ -269,9 +269,12 @@ multiplexer.
   of its own: Hermes's default stands, and a def that authored its own backend keeps it.
   With the terminal closed, a backend Hermes would run as a local browser (the built-in
   tools on this Chromium, or Camofox) has the `browser` toolset closed by the render
-  instead, so an engine left on the volume runs nothing; a CDP endpoint or a hosted provider
-  keeps Hermes's check and is left alone (docs/AGENT-NETWORKING.md, "What an agent's browser
-  can reach"). A Developer Agent's
+  instead, so an engine left on the volume runs nothing. So does a hosted provider while
+  Hermes sends its private addresses to a local Chromium (`auto_local_for_private_urls`, on
+  by default), and any browser whose def turns the check off (`allow_private_urls`). A CDP
+  endpoint, a hosted provider with that routing off, or a terminal that runs elsewhere keeps
+  Hermes's check and is left alone (docs/AGENT-NETWORKING.md, "What an agent's browser can
+  reach"). A Developer Agent's
   `PLAYWRIGHT_BROWSERS_PATH` (where a repo's own e2e suite installs its browsers, on the
   agent's state volume) changes neither: Hermes hands `agent-browser` the image's Chromium by
   path itself.
