@@ -36,7 +36,8 @@ Two views, one window:
 
 Each instance webview gets its own `data_directory`, so cookie jars and localStorage never mix
 — cookies ignore ports, so without this, two dev instances on `127.0.0.1:530x` would silently
-share a session. Hidden webviews stay loaded: sessions and SSE survive a switch.
+share a session. Hidden webviews stay loaded, so sessions and SSE survive a switch, until an
+instance has been off screen for the suspend timeout ("Suspending inactive instances" below).
 
 Adding an instance: the shell normalizes the URL (bare hosts become `https://`, only http(s),
 credentials/paths stripped — an instance IS its origin), then probes the instance beacon
@@ -69,7 +70,17 @@ records no removals, so no later launch deletes a data dir on the damaged file's
 settings value this build does not know (a newer build wrote it) reads as the default. The
 registry also records `lastView`, the instance the window last showed or `null` for the
 launcher, so a relaunch lands where the person left. A registry from before that field
-reopens the most recently opened instance, and only one that was actually opened.
+reopens the most recently opened instance, and only one that was actually opened. It also
+keeps each instance's last page (`lastUrls`: path, query and hash), so a relaunch, or any
+open of an instance with no webview, returns to that page instead of the root. The pages
+are kept beside the entries, not in them: every other instance's in-app switcher reads the
+entries (`list_instances`), and one instance's paths are no business of another origin. A
+sign-in or callback page is never kept (`suspend::restorable_url`: `/login`, `/claim`,
+`/join`, `/auth`, `/oauth`, any `/api/` URL, any path with `callback` in it, any URL with a
+one-time value such as `code`, `state` or a `token` in its query or fragment); the instance
+root is used instead. A page on another origin (a link that left the instance) leaves the
+last page of the instance itself standing. Older builds ignore `lastUrls` and drop it on
+save.
 
 ### Opening an instance, and when it does not load
 
@@ -107,13 +118,16 @@ a choice made in one instance reaches the others.
 
 ## Security posture
 
-- **Instance webviews get the switcher, window chrome, and a notification post — nothing else.** The shell's
+- **Instance webviews get the switcher, window chrome, a notification post and the suspend
+  report — nothing else.** The shell's
   commands are gated behind capabilities (`AppManifest::commands` in `desktop/src-tauri/build.rs`);
   the launcher holds all of them (`capabilities/launcher.json`), and each REGISTERED instance
   origin gets a runtime grant (`grant_switcher` in `src-tauri/src/lib.rs`, via Tauri's
   dynamic-ACL) scoped to `list_instances`, `activate_instance`, `show_welcome`,
-  `get_desktop_settings`, `set_titlebar_mode`, `desktop_window`, `check_for_update`,
-  `install_update`, and `desktop_notify` on that one webview. No fs, no generic window API —
+  `get_desktop_settings`, `set_titlebar_mode`, `set_suspend_after`, `desktop_window`,
+  `check_for_update`, `install_update`, `desktop_notify` and `desktop_suspend_report` on that
+  one webview. A suspend report counts only as the answer to the question the shell just
+  asked that webview (a nonce). No fs, no generic window API —
   remote content can switch instances, move/close *this* window, and post a notification
   (title, body, and a same-origin path). An origin the user never registered gets no IPC at all.
 - Login happens inside each instance webview via the instance's own flows (password or
@@ -179,9 +193,83 @@ page does, instead of GTK's grey and WebKit's white.
 
 Each OPENED instance keeps its webview, and with it a WebKit web process and, because of its
 own data directory, its own network process: about 110 MB + 13 MB for a trivial page, ~690
-MB for the real UI (2 web processes). 25 opened mock instances were 3.07 GB. Nothing is
-discarded, by design (sessions and SSE survive a switch); a cold open of an instance is
-~0.7 s of WebKit starting those two processes.
+MB for the real UI (2 web processes). 25 opened mock instances were 3.07 GB on the
+2026-10-28 rig (4.35 GB PSS on the 2026-10-29 one). An instance that stays off screen is
+suspended, which frees its web process: the next section.
+
+## Suspending inactive instances
+
+`desktop/src-tauri/src/suspend.rs` (the clock, the URL rule and the scripts), `commands.rs`
+(the wiring) and `watch.rs` (notifications while suspended).
+
+**When.** An instance whose page has not been on screen for the timeout is suspended: its
+webview is closed. "Not on screen" means another instance or the launcher has been showing.
+The instance the window shows counts only while the window itself is minimized or hidden,
+never while it is merely unfocused, so a page on a second monitor (an agent run streaming)
+stays. GTK on Wayland reports no minimized state, so there the shell counts its own minimize
+(the themed titlebar's button) until the window is focused again; on Wayland a window
+minimized by the compositor or by the OS titlebar's button is not seen as away, and its
+instance stays loaded. X11, macOS and Windows report minimized themselves. The timeout is
+`suspendAfterMinutes` in `settings.json`: 10 by default, `0` for Off, any whole number of
+minutes up to a day. The launcher and Settings → Profile offer Off, 5, 10, 30 and 60
+minutes; a value set by hand shows as its own choice. The clock ticks every 5 s.
+
+**Only a page that agrees.** Before it closes one, the shell asks the page
+(`suspend::report_js`) through ui's `window.__TALARIA_DESKTOP__` hook
+(`ui/src/lib/desktop-suspend.ts`). The page stays open, until it is next shown, when:
+
+- it has no hook: an instance whose Talaria predates it. Its notifications and its typed
+  input are its own page's business, so it behaves exactly as before;
+- it holds typed text a reload would lose: a field typed into that is still on the page and
+  differs from what it held before the first keystroke. ui keeps the chat composer's draft
+  across a reload (`lib/comms-drafts`, marked `data-desktop-draft`), so that does not count;
+  a half-written ticket field, an agent prompt mid-edit or a typed search does;
+- its page posts OS notifications and the shell cannot read them the way the page does
+  (below).
+
+**What a restore brings back.** Showing a suspended instance by any route recreates its
+webview at its exact last page (path, query and hash), at once and with no probe: a launcher
+row, the in-app switcher, `Ctrl/Cmd+Shift+H` then a row, and the window restored or focused
+while that instance is the one it shows. A relaunch with it as `lastView` opens it at the
+same page (a cold open, so probed first, as before). A notification click opens the
+notification's own path instead. The recreated page also gets back its `sessionStorage`
+(where ui keeps each view's "where you were") and the scroll position of every box that was
+scrolled, retried while the page renders for up to five seconds and abandoned at the
+person's first scroll, key or click. Not restored: in-memory state a reload also loses (an
+open menu or dialog), text in fields the page did not keep (such a page is never suspended),
+and scroll after a relaunch (only the URL is kept on disk).
+
+**What survives.**
+
+- *The session.* ui's session cookie is persistent (`Max-Age` 7 days), so it is on disk in
+  the instance's data directory and the restored page is still signed in.
+- *Notifications.* A suspended page posts nothing, so the shell does its job: `watch.rs`
+  reads `/api/notifications` with that instance's own cookies (taken from its webview's
+  store, sent only to its origin, redirects not followed), made live by `/api/me/events`
+  with the page's 30 s poll floor. The first read is taken while the page is still open: if
+  it fails for anything but a 401/403 (a proxy or certificate only the webview knows, the
+  instance down), the page is kept. After that every new row is posted, oldest first, with
+  the same clamps, tag and click as `desktop_notify`; a 401/403 ends the watcher. It runs
+  only when the page said it would post (ui's `browserNotifyEnabled`). The restored page's
+  own tracker takes its first read as a baseline, so nothing is posted twice. A row that
+  lands in the second or so between the restore and the page's first read is in the inbox
+  but gets no banner, as with any reload.
+- *The switcher, the titlebar mode, the launcher's state:* all read again when a page loads;
+  a hidden page did nothing else for the shell.
+
+**What it frees, and what it does not.** Measured 2026-10-29 on the headless rig (WebKitGTK
+2.52, llvmpipe): 25 opened mock instances with the launcher showing are 26 web processes,
+4.35 GB PSS (9.35 GB RSS) in all. All 25 suspended: one web process (the launcher's), 0.69 to
+0.72 GB PSS (2.0 GB RSS). The network processes stay: Tauri keeps each data directory's
+WebKit context alive for the app's life on Linux (tauri#14626), so each opened instance keeps
+its network process (about 13 MB PSS) until the app quits. The 25 watchers cost less than the
+rig resolves: stopping all 25 moved the shell process by 0.3 MB.
+
+**How fast.** A warm restore (row click to first paint) is ~0.76 s; a cold open is ~0.80 s;
+a switch to a live webview is 5 ms. A reload of the same page inside an existing webview
+paints in ~50 ms, so ~0.7 s of a restore is WebKit starting the web process and creating the
+webview. A pre-warm on hover could overlap at most the hover-to-click time with that, at the
+cost of a web process per hovered row; it is not done.
 
 ## Development: the box builds, the host runs
 
@@ -315,6 +403,12 @@ isolation that `data_directory` does not provide on macOS or Windows.
 
 ## Window chrome
 
+The window title is "Talaria — <instance>" while an instance is shown and "Talaria" on the
+launcher. On Wayland the OS titlebar is a `GtkHeaderBar` that tao builds with the first title
+and wraps in an event box, which keeps GTK from passing later titles to it, so the shell
+sets the header bar's title itself (`commands.rs::set_header_title`). On X11 the window
+manager draws the window's own title.
+
 The window ships `decorations: false`. Three titlebar modes live in
 `~/.local/share/app.talaria.desktop/settings.json` (themed / os / none). **Themed is the
 default on every OS**: custom min/max/close drawn in the webview (traffic-light side follows
@@ -350,7 +444,9 @@ there is no site-settings page inside the shell, so a page cannot grant it. The 
 through the OS notification service — the same path other desktop apps use. A click focuses
 this window, brings that instance forward, and opens the notification's path when it is a
 same-origin path. The app has to be running; a quit process is not listening. Tray and
-delivery after quit stay deferred. The post is off the main thread (see "The launcher's
+delivery after quit stay deferred. A suspended instance's notifications are posted by the
+shell itself ("Suspending inactive instances" above); an instance not opened this session
+posts none, as before. The post is off the main thread (see "The launcher's
 cost"), and the click never calls `show()` on the already-visible window (see the geometry
 section).
 

@@ -40,6 +40,9 @@ tokio = { version = "1", features = ["rt", "sync", "time"] }
 # same crate and version wry links; Tauri exposes the WebView, not its signals.
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0"
+# The OS titlebar's GtkHeaderBar (commands.rs::set_header_title). The version
+# tauri itself links, already in the lock: no new compile.
+gtk = "0.18"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
