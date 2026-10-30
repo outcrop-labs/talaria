@@ -24,10 +24,13 @@
  * matrix, hash, colour parsing — is imported rather than copied.
  *
  * ONE TICKER, MANY ELEMENTS. Every `<Skeleton>` on the page registers here and
- * is painted from the app's single rAF loop (`lib/waiting`'s clock), bucketed
- * down to 8Hz. A pane full of skeleton rows is one subscription and one set of
- * observers, not forty. Offscreen fields don't paint at all, and a background
- * tab stops the clock for everyone because rAF stops.
+ * is painted from the app's single rAF loop (`lib/motion`'s page clock), as a
+ * periodic 8Hz subscriber: the clock wakes for the first frame of each bucket
+ * and sleeps between them, so a page whose only motion is a skeleton runs
+ * about 16 frames a second, not 60. A pane full of skeleton rows is one
+ * subscription and one set of observers, not forty. Offscreen fields don't
+ * paint at all, and a background tab stops the clock for everyone because rAF
+ * stops.
  *
  * ONE LATTICE. Cell coordinates are keyed to the page, not to the element, so
  * the dot grid and the noise are continuous across neighbouring skeletons —
@@ -180,6 +183,9 @@ class Field {
 
   visible = true
   private painted = -1
+  /** The cells the mask covers, as (x, y, gx, gy) runs — walked once per
+   *  measure, not once per tick: the mask only moves when the box does. */
+  private cells: Float64Array = new Float64Array(0)
 
   constructor(
     readonly host: HTMLElement,
@@ -206,9 +212,10 @@ class Field {
     this.fy = oy.frac
     this.oy = oy.cell
 
-    let covered = 0
-    this.forEachCell(() => covered++)
-    this.solid = solidity(covered)
+    const cells: number[] = []
+    this.forEachCell((x, y, gx, gy) => cells.push(x, y, gx, gy))
+    this.cells = Float64Array.from(cells)
+    this.solid = solidity(cells.length / 4)
 
     this.canvas.width = Math.round(this.w * dpr)
     this.canvas.height = Math.round(this.h * dpr)
@@ -242,15 +249,23 @@ class Field {
 
     // `gx`/`gy` are PAGE-space cell coords: one lattice and one noise field for
     // the whole document, sampled through each element's mask.
-    this.forEachCell((x, y, gx, gy) => {
+    //
+    // The colour stays a per-dot `rgba()` string with the alpha at full
+    // precision. `globalAlpha`, or the alpha rounded to 8 bits, paints the
+    // same pixels in Chromium, but WebKit keeps a colour's alpha finer than 8
+    // bits and moves a few edge pixels by a level (UB6's parity harness).
+    const cells = this.cells
+    for (let k = 0; k < cells.length; k += 4) {
+      const gx = cells[k + 2]!
+      const gy = cells[k + 3]!
       const noise = staticDensity(gx, gy, bucket)
       const density = noise + (1 - noise) * this.solid
-      if (!passesBayer(density, gx, gy)) return
+      if (!passesBayer(density, gx, gy)) continue
 
       const alpha = ALPHA_FLOOR + (MAX_ALPHA - ALPHA_FLOOR) * clampUnit(density)
       ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`
-      ctx.fillRect(x - PITCH / 2 + off, y - PITCH / 2 + off, DOT, DOT)
-    })
+      ctx.fillRect(cells[k]! - PITCH / 2 + off, cells[k + 1]! - PITCH / 2 + off, DOT, DOT)
+    }
   }
 
   invalidate(): void {
@@ -309,12 +324,15 @@ function syncClock(): void {
   const wanted = !reduced && fields.size > 0
   if (wanted === !!offClock) return
   if (wanted) {
+    // Periodic, at the bucket rate: the clock runs this on the first frame of
+    // each 125 ms bucket and sleeps in between, instead of waking 60 times a
+    // second to find the 8 frames that change anything (UB6).
     offClock = subscribeToClock((elapsed) => {
       const next = tickBucket(elapsed)
       if (next === bucket) return
       bucket = next
       paintAll()
-    })
+    }, BUCKET_MS)
   } else {
     offClock?.()
     offClock = null
