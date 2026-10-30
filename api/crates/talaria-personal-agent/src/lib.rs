@@ -653,9 +653,17 @@ async fn rename_agent_slug(
         for b in bind {
             q = q.bind(b);
         }
-        q.execute(&mut *tx)
-            .await
-            .map_err(|e| store_fault("[personal-agent] rename: write failed", e))?;
+        match q.execute(&mut *tx).await {
+            Ok(_) => {}
+            // Another rename took the handle between the check above and
+            // this write: the caller's conflict, not a store fault.
+            Err(sqlx::Error::Database(db))
+                if db.is_unique_violation() && db.table() == Some("agent_defs") =>
+            {
+                return Err(format!("agent \"{new_slug}\" already exists"));
+            }
+            Err(e) => return Err(store_fault("[personal-agent] rename: write failed", e)),
+        }
     }
     tx.commit()
         .await

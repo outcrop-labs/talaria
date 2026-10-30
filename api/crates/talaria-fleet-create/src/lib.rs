@@ -269,7 +269,11 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         }
     };
 
-    let key_created = ensure_agent_key(&input.slug).await?;
+    // The fleet .env's own failure names its path: the operator's, in the
+    // log, and the caller's house 500 (as the rename's is).
+    let key_created = ensure_agent_key(&input.slug)
+        .await
+        .map_err(|e| talaria_error::store_fault("[fleet-create] agent key write failed", e))?;
 
     let mut def = match upsert_agent_def(
         pg,
