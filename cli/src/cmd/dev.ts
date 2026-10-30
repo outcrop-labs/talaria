@@ -116,8 +116,11 @@ const API_ENV_VARS = [
   'TALARIA_OMP_AUTH_PORT',
   'TALARIA_GATEWAY_PORT_BASE',
   'TALARIA_APPS_LOCAL_SOURCES',
-  // A devbox's own block (box/new.ts boxBlock): every line of it the api
-  // reads. The last paragraph below says why.
+] as const
+
+/** A devbox's own block (box/new.ts boxBlock): every line of it the api
+ *  reads. Lifted only for the box's own stack; apiEnv says why. */
+const BOX_API_ENV_VARS = [
   'TALARIA_AGENT_DIAL',
   'TALARIA_MCP_GW_URL',
   'TALARIA_FLEET_DIR',
@@ -195,14 +198,37 @@ const API_ENV_VARS = [
  *  daemon makes as an empty root-owned directory. It handed agents the
  *  host's MCP gateway URL, and dialled qdrant, embeddings and object storage
  *  on 127.0.0.1. `box/box.test.ts` pins every block key the api reads to
- *  this list. The primary and a worktree write none of these lines but the
- *  S3 pair, which their `talaria dev` already exports before the api starts,
- *  so nothing changes there. */
-export const API_ENV_KEYS: readonly string[] = API_ENV_VARS
+ *  BOX_API_ENV_VARS.
+ *
+ *  Those lines are lifted only when ui/.env is the box's own: it carries the
+ *  block's TALARIA_DEVBOX marker (or the shell does, as the box compose sets
+ *  it) and names no worktree (boxUiEnv strips TALARIA_WORKTREE). Anywhere
+ *  else they are lines an operator may have set by hand, and a worktree's
+ *  ui/.env is the primary's copied with only its own stack's lines replaced
+ *  (worktree.ts stripOwnKeys). Lifted there, the primary's TALARIA_APPS_DIR
+ *  (docs/APPS.md) or TALARIA_UPLOADS_DIR (ui/.env.example) would point the
+ *  worktree's api at the primary's apps, app databases (app_data_dir derives
+ *  from it, and an uninstall with wipe empties that cluster) and uploads, and
+ *  a hand-set TALARIA_FLEET_DIR would render its agents into the primary's
+ *  fleet dir. So a primary and every worktree, a worktree cut inside a box
+ *  included, hand the api what rc did: none of these lines from ui/.env (the
+ *  S3 pair still reaches it through the export runDev makes before the api
+ *  starts). */
+export const API_ENV_KEYS: readonly string[] = [...API_ENV_VARS, ...BOX_API_ENV_VARS]
+export const BOX_API_ENV_KEYS: readonly string[] = BOX_API_ENV_VARS
+
+/** Is `uiEnv` the box's own: the box block's marker, and no worktree? The
+ *  shell wins over ui/.env for both, as it does for every lifted line. */
+function isBoxStack(shell: Record<string, string | undefined>, uiEnv: string): boolean {
+  const devbox = shell.TALARIA_DEVBOX ?? envValue(uiEnv, 'TALARIA_DEVBOX')
+  const worktree = shell.TALARIA_WORKTREE ?? envValue(uiEnv, 'TALARIA_WORKTREE')
+  return Boolean(devbox) && !worktree
+}
 
 export function apiEnv(shell: Record<string, string | undefined>, uiEnv: string): Record<string, string> {
   const env: Record<string, string> = {}
-  for (const varName of API_ENV_VARS) {
+  const keys: readonly string[] = isBoxStack(shell, uiEnv) ? API_ENV_KEYS : API_ENV_VARS
+  for (const varName of keys) {
     const val = shell[varName] ?? envValue(uiEnv, varName)
     if (val) env[varName] = val
   }

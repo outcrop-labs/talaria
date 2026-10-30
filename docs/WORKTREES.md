@@ -113,7 +113,13 @@ data so you still have realistic agents/boards/tickets to work against.
    written rather than kept by hand): `envValue` takes the *first* match, so a
    leftover line would shadow the one written here. That is exactly how a
    worktree once answered every `/api/*` with `upstream unreachable` — its own
-   api healthy on `:54xx`, its app still dialling main's `:5274`.
+   api healthy on `:54xx`, its app still dialling main's `:5274`. The rest of
+   main's env is copied as it is, but the api is not handed the lines only a
+   devbox's block is meant to set (`TALARIA_FLEET_DIR`, `TALARIA_APPS_DIR`,
+   `TALARIA_UPLOADS_DIR`, the agent dial and the service addresses):
+   `talaria dev` lifts those for a box's own stack only, so a directory set by
+   hand in main's `ui/.env` never points the worktree's api at main's fleet,
+   apps, app databases or uploads.
 5. Seeds the fleet config plane the way `talaria setup` seeds the primary's:
    `fleet/skills`, `fleet/hooks`, `fleet/agents`, **`fleet/chassis.yml` from
    the worktree's own `scripts/chassis.template.yml`** and a blank `fleet/.env`.

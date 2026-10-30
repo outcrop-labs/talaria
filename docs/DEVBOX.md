@@ -66,7 +66,9 @@ branch on the host.
    started, the shell's `TALARIA_EMBED_CONTAINER` when it sets one. The Rust api
    reads no `.env` file, so the box's `talaria dev` hands it every line of this
    block it reads: the dial, the fleet, apps and uploads dirs, the gateway URLs,
-   and the qdrant, embeddings and storage addresses.
+   and the qdrant, embeddings and storage addresses. It does that only for the
+   box's own stack, a `ui/.env` with the block's `TALARIA_DEVBOX` and no
+   `TALARIA_WORKTREE`: a primary's or a worktree's api is handed none of them.
 7. Seeds starter data from the primary (below).
 8. Runs any `--setup` hooks inside the fresh box (provisioning; `npm i -g`
    hooks land in the shared tools layer, below), then installs deps and
