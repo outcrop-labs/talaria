@@ -743,9 +743,10 @@ fn live_instances(window: &Window) -> Vec<(String, Webview)> {
 /// Minimized or hidden — not merely unfocused.
 ///
 /// The shell's own minimize counts until the window is focused again (GTK on
-/// Wayland reports no minimized state). A window that is focused is not
-/// minimized: a compositor that ignored the request, or a restore that sent
-/// no focus event, clears it.
+/// Wayland reports no minimized state). A window found focused is not
+/// minimized, which clears it here, on a focus event, and once just after the
+/// minimize (`MINIMIZE_SETTLE`), so a compositor that ignored the request
+/// (sway and other wlroots window managers) does not leave it set.
 fn window_away(app: &AppHandle, window: &Window) -> bool {
     let state = app.state::<ShellState>();
     if state.self_minimized.load(Ordering::Relaxed) && window.is_focused().unwrap_or(false) {
@@ -888,7 +889,7 @@ pub fn desktop_suspend_report(
     };
     if page.holds_input {
         eprintln!(
-            "talaria-desktop: keeping {}: it holds typed input a reload would lose",
+            "talaria-desktop: keeping {}: it holds input a reload would lose",
             webview.label()
         );
         state
@@ -900,6 +901,15 @@ pub fn desktop_suspend_report(
     }
     let scroll = suspend::clean_scrolls(&report.scroll);
     let session = suspend::clean_session(&report.session);
+    let nonce = report.nonce;
+    // From here until finish_suspend (or keep_for_notify) the page is closing:
+    // the ticks meanwhile do not ask it again, which would start a second
+    // cookie read, a second baseline and a second watcher.
+    state
+        .activity
+        .lock()
+        .unwrap()
+        .closing(&id, nonce, Instant::now());
     let app = app.clone();
     // Off the main thread: the webview's cookie store answers through the main
     // loop (and on Windows deadlocks a sync command that waits for it), and
@@ -933,7 +943,15 @@ pub fn desktop_suspend_report(
         };
         let handle = app.clone();
         let _ = app.run_on_main_thread(move || {
-            finish_suspend(&handle, &instance, &report.url, scroll, session, watch)
+            finish_suspend(
+                &handle,
+                &instance,
+                nonce,
+                &report.url,
+                scroll,
+                session,
+                watch,
+            )
         });
     });
     Ok(())
@@ -950,14 +968,25 @@ fn keep_for_notify(app: &AppHandle, id: &str, why: &str) {
         .keep(id, suspend::Kept::Notify);
 }
 
+/// How long the webview's cookie store may take to answer before the page is
+/// kept instead (it answers through the main loop, which a busy GTK can hold).
+const COOKIE_WAIT: Duration = Duration::from_secs(10);
+
 /// The `Cookie` header `webview` would send to `origin`, read from its own
 /// store. `Ok(None)`: it holds none.
 async fn read_cookie(webview: Webview, origin: &str) -> Result<Option<String>, String> {
     let url: tauri::Url = origin
         .parse()
         .map_err(|e| format!("the stored address no longer parses: {e}"))?;
-    let cookies = tauri::async_runtime::spawn_blocking(move || webview.cookies_for_url(url))
+    let read = tauri::async_runtime::spawn_blocking(move || webview.cookies_for_url(url));
+    let cookies = tokio::time::timeout(COOKIE_WAIT, read)
         .await
+        .map_err(|_| {
+            format!(
+                "its cookie store did not answer in {} s",
+                COOKIE_WAIT.as_secs()
+            )
+        })?
         .map_err(|e| format!("reading its cookies: {e}"))?
         .map_err(|e| format!("reading its cookies: {e}"))?;
     Ok(watch::cookie_header(
@@ -968,6 +997,7 @@ async fn read_cookie(webview: Webview, origin: &str) -> Result<Option<String>, S
 fn finish_suspend(
     app: &AppHandle,
     instance: &Instance,
+    nonce: u64,
     reported_url: &str,
     scroll: Vec<suspend::Scroll>,
     session: Vec<(String, String)>,
@@ -976,6 +1006,9 @@ fn finish_suspend(
     let state = app.state::<ShellState>();
     let id = instance.id.clone();
     let label = instance_label(&id);
+    // The close this answer started ends here, whichever way: everything below
+    // runs on the main thread, as the tick does, so no ask can come between.
+    state.activity.lock().unwrap().closed(&id, nonce);
     // Still due? The person may have come back while the cookies were read.
     let Some(timeout) = state.settings.lock().unwrap().suspend_after() else {
         return;
@@ -1018,7 +1051,7 @@ fn finish_suspend(
         },
         registry::now_ms()
     );
-    state.suspended.lock().unwrap().insert(
+    let replaced = state.suspended.lock().unwrap().insert(
         id,
         Suspended {
             page,
@@ -1027,11 +1060,20 @@ fn finish_suspend(
             watcher,
         },
     );
+    // Never two watchers for one instance: one replaced here would post every
+    // banner twice, and keep posting after the restore.
+    if let Some(old) = replaced.and_then(|s| s.watcher) {
+        old.abort();
+    }
     if let Err(e) = state.persist() {
         eprintln!("talaria-desktop: {e}");
     }
     emit_state(app);
 }
+
+/// How long after the shell's own minimize it looks whether the compositor
+/// honoured it: a minimized window has lost focus by then.
+const MINIMIZE_SETTLE: Duration = Duration::from_millis(750);
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1054,7 +1096,25 @@ pub fn desktop_window(app: AppHandle, action: WindowAction) -> Result<(), String
             app.state::<ShellState>()
                 .self_minimized
                 .store(true, Ordering::Relaxed);
-            window.minimize().map_err(|e| format!("minimizing: {e}"))?
+            window.minimize().map_err(|e| format!("minimizing: {e}"))?;
+            // A compositor may ignore the request and leave the window where
+            // it is, focused. Look once, a moment later: still focused means
+            // not minimized. Otherwise the word would outlive the person
+            // clicking into another app, and the instance on screen would be
+            // suspended while visible.
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(MINIMIZE_SETTLE).await;
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    if main_window(&handle).is_ok_and(|w| w.is_focused().unwrap_or(false)) {
+                        handle
+                            .state::<ShellState>()
+                            .self_minimized
+                            .store(false, Ordering::Relaxed);
+                    }
+                });
+            });
         }
         WindowAction::ToggleMaximize => {
             if window

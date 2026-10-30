@@ -174,9 +174,15 @@ pub enum Baseline {
     Unreachable,
 }
 
-/// One read of `/api/notifications` as the page would make it.
+/// The longest the first read may take. The page waits open for it, and a
+/// read that has not finished by then counts as one the shell cannot make.
+pub const BASELINE_WAIT: Duration = Duration::from_secs(30);
+
+/// One read of `/api/notifications` as the page would make it, bounded by
+/// `BASELINE_WAIT`.
 pub async fn baseline(origin: &str, cookie: &str) -> Baseline {
-    match fetch(&client(), origin, cookie).await {
+    let read = tokio::time::timeout(BASELINE_WAIT, fetch(&client(), origin, cookie)).await;
+    match read.unwrap_or(Fetch::Failed) {
         Fetch::Rows(rows) => {
             let mut arrivals = Arrivals::default();
             arrivals.arrive(&rows);

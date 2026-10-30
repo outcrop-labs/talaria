@@ -209,7 +209,11 @@ never while it is merely unfocused, so a page on a second monitor (an agent run 
 stays. GTK on Wayland reports no minimized state, so there the shell counts its own minimize
 (the themed titlebar's button) until the window is focused again; on Wayland a window
 minimized by the compositor or by the OS titlebar's button is not seen as away, and its
-instance stays loaded. X11, macOS and Windows report minimized themselves. The timeout is
+instance stays loaded. A compositor may also ignore the shell's minimize (sway and other
+wlroots window managers): the shell looks once, 750 ms after asking, and a window still
+focused then is counted as on screen. One that ignored it but lost focus within that moment
+counts as away until it is focused again. X11, macOS and Windows report minimized
+themselves. The timeout is
 `suspendAfterMinutes` in `settings.json`: 10 by default, `0` for Off, any whole number of
 minutes up to a day. The launcher and Settings → Profile offer Off, 5, 10, 30 and 60
 minutes; a value set by hand shows as its own choice. The clock ticks every 5 s.
@@ -220,12 +224,26 @@ minutes; a value set by hand shows as its own choice. The clock ticks every 5 s.
 
 - it has no hook: an instance whose Talaria predates it. Its notifications and its typed
   input are its own page's business, so it behaves exactly as before;
-- it holds typed text a reload would lose: a field typed into that is still on the page and
-  differs from what it held before the first keystroke. ui keeps the chat composer's draft
-  across a reload (`lib/comms-drafts`, marked `data-desktop-draft`), so that does not count;
-  a half-written ticket field, an agent prompt mid-edit or a typed search does;
+- it holds input a reload would lose:
+  - a field the person changed that is still on the page and differs from what it held
+    before their first change: text in an input, a textarea or a rich editor, a select
+    picked, a checkbox or radio toggled. ui keeps the chat composer's draft across a reload
+    (`lib/comms-drafts`; the editor is marked `data-desktop-draft`), so the composer's text
+    does not count. A half-written ticket field, an agent prompt mid-edit, a typed search
+    or an unsaved form's select does;
+  - anything marked `data-desktop-unsaved`: the pending-attachment chips over a composer
+    (uploaded, not yet sent, and not part of the draft). A file input is not counted
+    itself: every one in ui hands its file off on pick, as such a chip or a saved upload;
+  - not seen: input inside an embedded frame. The artifact preview is a sandboxed frame
+    with its own origin and a Google file pane is Google's, so the page cannot read either;
 - its page posts OS notifications and the shell cannot read them the way the page does
   (below).
+
+A page that says it can go is closed once the shell has read its cookies and its
+notifications baseline, which can take a while on a slow instance. It is not asked again
+meanwhile, so one page never starts two closes or two watchers. Both reads are bounded (10 s
+for the cookie store, 30 s for the baseline), and a page the shell could not read in time
+stays.
 
 **What a restore brings back.** Showing a suspended instance by any route recreates its
 webview at its exact last page (path, query and hash), at once and with no probe: a launcher
@@ -236,7 +254,7 @@ notification's own path instead. The recreated page also gets back its `sessionS
 (where ui keeps each view's "where you were") and the scroll position of every box that was
 scrolled, retried while the page renders for up to five seconds and abandoned at the
 person's first scroll, key or click. Not restored: in-memory state a reload also loses (an
-open menu or dialog), text in fields the page did not keep (such a page is never suspended),
+open menu or dialog), input the page did not keep (such a page is never suspended),
 and scroll after a relaunch (only the URL is kept on disk).
 
 **What survives.**

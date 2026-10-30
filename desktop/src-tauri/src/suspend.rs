@@ -14,8 +14,8 @@
 //!
 //! The page decides whether it can go. The shell asks it (`report_js`), and a
 //! page that does not answer, answers with no `__TALARIA_DESKTOP__` hook (a
-//! Talaria older than the hook), or says it holds typed input a reload would
-//! lose, is kept until it is shown again. Only a page that says it can go is
+//! Talaria older than the hook), or says it holds input a reload would lose,
+//! is kept until it is shown again. Only a page that says it can go is
 //! closed.
 //!
 //! This module is the pure part: the activity clock, the URL rule and the
@@ -35,13 +35,21 @@ pub const TICK: Duration = Duration::from_secs(5);
 /// How long the shell waits for a page's report before asking again.
 pub const REPORT_WAIT: Duration = Duration::from_secs(30);
 
+/// How long a page that said it can go may take to close. Between its answer
+/// and the close the shell reads its cookies and its notifications baseline
+/// (commands.rs `COOKIE_WAIT`, watch.rs `BASELINE_WAIT`: 40 s at most, then the
+/// hop back to the main thread). It is not asked again meanwhile; this bound
+/// only keeps a close that never reported back from holding it forever.
+pub const CLOSE_WAIT: Duration = Duration::from_secs(60);
+
 /// Why a page asked to stay. Logged, and shown to nobody else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kept {
     /// No `__TALARIA_DESKTOP__` hook: an instance whose Talaria predates it.
     /// Its notifications and typed input are its own page's job, so it stays.
     Unsupported,
-    /// Typed input a reload would lose.
+    /// Input a reload would lose: a field changed, or an attachment uploaded
+    /// and not yet sent (ui's `data-desktop-unsaved`).
     Input,
     /// Its page posts notifications, and the shell could not read them the
     /// way the page does (a proxy or certificate only the webview knows, or
@@ -66,6 +74,9 @@ pub struct Activity {
     away_since: Option<Instant>,
     kept: HashMap<String, Kept>,
     asked: HashMap<String, Asked>,
+    /// Pages that said they can go, while the shell gets ready to close them.
+    /// Asking one again would start a second close, and a second watcher.
+    closing: HashMap<String, Asked>,
     nonce: u64,
 }
 
@@ -118,6 +129,7 @@ impl Activity {
         self.hidden_at.remove(id);
         self.kept.remove(id);
         self.asked.remove(id);
+        self.closing.remove(id);
         if self.shown.as_deref() == Some(id) {
             self.shown = None;
         }
@@ -139,8 +151,9 @@ impl Activity {
     }
 
     /// The live instances to ask now: off screen for the timeout, not kept,
-    /// and not already asked within `REPORT_WAIT`. A live webview the clock
-    /// has never seen hidden starts its clock here.
+    /// not already asked within `REPORT_WAIT`, and not closing (within
+    /// `CLOSE_WAIT`). A live webview the clock has never seen hidden starts
+    /// its clock here.
     pub fn due(&mut self, live: &[String], now: Instant, timeout: Duration) -> Vec<String> {
         let mut due = Vec::new();
         for id in live {
@@ -154,6 +167,13 @@ impl Activity {
                 .asked
                 .get(id)
                 .is_some_and(|a| now.saturating_duration_since(a.at) < REPORT_WAIT)
+            {
+                continue;
+            }
+            if self
+                .closing
+                .get(id)
+                .is_some_and(|c| now.saturating_duration_since(c.at) < CLOSE_WAIT)
             {
                 continue;
             }
@@ -186,8 +206,25 @@ impl Activity {
         }
     }
 
-    /// The page asked to stay: leave it alone until it is shown again.
+    /// `id`'s page answered `nonce` saying it can go, and the shell has
+    /// started closing it: not asked again until that close ends.
+    pub fn closing(&mut self, id: &str, nonce: u64, now: Instant) {
+        self.closing
+            .insert(id.to_string(), Asked { nonce, at: now });
+    }
+
+    /// The close started for `nonce` ended, whichever way it went. A later
+    /// close of the same instance is not ended by an earlier one's word.
+    pub fn closed(&mut self, id: &str, nonce: u64) {
+        if self.closing.get(id).is_some_and(|c| c.nonce == nonce) {
+            self.closing.remove(id);
+        }
+    }
+
+    /// The page asked to stay: leave it alone until it is shown again. A
+    /// close in flight that ends here is over.
     pub fn keep(&mut self, id: &str, why: Kept) {
+        self.closing.remove(id);
         self.kept.insert(id.to_string(), why);
     }
 
@@ -575,6 +612,86 @@ mod tests {
         assert_eq!(a.due(&live, now + REPORT_WAIT, MIN * 10), ids(&["a"]));
         assert!(a.answered("a", nonce));
         assert!(!a.answered("a", nonce), "an answer counts once");
+    }
+
+    #[test]
+    fn a_page_that_said_it_can_go_is_not_asked_again_while_it_closes() {
+        let t0 = Instant::now();
+        let mut a = Activity::default();
+        a.show(Some("a"), t0);
+        a.show(None, t0);
+        let live = ids(&["a"]);
+        let now = t0 + MIN * 10;
+        assert_eq!(a.due(&live, now, MIN * 10), ids(&["a"]));
+        let nonce = a.ask("a", now);
+        assert!(a.answered("a", nonce));
+        a.closing("a", nonce, now);
+        // The cookie read and the baseline take a while (a slow instance):
+        // every tick meanwhile, and past the report wait, asks nothing.
+        for secs in [5, 10, 30, 45, 59] {
+            assert!(
+                a.due(&live, now + Duration::from_secs(secs), MIN * 10)
+                    .is_empty(),
+                "re-asked {secs} s into the close"
+            );
+        }
+        // Another close's word does not end this one.
+        a.closed("a", nonce + 1);
+        assert!(
+            a.due(&live, now + Duration::from_secs(30), MIN * 10)
+                .is_empty()
+        );
+        // Ended without closing (the person came back, or the close failed)
+        // and still off screen: asked again.
+        a.closed("a", nonce);
+        assert_eq!(
+            a.due(&live, now + Duration::from_secs(30), MIN * 10),
+            ids(&["a"])
+        );
+    }
+
+    #[test]
+    fn a_close_that_never_reports_back_holds_the_page_only_for_the_close_wait() {
+        let t0 = Instant::now();
+        let mut a = Activity::default();
+        a.show(Some("a"), t0);
+        a.show(None, t0);
+        let live = ids(&["a"]);
+        let now = t0 + MIN * 10;
+        let nonce = a.ask("a", now);
+        assert!(a.answered("a", nonce));
+        a.closing("a", nonce, now);
+        assert!(
+            a.due(&live, now + CLOSE_WAIT - Duration::from_secs(1), MIN * 10)
+                .is_empty()
+        );
+        assert_eq!(a.due(&live, now + CLOSE_WAIT, MIN * 10), ids(&["a"]));
+    }
+
+    #[test]
+    fn a_close_that_keeps_the_page_ends_and_the_page_stays() {
+        let t0 = Instant::now();
+        let mut a = Activity::default();
+        a.show(Some("a"), t0);
+        a.show(None, t0);
+        let live = ids(&["a"]);
+        let now = t0 + MIN * 10;
+        let nonce = a.ask("a", now);
+        assert!(a.answered("a", nonce));
+        a.closing("a", nonce, now);
+        // The shell could not read its notifications: kept, close over.
+        a.keep("a", Kept::Notify);
+        assert!(a.due(&live, now + MIN * 100, MIN * 10).is_empty());
+        a.show(Some("a"), now + MIN * 100);
+        a.show(None, now + MIN * 100);
+        assert_eq!(a.due(&live, now + MIN * 110, MIN * 10), ids(&["a"]));
+        // Forgetting an instance mid-close clears that too.
+        let n2 = a.ask("a", now + MIN * 110);
+        a.closing("a", n2, now + MIN * 110);
+        a.forget("a");
+        a.show(Some("a"), now + MIN * 111);
+        a.show(None, now + MIN * 111);
+        assert_eq!(a.due(&live, now + MIN * 121, MIN * 10), ids(&["a"]));
     }
 
     #[test]
