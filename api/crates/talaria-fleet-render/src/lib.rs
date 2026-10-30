@@ -2961,20 +2961,20 @@ fn hermes_terminal_local(routed: &Map<String, Value>) -> bool {
 /// `is_browser_use_cli_mode`, `is_camofox_mode` and `_is_local_backend`.
 ///
 /// The agent's own secrets reach Hermes as its env, and `secret_names` are
-/// the ones that do (`passthrough_names`). Two env names change what Hermes
-/// picks:
-/// - `BROWSER_CDP_URL` is a CDP override, exactly as `browser.cdp_url` is
-///   (`_get_cdp_override_raw`: a live `/browser connect`, then this env name,
-///   then the config key). It beats a Camofox selection and is never local.
-/// - `CAMOFOX_URL` selects Camofox when no `browser.cloud_provider` is
-///   written.
+/// the ones that do (`passthrough_names`). One env name changes what Hermes
+/// picks: `BROWSER_CDP_URL` is a CDP override, exactly as `browser.cdp_url`
+/// is (`_get_cdp_override_raw`: a live `/browser connect`, then this env
+/// name, then the config key). It beats a Camofox selection and is never
+/// local.
 ///
-/// The hosted providers Hermes finds by their credentials when no provider
-/// is written (`_autodetect_cloud_provider`: `BROWSER_USE_API_KEY`, or
-/// `BROWSERBASE_API_KEY` with `BROWSERBASE_PROJECT_ID`) are not read: those
-/// names are refused as per-agent secrets and skipped at materialize
+/// The other names Hermes picks a browser by when no provider is written
+/// are not read: `CAMOFOX_URL` (`is_camofox_mode`) and the hosted providers'
+/// credentials (`_autodetect_cloud_provider`: `BROWSER_USE_API_KEY`, or
+/// `BROWSERBASE_API_KEY` with `BROWSERBASE_PROJECT_ID`). Those names are
+/// refused as per-agent secrets and skipped at materialize
 /// (`talaria_agent_secrets::reserved`), so Hermes never finds them in an
-/// agent's env either. What Talaria cannot see at all (a live `/browser
+/// agent's env either, and Camofox is chosen by `browser.cloud_provider`
+/// alone. What Talaria cannot see at all (a live `/browser
 /// connect`) it reads as absent, which errs toward `Local`.
 ///
 /// After those, `_is_local_backend` asks where the terminal runs
@@ -3019,11 +3019,7 @@ fn hermes_browser(routed: &Map<String, Value>, secret_names: &[String]) -> Herme
             other => py_text(other).trim().to_lowercase(),
         })
         .filter(|s| !s.is_empty());
-    let camofox = !cdp
-        && match &selection {
-            Some(s) => s == "camofox",
-            None => has_secret("CAMOFOX_URL"),
-        };
+    let camofox = !cdp && selection.as_deref() == Some("camofox");
     if !camofox && (backend.is_empty() || backend == "browser-use") {
         return HermesBrowser::Exec;
     }
@@ -5224,9 +5220,6 @@ service:
                     .clone()
             );
         }
-        // Camofox chosen by its env name alone, with no provider written.
-        let by_env = closed_for(&["terminal"], None, &["CAMOFOX_URL"]);
-        assert_eq!(by_env.last(), Some(&json!("browser")));
         // A retired name that closes the terminal counts, and so does an
         // authored platform list without it.
         let retired = closed_for(&["debugging"], Some(json!({ "backend": "off" })), &[]);
@@ -5290,13 +5283,6 @@ service:
                 "{label}"
             );
         }
-        // A written provider wins over the env name, as in Hermes.
-        let written = closed_for(
-            &["terminal"],
-            Some(json!({ "cloud_provider": "local" })),
-            &["CAMOFOX_URL"],
-        );
-        assert_eq!(written, terminal_closed);
         // A CDP endpoint supplied only as the agent's `BROWSER_CDP_URL`
         // secret is the same override as `browser.cdp_url`: never local, and
         // it beats a Camofox selection (`is_camofox_mode`).
@@ -5440,11 +5426,6 @@ service:
                     json!({ "backend": " Camofox " }),
                     vec![],
                     HermesBrowser::Remote,
-                ),
-                (
-                    json!({}),
-                    vec!["CAMOFOX_URL".to_string()],
-                    HermesBrowser::Local,
                 ),
                 (
                     json!({ "backend": "browser-use" }),

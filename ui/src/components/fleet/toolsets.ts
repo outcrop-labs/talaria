@@ -171,8 +171,7 @@ function pyText(v: unknown): string {
  * names of the agent's own secrets, which reach Hermes as its env. A
  * `BROWSER_CDP_URL` secret is the same CDP override as `browser.cdp_url`
  * (Hermes reads it first). With no names (a viewer who cannot read the
- * agent's secrets) it reads the config alone; the renderer also reads a
- * `CAMOFOX_URL` secret, which this does not.
+ * agent's secrets) it reads the config alone.
  * `via` is the setting that decided it, as the grid's line names it.
  */
 export type AuthoredBrowser = {
