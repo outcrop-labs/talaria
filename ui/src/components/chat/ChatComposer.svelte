@@ -465,9 +465,9 @@
   const draftUser = $derived(draftScope?.userId() ?? null)
   /** The key this composer owns right now, and for whom. */
   let owned: { user: string; key: string } | null = null
-  /** A draft key is owned: what is typed here survives a reload, so the
-   *  desktop shell may suspend the page with text in it (lib/desktop-suspend:
-   *  `data-desktop-draft`). */
+  /** A draft key is owned: what is typed in the editor survives a reload, so
+   *  the desktop shell may suspend the page with text in it
+   *  (lib/desktop-suspend: `data-desktop-draft`). */
   let keepsDraft = $state(false)
   /** The owned key has unsaved edits; the editor is serialized at flush. */
   let pending: { user: string; key: string; editor: DraftSource } | null = null
@@ -588,8 +588,10 @@
   const sendEnabled = $derived(!disabled && (canSend ?? !empty))
 </script>
 
-<div class="flex min-w-0 flex-1 flex-col gap-2" data-desktop-draft={keepsDraft ? '' : undefined}>
-  <div class="rounded-md border border-line bg-surface">
+<div class="flex min-w-0 flex-1 flex-col gap-2">
+  <!-- The mark sits on the editor alone: the draft keeps its text, not the
+       rail's controls. -->
+  <div class="rounded-md border border-line bg-surface" data-desktop-draft={keepsDraft ? '' : undefined}>
     <EditorContent editor={$editor} />
   </div>
   {#if controlRail}

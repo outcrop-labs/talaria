@@ -1,18 +1,26 @@
 // The desktop shell suspends an off-screen instance only when its page says
-// a reload loses nothing typed. Every kind of field the rule names, checked
-// against what a reload would and would not keep.
+// a reload loses nothing the person entered. Every kind of field the rule
+// names, and the unsaved mark, checked against what a reload would and would
+// not keep.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fieldOf, TypedInput, type Field } from './desktop-suspend'
 
 type Listener = (e: { target: unknown }) => void
 
-/** A document that only routes the two events the tracker listens to. */
+type Fired = 'focusin' | 'pointerdown' | 'beforeinput' | 'input' | 'change'
+
+/** A document that routes the events the tracker listens to, and answers
+ *  `querySelector` for the unsaved mark from a set the test controls. */
 class FakeDoc {
   listeners = new Map<string, Listener[]>()
+  marked = new Set<string>()
   addEventListener(type: string, fn: Listener) {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn])
   }
-  fire(type: 'beforeinput' | 'input', target: unknown) {
+  querySelector(selector: string) {
+    return this.marked.has(selector) ? {} : null
+  }
+  fire(type: Fired, target: unknown) {
     for (const fn of this.listeners.get(type) ?? []) fn({ target })
   }
 }
@@ -24,6 +32,7 @@ function el(
   o: {
     type?: string
     value?: string
+    checked?: boolean
     text?: string
     parent?: Field | null
     editable?: boolean
@@ -31,11 +40,12 @@ function el(
     disabled?: boolean
     readOnly?: boolean
   } = {},
-): Field & { value?: string; textContent: string | null; isConnected: boolean } {
+): Field & { value?: string; checked?: boolean; textContent: string | null; isConnected: boolean } {
   const self: Field & { editable: boolean; draft: boolean } = {
     tagName,
     type: o.type,
     value: o.value,
+    checked: o.checked,
     textContent: o.text ?? null,
     isConnected: true,
     disabled: o.disabled,
@@ -63,15 +73,32 @@ function type(doc: FakeDoc, field: Field & { value?: string; textContent: string
   doc.fire('input', field)
 }
 
-describe('which fields count as typed input', () => {
-  it('takes text inputs and textareas, and skips boxes a person does not type in', () => {
+/** Pick in a select or toggle a box the way the browser does: the person
+ *  reaches for it (focus or press), its state changes, then input and change
+ *  fire. No beforeinput. */
+function pick(doc: FakeDoc, field: Field & { value?: string; checked?: boolean }, next: string | boolean, reach = true) {
+  if (reach) doc.fire('focusin', field)
+  if (typeof next === 'boolean') field.checked = next
+  else field.value = next
+  doc.fire('input', field)
+  doc.fire('change', field)
+}
+
+describe('which fields count as entered input', () => {
+  it('takes every input a person sets, textareas and selects, and skips buttons, hidden and files', () => {
     for (const t of ['text', 'search', 'email', 'url', 'tel', 'password', 'number', 'TEXT']) {
       expect(fieldOf(el('INPUT', { type: t }) as unknown as EventTarget), t).not.toBeNull()
     }
-    for (const t of ['checkbox', 'radio', 'range', 'color', 'file', 'submit', 'hidden']) {
+    for (const t of ['checkbox', 'radio', 'range', 'color', 'date', 'time']) {
+      expect(fieldOf(el('INPUT', { type: t }) as unknown as EventTarget), t).not.toBeNull()
+    }
+    // A picked file is handed off on pick in ui; what it becomes (a marked
+    // chip, or a saved upload) is what counts.
+    for (const t of ['file', 'submit', 'button', 'reset', 'image', 'hidden']) {
       expect(fieldOf(el('INPUT', { type: t }) as unknown as EventTarget), t).toBeNull()
     }
     expect(fieldOf(el('TEXTAREA') as unknown as EventTarget)).not.toBeNull()
+    expect(fieldOf(el('SELECT') as unknown as EventTarget)).not.toBeNull()
     expect(fieldOf(el('DIV') as unknown as EventTarget)).toBeNull()
     expect(fieldOf(null)).toBeNull()
     expect(fieldOf({} as EventTarget)).toBeNull()
@@ -155,9 +182,61 @@ describe('what a reload would lose', () => {
     expect(typed.holds()).toBe(true)
   })
 
-  it('ignores boxes that are not typed in', () => {
-    const box = el('INPUT', { type: 'checkbox', value: 'on' })
-    type(doc, box, 'off')
+  it('is a select picked in an unsaved form, until it is picked back', () => {
+    const status = el('SELECT', { value: 'todo' })
+    pick(doc, status, 'doing')
+    expect(typed.holds()).toBe(true)
+    pick(doc, status, 'todo')
+    expect(typed.holds()).toBe(false)
+  })
+
+  it('is a select changed with no focus first, counted from nothing known', () => {
+    const status = el('SELECT', { value: 'todo' })
+    pick(doc, status, 'doing', false)
+    expect(typed.holds()).toBe(true)
+  })
+
+  it('is a checkbox toggled, until it is toggled back, with or without a press first', () => {
+    const box = el('INPUT', { type: 'checkbox', checked: false })
+    pick(doc, box, true)
+    expect(typed.holds()).toBe(true)
+    pick(doc, box, false)
+    expect(typed.holds()).toBe(false)
+
+    // Its label clicked: the box itself was never reached for.
+    const t2 = new TypedInput((doc = new FakeDoc()) as unknown as Document)
+    const viaLabel = el('INPUT', { type: 'checkbox', checked: true })
+    pick(doc, viaLabel, false, false)
+    expect(t2.holds()).toBe(true)
+    pick(doc, viaLabel, true, false)
+    expect(t2.holds()).toBe(false)
+  })
+
+  it('is a radio picked', () => {
+    const radio = el('INPUT', { type: 'radio', checked: false })
+    pick(doc, radio, true, false)
+    expect(typed.holds()).toBe(true)
+  })
+
+  it('is a pending attachment over a composer, whatever the fields hold', () => {
+    // The chips are uploaded and unsent: the draft keeps the text beside them
+    // (so the composer's own editor does not count), not the chips.
+    const composer = el('DIV', { draft: true })
+    const editor = el('DIV', { editable: true, text: '', parent: composer })
+    type(doc, editor, 'see this')
+    expect(typed.holds()).toBe(false)
+    doc.marked.add('[data-desktop-unsaved]')
+    expect(typed.holds()).toBe(true)
+    // Sent or removed: the strip and its mark are gone.
+    doc.marked.delete('[data-desktop-unsaved]')
+    expect(typed.holds()).toBe(false)
+  })
+
+  it('ignores a file picker, a button and a hidden field', () => {
+    for (const t of ['file', 'button', 'hidden']) {
+      const f = el('INPUT', { type: t, value: '' })
+      type(doc, f, 'C:\\fakepath\\shot.png')
+    }
     expect(typed.holds()).toBe(false)
   })
 })
@@ -181,6 +260,10 @@ describe('the hook the shell reads', () => {
     const first = hook
     mod.installDesktopSuspend()
     expect((window as unknown as { __TALARIA_DESKTOP__: unknown }).__TALARIA_DESKTOP__).toBe(first)
+    // A pending attachment shows up in the answer, read from the document.
+    doc.marked.add('[data-desktop-unsaved]')
+    expect(hook.suspendState()).toEqual({ holdsInput: true, notify: true })
+    doc.marked.clear()
     // Typed text shows up in the answer.
     const input = el('INPUT', { type: 'text', value: '' })
     type(doc, input, 'x')
