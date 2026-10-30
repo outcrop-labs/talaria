@@ -6,6 +6,7 @@ import {
   inDesktopShell,
   shellDesktopWindow,
   shellGetDesktopSettings,
+  shellSetSuspendAfter,
   shellSetTitlebarMode,
   type DesktopSettings,
   type TitlebarMode,
@@ -42,6 +43,10 @@ export async function loadDesktopSettings(): Promise<void> {
 
 export async function setTitlebarMode(mode: TitlebarMode): Promise<void> {
   settings = await shellSetTitlebarMode(mode)
+}
+
+export async function setSuspendAfter(minutes: number): Promise<void> {
+  settings = await shellSetSuspendAfter(minutes)
 }
 
 export function desktopWindow(

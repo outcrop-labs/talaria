@@ -16,6 +16,9 @@ export type TitlebarMode = 'themed' | 'os' | 'none'
 
 export interface DesktopSettings {
   titlebar: TitlebarMode
+  /** How long an instance's page may stay off screen before the shell
+   *  suspends it, in minutes. 0 is Off. */
+  suspendAfterMinutes: number
 }
 
 export type DesktopWindowAction = 'minimize' | 'toggleMaximize' | 'close' | 'startDragging'
@@ -33,9 +36,14 @@ export interface ShellSnapshot {
   view: 'welcome' | 'active'
   activeId: string | null
   titlebar: TitlebarMode
+  /** 0 is Off. */
+  suspendAfterMinutes: number
   instances: Instance[]
   /** Instances with a live webview this session — opening one is instant. */
   loaded: string[]
+  /** Instances this session suspended: opening one recreates its webview at
+   *  its last page, with no probe. */
+  suspended: string[]
   notices: string[]
   /** The instance to reopen at boot, until the first view change. */
   reopen: string | null
@@ -69,6 +77,9 @@ export const getDesktopSettings = () => invoke<DesktopSettings>('get_desktop_set
 
 export const setTitlebarMode = (mode: TitlebarMode) =>
   invoke<DesktopSettings>('set_titlebar_mode', { mode })
+
+export const setSuspendAfter = (minutes: number) =>
+  invoke<DesktopSettings>('set_suspend_after', { minutes })
 
 export const desktopWindow = (action: DesktopWindowAction) =>
   invoke<void>('desktop_window', { action })

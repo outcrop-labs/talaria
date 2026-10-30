@@ -3798,6 +3798,7 @@ dependencies = [
 name = "talaria-desktop"
 version = "0.1.0"
 dependencies = [
+ "gtk",
  "notify-rust",
  "reqwest",
  "serde",

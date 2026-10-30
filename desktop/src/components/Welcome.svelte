@@ -10,7 +10,7 @@
   import DitherField from './DitherField.svelte'
   import InstanceList from './InstanceList.svelte'
   import WingMark from './WingMark.svelte'
-  import { cancelOpen, dismissNotice, open, setTitlebar, shell } from '../lib/state.svelte'
+  import { cancelOpen, dismissNotice, open, setSuspend, setTitlebar, shell } from '../lib/state.svelte'
 
   // The signature ambient field, wearing the same shape the nav rail wears in
   // the product: a soft bloom off the top edge, a heavier foot at the bottom,
@@ -26,6 +26,24 @@
     { id: 'os', label: 'OS' },
     { id: 'none', label: 'None' },
   ]
+
+  // How long an instance may stay off screen before the shell frees it
+  // (src-tauri/src/suspend.rs). A value set by hand in settings.json that is
+  // not one of these still shows, as its own choice.
+  const suspendChoices = [
+    { minutes: 0, label: 'Off' },
+    { minutes: 5, label: '5 min' },
+    { minutes: 10, label: '10 min' },
+    { minutes: 30, label: '30 min' },
+    { minutes: 60, label: '1 h' },
+  ]
+  const suspendOptions = $derived(
+    suspendChoices.some((c) => c.minutes === shell.suspendAfterMinutes)
+      ? suspendChoices
+      : [...suspendChoices, { minutes: shell.suspendAfterMinutes, label: `${shell.suspendAfterMinutes} min` }].sort(
+          (a, b) => a.minutes - b.minutes,
+        ),
+  )
 
   const onadd = () => (shell.adding = true)
 
@@ -167,6 +185,30 @@
             </button>
           {/each}
         </div>
+      </div>
+
+      <div class="mt-6">
+        <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-muted" id="suspend-label">
+          Suspend inactive instances
+        </div>
+        <div class="inline-flex rounded-md border border-hairline p-0.5" role="group" aria-labelledby="suspend-label">
+          {#each suspendOptions as c (c.minutes)}
+            <button
+              type="button"
+              aria-pressed={shell.suspendAfterMinutes === c.minutes}
+              class="rounded px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.05em] {shell.suspendAfterMinutes ===
+              c.minutes
+                ? 'bg-raised text-readout'
+                : 'text-muted hover:text-readout'}"
+              onclick={() => void setSuspend(c.minutes)}
+            >
+              {c.label}
+            </button>
+          {/each}
+        </div>
+        <p class="mt-2 text-[11px] leading-snug text-dim">
+          An instance left off screen this long gives back its memory and reopens at the same page.
+        </p>
       </div>
 
       <div class="mt-6">

@@ -7,6 +7,12 @@
 //! <ms>`), whatever entries still parse are kept, and the launcher says what
 //! happened. The old behavior was a panic in setup and no window at all.
 //!
+//! Each instance's last page (`lastUrls`) is kept here too, so a relaunch, or
+//! a restore after a suspend, opens where the person was. It lives beside the
+//! entries, not in them: `Instance` is what the in-app switcher of every OTHER
+//! instance reads (`list_instances`), and one instance's paths are not another
+//! origin's business.
+//!
 //! Data dirs are deleted only for an instance the person removed. The file
 //! records each removal (`removed`) until a launch finds its dir gone, because
 //! a closing WebKit process can re-create the dir after the remove deleted
@@ -14,6 +20,7 @@
 //! may be the session of an entry a damaged file lost.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
@@ -75,6 +82,20 @@ struct RegistryFile {
     /// `sweep_removed`). Older builds ignore the field and drop it on save.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     removed: Vec<String>,
+    /// Local id → the last page that instance showed (suspend::restorable_url
+    /// already applied). Older builds ignore the field and drop it on save.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    last_urls: BTreeMap<String, String>,
+}
+
+/// Everything `save` writes, borrowed from the shell state.
+pub struct Record<'a> {
+    pub instances: &'a [Instance],
+    /// The instance on screen, or None for the launcher.
+    pub last_view: Option<&'a str>,
+    /// The removals still waiting on a sweep.
+    pub removed: &'a [String],
+    pub last_urls: &'a BTreeMap<String, String>,
 }
 
 /// Distinguish an absent field (None, from `default`) from `null`.
@@ -90,6 +111,9 @@ pub struct Loaded {
     /// Removals whose data dir the next sweep deletes. Always empty for a file
     /// that did not parse: what it recorded is not trusted with a delete.
     pub removed: Vec<String>,
+    /// Each registered instance's last page. Entries for ids the file no
+    /// longer registers are dropped.
+    pub last_urls: BTreeMap<String, String>,
 }
 
 pub fn load(path: &Path) -> Loaded {
@@ -101,6 +125,7 @@ pub fn load(path: &Path) -> Loaded {
                 resume: Resume::Launcher,
                 notice: None,
                 removed: Vec::new(),
+                last_urls: BTreeMap::new(),
             };
         }
         Err(e) => {
@@ -112,20 +137,26 @@ pub fn load(path: &Path) -> Loaded {
                     path.display()
                 )),
                 removed: Vec::new(),
+                last_urls: BTreeMap::new(),
             };
         }
     };
     match serde_json::from_str::<RegistryFile>(&raw) {
-        Ok(file) => Loaded {
-            instances: file.instances,
-            resume: match file.last_view {
-                None => Resume::Legacy,
-                Some(None) => Resume::Launcher,
-                Some(Some(id)) => Resume::Instance(id),
-            },
-            notice: None,
-            removed: file.removed,
-        },
+        Ok(file) => {
+            let mut last_urls = file.last_urls;
+            last_urls.retain(|id, _| file.instances.iter().any(|i| &i.id == id));
+            Loaded {
+                instances: file.instances,
+                resume: match file.last_view {
+                    None => Resume::Legacy,
+                    Some(None) => Resume::Launcher,
+                    Some(Some(id)) => Resume::Instance(id),
+                },
+                notice: None,
+                removed: file.removed,
+                last_urls,
+            }
+        }
         Err(strict) => {
             let (instances, total) = salvage(&raw);
             let aside = set_aside(path);
@@ -142,7 +173,15 @@ pub fn load(path: &Path) -> Loaded {
             // The rewrite records no removals, so no launch after it deletes a
             // data dir on the damaged file's word.
             if aside.is_ok() {
-                let _ = save(path, &instances, None, &[]);
+                let _ = save(
+                    path,
+                    &Record {
+                        instances: &instances,
+                        last_view: None,
+                        removed: &[],
+                        last_urls: &BTreeMap::new(),
+                    },
+                );
             }
             Loaded {
                 instances,
@@ -151,6 +190,7 @@ pub fn load(path: &Path) -> Loaded {
                     "The instance list could not be read ({strict}); {moved}, and {kept}"
                 )),
                 removed: Vec::new(),
+                last_urls: BTreeMap::new(),
             }
         }
     }
@@ -184,19 +224,18 @@ pub fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
     Ok(to)
 }
 
-/// `last_view`: the instance on screen, or None for the launcher. `removed`:
-/// the removals still waiting on a sweep.
-pub fn save(
-    path: &Path,
-    instances: &[Instance],
-    last_view: Option<&str>,
-    removed: &[String],
-) -> Result<(), String> {
+pub fn save(path: &Path, record: &Record<'_>) -> Result<(), String> {
     let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_string_pretty(&RegistryFile {
-        instances: instances.to_vec(),
-        last_view: Some(last_view.map(str::to_string)),
-        removed: removed.to_vec(),
+        instances: record.instances.to_vec(),
+        last_view: Some(record.last_view.map(str::to_string)),
+        removed: record.removed.to_vec(),
+        last_urls: record
+            .last_urls
+            .iter()
+            .filter(|(id, _)| record.instances.iter().any(|i| &i.id == *id))
+            .map(|(id, url)| (id.clone(), url.clone()))
+            .collect(),
     })
     .map_err(|e| format!("serializing registry: {e}"))?;
     fs::write(&tmp, json).map_err(|e| format!("writing {}: {e}", tmp.display()))?;
@@ -288,18 +327,53 @@ mod tests {
         a.last_opened_at = Some(2_000);
         let b = sample("b", "22222222-2222-2222-2222-222222222222");
         let gone = vec!["33333333-3333-3333-3333-333333333333".to_string()];
-        save(&path, &[a.clone(), b.clone()], Some("b"), &gone).unwrap();
+        let urls = BTreeMap::from([
+            (
+                "b".to_string(),
+                "https://outcrop.example/boards?x=1#t".to_string(),
+            ),
+            ("gone".to_string(), "https://gone.example/".to_string()),
+        ]);
+        let both = [a.clone(), b.clone()];
+        save(
+            &path,
+            &Record {
+                instances: &both,
+                last_view: Some("b"),
+                removed: &gone,
+                last_urls: &urls,
+            },
+        )
+        .unwrap();
         let loaded = load(&path);
         assert_eq!(loaded.instances, vec![a.clone(), b.clone()]);
         assert_eq!(loaded.resume, Resume::Instance("b".into()));
         assert_eq!(loaded.removed, gone);
-        save(&path, &[a, b], None, &[]).unwrap();
+        assert_eq!(
+            loaded.last_urls,
+            BTreeMap::from([(
+                "b".to_string(),
+                "https://outcrop.example/boards?x=1#t".to_string()
+            )]),
+            "a page is kept only for a registered instance"
+        );
+        save(
+            &path,
+            &Record {
+                instances: &both,
+                last_view: None,
+                removed: &[],
+                last_urls: &BTreeMap::new(),
+            },
+        )
+        .unwrap();
         let loaded = load(&path);
         assert_eq!(loaded.resume, Resume::Launcher);
         assert!(loaded.removed.is_empty());
+        let raw = fs::read_to_string(&path).unwrap();
         assert!(
-            !fs::read_to_string(&path).unwrap().contains("removed"),
-            "an empty list is not written, so older builds see the file they know"
+            !raw.contains("removed") && !raw.contains("lastUrls"),
+            "empty fields are not written, so older builds see the file they know"
         );
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -310,9 +384,12 @@ mod tests {
         let path = dir.join("instances.json");
         save(
             &path,
-            &[sample("a", "11111111-1111-1111-1111-111111111111")],
-            None,
-            &[],
+            &Record {
+                instances: &[sample("a", "11111111-1111-1111-1111-111111111111")],
+                last_view: None,
+                removed: &[],
+                last_urls: &BTreeMap::new(),
+            },
         )
         .unwrap();
         assert!(path.exists());
@@ -375,6 +452,42 @@ mod tests {
                 .unwrap()
                 .contains("1 of 2 instances were recovered")
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_from_an_older_build_has_no_pages_and_an_older_build_reads_ours() {
+        let dir = temp_dir("pages");
+        let path = dir.join("instances.json");
+        let a = sample("a", "11111111-1111-1111-1111-111111111111");
+        fs::write(
+            &path,
+            serde_json::json!({ "instances": [a], "lastView": "a" }).to_string(),
+        )
+        .unwrap();
+        assert!(load(&path).last_urls.is_empty());
+        // What an older build deserializes: the same struct without the field.
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        #[allow(dead_code)]
+        struct OlderFile {
+            instances: Vec<Instance>,
+            last_view: Option<String>,
+        }
+        let urls = BTreeMap::from([("a".to_string(), "https://outcrop.example/x".to_string())]);
+        save(
+            &path,
+            &Record {
+                instances: &[sample("a", "1")],
+                last_view: Some("a"),
+                removed: &[],
+                last_urls: &urls,
+            },
+        )
+        .unwrap();
+        let older: OlderFile = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(older.instances.len(), 1);
+        assert_eq!(older.last_view.as_deref(), Some("a"));
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -46,6 +46,9 @@ export type TitlebarMode = 'themed' | 'os' | 'none'
 
 export interface DesktopSettings {
   titlebar: TitlebarMode
+  /** Minutes an instance's page may stay off screen before the shell
+   *  suspends it; 0 is Off. Absent: a shell that predates suspending. */
+  suspendAfterMinutes?: number
 }
 
 export type DesktopWindowAction = 'minimize' | 'toggleMaximize' | 'close' | 'startDragging'
@@ -58,6 +61,11 @@ export async function shellGetDesktopSettings(): Promise<DesktopSettings> {
 export async function shellSetTitlebarMode(mode: TitlebarMode): Promise<DesktopSettings> {
   if (!inDesktopShell()) return { titlebar: mode }
   return ipc().then((invoke) => invoke<DesktopSettings>('set_titlebar_mode', { mode }))
+}
+
+export async function shellSetSuspendAfter(minutes: number): Promise<DesktopSettings> {
+  if (!inDesktopShell()) return { titlebar: 'themed', suspendAfterMinutes: minutes }
+  return ipc().then((invoke) => invoke<DesktopSettings>('set_suspend_after', { minutes }))
 }
 
 export async function shellDesktopWindow(action: DesktopWindowAction): Promise<void> {

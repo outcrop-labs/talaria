@@ -9,7 +9,10 @@
 //! Window and webview operations stay sync, on the main thread, because
 //! WebKitGTK geometry depends on their order (docs/DESKTOP.md).
 
-use std::{sync::atomic::Ordering, time::Duration};
+use std::{
+    sync::atomic::Ordering,
+    time::{Duration, Instant},
+};
 
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -19,8 +22,8 @@ use tauri::{
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::{
-    AddAttempt, LoadFailure, ShellState, View, beacon, layout, notify, registry,
-    registry::Instance, settings,
+    AddAttempt, LoadFailure, ShellState, Suspended, View, beacon, layout, notify, registry,
+    registry::Instance, settings, suspend, watch,
 };
 
 /// The launcher's ground (`--color-ground` in desktop/src/app.css), painted by
@@ -79,9 +82,14 @@ pub struct ShellSnapshot {
     pub view: View,
     pub active_id: Option<String>,
     pub titlebar: settings::TitlebarMode,
+    /// 0 is Off (settings.rs).
+    pub suspend_after_minutes: u32,
     pub instances: Vec<Instance>,
     /// Instances with a live webview this session: opening one is instant.
     pub loaded: Vec<String>,
+    /// Instances this session suspended (suspend.rs): opening one recreates
+    /// its webview at its last page, with no probe.
+    pub suspended: Vec<String>,
     /// What went wrong at startup (an unreadable registry or settings file).
     pub notices: Vec<String>,
     /// The instance to reopen at boot, until the first view change.
@@ -106,17 +114,24 @@ fn snapshot(app: &AppHandle) -> ShellSnapshot {
     // add runs on a tokio worker while the main thread reads this.
     let view = *state.view.lock().unwrap();
     let active_id = state.active.lock().unwrap().clone();
-    let titlebar = state.settings.lock().unwrap().titlebar;
+    let (titlebar, suspend_after_minutes) = {
+        let settings = state.settings.lock().unwrap();
+        (settings.titlebar, settings.suspend_after_minutes)
+    };
     let instances = state.instances.lock().unwrap().clone();
     let notices = state.notices.lock().unwrap().clone();
     let reopen = state.reopen.lock().unwrap().clone();
     let failure = state.failure.lock().unwrap().clone();
+    let mut suspended: Vec<String> = state.suspended.lock().unwrap().keys().cloned().collect();
+    suspended.sort();
     ShellSnapshot {
         view,
         active_id,
         titlebar,
+        suspend_after_minutes,
         instances,
         loaded,
+        suspended,
         notices,
         reopen,
         failure,
@@ -132,11 +147,37 @@ fn emit_state(app: &AppHandle) {
 /// welcome, the active instance in active. Every other one is hidden FIRST —
 /// wry packs child webviews in a vertical GtkBox, so two visible children for
 /// even one layout pass split the window between them.
+///
+/// The page leaving the screen has its URL remembered, and starts its
+/// suspend clock (suspend.rs); the one coming on screen stops its own.
 fn set_view(app: &AppHandle, view: View) -> Result<(), String> {
     let state = app.state::<ShellState>();
     let window = main_window(app)?;
     *state.view.lock().unwrap() = view;
     let active = state.active.lock().unwrap().clone();
+    let shown = match (view, &active) {
+        (View::Active, Some(id)) => Some(id.clone()),
+        _ => None,
+    };
+    let leaving = state
+        .activity
+        .lock()
+        .unwrap()
+        .shown()
+        .filter(|id| Some(*id) != shown.as_deref())
+        .map(str::to_string);
+    if let Some(id) = leaving
+        && let Some(webview) = window.get_webview(&instance_label(&id))
+        && remember_page(app, &id, &webview)
+        && let Err(e) = state.persist()
+    {
+        eprintln!("talaria-desktop: {e}");
+    }
+    state
+        .activity
+        .lock()
+        .unwrap()
+        .show(shown.as_deref(), Instant::now());
     let (keep, title) = match (view, active) {
         (View::Active, Some(id)) => {
             let title = state
@@ -161,7 +202,76 @@ fn set_view(app: &AppHandle, view: View) -> Result<(), String> {
     window
         .set_title(&title)
         .map_err(|e| format!("setting the window title: {e}"))?;
+    #[cfg(target_os = "linux")]
+    set_header_title(&window, &title);
     Ok(())
+}
+
+/// GTK on Wayland: the OS titlebar is tao's own `GtkHeaderBar`, built with the
+/// window's first title and wrapped in a `GtkEventBox`. GTK passes a new window
+/// title on to a header bar only when the header bar IS the titlebar, so
+/// through the wrapper `set_title` never reached it and the bar said
+/// "Talaria" for every instance. Set it directly. On X11 the window manager
+/// draws the title from the window's own, which `set_title` already set; there
+/// is no header bar to find and this does nothing.
+#[cfg(target_os = "linux")]
+fn set_header_title(window: &Window, title: &str) {
+    use gtk::prelude::*;
+    let Ok(gtk_window) = window.gtk_window() else {
+        return;
+    };
+    let Some(bar) = gtk_window.titlebar() else {
+        return;
+    };
+    let header = match bar.clone().downcast::<gtk::HeaderBar>() {
+        Ok(header) => Some(header),
+        Err(bar) => bar
+            .downcast::<gtk::Bin>()
+            .ok()
+            .and_then(|b| b.child())
+            .and_then(|c| c.downcast::<gtk::HeaderBar>().ok()),
+    };
+    if let Some(header) = header {
+        header.set_title(Some(title));
+    }
+}
+
+/// Remember the page `webview` shows as `id`'s last page. True when the record
+/// changed (the caller persists).
+///
+/// A page on the instance's own origin is remembered, unless it is a sign-in
+/// or callback page (suspend::restorable_url), which clears the record so a
+/// restore opens the root. A page on another origin (a link that left the
+/// instance) changes nothing: the last page of the instance itself stands.
+fn remember_page(app: &AppHandle, id: &str, webview: &Webview) -> bool {
+    let state = app.state::<ShellState>();
+    let Ok(instance) = state.find(id) else {
+        return false;
+    };
+    let Ok(url) = webview.url() else {
+        return false;
+    };
+    remember_url(&state, &instance, url.as_str())
+}
+
+fn remember_url(state: &ShellState, instance: &Instance, raw: &str) -> bool {
+    let same_origin = match (url::Url::parse(raw), url::Url::parse(&instance.url)) {
+        (Ok(page), Ok(base)) => page.origin() == base.origin(),
+        _ => false,
+    };
+    if !same_origin {
+        return false;
+    }
+    let page = suspend::restorable_url(&instance.url, raw);
+    let mut urls = state.last_urls.lock().unwrap();
+    match page {
+        Some(page) if urls.get(&instance.id) != Some(&page) => {
+            urls.insert(instance.id.clone(), page);
+            true
+        }
+        None => urls.remove(&instance.id).is_some(),
+        Some(_) => false,
+    }
 }
 
 #[tauri::command]
@@ -283,15 +393,23 @@ pub async fn probe_instance(app: AppHandle, id: String) -> Result<(), String> {
     beacon::probe(&state.http, &origin).await.map(|_| ())
 }
 
-/// Show an instance: create its webview if this is the first open — born at
-/// its final rect (WebviewBuilder cannot create hidden, and WebKitGTK
-/// mis-places new children until a set_bounds, tauri#10420) — then hand the
-/// whole window to it.
+/// Show an instance: create its webview if it has none — the first open, a
+/// relaunch, or a suspended one coming back — born at its final rect
+/// (WebviewBuilder cannot create hidden, and WebKitGTK mis-places new
+/// children until a set_bounds, tauri#10420), then hand the whole window to
+/// it. A new webview opens at the instance's last page (suspend.rs).
 #[tauri::command]
 pub fn activate_instance(app: AppHandle, id: String) -> Result<(), String> {
+    activate(&app, &id, None).map(|_| ())
+}
+
+/// `activate_instance`, plus a notification's `href`: a webview created for
+/// it opens there instead of at the last page. True when it did, so the
+/// caller does not navigate it a second time.
+fn activate(app: &AppHandle, id: &str, href: Option<&str>) -> Result<bool, String> {
     let state = app.state::<ShellState>();
-    let instance = state.find(&id)?;
-    let window = main_window(&app)?;
+    let instance = state.find(id)?;
+    let window = main_window(app)?;
     let label = instance_label(&instance.id);
 
     for other in window.webviews() {
@@ -299,8 +417,49 @@ pub fn activate_instance(app: AppHandle, id: String) -> Result<(), String> {
             let _ = other.hide();
         }
     }
+    let mut born_at_href = false;
     if window.get_webview(&label).is_none() {
-        create_instance_webview(&app, &window, &instance)?;
+        // Restoring: the load starts here, on the first signal. No probe —
+        // a suspended instance answered a moment ago, and a page that fails
+        // now comes back to the launcher as a load failure (Linux).
+        let resumed = state.suspended.lock().unwrap().remove(&instance.id);
+        if let Some(watcher) = resumed.as_ref().and_then(|r| r.watcher.as_ref()) {
+            watcher.abort();
+        }
+        let page = state
+            .last_urls
+            .lock()
+            .unwrap()
+            .get(&instance.id)
+            .and_then(|u| suspend::restorable_url(&instance.url, u));
+        let (target, scroll) = match href.and_then(notify::openable_href) {
+            Some(href) => {
+                born_at_href = true;
+                (format!("{}{href}", instance.url), None)
+            }
+            None => {
+                let scroll = resumed.as_ref().zip(page.as_deref()).and_then(|(r, page)| {
+                    (r.page.as_deref() == Some(page))
+                        .then(|| {
+                            suspend::restore_js(
+                                page,
+                                &r.scroll,
+                                &r.session,
+                                registry::now_ms() as u64,
+                            )
+                        })
+                        .flatten()
+                });
+                (page.unwrap_or_else(|| instance.url.clone()), scroll)
+            }
+        };
+        if resumed.is_some() {
+            eprintln!(
+                "talaria-desktop: restoring {label} (t={} ms)",
+                registry::now_ms()
+            );
+        }
+        create_instance_webview(app, &window, &instance, &target, scroll)?;
     }
     *state.active.lock().unwrap() = Some(instance.id.clone());
     {
@@ -316,15 +475,17 @@ pub fn activate_instance(app: AppHandle, id: String) -> Result<(), String> {
     }
     *state.reopen.lock().unwrap() = None;
     *state.failure.lock().unwrap() = None;
-    set_view(&app, View::Active)?;
-    emit_state(&app);
-    Ok(())
+    set_view(app, View::Active)?;
+    emit_state(app);
+    Ok(born_at_href)
 }
 
 fn create_instance_webview(
     app: &AppHandle,
     window: &Window,
     instance: &Instance,
+    target: &str,
+    restore: Option<String>,
 ) -> Result<Webview, String> {
     let state = app.state::<ShellState>();
     let label = instance_label(&instance.id);
@@ -333,20 +494,20 @@ fn create_instance_webview(
     // would share a session in one shared jar — directories don't.
     let dir = state.data_root.join(&instance.id).join("webview");
     std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
-    let url = instance
-        .url
+    let url = target
         .parse()
+        .or_else(|_| instance.url.parse())
         .map_err(|e| format!("stored URL no longer parses: {e}"))?;
     let rect = layout::creation_rect(window);
+    let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
+        .data_directory(dir)
+        .background_color(GROUND)
+        .initialization_script(ESCAPE_HATCH);
+    if let Some(script) = restore {
+        builder = builder.initialization_script(script);
+    }
     let webview = window
-        .add_child(
-            WebviewBuilder::new(&label, WebviewUrl::External(url))
-                .data_directory(dir)
-                .background_color(GROUND)
-                .initialization_script(ESCAPE_HATCH),
-            rect.position,
-            rect.size,
-        )
+        .add_child(builder, rect.position, rect.size)
         .map_err(|e| format!("creating the instance webview: {e}"))?;
     #[cfg(target_os = "linux")]
     watch_load_failures(app, &webview, &instance.id);
@@ -411,6 +572,7 @@ fn instance_load_failed(app: &AppHandle, id: &str, message: &str) {
     {
         let _ = webview.close();
     }
+    state.activity.lock().unwrap().forget(id);
     let seq = state.failure_seq.fetch_add(1, Ordering::Relaxed) + 1;
     *state.failure.lock().unwrap() = Some(LoadFailure {
         seq,
@@ -462,6 +624,17 @@ pub fn remove_instance(app: AppHandle, id: String) -> Result<Vec<Instance>, Stri
     if was_active {
         *state.active.lock().unwrap() = None;
     }
+    if let Some(watcher) = state
+        .suspended
+        .lock()
+        .unwrap()
+        .remove(&id)
+        .and_then(|s| s.watcher)
+    {
+        watcher.abort();
+    }
+    state.last_urls.lock().unwrap().remove(&id);
+    state.activity.lock().unwrap().forget(&id);
     let registered = {
         let mut instances = state.instances.lock().unwrap();
         let before = instances.len();
@@ -529,6 +702,379 @@ pub fn set_titlebar_mode(
     Ok(state.settings.lock().unwrap().clone())
 }
 
+/// How long an instance's page may stay off screen before it is suspended,
+/// in minutes; 0 is Off. The launcher and Settings → Profile both set it.
+#[tauri::command]
+pub fn set_suspend_after(
+    app: AppHandle,
+    minutes: u32,
+) -> Result<settings::DesktopSettings, String> {
+    if minutes > settings::MAX_SUSPEND_MINUTES {
+        return Err(format!(
+            "the longest suspend timeout is {} minutes",
+            settings::MAX_SUSPEND_MINUTES
+        ));
+    }
+    let state = app.state::<ShellState>();
+    let saved = {
+        let mut current = state.settings.lock().unwrap();
+        current.suspend_after_minutes = minutes;
+        settings::save(&state.settings_path, &current)?;
+        current.clone()
+    };
+    emit_state(&app);
+    Ok(saved)
+}
+
+/// The instance webviews that exist now, by local id.
+fn live_instances(window: &Window) -> Vec<(String, Webview)> {
+    window
+        .webviews()
+        .into_iter()
+        .filter_map(|w| {
+            w.label()
+                .strip_prefix("instance-")
+                .map(str::to_string)
+                .map(|id| (id, w))
+        })
+        .collect()
+}
+
+/// Minimized or hidden — not merely unfocused.
+///
+/// The shell's own minimize counts until the window is focused again (GTK on
+/// Wayland reports no minimized state). A window found focused is not
+/// minimized, which clears it here, on a focus event, and once just after the
+/// minimize (`MINIMIZE_SETTLE`), so a compositor that ignored the request
+/// (sway and other wlroots window managers) does not leave it set.
+fn window_away(app: &AppHandle, window: &Window) -> bool {
+    let state = app.state::<ShellState>();
+    if state.self_minimized.load(Ordering::Relaxed) && window.is_focused().unwrap_or(false) {
+        state.self_minimized.store(false, Ordering::Relaxed);
+    }
+    !window.is_visible().unwrap_or(true)
+        || window.is_minimized().unwrap_or(false)
+        || state.self_minimized.load(Ordering::Relaxed)
+}
+
+/// The instance on screen was suspended while the window was away, and the
+/// window is back: recreate it at its page, now.
+fn restore_shown(app: &AppHandle, window: &Window) {
+    let state = app.state::<ShellState>();
+    let view = *state.view.lock().unwrap();
+    let Some(id) = state.active.lock().unwrap().clone() else {
+        return;
+    };
+    if view != View::Active || window.get_webview(&instance_label(&id)).is_some() {
+        return;
+    }
+    let suspended = state.suspended.lock().unwrap().contains_key(&id);
+    if suspended && let Err(e) = activate(app, &id, None) {
+        eprintln!("talaria-desktop: restoring {id}: {e}");
+    }
+}
+
+/// The window was focused, restored or resized: if it is on screen again and
+/// its instance was suspended meanwhile, bring that instance back at once
+/// rather than on the next tick.
+pub fn window_returned(app: &AppHandle, focused: bool) {
+    let state = app.state::<ShellState>();
+    if focused {
+        state.self_minimized.store(false, Ordering::Relaxed);
+    }
+    let Ok(window) = main_window(app) else {
+        return;
+    };
+    let away = window_away(app, &window);
+    state.activity.lock().unwrap().window(away, Instant::now());
+    if !away {
+        restore_shown(app, &window);
+    }
+}
+
+/// Remember every live instance's page now (the window is closing).
+pub fn remember_all(app: &AppHandle) {
+    let Ok(window) = main_window(app) else {
+        return;
+    };
+    let mut changed = false;
+    for (id, webview) in live_instances(&window) {
+        changed |= remember_page(app, &id, &webview);
+    }
+    if changed && let Err(e) = app.state::<ShellState>().persist() {
+        eprintln!("talaria-desktop: {e}");
+    }
+}
+
+/// The suspend clock's tick (suspend::TICK), on the main thread: note what
+/// the window is doing, keep each live page's URL current, and ask every page
+/// that has been off screen for the timeout whether it can go.
+pub fn suspend_tick(app: &AppHandle) {
+    let state = app.state::<ShellState>();
+    let Ok(window) = main_window(app) else {
+        return;
+    };
+    let now = Instant::now();
+    let away = window_away(app, &window);
+    state.activity.lock().unwrap().window(away, now);
+    if !away {
+        restore_shown(app, &window);
+    }
+    let live = live_instances(&window);
+    let mut changed = false;
+    for (id, webview) in &live {
+        changed |= remember_page(app, id, webview);
+    }
+    if changed && let Err(e) = state.persist() {
+        eprintln!("talaria-desktop: {e}");
+    }
+    let Some(timeout) = state.settings.lock().unwrap().suspend_after() else {
+        return;
+    };
+    let ids: Vec<String> = live.iter().map(|(id, _)| id.clone()).collect();
+    let due = state.activity.lock().unwrap().due(&ids, now, timeout);
+    for id in due {
+        let nonce = state.activity.lock().unwrap().ask(&id, now);
+        if let Some((_, webview)) = live.iter().find(|(i, _)| *i == id) {
+            let _ = webview.eval(suspend::report_js(nonce));
+        }
+    }
+}
+
+/// A page's answer to `suspend::report_js`. Only an instance webview may call
+/// it, and only about itself; an answer nobody asked for is ignored.
+#[tauri::command]
+pub fn desktop_suspend_report(
+    app: AppHandle,
+    webview: Webview,
+    report: suspend::Report,
+) -> Result<(), String> {
+    let Some(id) = webview
+        .label()
+        .strip_prefix("instance-")
+        .map(str::to_string)
+    else {
+        return Err("only an instance page reports".into());
+    };
+    let state = app.state::<ShellState>();
+    let instance = state.find(&id)?;
+    if !state.activity.lock().unwrap().answered(&id, report.nonce) {
+        return Ok(());
+    }
+    let Some(timeout) = state.settings.lock().unwrap().suspend_after() else {
+        return Ok(());
+    };
+    if !state
+        .activity
+        .lock()
+        .unwrap()
+        .is_due(&id, Instant::now(), timeout)
+    {
+        return Ok(());
+    }
+    let page = match report.page {
+        Some(page) if page.version >= 1 => page,
+        _ => {
+            eprintln!(
+                "talaria-desktop: keeping {}: its Talaria predates suspend support",
+                webview.label()
+            );
+            state
+                .activity
+                .lock()
+                .unwrap()
+                .keep(&id, suspend::Kept::Unsupported);
+            return Ok(());
+        }
+    };
+    if page.holds_input {
+        eprintln!(
+            "talaria-desktop: keeping {}: it holds input a reload would lose",
+            webview.label()
+        );
+        state
+            .activity
+            .lock()
+            .unwrap()
+            .keep(&id, suspend::Kept::Input);
+        return Ok(());
+    }
+    let scroll = suspend::clean_scrolls(&report.scroll);
+    let session = suspend::clean_session(&report.session);
+    let nonce = report.nonce;
+    // From here until finish_suspend (or keep_for_notify) the page is closing:
+    // the ticks meanwhile do not ask it again, which would start a second
+    // cookie read, a second baseline and a second watcher.
+    state
+        .activity
+        .lock()
+        .unwrap()
+        .closing(&id, nonce, Instant::now());
+    let app = app.clone();
+    // Off the main thread: the webview's cookie store answers through the main
+    // loop (and on Windows deadlocks a sync command that waits for it), and
+    // the notifications baseline is a network read. The page stays open until
+    // both are done; the close itself is back on the main thread.
+    tauri::async_runtime::spawn(async move {
+        let watch = if page.notify {
+            match read_cookie(webview.clone(), &instance.url).await {
+                // The store answered with no cookie: signed out, and the page
+                // is not fetching notifications either.
+                Ok(None) => None,
+                Ok(Some(cookie)) => match watch::baseline(&instance.url, &cookie).await {
+                    watch::Baseline::Ready(arrivals) => Some((cookie, arrivals)),
+                    watch::Baseline::SignedOut => None,
+                    watch::Baseline::Unreachable => {
+                        keep_for_notify(
+                            &app,
+                            &instance.id,
+                            "the shell could not read its notifications the way the page does",
+                        );
+                        return;
+                    }
+                },
+                Err(e) => {
+                    keep_for_notify(&app, &instance.id, &e);
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            finish_suspend(
+                &handle,
+                &instance,
+                nonce,
+                &report.url,
+                scroll,
+                session,
+                watch,
+            )
+        });
+    });
+    Ok(())
+}
+
+/// A page whose notifications the shell cannot carry stays open until it is
+/// shown again.
+fn keep_for_notify(app: &AppHandle, id: &str, why: &str) {
+    eprintln!("talaria-desktop: keeping instance-{id}: {why}");
+    app.state::<ShellState>()
+        .activity
+        .lock()
+        .unwrap()
+        .keep(id, suspend::Kept::Notify);
+}
+
+/// How long the webview's cookie store may take to answer before the page is
+/// kept instead (it answers through the main loop, which a busy GTK can hold).
+const COOKIE_WAIT: Duration = Duration::from_secs(10);
+
+/// The `Cookie` header `webview` would send to `origin`, read from its own
+/// store. `Ok(None)`: it holds none.
+async fn read_cookie(webview: Webview, origin: &str) -> Result<Option<String>, String> {
+    let url: tauri::Url = origin
+        .parse()
+        .map_err(|e| format!("the stored address no longer parses: {e}"))?;
+    let read = tauri::async_runtime::spawn_blocking(move || webview.cookies_for_url(url));
+    let cookies = tokio::time::timeout(COOKIE_WAIT, read)
+        .await
+        .map_err(|_| {
+            format!(
+                "its cookie store did not answer in {} s",
+                COOKIE_WAIT.as_secs()
+            )
+        })?
+        .map_err(|e| format!("reading its cookies: {e}"))?
+        .map_err(|e| format!("reading its cookies: {e}"))?;
+    Ok(watch::cookie_header(
+        cookies.iter().map(|c| (c.name(), c.value())),
+    ))
+}
+
+fn finish_suspend(
+    app: &AppHandle,
+    instance: &Instance,
+    nonce: u64,
+    reported_url: &str,
+    scroll: Vec<suspend::Scroll>,
+    session: Vec<(String, String)>,
+    watch: Option<(String, watch::Arrivals)>,
+) {
+    let state = app.state::<ShellState>();
+    let id = instance.id.clone();
+    let label = instance_label(&id);
+    // The close this answer started ends here, whichever way: everything below
+    // runs on the main thread, as the tick does, so no ask can come between.
+    state.activity.lock().unwrap().closed(&id, nonce);
+    // Still due? The person may have come back while the cookies were read.
+    let Some(timeout) = state.settings.lock().unwrap().suspend_after() else {
+        return;
+    };
+    if !state
+        .activity
+        .lock()
+        .unwrap()
+        .is_due(&id, Instant::now(), timeout)
+    {
+        return;
+    }
+    let Ok(window) = main_window(app) else {
+        return;
+    };
+    let Some(webview) = window.get_webview(&label) else {
+        return;
+    };
+    remember_url(&state, instance, reported_url);
+    let page = state.last_urls.lock().unwrap().get(&id).cloned();
+    if let Err(e) = webview.close() {
+        eprintln!("talaria-desktop: suspending {label}: {e}");
+        return;
+    }
+    let watcher = watch.map(|(cookie, arrivals)| {
+        watch::spawn(
+            app.clone(),
+            label.clone(),
+            instance.url.clone(),
+            cookie,
+            arrivals,
+        )
+    });
+    eprintln!(
+        "talaria-desktop: suspended {label}{} (t={} ms)",
+        if watcher.is_some() {
+            ", notifications watched"
+        } else {
+            ""
+        },
+        registry::now_ms()
+    );
+    let replaced = state.suspended.lock().unwrap().insert(
+        id,
+        Suspended {
+            page,
+            scroll,
+            session,
+            watcher,
+        },
+    );
+    // Never two watchers for one instance: one replaced here would post every
+    // banner twice, and keep posting after the restore.
+    if let Some(old) = replaced.and_then(|s| s.watcher) {
+        old.abort();
+    }
+    if let Err(e) = state.persist() {
+        eprintln!("talaria-desktop: {e}");
+    }
+    emit_state(app);
+}
+
+/// How long after the shell's own minimize it looks whether the compositor
+/// honoured it: a minimized window has lost focus by then.
+const MINIMIZE_SETTLE: Duration = Duration::from_millis(750);
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WindowAction {
@@ -542,7 +1088,34 @@ pub enum WindowAction {
 pub fn desktop_window(app: AppHandle, action: WindowAction) -> Result<(), String> {
     let window = main_window(&app)?;
     match action {
-        WindowAction::Minimize => window.minimize().map_err(|e| format!("minimizing: {e}"))?,
+        WindowAction::Minimize => {
+            // GTK on Wayland never reports a minimized window (the protocol
+            // has no such state for the client), so the suspend clock needs
+            // the shell's own word for the minimize it did. The next focus
+            // clears it.
+            app.state::<ShellState>()
+                .self_minimized
+                .store(true, Ordering::Relaxed);
+            window.minimize().map_err(|e| format!("minimizing: {e}"))?;
+            // A compositor may ignore the request and leave the window where
+            // it is, focused. Look once, a moment later: still focused means
+            // not minimized. Otherwise the word would outlive the person
+            // clicking into another app, and the instance on screen would be
+            // suspended while visible.
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(MINIMIZE_SETTLE).await;
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    if main_window(&handle).is_ok_and(|w| w.is_focused().unwrap_or(false)) {
+                        handle
+                            .state::<ShellState>()
+                            .self_minimized
+                            .store(false, Ordering::Relaxed);
+                    }
+                });
+            });
+        }
         WindowAction::ToggleMaximize => {
             if window
                 .is_maximized()
@@ -690,18 +1263,30 @@ pub async fn desktop_notify(
     }
 }
 
-fn reveal_notice(app: &AppHandle, label: &str, href: Option<&str>) {
+/// A notification click: bring `label`'s instance forward, open `href` in it,
+/// and put the window in front. A suspended instance is recreated straight at
+/// `href`: the notification's own page wins over the page it was on.
+pub(crate) fn reveal_notice(app: &AppHandle, label: &str, href: Option<&str>) {
     let label = label.to_string();
     let href = href.map(str::to_string);
     let app = app.clone();
     // WebKitGTK eval and window ops belong on the main thread. The click
     // waiter is a blocking thread; this only queues the reveal.
     let _ = app.clone().run_on_main_thread(move || {
+        let mut born_at_href = false;
         if let Some(id) = label.strip_prefix("instance-") {
-            let _ = activate_instance(app.clone(), id.to_string());
+            born_at_href = activate(&app, id, href.as_deref()).unwrap_or(false);
         }
         if let Some(window) = app.get_window("main") {
             let _ = window.unminimize();
+            // The shell asked for the window back. On Wayland that brings no
+            // focus event without an activation token, so the shell's own
+            // minimize would keep counting the instance on screen as away
+            // and suspend it while it is visible. Never risk that: the
+            // window is back as far as the suspend clock is concerned.
+            app.state::<ShellState>()
+                .self_minimized
+                .store(false, Ordering::Relaxed);
             // NEVER `show()` a window that is already visible. On Linux tao's
             // show is gtk `show_all`, which re-shows every hidden child
             // webview — and wry's vertical GtkBox then gives the hidden
@@ -716,7 +1301,8 @@ fn reveal_notice(app: &AppHandle, label: &str, href: Option<&str>) {
             }
             let _ = window.set_focus();
         }
-        if let Some(href) = href
+        if !born_at_href
+            && let Some(href) = href
             && let Some(js) = notify::assign_js(&href)
             && let Some(webview) = app.get_webview(&label)
         {
