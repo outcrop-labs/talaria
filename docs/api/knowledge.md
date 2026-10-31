@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-21 routes.
+20 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -43,7 +43,6 @@
 | [`/api/rag/collections/{id}`](#apiragcollectionsid) | PUT | `admin` |
 | [`/api/rag/collections/{id}`](#apiragcollectionsid) | DELETE | `admin` |
 | [`/api/rag/search`](#apiragsearch) | POST | `dual` |
-| [`/api/search`](#apisearch) | POST | `dual` |
 | [`/api/templates`](#apitemplates) | GET | `session` |
 | [`/api/templates`](#apitemplates) | POST | `session` + `perm:templates.manage` |
 | [`/api/templates/{id}`](#apitemplatesid) | PUT | `session` + `perm:templates.manage` |
@@ -343,8 +342,8 @@ Source: [`api/crates/talaria-routes-knowledge/src/knowledge/memory_id.rs`](../..
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `agent-manager` | — | `{content, container}` | 200, 400 | — |
-| PUT | `session` + `agent-manager` | [body](#put-apimemoryid-body) | `{ok}` | 200, 400 | — |
+| GET | `session` + `agent-manager` | — | `{content, container}` | 200, 400, 409 | — |
+| PUT | `session` + `agent-manager` | [body](#put-apimemoryid-body) | `{ok}` | 200, 400, 409 | — |
 
 **GET** — Read one of the agent's two memory files. `?file=memory` (the default) is MEMORY.md, what the agent has learned and kept; `?file=profile` is USER.md, its profile of the person it works for. Any other value is a 400. A file the agent has never written reads as empty, not as a miss.
 
@@ -384,13 +383,14 @@ Source: [`api/crates/talaria-routes-knowledge/src/knowledge/rag_collections_id.r
 
 > /api/rag/collections/{id}. One collection, admin. PUT → replace its access
 > bindings wholesale; an unknown (but well-formed) id 404s. DELETE → drop it
-> (the two auto collections are protected); a missing id is a no-op delete —
-> it still answers ok, it still audits.
+> (the two auto collections are protected); an unknown id is the same 404,
+> with nothing deleted and nothing audited. The collection is read by the
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | PUT | `admin` | [body](#put-apiragcollectionsid-body) | `{ok}` | 200, 400, 404 | audit |
-| DELETE | `admin` | — | `{ok}` | 200, 400 | audit |
+| DELETE | `admin` | — | `{ok}` | 200, 400, 404 | audit |
 
 ### PUT `/api/rag/collections/{id}` body
 
@@ -419,26 +419,6 @@ Source: [`api/crates/talaria-routes-knowledge/src/knowledge/rag_search.rs`](../.
 | `query` | `string(1, 2000)` |  |
 | `limit` | `number?(1, 20)` |  |
 | `collectionIds` | `uuid[]?(20)` |  |
-
-## `/api/search`
-
-Source: [`api/crates/talaria-routes-knowledge/src/knowledge/search.rs`](../../api/crates/talaria-routes-knowledge/src/knowledge/search.rs)
-
-> /api/search.
->
-> LIVE WEB SEARCH — the endpoint behind the `web_search` MCP tool, and the one
-> place an agent or a signed-in user reaches this deployment's search.
-> …
-
-| Method | Auth | Body | Returns | Status | Flags |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `dual` | [body](#post-apisearch-body) | `{query, results, via}` | 200, 400, 503 | — |
-
-### POST `/api/search` body
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `query` | `string(2, 400)` |  |
 
 ## `/api/templates`
 

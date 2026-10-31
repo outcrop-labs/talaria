@@ -99,6 +99,9 @@ pub async fn get(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     require_agent_reader(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let Some((_, model, _)) = agent_model(&state, &id).await? else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
@@ -123,6 +126,9 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let Some((def_id, model, display_name)) = agent_model(&state, &id).await? else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
@@ -209,6 +215,9 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     let user = require_agent_manager(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let Some((def_id, model, display_name)) = agent_model(&state, &id).await? else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
@@ -243,6 +252,9 @@ pub async fn connect(
 ) -> Response {
     if let Err(e) = require_agent_manager(&state, &headers, &id).await {
         return e;
+    }
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return gate;
     }
     let sb = state.secretbox().await.unwrap_or_default();
     if !google_integration_enabled(&state.pg, &sb).await {

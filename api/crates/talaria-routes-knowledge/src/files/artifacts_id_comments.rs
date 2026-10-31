@@ -32,6 +32,11 @@ async fn readable(
     id: &str,
     user: &talaria_session::SessionUser,
 ) -> Result<Option<talaria_artifacts::Artifact>, Response> {
+    // A mangled id is the same unreadable artifact as an absent one: both
+    // doors answer 404, where the read's cast answered 500.
+    if !talaria_params::uuid_shaped(id) {
+        return Ok(None);
+    }
     let artifact = match get_artifact(&state.pg, id).await {
         Ok(Some(a)) => a,
         Ok(None) => return Ok(None),

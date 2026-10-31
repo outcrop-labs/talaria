@@ -12,6 +12,7 @@
   import RelayButton from '@/components/chat/RelayButton.svelte'
   import PendingAttachments from '@/components/chat/PendingAttachments.svelte'
   import { useModelEfforts } from '@/lib/model-efforts.svelte'
+  import { PINNED_TIER_NOTE } from '@/lib/agents'
   import { useProfilePrefs } from '@/lib/muse.svelte'
   import UserTurn from './UserTurn.svelte'
   import DayDivider from './DayDivider.svelte'
@@ -22,23 +23,29 @@
   import Button from '@/components/ui/Button.svelte'
   import AssistantTurn from './AssistantTurn.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import EmptyState from '@/components/ui/EmptyState.svelte'
   import { slide } from '@/lib/motion'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { queueChatMessage, steerChat, stopChat, streamChat, type ChatFocus, type ChatKind } from '@/lib/chat'
+  import { queueChatMessage, steerChat, stopChat, stopTurn, streamChat, type ChatFocus, type ChatKind } from '@/lib/chat'
   import { HttpError } from '@/lib/fetch-json'
   import { mergeTool } from '@/lib/sse-parse'
+  import { onUserEvent } from '@/lib/user-events.svelte'
   import {
     loadConversation,
     loadSessionOverview,
     markConversationRead,
+    openConversation,
     toggleConversationReaction,
     type SessionOverview,
   } from '@/lib/conversations.svelte'
   import { uploadFile, splitAttachments, type Attachment } from '@/lib/attachments'
   import {
+    foldToolVerdicts,
     reactionChips,
     sendRoute,
     stampFromServer,
+    stopOnceNamed,
+    newTurnId,
     toDisplay,
     toggleReactionLocal,
     turnTime,
@@ -54,6 +61,7 @@
     agentModel,
     agentLabel,
     tiers = [],
+    pinned = false,
     conversationId,
     newChatSignal,
     syncSignal = 0,
@@ -72,6 +80,9 @@
     agentLabel: string
     /** Requestable model tiers for this agent (alias names). */
     tiers?: string[]
+    /** The agent keeps pinned sessions, which always run its main model: the
+     *  tier chip stays on the rail, off, saying why (`PINNED_TIER_NOTE`). */
+    pinned?: boolean
     conversationId: string | null
     newChatSignal: number
     /** An inbound nudge to re-read history — the surface knows about turns this
@@ -158,6 +169,11 @@
   // True while an EXISTING conversation's history is being fetched — the pane
   // shows transcript-shaped skeletons, never the "Talk to X" hero.
   let loadingConversation = $state(false)
+  // The server answered 404 for the open thread: it is gone, or not the
+  // viewer's to read (it does not say which, and neither does the pane). The
+  // pane says so in place of an empty thread, and offers no composer, whose
+  // first send would only 404 in turn.
+  let missing = $state(false)
   // What Hermes has done to this thread's pinned session, read ONCE per
   // conversation beside the history. Deliberately not in the pollers: a
   // compaction is not news arriving turn by turn, and the read goes out to
@@ -170,6 +186,8 @@
   // so one copy action covers both plain and markdown wants).
   const menu = useContextMenu()
   let abortCtrl: AbortController | null = null
+  // The streaming turn's own name (`turnId`), which a Stop carries.
+  let turnId: string | null = null
   let convId: string | null = null
   let scrollEl = $state<HTMLDivElement | null>(null)
   // The mid-turn send is this surface's own: every other composer host has a
@@ -229,6 +247,7 @@
     held = []
     userStopped = false
     loadingConversation = false
+    missing = false
     // A fresh thread has no session behind it yet, so the previous thread's
     // compaction row must not survive the switch.
     sessionOverview = null
@@ -239,18 +258,31 @@
   // The routed id is what the server validates against, so it is also what the
   // picker lists from — `routedModelFor` builds exactly this string when the
   // tier is one of the agent's aliases.
+  // A pinned agent's session runs its main model whatever the pick, so no
+  // tier is held for it: a stale one would ride the send and validate the
+  // effort against a model that will not run.
+  $effect(() => {
+    if (pinned && tier) tier = ''
+  })
   const routedModel = $derived(tier ? `${agentModel}-${tier}` : agentModel)
-  const { efforts, default: agentEffort } = useModelEfforts(() => routedModel)
+  // Kept whole and read through its getters: a destructured `efforts` is the
+  // query's answer at mount (`[]` on a fresh page) and never moves after.
+  const modelEfforts = useModelEfforts(() => routedModel)
+  const efforts = $derived(modelEfforts.efforts)
+  const agentEffort = $derived(modelEfforts.default)
   // ── The seeded default: the AGENT-CONFIGURED effort for the routed model
   // (the pick saved beside the model in the agent editor) when there is one,
   // else the owner's platform default (Settings). Both are only ever offered
   // when this model publishes the level. `effortPristine` is what keeps an
   // explicit pick authoritative: choosing auto or a level is a decision about
   // THIS conversation, and re-applying a default after it would override the
-  // one person whose opinion matters. It re-arms exactly when the pick stops
-  // being valid — a tier switch to a model that cannot honor it — so the seed
-  // follows the owner across models instead of stranding them on a level the
-  // new model would 400 on.
+  // one person whose opinion matters. It re-arms whenever the pick is not one
+  // of the routed model's levels as this view holds them: a tier switch to a
+  // model that cannot honor it, and also any switch while the new model's
+  // levels are still loading (they read as none until the answer lands, so an
+  // unconfirmed level never rides the send). Either way the seed follows the
+  // owner across models instead of stranding them on a level the new model
+  // would 400 on.
   const prefs = useProfilePrefs()
   const preferredEffort = $derived(prefs.data?.preferredEffort ?? null)
   // The viewer's zone decides what "a day" is for the dividers and the turn
@@ -302,10 +334,13 @@
     userStopped = false
     let cancelled = false
     loadingConversation = true
+    missing = false
     sessionOverview = null
-    loadConversation(conversationId)
+    openConversation(conversationId)
       .then((res) => {
-        if (!cancelled) messages = (res?.messages ?? []).map(toDisplay)
+        if (cancelled) return
+        missing = res === 'missing'
+        messages = (res && res !== 'missing' ? res.messages : []).map(toDisplay)
       })
       .finally(() => {
         if (!cancelled) loadingConversation = false
@@ -477,7 +512,8 @@
   // Chips land on the streaming row from a different request (the agent's
   // tool call), so the SSE the speaker is watching never carries them.
   // Merge chips onto the live turn without replacing the prose the stream
-  // is still writing.
+  // is still writing. The agent's verdict on a call comes the same way (the
+  // stream says `completed` for a call that failed), and rides the same read.
   $effect(() => {
     if (!streaming) return
     const id = convId
@@ -486,17 +522,41 @@
     const iv = setInterval(async () => {
       if (stop) return
       const res = await loadConversation(id)
-      const remote = res?.messages.filter((m) => m.role === 'assistant').at(-1)
-      if (stop || !remote?.chips?.length) return
-      messages = messages.map((m, i) =>
-        i === messages.length - 1 && m.role === 'assistant' ? { ...m, chips: remote.chips, seq: remote.seq } : m,
-      )
+      if (stop || !res) return
+      const remote = res.messages.filter((m) => m.role === 'assistant').at(-1)
+      const chipped = remote?.chips?.length
+        ? messages.map((m, i) =>
+            i === messages.length - 1 && m.role === 'assistant' ? { ...m, chips: remote.chips, seq: remote.seq } : m,
+          )
+        : messages
+      const next = foldToolVerdicts(chipped, res.messages)
+      if (next !== messages) messages = next
     }, 1000)
     return () => {
       stop = true
       clearInterval(iv)
     }
   })
+
+  // THE RING FOR THIS CONVERSATION. The server fans an id-shaped
+  // `conversation` event when something lands on it, and that includes the
+  // agent's verdict on a call the stream called `completed`: the tool-events
+  // door marks the stored row `error` and rings. A verdict that lands after
+  // the turn did has no poll to ride, so this is how the open tab learns it.
+  // Only the calls' verdicts are taken from the re-read: prose, chips and
+  // the live row's own state stay this view's (the post-turn sync and the
+  // pollers above own those).
+  $effect(() =>
+    onUserEvent((event) => {
+      const id = convId
+      if (event.type !== 'conversation' || !id || event.conversationId !== id) return
+      void loadConversation(id).then((res) => {
+        if (!res || convId !== id) return
+        const next = foldToolVerdicts(messages, res.messages)
+        if (next !== messages) messages = next
+      })
+    }),
+  )
 
   // The surface's nudge — see the prop. Same last-signal guard the doc panes
   // use, so the effect only fires on a real bump.
@@ -631,6 +691,41 @@
     }
   }
 
+  // The streaming row is not always the LAST row: a message sent mid-turn —
+  // queued behind the reply, or steered into it — lands beneath it, and a
+  // patch that only ever looked at the tail dropped the rest of the reply on
+  // the floor (the transcript froze the moment you typed into it). Walk back
+  // to the newest assistant row instead.
+  const patchLast = (fn: (m: DisplayMessage) => DisplayMessage) => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i]
+      if (m?.role === 'assistant') {
+        messages[i] = fn(m)
+        return
+      }
+    }
+  }
+
+  /** Stop means stop: freeze whatever arrived as this turn's final word (see
+   *  `userStopped`). An empty stop is an error bubble, same as an empty
+   *  stream — a silent frozen chat reads as broken. */
+  const freezeStopped = () => {
+    userStopped = true
+    patchLast((m) => ({
+      ...m,
+      // Stamped on the row at once, not waited for: the server writes the
+      // same `stopped` into the turn's metadata, but the person who just
+      // pressed stop should read "stopped" now rather than a beat later.
+      stopped: true,
+      status: m.content || m.reasoning?.trim() || m.tools?.length ? 'complete' : 'error',
+    }))
+  }
+
+  /** A Stop pressed on a new thread's first turn before its response named
+   *  the conversation (see `stop`). Keyed by the turn's own controller, so a
+   *  later turn never answers for it. */
+  let pendingStop: { ctrl: AbortController; latch: ReturnType<typeof stopOnceNamed> } | null = null
+
   /** One streamed assistant turn. `shown` says the user's message is already
    *  in the transcript (the flush path put it there when it was sent). */
   const startTurn = async (text: string, atts: Attachment[], shown: boolean) => {
@@ -642,26 +737,13 @@
     streaming = true
     userStopped = false
 
-    // The streaming row is not always the LAST row: a message sent mid-turn —
-    // queued behind the reply, or steered into it — lands beneath it, and a
-    // patch that only ever looked at the tail dropped the rest of the reply on
-    // the floor (the transcript froze the moment you typed into it). Walk back
-    // to the newest assistant row instead.
-    const patchLast = (fn: (m: DisplayMessage) => DisplayMessage) => {
-      for (let i = messages.length - 1; i >= 0; i -= 1) {
-        const m = messages[i]
-        if (m?.role === 'assistant') {
-          messages[i] = fn(m)
-          return
-        }
-      }
-    }
-
     const ctrl = new AbortController()
+    const turn = newTurnId()
     abortCtrl = ctrl
+    turnId = turn
     try {
       for await (const ev of streamChat(
-        { model: agentModel, conversationId: convId ?? undefined, content: text, tier: tier || undefined, effort: effort || undefined, ...splitAttachments(atts), kind, templateId, ...focusField() },
+        { model: agentModel, conversationId: convId ?? undefined, content: text, tier: tier || undefined, effort: effort || undefined, ...splitAttachments(atts), kind, templateId, ...focusField(), turnId: turn },
         (meta) => {
           if (!convId) {
             convId = meta.conversationId
@@ -669,6 +751,15 @@
             // The hold can drain the instant the id exists — the turn is
             // streaming, so everything lands in the server's queue.
             void flushHeld()
+          }
+          // A Stop pressed before this answer named the thread: the server
+          // hears it now, then the reader hangs up. This runs before the
+          // stream yields anything, so nothing more reaches the transcript.
+          // An empty message id is the queued ack, which is not this turn.
+          if (pendingStop?.ctrl === ctrl) {
+            const { latch } = pendingStop
+            pendingStop = null
+            latch.named(meta.conversationId, meta.messageId !== '', (id) => void stopChat(id, turn).catch(() => {}))
           }
         },
         ctrl.signal,
@@ -696,23 +787,18 @@
         status: m.content || m.reasoning?.trim() || m.tools?.length ? 'complete' : 'error',
       }))
     } catch (e) {
-      if ((e as Error).name === 'AbortError') {
-        // Stop means stop: freeze whatever arrived as this turn's final word
-        // (see `userStopped`). An empty stop is an error bubble, same as an
-        // empty stream — a silent frozen chat reads as broken.
-        userStopped = true
-        patchLast((m) => ({
-          ...m,
-          // Stamped on the row at once, not waited for: the server writes the
-          // same `stopped` into the turn's metadata, but the person who just
-          // pressed stop should read "stopped" now rather than a beat later.
-          stopped: true,
-          status: m.content || m.reasoning?.trim() || m.tools?.length ? 'complete' : 'error',
-        }))
-      } else error = (e as Error).message
+      if ((e as Error).name === 'AbortError') freezeStopped()
+      else error = (e as Error).message
     } finally {
+      // A turn that ended before its answer named it (a refusal, a network
+      // failure) leaves the pending stop nothing to do.
+      if (pendingStop?.ctrl === ctrl) {
+        pendingStop.latch.cancel()
+        pendingStop = null
+      }
       streaming = false
       abortCtrl = null
+      if (turnId === turn) turnId = null
       // Pick up whatever happened meanwhile: queued messages, and the
       // follow-up turn the server chains for them (the resuming poller
       // animates it live once it appears). Skipped on a reader stop — a sync
@@ -734,11 +820,40 @@
    *  was waiting for. So the run is told first and the reader hangs up second;
    *  the call is fire-and-forget because the transcript must freeze on the
    *  keypress, not on a round trip, and a 409 (the turn finished on its own)
-   *  is nothing to report. Everything `userStopped` means is unchanged. */
+   *  is nothing to report. Everything `userStopped` means is unchanged.
+   *
+   *  Every stop names this page's own send (`turnId`), so one that reaches
+   *  the server before the send does is held for it rather than answered
+   *  409 and lost.
+   *
+   *  A new thread's first turn has no id to stop yet: it rides the response
+   *  headers, which the server sends once the agent has taken the turn. So
+   *  the transcript freezes now and the stop goes out at once by the send's
+   *  name alone (`stopTurn`), which the server places as soon as the send
+   *  claims its thread, even if this page is closed by then. The reader
+   *  still does not hang up early: the abort would end the very request
+   *  that brings the thread's id, and the page would not know its own
+   *  thread. It hangs up the moment the answer names the thread
+   *  (`stopOnceNamed`), stopping by that id as well. Until then the
+   *  composer keeps its stop face, and a message sent meanwhile is held, as
+   *  for any first turn that has no id yet; it queues behind the stopped
+   *  turn. */
   const stop = () => {
     const id = convId
-    if (id) void stopChat(id).catch(() => {})
-    abortCtrl?.abort()
+    const ctrl = abortCtrl
+    const turn = turnId ?? undefined
+    if (id) {
+      void stopChat(id, turn).catch(() => {})
+      ctrl?.abort()
+      return
+    }
+    if (!ctrl || pendingStop?.ctrl === ctrl) return
+    freezeStopped()
+    // The server hears this stop now, by the send's own name: it waits for
+    // the send or holds the stop for it, so a page closed right after Stop,
+    // or a view that starts a new chat, no longer takes the stop along.
+    if (turn) void stopTurn(turn).catch(() => {})
+    pendingStop = { ctrl, latch: stopOnceNamed(() => ctrl.abort()) }
   }
 
   /** Merge the server's identity fields onto what is on screen — never its
@@ -835,6 +950,16 @@
           </div>
         {/each}
       </div>
+    {:else if missing}
+      <!-- The house not-found answer (boards, documents, folders use the
+           same words). The 404 covers a thread that was deleted and one this
+           viewer may not read, and the copy names both without saying
+           which. -->
+      <EmptyState
+        icon="⧉"
+        title="Conversation not found"
+        hint="It may have been deleted, or you don’t have access."
+      />
     {:else if messages.length === 0}
       <!-- Outside the measure on purpose: this centres in the whole surface,
            where before it centred inside a 900px column that was itself
@@ -939,6 +1064,7 @@
        page rather than on a patch. A gradient scrim would fade the clip more
        softly, but this design system has no gradients anywhere and the matte
        rule is the house style. -->
+  {#if !missing}
   <div bind:clientHeight={composerH} class="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-surface pb-6">
     <div class="mx-auto w-full max-w-[var(--converse-width)] px-6">
     <!-- The composer panel (spec §7): #141312 body, strong 1px border,
@@ -1006,19 +1132,27 @@
                exactly attach, text, and submit. -->
           {#if !minimal}
             {#if tiers.length > 0}
-              <ComposerPicker
-                icon="✳"
-                chipVariant="primary"
-                value={tier}
-                label={tier || 'main'}
-                options={tierOptions}
-                meter={tierMeter}
-                searchPlaceholder="Search tiers"
-                menuClass="min-w-44"
-                title="Model tier for this chat"
-                menuLabel="Model tier"
-                onChange={(t) => (tier = t)}
-              />
+              <!-- A PINNED AGENT'S TIER CHIP IS OFF, not gone: the session runs
+                   the main model whatever a message picks, and a chip that
+                   vanished would say nothing about why. The wrapper carries the
+                   reason too, since a disabled button's own title does not
+                   reliably show. -->
+              <span title={pinned ? PINNED_TIER_NOTE : undefined} class="contents">
+                <ComposerPicker
+                  icon="✳"
+                  chipVariant="primary"
+                  value={pinned ? '' : tier}
+                  label={pinned ? 'main' : tier || 'main'}
+                  options={tierOptions}
+                  meter={tierMeter}
+                  searchPlaceholder="Search tiers"
+                  menuClass="min-w-44"
+                  title={pinned ? PINNED_TIER_NOTE : 'Model tier for this chat'}
+                  menuLabel="Model tier"
+                  disabled={pinned}
+                  onChange={(t) => (tier = t)}
+                />
+              </span>
             {/if}
             <!-- Effort sits immediately left of the send tile, and only when the
                  routed model's metadata vouches for levels — a model with no
@@ -1067,5 +1201,6 @@
       </div>
     </div>
   </div>
+  {/if}
   <ContextMenu {menu} />
 </div>

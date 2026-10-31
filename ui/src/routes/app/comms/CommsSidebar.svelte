@@ -413,7 +413,8 @@
   // Nothing starred (or every star's conversation gone): no section at all.
   const showStarred = $derived(view.searching ? view.starred.length > 0 : view.starredTotal > 0)
   const showDms = $derived(!view.searching || view.people.length > 0 || view.groupDms.length > 0 || usersFailed)
-  const showAgents = $derived(!view.searching || view.agents.length > 0 || fleetFailed || threadsFailed)
+  // Both reads' flags are read before they are combined (query-state.ts, anyLoading).
+  const showAgents = $derived(!view.searching || view.agents.length > 0 || [fleetFailed, threadsFailed].includes(true))
 </script>
 
 <!-- One rail row's silhouette (RailRow anatomy: glyph lane + name, px-2
@@ -713,7 +714,7 @@
   </div>
   <div role="separator" class="mx-2 my-3 border-t border-line-subtle"></div>
 
-  {#if view.noMatches && !channelsFailed && !usersFailed && !fleetFailed}
+  {#if view.noMatches && ![channelsFailed, usersFailed, fleetFailed].includes(true)}
     <EmptyState variant="inline" class="px-2 py-1" title="No conversations match" />
   {/if}
 

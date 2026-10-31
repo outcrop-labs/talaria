@@ -3,7 +3,6 @@
 // configurable surface (soul, models/aliases, fallbacks, tools) as an immutable
 // payload. Rendering + orchestration (Phase B) consume the current version.
 import { db } from './db/pg'
-import { seal } from './secretbox'
 
 /** Agent slug / department alphabets. `createAgent` has always enforced these;
  *  they live HERE now because every path that accepts an agent identity needs
@@ -146,57 +145,10 @@ export async function ensureEndpoint(e: {
   `
 }
 
-export async function updateEndpoint(
-  id: string,
-  patch: {
-    class?: 'local' | 'cloud'
-    priceInPerMtok?: number | null
-    priceOutPerMtok?: number | null
-    models?: string[]
-    modelPrices?: Record<string, { in?: number; out?: number }>
-    modelEfforts?: Record<string, string[]>
-    requestDefaults?: Record<string, unknown>
-    /** Raw provider API key: a non-empty string seals + stores it; '' clears it;
-     *  undefined leaves the stored key untouched. Never round-tripped to clients. */
-    apiKey?: string | null
-  },
-): Promise<void> {
-  const sql = await db()
-  if (patch.apiKey !== undefined) {
-    const cipher = patch.apiKey ? seal(patch.apiKey.trim()) : null
-    await sql`update llm_endpoints set api_key_cipher = ${cipher}, updated_at = now() where id = ${id}`
-  }
-  if (patch.class) await sql`update llm_endpoints set class = ${patch.class}, updated_at = now() where id = ${id}`
-  if (patch.requestDefaults)
-    await sql`update llm_endpoints set request_defaults = ${sql.json(patch.requestDefaults as never)}, updated_at = now() where id = ${id}`
-  if (patch.models)
-    await sql`update llm_endpoints set models = ${sql.json(patch.models)}, updated_at = now() where id = ${id}`
-  if (patch.modelEfforts)
-    await sql`update llm_endpoints set model_efforts = ${sql.json(patch.modelEfforts as never)}, updated_at = now() where id = ${id}`
-}
-
-/** Create a user-defined endpoint (Models tab). Name must be fresh. */
-export async function createEndpoint(e: {
-  name: string
-  provider: string
-  baseUrl?: string | null
-  class: 'local' | 'cloud'
-  apiKeyEnv?: string | null
-  /** Raw provider API key — sealed (secretbox) before it's stored. */
-  apiKey?: string | null
-  models?: string[]
-  modelPrices?: Record<string, { in?: number; out?: number }>
-}): Promise<string> {
-  const sql = await db()
-  const cipher = e.apiKey ? seal(e.apiKey.trim()) : null
-  const rows = await sql`
-    insert into llm_endpoints (name, provider, base_url, class, api_key_env, api_key_cipher, models, model_prices)
-    values (${e.name}, ${e.provider}, ${e.baseUrl ?? null}, ${e.class}, ${e.apiKeyEnv ?? null}, ${cipher},
-            ${sql.json(e.models ?? [])}, ${sql.json({})})
-    returning id
-  `
-  return (rows[0] as { id: string }).id
-}
+// No endpoint writer here takes a provider key. The api creates and edits
+// endpoints (`/api/fleet/endpoints`, talaria-routes-fleet) and seals a key
+// there; the copies of those writers that sealed one in this process had no
+// caller left, and an app host holds no provider key.
 
 /** Remove an endpoint. Refused while any ENABLED agent's CURRENT version
  *  targets it (retired agents don't run — their history must not block). */
@@ -275,32 +227,6 @@ export async function getAgentDef(id: string): Promise<AgentDef | null> {
   return (rows[0] as unknown as AgentDef) ?? null
 }
 
-export async function upsertAgentDef(input: {
-  slug: string
-  department: string
-  displayName: string
-  role?: string | null
-  source?: 'imported' | 'created'
-}): Promise<AgentDef> {
-  const sql = await db()
-  const model = `${input.slug}-${input.department}`
-  const rows = await sql`
-    insert into agent_defs (slug, department, model, display_name, role, source)
-    values (${input.slug}, ${input.department}, ${model}, ${input.displayName}, ${input.role ?? null}, ${input.source ?? 'imported'})
-    on conflict (slug) do update set
-      department = excluded.department, model = excluded.model,
-      display_name = excluded.display_name,
-      -- keep an existing role unless a new one is supplied (imports don't carry it)
-      role = coalesce(excluded.role, agent_defs.role), updated_at = now()
-    returning id, slug, department, model, display_name as "displayName", role,
-              email_alias as "emailAlias", owner_user_id as "ownerUserId",
-              enabled, managed, source,
-              ticket_template_id as "ticketTemplateId", plan_template_id as "planTemplateId",
-              current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
-  `
-  return rows[0] as unknown as AgentDef
-}
-
 /** Update editable identity metadata (role, display name, email alias). Not
  *  versioned — this is the agent's identity, not its config payload. */
 export async function updateAgentMeta(
@@ -365,45 +291,4 @@ export async function applyConfigEdits(
     fallback_providers: edits.fallbacks.map((f) => block(f)),
   }
   return { ...prev, main: edits.main, aliases: edits.aliases, fallbacks: edits.fallbacks, raw }
-}
-
-/** Key-order-insensitive stringify — Postgres jsonb reorders object keys, so a
- *  plain JSON.stringify comparison would see every round-trip as a change. */
-function canonical(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`
-  if (v && typeof v === 'object') {
-    const entries = Object.entries(v as Record<string, unknown>)
-      .filter(([, val]) => val !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    return `{${entries.map(([k, val]) => `${JSON.stringify(k)}:${canonical(val)}`).join(',')}}`
-  }
-  return JSON.stringify(v) ?? 'null'
-}
-
-/** Append a new version (and point current_version at it). Skips when the
- *  payload equals the latest version — safe to re-run imports. */
-export async function addVersionIfChanged(
-  agentId: string,
-  payload: { soul: string; config: AgentConfig; note?: string; createdBy?: string },
-): Promise<{ version: number; created: boolean }> {
-  const sql = await db()
-  const latest = (await sql`
-    select version, soul, config from agent_versions
-    where agent_id = ${agentId} order by version desc limit 1
-  `) as unknown as Array<{ version: number; soul: string; config: AgentConfig }>
-  const prev = latest[0]
-  if (prev && prev.soul === payload.soul && canonical(prev.config) === canonical(payload.config)) {
-    return { version: prev.version, created: false }
-  }
-  const next = (prev?.version ?? 0) + 1
-  await sql.begin(async (tx) => {
-    await tx`
-      insert into agent_versions (agent_id, version, soul, config, note, created_by)
-      values (${agentId}, ${next}, ${payload.soul},
-              ${tx.json(payload.config as unknown as Parameters<typeof tx.json>[0])},
-              ${payload.note ?? null}, ${payload.createdBy ?? null})
-    `
-    await tx`update agent_defs set current_version = ${next}, updated_at = now() where id = ${agentId}`
-  })
-  return { version: next, created: true }
 }

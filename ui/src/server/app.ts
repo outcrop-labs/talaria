@@ -11,9 +11,10 @@
 // in src/routes/api/ is the whole resident surface, loaded at boot.
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { compileRoute, matchRoute, type ApiMethod, type ApiRoute } from './api-route'
+import { compileRoute, matchSegments, pathSegments, type ApiMethod, type ApiRoute } from './api-route'
 import { json } from './http'
 import { maybeProxy } from './rust-proxy'
+import { APP_BUILDS_PREFIX, serveAppBuild } from './app-builds-door'
 
 const modules = import.meta.glob<{ Route?: ApiRoute }>('../routes/api/**/*.ts', { eager: true })
 
@@ -50,29 +51,42 @@ async function loadShell(): Promise<string | null> {
 
 async function handle(request: Request): Promise<Response> {
   const url = new URL(request.url)
-  const pathname = decodeURIComponent(url.pathname)
+  // An app's compiled client, behind the app's own grant (app-builds-door.ts).
+  // Ahead of the decode below: the door decodes each segment itself.
+  if (url.pathname.startsWith(APP_BUILDS_PREFIX)) return serveAppBuild(request)
+  // THE PATH STAYS RAW. It is decoded once, per segment, by pathSegments —
+  // never as a whole: a whole-path decode turned an encoded slash into a
+  // separator and fed the route matcher a `%` it decoded again (a 500 on any
+  // path holding `%25`). The proxy decides on the raw path too: Rust matches
+  // routes on it as sent.
+  const pathname = url.pathname
   const method = request.method.toUpperCase() as ApiMethod
+  const isApi = pathname === '/api' || pathname.startsWith('/api/') || pathname.startsWith('/.well-known/')
+  const segments = pathSegments(pathname)
+  if (segments === null && isApi) return json({ error: 'malformed path: a percent-escape does not decode' }, { status: 400 })
 
   // /api/* is the Rust api's before the route table is consulted; the table
-  // below is the three residents (app dispatch, healthz, the app
-  // MCP gateway) — the SPA shell, and nothing else.
+  // below is the residents (app dispatch, the app host's own routes, healthz,
+  // the app MCP gateway) — the SPA shell, and nothing else.
   const proxied = await maybeProxy(request, pathname)
   if (proxied) return proxied
 
-  for (const route of routes) {
-    const params = matchRoute(route, pathname)
-    if (!params) continue
-    const handler = route.handlers[method] ?? (method === 'HEAD' ? route.handlers.GET : undefined)
-    if (!handler) {
-      return json(
-        { error: 'method not allowed' },
-        { status: 405, headers: { allow: Object.keys(route.handlers).join(', ') } },
-      )
+  // A malformed path outside /api matches no route: the SPA shell below.
+  if (segments !== null) {
+    for (const route of routes) {
+      const params = matchSegments(route, segments)
+      if (!params) continue
+      const handler = route.handlers[method] ?? (method === 'HEAD' ? route.handlers.GET : undefined)
+      if (!handler) {
+        return json(
+          { error: 'method not allowed' },
+          { status: 405, headers: { allow: Object.keys(route.handlers).join(', ') } },
+        )
+      }
+      return handler({ request, params })
     }
-    return handler({ request, params })
   }
 
-  const isApi = pathname === '/api' || pathname.startsWith('/api/') || pathname.startsWith('/.well-known/')
   if (isApi) return json({ error: 'not found' }, { status: 404 })
 
   if (method === 'GET' || method === 'HEAD') {
@@ -95,6 +109,6 @@ async function handle(request: Request): Promise<Response> {
 // with the code it serves so the dev middleware (vite.config.ts) and the prod
 // wrapper can never drift apart on Set-Cookie, the one header that repeats.
 export { migrate } from './db/pg'
-export { writeHeadHeaders } from './http'
+export { stampPeer, writeHeadHeaders } from './http'
 export { startAppBuilds } from './app-build/reconcile'
 export default { fetch: handle }

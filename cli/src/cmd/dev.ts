@@ -7,11 +7,11 @@ import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
-import { compose, stackComposeFiles, waitFor } from '../compose'
-import { PG_CONTAINER, REDIS_CONTAINER } from '../containers'
+import { compose, stackComposeFiles, waitFor, waitForPostgres, worktreeComposeFiles } from '../compose'
 import { envValue } from '../envfile'
 import { anyNewer } from '../paths'
 import { API_PORT } from '../ports'
+import { ALL_PRIMARY_CONTAINER_VARS, devStack, refuseForeignCheckout, refuseSideStackContainers, refuseWorktreeEnvOverride, type DevStack } from '../stack'
 
 const DEV_COMPOSE = 'docker/dev-compose.yml'
 
@@ -97,6 +97,144 @@ export async function ompAuthBridge(ctx: Ctx, opts: { quietWhenFresh?: boolean }
   }
 }
 
+const API_ENV_VARS = [
+  'DATABASE_URL',
+  'REDIS_URL',
+  'TALARIA_SECRET_KEY',
+  'TALARIA_SECRET_KEY_FILE',
+  'AUTH_SECRET',
+  'TALARIA_SCHEDULER',
+  'SEARXNG_URL',
+  'TALARIA_API_PORT',
+  'TALARIA_API_BIND',
+  'TALARIA_GATEWAY_SELF_URL',
+  'PORT',
+  'TALARIA_APP_HOST_URL',
+  'TALARIA_FLEET_PROJECT',
+  'TALARIA_WORKTREE',
+  'TALARIA_MCP_PORT',
+  'TALARIA_OMP_AUTH_PORT',
+  'TALARIA_GATEWAY_PORT_BASE',
+  'TALARIA_APPS_LOCAL_SOURCES',
+] as const
+
+/** A devbox's own block (box/new.ts boxBlock): every line of it the api
+ *  reads. Lifted only for the box's own stack; apiEnv says why. */
+const BOX_API_ENV_VARS = [
+  'TALARIA_AGENT_DIAL',
+  'TALARIA_MCP_GW_URL',
+  'TALARIA_FLEET_DIR',
+  'TALARIA_APPS_DIR',
+  'TALARIA_UPLOADS_DIR',
+  'TALARIA_QDRANT_URL',
+  'TALARIA_EMBED_URL',
+  'TALARIA_S3_URL',
+  'TALARIA_S3_BUCKET',
+  'TALARIA_S3_ACCESS_KEY',
+  'TALARIA_S3_SECRET_KEY',
+] as const
+
+/** The connection facts the Rust api reads, lifted out of ui/.env with the
+ *  SHELL always winning — the same override point `talaria dev` gives every
+ *  other lifted var. In a worktree, a shell value that differs from a line
+ *  its ui/.env owns never gets this far: runDev refuses it first
+ *  (stack.ts refuseWorktreeEnvOverride).
+ *
+ *  The api's config.rs resolves the secret root in this order; lift all
+ *  three candidates so ui/.env's arrangement works whichever one it uses.
+ *  TALARIA_SCHEDULER rides along for one reason now: `off` is the kill
+ *  switch, and it has to reach the api process to mean anything. (During
+ *  the port the same variable declared which RUNTIME armed the schedule;
+ *  the cutover deleted the TS scheduler, so the api arms unless this says
+ *  `off`.) SEARXNG_URL — an operator's own search endpoint, nothing is
+ *  bundled — rides so the cargo child sees the same value the vite process
+ *  does (vite loads ui/.env itself) — the Rust read of it decides whether
+ *  search is env-pinned, and the two views must agree.
+ *  TALARIA_API_BIND and TALARIA_GATEWAY_SELF_URL are the container/devbox
+ *  dial: without the lift, ui/.env's 0.0.0.0 bind and :5274 gateway never
+ *  reach the renderer, and agents keep queueing on the UI hop.
+ *
+ *  TALARIA_API_PORT is in this list because the api BINDS it (talaria-config
+ *  reads it, defaulting to 5274). Without the lift, a worktree's api would
+ *  dutifully bind the shared port while the proxy dialed the worktree's own —
+ *  the two halves of the same setting have to agree. PORT and
+ *  TALARIA_FLEET_PROJECT are the fleet renderer's: the MCP gateway URL it
+ *  writes into every agent is built from the APP port, and the compose
+ *  project it addresses is what keeps a worktree's agents apart from the
+ *  main fleet — without the lift a worktree's agents would dial :5273 and
+ *  its containers would land in the shared `talaria-fleet` project. PORT is
+ *  also how the api reaches this app host for app harnesses (fitness reads
+ *  them from /api/app-host/harnesses on loopback); TALARIA_APP_HOST_URL
+ *  overrides that address outright.
+ *
+ *  TALARIA_MCP_PORT, TALARIA_OMP_AUTH_PORT and TALARIA_GATEWAY_PORT_BASE are
+ *  a worktree's own ports for what the api spawns and renders: the toolkit
+ *  MCP child, the omp auth bridge child, and the first agent gateway port.
+ *  The api reads all three and nothing else does, so without the lift every
+ *  stack's api fell back to :5280, :5276 and :8770 and the second stack
+ *  collided with the first (talaria worktree says how).
+ *
+ *  TALARIA_WORKTREE names the instance in every container the api owns: an
+ *  app's database (`talaria-appdb-<instance>-<slug>`) and an MCP package's
+ *  (`talaria-mcp-<instance>-<name>`). The app side reads it from ui/.env, so
+ *  without the lift the api named the main instance's container — uninstall
+ *  stopped a container that was not this worktree's and left its own
+ *  running.
+ *
+ *  TALARIA_APPS_LOCAL_SOURCES=1 lets the api install and update apps from a
+ *  repository on this machine (file://, or http:// to loopback) — a dev
+ *  stack's way to exercise the git install and update path without a
+ *  remote. The api is the one that reads it, so ui/.env has to reach it.
+ *
+ *  A devbox's block rides for the reason every line here does: the api has
+ *  no .env loader, and in a box nothing else hands those lines over. The box
+ *  compose's environment carries only TALARIA_DEVBOX and the app database
+ *  network, `box enter` sources nothing, and the devbox branch of runDev
+ *  skips the S3 lift the primary's compose call makes. So a box's api read
+ *  TALARIA_AGENT_DIAL as unset, published loopback ports for its agents and
+ *  dialled them on the box's own loopback. It took its fleet dir from its
+ *  cwd, /work/talaria/fleet, a path only the box container has: every bind
+ *  mount it rendered named a host path that did not exist, which the host's
+ *  daemon makes as an empty root-owned directory. It handed agents the
+ *  host's MCP gateway URL, and dialled qdrant, embeddings and object storage
+ *  on 127.0.0.1. `box/box.test.ts` pins every block key the api reads to
+ *  BOX_API_ENV_VARS.
+ *
+ *  Those lines are lifted only when ui/.env is the box's own: it carries the
+ *  block's TALARIA_DEVBOX marker (or the shell does, as the box compose sets
+ *  it) and names no worktree (boxUiEnv strips TALARIA_WORKTREE). Anywhere
+ *  else they are lines an operator may have set by hand, and a worktree's
+ *  ui/.env is the primary's copied with only its own stack's lines replaced
+ *  (worktree.ts stripOwnKeys). Lifted there, the primary's TALARIA_APPS_DIR
+ *  (docs/APPS.md) or TALARIA_UPLOADS_DIR (ui/.env.example) would point the
+ *  worktree's api at the primary's apps, app databases (app_data_dir derives
+ *  from it, and an uninstall with wipe empties that cluster) and uploads, and
+ *  a hand-set TALARIA_FLEET_DIR would render its agents into the primary's
+ *  fleet dir. So a primary and every worktree, a worktree cut inside a box
+ *  included, hand the api what rc did: none of these lines from ui/.env (the
+ *  S3 pair still reaches it through the export runDev makes before the api
+ *  starts). */
+export const API_ENV_KEYS: readonly string[] = [...API_ENV_VARS, ...BOX_API_ENV_VARS]
+export const BOX_API_ENV_KEYS: readonly string[] = BOX_API_ENV_VARS
+
+/** Is `uiEnv` the box's own: the box block's marker, and no worktree? The
+ *  shell wins over ui/.env for both, as it does for every lifted line. */
+function isBoxStack(shell: Record<string, string | undefined>, uiEnv: string): boolean {
+  const devbox = shell.TALARIA_DEVBOX ?? envValue(uiEnv, 'TALARIA_DEVBOX')
+  const worktree = shell.TALARIA_WORKTREE ?? envValue(uiEnv, 'TALARIA_WORKTREE')
+  return Boolean(devbox) && !worktree
+}
+
+export function apiEnv(shell: Record<string, string | undefined>, uiEnv: string): Record<string, string> {
+  const env: Record<string, string> = {}
+  const keys: readonly string[] = isBoxStack(shell, uiEnv) ? API_ENV_KEYS : API_ENV_VARS
+  for (const varName of keys) {
+    const val = shell[varName] ?? envValue(uiEnv, varName)
+    if (val) env[varName] = val
+  }
+  return env
+}
+
 /** The Rust api sidecar — the app's api since the cutover: every /api/*
  *  request the dev UI serves is proxied to it, so `talaria dev` brings it up
  *  by default. Opt OUT with TALARIA_API=off (a box that runs its own instance
@@ -143,33 +281,7 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
     return
   }
 
-  // The api's config.rs resolves the secret root in this order; lift all
-  // three candidates so ui/.env's arrangement works whichever one it uses.
-  // TALARIA_SCHEDULER rides along for one reason now: `off` is the kill
-  // switch, and it has to reach the api process to mean anything. (During
-  // the port the same variable declared which RUNTIME armed the schedule;
-  // the cutover deleted the TS scheduler, so the api arms unless this says
-  // `off`.) SEARXNG_URL — an operator's own search endpoint, nothing is
-  // bundled — rides so the cargo child sees the same value the vite process
-  // does (vite loads ui/.env itself) — the Rust read of it decides whether
-  // search is env-pinned, and the two views must agree.
-  // TALARIA_API_BIND and TALARIA_GATEWAY_SELF_URL are the container/devbox
-  // dial: without the lift, ui/.env's 0.0.0.0 bind and :5274 gateway never
-  // reach the renderer, and agents keep queueing on the UI hop.
-  const env: Record<string, string> = {}
-  // TALARIA_API_PORT is in this list because the api BINDS it (talaria-config
-  // reads it, defaulting to 5274). Without the lift, a worktree's api would
-  // dutifully bind the shared port while the proxy dialed the worktree's own —
-  // the two halves of the same setting have to agree. PORT and
-  // TALARIA_FLEET_PROJECT are the fleet renderer's: the MCP gateway URL it
-  // writes into every agent is built from the APP port, and the compose
-  // project it addresses is what keeps a worktree's agents apart from the
-  // main fleet — without the lift a worktree's agents would dial :5273 and
-  // its containers would land in the shared `talaria-fleet` project.
-  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL', 'TALARIA_API_PORT', 'TALARIA_API_BIND', 'TALARIA_GATEWAY_SELF_URL', 'PORT', 'TALARIA_FLEET_PROJECT']) {
-    const val = ctx.env[varName] ?? envValue(uiEnv, varName)
-    if (val) env[varName] = val
-  }
+  const env = apiEnv(ctx.env, uiEnv)
   const child = spawn('cargo', ['run', '--quiet'], {
     cwd: join(ctx.root, 'api'),
     env: { ...process.env, ...env },
@@ -238,7 +350,87 @@ async function warnDiskPressure(ctx: Ctx): Promise<void> {
   }
 }
 
+/** The port vite's own dev script binds (ui/package.json). */
+export const VITE_SCRIPT_PORT = '5273'
+
+/** vite's argv. `--strictPort` always: without it a port already taken made
+ *  vite bind the NEXT one and carry on, while everything that names this
+ *  stack's app port kept naming the old one — a worktree's ui/.env URLs and
+ *  its agents' TALARIA_GATEWAY_SELF_URL, main's agents on :5273, a box's
+ *  published port. The stack looked up and its agents could not reach it
+ *  (follow-up R23). A worktree passes its own PORT; vite's script hardcodes
+ *  5273 for everyone else. */
+export function viteArgs(port: string | undefined): string[] {
+  return port ? ['run', 'dev', '--', '--port', port, '--strictPort'] : ['run', 'dev', '--', '--strictPort']
+}
+
+/** Who is listening on a TCP port: `pid N (command)`, a container that
+ *  publishes it, or a plain "something" when this user cannot see the
+ *  process. null when nothing is listening — or when neither `ss` nor `lsof`
+ *  can say, which leaves the verdict to vite's own --strictPort. */
+export async function portHolder(ctx: Ctx, port: string): Promise<string | null> {
+  const quick = { timeoutMs: 5_000 }
+  let listening = false
+  let pid: string | null = null
+  let command: string | null = null
+  try {
+    const out = (await ctx.exec('ss', ['-Hltnp', 'sport', '=', `:${port}`], quick)).stdout.trim()
+    listening = out !== ''
+    const m = /users:\(\("([^"]*)",pid=(\d+)/.exec(out)
+    if (m) [command, pid] = [m[1]!, m[2]!]
+  } catch {
+    // No ss (macOS): lsof answers the same question. It exits 1 when nothing
+    // matches, which is the same answer as no lsof at all.
+    try {
+      const out = (await ctx.exec('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpc'], quick)).stdout
+      listening = out.trim() !== ''
+      pid = /^p(\d+)$/m.exec(out)?.[1] ?? null
+      command = /^c(.+)$/m.exec(out)?.[1] ?? null
+    } catch {
+      return null
+    }
+  }
+  if (!listening) return null
+  if (pid) {
+    try {
+      const args = (await ctx.exec('ps', ['-o', 'args=', '-p', pid], quick)).stdout.trim()
+      if (args) command = args.length > 120 ? `${args.slice(0, 117)}...` : args
+    } catch {
+      // gone already, or ps refused: the name ss gave is still worth printing
+    }
+    return `pid ${pid}${command ? ` (${command})` : ''}`
+  }
+  // A process this user cannot see: docker's port proxy is the usual one.
+  try {
+    const names = (await ctx.exec('docker', ['ps', '--filter', `publish=${port}`, '--format', '{{.Names}}'], quick)).stdout
+      .split('\n')
+      .map((n) => n.trim())
+      .filter(Boolean)
+    if (names.length) return `container ${names.join(', ')} (published by docker)`
+  } catch {
+    // no docker answer: say what is known
+  }
+  return 'a process this user cannot see (another user\'s, or root\'s)'
+}
+
+/** Refuse to start when the app's port is already taken, naming who holds
+ *  it — before a minute of infra and builds, and instead of vite's bare
+ *  "Port N is already in use" (or, before --strictPort, a silent move to the
+ *  next port). */
+async function assertAppPortFree(ctx: Ctx, port: string, whence: string): Promise<void> {
+  const holder = await portHolder(ctx, port)
+  if (!holder) return
+  ctx.log.die(
+    `port ${port} (${whence}) is already taken by ${holder}. vite binds it strictly — moving to another ` +
+      `port would leave this stack's URLs and its agents' gateway url on ${port}. Stop that process ` +
+      '(another `talaria dev` for this checkout?) and run again.',
+  )
+}
+
 export async function runDev(ctx: Ctx): Promise<number> {
+  // The shim always runs the primary's CLI: from inside a worktree this would
+  // bring up the PRIMARY's stack, so a run from another checkout stops here.
+  refuseForeignCheckout(ctx, 'dev')
   const uiEnvPath = join(ctx.root, 'ui/.env')
   if (!existsSync(uiEnvPath)) ctx.log.die('ui/.env missing — run `bun talaria setup` first')
   const uiEnv = readFileSync(uiEnvPath, 'utf8')
@@ -254,6 +446,14 @@ export async function runDev(ctx: Ctx): Promise<number> {
         '  Create isolated worktrees with:  bun talaria worktree <name>   (see docs/WORKTREES.md)',
     )
   }
+
+  // The port vite will bind, checked before anything else starts.
+  const wtPort = envValue(uiEnv, 'TALARIA_WORKTREE') ? envValue(uiEnv, 'PORT') : undefined
+  await assertAppPortFree(
+    ctx,
+    wtPort ?? VITE_SCRIPT_PORT,
+    wtPort ? "this worktree's PORT in ui/.env" : "the dev script's port",
+  )
 
   await warnDiskPressure(ctx)
 
@@ -271,8 +471,10 @@ export async function runDev(ctx: Ctx): Promise<number> {
     await mcpToolkit(ctx, { quietWhenFresh: true })
     await ompAuthBridge(ctx, { quietWhenFresh: true })
     await rustApi(ctx, uiEnv)
-    ctx.log.say(`app → http://127.0.0.1:${ctx.env.PORT ?? '5273'} (published to the host by the box compose)`)
-    return ctx.run('bun', ['run', 'dev'], { cwd: join(ctx.root, 'ui') })
+    ctx.log.say(`app → http://127.0.0.1:${ctx.env.PORT ?? VITE_SCRIPT_PORT} (published to the host by the box compose)`)
+    // Strict here too: the box compose publishes the container's 5273, so a
+    // vite that moved to 5274 would serve nothing the host can reach.
+    return ctx.run('bun', viteArgs(undefined), { cwd: join(ctx.root, 'ui') })
   }
 
   // A worktree (docs/WORKTREES.md) owns exactly two infra services — its own
@@ -283,19 +485,61 @@ export async function runDev(ctx: Ctx): Promise<number> {
   // still read the worktree's DB via ui/.env, but "stop my stack" and the
   // health gates would have been reaching into main. Container names come from
   // the marker, ports from the URLs `talaria worktree` wrote.
-  const worktree = envValue(uiEnv, 'TALARIA_WORKTREE')
+  //
+  // stack.ts names them, and refuses a shell var that names another stack's
+  // container instead of letting it win. The same holds for every line a
+  // worktree's ui/.env owns: apiEnv and vite both let the shell win, so a
+  // stale DATABASE_URL, REDIS_URL or fleet project from another stack's shell
+  // would put this worktree's servers on that stack. And a worktree with no
+  // fleet project of its own renders its agents into main's: refused too.
+  // The primary goes through the same door. Its shell is its override point,
+  // but a shell that carries TALARIA_WORKTREE was started under a worktree's
+  // `talaria dev` and holds that worktree's whole ui/.env (vite loads it into
+  // process.env), and a `talaria-wt-*` fleet project is a worktree's: either
+  // would start main's app and api on the worktree's database or fleet.
+  const stack = devStack(ctx, uiEnv, 'dev')
+  refuseWorktreeEnvOverride(ctx, stack, uiEnv, 'dev')
+  if (stack.fleetProblem) {
+    ctx.log.die(`${stack.fleetProblem}\n  \`talaria dev\` would start its api rendering agents there, so it refuses.`)
+  }
+  const worktree = stack.worktree
   if (worktree) {
-    ctx.env.TALARIA_PG_CONTAINER ??= `talaria-pg-${worktree}`
-    ctx.env.TALARIA_REDIS_CONTAINER ??= `talaria-redis-${worktree}`
+    ctx.env.TALARIA_PG_CONTAINER = stack.pgContainer
+    ctx.env.TALARIA_REDIS_CONTAINER = stack.redisContainer
+    // The ports compose publishes come from the URLs. A shell port that is
+    // not the URL's used to win (`??=`): the worktree's postgres then took,
+    // say, main's 5544 while its own app dialled the URL's, and main's app,
+    // on that port, would have reached the worktree's database.
     const pgPort = portOf(envValue(uiEnv, 'DATABASE_URL'))
     const redisPort = portOf(envValue(uiEnv, 'REDIS_URL'))
-    if (pgPort) ctx.env.TALARIA_PG_PORT ??= pgPort
-    if (redisPort) ctx.env.TALARIA_REDIS_PORT ??= redisPort
+    for (const [key, port, url] of [['TALARIA_PG_PORT', pgPort, 'DATABASE_URL'], ['TALARIA_REDIS_PORT', redisPort, 'REDIS_URL']] as const) {
+      const shell = ctx.env[key]
+      if (port && shell !== undefined && shell !== port) {
+        ctx.log.die(
+          `this is worktree "${worktree}", whose ${url} in ui/.env names port ${port}, but ${key}=${shell} in the environment ` +
+            `would publish its container on another. Refusing rather than guess: unset ${key}.`,
+        )
+      }
+      if (port) ctx.env[key] = port
+    }
     ctx.log.say(`infra (this worktree's postgres + redis — sidecars are the main stack's)`)
-    const code = await compose(ctx, { files: stackComposeFiles(ctx.root, DEV_COMPOSE), project: `talaria-wt-${worktree}` }, ['up', '-d', 'postgres', 'redis'])
+    // worktreeComposeFiles, not the dev pair: the stack `talaria worktree`
+    // made runs on the default bridge (docker/worktree.compose.yml), and an
+    // `up` without that file would recreate both containers on a project
+    // network — the address-pool drain the file exists to stop.
+    const code = await compose(ctx, { files: worktreeComposeFiles(ctx.root), project: `talaria-wt-${worktree}` }, ['up', '-d', 'postgres', 'redis'])
     if (code !== 0) ctx.log.die('worktree infra failed to start (run `bun talaria worktree` again? it was torn down?)')
-    return await waitThenRunApp(ctx, uiEnv)
+    await releaseLegacyNetwork(ctx, worktree)
+    return await waitThenRunApp(ctx, uiEnv, stack)
   }
+
+  // The primary: the shell's TALARIA_*_CONTAINER is its override point, but
+  // one that names a worktree's or a box's container (a shell under that
+  // worktree's `talaria dev` inherits them) would make the `up` below
+  // recreate main's postgres under that name, or remove it on the name
+  // conflict. Checked before the `??=` lines, so only the shell's values are
+  // judged.
+  await refuseSideStackContainers(ctx, ALL_PRIMARY_CONTAINER_VARS, 'dev')
 
   // The MinIO-era spellings keep working: a ui/.env written before the engine
   // swap names the container and port under the old variables, and compose
@@ -346,31 +590,60 @@ export async function runDev(ctx: Ctx): Promise<number> {
     ctx.log.warn('Continuing without it; see docker/dev-compose.yml + issue #151.')
   }
 
-  return await waitThenRunApp(ctx, uiEnv)
+  return await waitThenRunApp(ctx, uiEnv, stack)
+}
+
+/** The network a worktree's postgres + redis sat on before
+ *  docker/worktree.compose.yml moved them to the default bridge. */
+export function legacyWorktreeNetwork(worktree: string): string {
+  return `talaria-wt-${worktree}_default`
+}
+
+/** Give back the subnet of a worktree's old project network, now that the
+ *  `up` before this has moved both its containers to the default bridge. The
+ *  cleanup sweep leaves that network alone for as long as the worktree lives
+ *  (its project still has containers), so on a host of live worktrees — the
+ *  host whose address pools ran out — no subnet came back until each one was
+ *  torn down. Best effort, and quiet unless it frees one: no such network is
+ *  the usual case (every worktree cut since); one any container still names is
+ *  kept, a stopped container too, since it could not start again without it;
+ *  and a daemon too busy to answer changes nothing. */
+async function releaseLegacyNetwork(ctx: Ctx, worktree: string): Promise<void> {
+  const name = legacyWorktreeNetwork(worktree)
+  const quick = { timeoutMs: 15_000 }
+  try {
+    await ctx.exec('docker', ['network', 'inspect', '--format', '{{.Id}}', name], quick)
+  } catch {
+    return
+  }
+  try {
+    const ps = await ctx.exec('docker', ['ps', '-a', '--format', '{{.Networks}}'], quick)
+    const named = ps.stdout.split('\n').some((line) => line.split(',').some((n) => n.trim() === name))
+    if (named) return
+    await ctx.exec('docker', ['network', 'rm', name], quick)
+    ctx.log.ok(`removed ${name} — this worktree's postgres + redis run on the default bridge now`)
+  } catch {
+    // Still in use, or the daemon did not answer in time: the sweep takes it
+    // once the worktree is torn down.
+  }
 }
 
 /** The shared boot tail: infra readiness, deps, the fleet toolkit, then the
- *  vite process (this function's return IS dev's exit code). */
-async function waitThenRunApp(ctx: Ctx, uiEnv: string): Promise<number> {
+ *  vite process (this function's return IS dev's exit code). The probes exec
+ *  into the containers devStack named: a worktree's own, or main's as
+ *  compose reads the shell (an empty TALARIA_PG_CONTAINER is the default
+ *  there, so `?? PG_CONTAINER` would have probed a container named ''). */
+async function waitThenRunApp(ctx: Ctx, uiEnv: string, stack: DevStack): Promise<number> {
   ctx.log.say('waiting for postgres…')
-  const pg = ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER
-  const pgReady = await waitFor(
-    ctx,
-    'postgres',
-    async () => {
-      try {
-        await ctx.exec('docker', ['exec', pg, 'pg_isready', '-U', 'talaria', '-d', 'talaria'])
-        return true
-      } catch {
-        return false
-      }
-    },
-    40,
-  )
-  if (!pgReady) ctx.log.die('postgres never became ready')
+  const pg = stack.pgContainer
+  // A real query over TCP, not the socket pg_isready this was: on a fresh
+  // volume that passed against the entrypoint's temporary init server, and
+  // the app's migration pass then met "the database system is shutting down"
+  // (compose.ts, pgReadyArgs).
+  if (!(await waitForPostgres(ctx, pg, 40))) ctx.log.die('postgres never became ready')
 
   ctx.log.say('waiting for redis…')
-  const redis = ctx.env.TALARIA_REDIS_CONTAINER ?? REDIS_CONTAINER
+  const redis = stack.redisContainer
   // No death on timeout here, deliberately (parity with dev.sh): redis that
   // is merely slow must not abort the boot; the app retries connections.
   await waitFor(
@@ -395,15 +668,13 @@ async function waitThenRunApp(ctx: Ctx, uiEnv: string): Promise<number> {
   await ompAuthBridge(ctx)
   await rustApi(ctx, uiEnv)
 
-  // A worktree's ui/.env carries its own PORT (the allocated slot). vite's
-  // dev script hardcodes 5273, and a busy port makes vite silently bind the
-  // NEXT one — while the worktree's .env URLs keep claiming its own slot —
-  // so forward the flag explicitly and keep the two honest with each other.
+  // A worktree's ui/.env carries its own PORT (the allocated slot), and
+  // vite's dev script hardcodes 5273, so the worktree's is forwarded — and
+  // bound strictly (viteArgs says why).
   const wtPort = envValue(uiEnv, 'TALARIA_WORKTREE') ? envValue(uiEnv, 'PORT') : undefined
-  const devArgs = wtPort ? ['run', 'dev', '--', '--port', wtPort] : ['run', 'dev']
 
-  ctx.log.say(`app → http://localhost:${wtPort ?? '5273'}`)
-  return ctx.run('bun', devArgs, { cwd: join(ctx.root, 'ui') })
+  ctx.log.say(`app → http://localhost:${wtPort ?? VITE_SCRIPT_PORT}`)
+  return ctx.run('bun', viteArgs(wtPort), { cwd: join(ctx.root, 'ui') })
 }
 
 /** Host port of a postgres:// or redis:// URL, or null when unparseable. */

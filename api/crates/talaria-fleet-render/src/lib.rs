@@ -1,9 +1,25 @@
 // render_fleet — regenerate everything the managed fleet runs on from the
 // database: each managed agent's config.yaml + SOUL.md + git credential helper
 // + gitconfig + secrets.env, the shared skills root, and the one compose file
-// + manifest that describe the whole fleet. Idempotent, re-run on any change;
-// Hermes re-reads config on mtime, so a render lands in running agents without
-// a restart.
+// + manifest that describe the whole fleet. Idempotent, re-run on any change.
+//
+// A render reaches a RUNNING agent's config.yaml and SOUL.md without a roll:
+// both are bind-mounted into the container as single files, which pins the
+// inode that existed when the container was created, so they are rewritten
+// IN PLACE (`talaria_fleet_brain::write_in_place` — same inode, flock'd,
+// unchanged bytes skipped, mtime bumped last). Hermes re-reads config.yaml
+// whenever its stat signature changes. A rename-over-the-target write would
+// land on the host and never reach the container. SOUL.md is read when a
+// session's system prompt is built, so an edit reaches new sessions; a
+// session with history keeps the prompt it stored, restart or not.
+//
+// Re-reading the file is not the same as acting on every key in it: most of
+// config.yaml is read once, at start (`model_routes`, plugins, providers).
+// So each service carries a digest of the part a running agent would NOT
+// see (`START_CONFIG_LABEL`, `start_config_fingerprint`), beside the env,
+// image and limits that are the container's own. A change to any of those
+// moves compose's config hash for the service, and fleet-reconcile's
+// `apply_agent_change` recreates a running container exactly when it moved.
 //
 // THIS MODULE carries the whole render: the DATA PLANE (the managed-agent
 // roster, the stable loopback port assignment, the chassis parse), the KEY
@@ -35,9 +51,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use talaria_agent_auth::ensure_agent_api_key;
-use talaria_fleet_layout::GATEWAY_PORT_BASE;
+use talaria_error::store_fault;
 use talaria_secretbox::SecretBox;
-use talaria_workbench_harnesses::{MCP_CONFIG_FILE, PI_CODING_AGENT_DIR};
+use talaria_workbench_harnesses::{
+    MCP_CONFIG_FILE, MODELS_CONFIG_FILE, PI_CODING_AGENT_DIR, WORKBENCH_KEY_ENV,
+};
 
 /// The def columns the render loop reads — the agent_defs row for
 /// MANAGED+ENABLED agents (the current version rides alongside in
@@ -64,6 +82,11 @@ pub struct RenderDef {
     /// `fleet_disabled_toolsets` merges them on top of the pair Talaria always
     /// suppresses and whatever the def's own config already listed.
     pub disabled_toolsets: Vec<String>,
+    /// This agent's place among the rendered agents of its department, oldest
+    /// first: 1 runs in `agent-<department>`, anything above it is a second
+    /// agent in one department, which the render leaves out
+    /// ([`department_runners`]).
+    pub department_rank: i64,
 }
 
 /// The version's render-facing columns (the full version shape lives in
@@ -96,6 +119,7 @@ type TargetTuple = (
     bool,
     i32,
     sqlx::types::Json<Vec<String>>,
+    i64,
     i32,
     String,
     Value,
@@ -115,23 +139,28 @@ fn target_of(r: TargetTuple) -> RenderTarget {
             developer: r.8,
             max_children: r.9,
             disabled_toolsets: r.10.0,
+            department_rank: r.11,
         },
         version: RenderVersion {
-            version: r.11,
-            soul: r.12,
-            config: r.13,
+            version: r.12,
+            soul: r.13,
+            config: r.14,
         },
     }
 }
 
 /// Every managed+enabled agent with its current version, slug-ordered — the
 /// render's whole world. Agents without a current version are absent (the
-/// join drops them): a def with no version cannot be rendered.
+/// join drops them): a def with no version cannot be rendered. Each carries
+/// its rank in its department, oldest first — the same order
+/// talaria-agent-defs' `SharedDepartment::runner` reads.
 pub async fn managed_agents(pg: &PgPool) -> Result<Vec<RenderTarget>, sqlx::Error> {
     // Literal SQL: one auditable statement, columns spelled once.
     let rows: Vec<TargetTuple> = sqlx::query_as(
         "select d.id::text, d.slug, d.department, d.model, d.display_name, d.role, d.source, \
-         d.active_slot, d.developer, d.max_children, d.disabled_toolsets, v.version, v.soul, v.config \
+         d.active_slot, d.developer, d.max_children, d.disabled_toolsets, \
+         row_number() over (partition by d.department order by d.created_at, d.id) as department_rank, \
+         v.version, v.soul, v.config \
          from agent_defs d \
          join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
          where d.managed and d.enabled \
@@ -140,6 +169,58 @@ pub async fn managed_agents(pg: &PgPool) -> Result<Vec<RenderTarget>, sqlx::Erro
     .fetch_all(pg)
     .await?;
     Ok(rows.into_iter().map(target_of).collect())
+}
+
+/// An agent the render leaves out: an older agent holds its department.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeftOut {
+    pub slug: String,
+    pub model: String,
+    pub warning: String,
+}
+
+/// One container per department. A department names the compose service
+/// (`agent-<department>`) and the Hermes data volume, so two agents in one
+/// would be one service in the compose map — the later insert replacing the
+/// earlier agent's container — and one Hermes home both write. New writes
+/// cannot make such a pair (talaria-agent-defs, "A department is one agent's
+/// key"); one that predates that rule renders its OLDEST agent only (rank 1
+/// from [`managed_agents`]), which keeps its container and volume, and every
+/// other is left out: no service, no config, no manifest entry, and a warning
+/// that names both. Nothing is renamed or merged.
+pub fn department_runners(targets: Vec<RenderTarget>) -> (Vec<RenderTarget>, Vec<LeftOut>) {
+    let runner_of: HashMap<String, (String, String)> = targets
+        .iter()
+        .filter(|t| t.def.department_rank == 1)
+        .map(|t| {
+            (
+                t.def.department.clone(),
+                (t.def.model.clone(), t.def.display_name.clone()),
+            )
+        })
+        .collect();
+    let (kept, out): (Vec<RenderTarget>, Vec<RenderTarget>) = targets
+        .into_iter()
+        .partition(|t| t.def.department_rank <= 1);
+    let left_out = out
+        .into_iter()
+        .map(|t| {
+            let d = &t.def;
+            let (holder_model, holder_name) = runner_of
+                .get(&d.department)
+                .cloned()
+                .unwrap_or_else(|| ("another agent".into(), "the older agent".into()));
+            LeftOut {
+                slug: d.slug.clone(),
+                model: d.model.clone(),
+                warning: format!(
+                    "{}: not rendered — its department \"{}\" is also {holder_model}'s, the older agent, and a department is one container (agent-{}) and one memory volume. {holder_name} keeps both; retire and delete one of the two, because Talaria never merges two agents into one",
+                    d.model, d.department, d.department
+                ),
+            }
+        })
+        .collect();
+    (kept, left_out)
 }
 
 /// Assign each managed agent a stable loopback port (persisted, never reused),
@@ -157,11 +238,10 @@ pub async fn ensure_gateway_ports(
     .fetch_all(pg)
     .await?;
     let mut map: HashMap<String, i64> = existing.into_iter().collect();
-    let mut next = map
-        .values()
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(GATEWAY_PORT_BASE);
+    let mut next = next_gateway_port(
+        map.values().copied().max(),
+        talaria_fleet_layout::gateway_port_base(),
+    );
     for slug in slugs {
         if map.contains_key(slug) {
             continue;
@@ -178,14 +258,13 @@ pub async fn ensure_gateway_ports(
     Ok(map)
 }
 
-/// The next unclaimed loopback port for an incoming slot.
-pub async fn next_free_port(pg: &PgPool) -> Result<i64, sqlx::Error> {
-    let row: (i64,) =
-        sqlx::query_as("select coalesce(max(gateway_port), $1)::int8 as m from agent_defs")
-            .bind((GATEWAY_PORT_BASE - 1) as i32)
-            .fetch_one(pg)
-            .await?;
-    Ok(row.0.max(GATEWAY_PORT_BASE - 1) + 1)
+/// The first port a new agent gets: past the highest ever assigned, and never
+/// below this stack's base. The floor is what keeps a second stack's agents
+/// off the first stack's ports, since a seeded or fresh database starts with
+/// none of its own; ports already handed out (even below a later, higher
+/// base) are kept where they are.
+fn next_gateway_port(highest_assigned: Option<i64>, base: i64) -> i64 {
+    highest_assigned.map_or(base, |m| (m + 1).max(base))
 }
 
 /// Per-agent additions beyond the uniform chassis, keyed by slug.
@@ -384,7 +463,7 @@ pub async fn ensure_agent_env_keys(
     let known: Vec<(String,)> = sqlx::query_as("select slug from agent_defs")
         .fetch_all(pg)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| store_fault("[fleet] render: agent slugs read failed", e))?;
     let known: std::collections::HashSet<String> = known.into_iter().map(|(s,)| s).collect();
     let mut next = strip_stale_agent_lines(&current, &known);
     let mut append: Vec<String> = Vec::new();
@@ -445,6 +524,40 @@ async fn ensure_hermes_env_keys(
         }
     }
     (unkeyed, warnings)
+}
+
+/// Unseal the agent web-search vendor key(s) into the fleet .env as
+/// `TALARIA_WEB_<VAR>` lines (rewritten whole each render, so a cleared or
+/// switched vendor leaves nothing behind) and return the Hermes env names
+/// that now have a value to interpolate. A key that cannot be opened is
+/// named in the warnings and left out: the agent then reports the vendor's
+/// own missing-key error rather than receiving an empty variable.
+async fn ensure_web_search_env(
+    sb: &SecretBox,
+    plan: &talaria_agent_web_search::WebRender,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<&'static str>, String> {
+    let mut delivered: Vec<(&'static str, String)> = Vec::new();
+    for (var, sealed) in &plan.keys {
+        match sb.open(sealed) {
+            Ok(v) if talaria_agent_web_search::fleet_env_value_ok(&v) => delivered.push((*var, v)),
+            Ok(_) => warnings.push(format!(
+                "agent web search: the stored {var} is not a value Talaria can write to the fleet .env — re-enter it on Admin → Search"
+            )),
+            Err(e) => warnings.push(format!(
+                "agent web search: {var} could not be unsealed ({e}) — re-enter it on Admin → Search"
+            )),
+        }
+    }
+    let env_path = talaria_fleet_layout::fleet_env();
+    let current = tokio::fs::read_to_string(&env_path)
+        .await
+        .unwrap_or_default();
+    let next = talaria_agent_web_search::fleet_env_with(&current, &delivered);
+    if next != current {
+        write_fleet_env(&env_path, &next).await?;
+    }
+    Ok(delivered.into_iter().map(|(var, _)| var).collect())
 }
 
 fn unkeyed_warning(slug: &str, why: &str) -> String {
@@ -908,6 +1021,9 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "# owner/repo from an https or ssh remote URL.\n",
     "repo=$(printf %s \"$remote_url\" | sed -nE -e 's#^[a-z+]+://[^/]+/([^/]+/[^/]+)/?$#\\1#p' -e 's#^([^@]+@)?[^:]+:([^/]+/[^/]+)/?$#\\2#p' | sed 's#\\.git$##')\n",
     "[ -n \"$repo\" ] || exit 0\n",
+    "# And the host (with any port) the remote is on: the same owner/repo on\n",
+    "# two git hosts is two repositories with two sets of rules.\n",
+    "host=$(printf %s \"$remote_url\" | sed -nE -e 's#^[a-z+]+://([^@/]+@)?([^/]+)/.*$#\\2#p' -e 's#^([^@]+@)?([^:/]+):.*$#\\2#p')\n",
     "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>.\n",
     "refs=\"\"; n=0\n",
     "while read -r _ _ remote_ref _; do\n",
@@ -918,7 +1034,7 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "[ \"$n\" -gt 0 ] || exit 0\n",
     "refs=\"${refs%,}\"\n",
     "url=\"$TALARIA_API_URL/api/secrets/git-push-check\"\n",
-    "body=\"{\\\"repo\\\":\\\"$repo\\\",\\\"refs\\\":[$refs]}\"\n",
+    "body=\"{\\\"repo\\\":\\\"$repo\\\",\\\"host\\\":\\\"$host\\\",\\\"refs\\\":[$refs]}\"\n",
     "if command -v curl >/dev/null 2>&1; then\n",
     "  resp=$(curl -sS -X POST \"$url\" \\\n",
     "    -H \"X-Agent-Name: $API_SERVER_MODEL_NAME\" -H \"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
@@ -957,47 +1073,10 @@ async fn set_executable(path: &Path) {
     let _ = tokio::fs::set_permissions(path, perms).await;
 }
 
-/// TALARIA_AGENT_DIAL=container (docker/compose.yml deployments): the app runs
-/// ON the fleet network and dials compose service names, so loopback port
-/// publishing is skipped entirely — every install sharing one docker host
-/// allocates identical ports from the same seed data and would collide.
-fn dial_is_container() -> bool {
-    matches!(std::env::var("TALARIA_AGENT_DIAL"), Ok(v) if v == "container")
-}
-
-/// The operator's search endpoint AS AN AGENT CONTAINER CAN REACH IT, or None.
-/// The app's spelling is the app's view: on a host-run dev app a loopback
-/// address means the laptop, which an agent reaches as host.docker.internal
-/// (the chassis declares it); in a containerized stack a loopback address is
-/// the app container itself and reaches nothing from an agent, so it is
-/// withheld rather than rendered wrong. Any other host passes through as-is.
-fn agent_search_url(app_url: &str, container_dial: bool) -> Option<String> {
-    let url = app_url.trim();
-    if url.is_empty() {
-        return None;
-    }
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return Some(url.to_string());
-    };
-    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h, Some(p)),
-        _ => (authority, None),
-    };
-    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "0.0.0.0") {
-        return Some(url.to_string());
-    }
-    if container_dial {
-        return None;
-    }
-    let port = port.map(|p| format!(":{p}")).unwrap_or_default();
-    let path = if path.is_empty() {
-        String::new()
-    } else {
-        format!("/{path}")
-    };
-    Some(format!("{scheme}://host.docker.internal{port}{path}"))
-}
+// The deployment's dial mode, and the operator's search URL as an agent
+// container reaches it, live in talaria-fleet-layout: Admin → Search reads the
+// same rule back, so the panel says what this render does.
+use talaria_fleet_layout::{agent_search_url, dial_is_container};
 
 // ── The render loop ───────────────────────────────────────────────────────────
 
@@ -1007,30 +1086,145 @@ pub struct RenderResult {
     pub warnings: Vec<String>,
 }
 
-/// During a roll: additionally render this agent's INCOMING slot alongside its
-/// active one, on the given port. The manifest keeps pointing at the active
-/// port — cutover is a DB update + a plain re-render after health.
-pub struct RollOverlay<'a> {
-    pub slug: &'a str,
-    pub slot: talaria_fleet_docker::Slot,
-    pub port: i64,
+/// Every image a stock chassis has ever defaulted to, oldest first; the LAST
+/// is the current pin. A chassis is the operator's file — seeded from the
+/// template once and never rewritten — so a host keeps whichever default it
+/// was seeded with: the floating `:latest` from before the pin, or the pin
+/// of the day it was installed. The render reads a chassis whose image is
+/// `${HERMES_IMAGE:-<any of these>}` as "never chosen" and renders the
+/// current pin, which is how a bump reaches every host and not only fresh
+/// installs. Any other image an operator wrote stays theirs.
+///
+/// Bumping: APPEND the new pin — never edit or drop an entry, or the hosts
+/// seeded with it stay on it for good. The rest of the procedure is in
+/// docs/ARCHITECTURE.md, "The fleet".
+const HERMES_IMAGE_DEFAULTS: &[&str] = &[
+    // Before 2026-10-22: floating, and never pulled once cached.
+    "nousresearch/hermes-agent:latest",
+    "nousresearch/hermes-agent:v0.22.4@sha256:7a69201726bc64db2072a1371557137c23312d29705cda2b8ea2a0214a50a4cf",
+];
+
+/// The Hermes image every agent runs unless `HERMES_IMAGE` says otherwise —
+/// tag AND digest, so a host can never quietly run a different build than
+/// the one this render was checked against. The chassis template carries
+/// the same string as its `${HERMES_IMAGE:-…}` default (a test holds the two
+/// together).
+pub const HERMES_IMAGE_PIN: &str = HERMES_IMAGE_DEFAULTS[HERMES_IMAGE_DEFAULTS.len() - 1];
+
+/// The config schema version every rendered config.yaml declares as
+/// `_config_version`: the pinned image's own `DEFAULT_CONFIG["_config_version"]`
+/// (`hermes_cli/config_defaults.py`), read from the image with
+/// `python -c 'from hermes_cli.config_defaults import DEFAULT_CONFIG;
+/// print(DEFAULT_CONFIG["_config_version"])'`. BUMP WITH THE PIN — a test
+/// holds the pair together.
+///
+/// Without it Hermes reads the file as unversioned on every boot: the boot
+/// bootstrap logs "config migration skipped: This config predates version
+/// 12", and stage2's `docker_config_migrate.py` tries to migrate it and
+/// fails on the read-only bind. The render writes the whole schema Talaria
+/// means, so there is nothing for Hermes to migrate; stamping the current
+/// version says so, and both paths skip as up to date.
+pub const HERMES_CONFIG_VERSION: u64 = 51;
+
+/// What every agent's service gets whatever chassis it was seeded from:
+/// the current pin in place of any stock default a past template shipped,
+/// and a stop grace long enough for Hermes to drain
+/// (`AGENT_STOP_GRACE_SECS`) unless the chassis sets its own.
+fn apply_service_defaults(svc: &mut Map<String, Value>) {
+    let stock = svc
+        .get("image")
+        .and_then(Value::as_str)
+        .and_then(|i| i.strip_prefix("${HERMES_IMAGE:-"))
+        .and_then(|i| i.strip_suffix('}'))
+        .is_some_and(|default| HERMES_IMAGE_DEFAULTS.contains(&default));
+    if stock {
+        svc.insert(
+            "image".into(),
+            json!(format!("${{HERMES_IMAGE:-{HERMES_IMAGE_PIN}}}")),
+        );
+    }
+    svc.entry("stop_grace_period")
+        .or_insert_with(|| json!(format!("{}s", talaria_fleet_docker::AGENT_STOP_GRACE_SECS)));
+}
+
+/// The config.yaml a render writes: the provenance line, the YAML 1.1 body,
+/// and an explicit `...` document end. The end marker is what makes an
+/// in-place rewrite safe to race: while a shorter render is being written
+/// over a longer one, the file briefly holds the new document followed by
+/// the old one's tail, and the marker turns that tail into a second
+/// document — which Hermes's single-document loader refuses, so it keeps
+/// serving its last good config instead of a spliced one.
+fn config_yaml_text(model: &str, version: i32, routed: &Map<String, Value>) -> String {
+    let body = yaml11_emit(&Value::Object(routed.clone()));
+    format!(
+        "{RENDERED_HEADER}{model} v{version}{RENDERED_HEADER_TAIL}\n{}{}...\n",
+        body,
+        if body.ends_with('\n') { "" } else { "\n" }
+    )
+}
+
+/// The rendered config.yaml's first line is
+/// `<RENDERED_HEADER><model> v<version><RENDERED_HEADER_TAIL>`: which version
+/// of the agent the render last wrote, read back by [`rendered_version`].
+const RENDERED_HEADER: &str = "# Rendered by Talaria — ";
+const RENDERED_HEADER_TAIL: &str = ". Do not hand-edit; edit in Talaria.";
+
+/// The version a rendered config.yaml's header names ([`config_yaml_text`]),
+/// or None for a file that does not start with one.
+pub fn parse_rendered_version(text: &str) -> Option<i32> {
+    text.lines()
+        .next()?
+        .strip_prefix(RENDERED_HEADER)?
+        .strip_suffix(RENDERED_HEADER_TAIL)?
+        .rsplit_once(" v")?
+        .1
+        .parse()
+        .ok()
+}
+
+/// Which version of `slug`'s config the last render wrote for it — the
+/// header of `fleet/agents/<slug>/config.yaml`. That file is what a running
+/// agent reads in place, so this is the version its live settings and soul
+/// come from; whether the container itself was created from this render (the
+/// settings Hermes reads only at start, the env) is `container_fit`'s answer
+/// (talaria-fleet-docker). None when nothing was rendered for it.
+pub async fn rendered_version(slug: &str) -> Option<i32> {
+    let path = talaria_fleet_layout::fleet_dir()
+        .join("agents")
+        .join(slug)
+        .join("config.yaml");
+    let text = tokio::fs::read_to_string(path).await.ok()?;
+    parse_rendered_version(&text)
 }
 
 /// render_fleet — regenerate everything the managed fleet runs on. See the
 /// module header.
-pub async fn render_fleet(
-    pg: &PgPool,
-    sb: &SecretBox,
-    roll: Option<RollOverlay<'_>>,
-) -> Result<RenderResult, String> {
-    let targets = managed_agents(pg).await.map_err(|e| e.to_string())?;
+pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, String> {
+    // One agent per department's container: a second one is left out of
+    // everything below, by name.
+    let (targets, left_out) = department_runners(
+        managed_agents(pg)
+            .await
+            .map_err(|e| store_fault("[fleet] render: managed agents read failed", e))?,
+    );
     let agent_search_url =
         agent_search_url(&talaria_search::search_url(pg).await, dial_is_container());
+    // The operator's agent web-search choice (Admin → Search), the same for
+    // every agent in this render: the `web:` keys merged into each config
+    // below, and the vendor key delivered through the fleet .env.
+    let web_search = talaria_agent_web_search::render(
+        &talaria_agent_web_search::read(pg).await,
+        agent_search_url.is_some(),
+    );
     let mut result = RenderResult {
         agents: Vec::new(),
         files: Vec::new(),
-        warnings: Vec::new(),
+        warnings: web_search.warnings.clone(),
     };
+    for skipped in &left_out {
+        tracing::warn!("[fleet] {}", skipped.warning);
+        result.warnings.push(skipped.warning.clone());
+    }
 
     // The fleet's default brain is Talaria's own gateway. Best-effort — never
     // blocks a render.
@@ -1043,11 +1237,8 @@ pub async fn render_fleet(
     };
     // Read before the move below: whether the brain is MANAGED decides
     // whether each agent gets its own gateway key (an operator's raw
-    // upstream override keeps the operator's LLM_API_KEY in every service),
-    // and the fleet default model is what an agent with no model spec of its
-    // own runs on — so it is what such an agent's key is scoped to.
+    // upstream override keeps the operator's LLM_API_KEY in every service).
     let brain_managed = brain.as_ref().is_some_and(|b| b.managed);
-    let brain_model = brain.as_ref().and_then(|b| b.model.clone());
     if brain.is_some_and(|b| b.managed && b.model.is_none()) {
         result.warnings.push(
             "gateway brain: no model configured yet — add an LLM endpoint on /models to give agents a brain"
@@ -1080,6 +1271,7 @@ pub async fn render_fleet(
     talaria_mcp_service::ensure_mcp_service();
     ensure_fleet_env_key().await?;
     ensure_agent_env_keys(pg, sb, &targets).await?;
+    let web_search_keys = ensure_web_search_env(sb, &web_search, &mut result.warnings).await?;
     // The compose bearer, minted where missing; a slug that cannot be keyed
     // is skipped in the service loop below — named in the warnings, never
     // rendered with an empty `API_SERVER_KEY`.
@@ -1118,12 +1310,24 @@ pub async fn render_fleet(
             }
         };
     let mut agent_scopes: Vec<talaria_fleet_brain::AgentGatewayScope> = Vec::new();
+    let mut staged_configs: Vec<(PathBuf, String)> = Vec::new();
     seed_shared_skills().await?;
     seed_events_plugin().await?;
 
     // Credential-migration visibility — a render is the operator's moment.
-    if let Ok(legacy) = talaria_agent_auth::legacy_migration_status(pg).await
-        && let Some(w) = talaria_agent_auth::legacy_migration_warning(&legacy)
+    // An agent this render leaves out (`department_runners`) has no
+    // container to roll onto its own key, so it is no step of the migration:
+    // counting it would ask for a roll nobody can make.
+    if let Ok(mut legacy) = talaria_agent_auth::legacy_migration_status(pg).await
+        && let Some(w) = {
+            let skipped: std::collections::HashSet<&str> =
+                left_out.iter().map(|l| l.model.as_str()).collect();
+            legacy
+                .agents
+                .retain(|a| !skipped.contains(a.model.as_str()));
+            legacy.pending.retain(|m| !skipped.contains(m.as_str()));
+            talaria_agent_auth::legacy_migration_warning(&legacy)
+        }
     {
         result.warnings.push(w.clone());
         if legacy.window_open {
@@ -1134,6 +1338,24 @@ pub async fn render_fleet(
     }
 
     let gw_models = talaria_fleet_brain::gateway_model_set(pg).await;
+    // One capability read per gateway model id per render, however many
+    // agents run on it.
+    let mut sight_of: HashMap<String, Option<bool>> = HashMap::new();
+    // The org's image reader, for the agents whose own model cannot see (see
+    // `image_reader`). A role that cannot be rendered is said so, never
+    // rendered as something else.
+    let vision_reader = match talaria_model_roles::resolve_role_model(pg, "vision").await {
+        Ok(Some(role)) => match image_reader(pg, &role, &gw_models, &mut sight_of).await {
+            Ok(m) => Some(m),
+            Err(why) => {
+                result.warnings.push(format!(
+                    "vision role: {why} — agents whose model cannot see get no image reader"
+                ));
+                None
+            }
+        },
+        _ => None,
+    };
     let mut remapped: Vec<String> = Vec::new();
     let ports = ensure_gateway_ports(
         pg,
@@ -1143,7 +1365,7 @@ pub async fn render_fleet(
             .collect::<Vec<_>>(),
     )
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[fleet] render: gateway ports read or write failed", e))?;
 
     // Read once, ahead of the loop: omp's model roles are the same for every
     // Developer Agent (the data is read-only for the render's duration). A
@@ -1174,6 +1396,14 @@ pub async fn render_fleet(
         .join("talaria-events");
 
     let mut services: Map<String, Value> = Map::new();
+    // The departments whose agent keeps both the browser and the terminal
+    // toolsets on: each start installs the image's pinned browser engine onto
+    // their volume first (talaria-fleet-docker's browser_engine.rs). A
+    // terminal-less agent is never listed ([`fleet_browser_engine`]), and
+    // neither is an agent `department_runners` left out: it is not in
+    // `targets`, so its department is listed only for the agent that runs
+    // there, and only by that agent's own toolsets.
+    let mut browser_departments: Vec<String> = Vec::new();
     let mut secrets: Map<String, Value> = Map::new();
     let mut volumes: Map<String, Value> = chassis.volumes.clone();
 
@@ -1208,22 +1438,59 @@ pub async fn render_fleet(
             }
         }
 
+        // A `${CONFIG_…}` handle names a sealed credential the agent's env
+        // must hold, and Hermes keeps an unresolved one as its own text: a
+        // token that fails, or a password anyone who can read the config
+        // knows. So a handle with no secret behind it (removed by a path the
+        // Secrets route's guard does not cover, a secret-health clear or a
+        // hand edit) leaves its setting out of this render, and says so,
+        // until the secret is set again under that name.
+        let held = talaria_agent_secrets::held_config_secrets(pg, &def.id)
+            .await
+            .map_err(|e| {
+                store_fault(
+                    &format!("[fleet] render: {}: agent secrets read failed", def.slug),
+                    e,
+                )
+            })?;
+        let (config, withheld, missing) =
+            talaria_agent_secrets::withhold_unheld_config_secrets(&version.config, &held);
+        if !withheld.is_empty() {
+            let warning = format!(
+                "{}: left out {} of its config: the sealed credential {} it names does not exist. Set it again under that name in the Secrets tab to restore the setting",
+                def.display_name,
+                withheld.join(", "),
+                missing.join(", ")
+            );
+            tracing::warn!("[fleet] {warning}");
+            result.warnings.push(warning);
+        }
+
         // Un-interweave: all model tiers point at Talaria's gateway.
-        let raw = def_raw_config(&version.config);
+        let mut raw = def_raw_config(&config);
+        // How this agent reads an image, from what Talaria knows its models
+        // can see — written into the authored config BEFORE the transform,
+        // so an image-reader spec is routed and key-scoped like every other.
+        if let Value::Object(authored) = &mut raw {
+            let sights = agent_sights(pg, authored, &gw_models, &mut sight_of).await;
+            if fleet_vision(authored, &sights, vision_reader.as_deref()) {
+                result.warnings.push(format!(
+                    "{}: its model cannot read images and there is no image reader to give it (the vision role is unset, or could not be rendered) — an image sent to it goes unread",
+                    def.model
+                ));
+            }
+        }
         let routed = talaria_fleet_brain::route_config_through_gateway(&raw, &gw_models, |m| {
             if !remapped.contains(&m) {
                 remapped.push(m);
             }
         });
         // What this agent may ask the gateway for, on its own key: the ids
-        // its specs route to — or, with no spec at all, the fleet default
-        // Hermes falls back to (LLM_MODEL). The relay refuses the rest.
-        let mut agent_models = talaria_fleet_brain::routed_models(&routed);
-        if agent_models.is_empty()
-            && let Some(m) = &brain_model
-        {
-            agent_models.push(m.clone());
-        }
+        // its specs route to, and nothing else — the relay refuses the rest.
+        // A config with no spec gets an empty scope: Hermes picks its model
+        // from config.yaml alone (it deliberately ignores an `LLM_MODEL` env
+        // var), so there is no fleet default it could be falling back to.
+        let agent_models = talaria_fleet_brain::routed_models(&routed);
         agent_scopes.push(talaria_fleet_brain::AgentGatewayScope {
             slug: def.slug.clone(),
             model: def.model.clone(),
@@ -1233,6 +1500,9 @@ pub async fn render_fleet(
             Value::Object(m) => m,
             _ => Map::new(),
         };
+        if brain_managed {
+            fleet_gateway_provider(&mut routed);
+        }
 
         // The rendered MCP block is BUILT, never merged: the toolkit plus
         // what the registry grants this agent, every one a gateway URL. An
@@ -1251,7 +1521,12 @@ pub async fn render_fleet(
 
         let agent_servers = talaria_mcp::registry::servers_for_agent(pg, &def.model)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                store_fault(
+                    &format!("[fleet] render: {}: MCP servers read failed", def.slug),
+                    e,
+                )
+            })?;
         for name in &authored_servers {
             if name != "talaria" && !agent_servers.iter().any(|s| &s.name == name) {
                 let line = format!(
@@ -1319,6 +1594,9 @@ pub async fn render_fleet(
         skills_out.insert("external_dirs".into(), json!(ext_dirs));
         routed.insert("skills".into(), Value::Object(skills_out));
 
+        // The talaria MCP toolkit rides behind Hermes's tool-search bridge.
+        fleet_tool_search(&mut routed);
+
         // The talaria-events plugin (mounted into every agent above) is
         // enabled in config so Hermes registers its hooks. A user's own
         // enabled list is preserved — ours is added, never replaces.
@@ -1335,25 +1613,54 @@ pub async fn render_fleet(
         if !enabled.iter().any(|v| v.as_str() == Some("talaria-events")) {
             enabled.push(json!("talaria-events"));
         }
+        // The sealed manifest is a declaration, never a plugin to load (it
+        // has no adapter): an authored list that names it loses the entry.
+        enabled.retain(|v| {
+            !matches!(
+                v.as_str(),
+                Some("talaria-sealed" | "platforms/talaria-sealed")
+            )
+        });
         plugins.insert("enabled".into(), json!(enabled));
         routed.insert("plugins".into(), Value::Object(plugins));
+        // The agent's own secrets, by name, so execute_code gets them too.
+        let secret_names = talaria_agent_secrets::passthrough_names(pg, &def.id).await?;
+        fleet_env_passthrough(&mut routed, &secret_names);
 
         fleet_approvals(&mut routed, def.developer);
+        fleet_nous_off(&mut routed);
         fleet_delegation(&mut routed, def.max_children);
         fleet_disabled_toolsets(&mut routed, &toolset_floor, &def.disabled_toolsets);
+        fleet_browser_local_close(&mut routed, &secret_names);
+        let browser_engine = fleet_browser_engine(&routed);
+        fleet_tool_loop_guardrails(&mut routed);
+        fleet_title_generation(&mut routed);
+        fleet_model_routes(&mut routed, &def.model);
+        fleet_config_version(&mut routed);
+        match talaria_model_efforts::EffortVoices::read(pg).await {
+            Ok(voices) => {
+                let efforts = target_efforts(&voices, &version.config, &routed);
+                fleet_reasoning(&mut routed, &efforts);
+            }
+            // Left out, not guessed: reading a failed catalog as "nobody
+            // vouched" would mark every model unvouched and drop every
+            // configured level. Without the block Hermes runs as it did
+            // before there was one, and the next render puts it back.
+            Err(e) => tracing::warn!(
+                "[fleet] {}: effort catalog unreadable, reasoning block left out: {e}",
+                def.model
+            ),
+        }
 
         let cfg_path = agent_dir.join("config.yaml");
-        let cfg_text = format!(
-            "# Rendered by Talaria — {} v{}. Do not hand-edit; edit in Talaria.\n{}",
-            def.model,
-            version.version,
-            yaml11_emit(&Value::Object(routed))
-        );
-        // Atomic: the file is bind-mounted into a running container, and a
-        // roll's `docker compose up` may read it mid-render.
-        talaria_fleet_brain::write_atomic(&cfg_path, cfg_text.as_bytes(), 0o644)
-            .await
-            .map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+        let cfg_text = config_yaml_text(&def.model, version.version, &routed);
+        // What of this config a running agent would only see on a restart —
+        // labelled on the service below, so a change to it is a change to
+        // the service, and a change to the rest is not.
+        let start_fingerprint = start_config_fingerprint(&routed);
+        // Written after the loop, once the relay's scope already allows
+        // what it routes to (the scope write, below).
+        staged_configs.push((cfg_path.clone(), cfg_text));
 
         // The rendered soul: standing headers + coaching + handles + soul.
         let coaching = if coach_on {
@@ -1366,7 +1673,9 @@ pub async fn render_fleet(
             .unwrap_or_default();
         let soul_path = agent_dir.join("SOUL.md");
         let soul_text = soul_md(&soul_header, &coaching, &secret_handles, &version.soul);
-        tokio::fs::write(&soul_path, soul_text)
+        // Same single-file bind as config.yaml, so the same in-place writer —
+        // which also skips a soul whose bytes did not change.
+        talaria_fleet_brain::write_in_place(&soul_path, soul_text.as_bytes(), 0o644)
             .await
             .map_err(|e| format!("{}: {e}", soul_path.display()))?;
         result.files.push(cfg_path.display().to_string());
@@ -1404,7 +1713,9 @@ pub async fn render_fleet(
         result.files.push(helper_path.display().to_string());
         result.files.push(gitconfig_path.display().to_string());
 
-        // The service name carries the active slot ('a' = bare, 'b' = "-b").
+        // The service name carries the slot: 'a' = bare, the only one a roll
+        // creates; 'b' = "-b", only for an agent a pre-2026-10-22 blue/green
+        // roll left there, until its next roll moves it home.
         let slot_b = def.active_slot.as_deref() == Some("b");
         let service_name = format!("agent-{}{}", def.department, if slot_b { "-b" } else { "" });
         let imported = def.source == "imported";
@@ -1419,6 +1730,8 @@ pub async fn render_fleet(
             obj.remove("build");
             obj.remove("depends_on");
             obj.remove("profiles");
+            apply_service_defaults(obj);
+            label_start_config(obj, &start_fingerprint);
             if !dial_is_container() {
                 let port = ports.get(&def.slug).copied().unwrap_or(0);
                 obj.insert("ports".into(), json!([format!("127.0.0.1:{port}:8642")]));
@@ -1476,14 +1789,26 @@ pub async fn render_fleet(
         // used to bolt a second `web_search` onto every agent over MCP and run
         // its own SearXNG to answer it; now the agent searches with what it
         // has, and an endpoint the operator configured here reaches it too.
-        // Nothing set → nothing rendered → Hermes resolves its own floor.
+        // Nothing set → nothing rendered → Hermes resolves its own floor. A
+        // URL rendered here also switches that keyless floor off (the `web:`
+        // merge above), unless Admin → Search allowed it. Rendered is not
+        // reachable: Admin → Search probes it from inside a running agent
+        // (talaria-agent-web-search's `probe`) to say which it is.
         if let Some(url) = &agent_search_url {
             env.insert("SEARXNG_URL".into(), json!(url));
         }
-        env.insert(
-            "TALARIA_HEARTBEAT_SECONDS".into(),
-            json!("${TALARIA_HEARTBEAT_SECONDS:-45}"),
-        );
+        // The picked web vendor's key, under the exact name its Hermes
+        // provider reads, interpolated from the fleet .env — the value never
+        // lands in the compose file.
+        for var in &web_search_keys {
+            env.insert(
+                (*var).into(),
+                json!(format!(
+                    "${{{}}}",
+                    talaria_agent_web_search::fleet_env_var(var)
+                )),
+            );
+        }
         // A credential git cannot get must FAIL, not wait: with the terminal
         // prompt enabled (git's default), a push to a repo the helper declines
         // falls through to a username prompt that sits forever in a harness
@@ -1492,11 +1817,13 @@ pub async fn render_fleet(
         // such case into git's immediate "could not read Username", which the
         // toolkit skill already tells the agent to report_problem.
         env.insert("GIT_TERMINAL_PROMPT".into(), json!("0"));
+        pin_write_root(&mut env);
 
         // Developer Agent overlay: the dev sandbox. Harness state PERSISTS
-        // on the department state volume (hand-offs: a session one agent
-        // starts, a department-mate can resume); GitHub attribution AUTHORS
-        // commits as the agent (display name + stable per-agent email).
+        // on the agent's state volume (named for its department, which is
+        // its alone — `department_runners`), so a session survives restarts
+        // and rolls; GitHub attribution AUTHORS commits as the agent (display
+        // name + stable per-agent email).
         if developer {
             let obj = svc
                 .as_object_mut()
@@ -1632,18 +1959,28 @@ pub async fn render_fleet(
             .await
             .map_err(|e| format!("{}: {e}", mcp_path.display()))?;
 
-            // Gateway models.json for Oh My Pi: a `talaria` provider pointed
+            // Gateway models.yml for Oh My Pi: a `talaria` provider pointed
             // at the same OpenAI-compatible gateway the personas use, listing
-            // every model omp's roles name. `$OPENAI_API_KEY` interpolates
-            // from the container env at request time (omp_env set OPENAI_*).
+            // every model omp's roles name. Its `apiKey` names the env var
+            // omp reads the workbench key from at request time (omp_env sets
+            // it). YAML, because omp reads a models.json only until it has
+            // made a models.yml from it (MODELS_CONFIG_FILE).
             let llm_base = format!("{}/api/llm/v1", gateway_origin());
             let models_body = talaria_provider_models_json(&llm_base, &omp_roles.model_ids());
             tokio::fs::write(
-                wb_dir.join("models.json"),
-                serde_json::to_string_pretty(&models_body).unwrap_or_default(),
+                wb_dir.join(MODELS_CONFIG_FILE),
+                format!(
+                    "# Rendered by Talaria — Oh My Pi's gateway provider. Do not hand-edit.\n{}",
+                    yaml11_emit(&models_body)
+                ),
             )
             .await
             .map_err(|e| e.to_string())?;
+            // A models.json an older render wrote here STAYS. Nothing reads
+            // it, but a container created before this render still binds it,
+            // and most renders recreate no container: delete the bind source
+            // and that agent's next restart (a daemon restart, a reboot, its
+            // own crash) fails on a missing mount until someone rolls it.
             // The token that says which render built this sandbox. doctor
             // compares it with the one this build expects, so a container
             // that was never rolled stops being invisible.
@@ -1731,12 +2068,24 @@ pub async fn render_fleet(
             "{}:/opt/data/plugins/talaria-events:ro",
             fleet_plugins.display()
         ));
+        // The sealed manifest (talaria-agent-secrets' `sealed_manifest`,
+        // written beside secrets.env below): its DIRECTORY, so the rename
+        // that rewrites it reaches a running container. Hermes strips the
+        // names it declares from every command the agent runs.
+        vols.push(format!(
+            "{}:{}:ro",
+            agent_dir
+                .join(talaria_agent_secrets::SEALED_PLUGIN_DIR)
+                .display(),
+            talaria_agent_secrets::SEALED_PLUGIN_MOUNT
+        ));
         let protected = [
             "/opt/data",
             "/opt/data/config.yaml",
             "/opt/data/SOUL.md",
             "/opt/dept-skills",
             "/opt/skills",
+            talaria_agent_secrets::SEALED_PLUGIN_MOUNT,
         ];
         for v in svc
             .get("volumes")
@@ -1767,8 +2116,18 @@ pub async fn render_fleet(
             .insert("volumes".into(), json!(vols));
 
         // Per-agent secrets (UI-configured, DB-encrypted) materialize into the
-        // agent dir and load via env_file.
-        if talaria_agent_secrets::materialize_agent_secrets(pg, sb, &def.id, &def.slug).await? {
+        // agent dir and load via env_file; the sealed manifest beside them
+        // names the CONFIG_* ones. A row under a name refused now is not
+        // loaded, and says so here on every render until someone removes it.
+        let agent_secrets =
+            talaria_agent_secrets::materialize_agent_secrets(pg, sb, &def.id, &def.slug).await?;
+        for (name, why) in &agent_secrets.skipped {
+            tracing::warn!(
+                "[fleet] {}: per-agent secret {name} is not loaded: {why}",
+                def.slug
+            );
+        }
+        if agent_secrets.env_file {
             svc.as_object_mut().expect("checked above").insert(
                 "env_file".into(),
                 json!([agent_dir.join("secrets.env").display().to_string()]),
@@ -1810,32 +2169,10 @@ pub async fn render_fleet(
                 .insert("secrets".into(), Value::Array(kept));
         }
         services.insert(service_name.clone(), svc);
-
-        // Mid-roll: the INCOMING slot renders alongside, identical except for
-        // its fresh published port.
-        if let Some(r) = &roll
-            && r.slug == def.slug
-        {
-            let mut incoming = services.get(&service_name).cloned().unwrap_or(Value::Null);
-            if !dial_is_container()
-                && let Value::Object(o) = &mut incoming
-            {
-                o.insert(
-                    "ports".into(),
-                    json!([format!("127.0.0.1:{}:8642", r.port)]),
-                );
-            }
-            let incoming_name = format!(
-                "agent-{}{}",
-                def.department,
-                match r.slot {
-                    talaria_fleet_docker::Slot::B => "-b",
-                    talaria_fleet_docker::Slot::A => "",
-                }
-            );
-            services.insert(incoming_name, incoming);
-        }
         result.agents.push(def.model.clone());
+        if browser_engine {
+            browser_departments.push(def.department.clone());
+        }
     }
 
     for m in &remapped {
@@ -1844,14 +2181,40 @@ pub async fn render_fleet(
         ));
     }
 
-    // The relay's view of every agent key: subject and model set, one row,
-    // written after the loop so it is the whole roster at once.
+    // The relay's view of every agent key — subject and model set, one row —
+    // and the config.yaml files it must agree with. A config.yaml goes live
+    // in a RUNNING agent the moment it is written (the module header), and
+    // the relay allows an agent key exactly the ids its scope lists, so the
+    // order matters: WIDEN the row to the old scope plus the new one, write
+    // every config, then NARROW it to the new scope alone. A Hermes that
+    // reloads mid-render asks for an id from the old config or the new one,
+    // and both are allowed throughout; the other orders refuse its turns for
+    // the gap. (Another api instance reads the row through its 15s hot
+    // window and can lag that long.) A config that fails to write leaves the
+    // widened row in place — both scopes were sanctioned — until the next
+    // render.
+    let scope_warning = |e: String| {
+        format!(
+            "gateway: agent model scopes not written ({e}) — the relay judges agent keys by the last row it has"
+        )
+    };
+    if agent_gateway_keys
+        && let Err(e) = talaria_fleet_brain::widen_agent_gateway_models(pg, &agent_scopes).await
+    {
+        result.warnings.push(scope_warning(e));
+    }
+    for (cfg_path, cfg_text) in &staged_configs {
+        // IN PLACE, never renamed over: the running container sees this file
+        // through a single-file bind that pins its inode (the module header),
+        // and Hermes reloads it from there on the next request.
+        talaria_fleet_brain::write_in_place(cfg_path, cfg_text.as_bytes(), 0o644)
+            .await
+            .map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+    }
     if agent_gateway_keys
         && let Err(e) = talaria_fleet_brain::set_agent_gateway_models(pg, &agent_scopes).await
     {
-        result.warnings.push(format!(
-            "gateway: agent model scopes not written ({e}) — the relay judges agent keys by the last row it has"
-        ));
+        result.warnings.push(scope_warning(e));
     }
 
     let mut compose: Map<String, Value> = Map::new();
@@ -1881,8 +2244,40 @@ pub async fn render_fleet(
     .map_err(|e| format!("{}: {e}", compose_path.display()))?;
     result.files.push(compose_path.display().to_string());
 
-    write_fleet_manifest(pg, &mut result).await?;
+    let engine_path =
+        talaria_fleet_layout::fleet_dir().join(talaria_fleet_docker::BROWSER_ENGINE_FILE);
+    talaria_fleet_brain::write_atomic(
+        &engine_path,
+        talaria_fleet_docker::browser_engine_manifest(&browser_departments).as_bytes(),
+        0o644,
+    )
+    .await
+    .map_err(|e| format!("{}: {e}", engine_path.display()))?;
+    result.files.push(engine_path.display().to_string());
+
+    let left_out: Vec<String> = left_out.into_iter().map(|l| l.slug).collect();
+    write_fleet_manifest(pg, &mut result, &left_out).await?;
     Ok(result)
+}
+
+/// The gateway as the agent's `providers.talaria` entry (fleet-brain's
+/// `gateway_provider_entry`), so Hermes stamps every call it makes to the
+/// gateway with the conversation it belongs to and the relay can meter each
+/// one as that flow's. Merged into an authored `providers:` block — the
+/// def's own entries stand; only this key is Talaria's. Rendered only while
+/// the brain is managed: an operator's raw upstream did not ask for a
+/// session header, and Hermes would send it there.
+fn fleet_gateway_provider(routed: &mut Map<String, Value>) {
+    let mut providers = routed
+        .get("providers")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    providers.insert(
+        talaria_fleet_brain::GATEWAY_PROVIDER.into(),
+        talaria_fleet_brain::gateway_provider_entry(),
+    );
+    routed.insert("providers".into(), Value::Object(providers));
 }
 
 /// The agent's raw config, as authored (version.config.raw ?? {}).
@@ -1893,35 +2288,438 @@ fn def_raw_config(config: &Value) -> Value {
         .unwrap_or_else(|| Value::Object(Map::new()))
 }
 
-/// Fleet agents are driven through the api — an "unattended platform" in
-/// Hermes' approval model — and cron jobs run the same way: nobody is ever
-/// present to approve. The two modes decide what Hermes does when a tool
-/// call needs an approval nobody can give: `approve` waves it through,
-/// `deny` refuses it. Only approval-gated calls are touched either way —
-/// `execute_code`, and a terminal command Hermes' own classifier calls
-/// dangerous (`rm -rf`, a pipe to a shell, a credential read); file, browser,
-/// web, memory and every MCP call are not approval-gated and work under
-/// both. The explicit `deny` is what makes the no-person case a refusal
-/// rather than a prompt that stalls until it times out.
+// ── How an agent reads an image ──────────────────────────────────────────────
+
+/// One model an agent's own loop can answer on — its main model, a tier
+/// (`model_aliases`, which a `<persona>-<tier>` turn runs) or a fallback — as
+/// the gateway transform routes it: the Hermes provider id its spec runs
+/// under, the gateway model id, and whether Talaria knows it can read an
+/// image. `None` is "nobody has measured it", which is not a no.
+#[derive(Debug, Clone, PartialEq)]
+struct ModelSight {
+    provider: String,
+    model: String,
+    main: bool,
+    sees: Option<bool>,
+}
+
+/// The ROUTED specs an agent's loop can run on, main first, each once. Only
+/// a spec the gateway transform stamped a base URL on counts — that is the
+/// mark of a model the agent's key may ask for. The provider is read off the
+/// spec (the transform stamps `custom` today) because, for `custom`, it is
+/// the section Hermes' capability lookup reads `model_overrides` under. A
+/// NAMED provider is canonicalised to `custom` at runtime, and its own name
+/// reaches only `providers.<name>.models.<id>` — so whoever names the
+/// provider must re-check which key Hermes reads, not assume this one.
+fn runnable_specs(routed: &Value) -> Vec<(String, String, bool)> {
+    fn spec(s: &Value) -> Option<(String, String)> {
+        let model = s
+            .get("base_url")
+            .and(s.get("model"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|m| !m.is_empty())?;
+        let provider = s
+            .get("provider")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .unwrap_or("custom");
+        Some((provider.to_string(), model.to_string()))
+    }
+    let main = routed.get("model").into_iter().map(|s| (s, true));
+    let tiers = routed
+        .get("model_aliases")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|a| a.values())
+        .map(|s| (s, false));
+    let fallbacks = routed
+        .get("fallback_providers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|s| (s, false));
+    let mut out: Vec<(String, String, bool)> = Vec::new();
+    for (s, is_main) in main.chain(tiers).chain(fallbacks) {
+        if let Some((provider, model)) = spec(s)
+            && !out.iter().any(|(p, m, _)| *p == provider && *m == model)
+        {
+            out.push((provider, model, is_main));
+        }
+    }
+    out
+}
+
+/// One gateway model id's sight, over every endpoint that may serve it: a
+/// bare id can land on any member of its pool, and which one is not known
+/// until the call. So it SEES only when every member is known to, and it is
+/// BLIND as soon as one member is known not to — pixels sent to a pool with
+/// a blind member reach that member on some turns, while a description reads
+/// the same on all of them. Anything else, an empty pool included, is
+/// unknown.
+fn pool_sees(facts: &[Option<bool>]) -> Option<bool> {
+    if facts.contains(&Some(false)) {
+        return Some(false);
+    }
+    (!facts.is_empty() && facts.iter().all(|f| *f == Some(true))).then_some(true)
+}
+
+/// Talaria's own `vision` facts for a gateway model id — probe, declared,
+/// catalog or learned, whichever stands (`talaria_capability`) — per endpoint
+/// of the id's routing pool, folded by [`pool_sees`]. A failed read is
+/// unknown, never blind.
+async fn model_sees(pg: &PgPool, model: &str) -> Option<bool> {
+    let routing = talaria_gateway::registry::routing_for(pg, model)
+        .await
+        .ok()?;
+    let mut facts = Vec::with_capacity(routing.endpoints.len());
+    for ep in &routing.endpoints {
+        let key = talaria_capability::capability_key(&ep.name, &routing.upstream_model);
+        let known = talaria_capability::get_capabilities(pg, &key).await;
+        facts.push(known.get("vision").map(|f| f.value));
+    }
+    pool_sees(&facts)
+}
+
+/// [`model_sees`], read once per gateway model id per render however many
+/// agents (and the image reader) ask about it.
+async fn cached_sight(
+    pg: &PgPool,
+    model: &str,
+    seen: &mut HashMap<String, Option<bool>>,
+) -> Option<bool> {
+    if let Some(known) = seen.get(model) {
+        return *known;
+    }
+    let known = model_sees(pg, model).await;
+    seen.insert(model.to_string(), known);
+    known
+}
+
+/// THE ID A RENDERED IMAGE READER ASKS THE GATEWAY FOR, from the `vision`
+/// role. A rendered spec reaches the gateway by a bare model id — that is
+/// what the gateway transform keeps (any id it does not serve is swapped for
+/// the fleet fallback, quite possibly a blind model) and what the agent's key
+/// is scoped to. The role, though, is usually assigned endpoint-qualified
+/// (`<endpoint>/<model>`, the Models page's own spelling whenever one
+/// endpoint serves the model). So a qualified role renders as its bare model
+/// when the bare id cannot land anywhere the admin did not mean: no other
+/// endpoint serves it, or every endpoint that does is known to read images.
+/// A role assigned by its bare id is the admin's own pick of the pool, and
+/// stands unless one of its endpoints is known NOT to read images — the same
+/// hazard [`pool_sees`] calls blind. Anything else is refused with the
+/// reason, never rendered as a guess.
+async fn image_reader(
+    pg: &PgPool,
+    role: &str,
+    models: &talaria_fleet_brain::GatewayModels,
+    seen: &mut HashMap<String, Option<bool>>,
+) -> Result<String, String> {
+    if models.served.contains(role) {
+        return match cached_sight(pg, role, seen).await {
+            Some(false) => Err(format!(
+                "\"{role}\" is served by an endpoint known not to read images"
+            )),
+            _ => Ok(role.to_string()),
+        };
+    }
+    let pinned = talaria_gateway::registry::routing_for(pg, role)
+        .await
+        .map_err(|e| format!("\"{role}\" could not be routed ({e})"))?;
+    let bare = pinned.upstream_model;
+    if pinned.endpoints.len() != 1 || bare == role || !models.served.contains(&bare) {
+        return Err(format!("\"{role}\" is not served by the gateway"));
+    }
+    let pool = talaria_gateway::registry::routing_for(pg, &bare)
+        .await
+        .map(|r| r.endpoints.len())
+        .unwrap_or(0);
+    let sees = cached_sight(pg, &bare, seen).await;
+    if pool == 1 || sees == Some(true) {
+        Ok(bare)
+    } else {
+        Err(format!(
+            "\"{role}\" pins one endpoint, but agents reach a model by its bare id and \"{bare}\" is also served by endpoints not known to read images"
+        ))
+    }
+}
+
+/// Every model the authored config will run on once routed, with its sight.
+/// The routing here is a dry run of the transform the render makes next (no
+/// warnings: the real pass names its own remaps), so a model the gateway does
+/// not serve is judged as the fallback it will actually run as.
+async fn agent_sights(
+    pg: &PgPool,
+    authored: &Map<String, Value>,
+    models: &talaria_fleet_brain::GatewayModels,
+    seen: &mut HashMap<String, Option<bool>>,
+) -> Vec<ModelSight> {
+    let routed = talaria_fleet_brain::route_config_through_gateway(
+        &Value::Object(authored.clone()),
+        models,
+        |_| {},
+    );
+    let mut out = Vec::new();
+    for (provider, model, main) in runnable_specs(&routed) {
+        let sees = cached_sight(pg, &model, seen).await;
+        out.push(ModelSight {
+            provider,
+            model,
+            main,
+            sees,
+        });
+    }
+    out
+}
+
+/// A block of the authored config as an owned map, empty when absent.
+fn block_of(v: Option<&Value>) -> Map<String, Value> {
+    v.and_then(Value::as_object).cloned().unwrap_or_default()
+}
+
+/// Hermes' own test for an EXPLICIT `auxiliary.vision` backend
+/// (`agent/image_routing.py`'s `_explicit_aux_vision_override`): a provider
+/// other than `auto`, a model, or a base URL.
+fn explicit_vision_backend(vision: &Map<String, Value>) -> bool {
+    let text = |k: &str| {
+        vision
+            .get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string()
+    };
+    !matches!(text("provider").to_lowercase().as_str(), "" | "auto")
+        || !text("model").is_empty()
+        || !text("base_url").is_empty()
+}
+
+/// HOW AN AGENT READS AN IMAGE, from Talaria's own capability facts. Every
+/// fleet agent runs `provider: custom` with a gateway model id, which Hermes'
+/// catalog (models.dev) has never heard of — so on its own Hermes treats
+/// every agent model as of unknown sight, describes each attached image with
+/// the agent's own model, and has no describer at all once it learns that
+/// model is blind (its auxiliary auto chain tries OpenRouter, Nous and
+/// DeepInfra next, and no Talaria container carries a key for any of them).
+/// Three renders, in Hermes' own keys:
 ///
-/// A Developer Agent gets `approve`: the sandbox is the point, the
-/// container is its boundary, and the harness runs code all day. Every other
-/// agent gets `deny`: with the closed toolset default it has no shell to
-/// begin with, and the manager who opens `terminal` for it gets ordinary
-/// commands and a refused dangerous one, which is the confirmation step
-/// Talaria's chain otherwise never has. The one thing `deny` closes that an
-/// operator might want is `execute_code` on a non-Developer agent — that is
-/// the Developer switch's job, and the toolset editor says so.
+/// - `model_overrides.<provider>.<model>.supports_vision` for each model the
+///   loop runs on whose sight Talaria knows. Per model rather than one
+///   `model.supports_vision`, which Hermes applies to every model the agent
+///   runs (a tier or a fallback that sees differently included). It is the
+///   answer Hermes' capability lookup gives, which its `auto` image mode
+///   decides by. Unknown renders nothing.
+/// - `auxiliary.vision` — the describer — set to the org's `vision` role
+///   model, when one is served and some model of this agent is not known to
+///   see. Written as a bare `{provider, model}` spec: the gateway transform
+///   that runs next fills the gateway URL and key, and scopes the agent's
+///   key to the model. Hermes calls it to describe a chat image in `text`
+///   mode, and for `vision_analyze`, which is how a blind agent reads an
+///   image a tool handed it as a file path.
+/// - `agent.image_input_mode`: `native` when the main model is known to see
+///   (an explicit describer would otherwise force every image through it —
+///   Hermes' `auto` treats one as the user's chosen image route), `text`
+///   when the describer was rendered for a main model that is not.
+///
+/// HERMES HAS ONE IMAGE MODE PER AGENT, not one per model: a configured mode
+/// is returned before any per-model lookup (`decide_image_input_mode`). So
+/// under a seeing main model, a turn on a tier or a fallback that cannot see
+/// is sent the attached image as pixels too — Hermes strips them after a
+/// rejection it recognises, or the call fails, and either way that turn does
+/// not read the image. The describer rendered for that model still serves
+/// its `vision_analyze`. The other choice, `text` whenever any model of the
+/// agent is not known to see, would put every image the seeing main model
+/// gets through a describer to cover an operator's own tier or fallback pick.
+///
+/// A def that authored any of these keeps its own: its `supports_vision` for
+/// a model, an explicit vision backend of its own, an `image_input_mode`.
+/// An agent with no main model spec is left alone — there is no model to
+/// judge. Returns whether the main model is known to be blind with no reader
+/// to give it, which the render warns about.
+fn fleet_vision(
+    authored: &mut Map<String, Value>,
+    sights: &[ModelSight],
+    reader: Option<&str>,
+) -> bool {
+    let Some(main) = sights.iter().find(|s| s.main) else {
+        return false;
+    };
+
+    if sights.iter().any(|s| s.sees.is_some()) {
+        let mut overrides = block_of(authored.get("model_overrides"));
+        for s in sights {
+            let Some(sees) = s.sees else { continue };
+            let mut section = block_of(overrides.get(&s.provider));
+            let mut entry = block_of(section.get(&s.model));
+            entry
+                .entry("supports_vision")
+                .or_insert_with(|| json!(sees));
+            section.insert(s.model.clone(), Value::Object(entry));
+            overrides.insert(s.provider.clone(), Value::Object(section));
+        }
+        authored.insert("model_overrides".into(), Value::Object(overrides));
+    }
+
+    let mut aux = block_of(authored.get("auxiliary"));
+    let mut vision = block_of(aux.get("vision"));
+    let own_backend = explicit_vision_backend(&vision);
+    let needs_reader = sights.iter().any(|s| s.sees != Some(true));
+    let reader = reader.filter(|_| needs_reader && !own_backend);
+    if let Some(model) = reader {
+        vision.insert("provider".into(), json!("custom"));
+        vision.insert("model".into(), json!(model));
+        aux.insert("vision".into(), Value::Object(vision));
+        authored.insert("auxiliary".into(), Value::Object(aux));
+    }
+
+    let mode = match main.sees {
+        Some(true) => Some("native"),
+        _ if reader.is_some() => Some("text"),
+        _ => None,
+    };
+    let mut agent = block_of(authored.get("agent"));
+    if let Some(mode) = mode
+        && !agent.contains_key("image_input_mode")
+    {
+        agent.insert("image_input_mode".into(), json!(mode));
+        authored.insert("agent".into(), Value::Object(agent));
+    }
+
+    main.sees == Some(false) && reader.is_none() && !own_backend
+}
+
+/// The approval policy, written whole every render: a def cannot author its
+/// way around any of these keys, and every other key in its `approvals` block
+/// is left alone.
+///
+/// Hermes gates two kinds of call behind an approval: `execute_code`, and a
+/// terminal command its own classifier calls dangerous (`rm -rf`, a pipe to a
+/// shell, a credential read). File, browser, web, memory and every MCP call
+/// are not approval-gated. WHO ANSWERS depends on how the turn reached the
+/// agent:
+///
+/// - A cron, or an api turn with no stream attached, has nobody to ask, so
+///   `cron_mode` / `unattended_mode` decide on the spot: `approve` waves the
+///   call through, `deny` refuses it.
+/// - A STREAMED turn (every chat, channel reply and work session Talaria
+///   drives) registers an approval notifier, and Hermes treats that turn as
+///   attended. A flagged terminal command goes to `mode` first (`smart` by
+///   default: an LLM guardian that can approve what this agent's policy
+///   refuses), then to an `approval.request` frame on the stream, and waits
+///   `timeout` for an answer. `execute_code` still resolves from
+///   `unattended_mode` there.
+///
+/// So all four keys are pinned, to one policy per agent:
+///
+/// - A Developer Agent gets `mode: off` and `approve`: the sandbox is the
+///   point, the container is its boundary, and the harness runs code all
+///   day. Flagged commands run without a prompt on every path; Hermes'
+///   hardline floor and an authored `approvals.deny` list still hold. So do
+///   the gates Hermes never lets anything auto-approve (an MCP server's
+///   confirmation request, an untrusted MCP server's write tool, a saved
+///   card fill, a write to a project's AGENTS.md / CLAUDE.md / SOUL.md):
+///   they still ask. (This render sets no MCP `trust`, no `tool_costs` and
+///   no browser vault, so of those only the confirmation request and the
+///   protected write arise.) On a conversation turn whose owner manages the
+///   agent, Talaria's door puts the request to that person as a card;
+///   everywhere else it answers `deny`. The protected write is never carded:
+///   it only asks about paths outside `/opt/data`, which the write root
+///   ([`pin_write_root`]) refuses whatever the answer. Nor is an MCP form
+///   that asks for fields: Hermes would answer an allowed one with empty
+///   content, so the door declines it.
+/// - Every other agent gets `mode: manual` and `deny`. No guardian, so no
+///   model ever approves a command. A streamed turn's request reaches
+///   Talaria's door, which answers `deny` and records it; an unattended path
+///   refuses at once. With the closed toolset default such an agent has no
+///   shell to begin with, and the manager who opens `terminal` for it gets
+///   ordinary commands and a refused dangerous one. The one thing `deny`
+///   closes that an operator might want is `execute_code` on a non-Developer
+///   agent. That is the Developer switch's job, and the toolset editor says
+///   so.
+///
+/// `timeout` is how long Hermes holds a request open: a minute for an
+/// ordinary agent, whose requests the door refuses in milliseconds, and two
+/// for a Developer Agent, whose card a person has to read. The values and
+/// why live with the door (`talaria_gateway::fleet_approvals`), because the
+/// card closes itself five seconds before this runs out.
 fn fleet_approvals(routed: &mut Map<String, Value>, developer: bool) {
     let mut cfg = routed
         .get("approvals")
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let mode = if developer { "approve" } else { "deny" };
-    cfg.insert("unattended_mode".into(), json!(mode));
-    cfg.insert("cron_mode".into(), json!(mode));
+    let (mode, unattended) = if developer {
+        ("off", "approve")
+    } else {
+        ("manual", "deny")
+    };
+    cfg.insert("mode".into(), json!(mode));
+    cfg.insert(
+        "timeout".into(),
+        json!(talaria_gateway::fleet_approvals::approval_timeout_secs(
+            developer
+        )),
+    );
+    cfg.insert("unattended_mode".into(), json!(unattended));
+    cfg.insert("cron_mode".into(), json!(unattended));
     routed.insert("approvals".into(), Value::Object(cfg));
+}
+
+/// The file tools' write root, pinned on every agent: `HERMES_WRITE_SAFE_ROOT`
+/// = the agent's data volume (`/opt/data`), and `HERMES_HOME` = that same
+/// folder. The official image sets both values in its Dockerfile; rendering
+/// them makes them values Talaria sets, because the approval door reasons
+/// from the pair (`talaria_gateway::fleet_approvals::unanswerable`): Hermes'
+/// protected-instruction gate exempts `HERMES_HOME`, so while the home and
+/// the root are one folder, every write the gate asks about lies outside the
+/// root and cannot land. A home that drifted from the root would have the
+/// door refuse, with a false reason, a write that could land, so both are
+/// pinned together. Never widened: a Developer Agent's checkouts live under
+/// `/opt/data/workbench`, inside it. A chassis value for either is
+/// overwritten, and per-agent secrets cannot carry a `HERMES_*` name
+/// (talaria-agent-secrets).
+///
+/// Hermes reads the root as an `os.pathsep` list (`:` here), skips empty
+/// entries and `realpath`s each one (v0.22.4 `agent/file_safety.py`,
+/// `get_safe_write_roots`); a single root needs no separator.
+fn pin_write_root(env: &mut Map<String, Value>) {
+    let root = talaria_gateway::fleet_approvals::AGENT_WRITE_ROOT;
+    env.insert("HERMES_WRITE_SAFE_ROOT".into(), json!(root));
+    env.insert("HERMES_HOME".into(), json!(root));
+}
+
+/// Nous-hosted connectors and the Nous free-tier identity, off on every agent.
+/// Hermes ships both on: `tools.connectors.enabled` puts `manage_connections`
+/// (part of the api-server toolset) in front of the model, and `nous.guest`
+/// lets the container mint an anonymous Nous account on the first connector
+/// action. Both are routes around Talaria. A connector reaches a third-party
+/// account outside the MCP gateway's allowlist, credential custody and audit,
+/// and a guest identity is an account at a provider nobody here chose.
+/// Operators reach SaaS through the MCP registry and models through /models,
+/// so both keys are pinned off; the rest of each block stays the def's.
+fn fleet_nous_off(routed: &mut Map<String, Value>) {
+    let mut tools = routed
+        .get("tools")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut connectors = tools
+        .get("connectors")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    connectors.insert("enabled".into(), json!(false));
+    tools.insert("connectors".into(), Value::Object(connectors));
+    routed.insert("tools".into(), Value::Object(tools));
+
+    let mut nous = routed
+        .get("nous")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    nous.insert("guest".into(), json!(false));
+    routed.insert("nous".into(), Value::Object(nous));
 }
 
 /// How many subagents this agent may run at once — the def's `max_children`,
@@ -1954,9 +2752,8 @@ fn fleet_delegation(routed: &mut Map<String, Value>, max_children: i32) {
 ///
 /// `floor` is what Talaria suppresses on every agent — the mandatory pair
 /// plus the org's own floor (`talaria_agent_defs::mandatory_disabled`);
-/// `def_disabled` is the operator's own list (agent_defs.disabled_toolsets) —
-/// `browser` above all, because a browsing agent costs a Chromium install on
-/// every roll. THE ORDER IS THE MERGE'S MEANING: the floor Talaria always
+/// `def_disabled` is the operator's own list (agent_defs.disabled_toolsets).
+/// THE ORDER IS THE MERGE'S MEANING: the floor Talaria always
 /// suppresses, then what the operator closed, then whatever the authored
 /// config already carried. A reader of the rendered config.yaml can tell the
 /// three apart by where they sit, and a re-render of the same three lists
@@ -1991,12 +2788,843 @@ fn fleet_disabled_toolsets(
     routed.insert("agent".into(), Value::Object(agent));
 }
 
-/// Whether this agent still holds Hermes' browser toolset — the switch behind
-/// the browser setup the post-health sites run (talaria-fleet-docker's
-/// `install_browser`). Absence from the disabled list is the "yes": every
-/// built-in toolset is on until something names it.
-pub fn browser_enabled(def: &RenderDef) -> bool {
-    !def.disabled_toolsets.iter().any(|name| name == "browser")
+/// Whether this agent's starts install the browser engine: the `browser`
+/// toolset on AND the `terminal` toolset on, read from the merged config
+/// ([`toolset_closed`], so [`fleet_disabled_toolsets`] runs first). It
+/// renders nothing itself: Hermes's own default browser stands, and a
+/// `browser:` block the def authored passes through as written.
+///
+/// WHY THE TERMINAL DECIDES. Hermes v0.22.4 has two browser surfaces, and
+/// both drive the image's Chromium through the `agent-browser` CLI, which the
+/// image does not stage (talaria-fleet-docker's browser_engine.rs installs it
+/// onto the volume). Its default, Browser Use mode (`browser.backend` unset),
+/// is one `browser_exec` tool that Hermes offers only to a session that also
+/// has the `terminal` tool (`model_tools._rewrite_browser_exec`), and in that
+/// mode the built-in `browser_navigate` / `browser_click` / … tools are
+/// withheld (`check_browser_requirements`). The built-in tools
+/// (`browser.backend: off`) would work without a terminal, but Hermes runs
+/// them as a LOCAL browser, and it skips the private-address check for a
+/// local browser whenever `TERMINAL_ENV` is local or unset
+/// (`browser_tool_cloud._is_local_backend`: SSRF protection "only matters
+/// when the browser can reach networks the terminal cannot"). It never asks
+/// whether the session has a terminal. So a terminal-less agent given those
+/// tools could open the host, other agents' containers and the LAN, which its
+/// own `web_extract` refuses; no setting restores the check for a local
+/// browser, and Talaria cannot move `TERMINAL_ENV` off `local` for it (the
+/// file tools run through it; a def that authors `terminal.backend` moves
+/// its whole shell, and Hermes then keeps the check: [`hermes_browser`]).
+/// With the terminal on, Hermes's premise holds: the shell
+/// already reaches all of it. So only that agent gets the engine, and with it
+/// Hermes's default `browser_exec`. A terminal-less agent with `browser`
+/// ticked and no `browser:` block of its own renders exactly what it rendered
+/// before the engine existed (no `browser:` block, no engine), so it has no
+/// browser tool, an upgrade changes nothing for it, and the toolset grid says
+/// why (ui's `browserNote`).
+///
+/// "The terminal" is the `terminal` TOOL, which is what Hermes's gate reads
+/// ([`toolset_closed`] says where it can be closed).
+///
+/// A `browser:` block the def authored stands, and with the terminal open it
+/// is the def's own browser. With the terminal closed, one that Hermes would
+/// run as a local browser has the `browser` toolset closed for it first
+/// ([`fleet_browser_local_close`]), so no terminal-less agent keeps a browser
+/// without the private-address check, even on an engine an earlier start left
+/// on its volume.
+fn fleet_browser_engine(routed: &Map<String, Value>) -> bool {
+    !toolset_closed(routed, "browser") && !toolset_closed(routed, "terminal")
+}
+
+/// Whether the merged config closes `toolset` for the agent's sessions, read
+/// the way Hermes v0.22.4's api_server resolves a turn's tools: the platform
+/// list (`platform_toolsets.api_server`, Hermes's default bundle when the def
+/// authored none) minus `agent.disabled_toolsets`. So it is closed when the
+/// disabled list names it (a retired name as the governed toolsets it closes,
+/// [`talaria_agent_defs::toolset_names`]: `debugging` closes the terminal), or
+/// when the def authored a platform list that carries it nowhere
+/// ([`platform_list_carries`]). Talaria never writes that list, and the
+/// toolset grid does not read it; a def that authors one narrows its agent's
+/// tools behind the grid.
+fn toolset_closed(routed: &Map<String, Value>, toolset: &str) -> bool {
+    let disabled = routed
+        .get("agent")
+        .and_then(|a| a.get("disabled_toolsets"))
+        .and_then(Value::as_array);
+    // A name as the governed toolsets it closes; a stranger is taken as
+    // written.
+    let named = disabled.is_some_and(|d| {
+        d.iter().filter_map(Value::as_str).any(|raw| {
+            raw.trim() == toolset
+                || talaria_agent_defs::toolset_names(raw)
+                    .is_some_and(|names| names.contains(&toolset))
+        })
+    });
+    named || api_server_list(routed).is_some_and(|list| !platform_list_carries(&list, toolset))
+}
+
+/// The toolset list the def authored for Hermes's api_server platform, which
+/// replaces that platform's default bundle (v0.22.4 `_get_platform_tools`).
+/// None when there is none: Hermes reads only a list, or a string holding a
+/// list literal (`'["web", "terminal"]'`, older `hermes config set` builds),
+/// and falls back to its default for anything else. A list-literal string
+/// this cannot read is taken as an empty list, so it closes rather than
+/// opens.
+fn api_server_list(routed: &Map<String, Value>) -> Option<Vec<String>> {
+    let value = routed
+        .get("platform_toolsets")?
+        .as_object()?
+        .get("api_server")?;
+    let names = |items: &[Value]| -> Vec<String> {
+        items
+            .iter()
+            .filter_map(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            })
+            .collect()
+    };
+    match value {
+        Value::Array(items) => Some(names(items)),
+        Value::String(s) if s.trim_start().starts_with('[') => {
+            let parsed = serde_json::from_str::<Vec<Value>>(s.trim())
+                .or_else(|_| serde_json::from_str::<Vec<Value>>(&s.trim().replace('\'', "\"")));
+            Some(parsed.map(|items| names(&items)).unwrap_or_default())
+        }
+        _ => None,
+    }
+}
+
+/// Whether an authored platform list carries `toolset` (`terminal` or
+/// `browser`): by name, `debugging` for the terminal tool, or one of
+/// v0.22.4's composites that carry both (`all`, `*`, `coding`, the legacy
+/// `hermes`, and every `hermes-*` bundle but `hermes-webhook`, whose tools are
+/// web search, extract, vision and clarify). A custom toolset is not read, so
+/// it carries nothing here: the reading errs toward closed.
+fn platform_list_carries(list: &[String], toolset: &str) -> bool {
+    list.iter().any(|name| {
+        name == toolset
+            || (toolset == "terminal" && name == "debugging")
+            || matches!(name.as_str(), "all" | "*" | "coding" | "hermes")
+            || (name.starts_with("hermes-") && name != "hermes-webhook")
+    })
+}
+
+/// Which browser Hermes v0.22.4 gives an agent whose `browser` toolset is
+/// on, from its config and the names of its own secrets (which reach Hermes
+/// as env).
+#[derive(Debug, PartialEq, Eq)]
+enum HermesBrowser {
+    /// Browser Use mode: the one `browser_exec` tool, offered only with the
+    /// terminal. Hermes's default (`browser.backend` unset, or `browser-use`).
+    Exec,
+    /// The built-in `browser_*` tools on a browser Hermes skips its
+    /// private-address check for: one it calls local (this machine's
+    /// Chromium through the engine, or Camofox: `_is_local_backend`), a
+    /// hosted provider whose private addresses it sends to a local Chromium
+    /// (`_hybrid_routes_locally`), or any of them once the def turns the
+    /// check off ([`hermes_private_urls_allowed`]).
+    Local,
+    /// The built-in tools on a CDP endpoint or a hosted provider, or on this
+    /// machine's Chromium while the agent's terminal runs elsewhere (a
+    /// `terminal.backend` other than local): each keeps Hermes's check.
+    Remote,
+}
+
+/// Hermes's `is_truthy_value(v, default=False)`: a string is truthy when it
+/// strips and lower-cases to `1`, `true`, `yes` or `on`; anything else is
+/// Python's `bool()`.
+fn py_truthy(v: &Value) -> bool {
+    match v {
+        Value::String(s) => matches!(
+            s.trim().to_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        other => !py_text(other).is_empty(),
+    }
+}
+
+/// Whether the def turns Hermes v0.22.4's private-address check off for any
+/// browser it runs. The browser's gate (`_url_policy_error`, and
+/// `_post_redirect_block` after a redirect) passes a private address when
+/// `browser.allow_private_urls` is truthy (`_allow_private_urls`), or when
+/// `_is_safe_url` passes it, which it does for `security.allow_private_urls`
+/// as well (`url_safety._global_allow_private_urls`). Both are read with
+/// `is_truthy_value`, and only from a mapping. The env name asked before
+/// them there, `HERMES_ALLOW_PRIVATE_URLS`, cannot reach an agent:
+/// `HERMES_*` is refused as a secret, and neither the image nor the compose
+/// service sets it.
+fn hermes_private_urls_allowed(routed: &Map<String, Value>) -> bool {
+    ["browser", "security"].iter().any(|section| {
+        routed
+            .get(*section)
+            .and_then(Value::as_object)
+            .and_then(|m| m.get("allow_private_urls"))
+            .is_some_and(py_truthy)
+    })
+}
+
+/// Hermes's reading of a config value as `str(v or "")`.
+fn py_text(v: &Value) -> String {
+    match v {
+        Value::Null => String::new(),
+        Value::Bool(false) => String::new(),
+        Value::Bool(true) => "True".into(),
+        Value::Number(n) if n.as_f64() == Some(0.0) => String::new(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.clone(),
+        Value::Array(a) if a.is_empty() => String::new(),
+        Value::Object(o) if o.is_empty() => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// Whether Hermes v0.22.4 reads this agent's terminal as local, the last
+/// question `_is_local_backend` asks: `TERMINAL_ENV`, stripped and lower
+/// case, is `local` or empty.
+///
+/// For a Talaria agent that variable comes from the config alone. Its own
+/// secrets cannot carry it (`TERMINAL_*` is refused and skipped at
+/// materialize), the image and the compose service set none, and the
+/// api_server platform binds no per-turn terminal scope (that is the local
+/// session's, `policy_for_source`). The gateway's bridge
+/// (`_bridge_terminal_config_to_env`, and `apply_terminal_config_to_env`
+/// on every env reload) writes `terminal.backend` into it whenever the key
+/// is present: `str()` of the value, JSON for a list or a map. So a null is
+/// `None`, a bool `True`/`False`, a number its digits, and only a string can
+/// read as local. With no `terminal` map, or no `backend` in it, the
+/// variable is the default `local`.
+fn hermes_terminal_local(routed: &Map<String, Value>) -> bool {
+    match routed
+        .get("terminal")
+        .and_then(Value::as_object)
+        .and_then(|t| t.get("backend"))
+    {
+        None => true,
+        Some(Value::String(s)) => matches!(s.trim().to_lowercase().as_str(), "local" | ""),
+        Some(_) => false,
+    }
+}
+
+/// The browser Hermes v0.22.4 would give this agent, mirroring
+/// `is_browser_use_cli_mode`, `is_camofox_mode` and `_is_local_backend`.
+///
+/// The agent's own secrets reach Hermes as its env, and `secret_names` are
+/// the ones that do (`passthrough_names`). One env name changes what Hermes
+/// picks: `BROWSER_CDP_URL` is a CDP override, exactly as `browser.cdp_url`
+/// is (`_get_cdp_override_raw`: a live `/browser connect`, then this env
+/// name, then the config key). It beats a Camofox selection and is never
+/// local.
+///
+/// The other names Hermes picks a browser by when no provider is written
+/// are not read: `CAMOFOX_URL` (`is_camofox_mode`) and the hosted providers'
+/// credentials (`_autodetect_cloud_provider`: `BROWSER_USE_API_KEY`, or
+/// `BROWSERBASE_API_KEY` with `BROWSERBASE_PROJECT_ID`). Those names are
+/// refused as per-agent secrets and skipped at materialize
+/// (`talaria_agent_secrets::reserved`), so Hermes never finds them in an
+/// agent's env either, and Camofox is chosen by `browser.cloud_provider`
+/// alone. What Talaria cannot see at all (a live `/browser
+/// connect`) it reads as absent, which errs toward `Local`.
+///
+/// After those, `_is_local_backend` asks where the terminal runs
+/// ([`hermes_terminal_local`]): "when terminal runs in a container, browser
+/// on host can access internal networks the terminal can't", so a docker,
+/// ssh or other sandboxed terminal keeps the check for this machine's
+/// browser. Camofox is asked before that and stays local whatever the
+/// terminal.
+///
+/// A browser that keeps the check is `Local` all the same when Hermes would
+/// pass a private address to it anyway:
+/// - the def turns the check off ([`hermes_private_urls_allowed`]), for any
+///   of them;
+/// - a hosted provider sends a private address to a local Chromium sidecar,
+///   for which the check is skipped (`_hybrid_routes_locally`), while
+///   `browser.auto_local_for_private_urls` is on. Hermes reads that key as
+///   Python's `bool()` (so the string `"false"` is on) and defaults it on. A
+///   written `cloud_provider` names its provider whether or not its
+///   credentials are there (`browser_registry._resolve`), and an agent's
+///   cannot be, so for a Talaria agent that sidecar is the hosted browser's
+///   only working path.
+fn hermes_browser(routed: &Map<String, Value>, secret_names: &[String]) -> HermesBrowser {
+    let cfg = routed.get("browser").and_then(Value::as_object);
+    let get = |key: &str| cfg.and_then(|c| c.get(key));
+    // get_browser_backend: YAML 1.1's bare `off` is `false`, which is a
+    // choice; `true` is unset.
+    let backend = match get("backend") {
+        Some(Value::Bool(false)) => "off".to_string(),
+        Some(Value::Bool(true)) | None => String::new(),
+        Some(v) => py_text(v).trim().to_lowercase(),
+    };
+    let has_secret = |name: &str| secret_names.iter().any(|n| n == name);
+    // A stored secret is never empty (the secrets route refuses an empty
+    // value), so its name is the override.
+    let cdp = has_secret("BROWSER_CDP_URL")
+        || get("cdp_url").is_some_and(|v| !py_text(v).trim().is_empty());
+    // read_selection("browser"): the written `cloud_provider`, if any.
+    let selection = get("cloud_provider")
+        .filter(|v| !v.is_null())
+        .map(|v| match v {
+            Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+            other => py_text(other).trim().to_lowercase(),
+        })
+        .filter(|s| !s.is_empty());
+    let camofox = !cdp && selection.as_deref() == Some("camofox");
+    if !camofox && (backend.is_empty() || backend == "browser-use") {
+        return HermesBrowser::Exec;
+    }
+    let checked = |kept: bool| {
+        if kept && !hermes_private_urls_allowed(routed) {
+            HermesBrowser::Remote
+        } else {
+            HermesBrowser::Local
+        }
+    };
+    if cdp {
+        return checked(true);
+    }
+    if camofox {
+        return HermesBrowser::Local;
+    }
+    // _resolve_cloud_provider_uncached: a written key names a provider unless
+    // it normalises to local (or camofox, handled above).
+    let hosted = get("cloud_provider").is_some_and(|v| {
+        let key = py_text(v).trim().to_lowercase();
+        !key.is_empty() && key != "local" && key != "camofox"
+    });
+    if hosted {
+        // _auto_local_for_private_urls: `bool(value)`, on when absent.
+        let sidecar = get("auto_local_for_private_urls").is_none_or(|v| !py_text(v).is_empty());
+        return checked(!sidecar);
+    }
+    checked(!hermes_terminal_local(routed))
+}
+
+/// Close the `browser` toolset for an agent whose terminal is closed when the
+/// browser Hermes would give it skips the private-address check
+/// ([`hermes_browser`]'s `Local`): a def that authored a backend other than
+/// `browser-use`, Camofox, a hosted provider that sends private addresses to
+/// a local Chromium, or any of them with `allow_private_urls` on. With no
+/// terminal nothing else of the agent's reaches those networks. A def whose
+/// `terminal.backend` runs the shell elsewhere keeps the check, so it is
+/// left alone too, unless it turns the check off. Talaria installs no
+/// engine for such an agent, but one that an earlier start with the terminal
+/// open left on the volume would still run the built-in tools, so the render
+/// closes the toolset rather than relying on the engine being absent. A CDP
+/// endpoint (in the config, or a `BROWSER_CDP_URL` secret) or a hosted
+/// provider with `browser.auto_local_for_private_urls` off keeps Hermes's
+/// check and is left alone, and
+/// so is Hermes's default (`browser_exec`, which needs the terminal anyway),
+/// so a def with no `browser:` block renders exactly what it did before.
+/// The def's own `browser:` block is never rewritten, and the toolset grid
+/// says what happened (ui's `browserNote`).
+fn fleet_browser_local_close(routed: &mut Map<String, Value>, secret_names: &[String]) {
+    if toolset_closed(routed, "browser")
+        || !toolset_closed(routed, "terminal")
+        || hermes_browser(routed, secret_names) != HermesBrowser::Local
+    {
+        return;
+    }
+    // [`fleet_disabled_toolsets`] ran first, so the list is there.
+    if let Some(list) = routed
+        .get_mut("agent")
+        .and_then(|a| a.get_mut("disabled_toolsets"))
+        .and_then(Value::as_array_mut)
+    {
+        list.push(json!("browser"));
+    }
+}
+
+/// Hermes's progressive tool disclosure, pinned on. Every agent carries the
+/// `talaria` MCP server, and Hermes always treats an MCP tool as deferrable,
+/// so with the bridge on the toolkit's schemas stay out of the model-facing
+/// tool array: a turn carries `tool_search` / `tool_describe` / `tool_call`
+/// and a short name-and-description listing, and the agent pulls a schema
+/// when it needs one — which is what the talaria-toolkit skill teaches.
+/// Hermes's own default is `auto`, an alias of `on` today that its config
+/// documents as reserved for a future budget-gated mode, so the render says
+/// `on` rather than lean on a default whose meaning is announced to change.
+/// A def that authored its own `enabled` keeps it — an operator's explicit
+/// call — and every other key in the block (`defer`, `threshold_pct`, …) is
+/// left alone the same way. So does a def that wrote the block in a shape
+/// other than a map: Hermes reads the legacy `tool_search: false` as off
+/// (`ToolSearchConfig.from_raw`), and rewriting it to a map would flip that
+/// explicit off to on. A null at either level is nothing authored.
+fn fleet_tool_search(routed: &mut Map<String, Value>) {
+    let tools = routed
+        .entry("tools")
+        .and_modify(|v| {
+            if v.is_null() {
+                *v = json!({});
+            }
+        })
+        .or_insert_with(|| json!({}));
+    let Some(tools) = tools.as_object_mut() else {
+        return;
+    };
+    let search = tools
+        .entry("tool_search")
+        .and_modify(|v| {
+            if v.is_null() {
+                *v = json!({});
+            }
+        })
+        .or_insert_with(|| json!({}));
+    let Some(search) = search.as_object_mut() else {
+        return;
+    };
+    search.entry("enabled").or_insert_with(|| json!("on"));
+}
+
+/// Hermes' own tool-loop guard, ARMED. Hermes counts identical calls (tool,
+/// canonical arguments, result), cycles, replayed failures and read-only
+/// calls that keep answering the same, and on an attended platform it only
+/// warns — and `api_server`, the platform every fleet agent runs on, counts as
+/// attended (`agent/tool_guardrails.py`'s `_ATTENDED_PLATFORMS`). So the hard
+/// stops are switched on explicitly: block or halt at five, a halted turn
+/// ending with a reply that says why. This replaced the stream-side guard
+/// Talaria ran in talaria-chat-persist, which keyed on what the stream carries
+/// (a display preview and an always-empty result) and stopped legitimate
+/// work. Every other key a def set in the block — thresholds, loop caps — is
+/// the def's to tune; only the switch is Talaria's.
+fn fleet_tool_loop_guardrails(routed: &mut Map<String, Value>) {
+    let mut cfg = routed
+        .get("tool_loop_guardrails")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    cfg.insert("hard_stop_enabled".into(), json!(true));
+    routed.insert("tool_loop_guardrails".into(), Value::Object(cfg));
+}
+
+/// Hermes' model-written session titles, OFF. By default Hermes titles every
+/// session it holds with a background auxiliary model call — through the
+/// gateway, on the agent's key — and nothing in Talaria reads those titles:
+/// talaria-titler names the conversations people see. `model_upgrade_enabled:
+/// false` keeps Hermes' free instant title (derived from the opening message,
+/// no model call) for its own session list and drops the call. The rest of
+/// the def's `auxiliary` block is left as authored.
+fn fleet_title_generation(routed: &mut Map<String, Value>) {
+    let mut aux = routed
+        .get("auxiliary")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut titles = aux
+        .get("title_generation")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    titles.insert("model_upgrade_enabled".into(), json!(false));
+    aux.insert("title_generation".into(), Value::Object(titles));
+    routed.insert("auxiliary".into(), Value::Object(aux));
+}
+
+/// The schema version the render writes against ([`HERMES_CONFIG_VERSION`]),
+/// set over whatever the authored config carried: an imported or federated
+/// def may hold an older stamp, and an older stamp is what sends Hermes into
+/// a migration of a file it cannot write.
+fn fleet_config_version(routed: &mut Map<String, Value>) {
+    routed.insert("_config_version".into(), json!(HERMES_CONFIG_VERSION));
+}
+
+/// The compose label that carries [`start_config_fingerprint`]. A label is
+/// part of the service definition, so compose's own config hash
+/// (`com.docker.compose.config-hash`) moves when it does — which is how a
+/// change Hermes reads only at start reaches the one comparison that decides
+/// a recreate (talaria-fleet-docker's `container_fit`).
+pub const START_CONFIG_LABEL: &str = "talaria.config-start-hash";
+
+/// The config.yaml paths a RUNNING Hermes (v0.22.4) picks up from the
+/// in-place rewrite, each read against its source:
+///
+/// - `agent.disabled_toolsets` — every API turn builds its AIAgent from
+///   `_load_gateway_config()` and `_get_platform_tools(…, "api_server")`,
+///   which applies the list last (`gateway/platforms/api_server.py`,
+///   `hermes_cli/tools_config.py`).
+/// - `delegation.max_concurrent_children` — read on each delegate call
+///   through `load_config_readonly()` (`tools/delegate_tool_config.py`).
+/// - `mcp_servers` — the housekeeping tick reconciles the live servers
+///   against the file BY NAME (`reconcile_mcp_servers_with_config`). Only the
+///   name set is live; an entry that changes under the same name is not
+///   reconnected. The render builds every entry from the registry and the
+///   only field that can move under a name is `timeout`, whose edit keeps
+///   its own roll (talaria-mcp-apply).
+///
+/// Everything else is treated as read at start — `platforms.api_server.extra.
+/// model_routes` is parsed once in the adapter's constructor, plugins load
+/// at boot — and a path joins this list only with the same evidence.
+const LIVE_CONFIG_PATHS: &[&[&str]] = &[
+    &["agent", "disabled_toolsets"],
+    &["delegation", "max_concurrent_children"],
+    &["mcp_servers"],
+];
+
+/// A digest of the config.yaml a container needs to be RESTARTED to see:
+/// the routed config minus [`LIVE_CONFIG_PATHS`], keys sorted so the same
+/// config always digests the same. Rendered as [`START_CONFIG_LABEL`].
+pub fn start_config_fingerprint(routed: &Map<String, Value>) -> String {
+    fn without(map: &mut Map<String, Value>, path: &[&str]) {
+        match path {
+            [] => {}
+            [leaf] => {
+                map.remove(*leaf);
+            }
+            [head, rest @ ..] => {
+                if let Some(Value::Object(inner)) = map.get_mut(*head) {
+                    without(inner, rest);
+                    if inner.is_empty() {
+                        map.remove(*head);
+                    }
+                }
+            }
+        }
+    }
+    fn canonical(v: &Value) -> Value {
+        match v {
+            Value::Object(m) => {
+                let mut keys: Vec<&String> = m.keys().collect();
+                keys.sort();
+                let mut out = Map::new();
+                for k in keys {
+                    out.insert(k.clone(), canonical(&m[k]));
+                }
+                Value::Object(out)
+            }
+            Value::Array(a) => Value::Array(a.iter().map(canonical).collect()),
+            other => other.clone(),
+        }
+    }
+    let mut start_only = routed.clone();
+    for path in LIVE_CONFIG_PATHS {
+        without(&mut start_only, path);
+    }
+    let text = serde_json::to_string(&canonical(&Value::Object(start_only))).unwrap_or_default();
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Stamp [`START_CONFIG_LABEL`] on a service, in whichever form the
+/// chassis spelled its labels (a map, or compose's `KEY=value` list).
+fn label_start_config(svc: &mut Map<String, Value>, fingerprint: &str) {
+    match svc.get_mut("labels") {
+        Some(Value::Array(list)) => {
+            let prefix = format!("{START_CONFIG_LABEL}=");
+            list.retain(|l| !l.as_str().is_some_and(|s| s.starts_with(&prefix)));
+            list.push(json!(format!("{prefix}{fingerprint}")));
+        }
+        Some(Value::Object(map)) => {
+            map.insert(START_CONFIG_LABEL.into(), json!(fingerprint));
+        }
+        _ => {
+            svc.insert("labels".into(), json!({ START_CONFIG_LABEL: fingerprint }));
+        }
+    }
+}
+
+/// THE PERSONA'S TIERS, as Hermes' API server routes them. Talaria publishes
+/// `<persona>-<tier>` in the manifest and dials that id for a tier turn, but
+/// Hermes ignores a bare `model` on `/v1/chat/completions` unless an alias in
+/// `platforms.api_server.extra.model_routes` names it — without one every
+/// tier turn ran (and was metered as) something it was not: the main model,
+/// priced as the tier. Each routed `model_aliases` entry becomes a route to
+/// its upstream id, with no provider, base URL or key of its own, so it runs
+/// on the main runtime: the gateway, on the agent's key, which the render
+/// already scopes to every routed model id. Routes are read when the API
+/// server starts, so a tier change reaches a running agent on its next
+/// recreate. Routes the def authored under other names stay.
+fn fleet_model_routes(routed: &mut Map<String, Value>, persona: &str) {
+    let mut ours = Map::new();
+    if let Some(aliases) = routed.get("model_aliases").and_then(Value::as_object) {
+        for (name, spec) in aliases {
+            // Only a ROUTED spec: the gateway transform stamps a base URL on
+            // every model spec, and an entry without one is not a model the
+            // agent's key may ask for. The name is used as stored — the
+            // manifest publishes `<persona>-<name>` from the same edit, and
+            // the route has to match that id byte for byte.
+            let model = spec
+                .get("base_url")
+                .and(spec.get("model"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|m| !m.is_empty());
+            if !name.trim().is_empty()
+                && let Some(model) = model
+            {
+                ours.insert(format!("{persona}-{name}"), json!({ "model": model }));
+            }
+        }
+    }
+    if ours.is_empty() {
+        return;
+    }
+    let mut platforms = routed
+        .get("platforms")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut api = platforms
+        .get("api_server")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut extra = api
+        .get("extra")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut routes = extra
+        .get("model_routes")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    for (alias, route) in ours {
+        routes.insert(alias, route);
+    }
+    extra.insert("model_routes".into(), Value::Object(routes));
+    api.insert("extra".into(), Value::Object(extra));
+    platforms.insert("api_server".into(), Value::Object(api));
+    routed.insert("platforms".into(), Value::Object(platforms));
+}
+
+/// One of an agent's models as Hermes will run it, beside what Talaria knows
+/// about its reasoning effort: the upstream id the routed config asks the
+/// gateway for, the Hermes provider id its spec runs under, the levels
+/// somebody vouches for on its endpoint (the catalog or the endpoint's own
+/// declaration — `EffortVoices::for_target`), and the level the agent editor
+/// configured next to it.
+#[derive(Debug, Clone, PartialEq)]
+struct TargetEffort {
+    model: String,
+    provider: String,
+    levels: Vec<String>,
+    configured: Option<String>,
+}
+
+/// A structured target whose routed spec really runs it: the editor's
+/// endpoint, upstream model and configured effort, and the `provider` the
+/// spec names — the id Hermes resolves the model under, and so the section
+/// its `model_overrides` lookup reads (`agent/models_dev.py`'s
+/// `_provider_override_section`, keyed by the exact provider id).
+#[derive(Debug, Clone, PartialEq)]
+struct RunningTarget {
+    endpoint: String,
+    model: String,
+    configured: Option<String>,
+    provider: String,
+}
+
+/// A stored target as the editor wrote it: endpoint, upstream model, and the
+/// configured effort. Same posture as talaria-persona's reader — a
+/// half-written target is no target, a blank effort is no effort.
+fn read_effort_target(raw: &Value) -> Option<(String, String, Option<String>)> {
+    let t = raw.as_object()?;
+    let endpoint = t.get("endpoint")?.as_str()?.trim();
+    let model = t.get("model")?.as_str()?.trim();
+    if endpoint.is_empty() || model.is_empty() {
+        return None;
+    }
+    let effort = t
+        .get("effort")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_string);
+    Some((endpoint.to_string(), model.to_string(), effort))
+}
+
+/// The agent's structured targets in claim order — main, then each tier,
+/// then each fallback — each paired with the routed config's model spec for
+/// it (`model`, `model_aliases.<name>`, `fallback_providers[i]`). A target the
+/// gateway transform REMAPPED (its model is not served, so the spec now names
+/// the fallback default) is dropped: its endpoint's levels describe a model
+/// that will not run. The provider is read off the spec rather than assumed:
+/// the gateway transform stamps `custom` today, and a render that names its
+/// own provider must move the `model_overrides` section with it.
+fn structured_targets(config: &Value, routed: &Map<String, Value>) -> Vec<RunningTarget> {
+    let spec_model = |spec: Option<&Value>| {
+        spec.and_then(|s| s.get("model"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let spec_provider = |spec: Option<&Value>| {
+        spec.and_then(|s| s.get("provider"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .unwrap_or("custom")
+            .to_string()
+    };
+    let mut out = Vec::new();
+    let mut take = |raw: Option<&Value>, spec: Option<&Value>| {
+        if let (Some((endpoint, model, configured)), Some(running)) =
+            (raw.and_then(read_effort_target), spec_model(spec))
+            && running == model
+        {
+            out.push(RunningTarget {
+                endpoint,
+                model,
+                configured,
+                provider: spec_provider(spec),
+            });
+        }
+    };
+    take(config.get("main"), routed.get("model"));
+    for alias in config
+        .get("aliases")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = alias.get("name").and_then(Value::as_str).map(str::trim);
+        let spec = name.and_then(|n| routed.get("model_aliases").and_then(|a| a.get(n)));
+        take(Some(alias), spec);
+    }
+    for (i, fallback) in config
+        .get("fallbacks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let spec = routed
+            .get("fallback_providers")
+            .and_then(Value::as_array)
+            .and_then(|f| f.get(i));
+        take(Some(fallback), spec);
+    }
+    out
+}
+
+/// Each structured target's vouched levels, against voices read once per
+/// render.
+fn target_efforts(
+    voices: &talaria_model_efforts::EffortVoices,
+    config: &Value,
+    routed: &Map<String, Value>,
+) -> Vec<TargetEffort> {
+    structured_targets(config, routed)
+        .into_iter()
+        .map(|t| {
+            let levels = voices.for_target(&talaria_persona::ModelTarget {
+                endpoint: t.endpoint,
+                model: t.model.clone(),
+            });
+            TargetEffort {
+                model: t.model,
+                provider: t.provider,
+                levels,
+                configured: t.configured,
+            }
+        })
+        .collect()
+}
+
+/// The efforts Hermes' own loop recognizes as bare strings
+/// (`hermes_constants.VALID_REASONING_EFFORTS` plus `none`). A provider's
+/// bespoke level rides in the mapping form, which Hermes passes through
+/// verbatim instead of discarding as a typo.
+const HERMES_EFFORTS: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
+
+/// THE REASONING EFFORT EACH OF AN AGENT'S MODELS RUNS AT when nobody picked
+/// one for the turn — a cron fire, a channel reply, a harness turn, a work
+/// session. Hermes resolves it per RUNNING MODEL: a per-turn
+/// `model_options.reasoning_effort` first, then `agent.reasoning_overrides`
+/// for the model answering, then a global `agent.reasoning_effort`, and with
+/// none of those its custom-provider profile sends `medium`
+/// (`plugins/model-providers/custom`).
+///
+/// Two renders, both from Talaria's own effort contract:
+///
+/// - a level the agent editor configured beside a target, and the target's
+///   endpoint vouches for, becomes that model's `reasoning_overrides` entry.
+///   Per model rather than one global `reasoning_effort`, because a global
+///   would also apply to a fallback whose endpoint vouches for different
+///   levels. First claim wins (main, then tiers, then fallbacks), the order
+///   talaria-persona claims ids in;
+/// - a model NOBODY vouches for levels on — the catalog is silent and the
+///   endpoint declares none, the case where Talaria's own chat sends no effort
+///   at all — is marked `model_overrides.<provider>.<id>.supports_reasoning:
+///   false`, which is what keeps Hermes from filling in `medium` for it
+///   (`agent/reasoning_params.py`'s `unset_reasoning_default`). The section
+///   is the provider id the model's routed spec names (`custom`, as the
+///   gateway transform stamps it today), because Hermes looks the override up
+///   by the exact id it runs the model under. A `supports_reasoning` the def
+///   itself authored for that model stands.
+///
+/// A target that is vouched for but has no configured level is left to
+/// Hermes' default, as it always ran. Overrides a def authored for other
+/// models stay.
+fn fleet_reasoning(routed: &mut Map<String, Value>, targets: &[TargetEffort]) {
+    let mut overrides = Map::new();
+    for t in targets {
+        if let Some(effort) = t.configured.as_ref().filter(|e| t.levels.contains(e))
+            && !overrides.contains_key(&t.model)
+        {
+            let value = if HERMES_EFFORTS.contains(&effort.as_str()) {
+                json!(effort)
+            } else {
+                json!({ "enabled": true, "effort": effort })
+            };
+            overrides.insert(t.model.clone(), value);
+        }
+    }
+    let vouched: Vec<&str> = targets
+        .iter()
+        .filter(|t| !t.levels.is_empty())
+        .map(|t| t.model.as_str())
+        .collect();
+    let mut unvouched: Vec<(&str, &str)> = Vec::new();
+    for t in targets {
+        let key = (t.provider.as_str(), t.model.as_str());
+        if t.levels.is_empty() && !vouched.contains(&key.1) && !unvouched.contains(&key) {
+            unvouched.push(key);
+        }
+    }
+    if !overrides.is_empty() {
+        let mut agent = routed
+            .get("agent")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let mut merged = agent
+            .get("reasoning_overrides")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for (model, effort) in overrides {
+            merged.insert(model, effort);
+        }
+        agent.insert("reasoning_overrides".into(), Value::Object(merged));
+        routed.insert("agent".into(), Value::Object(agent));
+    }
+    if !unvouched.is_empty() {
+        let mut model_overrides = routed
+            .get("model_overrides")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for (provider, m) in unvouched {
+            let mut section = model_overrides
+                .get(provider)
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let mut entry = section
+                .get(m)
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            if !entry.contains_key("supports_reasoning") {
+                entry.insert("supports_reasoning".into(), json!(false));
+            }
+            section.insert(m.to_string(), Value::Object(entry));
+            model_overrides.insert(provider.to_string(), Value::Object(section));
+        }
+        routed.insert("model_overrides".into(), Value::Object(model_overrides));
+    }
 }
 
 /// s6 cont-init path. Lexicographic: after Hermes's `02-reconcile-profiles`,
@@ -2005,7 +3633,7 @@ const HARNESS_OWN_HOOK: &str = "/etc/cont-init.d/03-talaria-workbench-own";
 
 /// Heal Docker's root-owned bind-mount parents so the hermes runtime can
 /// write harness config. Directories only — never `-R`. The policy files
-/// mounted inside (models.json, settings.json, mcp.json, skills) are
+/// mounted inside (models.yml, settings.json, mcp.json, skills) are
 /// read-only host files; a recursive chown fails on them or steals host
 /// ownership of the skills tree. `0775` is the shared-group mode: owner
 /// hermes can write, and so can the hermes group. Other users cannot, and
@@ -2068,6 +3696,15 @@ if [ -x "$mise" ]; then
     runuser -u hermes -- ln -sfn "$real" /opt/data/.local/bin/bun || true
   fi
 fi
+
+# And where the AGENT'S TERMINAL looks. Hermes runs every terminal command
+# from a login-shell snapshot, and Debian's /etc/profile resets a non-root
+# PATH to /usr/local/bin:/usr/bin:/bin — /opt/data/.local/bin is not on it,
+# so omp started from the agent's own terminal died with `env: 'bun': No such
+# file or directory` while a `docker exec` probe found bun. /usr/local/bin is
+# the container layer, so this runs on every boot; the link is dangling until
+# the workbench provisions bun, and resolves from then on.
+ln -sfn /opt/data/.local/bin/bun /usr/local/bin/bun 2>/dev/null || true
 "#;
 
 // The bun the coding harness runs on — one pin, shared with the workbench's
@@ -2081,13 +3718,46 @@ fn harness_own_script() -> String {
         .replace("__XDG__", HARNESS_XDG_DATA_HOME)
 }
 
+/// List the agent's per-agent secret names in `terminal.env_passthrough`.
+///
+/// The secrets ride the container env (env_file). Hermes's terminal passes a
+/// name it does not own through as is, but execute_code starts from an EMPTY
+/// env and admits only safe names and the ones this list declares — so a
+/// vendor key a manager set for the agent reached its shell and never its
+/// scripts. The values stay where they are; this is names only. A def's own
+/// list is kept and ours is added. Nothing to add and nothing authored
+/// renders no block at all, so an agent without secrets is byte-identical.
+fn fleet_env_passthrough(routed: &mut Map<String, Value>, secret_names: &[String]) {
+    let mut terminal = routed
+        .get("terminal")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut list: Vec<Value> = terminal
+        .get("env_passthrough")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if secret_names.is_empty() && list.is_empty() {
+        return;
+    }
+    for name in secret_names {
+        let v = json!(name);
+        if !list.contains(&v) {
+            list.push(v);
+        }
+    }
+    terminal.insert("env_passthrough".into(), json!(list));
+    routed.insert("terminal".into(), Value::Object(terminal));
+}
+
 /// Policy files Oh My Pi reads inside [`PI_CODING_AGENT_DIR`].
 fn pi_config_mounts(wb_dir: &Path, fleet_skills: &Path) -> Vec<String> {
     let dir = PI_CODING_AGENT_DIR;
     vec![
         format!(
-            "{}:{dir}/models.json:ro",
-            wb_dir.join("models.json").display()
+            "{}:{dir}/{MODELS_CONFIG_FILE}:ro",
+            wb_dir.join(MODELS_CONFIG_FILE).display()
         ),
         format!(
             "{}:{dir}/settings.json:ro",
@@ -2112,8 +3782,9 @@ fn claude_mcp_config(names: &[String], model: &str, gw_base: &str) -> Value {
     })
 }
 
-/// Oh My Pi's `models.json`: a single `talaria` provider against the org
-/// gateway. `apiKey` interpolates `$OPENAI_API_KEY` at request time.
+/// Oh My Pi's model catalog: a single `talaria` provider against the org
+/// gateway. `apiKey` is the NAME of the env var holding the workbench key,
+/// which omp looks up at request time ([`WORKBENCH_KEY_ENV`]).
 fn talaria_provider_models_json(base_url: &str, model_ids: &[String]) -> Value {
     let models: Vec<Value> = if model_ids.is_empty() {
         vec![json!({ "id": "default" })]
@@ -2125,7 +3796,7 @@ fn talaria_provider_models_json(base_url: &str, model_ids: &[String]) -> Value {
             "talaria": {
                 "baseUrl": base_url,
                 "api": "openai-completions",
-                "apiKey": "$OPENAI_API_KEY",
+                "apiKey": WORKBENCH_KEY_ENV,
                 "compat": {
                     "supportsDeveloperRole": false,
                     "supportsReasoningEffort": false
@@ -2136,7 +3807,14 @@ fn talaria_provider_models_json(base_url: &str, model_ids: &[String]) -> Value {
     })
 }
 
-async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<(), String> {
+/// `left_out` is the render's [`department_runners`] skip list: an agent with
+/// no service of its own must not be dialed either — its department's url is
+/// another agent's container.
+async fn write_fleet_manifest(
+    pg: &PgPool,
+    result: &mut RenderResult,
+    left_out: &[String],
+) -> Result<(), String> {
     type DefRow = (
         String,
         String,
@@ -2153,7 +3831,7 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
     )
     .fetch_all(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[fleet] render: manifest read failed", e))?;
 
     let env = tokio::fs::read_to_string(talaria_fleet_layout::fleet_env())
         .await
@@ -2169,6 +3847,9 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
 
     let mut manifest: Vec<Value> = Vec::new();
     for (slug, department, model, gateway_port, active_slot, config) in &defs {
+        if left_out.contains(slug) {
+            continue;
+        }
         let key = keys.get(&slug.to_lowercase()).cloned().unwrap_or_default();
         if key.is_empty() {
             result.warnings.push(format!(
@@ -2233,32 +3914,82 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn target(slug: &str, department: &str, rank: i64) -> RenderTarget {
+        RenderTarget {
+            def: RenderDef {
+                id: format!("id-{slug}"),
+                slug: slug.into(),
+                department: department.into(),
+                model: format!("{slug}-{department}"),
+                display_name: slug.to_uppercase(),
+                role: None,
+                source: "created".into(),
+                active_slot: None,
+                developer: false,
+                max_children: 0,
+                disabled_toolsets: Vec::new(),
+                department_rank: rank,
+            },
+            version: RenderVersion {
+                version: 1,
+                soul: String::new(),
+                config: json!({}),
+            },
+        }
+    }
 
     #[test]
-    fn an_operators_search_url_reaches_an_agent_only_where_it_can() {
-        // Nothing configured: nothing rendered — Hermes resolves its own floor.
-        assert_eq!(agent_search_url("", false), None);
-        assert_eq!(agent_search_url("   ", true), None);
-        // A real host passes through untouched, container or not.
+    fn a_second_agent_in_a_department_is_left_out_and_the_older_one_keeps_its_container() {
+        // Slug order (the render's own) puts the newer agent last, where its
+        // service insert used to replace the older agent's.
+        let (kept, left_out) = department_runners(vec![
+            target("ava", "research", 1),
+            target("bo", "ops", 1),
+            target("zed", "research", 2),
+            target("amy", "research", 3),
+        ]);
         assert_eq!(
-            agent_search_url("https://search.corp.example/", true).as_deref(),
-            Some("https://search.corp.example/")
-        );
-        // Loopback on a host-run app is the laptop, which an agent spells
-        // host.docker.internal; the port and any path survive.
-        assert_eq!(
-            agent_search_url("http://127.0.0.1:8888", false).as_deref(),
-            Some("http://host.docker.internal:8888")
+            kept.iter().map(|t| t.def.slug.as_str()).collect::<Vec<_>>(),
+            vec!["ava", "bo"],
+            "one agent per department, in the render's own order"
         );
         assert_eq!(
-            agent_search_url("http://localhost:8080/searx", false).as_deref(),
-            Some("http://host.docker.internal:8080/searx")
+            left_out.iter().map(|l| l.slug.as_str()).collect::<Vec<_>>(),
+            vec!["zed", "amy"]
         );
-        // Loopback in a containerized stack is the app container itself —
-        // withheld, never rendered wrong.
-        assert_eq!(agent_search_url("http://127.0.0.1:8888", true), None);
+        let w = &left_out[0].warning;
+        assert!(
+            w.starts_with("zed-research: not rendered — its department \"research\" is also ava-research's, the older agent"),
+            "{w}"
+        );
+        assert!(w.contains("one container (agent-research)"), "{w}");
+        assert!(w.contains("AVA keeps both"), "{w}");
+        assert!(w.contains("never merges"), "{w}");
     }
-    use serde_json::json;
+
+    #[test]
+    fn a_fleet_with_one_agent_per_department_renders_whole() {
+        let (kept, left_out) =
+            department_runners(vec![target("ava", "research", 1), target("bo", "ops", 1)]);
+        assert_eq!(kept.len(), 2);
+        assert!(left_out.is_empty());
+    }
+
+    #[test]
+    fn a_new_agent_port_continues_past_the_highest_and_never_starts_below_the_base() {
+        let base = talaria_fleet_layout::GATEWAY_PORT_BASE;
+        // An empty database starts at the stack's base, default or its own.
+        assert_eq!(next_gateway_port(None, base), base);
+        assert_eq!(next_gateway_port(None, 20300), 20300);
+        // Ports already handed out are never reused: continue past the highest.
+        assert_eq!(next_gateway_port(Some(base + 4), base), base + 5);
+        assert_eq!(next_gateway_port(Some(20310), 20300), 20311);
+        // A seeded row below this stack's base (main's 8770, copied into a
+        // worktree) does not pull the next agent down onto main's ports.
+        assert_eq!(next_gateway_port(Some(8771), 20300), 20300);
+    }
 
     const CHASSIS: &str = "\
 service:
@@ -2542,7 +4273,7 @@ service:
         for s in [
             "http://host.docker.internal:5273/api/mcp/gw/talaria",
             "${TALARIA_AGENT_KEY}",
-            "${TALARIA_HEARTBEAT_SECONDS:-45}",
+            "${API_SERVER_PORT:-8642}",
             "z-ai/glm-5.2",
             "-y",
             "a-b-c",
@@ -2558,41 +4289,164 @@ service:
 
     #[test]
     fn fleet_approvals_follows_the_developer_switch_and_preserves_the_rest() {
-        // No authored approvals block, an ordinary agent: both modes land as
-        // deny — nobody is present to approve, so the answer is a refusal,
-        // not a stalled prompt — and nothing else appears.
+        // No authored approvals block, an ordinary agent: no guardian
+        // (`manual`), and both unattended modes deny, so a flagged command is
+        // refused on every path; the streamed path's request waits a minute
+        // at most for Talaria's answer.
         let mut routed = Map::new();
         routed.insert("model".into(), json!("x"));
         fleet_approvals(&mut routed, false);
         assert_eq!(
             routed.get("approvals"),
-            Some(&json!({ "unattended_mode": "deny", "cron_mode": "deny" }))
+            Some(&json!({
+                "mode": "manual", "timeout": 60,
+                "unattended_mode": "deny", "cron_mode": "deny"
+            }))
         );
 
-        // A Developer Agent gets approve: the sandbox runs code all day.
+        // A Developer Agent gets approvals off and approve: the sandbox runs
+        // code all day, streamed turn or not. What it still asks can become a
+        // card a person reads, so Hermes holds it two minutes, and the card
+        // closes itself five seconds before that.
         let mut dev = Map::new();
         dev.insert("model".into(), json!("x"));
         fleet_approvals(&mut dev, true);
         assert_eq!(
             dev.get("approvals"),
-            Some(&json!({ "unattended_mode": "approve", "cron_mode": "approve" }))
+            Some(&json!({
+                "mode": "off", "timeout": 120,
+                "unattended_mode": "approve", "cron_mode": "approve"
+            }))
         );
 
-        // An authored block keeps its other keys; the two modes are
-        // overridden wherever a def tried to set them itself — a def cannot
-        // author its own way to approve.
+        // An authored block keeps its other keys; the four policy keys are
+        // overridden wherever a def tried to set them itself. A def cannot
+        // author its own way to approve, and in particular cannot bring back
+        // the `smart` guardian that approves what `deny` refuses.
         let mut authored = Map::new();
         authored.insert(
             "approvals".into(),
-            json!({ "mode": "smart", "timeout": 300, "unattended_mode": "approve" }),
+            json!({
+                "mode": "smart", "timeout": 300, "unattended_mode": "approve",
+                "deny": ["git push --force*"]
+            }),
         );
         fleet_approvals(&mut authored, false);
         assert_eq!(
             authored.get("approvals"),
             Some(&json!({
-                "mode": "smart", "timeout": 300,
-                "unattended_mode": "deny", "cron_mode": "deny"
+                "mode": "manual", "timeout": 60,
+                "unattended_mode": "deny", "cron_mode": "deny",
+                "deny": ["git push --force*"]
             }))
+        );
+    }
+
+    #[test]
+    fn every_agent_s_write_root_and_home_are_its_data_volume_and_a_chassis_cannot_move_them() {
+        let mut env = Map::new();
+        pin_write_root(&mut env);
+        assert_eq!(env.get("HERMES_WRITE_SAFE_ROOT"), Some(&json!("/opt/data")));
+        // One root, no separator: Hermes splits on `os.pathsep`.
+        assert!(
+            !env["HERMES_WRITE_SAFE_ROOT"]
+                .as_str()
+                .unwrap()
+                .contains(':')
+        );
+        // The home the protected-instruction gate exempts is the root itself.
+        assert_eq!(env.get("HERMES_HOME"), env.get("HERMES_WRITE_SAFE_ROOT"));
+
+        // A chassis that carried its own (wider) root, or moved the home, is
+        // overwritten: the approval door reasons from these exact values.
+        let mut chassis = Map::new();
+        chassis.insert("HERMES_WRITE_SAFE_ROOT".into(), json!("/opt/data:/tmp:/"));
+        chassis.insert("HERMES_HOME".into(), json!("/srv/hermes"));
+        chassis.insert("TZ".into(), json!("UTC"));
+        pin_write_root(&mut chassis);
+        let root = json!(talaria_gateway::fleet_approvals::AGENT_WRITE_ROOT);
+        assert_eq!(chassis.get("HERMES_WRITE_SAFE_ROOT"), Some(&root));
+        assert_eq!(chassis.get("HERMES_HOME"), Some(&root));
+        assert_eq!(chassis.get("TZ"), Some(&json!("UTC")));
+    }
+
+    #[test]
+    fn the_gateway_provider_joins_an_authored_providers_block() {
+        let entry = json!({
+            "api": "${LLM_BASE_URL}",
+            "key_env": "LLM_API_KEY",
+            "session_affinity_header": "x-talaria-session",
+            "discover_models": false,
+        });
+        let mut bare = Map::new();
+        fleet_gateway_provider(&mut bare);
+        assert_eq!(bare.get("providers"), Some(&json!({ "talaria": entry })));
+
+        // A def's own entries stand; a `talaria` it authored is replaced —
+        // the gateway entry and its session header are Talaria's.
+        let mut authored = Map::new();
+        authored.insert(
+            "providers".into(),
+            json!({
+                "lab": { "api": "http://lab:4000/v1" },
+                "talaria": { "api": "http://elsewhere/v1" },
+            }),
+        );
+        fleet_gateway_provider(&mut authored);
+        assert_eq!(
+            authored.get("providers"),
+            Some(&json!({ "lab": { "api": "http://lab:4000/v1" }, "talaria": entry }))
+        );
+    }
+
+    #[test]
+    fn approvals_off_is_quoted_so_a_yaml_one_point_one_reader_keeps_the_string() {
+        // A bare `off` is a boolean in YAML 1.1. Hermes happens to read a
+        // false `mode` as "off" too, but the rendered file should say what it
+        // means rather than lean on that.
+        let mut dev = Map::new();
+        fleet_approvals(&mut dev, true);
+        let text = yaml11_emit(&Value::Object(dev));
+        assert!(text.contains("mode: 'off'"), "{text}");
+        assert!(text.contains("unattended_mode: approve"), "{text}");
+    }
+
+    #[test]
+    fn nous_connectors_and_guest_identity_are_pinned_off_and_nothing_else_moves() {
+        // Nothing authored: both blocks appear with the one key each.
+        let mut bare = Map::new();
+        fleet_nous_off(&mut bare);
+        assert_eq!(
+            bare.get("tools"),
+            Some(&json!({ "connectors": { "enabled": false } }))
+        );
+        assert_eq!(bare.get("nous"), Some(&json!({ "guest": false })));
+
+        // A def that turned them on is overridden; its other keys in both
+        // blocks, and a sibling block under `tools`, survive.
+        let mut authored = Map::new();
+        authored.insert(
+            "tools".into(),
+            json!({
+                "connectors": { "enabled": true, "extra": 1 },
+                "tool_search": { "enabled": true }
+            }),
+        );
+        authored.insert(
+            "nous".into(),
+            json!({ "guest": true, "anthropic_wire": "chat" }),
+        );
+        fleet_nous_off(&mut authored);
+        assert_eq!(
+            authored.get("tools"),
+            Some(&json!({
+                "connectors": { "enabled": false, "extra": 1 },
+                "tool_search": { "enabled": true }
+            }))
+        );
+        assert_eq!(
+            authored.get("nous"),
+            Some(&json!({ "guest": false, "anthropic_wire": "chat" }))
         );
     }
 
@@ -2629,6 +4483,76 @@ service:
         );
         // Idempotent.
         assert_eq!(strip_stale_agent_lines(&out, &live), out);
+    }
+
+    #[test]
+    fn fleet_tool_search_pins_the_bridge_on_and_keeps_what_a_def_authored() {
+        // Nothing authored: the bridge is pinned on, and the value is the
+        // STRING the YAML 1.1 emitter quotes — a bare `on` would reach
+        // PyYAML as a boolean.
+        let mut routed = Map::new();
+        fleet_tool_search(&mut routed);
+        assert_eq!(
+            routed.get("tools"),
+            Some(&json!({ "tool_search": { "enabled": "on" } }))
+        );
+        assert!(yaml11_emit(&Value::Object(routed)).contains("enabled: 'on'"));
+
+        // A def's own block: its `enabled` stands, its other keys stay, and
+        // a sibling under `tools` (another track's switch) is untouched.
+        let mut authored = Map::new();
+        authored.insert(
+            "tools".into(),
+            json!({
+                "tool_search": { "enabled": "off", "threshold_pct": 8 },
+                "connectors": { "enabled": false }
+            }),
+        );
+        fleet_tool_search(&mut authored);
+        assert_eq!(
+            authored.get("tools"),
+            Some(&json!({
+                "tool_search": { "enabled": "off", "threshold_pct": 8 },
+                "connectors": { "enabled": false }
+            }))
+        );
+
+        // A block with other keys but no `enabled` gets the pin beside them.
+        let mut partial = Map::new();
+        partial.insert("tools".into(), json!({ "tool_search": { "defer": [] } }));
+        fleet_tool_search(&mut partial);
+        assert_eq!(
+            partial.get("tools"),
+            Some(&json!({ "tool_search": { "defer": [], "enabled": "on" } }))
+        );
+
+        // The legacy bool form is a def's explicit call too: Hermes reads
+        // `tool_search: false` as off, so the render must not rewrite it
+        // into a map that says on. Same for a `tools` that is not a map.
+        for authored in [
+            json!({ "tool_search": false, "connectors": { "enabled": false } }),
+            json!({ "tool_search": true }),
+        ] {
+            let mut legacy = Map::new();
+            legacy.insert("tools".into(), authored.clone());
+            fleet_tool_search(&mut legacy);
+            assert_eq!(legacy.get("tools"), Some(&authored));
+        }
+        let mut odd = Map::new();
+        odd.insert("tools".into(), json!(["not", "a", "map"]));
+        fleet_tool_search(&mut odd);
+        assert_eq!(odd.get("tools"), Some(&json!(["not", "a", "map"])));
+
+        // A null at either level is nothing authored, and gets the pin.
+        for authored in [json!(null), json!({ "tool_search": null })] {
+            let mut empty = Map::new();
+            empty.insert("tools".into(), authored);
+            fleet_tool_search(&mut empty);
+            assert_eq!(
+                empty.get("tools"),
+                Some(&json!({ "tool_search": { "enabled": "on" } }))
+            );
+        }
     }
 
     #[test]
@@ -2669,6 +4593,238 @@ service:
         );
         let back: Value = serde_yaml_ng::from_str(&yaml).expect("emitted yaml parses");
         assert_eq!(back, Value::Object(authored));
+    }
+
+    #[test]
+    fn fleet_tool_loop_guardrails_arms_the_hard_stop_and_keeps_the_def_tuning() {
+        // Nothing authored: the switch alone — every threshold stays Hermes'.
+        let mut routed = Map::new();
+        fleet_tool_loop_guardrails(&mut routed);
+        assert_eq!(
+            routed.get("tool_loop_guardrails"),
+            Some(&json!({ "hard_stop_enabled": true }))
+        );
+        // A def that tuned the thresholds keeps them, and one that switched
+        // the hard stops off is switched back on: with the stream-side guard
+        // gone, this is the only loop breaker an agent has.
+        let mut authored = Map::new();
+        authored.insert(
+            "tool_loop_guardrails".into(),
+            json!({ "hard_stop_enabled": false, "hard_stop_after": { "exact_failure": 7 } }),
+        );
+        fleet_tool_loop_guardrails(&mut authored);
+        assert_eq!(
+            authored.get("tool_loop_guardrails"),
+            Some(&json!({ "hard_stop_enabled": true, "hard_stop_after": { "exact_failure": 7 } }))
+        );
+        // Emitted as the bare boolean Hermes' 1.1 reader takes for true.
+        let yaml = yaml11_emit(&Value::Object(authored));
+        assert!(yaml.contains("hard_stop_enabled: true"), "{yaml}");
+    }
+
+    #[test]
+    fn fleet_title_generation_drops_the_model_call_and_keeps_the_rest() {
+        let mut routed = Map::new();
+        fleet_title_generation(&mut routed);
+        assert_eq!(
+            routed.get("auxiliary"),
+            Some(&json!({ "title_generation": { "model_upgrade_enabled": false } }))
+        );
+        // The def's other auxiliary tasks, and its other title keys, stay.
+        let mut authored = Map::new();
+        authored.insert(
+            "auxiliary".into(),
+            json!({
+                "compression": { "timeout": 300 },
+                "title_generation": { "language": "fr", "model_upgrade_enabled": true }
+            }),
+        );
+        fleet_title_generation(&mut authored);
+        assert_eq!(
+            authored.get("auxiliary"),
+            Some(&json!({
+                "compression": { "timeout": 300 },
+                "title_generation": { "language": "fr", "model_upgrade_enabled": false }
+            }))
+        );
+    }
+
+    #[test]
+    fn fleet_model_routes_route_each_tier_to_its_upstream_id() {
+        // The routed shape: every model spec carries the gateway base URL.
+        let mut routed = Map::new();
+        routed.insert(
+            "model_aliases".into(),
+            json!({
+                "fast": { "model": "gpt-5-mini", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+                "deep": { "model": "o4", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+                // Not a routed spec: nothing the agent's key may ask for.
+                "odd": { "model": "stray" }
+            }),
+        );
+        routed.insert(
+            "platforms".into(),
+            json!({ "api_server": { "extra": { "model_routes": { "mine": { "model": "m" } }, "cors_origins": "*" } } }),
+        );
+        fleet_model_routes(&mut routed, "dex-ops");
+        assert_eq!(
+            routed.get("platforms"),
+            Some(&json!({ "api_server": { "extra": {
+                "model_routes": {
+                    "mine": { "model": "m" },
+                    "dex-ops-fast": { "model": "gpt-5-mini" },
+                    "dex-ops-deep": { "model": "o4" }
+                },
+                "cors_origins": "*"
+            } } }))
+        );
+        // No tiers: no platforms block appears at all.
+        let mut bare = Map::new();
+        bare.insert("model_aliases".into(), json!({}));
+        fleet_model_routes(&mut bare, "dex-ops");
+        assert!(bare.get("platforms").is_none());
+    }
+
+    #[test]
+    fn structured_targets_pair_each_target_with_its_running_spec() {
+        let config = json!({
+            "main": { "endpoint": "or", "model": "m", "effort": "high" },
+            "aliases": [
+                { "name": "deep", "endpoint": "or", "model": "big", "effort": " max " },
+                // Remapped by the gateway transform: its spec runs the fallback.
+                { "name": "gone", "endpoint": "old", "model": "retired", "effort": "low" }
+            ],
+            "fallbacks": [ { "endpoint": "local", "model": "q" } ]
+        });
+        let routed = json!({
+            "model": { "model": "m", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+            "model_aliases": {
+                "deep": { "model": "big", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+                "gone": { "model": "m", "base_url": "${LLM_BASE_URL}", "provider": "custom" }
+            },
+            // A spec naming its own provider keeps it; a spec with none is
+            // Hermes' `custom`.
+            "fallback_providers": [ { "model": "q", "base_url": "${LLM_BASE_URL}", "provider": "talaria" } ]
+        });
+        let routed = routed.as_object().unwrap();
+        let running =
+            |endpoint: &str, model: &str, configured: Option<&str>, provider: &str| RunningTarget {
+                endpoint: endpoint.into(),
+                model: model.into(),
+                configured: configured.map(str::to_string),
+                provider: provider.into(),
+            };
+        assert_eq!(
+            structured_targets(&config, routed),
+            vec![
+                running("or", "m", Some("high"), "custom"),
+                running("or", "big", Some("max"), "custom"),
+                running("local", "q", None, "talaria"),
+            ]
+        );
+        let mut bare = routed.clone();
+        bare.insert(
+            "model".into(),
+            json!({ "model": "m", "base_url": "${LLM_BASE_URL}" }),
+        );
+        assert_eq!(structured_targets(&config, &bare)[0].provider, "custom");
+        // A federated def with no structured targets renders nothing here.
+        assert!(structured_targets(&json!({ "raw": {} }), routed).is_empty());
+    }
+
+    #[test]
+    fn fleet_reasoning_renders_vouched_levels_and_neutralises_the_unvouched() {
+        let on =
+            |provider: &str, model: &str, levels: &[&str], configured: Option<&str>| TargetEffort {
+                model: model.into(),
+                provider: provider.into(),
+                levels: levels.iter().map(|l| l.to_string()).collect(),
+                configured: configured.map(str::to_string),
+            };
+        let t = |model: &str, levels: &[&str], configured: Option<&str>| {
+            on("custom", model, levels, configured)
+        };
+        let mut routed = Map::new();
+        routed.insert(
+            "agent".into(),
+            json!({ "disabled_toolsets": ["todo"], "reasoning_overrides": { "other": "low" } }),
+        );
+        routed.insert(
+            "model_overrides".into(),
+            json!({ "custom": { "authored": { "supports_reasoning": true } } }),
+        );
+        fleet_reasoning(
+            &mut routed,
+            &[
+                // Main: vouched, configured — the override.
+                t("gpt-5", &["low", "medium", "high"], Some("high")),
+                // A tier on the same model id: the main claimed it first.
+                t("gpt-5", &["low", "medium", "high"], Some("low")),
+                // A provider's own level rides in the mapping form.
+                t("kimi", &["thinking", "fast"], Some("thinking")),
+                // Configured but not vouched for: nothing, Hermes' default.
+                t("o4", &["low", "high"], Some("medium")),
+                // Nobody vouches: neutralised, so Hermes sends no effort.
+                t("qwen-local", &[], None),
+                t("qwen-local", &[], Some("high")),
+                // The def's own capability fact for a model stands.
+                t("authored", &[], None),
+            ],
+        );
+        assert_eq!(
+            routed.get("agent"),
+            Some(&json!({
+                "disabled_toolsets": ["todo"],
+                "reasoning_overrides": {
+                    "other": "low",
+                    "gpt-5": "high",
+                    "kimi": { "enabled": true, "effort": "thinking" }
+                }
+            }))
+        );
+        assert_eq!(
+            routed.get("model_overrides"),
+            Some(&json!({ "custom": {
+                "authored": { "supports_reasoning": true },
+                "qwen-local": { "supports_reasoning": false }
+            } }))
+        );
+        // A model one target vouches for is never marked unvouched by another
+        // target (another endpoint) that is silent about it.
+        let mut shared = Map::new();
+        fleet_reasoning(&mut shared, &[t("m", &[], None), t("m", &["low"], None)]);
+        assert!(shared.get("model_overrides").is_none());
+        assert!(shared.get("agent").is_none());
+        // The section is the provider the spec runs under, never an assumed
+        // `custom`: Hermes reads `model_overrides` by the exact provider id,
+        // so an entry under the wrong one is silently never read.
+        let mut named = Map::new();
+        named.insert(
+            "model_overrides".into(),
+            json!({ "custom:talaria": { "kept": { "context_length": 8192 } } }),
+        );
+        fleet_reasoning(
+            &mut named,
+            &[
+                on("custom:talaria", "plain", &[], None),
+                on("custom", "local", &[], None),
+            ],
+        );
+        assert_eq!(
+            named.get("model_overrides"),
+            Some(&json!({
+                "custom:talaria": {
+                    "kept": { "context_length": 8192 },
+                    "plain": { "supports_reasoning": false }
+                },
+                "custom": { "local": { "supports_reasoning": false } }
+            }))
+        );
+        // Emitted as Hermes reads it: a bare string, an unquoted false.
+        let yaml = yaml11_emit(&Value::Object(routed.clone()));
+        assert!(yaml.contains("supports_reasoning: false"), "{yaml}");
+        let back: Value = serde_yaml_ng::from_str(&yaml).expect("emitted yaml parses");
+        assert_eq!(back, Value::Object(routed));
     }
 
     #[test]
@@ -2715,8 +4871,7 @@ service:
         );
 
         // The operator's list sits between the two: after the floor, before
-        // the authored names, deduped against both. `browser` here is the
-        // switch that also skips the Chromium install.
+        // the authored names, deduped against both.
         let mut closed = Map::new();
         closed.insert(
             "agent".into(),
@@ -2764,25 +4919,6 @@ service:
             org.get("agent"),
             Some(&json!({ "disabled_toolsets": ["todo", "clarify", "terminal", "web"] }))
         );
-
-        // The switch reads the def's list, not the rendered merge: `browser`
-        // closed is the one answer the install site acts on.
-        let def = |disabled: &[&str]| RenderDef {
-            id: "d1".into(),
-            slug: "analyst".into(),
-            department: "research".into(),
-            model: "analyst-research".into(),
-            display_name: "Analyst".into(),
-            role: None,
-            source: "created".into(),
-            active_slot: None,
-            developer: false,
-            max_children: 3,
-            disabled_toolsets: disabled.iter().map(|s| s.to_string()).collect(),
-        };
-        assert!(browser_enabled(&def(&[])), "every toolset is on by default");
-        assert!(browser_enabled(&def(&["memory", "web"])));
-        assert!(!browser_enabled(&def(&["browser"])));
     }
 
     /// The two-name floor a fresh install has — what the renderer passes when
@@ -2792,6 +4928,218 @@ service:
             .iter()
             .map(|s| s.to_string())
             .collect()
+    }
+
+    #[test]
+    fn the_chassis_template_default_is_the_pin_the_render_upgrades_to() {
+        // One pin, two homes: the template a fresh install is seeded from,
+        // and the constant an old chassis is upgraded to. They must agree.
+        let template = include_str!("../../../../scripts/chassis.template.yml");
+        let line = format!("  image: ${{HERMES_IMAGE:-{HERMES_IMAGE_PIN}}}\n");
+        assert!(
+            template.contains(&line),
+            "scripts/chassis.template.yml must default its image to HERMES_IMAGE_PIN ({HERMES_IMAGE_PIN})"
+        );
+        assert!(
+            HERMES_IMAGE_PIN.contains(":v") && HERMES_IMAGE_PIN.contains("@sha256:"),
+            "the pin is a tag and a digest: {HERMES_IMAGE_PIN}"
+        );
+    }
+
+    #[test]
+    fn an_old_chassis_renders_the_pin_and_a_stop_grace_and_an_operators_image_stays() {
+        let pinned = json!(format!("${{HERMES_IMAGE:-{HERMES_IMAGE_PIN}}}"));
+        // Every stock default ever shipped — the floating `:latest` and each
+        // past pin — renders the CURRENT pin: a host seeded on any of them
+        // follows a bump.
+        for shipped in HERMES_IMAGE_DEFAULTS {
+            let mut seeded = Map::new();
+            seeded.insert(
+                "image".into(),
+                json!(format!("${{HERMES_IMAGE:-{shipped}}}")),
+            );
+            apply_service_defaults(&mut seeded);
+            assert_eq!(seeded.get("image"), Some(&pinned), "seeded with {shipped}");
+            assert_eq!(seeded.get("stop_grace_period"), Some(&json!("45s")));
+        }
+        assert_eq!(
+            HERMES_IMAGE_DEFAULTS[0], "nousresearch/hermes-agent:latest",
+            "the pre-pin floating default stays first: chassis files from before the pin still carry it"
+        );
+        let unique: std::collections::HashSet<&&str> = HERMES_IMAGE_DEFAULTS.iter().collect();
+        assert_eq!(
+            unique.len(),
+            HERMES_IMAGE_DEFAULTS.len(),
+            "a pin listed twice"
+        );
+
+        // An image the operator wrote is theirs — a registry of their own,
+        // a bare tag, or a Hermes version no stock template ever shipped.
+        for mine in [
+            "registry.example/hermes:mine",
+            "nousresearch/hermes-agent:v0.21.0",
+            "${HERMES_IMAGE:-nousresearch/hermes-agent:v0.21.0}",
+            "${HERMES_IMAGE:-registry.example/hermes:mine}",
+        ] {
+            let mut chosen = Map::new();
+            chosen.insert("image".into(), json!(mine));
+            chosen.insert("stop_grace_period".into(), json!("90s"));
+            apply_service_defaults(&mut chosen);
+            assert_eq!(
+                chosen.get("image"),
+                Some(&json!(mine)),
+                "{mine} is the operator's"
+            );
+            assert_eq!(chosen.get("stop_grace_period"), Some(&json!("90s")));
+        }
+    }
+
+    #[test]
+    fn the_config_version_is_the_pinned_images_own() {
+        // BUMP WITH THE PIN. When this fails, read the new image's
+        // DEFAULT_CONFIG["_config_version"] (the HERMES_CONFIG_VERSION doc
+        // has the one-liner) and update the constant and this pair together.
+        let tag = HERMES_IMAGE_PIN
+            .split_once(':')
+            .and_then(|(_, rest)| rest.split_once('@'))
+            .map(|(tag, _)| tag)
+            .expect("the pin is repo:tag@digest");
+        assert_eq!(
+            (tag, HERMES_CONFIG_VERSION),
+            ("v0.22.4", 51),
+            "HERMES_CONFIG_VERSION must be the pinned image's own _config_version"
+        );
+    }
+
+    #[test]
+    fn every_render_declares_the_schema_version_over_an_authored_one() {
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!({ "default": "m" }));
+        // An imported def stamped by an older Hermes: overridden, not kept —
+        // an older stamp is what starts a migration of the read-only file.
+        routed.insert("_config_version".into(), json!(9));
+        fleet_config_version(&mut routed);
+        let text = config_yaml_text("x-eng", 3, &routed);
+        assert!(text.contains("\n_config_version: 51\n"), "{text}");
+        let back: Value = serde_yaml_ng::from_str(&text).expect("parses");
+        assert_eq!(back["_config_version"], json!(HERMES_CONFIG_VERSION));
+    }
+
+    #[test]
+    fn the_start_fingerprint_ignores_what_hermes_reads_live_and_nothing_else() {
+        let base = json!({
+            "model": { "default": "m", "provider": "talaria" },
+            "agent": { "disabled_toolsets": ["todo", "clarify"], "max_turns": 60 },
+            "delegation": { "max_concurrent_children": 3 },
+            "mcp_servers": { "talaria": { "url": "http://gw/talaria" } },
+            "platforms": { "api_server": { "extra": { "model_routes": { "a-fast": { "model": "f" } } } } },
+        });
+        let base = base.as_object().cloned().expect("object");
+        let print = start_config_fingerprint(&base);
+        assert_eq!(print.len(), 64, "a sha256 hex digest");
+
+        // What a running agent takes from the in-place rewrite does not move it.
+        let mut live = base.clone();
+        live["agent"]["disabled_toolsets"] = json!(["todo", "clarify", "terminal"]);
+        live["delegation"]["max_concurrent_children"] = json!(8);
+        live["mcp_servers"]["github"] = json!({ "url": "http://gw/github", "timeout": 30 });
+        assert_eq!(start_config_fingerprint(&live), print, "live paths only");
+        // A section the live path empties is the same as one that never had it.
+        let mut bare = base.clone();
+        bare.remove("delegation");
+        assert_eq!(start_config_fingerprint(&bare), print);
+
+        // Key order is not a change.
+        let mut reordered = Map::new();
+        for (k, v) in base.iter().rev() {
+            reordered.insert(k.clone(), v.clone());
+        }
+        assert_eq!(start_config_fingerprint(&reordered), print);
+
+        // Everything else is read at start, and does.
+        let mut sibling = base.clone();
+        sibling["agent"]["max_turns"] = json!(90);
+        assert_ne!(start_config_fingerprint(&sibling), print, "agent.max_turns");
+        let mut routes = base.clone();
+        routes["platforms"]["api_server"]["extra"]["model_routes"]["a-fast"]["model"] = json!("g");
+        assert_ne!(start_config_fingerprint(&routes), print, "model_routes");
+        let mut model = base.clone();
+        model["model"]["default"] = json!("n");
+        assert_ne!(start_config_fingerprint(&model), print, "model");
+    }
+
+    #[test]
+    fn the_start_label_lands_in_whichever_form_the_chassis_used() {
+        let mut none = Map::new();
+        label_start_config(&mut none, "abc");
+        assert_eq!(none["labels"], json!({ START_CONFIG_LABEL: "abc" }));
+
+        let mut map = Map::new();
+        map.insert("labels".into(), json!({ "team": "ops" }));
+        label_start_config(&mut map, "abc");
+        label_start_config(&mut map, "def");
+        assert_eq!(
+            map["labels"],
+            json!({ "team": "ops", START_CONFIG_LABEL: "def" })
+        );
+
+        let mut list = Map::new();
+        list.insert("labels".into(), json!(["team=ops"]));
+        label_start_config(&mut list, "abc");
+        label_start_config(&mut list, "def");
+        assert_eq!(
+            list["labels"],
+            json!(["team=ops", format!("{START_CONFIG_LABEL}=def")])
+        );
+    }
+
+    #[test]
+    fn the_rendered_config_ends_its_document_so_a_stale_tail_cannot_parse() {
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!({ "default": "m" }));
+        routed.insert(
+            "agent".into(),
+            json!({ "disabled_toolsets": ["todo", "clarify"] }),
+        );
+        let text = config_yaml_text("x-eng", 3, &routed);
+        assert!(
+            text.starts_with("# Rendered by Talaria — x-eng v3."),
+            "{text}"
+        );
+        assert!(text.ends_with("\n...\n"), "{text}");
+        // The whole file is one document and parses back to what was routed.
+        let back: Value = serde_yaml_ng::from_str(&text).expect("parses");
+        assert_eq!(back, Value::Object(routed.clone()));
+        // A shorter render written over a longer one leaves the old tail
+        // behind for an instant; past the end marker it is a second
+        // document, which a single-document loader refuses.
+        let spliced = format!("{text}  - stale\nplugins:\n  enabled: []\n");
+        assert!(serde_yaml_ng::from_str::<Value>(&spliced).is_err());
+    }
+
+    #[test]
+    fn the_rendered_version_is_read_back_from_the_header() {
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!({ "default": "m" }));
+        assert_eq!(
+            parse_rendered_version(&config_yaml_text("x-eng", 3, &routed)),
+            Some(3)
+        );
+        // A model id that itself carries " v" is read from the right.
+        assert_eq!(
+            parse_rendered_version(&config_yaml_text("acme v2-ops", 41, &routed)),
+            Some(41)
+        );
+        // Anything else is no version: a hand-written file, an empty one,
+        // another renderer's header.
+        assert_eq!(parse_rendered_version("model: x\n"), None);
+        assert_eq!(parse_rendered_version(""), None);
+        assert_eq!(
+            parse_rendered_version(
+                "# Rendered by Talaria — Oh My Pi's gateway provider. Do not hand-edit.\n"
+            ),
+            None
+        );
     }
 
     #[test]
@@ -2808,6 +5156,660 @@ service:
         assert_eq!(back, Value::Object(routed), "round-trip must be lossless");
     }
 
+    /// A routed config after the toolset merge: the floor plus `def`.
+    fn merged(def_disabled: &[&str]) -> Map<String, Value> {
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!("x"));
+        let def: Vec<String> = def_disabled.iter().map(|s| s.to_string()).collect();
+        fleet_disabled_toolsets(&mut routed, &mandatory(), &def);
+        routed
+    }
+
+    #[test]
+    fn the_engine_comes_only_with_the_terminal() {
+        // Terminal open (a Developer Agent, or any agent a manager opened it
+        // on): the engine, and Hermes's own default browser.
+        assert!(fleet_browser_engine(&merged(&["cronjob"])));
+        assert!(fleet_browser_engine(&merged(&[])));
+        // A new agent's default, browser on and terminal closed: no engine,
+        // so no browser tool (Browser Use mode offers browser_exec only with
+        // the terminal, and the built-in tools would be a local browser with
+        // no private-address check).
+        let fresh = merged(talaria_agent_defs::DEFAULT_DISABLED_FOR_NEW);
+        assert!(!fleet_browser_engine(&fresh));
+        assert!(!fleet_browser_engine(&merged(&["terminal"])));
+        // The browser closed: no engine, terminal or not.
+        assert!(!fleet_browser_engine(&merged(&["browser"])));
+        assert!(!fleet_browser_engine(&merged(&["browser", "terminal"])));
+    }
+
+    #[test]
+    fn a_terminal_closed_anywhere_is_closed() {
+        // By the org floor.
+        let mut floored = Map::new();
+        fleet_disabled_toolsets(&mut floored, &["todo".into(), "terminal".into()], &[]);
+        assert!(!fleet_browser_engine(&floored));
+        // By the authored config's own list, spelled loosely.
+        for name in ["terminal", " terminal "] {
+            let mut authored = Map::new();
+            authored.insert("agent".into(), json!({ "disabled_toolsets": [name] }));
+            fleet_disabled_toolsets(&mut authored, &mandatory(), &[]);
+            assert!(!fleet_browser_engine(&authored), "{name:?}");
+        }
+        // By a retired name whose Hermes toolset carries the terminal tool
+        // (`debugging` is terminal + process_manage, with web and file).
+        let mut retired = Map::new();
+        retired.insert(
+            "agent".into(),
+            json!({ "disabled_toolsets": ["debugging"] }),
+        );
+        fleet_disabled_toolsets(&mut retired, &mandatory(), &[]);
+        assert!(!fleet_browser_engine(&retired));
+        // A retired name that closes something else leaves both open, and
+        // so does a stranger or a non-string entry.
+        let mut other = Map::new();
+        other.insert(
+            "agent".into(),
+            json!({ "disabled_toolsets": ["search", "safe", "terminalish", 7, null] }),
+        );
+        fleet_disabled_toolsets(&mut other, &mandatory(), &[]);
+        assert!(fleet_browser_engine(&other));
+        // The browser closed the same ways.
+        let mut browser = Map::new();
+        browser.insert("agent".into(), json!({ "disabled_toolsets": [" browser"] }));
+        fleet_disabled_toolsets(&mut browser, &mandatory(), &[]);
+        assert!(!fleet_browser_engine(&browser));
+    }
+
+    #[test]
+    fn an_authored_backend_does_not_buy_a_terminal_less_agent_an_engine() {
+        // The built-in tools are exactly the local browser the terminal
+        // rule is about, so a def that asked for them with the terminal
+        // closed still gets no engine; with the terminal open its backend
+        // stands and the engine is installed. The block itself is the def's
+        // and is never rewritten (the predicate only reads).
+        for block in [
+            json!({ "backend": "off", "headed": false }),
+            json!({ "backend": false }),
+            json!({ "backend": "browser-use" }),
+            json!({ "backend": null }),
+            json!(false),
+        ] {
+            let mut closed = merged(&["terminal"]);
+            closed.insert("browser".into(), block.clone());
+            assert!(!fleet_browser_engine(&closed), "{block}");
+            assert_eq!(closed.get("browser"), Some(&block));
+            let mut open = merged(&[]);
+            open.insert("browser".into(), block.clone());
+            assert!(fleet_browser_engine(&open), "{block}");
+        }
+    }
+
+    /// The merged list after the local-browser close, for a def whose
+    /// own disabled list is `def` and whose authored `browser:` is `block`.
+    fn closed_for(def: &[&str], block: Option<Value>, secrets: &[&str]) -> Vec<Value> {
+        let mut routed = merged(def);
+        if let Some(block) = block {
+            routed.insert("browser".into(), block);
+        }
+        let secrets: Vec<String> = secrets.iter().map(|s| s.to_string()).collect();
+        fleet_browser_local_close(&mut routed, &secrets);
+        routed["agent"]["disabled_toolsets"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn a_local_browser_is_closed_while_the_terminal_is() {
+        // Each of these is the built-in tools on a browser Hermes calls
+        // local, which skips its private-address check: with the terminal
+        // closed the render closes the toolset, so an engine an earlier start
+        // left on the volume runs nothing. The block itself stands.
+        for block in [
+            json!({ "backend": "off", "headed": false }),
+            json!({ "backend": false }),
+            json!({ "backend": " Camofox " }),
+            json!({ "backend": "off", "cloud_provider": "local" }),
+            json!({ "backend": "off", "cloud_provider": null }),
+            json!({ "backend": "off", "cdp_url": "  " }),
+            json!({ "cloud_provider": "camofox" }),
+            json!({ "backend": "browser-use", "cloud_provider": "CAMOFOX" }),
+        ] {
+            let mut routed = merged(&["terminal"]);
+            routed.insert("browser".into(), block.clone());
+            fleet_browser_local_close(&mut routed, &[]);
+            let list = routed["agent"]["disabled_toolsets"].as_array().unwrap();
+            assert_eq!(list.last(), Some(&json!("browser")), "{block}");
+            assert_eq!(routed.get("browser"), Some(&block));
+            assert!(!fleet_browser_engine(&routed), "{block}");
+            // With the terminal open the same block is the def's own browser.
+            let open = closed_for(&[], Some(block.clone()), &[]);
+            assert_eq!(
+                open,
+                merged(&[])["agent"]["disabled_toolsets"]
+                    .as_array()
+                    .unwrap()
+                    .clone()
+            );
+        }
+        // A retired name that closes the terminal counts, and so does an
+        // authored platform list without it.
+        let retired = closed_for(&["debugging"], Some(json!({ "backend": "off" })), &[]);
+        assert_eq!(retired.last(), Some(&json!("browser")));
+        let mut listed = merged(&[]);
+        listed.insert(
+            "platform_toolsets".into(),
+            json!({ "api_server": ["web", "browser"] }),
+        );
+        listed.insert("browser".into(), json!({ "backend": "off" }));
+        fleet_browser_local_close(&mut listed, &[]);
+        assert_eq!(
+            listed["agent"]["disabled_toolsets"]
+                .as_array()
+                .unwrap()
+                .last(),
+            Some(&json!("browser"))
+        );
+    }
+
+    #[test]
+    fn hermes_default_and_a_remote_browser_are_left_alone() {
+        let terminal_closed = merged(&["terminal"])["agent"]["disabled_toolsets"]
+            .as_array()
+            .unwrap()
+            .clone();
+        // No block at all (every default agent): the list is exactly what
+        // the toolset merge wrote, so an upgrade changes nothing for it.
+        let fresh = merged(talaria_agent_defs::DEFAULT_DISABLED_FOR_NEW);
+        let mut after = fresh.clone();
+        fleet_browser_local_close(&mut after, &[]);
+        assert_eq!(after, fresh);
+        // Browser Use mode (browser_exec needs the terminal anyway), a CDP
+        // endpoint, and a hosted provider that keeps private addresses on
+        // the provider (both keep Hermes's check).
+        for block in [
+            None,
+            Some(json!({ "backend": "browser-use" })),
+            Some(json!({ "backend": null, "headed": true })),
+            Some(json!({ "backend": true })),
+            Some(json!({ "backend": "" })),
+            Some(json!(false)),
+            Some(json!({ "backend": "off", "cdp_url": "http://chrome:9222" })),
+            Some(json!({ "cloud_provider": "camofox", "cdp_url": "ws://chrome:9222" })),
+            Some(json!({
+                "backend": "off",
+                "cloud_provider": "browserbase",
+                "auto_local_for_private_urls": false
+            })),
+            Some(json!({
+                "backend": "off",
+                "cloud_provider": "nous",
+                "auto_local_for_private_urls": null
+            })),
+            Some(json!({ "cloud_provider": "local" })),
+        ] {
+            let label = format!("{block:?}");
+            assert_eq!(
+                closed_for(&["terminal"], block, &[]),
+                terminal_closed,
+                "{label}"
+            );
+        }
+        // A CDP endpoint supplied only as the agent's `BROWSER_CDP_URL`
+        // secret is the same override as `browser.cdp_url`: never local, and
+        // it beats a Camofox selection (`is_camofox_mode`).
+        for block in [
+            Some(json!({ "backend": "off" })),
+            Some(json!({ "backend": false })),
+            Some(json!({ "backend": "off", "cloud_provider": "local" })),
+            Some(json!({ "backend": "off", "cdp_url": "" })),
+            Some(json!({ "cloud_provider": "camofox" })),
+            Some(json!({ "backend": " Camofox " })),
+        ] {
+            let label = format!("{block:?}");
+            assert_eq!(
+                closed_for(&["terminal"], block, &["BROWSER_CDP_URL"]),
+                terminal_closed,
+                "{label}"
+            );
+        }
+        // A secret that configures nothing Hermes selects by, a Browserbase
+        // base URL with no key or project, leaves the local browser closed.
+        let base_only = closed_for(
+            &["terminal"],
+            Some(json!({ "backend": "off" })),
+            &["BROWSERBASE_BASE_URL", "FIGMA_TOKEN"],
+        );
+        assert_eq!(base_only.last(), Some(&json!("browser")));
+        // A browser already closed is not listed twice.
+        let both = merged(&["terminal", "browser"])["agent"]["disabled_toolsets"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            closed_for(
+                &["terminal", "browser"],
+                Some(json!({ "backend": "off" })),
+                &[]
+            ),
+            both
+        );
+    }
+
+    /// `_is_local_backend`'s last question is the terminal's backend, which
+    /// the gateway bridges from `terminal.backend` into `TERMINAL_ENV` as
+    /// `str()` of the value. Every backend v0.22.4 ships
+    /// (`_BUILTIN_BACKENDS`) but `local` keeps the private-address check for
+    /// this machine's browser, so the render leaves the toolset open for
+    /// them; Camofox is asked first and stays local whatever the terminal.
+    #[test]
+    fn a_terminal_that_runs_elsewhere_keeps_hermes_check() {
+        let local_browser = json!({ "backend": "off" });
+        let with_terminal = |terminal: Option<Value>, browser: &Value| {
+            let mut routed = merged(&["terminal"]);
+            routed.insert("browser".into(), browser.clone());
+            if let Some(t) = terminal {
+                routed.insert("terminal".into(), t);
+            }
+            routed
+        };
+        let terminal_closed = merged(&["terminal"])["agent"]["disabled_toolsets"]
+            .as_array()
+            .unwrap()
+            .clone();
+        // Local, as Hermes reads it: no terminal map, no backend in it, or a
+        // string that strips and lower-cases to `local` or nothing.
+        for terminal in [
+            None,
+            Some(json!({})),
+            Some(json!({ "env_passthrough": ["A_TOKEN"] })),
+            Some(json!("docker")),
+            Some(json!(null)),
+            Some(json!({ "backend": "local" })),
+            Some(json!({ "backend": " LOCAL " })),
+            Some(json!({ "backend": "" })),
+            Some(json!({ "backend": "  " })),
+        ] {
+            let label = format!("{terminal:?}");
+            let routed = with_terminal(terminal, &local_browser);
+            assert!(hermes_terminal_local(&routed), "{label}");
+            assert_eq!(
+                hermes_browser(&routed, &[]),
+                HermesBrowser::Local,
+                "{label}"
+            );
+            let mut closed = routed.clone();
+            fleet_browser_local_close(&mut closed, &[]);
+            assert_eq!(
+                closed["agent"]["disabled_toolsets"]
+                    .as_array()
+                    .unwrap()
+                    .last(),
+                Some(&json!("browser")),
+                "{label}"
+            );
+        }
+        // Elsewhere: every other built-in backend, in any case, and every
+        // value that is not a string (`None`, `True`, `0`, JSON).
+        for backend in [
+            json!("docker"),
+            json!("singularity"),
+            json!("modal"),
+            json!("daytona"),
+            json!("vercel_sandbox"),
+            json!("ssh"),
+            json!(" Docker "),
+            json!("SSH"),
+            json!("a-plugin-backend"),
+            json!(null),
+            json!(false),
+            json!(true),
+            json!(0),
+            json!(["local"]),
+            json!({ "name": "local" }),
+        ] {
+            let terminal = json!({ "backend": backend });
+            let routed = with_terminal(Some(terminal.clone()), &local_browser);
+            assert!(!hermes_terminal_local(&routed), "{terminal}");
+            assert_eq!(
+                hermes_browser(&routed, &[]),
+                HermesBrowser::Remote,
+                "{terminal}"
+            );
+            let mut closed = routed.clone();
+            fleet_browser_local_close(&mut closed, &[]);
+            assert_eq!(
+                closed["agent"]["disabled_toolsets"].as_array().unwrap(),
+                &terminal_closed,
+                "{terminal}"
+            );
+            // Camofox stays local whatever the terminal, and Hermes's
+            // default and a CDP endpoint are what they were.
+            for (browser, secrets, want) in [
+                (
+                    json!({ "cloud_provider": "camofox" }),
+                    vec![],
+                    HermesBrowser::Local,
+                ),
+                // A backend that only names Camofox is not Camofox mode
+                // (that is the provider selection): it is this machine's
+                // browser, and the terminal decides.
+                (
+                    json!({ "backend": " Camofox " }),
+                    vec![],
+                    HermesBrowser::Remote,
+                ),
+                (
+                    json!({ "backend": "browser-use" }),
+                    vec![],
+                    HermesBrowser::Exec,
+                ),
+                (
+                    json!({ "backend": "off" }),
+                    vec!["BROWSER_CDP_URL".to_string()],
+                    HermesBrowser::Remote,
+                ),
+            ] {
+                let routed = with_terminal(Some(terminal.clone()), &browser);
+                assert_eq!(
+                    hermes_browser(&routed, &secrets),
+                    want,
+                    "{terminal} {browser}"
+                );
+            }
+        }
+    }
+
+    /// A browser that keeps Hermes's check is closed with the terminal all the
+    /// same when Hermes would pass it a private address anyway: the def turns
+    /// the check off (`browser.allow_private_urls`, `security.allow_private_urls`,
+    /// read as `is_truthy_value`), or a hosted provider sends private
+    /// addresses to a local Chromium sidecar (`_hybrid_routes_locally`,
+    /// while `browser.auto_local_for_private_urls` is on: Python's `bool()`,
+    /// on when absent).
+    #[test]
+    fn a_browser_hermes_lets_reach_private_addresses_closes_with_the_terminal() {
+        let routed_with = |browser: Value, extra: &[(&str, Value)]| {
+            let mut routed = merged(&["terminal"]);
+            routed.insert("browser".into(), browser);
+            for (key, value) in extra {
+                routed.insert((*key).into(), value.clone());
+            }
+            routed
+        };
+        let terminal_closed = merged(&["terminal"])["agent"]["disabled_toolsets"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let closes = |routed: &Map<String, Value>, secrets: &[String], label: &str| {
+            assert_eq!(
+                hermes_browser(routed, secrets),
+                HermesBrowser::Local,
+                "{label}"
+            );
+            let mut closed = routed.clone();
+            fleet_browser_local_close(&mut closed, secrets);
+            assert_eq!(
+                closed["agent"]["disabled_toolsets"]
+                    .as_array()
+                    .unwrap()
+                    .last(),
+                Some(&json!("browser")),
+                "{label}"
+            );
+        };
+        let stays = |routed: &Map<String, Value>, secrets: &[String], label: &str| {
+            assert_eq!(
+                hermes_browser(routed, secrets),
+                HermesBrowser::Remote,
+                "{label}"
+            );
+            let mut closed = routed.clone();
+            fleet_browser_local_close(&mut closed, secrets);
+            assert_eq!(
+                closed["agent"]["disabled_toolsets"].as_array().unwrap(),
+                &terminal_closed,
+                "{label}"
+            );
+        };
+        let cdp_secret = vec!["BROWSER_CDP_URL".to_string()];
+        let docker = ("terminal", json!({ "backend": "docker" }));
+        // A hosted provider: the sidecar is on when the key is absent, and
+        // for anything Python's bool() reads as true, the string "false"
+        // included.
+        for provider in [
+            "browserbase",
+            "browser-use",
+            "nous",
+            "firecrawl",
+            "a-plugin",
+        ] {
+            for sidecar in [
+                None,
+                Some(json!(true)),
+                Some(json!("false")),
+                Some(json!("no")),
+                Some(json!(1)),
+                Some(json!(["x"])),
+            ] {
+                let mut browser = json!({ "backend": "off", "cloud_provider": provider });
+                if let Some(v) = &sidecar {
+                    browser["auto_local_for_private_urls"] = v.clone();
+                }
+                let label = format!("{browser}");
+                closes(&routed_with(browser.clone(), &[]), &[], &label);
+                closes(
+                    &routed_with(browser, std::slice::from_ref(&docker)),
+                    &[],
+                    &label,
+                );
+            }
+            for off in [
+                json!(false),
+                json!(null),
+                json!(0),
+                json!(""),
+                json!([]),
+                json!({}),
+            ] {
+                let browser = json!({
+                    "backend": "off",
+                    "cloud_provider": provider,
+                    "auto_local_for_private_urls": off
+                });
+                stays(
+                    &routed_with(browser.clone(), &[]),
+                    &[],
+                    &format!("{browser}"),
+                );
+            }
+        }
+        // The check turned off, under either key, for every browser that
+        // would otherwise keep it: a CDP endpoint (config or secret), a
+        // hosted provider with the sidecar off, and this machine's browser
+        // with the terminal elsewhere.
+        let kept: [(Value, Vec<(&str, Value)>, Vec<String>); 4] = [
+            (
+                json!({ "backend": "off", "cdp_url": "http://chrome:9222" }),
+                vec![],
+                vec![],
+            ),
+            (json!({ "backend": "off" }), vec![], cdp_secret.clone()),
+            (
+                json!({
+                    "backend": "off",
+                    "cloud_provider": "browserbase",
+                    "auto_local_for_private_urls": false
+                }),
+                vec![],
+                vec![],
+            ),
+            (json!({ "backend": "off" }), vec![docker.clone()], vec![]),
+        ];
+        for (browser, extra, secrets) in &kept {
+            let label = format!("{browser} {extra:?} {secrets:?}");
+            stays(&routed_with(browser.clone(), extra), secrets, &label);
+            for on in [
+                json!(true),
+                json!("true"),
+                json!(" Yes "),
+                json!("ON"),
+                json!("1"),
+                json!(1),
+            ] {
+                let mut via_browser = browser.clone();
+                via_browser["allow_private_urls"] = on.clone();
+                closes(
+                    &routed_with(via_browser, extra),
+                    secrets,
+                    &format!("{label} browser {on}"),
+                );
+                let mut via_security = extra.clone();
+                via_security.push(("security", json!({ "allow_private_urls": on })));
+                closes(
+                    &routed_with(browser.clone(), &via_security),
+                    secrets,
+                    &format!("{label} security {on}"),
+                );
+            }
+            // Falsy as is_truthy_value reads it, or not in a mapping.
+            for off in [
+                json!(false),
+                json!(null),
+                json!("false"),
+                json!("off"),
+                json!("2"),
+                json!(0),
+            ] {
+                let mut via_browser = browser.clone();
+                via_browser["allow_private_urls"] = off.clone();
+                stays(
+                    &routed_with(via_browser, extra),
+                    secrets,
+                    &format!("{label} browser {off}"),
+                );
+                let mut via_security = extra.clone();
+                via_security.push(("security", json!({ "allow_private_urls": off })));
+                stays(
+                    &routed_with(browser.clone(), &via_security),
+                    secrets,
+                    &format!("{label} security {off}"),
+                );
+            }
+            let mut not_a_map = extra.clone();
+            not_a_map.push(("security", json!(["allow_private_urls"])));
+            stays(&routed_with(browser.clone(), &not_a_map), secrets, &label);
+        }
+        // Hermes's default stays browser_exec (it needs the terminal anyway),
+        // and the toggle does not make a terminal-less agent an engine.
+        let exec = routed_with(json!({ "allow_private_urls": true }), &[]);
+        assert_eq!(hermes_browser(&exec, &[]), HermesBrowser::Exec);
+        let mut closed = exec.clone();
+        fleet_browser_local_close(&mut closed, &[]);
+        assert_eq!(
+            closed["agent"]["disabled_toolsets"].as_array().unwrap(),
+            &terminal_closed
+        );
+        assert!(!fleet_browser_engine(&closed));
+    }
+
+    /// `hermes_browser` reads `BROWSER_CDP_URL` from the agent's secrets and
+    /// not the hosted providers' credentials, because those can never be an
+    /// agent's secret: refused on write, skipped at materialize, so Hermes's
+    /// auto-detect never finds them in the env either. If one of these ever
+    /// becomes a secret an agent can hold, `hermes_browser` must read it as
+    /// v0.22.4 does (`_autodetect_cloud_provider`, `is_camofox_mode`).
+    #[test]
+    fn the_browser_selecting_names_a_secret_can_carry_are_the_ones_read() {
+        for refused in [
+            "BROWSER_USE_API_KEY",
+            "BROWSERBASE_API_KEY",
+            "BROWSERBASE_PROJECT_ID",
+            "CAMOFOX_URL",
+        ] {
+            assert!(
+                talaria_agent_secrets::reserved(refused).is_some(),
+                "{refused} can be an agent secret now: hermes_browser must read it"
+            );
+        }
+        assert_eq!(talaria_agent_secrets::reserved("BROWSER_CDP_URL"), None);
+    }
+
+    #[test]
+    fn an_authored_platform_list_can_close_the_terminal() {
+        let with = |list: Value| {
+            let mut routed = merged(&[]);
+            routed.insert("platform_toolsets".into(), json!({ "api_server": list }));
+            routed
+        };
+        // Lists that carry both: by name, or through a composite.
+        for list in [
+            json!(["terminal", "browser", "web"]),
+            json!(["debugging", "browser"]),
+            json!(["hermes-api-server"]),
+            json!(["hermes"]),
+            json!(["coding"]),
+            json!(["all"]),
+            json!("[\"terminal\", \"browser\"]"),
+            json!("['terminal', 'browser']"),
+        ] {
+            assert!(fleet_browser_engine(&with(list.clone())), "{list}");
+        }
+        // Lists that leave the terminal (or the browser) out, or that cannot
+        // be read: closed, so no engine.
+        for list in [
+            json!(["web", "browser", "file"]),
+            json!(["terminal", "web"]),
+            json!(["hermes-webhook"]),
+            json!(["safe"]),
+            json!(["my-custom-kit"]),
+            json!([]),
+            json!("[terminal"),
+        ] {
+            assert!(!fleet_browser_engine(&with(list.clone())), "{list}");
+        }
+        // Anything but a list falls back to Hermes's default, which opens
+        // both; so does a platform other than the api_server.
+        for list in [json!("terminal"), json!(null), json!(7)] {
+            assert!(fleet_browser_engine(&with(list.clone())), "{list}");
+        }
+        let mut other = merged(&[]);
+        other.insert("platform_toolsets".into(), json!({ "cli": ["web"] }));
+        assert!(fleet_browser_engine(&other));
+    }
+
+    #[test]
+    fn fleet_env_passthrough_lists_secret_names_and_keeps_the_defs_own() {
+        // No secrets, nothing authored: no block, so the config is unchanged.
+        let mut bare = Map::new();
+        bare.insert("model".into(), json!("x"));
+        fleet_env_passthrough(&mut bare, &[]);
+        assert!(!bare.contains_key("terminal"), "{bare:?}");
+
+        // A def's own terminal block and list survive; ours is appended once.
+        let mut routed: Map<String, Value> = serde_json::from_value(json!({
+            "terminal": { "timeout": 300, "env_passthrough": ["MY_TOOL_HOME", "FIGMA_TOKEN"] }
+        }))
+        .unwrap();
+        fleet_env_passthrough(
+            &mut routed,
+            &["FIGMA_TOKEN".to_string(), "STRIPE_API_KEY".to_string()],
+        );
+        assert_eq!(
+            routed["terminal"],
+            json!({ "timeout": 300, "env_passthrough": ["MY_TOOL_HOME", "FIGMA_TOKEN", "STRIPE_API_KEY"] })
+        );
+        // And it is the block Hermes reads, losslessly.
+        let yaml = yaml11_emit(&Value::Object(routed.clone()));
+        assert!(
+            yaml.contains("terminal:\n  timeout: 300\n  env_passthrough:\n    - MY_TOOL_HOME\n"),
+            "{yaml}"
+        );
+        let back: Value = serde_yaml_ng::from_str(&yaml).expect("emitted yaml parses");
+        assert_eq!(back, Value::Object(routed));
+    }
+
     #[test]
     fn talaria_provider_models_json_points_at_the_gateway() {
         let v = talaria_provider_models_json("http://gw/api/llm/v1", &["qwen3:14b".into()]);
@@ -2817,8 +5819,8 @@ service:
         );
         assert_eq!(
             v["providers"]["talaria"]["apiKey"],
-            json!("$OPENAI_API_KEY"),
-            "Pi interpolates $ENV at request time — the key must not be baked"
+            json!("TALARIA_WORKBENCH_API_KEY"),
+            "omp reads the key from the env var this names — never baked, never a `$` literal"
         );
         assert_eq!(
             v["providers"]["talaria"]["api"],
@@ -2834,6 +5836,11 @@ service:
             json!("default"),
             "an empty catalog still loads the provider so --model can be passed"
         );
+        // It ships as YAML (omp's models.yml), and must read back unchanged —
+        // a model id like `qwen3:14b` included.
+        let yaml = yaml11_emit(&v);
+        let back: Value = serde_yaml_ng::from_str(&yaml).expect("models.yml parses");
+        assert_eq!(back, v, "models.yml round-trips:\n{yaml}");
     }
 
     #[test]
@@ -2937,6 +5944,282 @@ empty_list: []
         });
         assert_eq!(plan.next, current);
         assert!(plan.minted.is_empty() && plan.unkeyed.is_empty() && plan.warnings.is_empty());
+    }
+
+    // ── how an agent reads an image ─────────────────────────────────────────
+
+    fn sight(model: &str, main: bool, sees: Option<bool>) -> ModelSight {
+        ModelSight {
+            provider: "custom".into(),
+            model: model.into(),
+            main,
+            sees,
+        }
+    }
+
+    fn authored_with_main() -> Map<String, Value> {
+        json!({ "model": { "provider": "custom", "model": "text-only" } })
+            .as_object()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn runnable_specs_are_main_tiers_and_fallbacks_each_once() {
+        let routed = json!({
+            "model": { "model": "main-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+            "model_aliases": {
+                "deep": { "model": "deep-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+                "same": { "model": "main-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+                // Never routed: no base URL, so not a model the key may ask for.
+                "loose": { "model": "loose-m" },
+            },
+            "fallback_providers": [
+                { "model": "fb-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" },
+            ],
+            // A describer or a compression model is not one the loop answers on.
+            "auxiliary": { "compression": { "model": "aux-m", "base_url": "${LLM_BASE_URL}", "provider": "custom" } },
+        });
+        assert_eq!(
+            runnable_specs(&routed),
+            vec![
+                ("custom".to_string(), "main-m".to_string(), true),
+                ("custom".to_string(), "deep-m".to_string(), false),
+                ("custom".to_string(), "fb-m".to_string(), false),
+            ]
+        );
+        assert!(runnable_specs(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn a_pool_sees_only_when_every_member_does_and_one_blind_member_blinds_it() {
+        assert_eq!(pool_sees(&[Some(true), Some(true)]), Some(true));
+        assert_eq!(pool_sees(&[Some(true), None]), None);
+        assert_eq!(pool_sees(&[Some(true), Some(false)]), Some(false));
+        assert_eq!(pool_sees(&[None, Some(false)]), Some(false));
+        assert_eq!(pool_sees(&[None]), None);
+        // Nothing serves it: nobody knows anything, which is not a no.
+        assert_eq!(pool_sees(&[]), None);
+    }
+
+    #[test]
+    fn a_blind_agent_gets_the_vision_role_as_its_describer() {
+        let mut authored = authored_with_main();
+        let blind = fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            Some("seer"),
+        );
+        assert!(!blind, "a reader was rendered — nothing to warn about");
+        assert_eq!(
+            authored["model_overrides"],
+            json!({ "custom": { "text-only": { "supports_vision": false } } })
+        );
+        assert_eq!(
+            authored["auxiliary"],
+            json!({ "vision": { "provider": "custom", "model": "seer" } })
+        );
+        assert_eq!(authored["agent"], json!({ "image_input_mode": "text" }));
+    }
+
+    #[test]
+    fn a_seeing_agent_keeps_native_pixels_and_gets_no_describer() {
+        let mut authored = authored_with_main();
+        fleet_vision(
+            &mut authored,
+            &[
+                sight("text-only", true, Some(true)),
+                sight("tier-m", false, Some(true)),
+            ],
+            Some("seer"),
+        );
+        assert_eq!(
+            authored["model_overrides"],
+            json!({ "custom": {
+                "text-only": { "supports_vision": true },
+                "tier-m": { "supports_vision": true },
+            } })
+        );
+        assert!(authored.get("auxiliary").is_none(), "{authored:?}");
+        assert_eq!(authored["agent"], json!({ "image_input_mode": "native" }));
+    }
+
+    #[test]
+    fn a_seeing_main_with_a_blind_tier_gets_the_describer_and_stays_native() {
+        let mut authored = authored_with_main();
+        fleet_vision(
+            &mut authored,
+            &[
+                sight("text-only", true, Some(true)),
+                sight("tier-m", false, Some(false)),
+            ],
+            Some("seer"),
+        );
+        assert_eq!(
+            authored["model_overrides"]["custom"]["tier-m"],
+            json!({ "supports_vision": false })
+        );
+        // The describer is there for the tier's `vision_analyze`.
+        assert_eq!(authored["auxiliary"]["vision"]["model"], json!("seer"));
+        // An explicit describer would turn Hermes' `auto` into "describe
+        // everything" — the seeing main model is pinned to pixels. The mode
+        // is per agent, so a turn on the blind tier gets pixels too and does
+        // not read an attached image (see `fleet_vision`).
+        assert_eq!(authored["agent"]["image_input_mode"], json!("native"));
+    }
+
+    #[test]
+    fn an_unmeasured_main_model_gets_the_describer_and_no_claim_about_its_sight() {
+        let mut authored = authored_with_main();
+        let blind = fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, None)],
+            Some("seer"),
+        );
+        assert!(!blind);
+        // Unknown is not false: no supports_vision either way.
+        assert!(authored.get("model_overrides").is_none(), "{authored:?}");
+        assert_eq!(authored["auxiliary"]["vision"]["model"], json!("seer"));
+        assert_eq!(authored["agent"]["image_input_mode"], json!("text"));
+
+        // And with no vision role, nothing at all is rendered.
+        let mut authored = authored_with_main();
+        let before = authored.clone();
+        assert!(!fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, None)],
+            None
+        ));
+        assert_eq!(authored, before);
+    }
+
+    #[test]
+    fn a_known_blind_model_without_a_reader_is_declared_and_warned_about() {
+        let mut authored = authored_with_main();
+        let blind = fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            None,
+        );
+        assert!(blind);
+        assert_eq!(
+            authored["model_overrides"]["custom"]["text-only"],
+            json!({ "supports_vision": false })
+        );
+        assert!(authored.get("auxiliary").is_none(), "{authored:?}");
+        assert!(authored.get("agent").is_none(), "{authored:?}");
+    }
+
+    #[test]
+    fn what_a_def_authored_about_vision_stands() {
+        let mut authored = json!({
+            "model": { "provider": "custom", "model": "text-only" },
+            "model_overrides": { "custom": { "text-only": { "supports_vision": true, "context_window": 64000 } } },
+            "auxiliary": { "vision": { "provider": "openrouter", "model": "their-seer" }, "compression": { "timeout": 9 } },
+            "agent": { "image_input_mode": "auto", "max_turns": 40 },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let blind = fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            Some("seer"),
+        );
+        assert!(!blind, "the def brought its own describer");
+        assert_eq!(
+            authored["model_overrides"]["custom"]["text-only"],
+            json!({ "supports_vision": true, "context_window": 64000 })
+        );
+        assert_eq!(
+            authored["auxiliary"],
+            json!({ "vision": { "provider": "openrouter", "model": "their-seer" }, "compression": { "timeout": 9 } })
+        );
+        assert_eq!(
+            authored["agent"],
+            json!({ "image_input_mode": "auto", "max_turns": 40 })
+        );
+
+        // A vision block that names no backend is tuning, not a backend: the
+        // reader goes in beside its keys.
+        let mut authored = authored_with_main();
+        authored.insert(
+            "auxiliary".into(),
+            json!({ "vision": { "provider": "auto", "timeout": 200 } }),
+        );
+        fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            Some("seer"),
+        );
+        assert_eq!(
+            authored["auxiliary"]["vision"],
+            json!({ "provider": "custom", "timeout": 200, "model": "seer" })
+        );
+    }
+
+    #[test]
+    fn no_main_model_spec_means_nothing_is_rendered() {
+        let mut authored = json!({ "agent": { "max_turns": 40 } })
+            .as_object()
+            .unwrap()
+            .clone();
+        let before = authored.clone();
+        assert!(!fleet_vision(
+            &mut authored,
+            &[sight("tier-m", false, Some(false))],
+            Some("seer")
+        ));
+        assert_eq!(authored, before);
+    }
+
+    #[test]
+    fn the_describer_is_routed_scoped_and_emitted_like_every_other_spec() {
+        let models = talaria_fleet_brain::GatewayModels {
+            served: ["text-only", "seer"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            fallback: Some("text-only".into()),
+        };
+        let mut authored = authored_with_main();
+        fleet_vision(
+            &mut authored,
+            &[sight("text-only", true, Some(false))],
+            Some("seer"),
+        );
+        let routed = talaria_fleet_brain::route_config_through_gateway(
+            &Value::Object(authored),
+            &models,
+            |w| panic!("nothing should remap: {w}"),
+        );
+        assert_eq!(
+            routed["auxiliary"]["vision"],
+            json!({
+                "provider": "custom",
+                "model": "seer",
+                "base_url": "${LLM_BASE_URL}",
+                "api_key": "${LLM_API_KEY}",
+            })
+        );
+        // The agent's key is scoped to the describer too.
+        assert_eq!(
+            talaria_fleet_brain::routed_models(&routed),
+            vec!["text-only".to_string(), "seer".to_string()]
+        );
+        // The overrides are not a model spec, so the transform leaves them be.
+        assert_eq!(
+            routed["model_overrides"],
+            json!({ "custom": { "text-only": { "supports_vision": false } } })
+        );
+        let text = yaml11_emit(&routed);
+        let back: Value = serde_yaml_ng::from_str(&text).unwrap();
+        assert_eq!(back["auxiliary"]["vision"]["model"], json!("seer"));
+        assert_eq!(
+            back["model_overrides"]["custom"]["text-only"]["supports_vision"],
+            json!(false)
+        );
+        assert_eq!(back["agent"]["image_input_mode"], json!("text"));
     }
 
     #[test]
@@ -3231,6 +6514,12 @@ empty_list: []
             asked.contains(r#""repo":"acme/widgets""#),
             "the repo string must be .git-suffix-free: {asked}"
         );
+        // The remote's host rides along: the route resolves the grant on
+        // the git host the push goes to.
+        assert!(
+            asked.contains(r#""host":"github.com""#),
+            "the host must arrive bare: {asked}"
+        );
         let (code, err, _) = run(r#"{"error":"acme/widgets is not yours to push"}"#);
         assert_eq!(code, 1, "a refused push must abort");
         assert!(
@@ -3326,6 +6615,10 @@ empty_list: []
         // non-login `bash -c` finds it too.
         assert!(filled.contains(&format!("XDG_DATA_HOME={HARNESS_XDG_DATA_HOME}")));
         assert!(filled.contains("ln -sfn \"$real\" /opt/data/.local/bin/bun"));
+        // And onto the PATH the agent's terminal has once /etc/profile reset
+        // it (Hermes snapshots a login shell), unconditionally — the link
+        // resolves once the workbench provisions bun.
+        assert!(filled.contains("ln -sfn /opt/data/.local/bin/bun /usr/local/bin/bun"));
         assert!(filled.contains(&format!("bun@{HARNESS_BUN}")));
         // Globally, because a shim with no version is the whole bug: a Rust
         // job pins rust and mold, and omp is a bun program wherever it runs.
@@ -3342,7 +6635,7 @@ empty_list: []
             Path::new("/fleet/eng/workbench"),
             Path::new("/fleet/skills"),
         );
-        for file in ["models.json", "settings.json", "mcp.json", "skills"] {
+        for file in ["models.yml", "settings.json", "mcp.json", "skills"] {
             assert!(
                 mounts
                     .iter()

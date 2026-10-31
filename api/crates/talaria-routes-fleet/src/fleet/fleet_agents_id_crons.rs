@@ -1,5 +1,5 @@
 // /api/fleet/agents/{id}/crons. One agent's native Hermes cron jobs. GET →
-// jobs (read from the container's jobs.json). POST → create. Admin, or the
+// jobs (read from the agent's own `/api/jobs`). POST → create. Admin, or the
 // owner of a personal assistant.
 
 use axum::Json;
@@ -10,7 +10,7 @@ use serde_json::json;
 use talaria_agent_crons::{create_cron_job, list_cron_jobs};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, trimmed_string_member};
-use talaria_error::{house_error, object_or_400};
+use talaria_error::{house_error, object_or_400, store_answer};
 use talaria_session::{actor_of, require_agent_manager, require_agent_reader};
 use talaria_state::AppState;
 pub async fn get(
@@ -19,9 +19,12 @@ pub async fn get(
     headers: HeaderMap,
 ) -> Result<Response, Response> {
     require_agent_reader(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     Ok(match list_cron_jobs(&state.pg, &id).await {
         Ok(jobs) => Json(json!({ "jobs": jobs })).into_response(),
-        Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+        Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
     })
 }
 
@@ -42,10 +45,15 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let prompt = match trimmed_string_member(obj, "prompt", 1, 20_000) {
+    // The agent's own cap: Hermes's /api/jobs refuses a longer prompt
+    // (talaria_agent_crons::MAX_PROMPT_CHARS).
+    let prompt = match trimmed_string_member(obj, "prompt", 1, 5_000) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     Ok(
         match create_cron_job(&state.pg, &id, &name, &schedule, &prompt).await {
             Ok(created) => {
@@ -71,7 +79,7 @@ pub async fn post(
                 // wire shape — { ok, id }, id after ok.
                 Json(json!({ "ok": true, "id": created })).into_response()
             }
-            Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+            Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
         },
     )
 }

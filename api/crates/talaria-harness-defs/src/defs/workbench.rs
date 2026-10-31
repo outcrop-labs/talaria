@@ -718,6 +718,7 @@ fn workbench_harness(
         // exactly as empty as they were.
         ModelSpec {
             pin: None,
+            slot: None,
             role: Some(role),
             chain: None,
             user_id: None,

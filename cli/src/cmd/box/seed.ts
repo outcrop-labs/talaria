@@ -27,9 +27,10 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
-import { DEV_NETWORK, PG_CONTAINER, QDRANT_CONTAINER, STORAGE_CONTAINER, containerExists } from '../../containers'
+import { DEV_NETWORK, containerExists } from '../../containers'
 import { readEnvFile, writeSecret } from '../../envfile'
 import { rcloneImage } from '../../backup/lib'
+import { primaryContainer, refuseSideStackContainers, type PrimaryContainerVar } from '../../stack'
 import { boxFleetNetwork, boxHost, boxProject, boxSvc, boxState } from './shared'
 
 /** Repoint the chassis's fleet network at THIS box's own — the template
@@ -53,7 +54,7 @@ export function repointChassis(text: string, network: string): string {
 export function seedFleetEnv(primaryFleetEnv: string): string {
   const kept = primaryFleetEnv
     .split('\n')
-    .filter((l) => /^(LLM_BASE_URL|LLM_API_KEY|LLM_MODEL|HERMES_IMAGE)=/.test(l))
+    .filter((l) => /^(LLM_BASE_URL|LLM_API_KEY|HERMES_IMAGE)=/.test(l))
     .join('\n')
   return `# Fleet env — seeded from the primary fleet/.env by \`talaria box seed\`.
 # The renderer rewrites the endpoint through this box's own gateway;
@@ -66,9 +67,18 @@ export async function runSeed(ctx: Ctx, name: string, o: { force?: boolean; qdra
   const root = ctx.root
   const state = boxState(ctx, name)
   // NOT requireBox: `new` calls this before it writes box.env.
-  const MAIN_PGC = ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER
-  const MAIN_STORAGEC = ctx.env.TALARIA_STORAGE_CONTAINER ?? ctx.env.TALARIA_MINIO_CONTAINER ?? STORAGE_CONTAINER
-  const MAIN_QDRANT = ctx.env.TALARIA_QDRANT_CONTAINER ?? QDRANT_CONTAINER
+  // The seed SOURCES are main's containers, named by the shell's
+  // TALARIA_*_CONTAINER as the primary's compose names them. A shell under a
+  // worktree's `talaria dev` inherits that worktree's TALARIA_PG_CONTAINER,
+  // and this copied its database into the box as "the primary dev DB". An
+  // override that names another stack's container is refused here, before
+  // the box is touched (stack.ts).
+  const sources: PrimaryContainerVar[] = ['TALARIA_PG_CONTAINER', 'TALARIA_STORAGE_CONTAINER', 'TALARIA_MINIO_CONTAINER']
+  if (o.qdrant) sources.push('TALARIA_QDRANT_CONTAINER')
+  await refuseSideStackContainers(ctx, sources, `box seed ${name}`)
+  const MAIN_PGC = primaryContainer(ctx, 'TALARIA_PG_CONTAINER')
+  const MAIN_STORAGEC = primaryContainer(ctx, 'TALARIA_STORAGE_CONTAINER')
+  const MAIN_QDRANT = primaryContainer(ctx, 'TALARIA_QDRANT_CONTAINER')
   const PGC = boxSvc(name, 'postgres')
 
   if (!(await containerExists(ctx, PGC))) ctx.log.die(`box postgres (${PGC}) isn't running`)

@@ -1,6 +1,6 @@
 # Talaria — the whole app in one production container.
 #
-# Build from the REPO ROOT (the context needs ui/, mcp/, apps/, scripts/skills,
+# Build from the REPO ROOT (the context needs ui/, mcp/, scripts/skills,
 # scripts/chassis.template.yml):
 #
 #   docker build -t talaria:latest .
@@ -48,9 +48,10 @@ RUN --mount=type=cache,target=/root/.bun/install/cache cd ui && bun install --fr
 
 # Everything else. .dockerignore keeps node_modules/dist out of this copy, so
 # the installs above survive it.
-# apps/ is NOT ignored: apps compile into the bundle at build time
-# (import.meta.glob in ui/src/server/apps.ts) — including gitignored local
-# apps (e.g. apps/leadworks) that are part of local builds by design.
+# apps/ rides along in this copy, but nothing in the build reads it: the host
+# no longer compiles apps into its bundle. A running instance discovers apps on
+# disk under TALARIA_APPS_DIR (ui/src/server/apps.ts) and compiles each one
+# itself (ui/src/server/app-build), and the runtime stage below copies no apps/.
 COPY . .
 RUN cd ui && bun run build \
  && cd ../mcp && bun run build \
@@ -110,7 +111,7 @@ LABEL org.opencontainers.image.title="Talaria" \
       org.opencontainers.image.created="${CREATED}"
 
 # docker CLI + compose v2: the app drives the host daemon through the mounted
-# socket (fleet render/up, docker exec for agent memory/media/crons).
+# socket (fleet render/up, docker exec for agent memory/media).
 # git: app installs (git clone from the marketplace). tzdata: the app renders
 # local times. libgcc + libstdc++: the bun binary links them (they come free
 # with the node-based build stages but not with bare alpine — same set the

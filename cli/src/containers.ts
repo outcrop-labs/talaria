@@ -4,10 +4,18 @@
 // compose can never disagree about which container is "postgres", and so a
 // value changed in one place is changed everywhere it is read.
 //
-// These are the compose file's DEFAULTS. A reader that honours the operator's
-// override spells compose's own `${VAR:-default}` at the call site —
-// `ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER` — and a pure template that
-// only needs the default uses the constant directly.
+// These are the compose file's DEFAULTS, which is to say the PRIMARY stack's.
+// A command that acts on "this checkout's" postgres, redis or fleet resolves
+// them through stack.ts (devStack), which names a worktree's own containers
+// and refuses a shell override that names another stack's. Spelling
+// `ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER` at the call site is how
+// `talaria reset` run in a worktree came to reset main: nothing sets that var
+// in a worktree. The box and worktree seed sources and the primary's
+// `talaria dev`, which mean MAIN's containers on purpose, name them through stack.ts
+// primaryContainer (dev by way of devStack, whose names its readiness probes
+// use too), after a shell override that is a worktree's or a box's has been
+// refused: a worktree's `talaria dev` exports its own TALARIA_PG_CONTAINER to
+// every process it starts.
 
 import type { Ctx } from './ctx'
 
@@ -34,18 +42,6 @@ export async function containerState(ctx: Ctx, name: string): Promise<string | n
   }
 }
 
-/** Is the container's process RUNNING? Docker's own flag, deliberately: a
- *  PAUSED container is still running (its process is), and a probe that said
- *  otherwise would refuse to reset a stack that is merely frozen. False when
- *  the container does not exist — the same answer the old try/catch gave. */
-export async function containerRunning(ctx: Ctx, name: string): Promise<boolean> {
-  try {
-    return (await ctx.exec('docker', ['inspect', '-f', '{{.State.Running}}', name])).stdout.trim() === 'true'
-  } catch {
-    return false
-  }
-}
-
 /** Does the daemon know this container at all? Plain `docker inspect` with no
  *  format string: only existence is at stake, and a format would make the
  *  probe depend on a state the caller never reads. */
@@ -58,14 +54,7 @@ export async function containerExists(ctx: Ctx, name: string): Promise<boolean> 
   }
 }
 
-/** Names of the RUNNING containers whose name contains `filter` — or, with
- *  `all`, every container docker knows. Docker refusing to list (daemon down)
- *  is an empty answer, not an error: every caller is reporting, not acting. */
-export async function containerNames(ctx: Ctx, filter: string, all = false): Promise<string[]> {
-  const args = ['ps', ...(all ? ['-a'] : []), '--format', '{{.Names}}']
-  try {
-    return (await ctx.exec('docker', args)).stdout.split('\n').filter((l) => l.includes(filter))
-  } catch {
-    return []
-  }
-}
+// No name-substring lister lives here any more. `talaria reset fleet` picked
+// its containers by the substring `talaria-fleet-agent` and so, run in a
+// worktree, removed main's agents. A stack's containers are selected by their
+// compose project label (stack.ts, projectContainers).

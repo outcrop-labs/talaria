@@ -27,6 +27,12 @@
 //   · mise's shims on PATH for every login shell, so `cargo` / `bun` / `go`
 //     resolve to the repo's pinned versions by directory, with no activation
 //     step the agent can forget.
+//   · for a Talaria app (a talaria.json at the repo's root — any repo, never
+//     keyed on Talaria's own), the SDK kit: fetched from this instance as the
+//     agent, installed once per kit version beside the harness runtime, and
+//     `talaria-app` linked onto the PATH every shell has, so the agent can
+//     typecheck, build and eval the app here, in its sandbox, with the
+//     host's own recipe. The host never loads unmerged app code.
 //   · for Rust repos, sccache as cargo's compiler wrapper with one cache per
 //     department, so a job's cold `target/` still gets every dependency
 //     another job already compiled instead of rebuilding the whole graph.
@@ -60,6 +66,9 @@ pub const AGENT_USER: &str = "hermes";
 /// level down, which is where monorepos keep their per-language roots
 /// (Talaria's own rust-toolchain.toml lives in api/).
 const MARKERS: &[&str] = &[
+    // A Talaria app: the SDK kit (`install_app_kit`). Root only — the
+    // manifest sits at the root of every app.
+    "talaria.json",
     "mise.toml",
     ".mise.toml",
     ".tool-versions",
@@ -169,14 +178,20 @@ if [ -n "$missing" ]; then
 fi
 "#;
 
+/// `HOME` as Hermes sets it for the commands its terminal runs in a container
+/// (`$HERMES_HOME/home`, its `TERMINAL_HOME_MODE=auto` in a container). It is
+/// not the agent user's passwd home (`/opt/data`), which is the gateway's own.
+pub const AGENT_TERMINAL_HOME: &str = "/opt/data/home";
+
 /// User half, as the checkout's owner: the mise binary, the shims line in
 /// the shell profiles, the generated config kept out of git, every tool the
 /// repo's mise configs name, sccache wired into the repo's env when asked,
 /// and what resolved. $1 = home, $2 = repo root, $3 = "1" when a
-/// mise.local.toml was written, $4 = the sccache dir ("" = no sccache).
+/// mise.local.toml was written, $4 = the sccache dir ("" = no sccache),
+/// $5 = the agent terminal's HOME ([`AGENT_TERMINAL_HOME`]).
 const USER_SH: &str = r#"
 set -e
-home="$1"; root="$2"; wrote="$3"; sccache_dir="$4"
+home="$1"; root="$2"; wrote="$3"; sccache_dir="$4"; term_home="$5"
 export HOME="$home" MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/opt/data/workbench/jobs
 bin="$home/.local/bin"
 export PATH="$bin:$PATH"
@@ -185,22 +200,40 @@ if ! command -v mise >/dev/null 2>&1; then
   curl -fsSL https://mise.run | MISE_INSTALL_PATH="$bin/mise" sh >/dev/null
   command -v mise >/dev/null 2>&1 || { echo "could not download mise (https://mise.run)" >&2; exit 1; }
 fi
+# Where this install keeps its tools and its global config, resolved NOW, as
+# mise resolves them for this user: MISE_DATA_DIR, else XDG_DATA_HOME/mise
+# (the render sets XDG_DATA_HOME on workbenches), else ~/.local/share/mise.
+# The block below carries them as absolute paths because the shell that reads
+# it may have another HOME: Hermes runs the agent's terminal commands with
+# HOME=$term_home, where a ~-relative path names an empty directory and a
+# global pin (bun, below) is not found.
+data="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$home/.local/share}/mise}"
+global="${MISE_GLOBAL_CONFIG_FILE:-${MISE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$home/.config}/mise}/config.toml}"
+case "$data$global" in *"'"*) echo "mise paths with a quote in them: $data $global" >&2; exit 1 ;; esac
 # Rewritten on every call (old block out, current block in), so a fix to the
 # block reaches containers that already have an older one. Written back in
-# place (not replaced) so the file keeps its mode.
-for rc in "$home/.profile" "$home/.bashrc"; do
+# place (not replaced) so the file keeps its mode. Both homes get it: the
+# passwd home's profile is what Hermes's terminal sources when it snapshots a
+# new session, and the terminal home's is what `. ~/.profile` reads from a
+# shell the agent opened before this call (and what a login shell there reads).
+rcs="$home/.profile $home/.bashrc"
+if [ -n "$term_home" ] && [ "$term_home" != "$home" ] && mkdir -p "$term_home" 2>/dev/null; then
+  rcs="$rcs $term_home/.profile $term_home/.bashrc"
+fi
+for rc in $rcs; do
   touch "$rc"
   tmp=$(mktemp)
   awk '/^# >>> talaria workbench: mise >>>$/{skip=1} !skip{print} /^# <<< talaria workbench: mise <<<$/{skip=0}' "$rc" > "$tmp"
-  cat >> "$tmp" <<'EOF'
+  cat >> "$tmp" <<EOF
 # >>> talaria workbench: mise >>>
 export MISE_YES=1
 export MISE_TRUSTED_CONFIG_PATHS=/opt/data/workbench/jobs
-# mise's own lookup: MISE_DATA_DIR, else XDG_DATA_HOME/mise (the render sets
-# XDG_DATA_HOME on workbenches), else ~/.local/share/mise. Always to the
-# FRONT, even if already present: a stock .profile puts ~/.local/bin ahead
-# after .bashrc ran, and a hand-installed tool there must not shadow the pin.
-export PATH="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/shims:$PATH"
+export MISE_DATA_DIR='$data'
+export MISE_GLOBAL_CONFIG_FILE='$global'
+# Always to the FRONT, even if already present: a stock .profile puts
+# ~/.local/bin ahead after .bashrc ran, and a hand-installed tool there must
+# not shadow the pin.
+export PATH="\$MISE_DATA_DIR/shims:\$PATH"
 # <<< talaria workbench: mise <<<
 EOF
   cat "$tmp" > "$rc"
@@ -256,6 +289,9 @@ pub struct EnvPlan {
     pub sccache: bool,
     /// Declared entries that failed validation, told back to the agent.
     pub rejected: Vec<String>,
+    /// The repo is a Talaria app (a talaria.json at its root): prepare_env
+    /// installs the SDK kit, and the kit's checkers get node.
+    pub talaria_app: bool,
 }
 
 impl EnvPlan {
@@ -402,6 +438,16 @@ pub fn plan_env(files: &[(String, String)]) -> EnvPlan {
         if let Some((_, text)) = pick(files, &[".ruby-version"]) {
             plan.set_tool("ruby", first_line(text));
         }
+    }
+
+    // A Talaria app. Keyed on the manifest at the root and nothing else —
+    // never on the repo being Talaria's. An app repo has no package.json of
+    // its own, but the kit's checkers (svelte-check, vitest) are node
+    // programs, so a repo that pins no node gets one; the kit itself runs on
+    // the harness's bun, which every sandbox has.
+    plan.talaria_app = files.iter().any(|(p, _)| p == "talaria.json");
+    if plan.talaria_app && !plan.repo_config && !plan.tools.iter().any(|(n, _)| n == "node") {
+        plan.set_tool("node", "lts");
     }
 
     // The repo's explicit extras apply on top of either source.
@@ -784,6 +830,170 @@ pub async fn ensure_harness_runtime(pg: &PgPool, department: &str) -> Result<Str
     Ok(version)
 }
 
+// ── The SDK kit: a Talaria app's toolchain ─────────────────────────────────
+//
+// A repo with a talaria.json at its root is a Talaria app, and the instance
+// serves the kit that builds one (`GET /api/sdk/kit.tgz`: the SDK's
+// declarations, the host's build recipe, the `talaria-app` CLI). The sandbox
+// fetches it AS THE AGENT — its own credential and the app's origin are
+// already in the container's env for the git credential helper — so the kit
+// takes no path but the one any agent's request takes, and the api hands the
+// container nothing. One install per kit version, on the department volume
+// beside the harness runtime, shared by every job; `talaria-app` linked into
+// the bin directory every shell has, beside bun.
+
+/// Where kits are unpacked and installed, one directory per kit version: in
+/// the harness's data dir on the department volume, which the agent's user
+/// owns (mise keeps its installs there).
+pub fn kit_store() -> String {
+    format!(
+        "{}/talaria-sdk-kit",
+        talaria_workbench_harnesses::HARNESS_XDG_DATA_HOME
+    )
+}
+
+/// The workdir-relative file a job's eval session is written to. The kit's
+/// `talaria-app eval --gateway` finds it walking up from the app and sends
+/// its key as `x-talaria-session`, so the relay books those turns to the
+/// job's ticket.
+pub const EVAL_SESSION_FILE: &str = ".talaria/eval-session.json";
+
+/// `talaria-app` where the agent's terminal finds it (`install_app_kit`).
+pub const KIT_TERMINAL_LINK: &str = "/usr/local/bin/talaria-app";
+
+/// Long enough for a first install of the kit's packages on a slow link;
+/// every later job of the same version finds it installed.
+const KIT_TIMEOUT_MS: u64 = 10 * 60_000;
+
+/// $1 = the kit store, $2 = the bin dir (bun is there), $3 = the workdir.
+/// stdin = the eval session's JSON, or nothing. Runs as the agent.
+const KIT_SH: &str = r#"
+set -eu
+kits="$1"; bin="$2"; wd="$3"
+base="${TALARIA_API_URL:-}"
+[ -n "$base" ] || { echo "TALARIA_API_URL is not set in this sandbox, so the SDK kit has nowhere to come from" >&2; exit 1; }
+[ -n "${TALARIA_AGENT_KEY:-}" ] || { echo "TALARIA_AGENT_KEY is not set in this sandbox, so it cannot ask for the SDK kit" >&2; exit 1; }
+[ -x "$bin/bun" ] || { echo "no bun at $bin/bun to install the SDK kit with" >&2; exit 1; }
+mkdir -p "$kits" "$bin"
+tmp=$(mktemp -d "$kits/.fetch-XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+cat > "$tmp/session"
+url="${base%/}/api/sdk/kit.tgz"
+code=$(curl -sS -o "$tmp/kit.tgz" -D "$tmp/headers" -w '%{http_code}' \
+  -H "X-Agent-Name: ${API_SERVER_MODEL_NAME:-}" -H "X-Api-Key: $TALARIA_AGENT_KEY" "$url") \
+  || { echo "could not reach $url" >&2; exit 1; }
+if [ "$code" != 200 ]; then
+  echo "the instance answered $code for $url: $(head -c 300 "$tmp/kit.tgz")" >&2
+  exit 1
+fi
+ver=$(tr -d '\r' < "$tmp/headers" | sed -n 's/^[Xx]-[Tt]alaria-[Kk]it-[Vv]ersion: *//p' | tail -n 1)
+case "$ver" in
+  ''|*[!A-Za-z0-9._+-]*|[!A-Za-z0-9]*) echo "the instance named no usable kit version (\"$ver\")" >&2; exit 1 ;;
+esac
+dest="$kits/$ver"
+if [ ! -f "$dest/.installed" ]; then
+  mkdir "$tmp/kit"
+  tar -xzf "$tmp/kit.tgz" -C "$tmp/kit"
+  if ! (cd "$tmp/kit" && "$bin/bun" install --no-progress >"$tmp/install.log" 2>&1); then
+    tail -n 20 "$tmp/install.log" >&2
+    exit 1
+  fi
+  touch "$tmp/kit/.installed"
+  # A half-placed earlier attempt goes; a finished one another job placed
+  # meanwhile stays, and this copy is dropped.
+  if [ -e "$dest" ] && [ ! -f "$dest/.installed" ]; then rm -rf "$dest"; fi
+  mv -T "$tmp/kit" "$dest" 2>/dev/null || [ -f "$dest/.installed" ] \
+    || { echo "could not place the SDK kit at $dest" >&2; exit 1; }
+fi
+ln -sfn "$dest" "$kits/current"
+ln -sfn "$kits/current/bin/talaria-app" "$bin/talaria-app"
+if [ -s "$tmp/session" ]; then
+  umask 077
+  mkdir -p "$wd/.talaria"
+  cp "$tmp/session" "$wd/.talaria/.eval-session.tmp"
+  mv -f "$wd/.talaria/.eval-session.tmp" "$wd/.talaria/eval-session.json"
+  if [ -d "$wd/.git" ] && ! grep -qx '.talaria/eval-session.json' "$wd/.git/info/exclude" 2>/dev/null; then
+    mkdir -p "$wd/.git/info"
+    echo '.talaria/eval-session.json' >> "$wd/.git/info/exclude"
+  fi
+fi
+echo "=== kit"
+"$bin/talaria-app" version
+"#;
+
+/// The eval session a job's `talaria-app eval --gateway` books under, as the
+/// file the kit reads it from.
+pub fn eval_session_json(key: &str, job_id: &str) -> String {
+    json!({ "key": key, "jobId": job_id }).to_string()
+}
+
+/// Install the SDK kit for a Talaria app's job. Ok carries what the agent is
+/// told: the version, where `talaria-app` is, and the loop to run before
+/// finish_job. `session` is the job's eval session (`eval_session_json`), or
+/// None when none could be recorded — eval through the gateway still works,
+/// booked to the workbench key without a ticket.
+/// What `prepare_env` tells an agent about the kit it just installed: the
+/// loop to run before finish_job, and how a new app starts. A new repo has
+/// no talaria.json, and prepare_env installs the kit only for one that does,
+/// so an app starts from a seed manifest the agent writes first.
+pub const APP_KIT_USAGE: &str = "This repo is a Talaria app. Before finish_job, from the repo: `talaria-app check` (talaria.json, typecheck, the app's own tests), `talaria-app build` (the host's own build recipe and load probe, per surface, per harness and per trigger) and `talaria-app eval` (every harness fixture, against the replies in harnesses/recorded/; add `--gateway --model <id>` to run them through the Talaria gateway, booked to this job's ticket, and `--record` to keep the replies). To start an app in a new repo: write a seed talaria.json at its root that declares the app's name and slug, call prepare_env, then run `talaria-app scaffold`, which keeps the seed and writes the rest of the app around it. All of it runs here, never on the instance.";
+
+pub async fn install_app_kit(
+    pg: &PgPool,
+    department: &str,
+    workdir: &str,
+    session: Option<&str>,
+) -> Result<Value, String> {
+    let container = managed_container(pg, department).await;
+    let bin = talaria_workbench_harnesses::AGENT_BIN_DIR;
+    let (out, _) = docker_exec_as(
+        &container,
+        Some(AGENT_USER),
+        &["sh", "-c", KIT_SH, "sh", &kit_store(), bin, workdir],
+        Some(session.unwrap_or("")),
+        KIT_TIMEOUT_MS,
+    )
+    .await
+    .map_err(|e| {
+        let why = e
+            .lines()
+            .map(str::trim)
+            .rfind(|l| !l.is_empty())
+            .unwrap_or("no output")
+            .to_string();
+        format!("the SDK kit could not be installed: {why}")
+    })?;
+    let version = out
+        .split_once("=== kit\n")
+        .map(|(_, v)| v.trim().to_string())
+        .unwrap_or_default();
+    // And where the AGENT'S TERMINAL looks: Hermes runs each command from a
+    // login-shell snapshot whose PATH Debian's /etc/profile resets to
+    // /usr/local/bin:/usr/bin:/bin, so the bin dir above is not on it (the
+    // boot hook links bun there for the same reason). Root writes one fixed
+    // link and reads nothing of the repo; /usr/local/bin is the container
+    // layer, so every prepare_env lays it again after a restart.
+    let linked = docker_exec(
+        &container,
+        &[
+            "ln",
+            "-sfn",
+            &format!("{bin}/talaria-app"),
+            KIT_TERMINAL_LINK,
+        ],
+        10_000,
+    )
+    .await
+    .is_ok();
+    Ok(json!({
+        "ok": true,
+        "version": version,
+        "bin": if linked { KIT_TERMINAL_LINK.to_string() } else { format!("{bin}/talaria-app") },
+        "evalSession": session.map(|_| format!("{workdir}/{EVAL_SESSION_FILE}")),
+        "usage": APP_KIT_USAGE,
+    }))
+}
+
 /// Where a job finds its repo's env, relative to the job's workdir.
 pub const JOB_ENV_FILE: &str = ".talaria/env";
 
@@ -956,6 +1166,7 @@ pub async fn prepare_env(pg: &PgPool, department: &str, workdir: &str) -> Result
             &scan.root,
             if wrote { "1" } else { "0" },
             if plan.sccache { SCCACHE_DIR } else { "" },
+            AGENT_TERMINAL_HOME,
         ],
         USER_TIMEOUT_MS,
     )
@@ -977,10 +1188,11 @@ pub async fn prepare_env(pg: &PgPool, department: &str, workdir: &str) -> Result
         "tools": plan.tools.iter().map(|(n, v)| format!("{n}@{v}")).collect::<Vec<_>>(),
         "apt": plan.apt,
         "sccache": plan.sccache,
+        "talariaApp": plan.talaria_app,
         "rejected": plan.rejected,
         "skipped": scan.skipped,
         "resolved": resolved,
-        "usage": "Toolchains resolve through mise shims by directory in every NEW login shell (bash -l). In a shell opened before this call, run `. ~/.profile` first, or prefix a command with `mise exec --`. Do not install toolchains yourself: add them to the repo's mise.toml or .talaria/workbench.toml and call prepare_env again.",
+        "usage": "Toolchains resolve through mise shims by directory, so run them from inside the repo (cd into it first; outside it a shim answers \"No version is set\"). A terminal session started after this call has them on PATH; in one opened before it, run `. ~/.profile` first, or prefix a command with `mise exec --`. Do not install toolchains yourself: add them to the repo's mise.toml or .talaria/workbench.toml and call prepare_env again.",
     }))
 }
 
@@ -1273,6 +1485,118 @@ mod tests {
         )
     }
 
+    /// Runs USER_SH as prepare_env does, with a stub `mise` already in the
+    /// passwd home's bin (so nothing downloads) and a pinned env.
+    #[cfg(unix)]
+    fn run_user_sh(
+        home: &std::path::Path,
+        term: &str,
+        root: &std::path::Path,
+        xdg: &std::path::Path,
+    ) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let mise = bin.join("mise");
+        std::fs::write(&mise, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&mise, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(USER_SH)
+            .arg("sh")
+            .args([
+                home.to_str().unwrap(),
+                root.to_str().unwrap(),
+                "0",
+                "",
+                term,
+            ])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("XDG_DATA_HOME", xdg)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_mise_block_reaches_the_agent_terminals_home_with_absolute_paths() {
+        // Hermes runs the agent's terminal with HOME at $HERMES_HOME/home, not
+        // the passwd home prepare_env runs as. A block written only there, or
+        // one that finds mise through $HOME, left a shell the agent opened
+        // before prepare_env with no toolchain after `. ~/.profile`.
+        let scratch = Scratch::new("miseblock");
+        let (home, term, root, xdg) = (
+            scratch.0.join("home"),
+            scratch.0.join("term"),
+            scratch.0.join("repo"),
+            scratch.0.join("xdg"),
+        );
+        std::fs::create_dir_all(&root).unwrap();
+        // Twice: the block is rewritten in place, never appended again.
+        for _ in 0..2 {
+            assert!(run_user_sh(&home, term.to_str().unwrap(), &root, &xdg));
+        }
+        let data = format!("export MISE_DATA_DIR='{}/mise'", xdg.display());
+        let global = format!(
+            "export MISE_GLOBAL_CONFIG_FILE='{}/.config/mise/config.toml'",
+            home.display()
+        );
+        for rc in [
+            home.join(".profile"),
+            home.join(".bashrc"),
+            term.join(".profile"),
+            term.join(".bashrc"),
+        ] {
+            let body = std::fs::read_to_string(&rc).unwrap();
+            assert_eq!(
+                body.matches("# >>> talaria workbench: mise >>>").count(),
+                1,
+                "{}",
+                rc.display()
+            );
+            assert!(body.contains(&data), "{}: {body}", rc.display());
+            assert!(body.contains(&global), "{}: {body}", rc.display());
+            assert!(!body.contains("$HOME"), "{}: {body}", rc.display());
+        }
+        // What the agent's own shell gets from `. ~/.profile`: the shims first.
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(". \"$HOME/.profile\"; printf '%s' \"$PATH\"")
+            .env_clear()
+            .env("HOME", &term)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        let path = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            path.starts_with(&format!("{}/mise/shims:", xdg.display())),
+            "{path}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_mise_block_is_written_once_when_both_homes_are_the_same() {
+        let scratch = Scratch::new("miseblock-same");
+        let (home, root, xdg) = (
+            scratch.0.join("home"),
+            scratch.0.join("repo"),
+            scratch.0.join("xdg"),
+        );
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(run_user_sh(&home, home.to_str().unwrap(), &root, &xdg));
+        assert!(run_user_sh(&home, "", &root, &xdg));
+        let body = std::fs::read_to_string(home.join(".profile")).unwrap();
+        assert_eq!(
+            body.matches("# >>> talaria workbench: mise >>>").count(),
+            1,
+            "{body}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_scan_reads_plain_files_inside_the_checkout_and_nothing_else() {
@@ -1394,5 +1718,215 @@ mod tests {
             "set -a; . /opt/data/workbench/jobs/x/.talaria/env; set +a"
         );
         assert!(job_env_answer(wd, None).is_null());
+    }
+
+    #[test]
+    fn a_talaria_app_is_known_by_its_manifest_at_the_root_and_gets_node_for_the_kit() {
+        // Any repo with a talaria.json at its root: no package.json, no
+        // mention of Talaria anywhere else.
+        let plan = plan_env(&[f("talaria.json", "{\"name\":\"Notes\"}")]);
+        assert!(plan.talaria_app);
+        assert_eq!(plan.tools, vec![("node".to_string(), "lts".to_string())]);
+        // A node the repo pins is kept, not replaced.
+        let pinned = plan_env(&[f("talaria.json", "{}"), f(".nvmrc", "20\n")]);
+        assert!(pinned.talaria_app);
+        assert_eq!(pinned.tools, vec![("node".to_string(), "20".to_string())]);
+        // A repo's own mise config decides its tools, app or not.
+        let own = plan_env(&[
+            f("talaria.json", "{}"),
+            f("mise.toml", "[tools]\nbun = \"1\"\n"),
+        ]);
+        assert!(own.talaria_app);
+        assert!(own.tools.is_empty());
+        // Not an app: nothing about the kit, nothing added.
+        let plain = plan_env(&[f("package.json", "{}")]);
+        assert!(!plain.talaria_app);
+        assert_eq!(plain.tools, vec![("node".to_string(), "lts".to_string())]);
+        // The scan reads the manifest at the root only.
+        assert!(MARKERS.contains(&"talaria.json"));
+        assert!(!MARKERS.contains(&"*/talaria.json"));
+    }
+
+    #[test]
+    fn the_kit_usage_gives_the_whole_loop_and_starts_an_app_from_a_seed_manifest() {
+        // The loop before finish_job, in order: check, build, eval.
+        let check = APP_KIT_USAGE.find("`talaria-app check`").expect("check");
+        let build = APP_KIT_USAGE.find("`talaria-app build`").expect("build");
+        let eval = APP_KIT_USAGE.find("`talaria-app eval`").expect("eval");
+        assert!(check < build && build < eval, "{APP_KIT_USAGE}");
+        // A new app: the seed talaria.json first (prepare_env installs the
+        // kit only for a repo that has one), then prepare_env, then scaffold.
+        let seed = APP_KIT_USAGE.find("seed talaria.json").expect("seed");
+        let prepare = APP_KIT_USAGE[seed..]
+            .find("prepare_env")
+            .expect("prepare_env")
+            + seed;
+        let scaffold = APP_KIT_USAGE
+            .find("`talaria-app scaffold`")
+            .expect("scaffold");
+        assert!(seed < prepare && prepare < scaffold, "{APP_KIT_USAGE}");
+        assert!(!APP_KIT_USAGE.contains("empty repo"), "{APP_KIT_USAGE}");
+    }
+
+    #[test]
+    fn the_eval_session_file_is_what_the_kit_reads() {
+        let v: Value = serde_json::from_str(&eval_session_json("wbeval_00ff", "job-1")).unwrap();
+        assert_eq!(v, json!({ "key": "wbeval_00ff", "jobId": "job-1" }));
+        assert_eq!(EVAL_SESSION_FILE, ".talaria/eval-session.json");
+        assert!(kit_store().starts_with(talaria_workbench_harnesses::HARNESS_XDG_DATA_HOME));
+    }
+
+    /// KIT_SH as prepare_env runs it, against a stub `curl` that answers with
+    /// a kit tarball built here and a stub `bun` that counts installs.
+    #[cfg(unix)]
+    fn run_kit_sh(
+        scratch: &std::path::Path,
+        status: &str,
+        session: &str,
+    ) -> (String, String, bool) {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let exe = |p: &std::path::Path, body: &str| {
+            std::fs::write(p, body).unwrap();
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let fake = scratch.join("fakebin");
+        let bin = scratch.join("bin");
+        let kit_src = scratch.join("kit-src");
+        std::fs::create_dir_all(kit_src.join("bin")).unwrap();
+        std::fs::create_dir_all(&fake).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        exe(
+            &kit_src.join("bin/talaria-app"),
+            "#!/bin/sh\necho \"kit test-1 · $1\"\n",
+        );
+        std::fs::write(kit_src.join("package.json"), "{}").unwrap();
+        let tgz = scratch.join("kit.tgz");
+        assert!(
+            std::process::Command::new("tar")
+                .args([
+                    "-czf",
+                    tgz.to_str().unwrap(),
+                    "-C",
+                    kit_src.to_str().unwrap(),
+                    "."
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+        // curl: -o <body> -D <headers> -w '%{http_code}' -H … <url>
+        exe(
+            &fake.join("curl"),
+            &format!(
+                "#!/bin/sh\nout=; hdr=\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) out=$2; shift ;; -D) hdr=$2; shift ;; -H) echo \"$2\" >> {asked} ;; http*) echo \"$1\" >> {asked} ;; esac; shift; done\nif [ {status} = 200 ]; then cp {tgz} \"$out\"; printf 'HTTP/1.1 200 OK\\r\\nX-Talaria-Kit-Version: test-1\\r\\n\\r\\n' > \"$hdr\"; else echo '{{\"error\":\"unknown agent credential\"}}' > \"$out\"; printf 'HTTP/1.1 {status} X\\r\\n\\r\\n' > \"$hdr\"; fi\nprintf {status}\n",
+                asked = scratch.join("asked").display(),
+                tgz = tgz.display(),
+                status = status,
+            ),
+        );
+        exe(
+            &bin.join("bun"),
+            &format!(
+                "#!/bin/sh\n[ \"$1\" = install ] && echo x >> {} && mkdir -p node_modules\n",
+                scratch.join("installs").display()
+            ),
+        );
+        let wd = scratch.join("job");
+        std::fs::create_dir_all(wd.join(".git")).unwrap();
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(KIT_SH)
+            .arg("sh")
+            .args([
+                scratch.join("kits").to_str().unwrap(),
+                bin.to_str().unwrap(),
+                wd.to_str().unwrap(),
+            ])
+            .env_clear()
+            .env("PATH", format!("{}:/usr/bin:/bin", fake.display()))
+            .env("TALARIA_API_URL", "http://app.test:5307/")
+            .env("TALARIA_AGENT_KEY", "tak_agent_own")
+            .env("API_SERVER_MODEL_NAME", "dev-agent")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(session.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+            out.status.success(),
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_kit_installs_once_per_version_as_the_agent_and_lands_on_the_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new("kit");
+        let session = eval_session_json("wbeval_0123", "job-1");
+        for _ in 0..2 {
+            let (out, err, ok) = run_kit_sh(&scratch.0, "200", &session);
+            assert!(ok, "{out}{err}");
+            assert!(out.contains("=== kit\nkit test-1 · version"), "{out}");
+        }
+        // Asked as the agent, at the app's own origin.
+        let asked = std::fs::read_to_string(scratch.0.join("asked")).unwrap();
+        assert!(asked.contains("X-Api-Key: tak_agent_own"), "{asked}");
+        assert!(asked.contains("X-Agent-Name: dev-agent"), "{asked}");
+        assert!(
+            asked.contains("http://app.test:5307/api/sdk/kit.tgz"),
+            "{asked}"
+        );
+        // Installed once for the version, however many jobs ask.
+        let installs = std::fs::read_to_string(scratch.0.join("installs")).unwrap();
+        assert_eq!(installs.lines().count(), 1);
+        let kits = scratch.0.join("kits");
+        assert!(kits.join("test-1/.installed").is_file());
+        assert!(kits.join("test-1/node_modules").is_dir());
+        assert_eq!(
+            std::fs::read_link(kits.join("current")).unwrap(),
+            kits.join("test-1")
+        );
+        assert_eq!(
+            std::fs::read_link(scratch.0.join("bin/talaria-app")).unwrap(),
+            kits.join("current/bin/talaria-app")
+        );
+        // No download is left behind.
+        assert!(std::fs::read_dir(&kits).unwrap().all(|e| {
+            !e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".fetch-")
+        }));
+        // The job's eval session: the agent's own, 0600, out of git.
+        let file = scratch.0.join("job/.talaria/eval-session.json");
+        assert_eq!(std::fs::read_to_string(&file).unwrap().trim(), session);
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let exclude = std::fs::read_to_string(scratch.0.join("job/.git/info/exclude")).unwrap();
+        assert_eq!(exclude.matches(".talaria/eval-session.json").count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_kit_says_what_the_instance_answered() {
+        let scratch = Scratch::new("kit-refused");
+        let (_, err, ok) = run_kit_sh(&scratch.0, "401", "");
+        assert!(!ok);
+        assert!(err.contains("the instance answered 401"), "{err}");
+        assert!(err.contains("unknown agent credential"), "{err}");
+        assert!(!scratch.0.join("bin/talaria-app").exists());
+        assert!(!scratch.0.join("job/.talaria").exists());
     }
 }

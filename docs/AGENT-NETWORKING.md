@@ -45,7 +45,7 @@ and it answers perfectly — because **the app can always reach itself**.
 > Reachability is not a property of a service. It is a property of a path.
 
 Testing the agent's path requires standing where the agent stands.
-`api/src/fleet/preflight.rs` does that: it runs a throwaway container on the
+`talaria-fleet-preflight` does that: it runs a throwaway container on the
 fleet network and asks *it*. That verdict is what the "Agents cannot reach
 Talaria" alert reports, and it runs when an agent is brought up.
 
@@ -126,8 +126,59 @@ toolkit, and the internet", and each failure names its own fix.
 
 Docker pins a network's DNS upstream when the network is created, and a host
 resolver mix that refuses docker subnets leaves every container green and
-offline — the built-in browser shipped dead exactly this way once: it fetches
-its engine from npm on first use, so with no external DNS it never installed,
-silently. The chassis pins external resolvers per service (`AGENT_DNS_1` /
+offline — the built-in browser shipped dead exactly this way once: its engine
+comes from npm (today it is installed before an agent with the browser and the
+terminal on starts, in a one-shot run of the agent's own service, so with these
+same resolvers), and with no external DNS it never installed, silently. The
+chassis pins external resolvers per service (`AGENT_DNS_1` /
 `AGENT_DNS_2` in `fleet/.env`, defaults 1.1.1.1 / 1.0.0.1), and the
 preflight's DNS probe turns a dead resolver into an alert.
+
+## What an agent's browser can reach
+
+An agent's container reaches what the host's docker bridge reaches: the Talaria app and
+toolkit at `host.docker.internal`, anything else the host serves on its bridge addresses,
+the other containers on the fleet network, and the LAN. Hermes refuses private and internal
+addresses to its web tools (`web_extract` resolves every host and refuses a private one).
+It does not refuse them to its own browser when that browser runs locally: Hermes v0.22.4
+skips the check whenever the terminal backend is local, on the grounds that the terminal
+reaches the same networks anyway. It judges that by the terminal backend, not by whether
+the agent has a terminal at all.
+
+So Talaria gives the browser only to an agent whose `terminal` toolset is on, and for that
+agent the premise holds: its shell already reaches everything its browser can. An agent
+with `browser` ticked and the terminal closed, which is a new agent's default, gets no
+browser engine and no browser tool, and the toolset grid says why. Its rendered config is
+the one it had before Talaria installed engines at all, so an upgrade changes nothing for
+it. Opening its terminal gives it Hermes' `browser_exec` and the shell together; closing it
+again takes both away on the next roll.
+
+A def's own `browser:` block is its owner's call, and the render passes it through as
+written. Hermes reads any `browser.backend` other than `browser-use` as its built-in tools.
+On this machine's Chromium they need the same engine, and Talaria installs none for a
+terminal-less agent, but an engine that an earlier start with the terminal open left on the
+agent's volume stays there and would run them; Camofox (`browser.cloud_provider: camofox`)
+needs no engine at all. Hermes calls both of
+those local and skips the check for them. So with the terminal closed, the render closes the
+`browser` toolset for an agent whose config picks one of them (`fleet_browser_local_close`),
+and the grid says so on that agent. A CDP endpoint (`browser.cdp_url`, or a `BROWSER_CDP_URL`
+secret on the agent, which Hermes reads first) keeps Hermes' check and is left alone. So does
+this machine's browser for a def that runs its terminal elsewhere: Hermes bridges
+`terminal.backend` into `TERMINAL_ENV`, and any backend but `local` (docker, ssh, singularity,
+modal, daytona, vercel_sandbox) keeps the check for it. Camofox stays local whatever the
+terminal. A hosted provider (`browser.cloud_provider`) keeps the check only with
+`browser.auto_local_for_private_urls` off: while it is on, which is Hermes' default, Hermes
+sends every private address to a local Chromium beside the provider and skips the check for
+it, so the render closes the toolset for that agent too. Any of these is closed the same way
+when the def turns the check off (`browser.allow_private_urls` or
+`security.allow_private_urls`). The render reads the terminal where Hermes does: the
+toolset grid's list, and a `platform_toolsets.api_server` list a def authored, which replaces
+Hermes' default bundle (the grid does not show that one). A hosted provider's credentials are
+not a way around this: `BROWSER_USE_API_KEY` and `BROWSERBASE_API_KEY` are refused as an
+agent's secrets, so Hermes never finds them in its env to pick one by. What the render cannot
+see at all (a live `/browser connect`) it reads as absent, which errs toward closing. The
+boundaries for what any agent may reach are:
+
+- the `browser` and `terminal` toolsets off, for an agent that must not reach your network;
+- host services bound to loopback only (the chassis note on `host.docker.internal`); and
+- the host's own firewall, for what the fleet subnet may reach on the LAN.

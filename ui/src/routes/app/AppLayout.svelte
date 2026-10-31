@@ -18,9 +18,10 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import ThemeToggle from '@/components/ThemeToggle.svelte'
-  import { useDeniedViews, useLogout, useSession } from '@/lib/session'
+  import { useAppGrants, useDeniedViews, useLogout, useSession } from '@/lib/session'
   import { upgradeDitherSurfaces } from '@/lib/dither-surface'
   import { ADMIN_VIEWS } from '@/lib/nav'
+  import { isViewDenied } from '@/lib/app-grants'
   import { useUserEventInvalidation } from '@/lib/user-events.svelte'
   import { usePresenceHeartbeat } from '@/lib/presence.svelte'
   import { assistantSurface, shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
@@ -43,6 +44,7 @@
 
   const session = useSession()
   const denied = useDeniedViews()
+  const appGrants = useAppGrants()
   const logout = useLogout()
   // THE FIREHOSE'S ONE MOUNT. Everything live that is not a page's own stream
   // rides this: the bell, the rails' badges, a run finishing off-page. One
@@ -122,15 +124,27 @@
   })
 
   // Route gate: a denied or role-gated view isn't just hidden from the nav —
-  // reaching it by URL bounces to Home. (Match prefixes, e.g. /boards/x.)
-  $effect(() => {
+  // reaching it by URL bounces to Home. Core views match by prefix (/boards
+  // denies /boards/x); an app's work and manage views are separate grants,
+  // each open only when the session lists it, so a manage-only grant opens
+  // /x/<slug>/manage (isViewDenied, app-grants.ts).
+  //
+  // THE VIEW NEVER MOUNTS WHILE DENIED. The bounce is a navigation, and it
+  // lands a tick after the router has already handed this layout the denied
+  // view: as an effect alone, a client-side move into a surface the person
+  // does not hold (a work member following an app's link into its manage
+  // surface) rendered that surface for a moment before Home replaced it. The
+  // decision is a derived value, so the outlet below withholds the view in the
+  // same flush that the path changes, and the effect only does the moving.
+  const routeDenied = $derived.by(() => {
     const u = session.data
-    if (!u) return
-    const blocked = u.role === 'admin' ? denied.current : [...denied.current, ...ADMIN_VIEWS]
-    const pathname = route.pathname
-    if (blocked.some((v) => pathname === v || pathname.startsWith(v + '/'))) {
-      void navigate('/')
-    }
+    if (!u) return false
+    const isAdmin = u.role === 'admin'
+    const blocked = isAdmin ? denied.current : [...denied.current, ...ADMIN_VIEWS]
+    return isViewDenied(route.pathname, { isAdmin, denied: blocked, appGrants: appGrants.current })
+  })
+  $effect(() => {
+    if (routeDenied) void navigate('/')
   })
 
   // THE AUTH GATE PAINTS NOTHING IT MIGHT TAKE BACK. While the session read is
@@ -291,7 +305,9 @@
              the note in styles.css. Content entrance is animated by Materialize
              and listStagger instead, which fire when the data actually lands. -->
         <div class="min-h-0 min-w-0 flex-1 overflow-hidden">
-          {@render children()}
+          {#if !routeDenied}
+            {@render children()}
+          {/if}
         </div>
       </InboxFocusShell>
     </div>

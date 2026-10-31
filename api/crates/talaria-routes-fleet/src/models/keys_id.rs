@@ -1,6 +1,7 @@
 // /api/keys/{id}. DELETE revokes one of MY keys (the hash stays for audit);
-// PUT sets my key's self-imposed policy (#265). A non-uuid {id} logs and
-// answers the house envelope 500 — not a thrown platform error.
+// PUT sets my key's self-imposed policy (#265). A non-uuid {id} answers the
+// family's 400 ("not a uuid"); a well-formed id that names none of my keys
+// is a 404 on both, with no audit row.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -14,8 +15,8 @@ use talaria_llm_keys::{KeyPolicy, revoke_key, set_key_policy};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 
-/// The uuid parse is just a gate — the original string flows on to the
-/// query and the audit row verbatim. Some(gate) = the 500 to return.
+/// The uuid parse is just a gate (the family's 400); the id then flows on
+/// to the query and the audit row in its canonical spelling.
 fn uuid_or_500(id: &str, action: &str) -> Option<Response> {
     talaria_params::uuid_gate("keys", action, id)
 }
@@ -29,8 +30,14 @@ pub async fn delete(
     if let Some(gate) = uuid_or_500(&id, "DELETE") {
         return Ok(gate);
     }
-    if let Err(e) = revoke_key(&state.pg, &user.id, &id).await {
-        return Ok(internal("[keys] revoke failed", e));
+    // The audit row names the key's own id, whatever spelling the path used.
+    let id = talaria_params::uuid_canonical(&id).unwrap_or(id);
+    match revoke_key(&state.pg, &user.id, &id).await {
+        Ok(true) => {}
+        // Nobody's key, or someone else's: the same miss, and nothing
+        // revoked to audit.
+        Ok(false) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[keys] revoke failed", e)),
     }
     log_audit(
         &state.pg,
@@ -75,6 +82,7 @@ pub async fn put(
     if let Some(gate) = uuid_or_500(&id, "PUT") {
         return Ok(gate);
     }
+    let id = talaria_params::uuid_canonical(&id).unwrap_or(id);
     // The echo: absent and null both answer null, but a literal 0 STAYS 0
     // in the response and the audit row even though the write normalizes it
     // to unlimited. js_num so 1000 echoes as "1000".

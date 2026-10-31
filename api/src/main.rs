@@ -92,12 +92,25 @@ async fn serve() {
 
     // Drop apps whose last compile/load failed. Enablement already probes;
     // this closes the window after a crash between boots. GET /admin/apps
-    // is a read — it must not mutate the enabled set.
+    // is a read — it must not mutate the enabled set. Then reconcile the
+    // app MCP rows UNCONDITIONALLY: the app host turns a broken app off by
+    // writing the enabled set itself, and a host that did so while this
+    // process was down left the app's server serving on the agents carrying
+    // it. The sync turns such a row off (keeping its grants), and copies
+    // every serving row's catalog fresh from its build.
     {
         let state = state.clone();
         tokio::spawn(async move {
             if let Ok(sb) = state.secretbox().await {
                 talaria_api::apps::disable_broken_apps(&state.pg, &sb).await;
+                // An app that is off holds no gateway key, whoever turned it
+                // off and whenever.
+                if let Err(e) = talaria_api::apps::reconcile_app_llm_keys(&state.pg).await {
+                    tracing::warn!("[apps] boot gateway-key reconcile failed: {e}");
+                }
+                if let Err(e) = talaria_api::apps::sync_app_mcp_servers(&state.pg, &sb).await {
+                    tracing::warn!("[apps] boot MCP registry sync failed: {e}");
+                }
             }
         });
     }

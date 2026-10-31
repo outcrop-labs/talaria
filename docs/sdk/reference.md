@@ -1,15 +1,19 @@
 # SDK reference
 
-Every export from both entry points, one row each. **This file is enforced**:
-`bun run check` parses the exports out of `ui/src/sdk/index.ts` and
-`ui/src/sdk/server.ts` and fails if a symbol here doesn't exist, or an export
-is missing from here. Guides live beside this file; the row is the claim.
+Every export from every entry point, one row each. **This file is enforced**:
+`bun run check` parses the exports out of `ui/src/sdk/index.ts`,
+`ui/src/sdk/server.ts` and `ui/src/sdk/testing.ts`, entry point by entry point, and fails if a row names a
+symbol its entry point doesn't export, if an export has no row under its own
+entry point's headings, or if a row's kind (fn, const, class, comp, type) is
+not what the source declares. Guides live beside this file; the row is the
+claim.
 
 Import them as:
 
 ```ts
 import { Button, useAppQuery } from '@talaria/sdk'          // client
 import { defineAppServer, z } from '@talaria/sdk/server'    // server
+import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp.ts and harnesses
 ```
 
 ## `@talaria/sdk` — app definition
@@ -18,6 +22,19 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | :--- | :--- | :--- |
 | `defineApp` | fn | Declare the app's surfaces; default-export from app.ts |
 | `AppSurfaces` | type | The surfaces map (work / manage / settings), all optional |
+| `useApp` | fn | The app a surface belongs to: `{ slug, surface, manifest, rest, query }`, as installed |
+| `AppContext` | type | What `useApp` returns |
+| `AppSurfaceName` | type | Which surface is rendering: work, manage or settings |
+| `AppManifest` | type | The manifest as the host serves it: slug, name, icon, version, surfaces |
+
+## `@talaria/sdk` — routes inside the app
+
+| symbol | kind | what it is |
+| :--- | :--- | :--- |
+| `useAppRoute` / `AppRoute` | fn / type | Where the surface is, live: the path below it (rest), its segments, the query, and `match(pattern)` for a route's params |
+| `RouteParams` | type | The params a pattern captures, by name: `RouteParams<'items/:id'>` is `{ id: string }` |
+| `appHref` / `AppHrefOptions` | fn / type | The href for a route of this app, relative to the surface; `{ surface }` links into the other one |
+| `appNavigate` / `AppNavigateOptions` | fn / type | Go to a route of this app, relative to the surface; `{ replace }` skips the history entry |
 
 ## `@talaria/sdk` — UI kit: actions
 
@@ -45,8 +62,10 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | `Radio` | comp | Radio button |
 | `Toggle` | comp | On/off switch |
 | `InlineCreate` | comp | Click-to-add row (the + Add thing pattern) |
-| `submitOnEnter` | fn | Enter submits, Escape blurs — the inline-edit contract |
-| `inlineEditKeys` | fn | Key handler for inline edit fields |
+| `submitOnEnter` | fn | Key handler for a field with a button: Enter presses it (Enter only) |
+| `inlineEditKeys` | fn | Key handler for inline edit: Enter commits via blur, Escape reverts in place |
+| `AddRow` | comp | The always-open "type a name, press Add" row under a registry |
+| `RenameField` | comp | A name edited in place; commits on Enter or blur, only when changed |
 | `controlSizes` / `ControlSize` | const / type | The size scale shared by controls |
 | `RichEditor` / `RichEditorHandle` | comp / type | WYSIWYG editor (markdown under the hood) |
 
@@ -63,6 +82,9 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | `Disclosure` | comp | Expandable section |
 | `StatCard` | comp | Metric tile; may wrap a link |
 | `Steps` | comp | Numbered step indicator |
+| `LibraryPane` / `LibraryGroup` | comp / type | A library picker on the left, the selected record on the right |
+| `RecordTitle` | comp | A record's emoji + title heading, read or editable |
+| `SortHeader` | comp | A sortable column head; the sort cycle stays the caller's |
 
 ## `@talaria/sdk` — UI kit: display
 
@@ -88,6 +110,10 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | `InlineWaitingSite` | type | Declare an app's own waiting site inline |
 | `WaitingRole` / `WaitingSlot` | type | Waiting vocabulary for those sites |
 | `confirm` / `alert` / `prompt` | fn | The platform's dialogs |
+| `QueryState` | comp | A query's three answers — your skeleton, its error with Retry, or the data |
+| `QueryError` | comp | The error branch on its own; spread `listQuery(...).notice` into it |
+| `listQuery` | fn | A list read with its failure attached: rows, notice, failed, stale, pending |
+| `ListQuery` / `QueryLike` / `QueryErrorProps` | types | What `listQuery` returns, the query slice it reads, `QueryError`'s props |
 
 ## `@talaria/sdk` — UI kit: menus
 
@@ -116,18 +142,35 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | `createQuery` / `createMutation` | fn | svelte-query primitives (options are functions in v6) |
 | `useQueryClient` | fn | The query client from context |
 | `keepPreviousData` | fn | Page-flip placeholder |
-| `api` | fn | JSON fetch against any platform API; throws the server's error |
-| `appApi` | fn | get/post/put/patch/del bound to this app's routes |
-| `useAppQuery` | fn | svelte-query read of an app-server GET; path may be a getter |
-| `useAppInvalidate` | fn | Invalidate this app's queries after a write |
+| `useUserEvents` / `UserEvent` | fn / type | Subscribe to the shared live stream (ids only) for the component's lifetime |
+| `api` / `ApiInit` | fn / type | JSON fetch against any platform API; rejects with an `HttpError` |
+| `HttpError` | class | A non-2xx: its status, with the server's sentence as the message |
+| `errorMessage` | fn | One human line for any thrown value |
+| `getStream` / `postStream` | fn | A streamed reply's open Response, same error contract as `api` |
+| `openStream` | fn | Subscribe to a server-sent-events route; returns the unsubscribe |
+| `appApi` / `AppApi` / `AppApiInit` | fn / types | get/post/put/patch/del/url bound to an app's routes, for a slug you already hold; each verb takes `{ timeout, signal }` last |
+| `useAppApi` | fn | `appApi` for the surrounding surface — no slug, read once at init |
+| `useAppQuery` / `AppQueryOptions` | fn / type | svelte-query read of an app-server GET; path and options may be getters |
+| `appQueryKey` | fn | The key an app-server path reads under: app, segments, then search params |
+| `useAppInvalidate` | fn | Invalidate an app's reads after a write: all of them, or every read under a path |
 
 ## `@talaria/sdk/server` — app server
 
 | symbol | kind | what it is |
 | :--- | :--- | :--- |
-| `defineAppServer` | fn | Declare the fetch handler; default-export from server.ts |
-| `AppServer` | type | What `defineAppServer` takes |
-| `AppRequestContext` | type | ctx: user, app, path, url, store |
+| `defineAppServer` | fn | Declare the fetch handler and the trigger handlers; default-export from server.ts |
+| `AppServer` | type | What `defineAppServer` takes: `fetch?`, `triggers?` |
+| `AppRequestContext` | type | ctx: user, access, perms, can, app, path, segments, url, origin, store, api, secret, signal, agents, harness |
+| `AppTriggerHandler` | type | One trigger's handler: takes ctx, may return the run's line for Manage → Apps (a string) |
+| `AppTriggerContext` | type | A trigger's ctx, as the app with no user: app, trigger, runId, cause, store, secret, origin, agents (refuses), harness (no agent pin), signal |
+| `AppTriggerCause` | type | Why the run started: `{ kind: 'cron', dueAt }` or `{ kind: 'event', event }` |
+| `AppTriggerEvent` | type | A platform event, ids only: `ticket.created` or `ticket.moved` |
+| `AppAgents` | type | `ctx.agents`: `turn(options)` drives one agent turn the caller may drive |
+| `AgentTurnOptions` | type | agent, message, system, session, effort, watch, signal |
+| `AgentTurnReply` | type | A finished turn: agent, text, tools, session |
+| `AgentTurnEvent` | type | What the turn's watch callback receives: the agent's words, or a tool it started or finished |
+| `HttpError` | class | What ctx.api throws on a non-2xx answer: status + the server's sentence |
+| `PlatformApiInit` | type | ctx.api's options: method, body, headers, signal, timeoutMs |
 | `SessionUser` | type | The authenticated user the handler runs as |
 | `json` | fn | JSON response helper (`json(body, { status })`) |
 | `parseBody` | fn | Zod-validate a request body; returns data or the standard 400 |
@@ -141,19 +184,33 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | :--- | :--- | :--- |
 | `defineAppMcp` | fn | Declare agent-callable tools; default-export from mcp.ts |
 | `AppMcp` | type | The tools map `defineAppMcp` takes |
-| `AppMcpTool` | type | One tool: name, description, inputSchema, handler |
-| `AppMcpContext` | type | Tool handler ctx: app, agent, store |
+| `AppMcpTool` | type | One tool: name, description, inputSchema, outputSchema, handler |
+| `AppMcpContext` | type | Tool handler ctx: app, agent, caller, actingUserId, store, signal, agents (the calling agent only), harness |
+| `AppMcpCaller` | type | Who calls: the agent's name and id, and whether that is proven (its own key, not the org-wide one) |
+| `toolResult` | fn | A whole MCP result for a handler to return: content blocks, structuredContent, isError |
+| `AppToolResult` / `AppToolContent` | types | What `toolResult` makes, and one content block (text, image, audio, resource_link, resource) |
+| `isUnresolvedHandle` | fn | Whether a value still carries a `«secret:…»` handle the gateway could not resolve |
+
+## `@talaria/sdk/testing` — unit tests of MCP tools and harnesses
+
+| symbol | kind | what it is |
+| :--- | :--- | :--- |
+| `callAppTool` | fn | Call one tool of an mcp.ts as the gateway would, with no host; answers what the agent receives |
+| `AppToolCallOptions` / `AppToolCallResult` | types | `callAppTool`'s context (caller, actingUserId, store, agents, harness, timeoutSecs, signal, tools) and its answer |
+| `memoryStore` | fn | An in-memory document store with the installed store's interface and answers |
+| `runHarnessOffline` | fn | Run a harness through the real runner against scripted replies — no gateway, no database, nothing recorded |
+| `OfflineRunOptions` / `OfflineRun` / `OfflineReply` | types | Its options (replies or a reply function, model, capabilities on record), its result (`HarnessResult` plus every request), one scripted turn |
 
 ## `@talaria/sdk/server` — activity harnesses
 
 | symbol | kind | what it is |
 | :--- | :--- | :--- |
-| `defineHarness` | fn | Declare a model call Talaria runs; default-export from harnesses/*.ts |
+| `defineHarness` | fn | Declare a model call Talaria runs; default-export one per `harnesses/*.ts` to register it for fitness, run it from server.ts or mcp.ts with `ctx.harness.run` |
 | `HarnessDefinition` | type | The full activity contract (render, output, model, evals…) |
 | `RenderContext` | type | What the render step receives |
 | `Message` | type | One chat message |
-| `Grounding` | type | Retrieval grounding for a render |
-| `ModelSpec` | type | The model chain spec |
+| `Grounding` | type | The turn's real tool record, which the guard checks citations and outage claims against |
+| `ModelSpec` | type | The model chain spec: pin, role, chain, and slot: the harness's own model setting, which the host sets |
 | `Capability` | type | A capability a harness requires of a model |
 | `RoleFloor` | type | The minimum-model declaration |
 | `Verify` | type | Output verifier signature |
@@ -166,15 +223,22 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | `ToolDefinition` | type | A tool offered on one turn (OpenAI wire shape) |
 | `ToolCall` | type | The model's use of one |
 | `ToolPolicy` | type | Whether a turn may use tools at all |
+| `HarnessLoop` | type | A tool loop the runner holds: tools, maxTurns |
+| `HarnessTool` | type | One loop tool: a ToolDefinition plus exactly one of handler, mcp or org, and an optional simulate |
+| `HarnessToolContext` | type | What a loop tool's handler receives: app, harness, actingUserId, turn, signal |
+| `HarnessToolWorld` | type | What a loop tool's simulate receives: the run's input |
 
 ## `@talaria/sdk/server` — the runner (bridge pattern)
 
 | symbol | kind | what it is |
 | :--- | :--- | :--- |
-| `runHarness` | fn | The one runner — resolve, floor, render, call, parse, repair, guard, meter |
+| `AppHarnessRunner` | type | `ctx.harness`: run(def, input, opts) and stream(def, input, { onDelta }), bound by the host to the caller |
+| `HarnessRunOptions` / `HarnessStreamOptions` | types | What a bound run takes: model (checked), tier, effort, ledger (refId, taskId), signal, and onDelta for a stream |
+| `runHarness` | fn | The free runner, for apps written before `ctx.harness`: no checks, no deps, a warning when it pins an agent |
 | `resolveHarnessModel` | fn | Free probe: which chain would carry this harness, or null |
-| `RunContext` | type | Caller + signal for a direct run |
+| `RunContext` | type | The free runner's context: caller, userId, model, step, tier, effort, ledger, signal, and no deps |
 | `RunLedger` | type | Where the run's cost lands |
+| `LoopCall` | type | One dispatched loop call: tool, args, result, error |
 | `HarnessResult` | type | What `runHarness` resolves to |
 | `ModelChainStep` | type | Which link of the chain answered |
 | `ResolvedHarnessModel` | type | The chain's answer: model + step |

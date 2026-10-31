@@ -19,19 +19,40 @@
 // budget subject, the ledger row, the guard finding. An AGENT'S key
 // (`agent:<slug>`, minted per enabled agent by fleet-brain and stamped into
 // that agent's container alone) is the agent: its subject is the agent's
-// model id — the same name chat-persist ledgers the persona turn under, so
-// one `agent_model` sums both what the chat flow wrote and anything this
-// relay writes — and it may ask only for the model ids its rendered config
-// routes to (gateway_agent_models, written by the render); anything else is
-// a 403 before any upstream is touched.
+// model id — the one `agent_model` every row of its spend lands under, and
+// the name its budget binds — and it may ask only for the model ids its
+// rendered config routes to (gateway_agent_models, written by the render);
+// anything else is a 403 before any upstream is touched.
 //
-// WHETHER THE RELAY METERS AN AGENT'S CALL. A turn Talaria drove — chat,
-// channel, harness — is ledgered as one row by the flow that drove it, so
-// the inner-loop calls behind it are skipped here. A turn Hermes started by
-// itself (a cron inside the container) looks the same at this relay and no
-// flow writes its row, so the relay asks the turn register (gateway
-// usage.rs): a Talaria turn open for this agent → skip, as before; none →
-// meter here, under the agent, source `unattended`.
+// EVERY AGENT CALL IS METERED HERE, one row per upstream call — this is the
+// only writer of an agent's spend. Whose turn the call belongs to rides on
+// it: Hermes stamps `x-talaria-session` (the rendered provider entry's
+// `session_affinity_header`) with the conversation's key, and the row takes
+// the flow the chat transport recorded for that key — chat, channel, ticket,
+// research, with its conversation or run and ticket — or stays `unattended`
+// (a cron's `cron_<job id>`, no header, a key nobody recorded). gateway
+// usage.rs, "Attribution", has the whole mechanism.
+//
+// AN APP'S KEY (`app:<slug>`, minted per enabled app by talaria-apps and held
+// by the app host alone — app_keys.rs) is the app: its budget subject is
+// `app:<slug>`, every row it books lands under the run's caller stamp inside
+// that namespace with source `app`, and the run's ref and ticket ride along
+// when they are uuids. It is the app's only while the lifecycle records its
+// id; a key merely NAMED like one is refused. Two things differ from any
+// other key. A model the gateway does not serve but that is a live fleet
+// agent (or a tier of one) is driven for one turn through the persona door
+// (fleet_chat.rs), with the turn's attribution recorded as `app` spend, so
+// the agent's own calls — on its own key, through this relay — are the one
+// meter of that turn. And the relay runs no guard pass of its own: the app
+// host's harness runner guards every reply with the harness's narrowed rule
+// set, and a second pass here would file every finding twice. The runner
+// runs the structural rules; the semantic ones need the decision model,
+// which lives here, so the runner hands the run's final reply and tool
+// record to `/api/internal/apps/{slug}/guard` once per run — never per call,
+// because a call here cannot tell a run's answer from a repair or a loop
+// turn, and cannot see a tool record the harness grounded itself. The answer
+// says which side served it and which contract parameters never reached the
+// model (`x-talaria-transport`, `x-talaria-contract-drops`).
 //
 // THE GUARD'S TWO POSTURES. Observe (or an agent-loop key): the guard runs
 // detached after the bytes are gone — findings record, response untouched.
@@ -53,11 +74,18 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use talaria_api_facades::decide::guard as decide_guard;
-use talaria_api_facades::decide::tools as decide_tools;
+use talaria_api_facades::fleet::list_agents;
 use talaria_api_facades::gateway::agent_keys::{
     agent_key_scope, agent_slug_of_key, model_in_scope,
 };
+use talaria_api_facades::gateway::app_keys::{
+    APP_SOURCE, CALLER_HEADER, CANNED_HEADER, CONTRACT_DROPS_HEADER, HOLD_HEADER, REF_HEADER,
+    TASK_HEADER, TRANSPORT_HEADER, app_caller_stamp, app_key_is_current, app_slug_of_key,
+    contract_drops_value, hold_ms_of, persona_base,
+};
+use talaria_api_facades::gateway::budget::BudgetDenial;
 use talaria_api_facades::gateway::budget::{BudgetLimits, budget_message, check_budget};
+use talaria_api_facades::gateway::fleet_chat::proxy_chat;
 use talaria_api_facades::gateway::guard::{
     Finding, Grounding, GuardMode, extract_tool_record, grounding_text_of, guard_completion,
     guard_config, needs_redaction, redact_secrets,
@@ -66,10 +94,11 @@ use talaria_api_facades::gateway::registry::resolve_route;
 use talaria_api_facades::gateway::settings::get_setting_hot;
 use talaria_api_facades::gateway::upstream::{Reply, build_upstream, fetch_upstream, js_truthy};
 use talaria_api_facades::gateway::usage::{
-    RELAY_SOURCE, ReportedSpend, TokenCounts, UNATTENDED_SOURCE, estimate_tokens, normalize_usage,
-    record_relay_usage, reported_spend, talaria_turn_open,
+    RELAY_SOURCE, ReportedSpend, SESSION_HEADER, StatedFlow, TokenCounts, TurnAttribution,
+    UNATTENDED_SOURCE, affinity_key, estimate_tokens, normalize_usage, record_relay_usage,
+    reported_spend,
 };
-use talaria_auth::{authenticate_key, bearer_secret};
+use talaria_auth::{KeyIdentity, authenticate_key, bearer_secret};
 use talaria_error::{
     BudgetFacts, internal, js_num, log_upstream_error, openai_budget_error, openai_error,
     openai_error_null_param, sanitized_upstream_body,
@@ -90,16 +119,160 @@ const PERSONA_KEY: &str = "fleet-gateway";
 const WORKBENCH_KEY: &str = "workbench-gateway";
 
 /// The subject a key's calls are budgeted, ledgered and guarded under: an
-/// agent's key answers with the agent's model id (the persona ledger's
-/// namespace); any other key with `api:<name>`. The agent's slug stands in
+/// agent's key answers with the agent's model id (the agent's ledger
+/// namespace); an app's with its own name, `app:<slug>` (its rows land under
+/// the run's caller stamp inside it — `AppCall`); any other key with
+/// `api:<name>`. The agent's slug stands in
 /// for a key the last render did not scope — a disabled agent's, or one
 /// rendered before scopes existed — so its spend still has a name.
+///
+/// That fallback name is not the one the chat transport records a turn's
+/// flow under (the agent's model id), so an unscoped key's rows never join
+/// an attribution: they are booked, under the slug, and stay `unattended`.
+/// The next render scopes every enabled agent's key, which closes it.
 fn caller_of(key_name: &str, scope_model: Option<&str>) -> String {
     match (agent_slug_of_key(key_name), scope_model) {
         (Some(_), Some(model)) => model.to_string(),
         (Some(slug), None) => slug.to_string(),
+        (None, _) if app_slug_of_key(key_name).is_some() => key_name.to_string(),
         (None, _) => format!("api:{key_name}"),
     }
+}
+
+/// What an app's call says about its run, read off the headers the app host
+/// sets — honored for an app's key alone (any other key's are ignored).
+struct AppCall {
+    /// The name this call's rows land under: the run's caller stamp, kept
+    /// inside the app's namespace.
+    stamp: String,
+    /// The run's ref and ticket, booked when they are uuids.
+    stated: StatedFlow,
+    /// How long an agent turn may hold for a restarting agent.
+    hold_ms: Option<u64>,
+}
+
+impl AppCall {
+    fn read(slug: &str, headers: &axum::http::HeaderMap) -> Self {
+        let h = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+        let id = |name: &str| {
+            h(name)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(String::from)
+        };
+        AppCall {
+            stamp: app_caller_stamp(slug, h(CALLER_HEADER)),
+            stated: StatedFlow {
+                ref_id: id(REF_HEADER),
+                task_id: id(TASK_HEADER),
+            },
+            hold_ms: hold_ms_of(h(HOLD_HEADER)),
+        }
+    }
+}
+
+/// The 429 a budget denial answers with — the same body whichever door the
+/// call was headed for, with the window's real resume time as
+/// `error.resets_at` when it is known.
+///
+/// AN AGENT'S KEY GETS NO `Retry-After`. Hermes honours the header on a 429
+/// (up to 600s a wait, `api_max_retries` times): a 300 held the turn ten
+/// minutes and then told the person the limit "resets in ~5 min", about a
+/// 24h window. Without it Hermes backs off a few seconds, ends the turn,
+/// and names the reset from `resets_at`. An operator's or an app's key
+/// keeps the header its clients may honour (`budget.rs` `retry_after`).
+fn budget_refusal(denial: &BudgetDenial, agent_key: bool) -> Response {
+    let mut out = openai_budget_error(
+        StatusCode::TOO_MANY_REQUESTS,
+        &budget_message(denial),
+        "budget_exceeded",
+        "budget_exceeded",
+        BudgetFacts {
+            scope: denial.scope.to_string(),
+            subject: denial.subject.clone(),
+            unit: denial.unit.to_string(),
+            limit: js_num(denial.limit),
+            used: js_num(denial.used),
+            window_hours: denial.window_hours,
+            via: denial.via.to_string(),
+        },
+        denial.resets_at,
+    );
+    if agent_key {
+        return out;
+    }
+    out.headers_mut().insert(
+        header::RETRY_AFTER,
+        header::HeaderValue::from_str(&denial.retry_after_seconds.max(1).to_string())
+            .unwrap_or(header::HeaderValue::from_static("300")),
+    );
+    out
+}
+
+/// An app's answer from the gateway side: which side served it, and the
+/// contract parameters that never reached the model, so the host's runner
+/// can stop trusting a JSON mode the endpoint dropped and refuse a tool turn
+/// whose tools were stripped.
+fn app_gateway_answer(mut out: Response, drops: Option<&str>) -> Response {
+    out.headers_mut().insert(
+        TRANSPORT_HEADER,
+        header::HeaderValue::from_static("gateway"),
+    );
+    if let Some(v) = drops.and_then(|d| header::HeaderValue::from_str(d).ok()) {
+        out.headers_mut().insert(CONTRACT_DROPS_HEADER, v);
+    }
+    out
+}
+
+/// ONE TURN OF A LIVE FLEET AGENT, DRIVEN BY AN APP — the persona door
+/// (`proxy_chat`) with the turn's attribution recorded as the app's: every
+/// call the agent makes for the turn reaches this relay on the agent's own
+/// key and is booked there, once, as `app` spend with the run's ref and
+/// ticket. Nothing is booked here — the turn's spend is the agent's calls.
+/// The app's budget still gates the turn: an app over its ceiling drives no
+/// agent either. The agent's stream relays untouched; a canned sentence
+/// (the agent never came back, or the fleet is unrendered) says so in
+/// `x-talaria-canned`, so the host fails the run instead of reading the
+/// sentence as the agent's answer.
+async fn app_agent_turn(
+    state: &AppState,
+    id: &KeyIdentity,
+    app: &AppCall,
+    agent: String,
+    payload: Value,
+) -> Response {
+    let caller = caller_of(&id.key_name, None);
+    if let Some(denial) = check_budget(
+        &state.pg,
+        &caller,
+        BudgetLimits {
+            tokens: id.caps.tokens,
+            usd: id.caps.usd,
+        },
+    )
+    .await
+    {
+        return budget_refusal(&denial, false);
+    }
+    let attribution = TurnAttribution {
+        pg: state.pg.clone(),
+        agent_model: agent,
+        source: APP_SOURCE.to_string(),
+        ref_id: app.stated.ref_id.clone(),
+        task_id: app.stated.task_id.clone(),
+        attended: false,
+    };
+    let stream = proxy_chat(&payload, app.hold_ms, Some(attribution)).await;
+    let mut out = Response::builder()
+        .status(StatusCode::from_u16(stream.status).unwrap_or(StatusCode::BAD_GATEWAY))
+        .header(header::CONTENT_TYPE, stream.content_type.as_str())
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(TRANSPORT_HEADER, "fleet");
+    if let Some(canned) = stream.canned {
+        out = out.header(CANNED_HEADER, canned);
+    }
+    out.body(Body::from_stream(stream.body))
+        .unwrap_or_else(|_| fixed_json(502, &sanitized_upstream_body(502, "")))
 }
 
 pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response {
@@ -116,6 +289,29 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         Ok(None) => return openai_error(StatusCode::UNAUTHORIZED, "invalid API key"),
         Err(e) => return internal("[llm/v1/chat] key lookup failed", e),
     };
+    // AN APP'S KEY IS THE APP'S ONLY WHILE THE LIFECYCLE RECORDS IT
+    // (app_keys.rs): a key that is merely named `app:<slug>` — minted by
+    // hand, or one a rotation replaced — answers like an unknown key.
+    let app_call = match app_slug_of_key(&id.key_name) {
+        Some(slug) if app_key_is_current(&state.pg, slug, &id.key_id).await => {
+            Some(AppCall::read(slug, req.headers()))
+        }
+        Some(slug) => {
+            tracing::warn!(
+                "[llm/v1/chat] {} is not the key app \"{slug}\" holds — refused",
+                id.key_name
+            );
+            return openai_error(StatusCode::UNAUTHORIZED, "invalid API key");
+        }
+        None => None,
+    };
+    // The conversation key Hermes stamped on the call, read before the body
+    // is consumed; only an agent's key gets to use it (below).
+    let session_header = affinity_key(
+        req.headers()
+            .get(SESSION_HEADER)
+            .and_then(|v| v.to_str().ok()),
+    );
 
     // Detached last_used_at — same fire-and-forget write as the models route.
     {
@@ -216,6 +412,14 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
     let route = match resolve_route(&state.pg, &model).await {
         Ok(Some(r)) => r,
         Ok(None) => {
+            // An app may drive a live fleet agent for one turn — the
+            // gateway wins when a model is both, as the transport rule says.
+            if let Some(app) = &app_call {
+                let agents: Vec<String> = list_agents().await.into_iter().map(|a| a.id).collect();
+                if let Some(agent) = persona_base(&model, &agents) {
+                    return app_agent_turn(&state, &id, app, agent.to_string(), client_body).await;
+                }
+            }
             return openai_error(
                 StatusCode::NOT_FOUND,
                 &format!("unknown model \"{model}\" — GET /v1/models"),
@@ -241,27 +445,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
     )
     .await
     {
-        let mut out = openai_budget_error(
-            StatusCode::TOO_MANY_REQUESTS,
-            &budget_message(&denial),
-            "budget_exceeded",
-            "budget_exceeded",
-            BudgetFacts {
-                scope: denial.scope.to_string(),
-                subject: denial.subject.clone(),
-                unit: denial.unit.to_string(),
-                limit: js_num(denial.limit),
-                used: js_num(denial.used),
-                window_hours: denial.window_hours,
-                via: denial.via.to_string(),
-            },
-        );
-        out.headers_mut().insert(
-            header::RETRY_AFTER,
-            header::HeaderValue::from_str(&denial.retry_after_seconds.max(1).to_string())
-                .unwrap_or(header::HeaderValue::from_static("300")),
-        );
-        return out;
+        return budget_refusal(&denial, is_agent_key);
     }
 
     let mut call = match build_upstream(&state, &route, &client_body).await {
@@ -277,36 +461,21 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         }
     };
 
-    // METERING — does this call's spend already reach the ledger from another
-    // writer? On an agent's key (and the legacy fleet-wide persona key): a
-    // chat/channel turn writes one row for the whole turn, so metering the N
-    // inner-loop calls behind it counts that turn twice. Everything else is
-    // metered HERE because here is the only place it lands.
-    //
-    // An agent's key asks the turn register first: the chat transport counts
-    // every turn Talaria drives while it is open, so a call that arrives
-    // with NO turn counted for this agent is one Hermes started by itself —
-    // a cron — and nothing else will ledger it. That call is metered here,
-    // under the agent, as `unattended`. Only a key the render scoped can ask
-    // (the register is keyed by the agent's model id, which is the scope);
-    // an unscoped key keeps the skip. KNOWN DOUBLE-SKIP: a cron firing
-    // while a chat turn is open for the same agent is skipped with that
-    // turn's calls — the relay cannot tell one agent's two loops apart.
-    let unmetered = get_setting_hot(
-        &state.pg,
-        "gateway_unmetered_keys",
-        json!(["fleet-gateway"]),
-    )
-    .await;
+    // METERING — every call is booked here, an agent's included: no other
+    // writer books an agent's spend any more. The one way out is an
+    // operator listing a key in `gateway_unmetered_keys` (empty by default),
+    // and a key listed there is booked nowhere at all. An agent's row starts
+    // `unattended` and keeps the conversation key Hermes stamped on the
+    // call; the insert itself takes the flow recorded for that key, when
+    // there is one. Another key's header is ignored — an operator's rows are
+    // the operator's.
+    let unmetered = get_setting_hot(&state.pg, "gateway_unmetered_keys", json!([])).await;
     let listed_unmetered = unmetered
         .as_array()
         .map(|a| a.iter().any(|v| v.as_str() == Some(id.key_name.as_str())))
         .unwrap_or(false);
-    let talaria_turn = match &agent_scope {
-        Some(scope) => talaria_turn_open(&scope.model).await,
-        None => None,
-    };
-    let meter = meter_plan(is_agent_key, listed_unmetered, talaria_turn);
+    let meter = meter_plan(is_agent_key, app_call.is_some(), listed_unmetered);
+    let affinity = session_header.filter(|_| honors_affinity(is_agent_key, &id.key_name));
 
     // ANNOTATION — is the caller an agent's own tool loop? Guard caveats are
     // for humans reading a reply; injecting one into an agent's loop would
@@ -325,8 +494,10 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
             .as_array()
             .map(|a| a.iter().any(|v| v.as_str() == Some(id.key_name.as_str())))
             .unwrap_or(false);
-    let guard_cfg = guard_config(&state.pg).await;
-    let may_annotate = !is_agent_loop && guard_cfg.mode.discloses();
+    // An app's call is guarded by the host's runner, never here — its
+    // semantic rules too, through the internal guard door, once per run.
+    let guarded = app_call.is_none();
+    let may_annotate = guarded && !is_agent_loop && guard_config(&state.pg).await.mode.discloses();
 
     // Everything a guard call needs, held once for both relay paths.
     let guard_spec = GuardSpec {
@@ -335,6 +506,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         model: model.clone(),
         endpoint: route.endpoint.name.clone(),
         messages: client_body["messages"].clone(),
+        enabled: guarded,
     };
 
     let prompt_chars = prompt_chars_of(&client_body["messages"]);
@@ -349,9 +521,19 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         }
     };
 
+    // What the answer tells an app about the call, read now that the fetch
+    // has settled every drop it is going to make.
+    let app_drops = app_call
+        .as_ref()
+        .and_then(|_| contract_drops_value(call.contract_drops.iter().map(|d| d.capability)));
+
     let ledger = Ledger {
         pg: state.pg.clone(),
-        caller: caller.clone(),
+        // An app's rows land under the run's stamp; its budget above is the
+        // app's.
+        caller: app_call
+            .as_ref()
+            .map_or_else(|| caller.clone(), |a| a.stamp.clone()),
         endpoint: route.endpoint.name.clone(),
         endpoint_class: route.endpoint.class.clone(),
         provider: route.endpoint.provider.clone(),
@@ -359,6 +541,18 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         prompt_chars,
         skip: meter.skip(),
         source: meter.source(),
+        affinity,
+        stated: app_call
+            .as_ref()
+            .map(|a| a.stated.clone())
+            .unwrap_or_default(),
+    };
+    let answer = |out: Response| {
+        if app_call.is_some() {
+            app_gateway_answer(out, app_drops.as_deref())
+        } else {
+            out
+        }
     };
 
     // ── Non-streaming: read, meter, relay ─────────────────────────────────
@@ -379,7 +573,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
                 let spend = reported_spend(&ledger.provider, &j);
                 ledger.spawn(reported, false, &spend);
             }
-            return fixed_json(status, &sanitized_upstream_body(status, &text));
+            return answer(fixed_json(status, &sanitized_upstream_body(status, &text)));
         }
         if let Ok(mut j) = serde_json::from_str::<Value>(&text) {
             let content = j["choices"][0]["message"]["content"]
@@ -414,12 +608,6 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
                     extract_tool_record(client_body["messages"].as_array().unwrap_or(&Vec::new()))
                         .backing_tools;
                 decide_guard::observe(&state, &content, &tool_names, &caller, &model);
-                // TOOL-OFFER PRUNING, measured and never applied. Judges the
-                // tools this turn was OFFERED against what the reply actually
-                // CALLED, so the ledger can answer "would pruning have broken
-                // this turn" before anything prunes. Its own setting, off by
-                // default, and detached — see talaria-decide::tools.
-                decide_tools::observe(&state, &client_body, &j, &caller);
                 if !findings.is_empty() && j["choices"][0]["message"].is_object() {
                     // GROUNDED, like the findings above: redaction gets the
                     // same grounding material the findings got, or the two
@@ -449,7 +637,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
                 guard_spec.observe(&content);
             }
         }
-        return fixed_json_with_type(status, &text, &content_type);
+        return answer(fixed_json_with_type(status, &text, &content_type));
     }
 
     // ── Streaming: pass bytes through, scan SSE lines for usage/content ──
@@ -461,7 +649,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         let status = reply.status();
         let text = reply.text().await;
         log_upstream_error("llm-v1-stream", status, &text);
-        return fixed_json(status, &sanitized_upstream_body(status, &text));
+        return answer(fixed_json(status, &sanitized_upstream_body(status, &text)));
     }
     let Reply::Live(res) = reply else {
         return fixed_json(502, &sanitized_upstream_body(502, ""));
@@ -478,12 +666,14 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         MeterMode::Passthrough
     };
     let stream = MeteredStream::new(res.bytes_stream(), ledger, mode, guard_spec);
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, content_type)
-        .header(header::CACHE_CONTROL, "no-cache")
-        .body(Body::from_stream(stream))
-        .expect("static headers build")
+    answer(
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, content_type)
+            .header(header::CACHE_CONTROL, "no-cache")
+            .body(Body::from_stream(stream))
+            .expect("static headers build"),
+    )
 }
 
 /// `Response` with a raw string body — used where the body is already the
@@ -525,11 +715,11 @@ fn prompt_chars_of(messages: &Value) -> usize {
 }
 
 /// What the ledger does with one call, decided before the upstream is
-/// touched: skip because another writer books the turn, or book it here
-/// under a source that says whose spend it is.
+/// touched: skip, because an operator listed the key unmetered, or book it
+/// here under a source that says whose spend it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Meter {
-    /// The flow that drove this turn writes the row — or nobody can tell.
+    /// An operator listed this key in `gateway_unmetered_keys`.
     Skip,
     /// Book it here, under this source.
     Book(&'static str),
@@ -548,24 +738,33 @@ impl Meter {
     }
 }
 
-/// The metering decision. `talaria_turn` is the register's answer for an
-/// agent key — Some(true) a Talaria turn is open, Some(false) none is, None
-/// the register could not be read (or the key is unscoped, so there was
-/// nothing to ask under) — and it is only consulted for an agent key.
-fn meter_plan(is_agent_key: bool, listed_unmetered: bool, talaria_turn: Option<bool>) -> Meter {
+/// Whose `x-talaria-session` header the relay books by. An agent's own key:
+/// the conversation key Hermes stamps. The workbench key: a workbench job's
+/// eval session (`talaria-app eval --gateway`), so a harness fixture replayed
+/// in the sandbox is booked to the job's ticket. The workbench key is
+/// fleet-wide, but the session key it can name is a random one prepare_env
+/// recorded for one job and wrote into that job's workdir alone; a key no
+/// flow recorded books nothing differently. Any other key is an operator's,
+/// and its rows are the operator's.
+fn honors_affinity(is_agent_key: bool, key_name: &str) -> bool {
+    is_agent_key || key_name == WORKBENCH_KEY
+}
+
+/// The metering decision. An agent's call is booked under the agent as
+/// `unattended` until its conversation key says which flow it belongs to
+/// (the insert reads that); an app's is the app's, `app`; any other key's is
+/// the key's own, `gateway`.
+fn meter_plan(is_agent_key: bool, is_app_key: bool, listed_unmetered: bool) -> Meter {
     if listed_unmetered {
         return Meter::Skip;
     }
-    if !is_agent_key {
-        return Meter::Book(RELAY_SOURCE);
-    }
-    match talaria_turn {
-        // Nobody is driving this turn: the row lands here or nowhere.
-        Some(false) => Meter::Book(UNATTENDED_SOURCE),
-        // A Talaria turn is open (or the question could not be asked): the
-        // flow's row is the row, as before.
-        Some(true) | None => Meter::Skip,
-    }
+    Meter::Book(if is_agent_key {
+        UNATTENDED_SOURCE
+    } else if is_app_key {
+        APP_SOURCE
+    } else {
+        RELAY_SOURCE
+    })
 }
 
 /// The ledger write for one call — spawned, never awaited on the request
@@ -581,6 +780,12 @@ struct Ledger {
     prompt_chars: usize,
     skip: bool,
     source: &'static str,
+    /// The conversation key Hermes stamped on an agent's call — None for
+    /// any other key, and for an agent call outside any conversation.
+    affinity: Option<String>,
+    /// The ref and ticket an app's run states for its rows — empty for
+    /// every other key.
+    stated: StatedFlow,
 }
 
 impl Ledger {
@@ -621,6 +826,8 @@ impl Ledger {
                 &l.pg,
                 l.source,
                 &l.caller,
+                l.affinity.as_deref(),
+                &l.stated,
                 &l.endpoint,
                 &l.endpoint_class,
                 &l.upstream_model,
@@ -646,6 +853,8 @@ struct GuardSpec {
     model: String,
     endpoint: String,
     messages: Value,
+    /// False for an app's call: the host's runner guards it.
+    enabled: bool,
 }
 
 impl GuardSpec {
@@ -669,6 +878,9 @@ impl GuardSpec {
     /// `try_current` because Drop can run outside the runtime at shutdown —
     /// losing the guard there is acceptable, panicking is not.
     fn observe(&self, answer: &str) {
+        if !self.enabled {
+            return;
+        }
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let fut = self.call(answer);
             handle.spawn(async move {
@@ -951,30 +1163,101 @@ mod tests {
         // chat-persist ledgers the persona turn under — else its slug.
         assert_eq!(caller_of("agent:xeng", Some("x-eng")), "x-eng");
         assert_eq!(caller_of("agent:xeng", None), "xeng");
+        // An app's key: the app, by its own name — the subject its budget
+        // binds and the namespace its stamps book under.
+        assert_eq!(caller_of("app:crm", None), "app:crm");
+        assert_eq!(
+            caller_of("app:Not A Slug", None),
+            "api:app:Not A Slug",
+            "only an app's shape is an app"
+        );
+    }
+
+    /// An agent's key hears the reset time and no `Retry-After` (Hermes
+    /// would hold the turn for it); every other key keeps its header.
+    #[tokio::test]
+    async fn a_budget_refusal_tells_an_agent_when_and_never_to_wait() {
+        let denial = BudgetDenial {
+            scope: "caller",
+            subject: Some("engineer-engineering".into()),
+            unit: "tokens",
+            limit: 1.0,
+            used: 1200.0,
+            window_hours: 24,
+            retry_after_seconds: 300,
+            resets_at: Some(1_793_197_259),
+            via: "admin",
+        };
+        let body = |r: Response| async move {
+            let bytes = axum::body::to_bytes(r.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        };
+
+        let agent = budget_refusal(&denial, true);
+        assert_eq!(agent.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(agent.headers().get(header::RETRY_AFTER).is_none());
+        let json = body(agent).await;
+        assert_eq!(json["error"]["code"], "budget_exceeded");
+        assert_eq!(json["error"]["resets_at"], 1_793_197_259);
+        assert_eq!(json["error"]["budget"]["scope"], "caller");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("(around 2026-10-28 14:21 UTC, if nothing more is spent)")
+        );
+
+        let operator = budget_refusal(&denial, false);
+        assert_eq!(operator.headers()[header::RETRY_AFTER], "300");
+        assert_eq!(body(operator).await["error"]["resets_at"], 1_793_197_259);
+
+        // An unknown resume time is left out, not sent as null.
+        let unknown = BudgetDenial {
+            resets_at: None,
+            ..denial
+        };
+        let json = body(budget_refusal(&unknown, true)).await;
+        assert!(json["error"].get("resets_at").is_none());
     }
 
     #[test]
-    fn an_agents_call_is_metered_here_only_when_no_talaria_turn_is_open() {
+    fn every_call_is_metered_here_and_an_agents_starts_unattended() {
         // An operator's key: metered here, as ever — unless listed unmetered.
-        assert_eq!(meter_plan(false, false, None), Meter::Book(RELAY_SOURCE));
-        assert_eq!(meter_plan(false, true, None), Meter::Skip);
-        // An agent's key during a chat turn: the flow writes the row.
-        assert_eq!(meter_plan(true, false, Some(true)), Meter::Skip);
-        // An agent's key with no Talaria turn open — a cron: the row lands
-        // here, named for what it is.
+        assert_eq!(meter_plan(false, false, false), Meter::Book(RELAY_SOURCE));
+        assert_eq!(meter_plan(false, false, true), Meter::Skip);
+        // An agent's key, inside a Talaria turn or not: booked here, as the
+        // agent's, until its conversation key names the flow.
         assert_eq!(
-            meter_plan(true, false, Some(false)),
+            meter_plan(true, false, false),
             Meter::Book(UNATTENDED_SOURCE)
         );
-        // The register unreadable, or an unscoped key: today's skip, never a
-        // double-counted turn.
-        assert_eq!(meter_plan(true, false, None), Meter::Skip);
         // An operator listing an agent key as unmetered still wins.
-        assert_eq!(meter_plan(true, true, Some(false)), Meter::Skip);
+        assert_eq!(meter_plan(true, false, true), Meter::Skip);
+        // An app's key: the app's spend, under its own source.
+        assert_eq!(meter_plan(false, true, false), Meter::Book(APP_SOURCE));
+        assert_eq!(Meter::Book(APP_SOURCE).source(), "app");
+        assert_eq!(meter_plan(false, true, true), Meter::Skip);
         // The ledger's view of a decision.
         assert!(Meter::Skip.skip());
         assert!(!Meter::Book(UNATTENDED_SOURCE).skip());
         assert_eq!(Meter::Book(UNATTENDED_SOURCE).source(), "unattended");
+    }
+
+    #[test]
+    fn the_session_header_books_an_agents_calls_and_a_workbench_jobs_evals_only() {
+        // An agent's own key: the conversation key Hermes stamped.
+        assert!(honors_affinity(true, "agent:xeng"));
+        // The workbench key: a job's eval session, booked to its ticket.
+        assert!(honors_affinity(false, "workbench-gateway"));
+        // prepare_env records a job's eval session under this caller
+        // (talaria-workbench-mcp `WORKBENCH_CALLER`); the relay's insert
+        // finds the flow only if the two agree.
+        assert_eq!(caller_of(WORKBENCH_KEY, None), "api:workbench-gateway");
+        // The personas' key and an operator's: their rows stay theirs.
+        assert!(!honors_affinity(false, "fleet-gateway"));
+        assert!(!honors_affinity(false, "my-key"));
     }
 
     fn scanner_mode(mode: MeterMode) -> MeteredStream {
@@ -990,6 +1273,8 @@ mod tests {
             prompt_chars: 0,
             skip: true,
             source: RELAY_SOURCE,
+            affinity: None,
+            stated: StatedFlow::default(),
         };
         let guard_spec = GuardSpec {
             pg: sqlx::PgPool::connect_lazy("postgres://x").unwrap(),
@@ -997,6 +1282,7 @@ mod tests {
             model: "test-model".into(),
             endpoint: "e".into(),
             messages: json!([]),
+            enabled: true,
         };
         MeteredStream::new(futures_util::stream::empty(), ledger, mode, guard_spec)
     }

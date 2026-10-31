@@ -190,6 +190,15 @@ export function delJsonOr<T>(url: string, body: unknown, statusesAsData: number[
   return sendJson<T>('DELETE', url, body, init, statusesAsData)
 }
 
+/** A DELETE whose 404 is the outcome asked for. The api answers a well-formed
+ *  id that names nothing 404 (docs/API-CONVENTIONS.md), and to a delete that
+ *  means another tab or another person got there first: the thing is gone,
+ *  so the caller refreshes as after its own delete. Every other non-2xx still
+ *  rejects with the server's sentence. */
+export async function delJsonGone(url: string, body?: unknown, init?: RequestInit): Promise<void> {
+  await sendJson<unknown>('DELETE', url, body, init, [404])
+}
+
 /** A POST whose reply is a STREAM: the ok Response with a non-null body,
  *  untouched — `readJson` would buffer it. Non-2xx (or an empty body) throws
  *  with the server's `error` string, same as the buffered door. A 200 whose

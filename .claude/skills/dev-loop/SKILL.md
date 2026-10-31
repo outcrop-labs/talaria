@@ -26,7 +26,7 @@ Reset a wedged stack with `bun talaria reset <mode>`; snapshot and restore with
 |---|---|
 | dev UI | 5273 |
 | Rust api | 5274 |
-| a worktree stack | app `53xx`, api `54xx`, Postgres `56xx`, Redis `65xx` — deterministic per name |
+| a worktree stack | app `53xx`, api `54xx`, Postgres `56xx`, Redis `65xx`, toolkit `57xx`, omp auth `58xx`, agent gateways from `20000 + slot·100` — one slot per stack |
 
 ## The gates, and what each proves
 
@@ -59,7 +59,8 @@ Never two servers on one database — a stale encryption key re-seals secrets wr
 
 - **Worktree** (host, light): `bun talaria worktree <name>` (alias `git wt <name>`) — own
   git worktree at `../talaria-<name>`, own Postgres + Redis on deterministic ports, a
-  pg_dump-seeded DB, `node_modules` symlinked from main. Teardown:
+  pg_dump-seeded DB, `ui/node_modules` symlinked from main and `cli/` + `mcp/`
+  installed from the branch's lockfiles. Teardown:
   `docker compose -p talaria-wt-<name> down -v && git worktree remove --force ../talaria-<name> && git branch -D wt/<name>`.
   Run that from the primary checkout, not from inside the worktree. Full rules: docs/WORKTREES.md.
 - **Devbox** (container, heavy): `bun talaria box new <name>` — a full stack per task with

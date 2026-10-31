@@ -90,6 +90,11 @@ pub struct OpenAiBudgetBody {
     pub code: String,
     pub param: serde_json::Value,
     pub budget: BudgetFacts,
+    /// When the window's spend falls back under the cap, in epoch seconds —
+    /// on the error object itself, where an OpenAI-style client (Hermes
+    /// among them) looks for a 429's reset. Absent when it is unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
 }
 
 #[derive(serde::Serialize)]
@@ -103,6 +108,7 @@ pub fn openai_budget_error(
     kind: &str,
     code: &str,
     budget: BudgetFacts,
+    resets_at: Option<i64>,
 ) -> Response {
     (
         status,
@@ -113,6 +119,7 @@ pub fn openai_budget_error(
                 code: code.to_string(),
                 param: serde_json::Value::Null,
                 budget,
+                resets_at,
             },
         }),
     )
@@ -190,6 +197,33 @@ pub fn object_or_400(
         Ok(o) => Ok(o),
         Err(msg) => Err(house_error(StatusCode::BAD_REQUEST, &msg)),
     }
+}
+
+/// What a store hands up in place of a database error's own text, where its
+/// errors are sentences a route puts on the wire. A sqlx error's Display is
+/// the database talking — a constraint name, a cast it refused, the pool's
+/// state — and none of that is the caller's to read
+/// (docs/API-CONVENTIONS.md, "Shapes"). The full error is logged where it
+/// happened ([`store_fault`]); the route answers this one the house 500
+/// ([`store_answer`]).
+pub const STORE_FAULT: &str = "the database could not complete this request";
+
+/// Log a store's database error with its context, and hand up
+/// [`STORE_FAULT`] in its place — the `.map_err` for a store whose `Err` is
+/// a sentence a person reads.
+pub fn store_fault(context: &str, e: impl std::fmt::Display) -> String {
+    tracing::error!("{context}: {e}");
+    STORE_FAULT.to_string()
+}
+
+/// A store's sentence as a route answers it: [`STORE_FAULT`] is the house
+/// 500 (already logged where it happened), and any other sentence is the
+/// route's own refusal, with `status`.
+pub fn store_answer(status: StatusCode, sentence: &str) -> Response {
+    if sentence == STORE_FAULT {
+        return thrown_internal_error();
+    }
+    house_error(status, sentence)
 }
 
 /// The bare Postgres sentence under a sqlx error — the message
@@ -670,6 +704,30 @@ fn scrub_prefixed_key(s: &str, i: usize) -> Option<(String, usize)> {
 mod tests {
     use super::*;
 
+    /// A store's fault crosses as the house 500 (the text/plain envelope,
+    /// nothing of the database's text); any other sentence is the route's
+    /// own refusal.
+    #[test]
+    fn a_store_fault_is_the_house_500_and_names_no_sql() {
+        let sentence = store_fault(
+            "[test] write",
+            "error returned from database: insert or update on table \"agent_secrets\" violates foreign key constraint",
+        );
+        assert_eq!(sentence, STORE_FAULT);
+        let r = store_answer(StatusCode::BAD_REQUEST, &sentence);
+        assert_eq!(r.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            r.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "text/plain"
+        );
+        let r = store_answer(StatusCode::BAD_REQUEST, "not a running managed agent");
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            r.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+    }
+
     /// A model that will not switch its thinking off says so in prose the
     /// boundary never forwards — so the boundary says it in ITS words,
     /// which still read as the refusal they are (Hermes steps its effort up
@@ -920,6 +978,7 @@ mod tests {
                     window_hours: 24,
                     via: "key".into(),
                 },
+                resets_at: None,
             },
         })
         .unwrap();
@@ -927,6 +986,30 @@ mod tests {
         assert_eq!(
             b,
             r#"{"error":{"message":"…","type":"budget_exceeded","code":"budget_exceeded","param":null,"budget":{"scope":"caller","subject":"api:my-key","unit":"usd","limit":2,"used":2.5,"windowHours":24,"via":"key"}}}"#
+        );
+        // A known resume time rides last, on the error object itself.
+        let b = serde_json::to_string(&OpenAiBudget {
+            error: OpenAiBudgetBody {
+                message: "…".into(),
+                kind: "budget_exceeded".into(),
+                code: "budget_exceeded".into(),
+                param: serde_json::Value::Null,
+                budget: BudgetFacts {
+                    scope: "org".into(),
+                    subject: None,
+                    unit: "tokens".into(),
+                    limit: js_num(1000.0),
+                    used: js_num(1200.0),
+                    window_hours: 24,
+                    via: "admin".into(),
+                },
+                resets_at: Some(1_793_197_259),
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            b,
+            r#"{"error":{"message":"…","type":"budget_exceeded","code":"budget_exceeded","param":null,"budget":{"scope":"org","subject":null,"unit":"tokens","limit":1000,"used":1200,"windowHours":24,"via":"admin"},"resets_at":1793197259}}"#
         );
     }
 

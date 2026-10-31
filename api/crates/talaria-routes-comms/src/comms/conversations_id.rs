@@ -26,9 +26,13 @@ use serde_json::Value;
 use talaria_body::{optional_boolean_member, trimmed_string_member};
 use talaria_conversations::{get_conversation, set_pinned_files};
 use talaria_error::{house_error, internal, object_or_400};
+// A truncated or mangled link is the same 404 as a thread the caller cannot
+// see, instead of a 500 from the read's `$1::uuid` cast (which the pane read
+// as nothing to show, and opened an empty thread).
 use talaria_notify::{
     NotifyDeps, conversation_audience_ids, fan_conversation_event, fan_known_conversation,
 };
+use talaria_params::uuid_shaped;
 use talaria_plan_drafts::drop_draft;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -45,6 +49,9 @@ pub async fn get(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
+    if !uuid_shaped(&id) {
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
+    }
     Ok(match get_conversation(&state.pg, &user.id, &id).await {
         Ok(Some((conversation, messages))) => (
             StatusCode::OK,
@@ -132,6 +139,9 @@ async fn visible_role(
     id: &str,
     where_: &str,
 ) -> Result<String, Response> {
+    if !uuid_shaped(id) {
+        return Err(house_error(StatusCode::NOT_FOUND, "not found"));
+    }
     match get_conversation(&state.pg, user_id, id).await {
         Ok(Some((detail, _))) => Ok(detail.role),
         Ok(None) => Err(house_error(StatusCode::NOT_FOUND, "not found")),

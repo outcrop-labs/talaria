@@ -1,10 +1,18 @@
 <script lang="ts">
   import { Archive, Copy, Play, Repeat, RotateCw, SlidersHorizontal, Square, Trash2, UserPlus } from '@lucide/svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
-  import type { AgentContainers, AgentDef } from '@/lib/fleet-defs'
+  import type { AgentContainers, AgentDef, FleetRollRow } from '@/lib/fleet-defs'
   import IconButton from '@/components/ui/IconButton.svelte'
   import AgentRetireModal from './AgentRetireModal.svelte'
-  import { deleteForeverConfirm, healthOf, RESTART_CONFIRM, useAgentControls } from './agents.svelte'
+  import {
+    deleteForeverConfirm,
+    healthOf,
+    RESTART_CONFIRM,
+    settleStillWorking,
+    STILL_WORKING_LABEL,
+    stillWorkingOf,
+    useAgentControls,
+  } from './agents.svelte'
 
   /** The control-icon cluster (start/stop/restart/roll · manage · retire · re-hire). */
   let {
@@ -12,6 +20,7 @@
     containers,
     running,
     rolling = false,
+    roll,
     onManage,
     onDuplicate,
   }: {
@@ -21,6 +30,9 @@
     /** Mid-roll (this agent's own, or the fleet-wide batch): the Roll control
      *  stays visible and disabled — the route would answer 409 anyway. */
     rolling?: boolean
+    /** This agent's row in the roll picture (admins see it): an apply still
+     *  going on reads its verdict there. */
+    roll?: FleetRollRow
     onManage: () => void
     onDuplicate: () => void
   } = $props()
@@ -37,8 +49,26 @@
   // stays editable through Manage; Retire/Delete stay for changing one's
   // mind. No Stop/Restart/Roll — nothing is running.
   const draft = $derived(healthOf(d, containers).health === 'draft')
-
+  // A verb the route answered 202 for is still being carried out: noted until
+  // the roster's next reading shows the state it was for (agents.svelte.ts).
+  const working = $derived(stillWorkingOf(d.id))
+  $effect(() => {
+    settleStillWorking(d, containers, roll)
+  })
 </script>
+
+{#snippet stillWorkingNote()}
+  {#if working}
+    <span
+      class="mr-1.5 inline-flex shrink-0 items-center gap-1 text-xs text-muted"
+      data-testid="agent-still-working"
+      title="Docker has not finished this yet, and the request stopped waiting for it. It goes on; the roster shows the agent's state when it lands."
+    >
+      <WaitingMark site="fleet/agent-controls" size={10} class="text-muted" />
+      {STILL_WORKING_LABEL[working.action]}
+    </span>
+  {/if}
+{/snippet}
 
 {#if controls.pending}
   <WaitingMark site="fleet/agent-controls" size={12} class="text-muted" />
@@ -46,6 +76,7 @@
   <!-- Retired agents: re-hire (re-enable + start), duplicate as a template, or
        delete forever — the only truly destructive lifecycle action. -->
   <div class="flex items-center">
+    {@render stillWorkingNote()}
     <IconButton title="Duplicate to a new agent" onclick={onDuplicate}><Copy size={15} /></IconButton>
     {#if canManage}
       <IconButton title="Re-hire" onclick={() => void controls.act('unretire', 're-hiring')}><UserPlus size={15} /></IconButton>
@@ -58,6 +89,7 @@
   </div>
 {:else}
   <div class="flex items-center">
+    {@render stillWorkingNote()}
     <IconButton title="Duplicate to a new agent" onclick={onDuplicate}><Copy size={15} /></IconButton>
     <!-- Manage opens for everyone who can see the agent; the modal is
          read-only unless they manage it. -->
@@ -77,7 +109,7 @@
           onclick={() => void controls.act('restart', 'restarting', RESTART_CONFIRM)}
         ><RotateCw size={14} /></IconButton>
         <IconButton
-          title={rolling ? 'Rolling now' : 'Roll (zero-downtime replacement: fresh container, old one finishes its replies)'}
+          title={rolling ? 'Rolling now' : 'Roll (recreate in place: the container stops, a fresh one starts on the current render)'}
           disabled={rolling}
           onclick={() => void controls.act('roll', 'rolling')}
         ><Repeat size={14} /></IconButton>

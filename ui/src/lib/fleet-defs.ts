@@ -1,7 +1,7 @@
 // Harness registry client (admin): agent definitions + LLM endpoints.
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
-import { errorMessage, getJson, getList, patchJson, postJson, putJson } from '@/lib/fetch-json'
+import { errorMessage, getJson, getList, HttpError, patchJson, postJson, putJson } from '@/lib/fetch-json'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
@@ -84,9 +84,9 @@ export interface AgentDef {
    *  history, so its compaction and session search cover the whole thread. */
   pinnedSessions: boolean
   /** Hermes toolsets this agent does NOT get. Empty for most agents; `browser`
-   *  here is what keeps a non-browsing agent from paying for a Chromium
-   *  install on every roll. `todo` and `clarify` are off for every agent
-   *  whatever this says — Talaria's own versions are the ones a person sees. */
+   *  here keeps an agent that should not browse off the web. `todo` and
+   *  `clarify` are off for every agent whatever this says — Talaria's own
+   *  versions are the ones a person sees. */
   disabledToolsets: string[]
   /** Template overrides — this agent always formats tickets/plans on these. */
   ticketTemplateId: string | null
@@ -98,7 +98,40 @@ export interface AgentDef {
    *  derived view of one block inside it. Null (or absent, on an older api)
    *  means the def says nothing and Hermes' own defaults are in force. */
   compression?: AgentCompression | null
+  /** Null unless another agent holds this one's department too — only ever a
+   *  pair from before a department became one agent's (absent on an older
+   *  api). */
+  departmentShare?: DepartmentShare | null
   latest: AgentVersion | null
+}
+
+/** A department two agents hold. A department names one container and one
+ *  memory volume, so the render runs the OLDER agent there and leaves the
+ *  other out; nothing is merged. */
+export interface DepartmentShare {
+  /** Whether this agent is the one running in the department's container. */
+  runs: boolean
+  /** The one that is — null when the render runs none of them. */
+  runner: DepartmentPeer | null
+  /** Every other agent holding the department. */
+  others: DepartmentPeer[]
+}
+
+export interface DepartmentPeer {
+  id: string
+  slug: string
+  displayName: string
+}
+
+/** The agent's OWN containers. They are found by department, and where two
+ *  agents share one the container is the runner's: the other agent has none,
+ *  and must not read the runner's state as its own. */
+export function containersOf(
+  def: Pick<AgentDef, 'department' | 'departmentShare'>,
+  byDept: Map<string, AgentContainers>,
+): AgentContainers | null {
+  if (def.departmentShare && !def.departmentShare.runs) return null
+  return byDept.get(def.department) ?? null
 }
 
 /** One of an agent's managers. `role` is their org role, so the roster can
@@ -240,14 +273,41 @@ export interface FleetRollRow {
   state: FleetRollState
   /** Epoch ms the roll started (or was queued); null when idle. */
   since: number | null
-  /** The failure sentence, or a progress note ("queued") while rolling. */
+  /** The failure sentence, or a progress note while rolling: "queued" (a
+   *  batch member waiting for a slot) or "still starting" (recreated, and not
+   *  healthy yet when the roll's health wait passed; the row turns done once
+   *  it is, or failed if it never is). */
   detail: string | null
   batch: string | null
 }
 
+/** The note on a `rolling` row whose container was recreated and had not
+ *  reported healthy when the roll's health wait passed (talaria-fleet-reconcile
+ *  STILL_STARTING). The roll's steps are over: only its verdict is to come. */
+export const ROLL_STILL_STARTING = 'still starting'
+
+/** Whether a row's roll is in its steps — what holds the Roll controls. A row
+ *  noted `still starting` is not: its roll has let go of its locks (the route
+ *  accepts a new one), and the late wait only writes its verdict, for up to
+ *  twelve minutes. Its chip still reads *starting*. */
+export function rollInProgress(row: FleetRollRow | null | undefined): boolean {
+  return row?.state === 'rolling' && row.detail !== ROLL_STILL_STARTING
+}
+
+/** The roll picture's rows by agent slug — what each tile and row reads its
+ *  own line from. Not by department: the picture has one row per agent, and
+ *  an agent left out of a department another agent runs in (a pair from
+ *  before the one-agent rule) has its own row there, idle. Keyed by
+ *  department, it wore the runner's chip and its Roll control followed the
+ *  runner's roll. */
+export function rollRowsBySlug(rows: FleetRollRow[] | null | undefined): Map<string, FleetRollRow> {
+  return new Map((rows ?? []).map((r) => [r.slug, r]))
+}
+
 export interface FleetRollPicture {
   ok: boolean
-  /** Whether any department is mid-roll right now. */
+  /** Whether any department's roll is in its steps right now — rows noted
+   *  `still starting` do not count (`rollInProgress`). */
   rolling: boolean
   /** The most recent batch on record, if any. */
   batch: string | null
@@ -279,7 +339,7 @@ export interface FleetRollStart {
   error?: string
 }
 
-/** Queue a blue/green roll of every running managed agent (`all`: every
+/** Queue an in-place roll of every running managed agent (`all`: every
  *  managed enabled agent, stopped ones included). Answers as soon as the
  *  batch is decided; `useFleetRoll` carries the progress. Failures resolve
  *  as `{ error }` so the strip can render the sentence in place. */
@@ -339,19 +399,96 @@ export async function saveAgentEdit(
   created?: boolean
   applied?: boolean
   /** The route's own remarks about what it did with the edit — e.g. a
-   *  threshold Hermes will floor on this model, or a change saved without a
-   *  roll. Optional: an api that reports none simply shows nothing. */
+   *  threshold Hermes will floor on this model. Optional: an api that
+   *  reports none simply shows nothing. */
   notes?: string[]
+  /** Why an asked-for apply did not land (`applied: false`): the roll
+   *  failed (a step threw, or the container stopped running before it was
+   *  healthy), found the department mid-roll or no agent to roll, or the
+   *  agent has no container of its own. The version is saved either way.
+   *  On a Save & apply with nothing changed (`created: false`): why the
+   *  agent does not run the current version. */
+  warning?: string
+  /** Only on a Save & apply with nothing changed: whether the agent runs the
+   *  current version (or, stopped, will on its next start). A version that
+   *  was not in effect is applied, and this says whether it now is. */
+  inEffect?: boolean
+  /** A 202: the version is saved, and its apply (the render, a roll) was
+   *  still going when the route stopped waiting (210 s). It goes on. */
+  pending?: boolean
   error?: string
 }> {
   try {
-    return await postJson<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean; notes?: string[] }>(
+    return await postJson<{
+      ok?: boolean
+      version?: number
+      created?: boolean
+      applied?: boolean
+      notes?: string[]
+      warning?: string
+      inEffect?: boolean
+      pending?: boolean
+    }>(
       `/api/fleet/defs/${id}/edit`,
       edit,
     )
   } catch (e) {
     return { error: errorMessage(e) }
   }
+}
+
+/** The sentence for a save whose apply outlived the route's answer (a 202,
+ *  `pending`), or null for any other answer. The version IS saved — never
+ *  "failed" — and its render and roll go on; the roster notes the agent
+ *  *still applying* until it lands. A Save & apply with nothing changed
+ *  (`created: false`) saved nothing new: it is applying a version saved
+ *  earlier, and says that instead. */
+export function editStillApplying(r: { version?: number; created?: boolean; pending?: boolean }): string | null {
+  if (!r.pending) return null
+  const rest = "is taking longer than this form waits (a roll's recreate and health check), and it goes on: the roster shows the agent when it lands."
+  if (r.created === false && r.version) return `Applying version ${r.version} ${rest}`
+  const saved = r.version ? `Saved as version ${r.version}.` : 'Saved.'
+  return `${saved} Applying it ${rest}`
+}
+
+/** A version this editor saw saved and not applied, and the route's reason. */
+export interface UnappliedVersion {
+  version: number
+  why: string
+}
+
+/** The sentence a config save owes the person when its apply did not land,
+ *  or null when there is none. A saved version that is not running is not a
+ *  success to close on: the editor shows this in place instead.
+ *
+ *  A Save & apply with nothing changed creates no version. When the agent
+ *  does not run the current version (one saved without an apply, a roll
+ *  that never landed), the route applies it, and says whether the agent runs
+ *  it now (`inEffect`), with the reason in `warning` when it does not: the
+ *  apply failed, the agent is retired, docker did not say.
+ *
+ *  `unapplied` is the version this editor already saw saved and not applied,
+ *  passed only for a save that asked to apply. It speaks only for a no-op
+ *  answer that carries no `inEffect` either way, which this api's managed
+ *  answers always carry: an api from before it did. */
+export function editNotApplied(
+  r: { version?: number; created?: boolean; applied?: boolean; inEffect?: boolean; warning?: string },
+  unapplied: UnappliedVersion | null = null,
+): string | null {
+  const why = r.warning?.trim()
+  // A Save & apply with nothing changed saved nothing: the route says
+  // whether the agent runs the current version (`inEffect`), and why not.
+  if (why && r.created === false && r.version) return `Version ${r.version} is not applied: ${why}`
+  if (why) return r.version ? `Saved as version ${r.version}, not applied: ${why}` : `Saved, not applied: ${why}`
+  // The route checked, and the agent runs it (a roll from the roster since,
+  // say): nothing this editor remembers outranks that.
+  if (r.inEffect === true) return null
+  // No `inEffect` either way: the answer does not say whether the version
+  // this editor saw unapplied runs now, and silence is not proof it does.
+  if (unapplied && r.version === unapplied.version && r.created === false && r.applied !== true) {
+    return `Version ${unapplied.version} is still not applied, as far as this form can tell: the answer did not say whether the agent runs it now. Roll the agent to put it on once this clears: ${unapplied.why}`
+  }
+  return null
 }
 
 export type FleetAction = 'up' | 'stop' | 'restart' | 'roll' | 'retire' | 'unretire' | 'delete'
@@ -428,10 +565,28 @@ export async function rotateAgentKey(id: string): Promise<{ ok?: boolean; rollin
   }
 }
 
-export async function controlAgent(id: string, action: FleetAction): Promise<{ ok?: boolean; healthy?: boolean; error?: string }> {
+/** What the control route answers. `pending` (a 202) means the verb was still
+ *  running when the route stopped waiting (210 s): it goes on, and `state` is
+ *  the container as docker described it then (running, stopped, gone or
+ *  unknown). The roster's polled container state shows the rest. */
+export interface ControlAnswer {
+  ok?: boolean
+  healthy?: boolean
+  warming?: boolean
+  rolling?: boolean
+  pending?: boolean
+  state?: 'running' | 'stopped' | 'gone' | 'unknown'
+  error?: string
+  /** With `error`: the HTTP status it came with (none when the request never
+   *  got an answer). A 503 is a verb docker has not confirmed yet — it may
+   *  still land — which is not a refusal. */
+  status?: number
+}
+
+export async function controlAgent(id: string, action: FleetAction): Promise<ControlAnswer> {
   try {
-    return await postJson<{ ok?: boolean; healthy?: boolean; warming?: boolean }>(`/api/fleet/agents/${id}/control`, { action })
+    return await postJson<ControlAnswer>(`/api/fleet/agents/${id}/control`, { action })
   } catch (e) {
-    return { error: errorMessage(e) }
+    return { error: errorMessage(e), ...(e instanceof HttpError ? { status: e.status } : {}) }
   }
 }

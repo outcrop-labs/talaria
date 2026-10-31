@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-32 routes.
+33 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -38,6 +38,7 @@
 | [`/api/chat`](#apichat) | POST | `session` |
 | [`/api/chat/chips/approvals/{id}`](#apichatchipsapprovalsid) | POST | `session` |
 | [`/api/chat/chips/resolve`](#apichatchipsresolve) | POST | `session` |
+| [`/api/chat/turns/{id}/stop`](#apichatturnsidstop) | POST | `session` |
 | [`/api/conversations`](#apiconversations) | GET | `session` |
 | [`/api/conversations/{id}`](#apiconversationsid) | GET | `session` |
 | [`/api/conversations/{id}`](#apiconversationsid) | PATCH | `session` |
@@ -370,6 +371,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/chat.rs`](../../api/crates/t
 | `templateId` | `uuid?` |  |
 | `queue` | `bool?` |  |
 | `focus` | `focus` | { kind: artifact|google, id, title? } or null — the file open in the teammate's pane; read on work turns only |
+| `turnId` | `uuid?` |  |
 
 ## `/api/chat/chips/approvals/{id}`
 
@@ -378,11 +380,12 @@ Source: [`api/crates/talaria-routes-comms/src/comms/chips_approvals_id.rs`](../.
 > POST /api/chat/chips/approvals/{id} — approve or deny a chip.
 > Google sends execute through the existing confirm-send. Ticket moves apply
 > as the person who approved. Either way the chip that follows names the
-> tools that approval unlocked.
+> tools that approval unlocked. An agent's own approval request (kind
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apichatchipsapprovalsid-body) | `{status, tools}` | 200, 400, 403, 404, 502 | — |
+| POST | `session` | [body](#post-apichatchipsapprovalsid-body) | `{status, tools}` | 200, 400, 403, 404, 409, 502 | — |
 
 **POST** — Approve or deny a protected action surfaced as a chip in the thread.
 
@@ -411,6 +414,22 @@ Source: [`api/crates/talaria-routes-comms/src/comms/chips.rs`](../../api/crates/
 Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
 through the `crate::body` member vocabulary — the field set lives in the route
 source.
+
+## `/api/chat/turns/{id}/stop`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/chat_turns_id_stop.rs`](../../api/crates/talaria-routes-comms/src/comms/chat_turns_id_stop.rs)
+
+> /api/chat/turns/{id}/stop.
+> POST → stop the turn the page's own send named `id` (`turnId` on
+> /api/chat), wherever it has got to. The page sends this the moment Stop is
+> pressed on a new thread's first turn, whose thread id rides back only with
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{ok, hermes, held}` | 200, 409 | — |
+
+**POST** — Stop the turn the caller's own send named (`turnId` on /api/chat), before or after the api has heard of it: the stop a page sends for a new thread, whose id it does not have yet. Waits up to 10 s for the send, then stops its thread's turn as /api/conversations/{id}/stop does (`hermes`). A send that has not come by then gets the stop `held`, for its turn to be stopped when it opens. Only the sender's own turn: anything else, or a turn that ended → 409.
 
 ## `/api/conversations`
 
@@ -583,7 +602,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_schedule.rs
 | :--- | :--- | :--- |
 | `name` | `string trimmed(1, 80)` | The same bounds the fleet door takes, because it is the same job. |
 | `schedule` | `string trimmed(1, 120)` |  |
-| `prompt` | `string trimmed(1, 20000)` |  |
+| `prompt` | `string trimmed(1, 5000)` | The agent's own cap: Hermes's /api/jobs refuses a longer prompt (talaria_agent_crons::MAX_PROMPT_CHARS). |
 
 ## `/api/conversations/{id}/schedules`
 
@@ -592,7 +611,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_schedules.r
 > /api/conversations/{id}/schedules.
 > GET → what this thread has put its agent on a timer for. Two halves: the
 > rows Talaria wrote when the schedule was created (name, schedule, when,
-> which job), and the live state only the agent's own jobs.json knows — is it
+> which job), and the live state only the agent's own scheduler knows — is it
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -661,15 +680,15 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_stop.rs`](.
 
 > /api/conversations/{id}/stop.
 > POST → interrupt the reply that is streaming in this thread right now. The
-> stop button, server-side: Hermes addresses a running turn by its own run id,
-> and the assistant row is the only place that says which one this is.
+> stop button, server-side: Hermes addresses a running turn by its own run id.
+> A session turn's run id is on its assistant row (stamped from
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | — | `{ok, hermes}` | 200, 403, 409, 502 | — |
+| POST | `session` | — | `{ok, hermes} or {ok, hermes, held}` | 200, 400, 403, 409, 502 | — |
 
-**POST** — Interrupt the reply streaming in this thread. `hermes` says whether the agent's own run was interrupted, or whether hanging up was the whole stop. Nothing is streaming → 409.
+**POST** — Interrupt the reply streaming in this thread, on either arm: a session turn by its run id, a completions turn by its completion id. A turn this instance is still opening (sent, but not yet named by the agent) is waited for, up to 10 s. The optional body `{ turnId }` names the page's own send: a stop that comes before that send has been read waits for it too, and is held for it past the wait. `hermes` says whether the agent's own run was interrupted, or whether hanging up was the whole stop (a completions turn a drain in another process reads). `held` says the agent had not opened the turn within the wait, and the stop is sent when it does. Nothing is streaming → 409.
 
 ## `/api/conversations/{id}/teams`
 

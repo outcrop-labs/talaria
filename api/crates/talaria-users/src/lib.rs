@@ -533,7 +533,7 @@ pub async fn list_directory(pg: &PgPool) -> Result<Vec<DirectoryRow>, sqlx::Erro
 
 /// Manage-section routes: default DENIED for members, granted explicitly via
 /// allowed_manage_views. Enabled apps extend this set with EVERY app view
-/// (work and manage) — apps are explicit-grant only.
+/// (`app_view_routes`) — apps are explicit-grant only.
 pub const MANAGE_VIEW_ROUTES: [&str; 8] = [
     "/agents",
     "/teams",
@@ -545,19 +545,9 @@ pub const MANAGE_VIEW_ROUTES: [&str; 8] = [
     "/apps",
 ];
 
-/// Apps' slug rule: lowercase letters, digits, dashes; a letter-or-digit
-/// head; ≤64 chars total.
-pub fn slug_ok(s: &str) -> bool {
-    let b = s.as_bytes();
-    if b.is_empty() || b.len() > 64 {
-        return false;
-    }
-    let head = b[0].is_ascii_lowercase() || b[0].is_ascii_digit();
-    let rest = b[1..]
-        .iter()
-        .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-');
-    head && rest
-}
+// The slug rules live with the manifest validator (talaria-app-manifest), the
+// one place both install and discovery read them.
+pub use talaria_app_manifest::{RESERVED_APP_SLUGS, slug_installable, slug_ok};
 
 /// Where app codebases live: TALARIA_APPS_DIR, else <cwd>/../apps — the
 /// repo's apps/ dir when the process runs from api/.
@@ -668,66 +658,123 @@ pub struct DiscoveredApp {
     pub mcp: bool,
 }
 
-/// The manifests on disk, sorted by app name. Any unreadable/unparseable
-/// directory is skipped. A missing scalar field yields its default; a
-/// non-string value is treated as missing.
+/// The manifests on disk, sorted by app name, for the listings (Admin → Apps,
+/// /api/apps, the MCP sync). A directory that cannot be listed is logged and
+/// reads as no apps — a listing can show nothing. A GRANT may not: the view
+/// grants read `discovered_apps_in`, which says the directory failed.
 pub fn discovered_apps() -> Vec<DiscoveredApp> {
-    let Ok(entries) = std::fs::read_dir(apps_dir()) else {
-        return Vec::new();
+    let dir = apps_dir();
+    discovered_apps_in(&dir).unwrap_or_else(|e| {
+        tracing::warn!("[apps] could not list {}: {e}", dir.display());
+        Vec::new()
+    })
+}
+
+/// What one directory under apps/ holds, as discovery reads it.
+enum AppDir {
+    /// Not an app at all: no talaria.json, or not a slug-named directory.
+    NotAnApp,
+    /// talaria.json is there and fails the manifest rules: listed as broken.
+    Broken {
+        slug: String,
+        reason: String,
+    },
+    App(DiscoveredApp),
+}
+
+fn read_app_dir(e: &std::fs::DirEntry) -> AppDir {
+    if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        return AppDir::NotAnApp;
+    }
+    let slug = e.file_name().to_string_lossy().into_owned();
+    // A dot-named directory never passes: the update and install staging
+    // trees (`.<slug>.next`, `.<slug>.prev`, `.install-…`) live there.
+    if !slug_ok(&slug) {
+        return AppDir::NotAnApp;
+    }
+    let Ok(bytes) = std::fs::read(e.path().join("talaria.json")) else {
+        return AppDir::NotAnApp;
     };
-    let mut out = Vec::new();
-    for e in entries.flatten() {
-        if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let slug = e.file_name().to_string_lossy().into_owned();
-        if !slug_ok(&slug) {
-            continue;
-        }
-        let Ok(raw) = std::fs::read_to_string(e.path().join("talaria.json")) else {
-            continue;
-        };
-        let Ok(j) = serde_json::from_str::<serde_json::Value>(&raw) else {
-            continue;
-        };
-        // A truthy name is what admits an app at all; surface keys count only
-        // when they hold non-empty strings.
-        let Some(name) = j
-            .get("name")
-            .and_then(|v| v.as_str())
-            .filter(|n| !n.is_empty())
-        else {
-            continue;
-        };
-        let str_field = |key: &str, default: &str| {
-            j.get(key)
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| default.to_string())
-        };
-        // Surface keys are OMITTED unless they hold a non-empty string —
-        // the key is absent, not null.
-        let surface = |key: &str| {
-            j.get("surfaces")
-                .and_then(|s| s.get(key))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-        };
-        out.push(DiscoveredApp {
+    match talaria_app_manifest::parse_manifest(&bytes, talaria_app_manifest::SDK_VERSION) {
+        Err(reason) => AppDir::Broken { slug, reason },
+        Ok(m) if m.slug.as_deref().is_some_and(|declared| declared != slug) => AppDir::Broken {
+            reason: format!(
+                "talaria.json declares the slug \"{}\", but the app is installed as \"{slug}\"",
+                m.slug.unwrap_or_default()
+            ),
+            slug,
+        },
+        Ok(m) => AppDir::App(DiscoveredApp {
             mcp: e.path().join("mcp.ts").exists(),
             slug,
-            name: name.to_string(),
-            icon: str_field("icon", "⬡"),
-            description: str_field("description", ""),
-            version: str_field("version", "0.0.0"),
-            work: surface("work"),
-            manage: surface("manage"),
-            settings: surface("settings"),
-        });
+            name: m.name,
+            icon: m.icon,
+            description: m.description,
+            version: m.version,
+            work: m.work,
+            manage: m.manage,
+            settings: m.settings,
+        }),
+    }
+}
+
+/// The manifests under `dir`, sorted by app name. A missing directory is no
+/// apps installed; a directory that exists and cannot be listed is an error.
+/// An app is a slug-named directory whose talaria.json passes the manifest
+/// rules (talaria-app-manifest — the rules the TS host's `listInstalledApps`
+/// holds manifests to, pinned by api/tests/it/fixtures/app-manifest.json).
+/// One that fails is not listed here — no grant, no nav, no MCP row — but
+/// `broken_apps_in` names it, so Manage → Apps can show why and remove it.
+pub fn discovered_apps_in(dir: &std::path::Path) -> std::io::Result<Vec<DiscoveredApp>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut out = Vec::new();
+    for e in entries {
+        if let AppDir::App(app) = read_app_dir(&e?) {
+            out.push(app);
+        }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
+    Ok(out)
+}
+
+/// An installed app whose manifest fails the rules: its slug, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokenApp {
+    pub slug: String,
+    pub reason: String,
+}
+
+/// The directories under `dir` that carry a talaria.json the manifest rules
+/// refuse, sorted by slug. A directory with no talaria.json is not an app
+/// and is not listed.
+pub fn broken_apps_in(dir: &std::path::Path) -> std::io::Result<Vec<BrokenApp>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut out = Vec::new();
+    for e in entries {
+        if let AppDir::Broken { slug, reason } = read_app_dir(&e?) {
+            out.push(BrokenApp { slug, reason });
+        }
+    }
+    out.sort_by(|a, b| a.slug.cmp(&b.slug));
+    Ok(out)
+}
+
+/// `broken_apps_in` over the apps directory; a listing failure is logged and
+/// reads as none, like `discovered_apps`.
+pub fn broken_apps() -> Vec<BrokenApp> {
+    let dir = apps_dir();
+    broken_apps_in(&dir).unwrap_or_else(|e| {
+        tracing::warn!("[apps] could not list {}: {e}", dir.display());
+        Vec::new()
+    })
 }
 
 /// One enabled app as /api/apps serves it — wire order; absent surface keys
@@ -756,7 +803,7 @@ pub struct WireSurfaces {
 
 /// The signed-in view of installed apps: ENABLED apps only, in discovered
 /// (name) order — the platform's own menu, not a secret; per-user view
-/// gating happens off deniedViews client-side.
+/// gating happens off the session's `appGrants` (`ViewGrants::app_grants`).
 pub async fn enabled_apps(pg: &PgPool) -> Vec<WireApp> {
     let enabled: HashSet<String> =
         get_setting(pg, "apps_enabled", serde_json::Value::Array(vec![]))
@@ -792,44 +839,205 @@ pub async fn enabled_apps(pg: &PgPool) -> Vec<WireApp> {
         .collect()
 }
 
-/// ALL app view routes of ENABLED apps: every work surface, then every
-/// manage surface — apps are explicit-grant.
-pub async fn app_view_routes(pg: &PgPool) -> Vec<String> {
-    let enabled: HashSet<String> =
-        get_setting(pg, "apps_enabled", serde_json::Value::Array(vec![]))
-            .await
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(String::from)
-                    .collect()
-            })
-            .unwrap_or_default();
-    let apps: Vec<_> = discovered_apps()
-        .into_iter()
-        .filter(|a| enabled.contains(&a.slug))
-        .collect();
-    let mut out = Vec::new();
-    for a in apps.iter().filter(|a| a.work.is_some()) {
-        out.push(format!("/x/{}", a.slug));
-    }
-    for a in apps.iter().filter(|a| a.manage.is_some()) {
-        out.push(format!("/x/{}/manage", a.slug));
-    }
-    out
+/// The grantable views one app contributes, `(work, manage)`. Each surface
+/// is its own grant: the work surface is `/x/<slug>`, the manage surface is
+/// `/x/<slug>/manage`, and the settings tab follows the manage grant. So an
+/// app that ships settings but no manage surface still contributes
+/// `/x/<slug>/manage` — without it nothing could be granted, and the settings
+/// tab (and the server behind it) would be open to every member or to none.
+/// The TS twin, which the route gate, the nav and the app API gateway read,
+/// is `appGrantViews` in ui/src/lib/app-grants.ts; the two are pinned to one
+/// shared fixture, api/tests/it/fixtures/app-grants.json.
+pub fn app_grant_views(app: &DiscoveredApp) -> (Option<String>, Option<String>) {
+    let work = app.work.as_ref().map(|_| format!("/x/{}", app.slug));
+    let manage =
+        (app.manage.is_some() || app.settings.is_some()).then(|| format!("/x/{}/manage", app.slug));
+    (work, manage)
 }
-/// Views a member may NOT reach: their explicit work-view denials (DB order)
-/// PLUS every Manage view they haven't been granted. Team grants union in:
-/// a team's work denial adds to the user's, a team's manage grant opens the
-/// door. Admins are never restricted.
-pub async fn denied_views(
+
+/// Why a person's view grants, or the enabled apps' views, could not be
+/// read. Each is an answer nobody may guess at: an app list read as empty
+/// once dropped every app view from a member's denials, and the TS gate,
+/// which read a missing denial as a grant, opened every surface of every app
+/// to every member. When only the apps read fails, a member's resolution
+/// still answers for the core views and withholds the app grants
+/// (`ViewGrants::app_grants` is `None`); see `view_grants_in`.
+#[derive(Debug, thiserror::Error)]
+pub enum ViewsError {
+    #[error("database read failed: {0}")]
+    Db(#[from] sqlx::Error),
+    #[error("the apps_enabled setting is not a list of app slugs")]
+    EnabledSetting,
+    #[error("the apps directory could not be listed: {0}")]
+    AppsDir(#[source] std::io::Error),
+}
+
+/// The enabled set from the stored `apps_enabled` value. Absent (or a stored
+/// JSON null) is no app enabled; anything but an array of strings is an
+/// error. The TS host's `enabledAppSlugs` (ui/src/server/apps.ts) holds the
+/// stored value to the same rule.
+pub fn enabled_slugs_from(
+    stored: Option<serde_json::Value>,
+) -> Result<HashSet<String>, ViewsError> {
+    use serde_json::Value;
+    match stored {
+        None | Some(Value::Null) => Ok(HashSet::new()),
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .map(|v| match v {
+                Value::String(slug) => Ok(slug),
+                _ => Err(ViewsError::EnabledSetting),
+            })
+            .collect(),
+        Some(_) => Err(ViewsError::EnabledSetting),
+    }
+}
+
+/// Every view of these apps that is enabled: all work views, then all manage
+/// views (`app_grant_views`), in the apps' (name) order.
+pub fn app_views_of(apps: &[DiscoveredApp], enabled: &HashSet<String>) -> Vec<String> {
+    let views: Vec<_> = apps
+        .iter()
+        .filter(|a| enabled.contains(&a.slug))
+        .map(app_grant_views)
+        .collect();
+    let work = views.iter().filter_map(|(w, _)| w.clone());
+    let manage = views.iter().filter_map(|(_, m)| m.clone());
+    work.chain(manage).collect()
+}
+
+/// ALL app view routes of ENABLED apps under `dir`: every work view, then
+/// every manage view (`app_grant_views`) — apps are explicit-grant. Fails
+/// when the setting or the directory cannot be read; it never answers "no
+/// apps" for "could not tell".
+pub async fn app_view_routes_in(
     pg: &PgPool,
+    dir: &std::path::Path,
+) -> Result<Vec<String>, ViewsError> {
+    let enabled =
+        enabled_slugs_from(talaria_gateway::settings::try_get_setting(pg, "apps_enabled").await?)?;
+    let apps = discovered_apps_in(dir).map_err(ViewsError::AppsDir)?;
+    Ok(app_views_of(&apps, &enabled))
+}
+
+/// `app_view_routes_in` for the configured apps directory.
+pub async fn app_view_routes(pg: &PgPool) -> Result<Vec<String>, ViewsError> {
+    app_view_routes_in(pg, &apps_dir()).await
+}
+
+/// What one person may reach, as `GET /api/auth/session` serves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewGrants {
+    /// Views they may NOT reach: their explicit work-view denials (DB order),
+    /// their teams', then every grantable manage view — core and app — they
+    /// hold no grant for. Empty for an admin. When the enabled apps could not
+    /// be read (`app_grants` is `None`) it lists no app view it was not
+    /// explicitly given, so it answers for the core views only — `denies`
+    /// is how a caller asks about a view.
+    pub denied: Vec<String>,
+    /// The app views they HOLD by grant (person or team), each named exactly
+    /// as `app_grant_views` names it. The app gates admit on this list and
+    /// never on a view's absence from `denied`. Empty for an admin, who holds
+    /// every app by role, the same way `denied` is empty for one. `None` when
+    /// the enabled apps could not be read (a malformed `apps_enabled`, an
+    /// apps directory that cannot be listed): the session serves
+    /// `appGrants: null` with `appsUnreadable: true`, and every app gate
+    /// reads that as no app at all. The core views resolve regardless, so a
+    /// broken app setting costs a member their apps, not all of Talaria.
+    pub app_grants: Option<Vec<String>>,
+}
+
+/// The app view that governs `path` — `/x/<slug>/manage` for the manage
+/// surface and anything under it, `/x/<slug>` for every other path under
+/// the app — or `None` when `path` is not an app route. An app owns every
+/// route below its surfaces, so `/x/crm/deals/7` is the work view's and
+/// `/x/crm/manage/fields/7` the manage view's. Paths compare ASCII-case-
+/// insensitively, as the client router matches a static segment (it mounts
+/// the manage surface at `/x/crm/MANAGE`). The TS twin is `appViewFor` in
+/// ui/src/lib/app-grants.ts; both read the fixture's `routes` cases.
+pub fn app_view_for(path: &str) -> Option<String> {
+    let path = path.to_ascii_lowercase();
+    let rest = path.strip_prefix("/x/")?;
+    let mut parts = rest.split('/');
+    let slug = parts.next().filter(|s| !s.is_empty())?;
+    Some(match parts.next() {
+        Some("manage") => format!("/x/{slug}/manage"),
+        _ => format!("/x/{slug}"),
+    })
+}
+
+impl ViewGrants {
+    /// Whether `view` is closed to this (non-admin) person — the rule
+    /// `isViewDenied` holds in ui/src/lib/app-grants.ts. A core view is
+    /// closed when it, or a view above it, is denied ('x' denies
+    /// 'x/anything'). An app route opens only on the exact view that governs
+    /// it (`app_view_for`), held by grant. Paths compare ASCII-case-
+    /// insensitively, as the client router matches them. `None` when `view`
+    /// is an app route and the enabled apps could not be read: nobody may
+    /// read that as open.
+    pub fn denies(&self, view: &str) -> Option<bool> {
+        match app_view_for(view) {
+            Some(app) => self.app_grants.as_ref().map(|held| !held.contains(&app)),
+            None => {
+                let view = view.to_ascii_lowercase();
+                Some(
+                    self.denied
+                        .iter()
+                        .any(|v| *v == view || view.starts_with(&format!("{v}/"))),
+                )
+            }
+        }
+    }
+}
+
+/// The pure half of the resolution: given a member's explicit denials, the
+/// views they were granted and the enabled apps' views, what they may not
+/// reach and which app views they hold. An app view is held when it was
+/// granted and not explicitly denied. `app_views` is `None` when the enabled
+/// apps could not be read: the core views resolve as ever, and no app view
+/// is held.
+pub fn resolve_view_grants(
+    explicit_denied: Vec<String>,
+    allowed: &HashSet<String>,
+    app_views: Option<&[String]>,
+) -> ViewGrants {
+    let app_grants = app_views.map(|views| {
+        views
+            .iter()
+            .filter(|v| allowed.contains(*v) && !explicit_denied.contains(*v))
+            .cloned()
+            .collect()
+    });
+    let mut denied = explicit_denied;
+    denied.extend(
+        MANAGE_VIEW_ROUTES
+            .into_iter()
+            .map(String::from)
+            .chain(app_views.unwrap_or_default().iter().cloned())
+            .filter(|v| !allowed.contains(v)),
+    );
+    ViewGrants { denied, app_grants }
+}
+
+/// A person's view grants, with the apps under `dir`. Team grants union in:
+/// a team's work denial adds to the person's, a team's manage grant opens the
+/// door. Admins are never restricted, and their resolution reads neither the
+/// apps directory nor the setting — so Admin → Apps stays reachable to fix a
+/// broken setting. For a member, an apps read that fails withholds the app
+/// grants (`app_grants: None`) and nothing else: the core views still
+/// resolve, so a malformed `apps_enabled` or an unlistable apps directory
+/// shuts the apps and leaves the rest of Talaria open.
+pub async fn view_grants_in(
+    pg: &PgPool,
+    dir: &std::path::Path,
     user_id: &str,
     role: &str,
-) -> Result<Vec<String>, sqlx::Error> {
+) -> Result<ViewGrants, ViewsError> {
     if role == "admin" {
-        return Ok(Vec::new());
+        return Ok(ViewGrants {
+            denied: Vec::new(),
+            app_grants: Some(Vec::new()),
+        });
     }
     let row: Option<(Vec<String>, Option<Vec<String>>)> =
         sqlx::query_as("select denied_views, allowed_manage_views from users where id = $1::uuid")
@@ -843,8 +1051,7 @@ pub async fn denied_views(
             denied.push(v);
         }
     }
-    let mut allowed: std::collections::HashSet<String> =
-        allowed.unwrap_or_default().into_iter().collect();
+    let mut allowed: HashSet<String> = allowed.unwrap_or_default().into_iter().collect();
     for v in team_allowed {
         allowed.insert(v);
     }
@@ -857,15 +1064,19 @@ pub async fn denied_views(
     if talaria_agent_managers::manages_any_agent(pg, user_id, role).await? {
         allowed.insert("/agents".to_string());
     }
-    let mut out = denied;
-    out.extend(
-        MANAGE_VIEW_ROUTES
-            .into_iter()
-            .map(String::from)
-            .chain(app_view_routes(pg).await)
-            .filter(|v| !allowed.contains(v)),
-    );
-    Ok(out)
+    let app_views = match app_view_routes_in(pg, dir).await {
+        Ok(views) => Some(views),
+        Err(e) => {
+            tracing::warn!(error = %e, "[users] enabled apps unreadable: app grants withheld, core views resolved");
+            None
+        }
+    };
+    Ok(resolve_view_grants(denied, &allowed, app_views.as_deref()))
+}
+
+/// `view_grants_in` for the configured apps directory.
+pub async fn view_grants(pg: &PgPool, user_id: &str, role: &str) -> Result<ViewGrants, ViewsError> {
+    view_grants_in(pg, &apps_dir(), user_id, role).await
 }
 
 // ── Admin console writes ────────────────────────────────────────────────────
@@ -999,18 +1210,26 @@ pub async fn set_user_agent_access(
     Ok(())
 }
 
+/// Every view an `allowed_manage_views` list may name: the core manage views,
+/// then each enabled app's views. A person's grants and a team's pass through
+/// the same list, so a stale id typed into a request body can't manufacture a
+/// grant on either.
+pub async fn grantable_manage_views(pg: &PgPool) -> Result<Vec<String>, ViewsError> {
+    Ok(MANAGE_VIEW_ROUTES
+        .into_iter()
+        .map(String::from)
+        .chain(app_view_routes(pg).await?)
+        .collect())
+}
+
 /// Replace a member's granted Manage views — filtered to the valid routes,
 /// so a stale id typed into a request body can't manufacture a grant.
 pub async fn set_allowed_manage_views(
     pg: &PgPool,
     user_id: &str,
     views: &[String],
-) -> Result<(), sqlx::Error> {
-    let valid: Vec<String> = MANAGE_VIEW_ROUTES
-        .into_iter()
-        .map(String::from)
-        .chain(app_view_routes(pg).await)
-        .collect();
+) -> Result<(), ViewsError> {
+    let valid = grantable_manage_views(pg).await?;
     let filtered: Vec<&str> = views
         .iter()
         .filter(|v| valid.contains(v))
@@ -1204,6 +1423,440 @@ pub async fn set_assistant_dm_access(
 mod tests {
     use super::*;
 
+    fn app(slug: &str, work: bool, manage: bool, settings: bool) -> DiscoveredApp {
+        let label = |on: bool, l: &str| on.then(|| l.to_string());
+        DiscoveredApp {
+            slug: slug.into(),
+            name: slug.into(),
+            icon: "⬡".into(),
+            description: String::new(),
+            version: "0.0.0".into(),
+            work: label(work, "Work"),
+            manage: label(manage, "Manage"),
+            settings: label(settings, "Settings"),
+            mcp: false,
+        }
+    }
+
+    #[test]
+    fn each_app_surface_is_its_own_grant_and_settings_follows_manage() {
+        let v = |a: DiscoveredApp| app_grant_views(&a);
+        let s = |x: &str| Some(x.to_string());
+        // Work and manage are two views, granted apart.
+        assert_eq!(
+            v(app("crm", true, true, false)),
+            (s("/x/crm"), s("/x/crm/manage"))
+        );
+        assert_eq!(v(app("crm", true, false, false)), (s("/x/crm"), None));
+        assert_eq!(
+            v(app("crm", false, true, false)),
+            (None, s("/x/crm/manage"))
+        );
+        // A settings tab rides the manage grant — even with no manage
+        // surface, so a settings-only app has something to grant at all.
+        assert_eq!(
+            v(app("crm", false, false, true)),
+            (None, s("/x/crm/manage"))
+        );
+        assert_eq!(
+            v(app("crm", true, false, true)),
+            (s("/x/crm"), s("/x/crm/manage"))
+        );
+        // No surface, nothing to grant: only an admin reaches it.
+        assert_eq!(v(app("crm", false, false, false)), (None, None));
+    }
+
+    /// The shared fixture (api/tests/it/fixtures/app-grants.json) the TS
+    /// suite reads too (ui/src/server/app-grants.fixture.test.ts). Rust resolves
+    /// each viewer's grants to the fixture's `appGrants`; TS turns that list
+    /// into `access`. Neither side can move the rule alone.
+    const GRANTS_FIXTURE: &str = include_str!("../../../tests/it/fixtures/app-grants.json");
+
+    fn fixture() -> serde_json::Value {
+        serde_json::from_str(GRANTS_FIXTURE).expect("app-grants.json parses")
+    }
+
+    fn strings(v: &serde_json::Value) -> Vec<String> {
+        v.as_array()
+            .expect("a list")
+            .iter()
+            .map(|s| s.as_str().expect("a string").to_string())
+            .collect()
+    }
+
+    fn fixture_app(a: &serde_json::Value) -> DiscoveredApp {
+        let surface = |k: &str| {
+            a["surfaces"]
+                .get(k)
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        };
+        DiscoveredApp {
+            slug: a["slug"].as_str().unwrap().into(),
+            name: a["name"].as_str().unwrap().into(),
+            icon: "⬡".into(),
+            description: String::new(),
+            version: "0.0.0".into(),
+            work: surface("work"),
+            manage: surface("manage"),
+            settings: surface("settings"),
+            mcp: false,
+        }
+    }
+
+    #[test]
+    fn the_app_grant_rule_matches_the_shared_fixture() {
+        let f = fixture();
+        let apps: Vec<DiscoveredApp> = f["apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(fixture_app)
+            .collect();
+        for (a, raw) in apps.iter().zip(f["apps"].as_array().unwrap()) {
+            let (work, manage) = app_grant_views(a);
+            let views: Vec<String> = work.into_iter().chain(manage).collect();
+            assert_eq!(views, strings(&raw["views"]), "views of {}", a.slug);
+        }
+        let enabled: HashSet<String> = strings(&f["enabled"]).into_iter().collect();
+        let app_views = app_views_of(&apps, &enabled);
+        assert_eq!(app_views, strings(&f["appViews"]));
+
+        for viewer in f["viewers"].as_array().unwrap() {
+            let about = viewer["about"].as_str().unwrap();
+            // An admin never reaches the resolver (`view_grants_in` answers
+            // no denials and an empty grant list for one); the live test
+            // below pins that arm.
+            if viewer["admin"].as_bool() == Some(true) {
+                assert!(strings(&viewer["appGrants"]).is_empty(), "{about}");
+                continue;
+            }
+            let allowed: HashSet<String> = strings(&viewer["allowed"]).into_iter().collect();
+            let explicit = strings(&viewer["explicitDenied"]);
+            if viewer["appsUnreadable"].as_bool() == Some(true) {
+                // The apps read failed: no app view is held, whatever was
+                // granted, and the core views resolve exactly as ever.
+                assert!(viewer["appGrants"].is_null(), "{about}");
+                let g = resolve_view_grants(explicit, &allowed, None);
+                assert_eq!(g.app_grants, None, "{about}");
+                assert_eq!(g.denied, strings(&viewer["denied"]), "{about}");
+                for v in &app_views {
+                    assert_eq!(g.denies(v), None, "{about}: {v} is not answerable");
+                }
+                assert_eq!(g.denies("/boards/b1"), Some(true), "{about}");
+                assert_eq!(g.denies("/agents"), Some(false), "{about}");
+                assert_eq!(g.denies("/inbox"), Some(false), "{about}");
+                continue;
+            }
+            let g = resolve_view_grants(explicit, &allowed, Some(&app_views));
+            let held = g.app_grants.clone().expect("the apps were read");
+            assert_eq!(held, strings(&viewer["appGrants"]), "{about}");
+            // Fail closed: every enabled app view is either held or denied,
+            // never neither — and never both.
+            for v in &app_views {
+                let is_held = held.contains(v);
+                let denied = g.denied.contains(v);
+                assert!(
+                    is_held != denied,
+                    "{about}: {v} held={is_held} denied={denied}"
+                );
+                assert_eq!(g.denies(v), Some(!is_held), "{about}: {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_route_below_an_app_surface_answers_to_that_surface() {
+        // The fixture's `routes` cases, which the TS route gate and nav read
+        // too (ui/src/server/app-grants.fixture.test.ts): a work-only member
+        // reaches /x/crm/a/b and never /x/crm/manage/a, a manage-only member
+        // the reverse.
+        let f = fixture();
+        let viewers = f["routes"]["viewers"].as_object().expect("routes.viewers");
+        let paths = f["routes"]["paths"].as_array().expect("routes.paths");
+        assert!(!viewers.is_empty() && !paths.is_empty());
+        for c in paths {
+            let path = c["path"].as_str().expect("path");
+            assert_eq!(
+                app_view_for(path),
+                c["view"].as_str().map(String::from),
+                "the view governing {path}"
+            );
+            let open = strings(&c["open"]);
+            for (name, v) in viewers {
+                let g = ViewGrants {
+                    denied: strings(&v["denied"]),
+                    app_grants: Some(strings(&v["appGrants"])),
+                };
+                assert_eq!(
+                    g.denies(path),
+                    Some(!open.contains(name)),
+                    "{path} for the {name} viewer"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_app_route_answers_to_the_view_that_governs_it() {
+        let s = |x: &str| Some(x.to_string());
+        assert_eq!(app_view_for("/x/crm"), s("/x/crm"));
+        assert_eq!(app_view_for("/x/crm/deals/7"), s("/x/crm"));
+        assert_eq!(app_view_for("/x/crm/manage"), s("/x/crm/manage"));
+        assert_eq!(app_view_for("/x/crm/manage/fields"), s("/x/crm/manage"));
+        assert_eq!(app_view_for("/x/crm/manager"), s("/x/crm"));
+        assert_eq!(app_view_for("/x/"), None);
+        assert_eq!(app_view_for("/x"), None);
+        assert_eq!(app_view_for("/teams"), None);
+
+        // A work grant never opens the manage surface, and a denied work view
+        // does not shut a granted manage view below it.
+        let g = ViewGrants {
+            denied: vec!["/x/crm".into(), "/teams".into()],
+            app_grants: Some(vec!["/x/crm/manage".into()]),
+        };
+        assert_eq!(g.denies("/x/crm/manage/fields"), Some(false));
+        assert_eq!(g.denies("/x/crm"), Some(true));
+        assert_eq!(g.denies("/teams/t1"), Some(true));
+        assert_eq!(g.denies("/observability"), Some(false));
+
+        // The apps could not be read: core views still answer, app routes
+        // never do.
+        let g = ViewGrants {
+            denied: vec!["/teams".into()],
+            app_grants: None,
+        };
+        assert_eq!(g.denies("/teams"), Some(true));
+        assert_eq!(g.denies("/observability"), Some(false));
+        assert_eq!(g.denies("/x/crm"), None);
+        assert_eq!(g.denies("/x/crm/manage"), None);
+    }
+
+    #[test]
+    fn the_enabled_setting_reads_as_the_shared_fixture_says() {
+        for case in fixture()["enabledSetting"].as_array().unwrap() {
+            let about = case["about"].as_str().unwrap();
+            let stored = if case["absent"].as_bool() == Some(true) {
+                None
+            } else {
+                Some(case["stored"].clone())
+            };
+            let got = enabled_slugs_from(stored);
+            if case["error"].as_bool() == Some(true) {
+                assert!(matches!(got, Err(ViewsError::EnabledSetting)), "{about}");
+            } else {
+                let want: HashSet<String> = strings(&case["slugs"]).into_iter().collect();
+                assert_eq!(got.unwrap(), want, "{about}");
+            }
+        }
+    }
+
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "talaria-users-{tag}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn manifests_are_apps_exactly_as_the_shared_fixture_says() {
+        use base64::Engine as _;
+        let dir = scratch_dir("manifests");
+        let cases = fixture()["manifests"].as_array().unwrap().clone();
+        for case in &cases {
+            let app = dir.join(case["dir"].as_str().unwrap());
+            std::fs::create_dir_all(&app).unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(case["bytesBase64"].as_str().unwrap())
+                .unwrap();
+            std::fs::write(app.join("talaria.json"), bytes).unwrap();
+        }
+        let listed: Vec<String> = discovered_apps_in(&dir)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.slug)
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        for case in &cases {
+            let slug = case["dir"].as_str().unwrap();
+            assert_eq!(
+                listed.iter().any(|s| s == slug),
+                case["listed"].as_bool().unwrap(),
+                "{}",
+                case["about"].as_str().unwrap()
+            );
+        }
+    }
+
+    /// Every directory with a talaria.json is either an app or broken, never
+    /// silently neither: a manifest the rules refuse is listed with the
+    /// reason, so Manage → Apps can show it and uninstall it.
+    #[test]
+    fn a_refused_manifest_is_listed_as_broken_with_its_reason() {
+        use base64::Engine as _;
+        let dir = scratch_dir("broken");
+        let cases = fixture()["manifests"].as_array().unwrap().clone();
+        for case in &cases {
+            let app = dir.join(case["dir"].as_str().unwrap());
+            std::fs::create_dir_all(&app).unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(case["bytesBase64"].as_str().unwrap())
+                .unwrap();
+            std::fs::write(app.join("talaria.json"), bytes).unwrap();
+        }
+        // Not an app at all: no manifest, or a staging tree.
+        std::fs::create_dir_all(dir.join("no-manifest")).unwrap();
+        std::fs::create_dir_all(dir.join(".crm.next")).unwrap();
+        std::fs::write(dir.join(".crm.next/talaria.json"), b"{}").unwrap();
+        // A declared slug the directory does not match.
+        std::fs::create_dir_all(dir.join("crm2")).unwrap();
+        std::fs::write(
+            dir.join("crm2/talaria.json"),
+            br#"{"name":"CRM","slug":"crm"}"#,
+        )
+        .unwrap();
+        let broken = broken_apps_in(&dir).unwrap();
+        let listed = discovered_apps_in(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let slugs: Vec<&str> = broken.iter().map(|b| b.slug.as_str()).collect();
+        assert_eq!(slugs, ["bom", "broken", "crm2", "latin1", "noname"]);
+        let reason = |s: &str| broken.iter().find(|b| b.slug == s).unwrap().reason.clone();
+        assert_eq!(reason("latin1"), "talaria.json is not UTF-8");
+        assert!(reason("noname").contains("needs a \"name\""));
+        assert!(reason("crm2").contains("declares the slug \"crm\""));
+        assert!(listed.iter().all(|a| a.slug != "crm2"));
+        for case in &cases {
+            let slug = case["dir"].as_str().unwrap();
+            let is_app = listed.iter().any(|a| a.slug == slug);
+            assert_ne!(is_app, slugs.contains(&slug), "{slug} is one or the other");
+        }
+    }
+
+    #[test]
+    fn a_missing_apps_dir_is_no_apps_and_an_unlistable_one_is_an_error() {
+        let dir = scratch_dir("unlistable");
+        assert!(discovered_apps_in(&dir.join("absent")).unwrap().is_empty());
+        // A file where the directory should be: it exists and cannot be
+        // listed, so nobody may read it as "no apps".
+        let file = dir.join("apps");
+        std::fs::write(&file, b"not a directory").unwrap();
+        let got = discovered_apps_in(&file);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(got.is_err());
+    }
+
+    /// Live: a settings-only app's manage view is denied until granted and
+    /// held once granted, and on a malformed setting or an unlistable apps
+    /// directory a member's resolution withholds every app grant — never
+    /// leaving the app views out of a list read as complete — while the core
+    /// views resolve as before; an admin's never reads either.
+    ///
+    ///   DATABASE_URL=postgres://… cargo test -p talaria-users --lib -- --ignored live_
+    #[tokio::test]
+    #[ignore = "live DB: set DATABASE_URL"]
+    async fn live_view_grants_list_a_settings_only_app_and_withhold_apps_it_cannot_read() {
+        use futures_util::FutureExt as _;
+        use talaria_gateway::settings::{set_setting, try_get_setting};
+        let url = std::env::var("DATABASE_URL").expect("set DATABASE_URL to run the live tests");
+        let pg = PgPool::connect(&url).await.expect("connect");
+        let dir = scratch_dir("live");
+        let slug = format!("prefs-{}", uuid::Uuid::new_v4().simple());
+        std::fs::create_dir_all(dir.join(&slug)).unwrap();
+        std::fs::write(
+            dir.join(&slug).join("talaria.json"),
+            br#"{"name":"Prefs","surfaces":{"settings":"Prefs"}}"#,
+        )
+        .unwrap();
+        let before = try_get_setting(&pg, "apps_enabled").await.unwrap();
+        let sub = format!("users-live:{slug}");
+        let uid: String = sqlx::query_scalar(
+            "insert into users (sub, email, name, role) values ($1, $1, 'live', 'member') returning id::text",
+        )
+        .bind(&sub)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        let view = format!("/x/{slug}/manage");
+
+        let run = async {
+            set_setting(&pg, "apps_enabled", &serde_json::json!([slug]))
+                .await
+                .unwrap();
+            let g = view_grants_in(&pg, &dir, &uid, "member").await.unwrap();
+            assert!(g.denied.contains(&view), "ungranted: denied");
+            assert_eq!(g.app_grants, Some(vec![]), "ungranted: held nothing");
+
+            sqlx::query("update users set allowed_manage_views = $1 where id = $2::uuid")
+                .bind(vec![view.clone()])
+                .bind(&uid)
+                .execute(&pg)
+                .await
+                .unwrap();
+            let g = view_grants_in(&pg, &dir, &uid, "member").await.unwrap();
+            assert_eq!(g.app_grants, Some(vec![view.clone()]), "granted: held");
+            assert!(!g.denied.contains(&view), "granted: not denied");
+            let core = g.denied.clone();
+
+            // A malformed setting withholds the app grants and nothing else:
+            // the core denials are the ones the readable setting gave.
+            set_setting(&pg, "apps_enabled", &serde_json::json!({ "broken": true }))
+                .await
+                .unwrap();
+            assert!(matches!(
+                app_view_routes_in(&pg, &dir).await,
+                Err(ViewsError::EnabledSetting)
+            ));
+            let g = view_grants_in(&pg, &dir, &uid, "member").await.unwrap();
+            assert_eq!(g.app_grants, None, "malformed setting: no app held");
+            assert_eq!(g.denied, core, "malformed setting: core views as before");
+            assert_eq!(g.denies(&view), None);
+            assert_eq!(g.denies("/teams"), Some(true));
+            // The admin arm reads neither, so Admin → Apps stays reachable to
+            // rewrite the setting.
+            let g = view_grants_in(&pg, &dir, &uid, "admin").await.unwrap();
+            assert!(g.denied.is_empty());
+            assert_eq!(g.app_grants, Some(vec![]));
+
+            // An apps directory that cannot be listed: the same.
+            set_setting(&pg, "apps_enabled", &serde_json::json!([slug]))
+                .await
+                .unwrap();
+            let not_a_dir = dir.join(&slug).join("talaria.json");
+            assert!(matches!(
+                app_view_routes_in(&pg, &not_a_dir).await,
+                Err(ViewsError::AppsDir(_))
+            ));
+            let g = view_grants_in(&pg, &not_a_dir, &uid, "member")
+                .await
+                .unwrap();
+            assert_eq!(g.app_grants, None, "unlistable dir: no app held");
+            assert_eq!(g.denied, core, "unlistable dir: core views as before");
+        };
+        let outcome = std::panic::AssertUnwindSafe(run).catch_unwind().await;
+
+        match before {
+            Some(v) => set_setting(&pg, "apps_enabled", &v).await.unwrap(),
+            None => {
+                sqlx::query("delete from app_settings where key = 'apps_enabled'")
+                    .execute(&pg)
+                    .await
+                    .unwrap();
+            }
+        }
+        sqlx::query("delete from users where id = $1::uuid")
+            .bind(&uid)
+            .execute(&pg)
+            .await
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
     const UID: &str = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
 
     #[test]
@@ -1339,6 +1992,27 @@ mod tests {
         assert!(!slug_ok("Upper"));
         assert!(!slug_ok("under_score"));
         assert!(!slug_ok("sp ace"));
+    }
+
+    #[test]
+    fn a_new_app_cannot_take_a_router_config_key_as_its_slug() {
+        // The shared fixture's list, which the TS route-table test checks
+        // against the route table's own config keys.
+        let f = fixture();
+        let reserved: Vec<String> = RESERVED_APP_SLUGS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(reserved, strings(&f["routes"]["reservedSlugs"]));
+        for s in RESERVED_APP_SLUGS {
+            // Slug-shaped, so an app already installed under one is still
+            // discovered, enabled and uninstalled; only a new install refuses.
+            assert!(slug_ok(s), "{s}");
+            let err = slug_installable(s).expect_err(s);
+            assert!(err.contains("is reserved"), "{err}");
+        }
+        assert_eq!(slug_installable("crm"), Ok(()));
+        assert_eq!(slug_installable("hooks-app"), Ok(()));
+        assert_eq!(slug_installable("my-layout"), Ok(()));
+        let err = slug_installable("Hooks").expect_err("upper case");
+        assert!(err.contains("not a usable app slug"), "{err}");
     }
 
     #[test]

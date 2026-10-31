@@ -1,7 +1,7 @@
 // /api/admin/model-roles. Model Roles — which model handles each activity
 // class. GET → the catalog of roles + current assignments + assignable
 // models + fitness issues. PUT { role, model|null } → assign (null = back
-// to auto). Admins only.
+// to auto); a `vision` assignment also re-renders the fleet. Admins only.
 //
 // `issues` is the audit-1.6 signal and it is ADVISORY on both verbs: a PUT that
 // creates one still succeeds, and answers with the issue it just created so the
@@ -155,6 +155,9 @@ pub async fn put(
             },
         )
         .await;
+        if role == "vision" {
+            rerender_fleet(&state);
+        }
     }
     if let Some(effort_value) = &effort {
         // Validated against the levels the model PUBLISHES: a preference for a
@@ -226,6 +229,28 @@ pub async fn put(
         .await;
     }
     Ok(finish(&state).await)
+}
+
+/// The `vision` role is the one role rendered into fleet config: it is each
+/// blind agent's Hermes image reader (`auxiliary.vision`, talaria-fleet-render's
+/// `fleet_vision`). So assigning or clearing it re-renders the fleet now,
+/// rather than leaving it for whatever render comes next. Detached, like the
+/// renders an MCP edit starts: the assignment is already written, and a render
+/// that fails says so in the log and is retried by the next one.
+fn rerender_fleet(state: &AppState) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        let sb = match state.secretbox().await {
+            Ok(sb) => sb,
+            Err(e) => {
+                tracing::warn!("[model-roles] vision role saved; fleet re-render skipped: {e}");
+                return;
+            }
+        };
+        if let Err(e) = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb).await {
+            tracing::warn!("[model-roles] vision role saved; fleet re-render failed: {e}");
+        }
+    });
 }
 
 async fn finish(state: &AppState) -> Response {

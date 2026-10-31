@@ -65,15 +65,41 @@ impl MemoryFile {
     }
 }
 
-async fn department_for(pg: &PgPool, def_id: &str) -> Result<(String, String), String> {
+/// Whether a door's error is the shared-department refusal below — the route
+/// answers it 409, every other failure here stays a 400.
+pub use talaria_agent_defs::is_shared_department_refusal;
+
+/// The department whose container holds `def_id`'s memory. The container is
+/// found by department, and where another agent shares this one's (a pair
+/// from before a department became one agent's) and runs there, the memory
+/// in it is THAT agent's: reading it here would show this agent somebody
+/// else's memory, and writing it would overwrite theirs. Refused, by name;
+/// `doing` is what the door would have done ("read memory from").
+async fn department_for(
+    pg: &PgPool,
+    def_id: &str,
+    doing: &str,
+) -> Result<(String, String), String> {
     let row: Option<(String, String)> = sqlx::query_as(
         "select department, display_name from agent_defs where id = $1::uuid and managed",
     )
     .bind(def_id)
     .fetch_optional(pg)
     .await
-    .map_err(|e| e.to_string())?;
-    row.ok_or_else(|| "not a managed agent".to_string())
+    .map_err(|e| talaria_error::store_fault("[memory] agent read failed", e))?;
+    let (department, display_name) = row.ok_or_else(|| "not a managed agent".to_string())?;
+    if let Some(runner) = talaria_agent_defs::runner_instead_of(pg, def_id, &department)
+        .await
+        .map_err(|e| talaria_error::store_fault("[memory] department share read failed", e))?
+    {
+        return Err(talaria_agent_defs::shared_department_refusal(
+            doing,
+            &display_name,
+            &department,
+            &runner.display_name,
+        ));
+    }
+    Ok((department, display_name))
 }
 
 pub async fn read_memory(
@@ -81,7 +107,7 @@ pub async fn read_memory(
     def_id: &str,
     file: MemoryFile,
 ) -> Result<(String, String), String> {
-    let (department, _) = department_for(pg, def_id).await?;
+    let (department, _) = department_for(pg, def_id, "read memory from").await?;
     let name = managed_container(pg, &department).await;
     let content = match docker_exec_opt(&name, &["cat", file.path()], None, 20_000).await {
         Ok((stdout, _)) => stdout,
@@ -103,7 +129,7 @@ pub async fn write_memory(
     author: Option<&str>,
     file: MemoryFile,
 ) -> Result<(), String> {
-    let (department, _) = department_for(pg, def_id).await?;
+    let (department, _) = department_for(pg, def_id, "write memory in").await?;
     let name = managed_container(pg, &department).await;
     let write = format!("cat > {}", file.path());
     docker_exec_opt(&name, &["sh", "-c", &write], Some(content), 20_000)

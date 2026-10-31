@@ -11,4 +11,5 @@ workspace = true
 [dependencies]
 serde = { workspace = true }
 sqlx = { workspace = true }
+talaria-params = { workspace = true }
 talaria-permissions = { workspace = true }

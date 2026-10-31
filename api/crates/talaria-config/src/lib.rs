@@ -45,6 +45,54 @@ impl SecretRoot {
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    /// THE APP HOST'S SERVICE CREDENTIAL for `/api/internal/*`: hex
+    /// HMAC-SHA256 of [`INTERNAL_TOKEN_CONTEXT`] keyed by the root. The TS
+    /// host derives the same value from the same root (`internalToken`,
+    /// ui/src/server/secretbox.ts), so the two processes agree without a
+    /// token being minted, stored or passed between them — and whether the
+    /// api was spawned by the host or adopted makes no difference. Nobody
+    /// else holds the root, so no user, agent or app can present it, and the
+    /// value reveals nothing about the root it came from.
+    pub fn internal_token(&self) -> String {
+        internal_token_for(&self.material)
+    }
+
+    /// Whether `presented` is [`Self::internal_token`], compared in constant
+    /// time. An empty root admits nothing.
+    pub fn admits_internal(&self, presented: &str) -> bool {
+        if self.material.is_empty() {
+            return false;
+        }
+        let want = self.internal_token();
+        want.len() == presented.len()
+            && want
+                .bytes()
+                .zip(presented.bytes())
+                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                == 0
+    }
+}
+
+/// The header an internal caller presents [`SecretRoot::internal_token`] in.
+pub const INTERNAL_HEADER: &str = "x-talaria-internal";
+
+/// What the internal credential is an HMAC of. Versioned, so a future change
+/// of derivation is a new context rather than a silent collision.
+pub const INTERNAL_TOKEN_CONTEXT: &str = "talaria.internal.v1";
+
+fn internal_token_for(material: &str) -> String {
+    use hmac::Mac as _;
+    type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+    // hmac 0.13: the constructor lives on KeyInit.
+    let mut mac = <HmacSha256 as hmac::KeyInit>::new_from_slice(material.as_bytes())
+        .expect("hmac takes any key length");
+    mac.update(INTERNAL_TOKEN_CONTEXT.as_bytes());
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 impl Config {
@@ -244,6 +292,44 @@ mod tests {
         let c =
             Config::from_parts(db, rd, sk, String::new(), String::new(), String::new()).unwrap();
         assert_eq!(c.bind.port(), DEFAULT_PORT);
+    }
+
+    /// The vector ui/src/server/secretbox.test.ts pins too: node's
+    /// `createHmac('sha256', 'root-secret').update('talaria.internal.v1')`.
+    /// If the two runtimes ever disagree, every host → api internal call is
+    /// refused, so the agreement is the test.
+    #[test]
+    fn internal_token_matches_the_hosts_derivation_and_admits_only_itself() {
+        let [db, rd, sk, skf, auth, port] = base();
+        let c = Config::from_parts(db, rd, sk, skf, auth, port).unwrap();
+        let token = c.secret_root.internal_token();
+        assert_eq!(
+            token,
+            "341a37f012f6b92e230f409a24288148c425e0e19bba2e9609f50e56479b8326"
+        );
+        assert!(c.secret_root.admits_internal(&token));
+        assert!(!c.secret_root.admits_internal(""));
+        assert!(!c.secret_root.admits_internal(&token[..63]));
+        assert!(!c.secret_root.admits_internal(&format!("{}0", &token[..63])));
+        // Another root derives another credential.
+        assert_eq!(
+            internal_token_for("another-root"),
+            "f20889e6131d534ab0c32ee243f34ab2c309c0a446270e865635f482876a3043"
+        );
+        assert!(
+            !c.secret_root
+                .admits_internal(&internal_token_for("another-root"))
+        );
+    }
+
+    #[test]
+    fn an_empty_root_admits_nothing() {
+        let root = SecretRoot {
+            material: String::new(),
+            source: RootSource::SecretKey,
+            name: "TALARIA_SECRET_KEY".into(),
+        };
+        assert!(!root.admits_internal(&internal_token_for("")));
     }
 
     #[test]

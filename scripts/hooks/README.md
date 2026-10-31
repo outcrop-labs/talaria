@@ -36,9 +36,17 @@ Three entry points:
   push to `main` or `rc` that the model does not allow stops here with the reason; the model
   is [`../../docs/BRANCHES.md`](../../docs/BRANCHES.md).
 - [`pr-watch.mjs`](./pr-watch.mjs) — after a pull request is open. Polls check runs and
-  mergeable state. Exit 0 only when checks are green and the PR is mergeable against `rc`;
-  exit 2 names `red`, `conflict`, `pending`, `timeout`, `closed`, or `base` on stderr. It
-  does not edit or push. Not wired as a Stop hook — [`ship-a-change`](../../.claude/skills/ship-a-change/SKILL.md)
+  mergeable state. Exit 0 only when checks are green (the latest run of each; a superseded
+  cancelled one does not count), the PR's head is the pushed commit, a CI workflow run for
+  that head has finished, and the PR is mergeable against `rc`. The CI workflow's name comes
+  from the PR's own repository (the one gh's PR URL names, else `--repo`): its `ci.yml` at
+  the PR head, read from GitHub. Only when GitHub cannot answer does this checkout's copy (if it is
+  that repository) or `CI` stand in, and the verdict says so. Every `gh` read names the PR's
+  host (`--hostname` on `gh api`, `HOST/OWNER/REPO` on `--repo`), so a GitHub Enterprise PR,
+  or a `GH_HOST` set for another host, does not send it elsewhere;
+  exit 2 names `red`, `conflict`, `pending`, `timeout`, `closed`, or `base` on stderr
+  (`pending` comes at once, not at the wall clock, when only a push or a reconcile can
+  change the head). It does not edit or push. Not wired as a Stop hook — [`ship-a-change`](../../.claude/skills/ship-a-change/SKILL.md)
   runs it, because whether a harness should spawn it on its own is an open call. Exit 0
   prints one proof line to stdout (the state an agent may cite); every other rule of this
   contract holds, including "could not run is not a pass".

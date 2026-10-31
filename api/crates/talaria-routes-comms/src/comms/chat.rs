@@ -23,8 +23,8 @@ use talaria_body::{
     optional_uuid_member, string_member, string_msg, uuid_member, zod_type_name,
 };
 use talaria_chat_persist::{
-    PersistMeta, PlanMeta, TurnMeta, continue_conversation, persist_assistant_stream, pinned_turn,
-    send_turn,
+    OpeningTurn, PersistMeta, PlanMeta, TurnMeta, continue_conversation, persist_assistant_stream,
+    pinned_turn, send_turn, turn_sent,
 };
 use talaria_conversations::{
     accessible_conversation, active_streaming_assistant, create_conversation,
@@ -70,6 +70,11 @@ struct ChatBody {
     /// The file open in the teammate's pane (work turns only; validated for
     /// every kind, read only for `work`). Null and absent both mean none.
     focus: Option<PaneFocus>,
+    /// The page's own name for this turn, a uuid it drew: a stop that names
+    /// it reaches this turn before the api has read this send, and on a new
+    /// thread before the page knows the thread (talaria-chat-persist
+    /// `turn_stop`).
+    turn_id: Option<String>,
 }
 
 /// `focus: { kind: 'artifact' | 'google', id, title? } | null`. The kind is
@@ -134,6 +139,7 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<ChatBody, String> {
     // { kind: artifact|google, id, title? } or null — the file open in the
     // teammate's pane; read on work turns only
     let focus = focus_member(obj, "focus")?;
+    let turn_id = optional_uuid_member(obj, "turnId")?;
     Ok(ChatBody {
         model,
         conversation_id,
@@ -146,6 +152,7 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<ChatBody, String> {
         template_id,
         queue,
         focus,
+        turn_id,
     })
 }
 
@@ -181,6 +188,7 @@ pub async fn post(
     // Which research prompt this conversation's agent speaks with, set while
     // resolving the conversation below — None everywhere but research.
     let mut research_prompt: Option<&'static str> = None;
+    let mut opening: Option<OpeningTurn> = None;
     if let Some(cid) = conv_id.as_deref() {
         let conv = match accessible_conversation(&state.pg, &user.id, cid).await {
             Ok(c) => c,
@@ -189,6 +197,10 @@ pub async fn post(
         let Some(conv) = conv else {
             return Ok(house_error(StatusCode::NOT_FOUND, "conversation not found"));
         };
+        // A stop pressed the moment this was sent can arrive before the
+        // reply row exists: from here it waits for this turn to name itself
+        // instead of missing it (talaria-chat-persist `OpeningTurn`).
+        opening = Some(OpeningTurn::take(cid));
         agent_model = conv.agent_model;
         kind = conv.kind;
         plan_title = conv.title;
@@ -421,6 +433,28 @@ pub async fn post(
     }
     let conv_id = conv_id.expect("created or resolved above");
 
+    // A new thread's opening is claimed as soon as its id exists. And from
+    // here a stop that names this send's turn (`turnId`) finds it: the
+    // caller's access is checked and the thread's opening claimed. A stop
+    // that came first and outlived its wait is handed to the opening, whose
+    // drain sends it the moment the turn names itself.
+    let mut opening = opening.unwrap_or_else(|| OpeningTurn::take(&conv_id));
+    if let Some(turn_id) = body.turn_id.as_deref() {
+        let sent = turn_sent(turn_id, &user.id, &conv_id);
+        if sent.stop_held() {
+            if opening.hold_stop_here() {
+                tracing::info!(
+                    "[chat] {conv_id}: a person's stop for this turn came before the send did; it is held until the agent opens the turn"
+                );
+            } else {
+                tracing::info!(
+                    "[chat] {conv_id}: a person's stop for this turn came before the send did, and another turn holds the thread: nothing of this send's to stop"
+                );
+            }
+        }
+        opening.keep_turn(sent);
+    }
+
     // Claude-style flow: while a reply is streaming, new messages QUEUE into
     // history instead of interrupting — the completing turn (or the
     // continuation below, if the stream just ended) picks them up.
@@ -609,6 +643,9 @@ pub async fn post(
         Vec::new()
     };
     if queued {
+        // Not this send's turn to open: let go first, so the chained turn
+        // below can claim the thread for its own.
+        drop(opening);
         // If the stream ended between the client's view and this landing,
         // nothing would pick the message up — chain the next turn ourselves.
         if in_flight.is_none() {
@@ -766,7 +803,9 @@ pub async fn post(
         });
     }
 
-    let (upstream, prompt_chars) = send_turn(
+    let sent_at_ms = talaria_agent_auth::now_ms();
+    let upstream = send_turn(
+        &state.pg,
         pinned,
         &agent_model,
         &routed_model,
@@ -782,7 +821,6 @@ pub async fn post(
     // it completes even if the client disconnects.
     let persist_meta = PersistMeta {
         agent_model: agent_model.clone(),
-        prompt_chars,
         tier: body.tier.clone(),
         plan: plan_meta.clone(),
         research_prompt,
@@ -790,6 +828,7 @@ pub async fn post(
         sender: Some(identity),
         // A live turn is a first attempt — eligible for the one auto-resume.
         resumed: false,
+        sent_at_ms: Some(sent_at_ms),
     };
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let assistant_id_header = assistant_id.clone();
@@ -802,6 +841,7 @@ pub async fn post(
             persist_conv_id,
             Some(persist_meta),
             Some(tx),
+            opening,
         )
         .await;
     });

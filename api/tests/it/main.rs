@@ -15,8 +15,10 @@
 
 mod support;
 
+mod absent_path_ids;
 mod agent_managers;
 mod agent_reply_notify;
+mod app_mcp_sync_live;
 mod artifacts_read;
 mod attribution;
 mod blueprints_live;
@@ -40,7 +42,9 @@ mod gateway_hot_caches;
 mod github_jwt;
 mod github_pem_repair;
 mod group_dm_live;
+mod internal_routes;
 mod llm_models;
+mod malformed_path_ids;
 mod me_threads_sent_live;
 mod notifications_reads;
 mod office_export_live;
@@ -59,6 +63,8 @@ mod runs_decide;
 mod runs_reclaim;
 mod runs_run;
 mod runs_store;
+mod seal_configs_live;
+mod secret_delete_live;
 mod secretbox;
 mod sender_identity_live;
 mod session_overview_live;
@@ -67,6 +73,7 @@ mod subagent_events_live;
 mod task_refs_live;
 mod teams_move_live;
 mod ticket_threads_live;
+mod turn_stop_live;
 mod typed_binds;
 mod typing_live;
 mod unreads;

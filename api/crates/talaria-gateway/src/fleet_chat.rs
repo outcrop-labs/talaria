@@ -7,7 +7,9 @@
 // A session turn can also be reached while it runs: steer_run pushes words
 // into it and stop_run interrupts it, both naming the run id the stream
 // announced. They live here because they go through the same door with the
-// same bearer as the turn itself.
+// same bearer as the turn itself — as does agent_request, the plain json call
+// other crates make on that door (talaria-agent-crons drives Hermes's own
+// `/api/jobs` with it).
 //
 // Every Hermes persona turn in the tree is sent from here to the agent's own
 // container, which then talks to a provider we do not control the request
@@ -20,15 +22,30 @@
 // (routes/llm_chat.rs) serves workspace API keys against provider endpoints;
 // this path serves TALKING TO THE AGENTS THEMSELVES, and only the comms/chat
 // planes do it.
+//
+// WHERE A TURN'S SPEND LANDS: not here. The relay books every call the agent
+// makes on its own gateway key; what this door adds is WHOSE turn those calls
+// belong to. Each caller hands over its `TurnAttribution` (the flow's source,
+// conversation or run, ticket), and the turn's conversation id — the session
+// id we created, or the id Hermes answers in `X-Hermes-Session-Id` on the
+// completions arm — is recorded under it. The agent's talaria-events plugin
+// ties the affinity key Hermes stamps on the turn's calls to that same id, so
+// the relay can stamp the flow on every row it books (usage.rs, "Attribution").
 
 use axum::body::Bytes;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 
+use crate::fleet_lost_turns::{LostTurnRetry, heal_lost_completion, heal_lost_turn};
 use crate::provider::http;
-use crate::usage::{TurnRegistration, register_turn};
+use crate::usage::{TurnAttribution, affinity_key, backfill_attribution, record_attribution};
 use crate::vault::{SecretVault, seal_content};
+use futures_util::future::BoxFuture;
 use talaria_fleet_layout::{ManifestEntry, describe_agent, read_manifest};
+
+/// The verb of an `agent_request`, re-exported so a caller names one without
+/// a reqwest dependency of its own.
+pub use reqwest::Method;
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -40,15 +57,19 @@ pub type ByteStream = Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<By
 /// response's headers) before the retry/deadline loop takes over. Generous on
 /// purpose: the agent's first frame rides its provider's time-to-first-token,
 /// and a long context — or a mid-task compaction — can hold that for minutes.
-/// Only silence past this reads as "not serving yet".
-const HEADERS_WINDOW: Duration = Duration::from_secs(300);
+/// Only silence past this reads as "not serving yet". It is also how long a
+/// let-go completions turn keeps being sent its stop while Hermes cannot
+/// place it yet (fleet_abandoned.rs): the same patience, for the same agent.
+pub(crate) const HEADERS_WINDOW: Duration = Duration::from_secs(300);
 /// The bound on a steer or a stop. A control call names a run that is live
 /// at this instant and the container answers it in milliseconds or not at
 /// all; the drain loop fires these from inside a stream it must keep
 /// reading, and a route answers a person who just pressed the button.
 /// Neither can wait the turn's five minutes on a container that accepted
-/// TCP and went quiet.
-const CONTROL_WINDOW: Duration = Duration::from_secs(10);
+/// TCP and went quiet. It also bounds how long a completions turn its reader
+/// let go of is read on once its stop can be placed (fleet_abandoned.rs),
+/// which a caller with its own deadline counts in.
+pub const CONTROL_WINDOW: Duration = Duration::from_secs(10);
 
 /// One OpenAI-style streamed reply, or a canned one. `status` is the upstream
 /// (or canned = 200) status; the body is raw SSE bytes the caller parses with
@@ -65,6 +86,11 @@ pub struct ChatStream {
     /// `ok()`. The persona transport reads this and fails the call so the
     /// sentence can never be persisted as an agent's work.
     pub canned: Option<&'static str>,
+    /// The conversation id Hermes answered in `X-Hermes-Session-Id` — on the
+    /// completions arm, Hermes' own id for the conversation (`api-<digest>`
+    /// of its opening), which is the key every call of the turn is metered
+    /// under. None on a canned or synthesized reply.
+    pub hermes_session: Option<String>,
 }
 
 impl ChatStream {
@@ -75,16 +101,111 @@ impl ChatStream {
     }
 }
 
-/// The chat plane's payload — `{model, messages}` plus `reasoning_effort`
-/// when one was honored, in that key order.
+/// The chat plane's payload — `{model, messages}` plus the effort when one
+/// was honored, in that key order.
 pub fn chat_payload(model: &str, messages: &Value, effort: Option<&str>) -> Value {
     let mut payload = serde_json::Map::new();
     payload.insert("model".into(), json!(model));
     payload.insert("messages".into(), messages.clone());
-    if let Some(effort) = effort {
-        payload.insert("reasoning_effort".into(), json!(effort));
+    if let Some(options) = persona_model_options(effort) {
+        payload.insert("model_options".into(), options);
     }
     Value::Object(payload)
+}
+
+/// THE ONE PLACE A PER-TURN EFFORT IS SPELLED FOR A PERSONA: Hermes' API
+/// server reads a request's effort from `model_options.reasoning_effort` and
+/// from nowhere else — a top-level `reasoning_effort` (the OpenAI spelling)
+/// is ignored on `/v1/chat/completions` and on the session-chat route alike,
+/// and the agent runs at its configured default instead
+/// (`gateway/platforms/api_server_request_options.py`, Hermes v0.22). Both
+/// arms — `chat_payload`/the harness's `persona_payload` and the session
+/// body — spend it through here so the two cannot spell it apart.
+pub fn persona_model_options(effort: Option<&str>) -> Option<Value> {
+    effort.map(|e| json!({ "reasoning_effort": e }))
+}
+
+/// Remember that a conversation moved to Hermes thread `n`, so its next turn
+/// opens there too. Called once, after the turn sent on the fresh thread has
+/// opened its stream.
+pub type RememberThread = Box<dyn FnOnce(i32) -> BoxFuture<'static, ()> + Send>;
+
+/// WHICH HERMES SESSION A COMPLETIONS TURN LANDS IN. Talaria names none on
+/// this arm: Hermes derives it from the turn's opening, as `api-` plus a
+/// digest of the system rows and the first user message
+/// (`_derive_chat_session_id`, v0.22). A conversation keeps its opening, so it
+/// keeps one derived session for life.
+///
+/// That session can be wedged. When the container dies mid-turn, v0.22 fences
+/// the running turn as `unknown` at the next boot, and refuses every later
+/// turn on the session with `unknown_execution`. Each refused admission stays
+/// queued behind the lost one, and all of them run the moment someone
+/// discards it. So the repair here never discards anything. It sends the
+/// refused turn again, once, with one more system row in its opening
+/// ([`thread_line`]). That moves the turn to a fresh derived session, and the
+/// wedged one is left parked, with nothing in it ever run.
+///
+/// The thread is the number in that row. A conversation's thread is stored
+/// (`conversations.hermes_epoch`), so its later turns open on the session the
+/// repair moved it to rather than being refused once more each. Epoch 0 is the
+/// opening as Talaria sends it, with no extra row, so a conversation that never
+/// lost a turn keeps the session it always had. A one-shot (a harness turn, an
+/// app turn, a channel reply) has nothing to store a thread on: its repair
+/// takes a random one and nothing remembers it.
+pub struct Thread {
+    epoch: i32,
+    remember: Option<RememberThread>,
+}
+
+impl Thread {
+    /// A turn with no conversation to keep a thread on.
+    pub fn one_shot() -> Self {
+        Thread {
+            epoch: 0,
+            remember: None,
+        }
+    }
+
+    /// A conversation on thread `epoch`, whose move to a fresh one is kept by
+    /// `remember`.
+    pub fn conversation(epoch: i32, remember: RememberThread) -> Self {
+        Thread {
+            epoch: epoch.max(0),
+            remember: Some(remember),
+        }
+    }
+}
+
+/// The system row that moves a completions turn onto Hermes thread `thread`.
+/// It is part of the opening Hermes digests, so a different thread is a
+/// different derived session. The words say what it is, so a model that reads
+/// it has nothing to act on.
+pub fn thread_line(thread: &str) -> Value {
+    json!({
+        "role": "system",
+        "content": format!(
+            "SESSION THREAD: {thread}. (Bookkeeping: this agent restarted during an earlier turn \
+             of this conversation, and the conversation continues on a fresh agent session. \
+             Nothing to act on.)"
+        ),
+    })
+}
+
+/// The payload with `thread`'s row after its leading system rows, or as it
+/// is when there is no thread to name.
+fn on_thread(payload: &Value, thread: Option<&str>) -> Value {
+    let mut payload = payload.clone();
+    if let (Some(thread), Some(list)) = (
+        thread,
+        payload.get_mut("messages").and_then(Value::as_array_mut),
+    ) {
+        let at = list
+            .iter()
+            .position(|m| m["role"] != "system")
+            .unwrap_or(list.len());
+        list.insert(at, thread_line(thread));
+    }
+    payload
 }
 
 /// Send one chat turn to the agent's container. Seals every
@@ -95,13 +216,38 @@ pub fn chat_payload(model: &str, messages: &Value, effort: Option<&str>) -> Valu
 /// history shows what happened rather than a silent failure.
 ///
 /// `payload` is the WHOLE request body the agent's gateway sees — the turn
-/// payload plus `stream: true` and `stream_options` — so a persona turn's
-/// `temperature`/`response_format` ride alongside model and messages, and the
-/// one mapping that decides them (`persona_payload`) is the only place they
-/// can be dropped. `messages` is the OpenAI history (system + turns, content
+/// payload plus `stream: true` and `stream_options` — so whatever a persona
+/// turn carries beside model and messages (`model_options` for its effort)
+/// is decided by the one mapping that builds it (`persona_payload`,
+/// `chat_payload`). `messages` is the OpenAI history (system + turns, content
 /// string or parts). `wait_ms` is the hold window; None is the two-minute
 /// default.
-pub async fn proxy_chat(payload: &Value, wait_ms: Option<u64>) -> ChatStream {
+///
+/// `attribution` is the flow this turn belongs to: the conversation key
+/// Hermes answers is recorded under it, so every call the agent makes for
+/// the turn is metered as that flow's. None leaves the turn's calls
+/// `unattended` at the relay — still booked, under the agent.
+///
+/// A turn Hermes refuses because its derived session lost an earlier turn in
+/// a restart is sent again on a fresh session, once ([`Thread`]). This is the
+/// one-shot form; a conversation that keeps its thread calls
+/// [`proxy_chat_on`].
+pub async fn proxy_chat(
+    payload: &Value,
+    wait_ms: Option<u64>,
+    attribution: Option<TurnAttribution>,
+) -> ChatStream {
+    proxy_chat_on(payload, wait_ms, attribution, Thread::one_shot()).await
+}
+
+/// [`proxy_chat`] for a turn that belongs to a conversation's [`Thread`]: it
+/// opens on that thread, and a repair that moves it remembers where to.
+pub async fn proxy_chat_on(
+    payload: &Value,
+    wait_ms: Option<u64>,
+    attribution: Option<TurnAttribution>,
+    thread: Thread,
+) -> ChatStream {
     let model = payload
         .get("model")
         .and_then(Value::as_str)
@@ -121,11 +267,23 @@ pub async fn proxy_chat(payload: &Value, wait_ms: Option<u64>) -> ChatStream {
     }
     report_sealed(&vault, &model);
 
-    match hold_for_agent(&model, AgentRequest::ChatCompletions { payload }, wait_ms).await {
+    match hold_for_agent(
+        &model,
+        AgentRequest::ChatCompletions {
+            payload,
+            epoch: thread.epoch,
+            remember: std::sync::Mutex::new(thread.remember),
+        },
+        wait_ms,
+        attribution,
+    )
+    .await
+    {
         Ok(stream) => stream,
-        // The completions arm names no session, so it has none to lose; the
-        // canned sentence is the honest answer if the type ever says
-        // otherwise.
+        // The completions arm names no session of its own, so there is no
+        // room for it to find gone: its sessions are derived, and a wedged one
+        // is left for a fresh one (`Thread`). The canned sentence is the honest
+        // answer if the type ever says otherwise.
         Err(SessionLost) => canned_chat_stream(&unavailable_reply(&model), "hold"),
     }
 }
@@ -150,24 +308,41 @@ pub async fn proxy_chat(payload: &Value, wait_ms: Option<u64>) -> ChatStream {
 /// manifest row at all is mock mode. `message` is a string or OpenAI content
 /// parts; `system_message` is the per-turn prompt Hermes calls ephemeral. Both
 /// are sealed through a per-call vault before they leave the process.
+/// `effort` rides as `model_options`, the one spelling Hermes reads
+/// ([`persona_model_options`]).
 ///
 /// `history_expected` says the conversation has been driven through this
-/// session before, so the session MUST already exist in the container: a
-/// create that answers 201 then means the state volume was lost (a re-hire
-/// on the same slug, a swapped volume, a host restore) and Hermes would
-/// answer from an empty room while the transcript on screen says otherwise.
-/// That turn is `None` — the caller sends the full history instead — rather
-/// than a stream from a session that knows nothing.
+/// session before, so the session MUST already exist in the container. Such a
+/// session is LOOKED UP, never created: one that is not there means the state
+/// volume was lost (a re-hire on the same slug, a swapped volume, a host
+/// restore) or the session was deleted, and Hermes would answer from an empty
+/// room while the transcript on screen says otherwise. That turn is `None` —
+/// the caller sends the full history instead — rather than a stream from a
+/// session that knows nothing. Nothing is created on the way out either: an
+/// empty room made here would be found by the NEXT turn, which would then send
+/// only its new message into it. A create Hermes refuses as `session_deleted`
+/// is `None` the same way, since v0.22 never lets a deleted id be reused.
+///
+/// A turn Hermes refuses because the session LOST an earlier turn in a
+/// non-graceful restart is repaired here, once, before the caller sees it
+/// (`heal_lost_turn`).
+///
+/// `attribution` is `proxy_chat`'s: here the key is `conversation_id`
+/// itself, recorded before the first attempt so the agent's first call
+/// already finds it.
+#[allow(clippy::too_many_arguments)] // one turn's facts, each named at the call site
 pub async fn proxy_session_turn(
     agent_model: &str,
     conversation_id: &str,
     system_message: Option<&str>,
     message: &Value,
+    effort: Option<&str>,
     wait_ms: Option<u64>,
     history_expected: bool,
+    attribution: Option<TurnAttribution>,
 ) -> Option<ChatStream> {
     let mut vault = SecretVault::default();
-    let body = session_turn_body(message, system_message, &mut vault);
+    let body = session_turn_body(message, system_message, effort, &mut vault);
     report_sealed(&vault, agent_model);
 
     hold_for_agent(
@@ -178,6 +353,7 @@ pub async fn proxy_session_turn(
             history_expected,
         },
         wait_ms,
+        attribution,
     )
     .await
     .ok()
@@ -190,12 +366,16 @@ pub async fn proxy_session_turn(
 fn session_turn_body(
     message: &Value,
     system_message: Option<&str>,
+    effort: Option<&str>,
     vault: &mut SecretVault,
 ) -> Value {
     let mut body = serde_json::Map::new();
     body.insert("message".into(), seal_content(message, vault));
     if let Some(system) = system_message {
         body.insert("system_message".into(), seal_content(&json!(system), vault));
+    }
+    if let Some(options) = persona_model_options(effort) {
+        body.insert("model_options".into(), options);
     }
     Value::Object(body)
 }
@@ -216,22 +396,31 @@ fn report_sealed(vault: &SecretVault, model: &str) {
 /// copy of the loop that drifts from this one.
 enum AgentRequest {
     ChatCompletions {
+        /// The sealed turn, before its thread row: the repair re-opens it on
+        /// a fresh thread from here.
         payload: Value,
+        /// The [`Thread`] it opens on.
+        epoch: i32,
+        /// Taken once, by the repair of the attempt that opened a stream —
+        /// which is the last attempt the hold makes.
+        remember: std::sync::Mutex<Option<RememberThread>>,
     },
     SessionTurn {
         conversation_id: String,
         body: Value,
         /// The conversation was driven through this session before, so the
-        /// session must already be there: a fresh create is a lost volume,
-        /// not a first turn.
+        /// session must already be there: it is looked up, never created,
+        /// and a lookup that finds nothing is a lost session, not a first
+        /// turn.
         history_expected: bool,
     },
 }
 
-/// The pinned session this turn expected to find is gone: the container
-/// answered the create with a fresh session where a transcript should have
-/// been. Not a hold and not a canned reply — the caller has the full history
-/// in hand and sends it the other way.
+/// The pinned session this turn expected to find is gone: the lookup of a
+/// session that carried turns answered `session_not_found` (a lost state
+/// volume), or a create was refused as `session_deleted`. Not a hold and not a
+/// canned reply — the caller has the full history in hand and sends it the
+/// other way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionLost;
 
@@ -246,16 +435,43 @@ enum Opened {
 impl AgentRequest {
     /// One attempt against this agent's own gateway. `NotYet` means "not
     /// serving yet" — the hold loop backs off and tries again until its
-    /// deadline.
-    async fn open(&self, entry: &ManifestEntry) -> Opened {
+    /// deadline. `attribution` rides into the completions arm's repair: a
+    /// turn moved to a fresh session is metered under that session's key.
+    async fn open(&self, entry: &ManifestEntry, attribution: Option<&TurnAttribution>) -> Opened {
         match self {
-            AgentRequest::ChatCompletions { payload } => {
-                let mut request = payload.clone();
-                // include_usage: the final chunk reports token counts for the
-                // ledger (gateways that don't support it just ignore the option).
-                request["stream"] = json!(true);
-                request["stream_options"] = json!({ "include_usage": true });
+            AgentRequest::ChatCompletions {
+                payload,
+                epoch,
+                remember,
+            } => {
+                let thread = (*epoch > 0).then(|| epoch.to_string());
+                let request = completions_request(payload, thread.as_deref());
                 match open_stream(agent_post(entry, "/v1/chat/completions"), &request).await {
+                    Some(stream) if stream.ok() => {
+                        let remember = remember.lock().ok().and_then(|mut r| r.take());
+                        let let_go = crate::fleet_abandoned::LetGo::default();
+                        let retry = FreshThread {
+                            entry: ManifestEntry {
+                                model: entry.model.clone(),
+                                url: entry.url.clone(),
+                                key: entry.key.clone(),
+                            },
+                            payload: payload.clone(),
+                            next_epoch: *epoch + 1,
+                            remember,
+                            attribution: attribution.cloned(),
+                            abandoned: stream.hermes_session.clone(),
+                            let_go: let_go.clone(),
+                        };
+                        // Outermost, so it reads the moved turn's chunks too
+                        // (fleet_abandoned.rs: a reader that lets go stops the
+                        // turn in the agent, and the move then sends nothing).
+                        Opened::Stream(crate::fleet_abandoned::stop_when_abandoned(
+                            heal_lost_completion(stream, retry.into_retry()),
+                            entry,
+                            let_go,
+                        ))
+                    }
                     Some(stream) => Opened::Stream(stream),
                     None => Opened::NotYet,
                 }
@@ -266,44 +482,141 @@ impl AgentRequest {
                 history_expected,
             } => {
                 // The session must exist before a turn can land on it, and the
-                // create is the only place we can learn that it doesn't. A
-                // refusal here is treated exactly like a gateway that isn't
-                // serving yet — on a container that is still booting that is
-                // precisely what it is.
-                match ensure_session(entry, conversation_id).await {
+                // look-up (or the create) is the only place we can learn that
+                // it doesn't. A refusal here is treated exactly like a gateway
+                // that isn't serving yet — on a container that is still
+                // booting that is precisely what it is.
+                match ensure_session(entry, conversation_id, *history_expected).await {
                     SessionCreate::NotReady => return Opened::NotYet,
-                    SessionCreate::Existing => {}
-                    // A fresh session where a transcript was expected is the
-                    // state-volume loss M5 names; said once per conversation,
-                    // because the caller will come back this way every turn
-                    // until the history is rebuilt.
-                    SessionCreate::Fresh if *history_expected => {
+                    SessionCreate::Existing | SessionCreate::Fresh => {}
+                    // The room is gone: the state-volume loss M5 names, or a
+                    // deleted session. Said once per conversation, because the
+                    // caller comes back this way every turn from now on.
+                    SessionCreate::Lost(why) => {
                         if lost_sessions_first_sight(conversation_id) {
                             tracing::warn!(
-                                "[fleet] {}: session {conversation_id} was created fresh where a \
-                                 transcript was expected — the Hermes state volume was lost; this \
+                                "[fleet] {}: session {conversation_id} is gone — {why}; this \
                                  conversation is sent with its full history instead",
                                 entry.url
                             );
                         }
                         return Opened::Lost;
                     }
-                    SessionCreate::Fresh => {}
                 }
-                match open_stream(
-                    agent_post(
-                        entry,
-                        &format!("/api/sessions/{conversation_id}/chat/stream"),
-                    ),
-                    body,
-                )
-                .await
-                {
+                let path = format!("/api/sessions/{conversation_id}/chat/stream");
+                match open_stream(agent_post(entry, &path), body).await {
+                    Some(stream) if stream.ok() => Opened::Stream(heal_lost_turn(
+                        stream,
+                        LostTurnRetry::over_http(entry, conversation_id, path, body.clone()),
+                    )),
                     Some(stream) => Opened::Stream(stream),
                     None => Opened::NotYet,
                 }
             }
         }
+    }
+}
+
+/// The completions body the agent's gateway is sent: the turn on its thread,
+/// streamed. include_usage: the final chunk reports token counts for the
+/// ledger (gateways that don't support it just ignore the option).
+fn completions_request(payload: &Value, thread: Option<&str>) -> Value {
+    let mut request = on_thread(payload, thread);
+    request["stream"] = json!(true);
+    request["stream_options"] = json!({ "include_usage": true });
+    request
+}
+
+/// What the completions arm's repair needs to send a refused turn again on a
+/// fresh thread ([`Thread`]).
+struct FreshThread {
+    entry: ManifestEntry,
+    payload: Value,
+    /// The conversation's next thread, when it has one to keep.
+    next_epoch: i32,
+    remember: Option<RememberThread>,
+    attribution: Option<TurnAttribution>,
+    /// The derived session Hermes refused the turn on, for the log line.
+    abandoned: Option<String>,
+    /// Marked when the turn's reader let go of it (fleet_abandoned.rs). The
+    /// guard reads a let-go stream on to stop it, so a refusal can still be
+    /// read after the reader left; the move sends nothing then.
+    let_go: crate::fleet_abandoned::LetGo,
+}
+
+impl FreshThread {
+    fn into_retry(self) -> LostTurnRetry {
+        let label = self
+            .abandoned
+            .clone()
+            .unwrap_or_else(|| "a derived session".into());
+        LostTurnRetry::new(
+            label,
+            Box::new(move |_refused_run| Box::pin(async move { self.send().await })),
+        )
+    }
+
+    /// Open the turn on the fresh thread. Nothing is withdrawn or discarded
+    /// first: the refused admission and every one queued before it stay
+    /// parked behind the lost turn in the abandoned session, where nothing
+    /// runs them. The fresh session's key is recorded for the turn's flow
+    /// the moment its headers name it, the same as a first attempt.
+    async fn send(self) -> Result<ByteStream, String> {
+        if self.let_go.happened() {
+            return Err("its reader had let go of the turn, so it was not sent again".into());
+        }
+        let thread = match self.remember {
+            Some(_) => self.next_epoch.to_string(),
+            None => uuid::Uuid::new_v4().simple().to_string()[..8].to_string(),
+        };
+        let request = completions_request(&self.payload, Some(&thread));
+        let stream = match open_stream(agent_post(&self.entry, "/v1/chat/completions"), &request)
+            .await
+        {
+            Some(stream) if stream.ok() => stream,
+            Some(stream) => {
+                return Err(format!(
+                    "the agent answered the turn sent on a fresh session with HTTP {}",
+                    stream.status
+                ));
+            }
+            None => {
+                return Err(
+                    "the agent went away before the turn could be sent on a fresh session".into(),
+                );
+            }
+        };
+        let fresh = stream.hermes_session.clone();
+        // Said at warn on purpose: the abandoned session still holds the lost
+        // turn and every refusal queued behind it, and `hermes sessions
+        // discard` on it would run them all, unobserved.
+        tracing::warn!(
+            "[fleet] {}: {} lost a turn in a restart; this turn moved to thread {thread} ({}). Do \
+             not discard the abandoned session: its queued turns would run",
+            self.entry.model,
+            self.abandoned.as_deref().unwrap_or("the derived session"),
+            fresh.as_deref().unwrap_or("no session id answered"),
+        );
+        if let Some(remember) = self.remember {
+            remember(self.next_epoch).await;
+        }
+        let body = match (
+            self.attribution,
+            affinity_key(stream.hermes_session.as_deref()),
+        ) {
+            (Some(a), Some(key)) => {
+                record(&a, &key).await;
+                spawn_backfill(&a.pg, &a.agent_model, &key);
+                Box::pin(Attributed {
+                    inner: stream.body,
+                    pg: a.pg,
+                    agent_model: a.agent_model,
+                    key,
+                }) as ByteStream
+            }
+            _ => stream.body,
+        };
+        Ok(body)
     }
 }
 
@@ -326,25 +639,31 @@ fn lost_sessions_first_sight(conversation_id: &str) -> bool {
 /// `Err(SessionLost)` is the session arm's one way out that is not a stream:
 /// the room it expected is gone, and the caller decides what to send instead.
 ///
-/// THE TURN IS REGISTERED HERE — once, before the first attempt reaches the
-/// container, and for as long as the stream it opens is being read. This is
-/// the one door every Talaria-driven persona turn goes through (both arms,
-/// every caller: chat, channel, harness), and the register is what lets the
-/// gateway relay tell these turns — whose spend the driving flow ledgers —
-/// from a turn Hermes started by itself (a cron), whose spend it must meter
-/// (usage.rs, "The in-flight turn register"). It is counted before the
-/// request goes out because the agent's tool loop, the calls being judged,
-/// runs during the headers wait; it rides the stream so the consumer's end
-/// — clean, hung up, errored — is the turn's end; and a hold that gives up
-/// with a canned reply drops it on the way out.
+/// THE TURN'S KEY IS RECORDED HERE — the one door every Talaria-driven
+/// persona turn goes through (both arms, every caller: chat, channel,
+/// harness). The session arm knows its key before it sends anything, so it
+/// is recorded before the first attempt; the completions arm learns it from
+/// the response headers, and records it then, with a backfill for the calls
+/// that finished first. Either way the stream carries a second backfill to
+/// its end — clean, hung up, errored — for a call that raced the record.
 async fn hold_for_agent(
     model: &str,
     request: AgentRequest,
     wait_ms: Option<u64>,
+    attribution: Option<TurnAttribution>,
 ) -> Result<ChatStream, SessionLost> {
+    if let (
+        Some(a),
+        AgentRequest::SessionTurn {
+            conversation_id, ..
+        },
+    ) = (&attribution, &request)
+        && let Some(key) = affinity_key(Some(conversation_id))
+    {
+        record(a, &key).await;
+    }
     let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms.unwrap_or(120_000));
     let mut attempt: u32 = 0;
-    let mut turn: Option<TurnRegistration> = None;
     loop {
         let manifest = read_manifest().await;
         let entry = manifest.iter().find(|m| m.model == model);
@@ -355,11 +674,18 @@ async fn hold_for_agent(
         }
 
         if let Some(entry) = entry {
-            if turn.is_none() {
-                turn = register_turn(&turn_subject(&manifest, entry)).await;
-            }
-            match request.open(entry).await {
-                Opened::Stream(stream) => return Ok(bind_turn(stream, turn)),
+            match request.open(entry, attribution.as_ref()).await {
+                Opened::Stream(stream) => {
+                    // Hermes' approval requests on this turn are answered
+                    // here: refused and recorded, or, on an attended
+                    // conversation turn, put to its person as a card
+                    // (fleet_approvals.rs).
+                    let subject = turn_subject(&manifest, entry);
+                    let turn = crate::fleet_approvals::ApprovalTurn::of(attribution.as_ref());
+                    let stream =
+                        crate::fleet_approvals::tap_approvals(stream, entry, &subject, turn);
+                    return Ok(attribute_stream(stream, &request, attribution).await);
+                }
                 Opened::Lost => return Err(SessionLost),
                 Opened::NotYet => {}
             }
@@ -376,13 +702,26 @@ async fn hold_for_agent(
     }
 }
 
+/// The key a turn's calls reach the relay under: the session id we created,
+/// or on the completions arm the id Hermes answered for the conversation.
+/// None when the completions arm answered no usable id (a Hermes without the
+/// header, a synthesized error) — the turn's calls then stay `unattended`.
+fn turn_key(request: &AgentRequest, stream: &ChatStream) -> Option<String> {
+    match request {
+        AgentRequest::SessionTurn {
+            conversation_id, ..
+        } => affinity_key(Some(conversation_id)),
+        AgentRequest::ChatCompletions { .. } => affinity_key(stream.hermes_session.as_deref()),
+    }
+}
+
 /// The name a turn is registered under: the agent's model id — the relay's
 /// subject for that agent's key, and the ledger namespace its rows land in.
 /// A tier is dialed as its own manifest row, `<agent model>-<tier>`, pointing
 /// at the same container as the agent's row; the agent's row is the shortest
 /// model sharing the container's url, so a tiered turn registers under the
 /// agent and not under a name the relay never sees.
-fn turn_subject(manifest: &[ManifestEntry], entry: &ManifestEntry) -> String {
+pub(crate) fn turn_subject(manifest: &[ManifestEntry], entry: &ManifestEntry) -> String {
     manifest
         .iter()
         .filter(|m| m.url == entry.url)
@@ -392,15 +731,71 @@ fn turn_subject(manifest: &[ManifestEntry], entry: &ManifestEntry) -> String {
         .to_string()
 }
 
-/// The stream with its registration riding along: the turn stays counted
-/// until the consumer lets go of the body — the end of a drain, a hang-up, an
-/// error — and no later.
-struct TurnBound {
-    inner: ByteStream,
-    _turn: TurnRegistration,
+/// Record a turn's key, saying so when it cannot: the turn goes on, and its
+/// calls are still booked — under the agent, `unattended`.
+async fn record(a: &TurnAttribution, key: &str) {
+    if let Err(e) = record_attribution(a, key).await {
+        tracing::warn!(
+            "[fleet] {}: could not record turn {key} as {} spend: {e}",
+            a.agent_model,
+            a.source
+        );
+    }
 }
 
-impl futures_util::Stream for TurnBound {
+/// Claim the rows already booked under `key`, detached. `try_current`: a
+/// stream dropped outside the runtime at shutdown loses its backfill, which
+/// leaves those rows `unattended` — still counted, never panicking.
+fn spawn_backfill(pg: &sqlx::PgPool, agent_model: &str, key: &str) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let (pg, agent_model, key) = (pg.clone(), agent_model.to_string(), key.to_string());
+    handle.spawn(async move {
+        if let Err(e) = backfill_attribution(&pg, &agent_model, &key).await {
+            tracing::warn!("[fleet] {agent_model}: backfilling turn {key} failed: {e}");
+        }
+    });
+}
+
+/// Tie a turn's attribution to the stream it covers: the completions arm's
+/// key is recorded now that the headers named it, and either arm's stream
+/// backfills once more when the consumer lets go of it.
+async fn attribute_stream(
+    mut stream: ChatStream,
+    request: &AgentRequest,
+    attribution: Option<TurnAttribution>,
+) -> ChatStream {
+    let Some(a) = attribution else {
+        return stream;
+    };
+    let Some(key) = turn_key(request, &stream) else {
+        return stream;
+    };
+    if matches!(request, AgentRequest::ChatCompletions { .. }) {
+        record(&a, &key).await;
+        spawn_backfill(&a.pg, &a.agent_model, &key);
+    }
+    let inner = std::mem::replace(&mut stream.body, Box::pin(futures_util::stream::empty()));
+    stream.body = Box::pin(Attributed {
+        inner,
+        pg: a.pg,
+        agent_model: a.agent_model,
+        key,
+    });
+    stream
+}
+
+/// The stream with its turn's key riding along, so the end of the read —
+/// however it ends — claims any row that raced the record.
+struct Attributed {
+    inner: ByteStream,
+    pg: sqlx::PgPool,
+    agent_model: String,
+    key: String,
+}
+
+impl futures_util::Stream for Attributed {
     type Item = reqwest::Result<Bytes>;
 
     fn poll_next(
@@ -411,21 +806,17 @@ impl futures_util::Stream for TurnBound {
     }
 }
 
-/// Tie a registration to the stream it covers. No registration (the register
-/// was unreachable) leaves the stream as it was.
-fn bind_turn(mut stream: ChatStream, turn: Option<TurnRegistration>) -> ChatStream {
-    if let Some(turn) = turn {
-        let inner = std::mem::replace(&mut stream.body, Box::pin(futures_util::stream::empty()));
-        stream.body = Box::pin(TurnBound { inner, _turn: turn });
+impl Drop for Attributed {
+    fn drop(&mut self) {
+        spawn_backfill(&self.pg, &self.agent_model, &self.key);
     }
-    stream
 }
 
 /// An authenticated POST to one agent's own gateway. The session arm and the
 /// chat arm go through the SAME door with the SAME bearer — the manifest row's
 /// key, which the renderer put in the container as its API_SERVER_KEY — so the
 /// key handling can only be got right or wrong once.
-fn agent_post(entry: &ManifestEntry, path: &str) -> reqwest::RequestBuilder {
+pub(crate) fn agent_post(entry: &ManifestEntry, path: &str) -> reqwest::RequestBuilder {
     let req = http()
         .post(format!("{}{path}", entry.url))
         .header("content-type", "application/json");
@@ -435,7 +826,7 @@ fn agent_post(entry: &ManifestEntry, path: &str) -> reqwest::RequestBuilder {
 /// The same door, read-only — the session reads (`/api/sessions/{id}` and its
 /// messages) ask Hermes about a transcript it is already holding. Same bearer
 /// as the POST side for the same reason: one place to get the key right.
-fn agent_get(entry: &ManifestEntry, path: &str) -> reqwest::RequestBuilder {
+pub(crate) fn agent_get(entry: &ManifestEntry, path: &str) -> reqwest::RequestBuilder {
     with_bearer(entry, http().get(format!("{}{path}", entry.url)))
 }
 
@@ -470,14 +861,17 @@ fn with_bearer(entry: &ManifestEntry, req: reqwest::RequestBuilder) -> reqwest::
 /// copy of it into the session, invisibly to the step's checkpoint. Those
 /// come back as the error they are (the upstream status as-is, or a
 /// synthesized 504 for the silent one) and the caller fails the turn.
-async fn open_stream(req: reqwest::RequestBuilder, body: &Value) -> Option<ChatStream> {
+pub(crate) async fn open_stream(req: reqwest::RequestBuilder, body: &Value) -> Option<ChatStream> {
     let upstream = match tokio::time::timeout(HEADERS_WINDOW, req.json(body).send()).await {
         Ok(Ok(upstream)) => upstream,
         Ok(Err(e)) if failed_before_any_byte(&e) => return None,
         Ok(Err(e)) => {
             return Some(error_stream(
                 502,
-                format!("the agent gateway failed after the request was sent: {e}"),
+                format!(
+                    "the agent gateway failed after the request was sent: {}",
+                    transport_error(e)
+                ),
             ));
         }
         Err(_) => {
@@ -498,22 +892,33 @@ async fn open_stream(req: reqwest::RequestBuilder, body: &Value) -> Option<ChatS
         .and_then(|v| v.to_str().ok())
         .unwrap_or("text/event-stream")
         .to_string();
+    let hermes_session = upstream
+        .headers()
+        .get("x-hermes-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     Some(ChatStream {
         status,
         content_type,
         body: Box::pin(upstream.bytes_stream()),
         canned: None,
+        hermes_session,
     })
 }
 
-/// What the session create answered — the two successes are kept apart
-/// because they mean different things to a turn that expected a transcript.
+/// What the session look-up or create answered — the two successes are kept
+/// apart because they mean different things to a turn that expected a
+/// transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionCreate {
-    /// 2xx: the container made the session just now.
+    /// 2xx on a create: the container made the session just now.
     Fresh,
-    /// 409 `session_exists`: an earlier turn made it — the steady state.
+    /// The session is there: a look-up found it, or a create answered 409
+    /// `session_exists` because an earlier turn made it — the steady state.
     Existing,
+    /// The room is gone for good — the reason is for the log line. The caller
+    /// sends the full history the other way, every turn from here on.
+    Lost(&'static str),
     /// Anything else: not serving yet, or a container refusing the room.
     NotReady,
 }
@@ -541,6 +946,43 @@ fn failed_before_any_byte(e: &reqwest::Error) -> bool {
     false
 }
 
+/// A failed request to an agent's API server, as a reader may see it: what
+/// went wrong and why, never where.
+///
+/// reqwest's Display is "error sending request for url (http://agent-x:8642/
+/// v1/…)" — the agent's dial URL (a container DNS name and port, or a host
+/// loopback port: the fleet's topology) and no cause, so it was both leaky
+/// and useless to the person reading it. This keeps reqwest's own words
+/// without the URL and adds the innermost cause ("Connection refused (os
+/// error 111)", "operation timed out"), which no layer of the chain prints
+/// with an address. The whole error, URL and chain, goes to the server log.
+/// Every agent-transport error that reaches a caller's text goes through
+/// here.
+pub(crate) fn transport_error(e: reqwest::Error) -> String {
+    let mut chain = Vec::new();
+    let mut source = std::error::Error::source(&e);
+    while let Some(err) = source {
+        chain.push(err.to_string());
+        source = err.source();
+    }
+    tracing::warn!("[fleet] agent transport: {e}: {}", chain.join(": "));
+    let url = e.url().map(|u| u.to_string());
+    let host = e
+        .url()
+        .and_then(|u| Some(format!("{}:{}", u.host_str()?, u.port_or_known_default()?)));
+    let what = e.without_url().to_string();
+    let text = match chain.last() {
+        Some(cause) if *cause != what => format!("{what}: {cause}"),
+        _ => what,
+    };
+    // No layer below reqwest prints an address today; this keeps it so if
+    // one ever does.
+    [url, host]
+        .into_iter()
+        .flatten()
+        .fold(text, |t, leak| t.replace(&leak, "the agent"))
+}
+
 /// A non-200 reply synthesized on this side of the wire, for the two
 /// failures that happen after the request was sent. Not canned: a canned
 /// stream is a 200 the harness unwraps, and these must read as the error
@@ -554,58 +996,102 @@ fn error_stream(status: u16, text: String) -> ChatStream {
         )
         .boxed(),
         canned: None,
+        hermes_session: None,
     }
 }
 
-/// Create the Hermes session this turn lands on, idempotently: a success is a
-/// fresh session, and 409 `session_exists` is the one an earlier turn made —
-/// the normal answer for every turn but the first. Anything else (including a
+/// Make sure the Hermes session this turn lands on is there.
+///
+/// A session that has carried turns before (`history_expected`) is LOOKED UP
+/// (`GET /api/sessions/{id}`), never created: Hermes answering
+/// `session_not_found` means the room is gone, and creating an empty one here
+/// would be found by the next turn, which would then send only its new message
+/// into a session that knows nothing. Every other session is CREATED,
+/// idempotently: a success is a fresh session, and 409 `session_exists` is the
+/// one an earlier turn made. A 409 `session_deleted` is a room that is gone for
+/// good — v0.22 fences a deleted id so it is never reused — and treating it as
+/// "not ready" held every turn for two minutes and then answered with the
+/// "restarting" sentence while the agent was up. Anything else (including a
 /// transport error) reads as "this container is not ready", which is the same
-/// answer the stream itself gives while a container boots. Fresh and existing
-/// are reported apart: the caller knows whether a transcript should have
-/// been there, and a fresh room where one was expected is not a success.
+/// answer the stream itself gives while a container boots.
 ///
 /// The session carries no `system_prompt` of its own on purpose: every turn
 /// sends its own ephemeral one, so there is no stored prompt here to go stale
 /// against the workspace it was rendered from. The headers window is the same
-/// one the stream uses — a create that answers at all answers in milliseconds,
+/// one the stream uses — a call that answers at all answers in milliseconds,
 /// and the bound exists for the container that accepts TCP and then says
 /// nothing.
-async fn ensure_session(entry: &ManifestEntry, conversation_id: &str) -> SessionCreate {
-    let body = json!({ "id": conversation_id });
-    let sent = tokio::time::timeout(
-        HEADERS_WINDOW,
-        agent_post(entry, "/api/sessions").json(&body).send(),
-    )
-    .await;
-    let Ok(Ok(res)) = sent else {
+async fn ensure_session(
+    entry: &ManifestEntry,
+    conversation_id: &str,
+    history_expected: bool,
+) -> SessionCreate {
+    let (verb, request) = if history_expected {
+        (
+            "GET /api/sessions/{id}",
+            agent_get(entry, &format!("/api/sessions/{conversation_id}")),
+        )
+    } else {
+        (
+            "POST /api/sessions",
+            agent_post(entry, "/api/sessions").json(&json!({ "id": conversation_id })),
+        )
+    };
+    let Ok(Ok(res)) = tokio::time::timeout(HEADERS_WINDOW, request.send()).await else {
         return SessionCreate::NotReady;
     };
-    let status = res.status();
-    if status.is_success() {
-        return SessionCreate::Fresh;
-    }
-    // A 409 is "exists" only when it says so: any other conflict is a
-    // container refusing the session, and the stream POST would then be
-    // talking to a room that was never made.
-    if status == reqwest::StatusCode::CONFLICT {
+    let status = res.status().as_u16();
+    let code = if (200..300).contains(&status) {
+        None
+    } else {
         let body: Value = res.json().await.unwrap_or(Value::Null);
-        return if body["error"]["code"] == "session_exists" {
-            SessionCreate::Existing
-        } else {
-            SessionCreate::NotReady
-        };
-    }
-    // A Hermes without the session API at all. The hold below treats it as
-    // a container still booting, which is the one thing it is not — so the
-    // log names it, because nothing else in a two-minute hold will.
-    if status == reqwest::StatusCode::NOT_FOUND {
+        body["error"]["code"].as_str().map(str::to_string)
+    };
+    let answer = if history_expected {
+        session_lookup_answer(status, code.as_deref())
+    } else {
+        session_create_answer(status, code.as_deref())
+    };
+    // A Hermes without the session API at all: its 404 carries no session
+    // code. The hold treats it as a container still booting, which is the one
+    // thing it is not — so the log names it, because nothing else in a
+    // two-minute hold will.
+    if answer == SessionCreate::NotReady && status == 404 {
         eprintln!(
-            "[fleet] {}: POST /api/sessions answered 404 — this Hermes has no session API; the agent cannot be pinned",
+            "[fleet] {}: {verb} answered 404 — this Hermes has no session API; the agent cannot be pinned",
             entry.url
         );
     }
-    SessionCreate::NotReady
+    answer
+}
+
+/// What a session LOOK-UP answered, as the turn reads it. Only a 2xx is the
+/// room, and only Hermes' own `session_not_found` says it is gone — a bare 404
+/// is a Hermes with no session API, which is "not ready" like everything else.
+fn session_lookup_answer(status: u16, code: Option<&str>) -> SessionCreate {
+    match (status, code) {
+        (200..=299, _) => SessionCreate::Existing,
+        (404, Some("session_not_found")) => SessionCreate::Lost(
+            "a transcript was expected and the session is not in the container (its state volume \
+             was lost, or the session was deleted)",
+        ),
+        _ => SessionCreate::NotReady,
+    }
+}
+
+/// What a session CREATE answered. A 409 is "exists" only when it says so,
+/// and "deleted" only when it says that: any other conflict is a container
+/// refusing the session, and the stream POST would then be talking to a room
+/// that was never made.
+fn session_create_answer(status: u16, code: Option<&str>) -> SessionCreate {
+    match (status, code) {
+        (200..=299, _) => SessionCreate::Fresh,
+        (409, Some("session_exists")) => SessionCreate::Existing,
+        (409, Some("session_deleted")) => {
+            SessionCreate::Lost("the session was deleted, and Hermes never reuses a deleted id")
+        }
+        _ => SessionCreate::NotReady,
+    }
 }
 
 /// The agent stayed down past the hold window: say so honestly, streamed as a
@@ -646,6 +1132,7 @@ fn canned_chat_stream(text: &str, canned: &'static str) -> ChatStream {
         content_type: "text/event-stream".into(),
         body,
         canned: Some(canned),
+        hermes_session: None,
     }
 }
 
@@ -697,7 +1184,7 @@ pub async fn steer_run(agent_model: &str, run_id: &str, text: &str) -> SteerOutc
         Ok(Ok(res)) if res.status().is_success() => SteerOutcome::Accepted,
         Ok(Ok(res)) if res.status() == reqwest::StatusCode::CONFLICT => SteerOutcome::NotAccepting,
         Ok(Ok(res)) => SteerOutcome::Failed(control_failure(res).await),
-        Ok(Err(e)) => SteerOutcome::Failed(e.to_string()),
+        Ok(Err(e)) => SteerOutcome::Failed(transport_error(e)),
         Err(_) => SteerOutcome::Failed("the agent did not answer the steer".into()),
     }
 }
@@ -726,9 +1213,62 @@ pub async fn stop_run(agent_model: &str, run_id: &str) -> Result<(), String> {
     match sent {
         Ok(Ok(res)) if res.status().is_success() => Ok(()),
         Ok(Ok(res)) => Err(control_failure(res).await),
-        Ok(Err(e)) => Err(e.to_string()),
+        Ok(Err(e)) => Err(transport_error(e)),
         Err(_) => Err("the agent did not answer the stop".into()),
     }
+}
+
+/// Stop a COMPLETIONS turn a person is reading, by its completion id — the
+/// arm whose turn has no `run.started` to name it. While the turn's request
+/// is open its completion id is its Hermes run id (fleet_abandoned.rs), and
+/// the drain that holds the request open is what knows the id: `current`
+/// asks it (the reply row's open completion, [`AgentStreamParser::completion`]),
+/// before every send, and answers None once the stream has ended.
+///
+/// The stop is sent again while Hermes cannot place it yet, within the
+/// control window. `Ok(Some(words))` says what it did to the turn, for a log
+/// line (interrupted, or cancelled while still queued); `Ok(None)` means the
+/// stream ended first, so nothing was left to stop; `Err` is why Hermes
+/// would not take it, in the closed vocabulary (never the body's prose,
+/// never the dial URL). Like `stop_run`, `Ok` means the interrupt was taken,
+/// not that the turn is over: Hermes ends the turn's stream with a
+/// `cancelled` finish, and the drain still owns that ending.
+pub async fn stop_completion(
+    agent_model: &str,
+    current: impl Fn() -> Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(entry) = agent_entry(agent_model).await else {
+        return Err("no such agent".into());
+    };
+    crate::fleet_abandoned::stop_open_completion(
+        &entry,
+        current,
+        tokio::time::Instant::now() + CONTROL_WINDOW,
+    )
+    .await
+}
+
+/// [`stop_completion`] for a stop nobody is waiting on: a person's stop that
+/// was held for a turn still opening, sent from the turn's drain once the
+/// turn names itself (talaria-chat-persist `hold_stop`). Hermes writes the
+/// role chunk before it binds the completion id to the turn's admission, and
+/// on a starved agent store the id has stayed unbound for minutes after it.
+/// The control window is a waiting caller's bound; a held stop has no
+/// caller, so it is placed with the patience the abandoned-turn guard gives
+/// the same stop: the headers window.
+pub async fn stop_completion_held(
+    agent_model: &str,
+    current: impl Fn() -> Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(entry) = agent_entry(agent_model).await else {
+        return Err("no such agent".into());
+    };
+    crate::fleet_abandoned::stop_open_completion(
+        &entry,
+        current,
+        tokio::time::Instant::now() + HEADERS_WINDOW,
+    )
+    .await
 }
 
 /// This agent's manifest row, looked up once. The control calls do not hold
@@ -736,6 +1276,56 @@ pub async fn stop_run(agent_model: &str, run_id: &str) -> Result<(), String> {
 /// answer here rather than something to wait out.
 async fn agent_entry(model: &str) -> Option<ManifestEntry> {
     read_manifest().await.into_iter().find(|m| m.model == model)
+}
+
+/// What an agent's API server answered: the status as-is, and the body as
+/// json (`Null` when it was empty or not json).
+#[derive(Debug, Clone)]
+pub struct AgentAnswer {
+    pub status: u16,
+    pub body: Value,
+}
+
+/// One json request to an agent's own API server, through the same door and
+/// with the same bearer as a turn — for the control-plane surfaces Hermes
+/// serves there (its `/api/jobs` cron REST is the first). `window` bounds the
+/// whole exchange, body included: the caller knows how long its call may
+/// legitimately take.
+///
+/// `Err` means NO ANSWER — no manifest row, a refused or reset connection, or
+/// silence past the window. Any status is an answer and comes back `Ok`; what
+/// a refusal means is the caller's to read, so this never interprets it.
+pub async fn agent_request(
+    agent_model: &str,
+    method: Method,
+    path: &str,
+    body: Option<&Value>,
+    window: Duration,
+) -> Result<AgentAnswer, String> {
+    let Some(entry) = agent_entry(agent_model).await else {
+        return Err("not in the fleet manifest".into());
+    };
+    let mut req = with_bearer(
+        &entry,
+        http().request(method, format!("{}{path}", entry.url)),
+    );
+    if let Some(body) = body {
+        req = req.json(body);
+    }
+    let exchange = async {
+        let res = req.send().await?;
+        let status = res.status().as_u16();
+        let bytes = res.bytes().await?;
+        Ok::<_, reqwest::Error>((status, bytes))
+    };
+    match tokio::time::timeout(window, exchange).await {
+        Ok(Ok((status, bytes))) => Ok(AgentAnswer {
+            status,
+            body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        }),
+        Ok(Err(e)) => Err(transport_error(e)),
+        Err(_) => Err(format!("no answer within {}s", window.as_secs())),
+    }
 }
 
 /// What Hermes is holding for one pinned conversation: how much of the
@@ -873,7 +1463,7 @@ fn parse_message_count(body: &Value) -> Option<i64> {
 /// error code when the body names one (`run_not_found`, `invalid_steer_input`
 /// — a closed vocabulary Hermes owns). THE BODY'S PROSE NEVER TRAVELS: an
 /// agent's own words can be in there, and this string goes back into a chat.
-async fn control_failure(res: reqwest::Response) -> String {
+pub(crate) async fn control_failure(res: reqwest::Response) -> String {
     let status = res.status().as_u16();
     match res
         .json::<Value>()
@@ -1019,6 +1609,8 @@ pub struct AgentStreamParser {
     /// what tells a turn that already streamed its words (do not land them
     /// twice) from one that never streamed at all (land them once).
     streamed: bool,
+    /// The completion this stream named last ([`completion_id_of`]).
+    completion: Option<String>,
 }
 
 impl AgentStreamParser {
@@ -1035,6 +1627,7 @@ impl AgentStreamParser {
                 &frame[..frame.len() - 2],
                 &mut self.streamed,
                 &mut self.calls,
+                &mut self.completion,
             ));
         }
         events
@@ -1043,14 +1636,41 @@ impl AgentStreamParser {
     /// End of body: parse whatever the final frame left behind.
     pub fn finish(&mut self) -> Vec<AgentStreamEvent> {
         let rest = std::mem::take(&mut self.buffer);
-        parse_frame(&rest, &mut self.streamed, &mut self.calls)
+        parse_frame(
+            &rest,
+            &mut self.streamed,
+            &mut self.calls,
+            &mut self.completion,
+        )
     }
+
+    /// The completion a completions-arm stream named last (`chatcmpl-…`),
+    /// or None on the session arm, which names its run in `run.started`
+    /// instead. While the turn's request is open this id is also the turn's
+    /// Hermes run id, so it is what a person's stop names
+    /// ([`stop_completion`]). A turn the lost-turn watch moved names its
+    /// fresh completion in its next role chunk, and that one replaces it.
+    pub fn completion(&self) -> Option<&str> {
+        self.completion.as_deref()
+    }
+}
+
+/// The completion a `/v1/chat/completions` chunk belongs to: the chunk's own
+/// top-level `id` (`chatcmpl-…`), never an id quoted in the reply's words.
+/// Hermes writes it on every chunk of a turn, the role chunk first, and
+/// while the turn's request is open the same id names the turn's run
+/// (`POST /v1/runs/{id}/stop`; fleet_abandoned.rs says how).
+pub(crate) fn completion_id_of(json: &Value) -> Option<&str> {
+    json.get("id")
+        .and_then(Value::as_str)
+        .filter(|id| id.len() > "chatcmpl-".len() && id.starts_with("chatcmpl-"))
 }
 
 fn parse_frame(
     frame: &str,
     streamed: &mut bool,
     calls: &mut HashMap<String, u32>,
+    completion: &mut Option<String>,
 ) -> Vec<AgentStreamEvent> {
     let mut event_name = String::new();
     let mut data_lines: Vec<&str> = Vec::new();
@@ -1085,12 +1705,36 @@ fn parse_frame(
     {
         return events;
     }
+    // Only an unnamed chunk is a completion's: a named frame on this stream
+    // (an approval request) names its run in `run_id`, not `id`.
+    if event_name.is_empty()
+        && let Some(id) = completion_id_of(&json)
+    {
+        *completion = Some(id.to_string());
+    }
     let mut events = Vec::new();
     // The failure frame first: it rides a 200 with no content delta, and the
     // turn is over the moment it lands — later arms may still pull usage, but
     // nothing downstream should read this frame as a healthy empty one.
     if let Some(message) = error_message_of(&json) {
         events.push(AgentStreamEvent::Error { message });
+    }
+    // AN INTERRUPTED COMPLETION ENDS `cancelled`, the completions arm's
+    // `run.cancelled`: Hermes' finish chunk says `cancelled` for a turn that
+    // did not complete and named no error (`_finish_reason` in
+    // api_server_openai_routes.py, v0.22.4), which is a turn a stop
+    // interrupted, or a queued one a stop withdrew. Every turn that ends
+    // unfinished for another reason carries its error, and reads as one
+    // above. So it says only that it happened, and the words before it
+    // stand as the reply.
+    if json
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(Value::as_str)
+        == Some("cancelled")
+    {
+        events.push(AgentStreamEvent::Stopped);
     }
     let delta = json
         .get("choices")
@@ -1336,6 +1980,10 @@ fn parse_session_frame(
         // acknowledgement is nothing to land.
         "run.steered" => Some(Vec::new()),
         "run.queued" => Some(Vec::new()),
+        // Hermes asking whoever reads the stream to approve a flagged call.
+        // The door answered it, or raised its card, as the bytes went past
+        // (fleet_approvals.rs); the consumer has nothing to land.
+        "approval.request" => Some(Vec::new()),
         "error" => Some(vec![AgentStreamEvent::Error {
             message: session_error_message(json),
         }]),
@@ -1349,10 +1997,19 @@ fn parse_session_frame(
 /// counts or a character estimate" on whether a usage event arrived at all,
 /// so a frame without counts must stay silent here — a reported 0/0 would
 /// be billed as the truth.
+///
+/// THE SESSION STREAM SPELLS THEM THE RESPONSES WAY: Hermes v0.22 puts
+/// `usage: {input_tokens, output_tokens, total_tokens}` on `run.completed`
+/// (and the other `run.*` verdicts) and none on `assistant.completed`
+/// (`gateway/platforms/api_server.py`, `_finish_turn_result`). The
+/// chat-completions spelling is still read, the way talaria-decide's wire
+/// reader reads both.
 fn session_usage(json: &Value) -> Vec<AgentStreamEvent> {
     let usage = json.get("usage");
     let count = |k: &str| usage.and_then(|u| u.get(k)).and_then(Value::as_i64);
-    match (count("prompt_tokens"), count("completion_tokens")) {
+    let input = count("input_tokens").or_else(|| count("prompt_tokens"));
+    let output = count("output_tokens").or_else(|| count("completion_tokens"));
+    match (input, output) {
         (Some(prompt_tokens), Some(completion_tokens)) => vec![AgentStreamEvent::Usage {
             prompt_tokens,
             completion_tokens,
@@ -1438,36 +2095,564 @@ fn session_error_message(json: &Value) -> String {
 mod tests {
     use super::*;
 
+    /// Thread 0 is the opening as sent, so a conversation that never lost a
+    /// turn keeps the derived session it always had; any other thread is one
+    /// more system row after the leading ones, and nothing else changes.
     #[test]
-    fn a_turn_registers_under_the_agent_whatever_tier_it_dials() {
-        let row = |model: &str, url: &str| ManifestEntry {
-            model: model.into(),
-            url: url.into(),
+    fn a_thread_is_one_system_row_in_the_opening_and_nothing_else() {
+        let payload = json!({
+            "model": "ada-eng",
+            "messages": [
+                { "role": "system", "content": "mode" },
+                { "role": "system", "content": "THIS CONVERSATION'S ID: c1." },
+                { "role": "user", "content": "hi" },
+                { "role": "assistant", "content": "hello" },
+                { "role": "user", "content": "again" },
+            ],
+            "model_options": { "reasoning_effort": "low" },
+        });
+        let plain = completions_request(&payload, None);
+        assert_eq!(plain["messages"], payload["messages"]);
+        assert_eq!(plain["stream"], true);
+        assert_eq!(plain["stream_options"]["include_usage"], true);
+        assert_eq!(plain["model_options"], payload["model_options"]);
+
+        let moved = completions_request(&payload, Some("2"));
+        let mut list = moved["messages"].as_array().unwrap().clone();
+        assert_eq!(list.len(), 6);
+        assert_eq!(list[2], thread_line("2"));
+        assert!(
+            list[2]["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("SESSION THREAD: 2.")
+        );
+        list.remove(2);
+        assert_eq!(Value::Array(list), payload["messages"]);
+        assert_eq!(moved["model"], payload["model"]);
+        // Different threads are different openings, so different sessions.
+        assert_ne!(thread_line("2"), thread_line("3"));
+
+        // A one-shot with no system rows takes its thread row first.
+        let bare = json!({ "model": "m", "messages": [{ "role": "user", "content": "q" }] });
+        assert_eq!(
+            completions_request(&bare, Some("ab12cd34"))["messages"][0]["role"],
+            "system"
+        );
+    }
+
+    #[test]
+    fn a_conversation_thread_never_starts_below_zero() {
+        let t = Thread::conversation(-3, Box::new(|_| Box::pin(async {})));
+        assert_eq!(t.epoch, 0);
+        assert!(t.remember.is_some());
+        let one = Thread::one_shot();
+        assert_eq!(one.epoch, 0);
+        assert!(one.remember.is_none());
+    }
+
+    // ── The fresh-thread move itself (`FreshThread::send`) ───────────────────
+    //
+    // Against a stand-in for the agent's own gateway on loopback: it answers
+    // a completions POST the way Hermes does, a short stream with the derived
+    // session in `X-Hermes-Session-Id`, one session per thread row, and it
+    // keeps every body it was sent.
+
+    /// The derived session the stand-in names for a body: `api-` and the
+    /// body's thread, the way a different opening is a different session.
+    fn session_for(body: &Value) -> String {
+        format!("api-fresh{}", thread_in(body).unwrap_or_default())
+    }
+
+    /// The thread a body's `SESSION THREAD` row names, if it has one.
+    fn thread_in(body: &Value) -> Option<String> {
+        body["messages"].as_array()?.iter().find_map(|m| {
+            let text = m["content"].as_str()?;
+            let rest = text.strip_prefix("SESSION THREAD: ")?;
+            Some(rest.split('.').next()?.to_string())
+        })
+    }
+
+    /// What the stand-in was sent: each body, with the `Authorization`
+    /// header it came under.
+    #[derive(Clone, Default)]
+    struct Seen(std::sync::Arc<std::sync::Mutex<Vec<(Value, Option<String>)>>>);
+
+    impl Seen {
+        fn bodies(&self) -> Vec<Value> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(b, _)| b.clone())
+                .collect()
+        }
+
+        fn authorizations(&self) -> Vec<Option<String>> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, a)| a.clone())
+                .collect()
+        }
+    }
+
+    /// Bind the stand-in; `status` is what every POST answers.
+    async fn agent_gateway(status: u16) -> (ManifestEntry, Seen) {
+        let seen = Seen::default();
+        let kept = seen.clone();
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(
+                move |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>| {
+                    let kept = kept.clone();
+                    async move {
+                        let session = session_for(&body);
+                        let authorization = headers
+                            .get(axum::http::header::AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_string);
+                        kept.0.lock().unwrap().push((body, authorization));
+                        (
+                            axum::http::StatusCode::from_u16(status).unwrap(),
+                            [
+                                ("content-type", "text/event-stream".to_string()),
+                                ("x-hermes-session-id", session),
+                            ],
+                            "data: {\"choices\": [{\"index\": 0, \"delta\": {\"content\": \"on the \
+                         fresh thread\"}, \"finish_reason\": null}]}\n\ndata: [DONE]\n\n",
+                        )
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let entry = ManifestEntry {
+            model: "ada-ops".into(),
+            url,
+            key: Some("agent-door-key".into()),
+        };
+        (entry, seen)
+    }
+
+    /// A refused turn as the repair holds it: the sealed payload, before any
+    /// thread row.
+    fn refused_turn() -> Value {
+        json!({
+            "model": "ada-ops",
+            "messages": [
+                { "role": "system", "content": "mode" },
+                { "role": "system", "content": "THIS CONVERSATION'S ID: c1." },
+                { "role": "user", "content": "alpha one" },
+                { "role": "assistant", "content": "SEEN 1" },
+                { "role": "user", "content": "alpha two" },
+            ],
+        })
+    }
+
+    fn fresh(
+        entry: &ManifestEntry,
+        next_epoch: i32,
+        remember: Option<RememberThread>,
+    ) -> FreshThread {
+        FreshThread {
+            entry: ManifestEntry {
+                model: entry.model.clone(),
+                url: entry.url.clone(),
+                key: entry.key.clone(),
+            },
+            payload: refused_turn(),
+            next_epoch,
+            remember,
+            attribution: None,
+            abandoned: Some("api-0123456789abcdef".into()),
+            let_go: crate::fleet_abandoned::LetGo::default(),
+        }
+    }
+
+    /// What a `RememberThread` was called with, in order.
+    type Kept = std::sync::Arc<std::sync::Mutex<Vec<i32>>>;
+
+    fn remembering() -> (RememberThread, Kept) {
+        let kept: Kept = Default::default();
+        let k = kept.clone();
+        (
+            Box::new(move |n| {
+                k.lock().unwrap().push(n);
+                Box::pin(async {})
+            }),
+            kept,
+        )
+    }
+
+    async fn read_all(body: ByteStream) -> String {
+        let parts: Vec<Bytes> = body.map(|c| c.expect("a chunk")).collect().await;
+        String::from_utf8(parts.concat()).unwrap()
+    }
+
+    /// A conversation's repair opens the turn on the conversation's next
+    /// thread, not a random one, and keeps it, once, after the fresh stream
+    /// opened: the conversation's next turn opens there too. The body is the
+    /// refused turn plus that thread's row and nothing else, sent once, with
+    /// the agent's own bearer.
+    #[tokio::test]
+    async fn a_conversations_fresh_thread_is_its_next_one_and_is_kept() {
+        let (entry, seen) = agent_gateway(200).await;
+        let (remember, kept) = remembering();
+        let body = fresh(&entry, 3, Some(remember))
+            .send()
+            .await
+            .expect("the fresh thread answers");
+        assert_eq!(*kept.lock().unwrap(), [3]);
+        let text = read_all(body).await;
+        assert!(text.contains("on the fresh thread"), "{text}");
+        assert!(text.ends_with("data: [DONE]\n\n"), "{text}");
+
+        let sent = seen.bodies();
+        assert_eq!(sent.len(), 1, "sent once");
+        assert_eq!(thread_in(&sent[0]).as_deref(), Some("3"));
+        assert_eq!(sent[0], completions_request(&refused_turn(), Some("3")));
+        assert_eq!(sent[0]["stream"], true);
+        assert_eq!(
+            seen.authorizations(),
+            [Some("Bearer agent-door-key".to_string())]
+        );
+    }
+
+    /// A turn whose reader let go of it is not moved: the guard reads the
+    /// refusal only to stop the turn, and a fresh one would run for nobody.
+    /// Nothing is sent and no thread is kept.
+    #[tokio::test]
+    async fn a_turn_its_reader_let_go_of_is_not_moved() {
+        let (entry, seen) = agent_gateway(200).await;
+        let (remember, kept) = remembering();
+        let thread = fresh(&entry, 3, Some(remember));
+        thread.let_go.mark();
+        let why = match thread.send().await {
+            Ok(_) => panic!("a let-go turn was moved"),
+            Err(why) => why,
+        };
+        assert!(why.contains("let go"), "{why}");
+        assert!(seen.bodies().is_empty(), "nothing was sent");
+        assert!(kept.lock().unwrap().is_empty(), "no thread was kept");
+    }
+
+    /// A one-shot has nothing to keep a thread on: its repair takes a random
+    /// eight-hex thread, a different one each time, so two one-shots wedged
+    /// on one opening do not land on one fresh session. Nothing is kept.
+    #[tokio::test]
+    async fn a_one_shot_takes_a_random_thread_and_keeps_none() {
+        let (entry, seen) = agent_gateway(200).await;
+        for _ in 0..2 {
+            let body = fresh(&entry, 1, None).send().await.expect("answers");
+            assert!(read_all(body).await.contains("on the fresh thread"));
+        }
+        let sent = seen.bodies();
+        assert_eq!(sent.len(), 2);
+        let threads: Vec<String> = sent.iter().map(|b| thread_in(b).unwrap()).collect();
+        for t in &threads {
+            assert_eq!(t.len(), 8, "{t}");
+            assert!(
+                t.bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                "{t}"
+            );
+            // Not the epoch a conversation would have taken.
+            assert_ne!(t, "1");
+        }
+        assert_ne!(threads[0], threads[1], "a fresh random thread each time");
+        // Apart from its row, the body is the refused turn.
+        for (body, thread) in sent.iter().zip(&threads) {
+            assert_eq!(*body, completions_request(&refused_turn(), Some(thread)));
+        }
+    }
+
+    /// A move the agent refuses, or one it is not there to take, says why
+    /// and keeps nothing: the conversation stays on the thread it had, and
+    /// its next turn is refused once more and moves again.
+    #[tokio::test]
+    async fn a_failed_move_keeps_no_thread() {
+        let (entry, seen) = agent_gateway(503).await;
+        let (remember, kept) = remembering();
+        let why = match fresh(&entry, 2, Some(remember)).send().await {
+            Err(why) => why,
+            Ok(_) => panic!("a 503 is no stream to carry on with"),
+        };
+        assert_eq!(
+            why,
+            "the agent answered the turn sent on a fresh session with HTTP 503"
+        );
+        assert!(kept.lock().unwrap().is_empty());
+        assert_eq!(seen.bodies().len(), 1);
+
+        // Nothing listening: the turn never left.
+        let gone = ManifestEntry {
+            model: "ada-ops".into(),
+            url: "http://127.0.0.1:9".into(),
             key: None,
         };
-        let manifest = vec![
-            row("x-eng", "http://agent-eng:8642"),
-            row("x-eng-fast", "http://agent-eng:8642"),
-            row("x-eng-deep", "http://agent-eng:8642"),
-            row("y-ops", "http://agent-ops:8642"),
-        ];
-        assert_eq!(turn_subject(&manifest, &manifest[0]), "x-eng");
+        let (remember, kept) = remembering();
+        let why = match fresh(&gone, 2, Some(remember)).send().await {
+            Err(why) => why,
+            Ok(_) => panic!("nothing answered"),
+        };
         assert_eq!(
-            turn_subject(&manifest, &manifest[2]),
-            "x-eng",
-            "a tier row registers under the agent sharing its container"
+            why,
+            "the agent went away before the turn could be sent on a fresh session"
+        );
+        assert!(kept.lock().unwrap().is_empty());
+    }
+
+    /// The fresh session's key is recorded for the turn's flow the moment
+    /// its headers name it, and what the relay booked under that key before
+    /// the record (the agent's first call racing it) is claimed: once when
+    /// the stream opens, and once more when its reader lets go. The live
+    /// half of `usage.rs`'s ledger proof, run the same way:
+    ///
+    ///   DATABASE_URL=postgres://… cargo test -p talaria-gateway --lib -- \
+    ///     --ignored fleet_chat::tests::a_fresh_thread_records
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn a_fresh_thread_records_and_backfills_its_new_key() {
+        use crate::usage::{StatedFlow, TokenCounts, UNATTENDED_SOURCE, record_relay_usage};
+        let url = std::env::var("DATABASE_URL")
+            .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
+        let pg = sqlx::PgPool::connect(&url).await.expect("connect");
+        // A name no other test, and no real agent, books under.
+        let agent = format!("live-fresh-{}", uuid::Uuid::new_v4());
+        let conversation = uuid::Uuid::new_v4().to_string();
+        let cleanup = || async {
+            for sql in [
+                "delete from usage_events where agent_model = $1",
+                "delete from usage_attributions where agent_model = $1",
+            ] {
+                sqlx::query(sql).bind(&agent).execute(&pg).await.unwrap();
+            }
+        };
+        let book = |prompt: i64| {
+            let (pg, agent) = (pg.clone(), agent.clone());
+            async move {
+                let counts = TokenCounts {
+                    prompt_tokens: prompt,
+                    completion_tokens: 1,
+                    ..TokenCounts::default()
+                };
+                record_relay_usage(
+                    &pg,
+                    UNATTENDED_SOURCE,
+                    &agent,
+                    Some("api-fresh4"),
+                    &StatedFlow::default(),
+                    "live-test-endpoint",
+                    "local",
+                    "live-test-model",
+                    &counts,
+                    false,
+                    None,
+                )
+                .await
+                .expect("the relay's insert");
+            }
+        };
+        let row = |prompt: i64| {
+            let (pg, agent) = (pg.clone(), agent.clone());
+            async move {
+                sqlx::query_as::<_, (String, Option<String>)>(
+                    "select source, ref_id::text from usage_events \
+                      where agent_model = $1 and prompt_tokens = $2",
+                )
+                .bind(&agent)
+                .bind(prompt)
+                .fetch_one(&pg)
+                .await
+                .expect("the row")
+            }
+        };
+        // The backfills are detached; give each a moment to land.
+        let claimed = |prompt: i64| {
+            let row = &row;
+            async move {
+                for _ in 0..50 {
+                    if row(prompt).await.0 == "chat" {
+                        return true;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                false
+            }
+        };
+        cleanup().await;
+
+        let (entry, _seen) = agent_gateway(200).await;
+        // The turn's first call, booked before the fresh key was recorded.
+        book(101).await;
+        let (remember, _kept) = remembering();
+        let mut move_it = fresh(&entry, 4, Some(remember));
+        move_it.attribution = Some(TurnAttribution {
+            pg: pg.clone(),
+            agent_model: agent.clone(),
+            source: "chat".into(),
+            ref_id: Some(conversation.clone()),
+            task_id: None,
+            attended: false,
+        });
+        let body = move_it.send().await.expect("the fresh thread answers");
+
+        // Recorded before `send` handed the stream back.
+        let recorded: (String, Option<String>) = sqlx::query_as(
+            "select source, ref_id::text from usage_attributions \
+              where agent_model = $1 and affinity_key = 'api-fresh4'",
+        )
+        .bind(&agent)
+        .fetch_one(&pg)
+        .await
+        .expect("the fresh key is recorded");
+        assert_eq!(recorded, ("chat".into(), Some(conversation.clone())));
+        // Nothing was recorded under the abandoned session.
+        let abandoned: i64 = sqlx::query_scalar(
+            "select count(*) from usage_attributions \
+              where agent_model = $1 and affinity_key = 'api-0123456789abcdef'",
+        )
+        .bind(&agent)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert_eq!(abandoned, 0);
+
+        assert!(
+            claimed(101).await,
+            "the open's backfill claims the early call"
+        );
+        assert_eq!(row(101).await, ("chat".into(), Some(conversation.clone())));
+
+        // A call booked while the stream was still being read, whose insert
+        // missed the record (it read the attributions before the record
+        // committed) and landed after the open's backfill ran: the reader
+        // letting go claims it.
+        book(202).await;
+        sqlx::query(
+            "update usage_events set source = $2, ref_id = null \
+              where agent_model = $1 and prompt_tokens = 202",
+        )
+        .bind(&agent)
+        .bind(UNATTENDED_SOURCE)
+        .execute(&pg)
+        .await
+        .unwrap();
+        assert_eq!(row(202).await, (UNATTENDED_SOURCE.into(), None));
+        assert!(read_all(body).await.contains("on the fresh thread"));
+        assert!(
+            claimed(202).await,
+            "the end-of-read backfill claims the late call"
+        );
+        assert_eq!(row(202).await, ("chat".into(), Some(conversation.clone())));
+
+        cleanup().await;
+    }
+
+    #[test]
+    fn a_turn_is_metered_under_the_session_we_made_or_the_id_hermes_answered() {
+        let stream = |hermes_session: Option<&str>| ChatStream {
+            status: 200,
+            content_type: "text/event-stream".into(),
+            body: Box::pin(futures_util::stream::empty()),
+            canned: None,
+            hermes_session: hermes_session.map(str::to_string),
+        };
+        let session = AgentRequest::SessionTurn {
+            conversation_id: "4f7c2a1e-9d3b-4c8a-b1f2-0e6d5a4c3b2a".into(),
+            body: json!({}),
+            history_expected: false,
+        };
+        // The session arm's key is ours, whatever the container answered.
+        assert_eq!(
+            turn_key(&session, &stream(Some("api-0123456789abcdef"))).as_deref(),
+            Some("4f7c2a1e-9d3b-4c8a-b1f2-0e6d5a4c3b2a")
         );
         assert_eq!(
-            turn_subject(&manifest, &manifest[3]),
-            "y-ops",
-            "another container is another agent"
+            turn_key(&session, &stream(None)).as_deref(),
+            Some("4f7c2a1e-9d3b-4c8a-b1f2-0e6d5a4c3b2a")
         );
-        let alone = vec![row("x-eng-fast", "http://agent-eng:8642")];
+        // The completions arm's key is the one Hermes named for it.
+        let completions = AgentRequest::ChatCompletions {
+            payload: json!({}),
+            epoch: 0,
+            remember: std::sync::Mutex::new(None),
+        };
         assert_eq!(
-            turn_subject(&alone, &alone[0]),
-            "x-eng-fast",
-            "a row with no sibling is its own subject"
+            turn_key(&completions, &stream(Some("api-0123456789abcdef"))).as_deref(),
+            Some("api-0123456789abcdef")
         );
+        // No header (an older Hermes, a synthesized error): no key, and the
+        // turn's calls stay unattended rather than claiming someone else's.
+        assert_eq!(turn_key(&completions, &stream(None)), None);
+        assert_eq!(turn_key(&completions, &stream(Some("bad key"))), None);
+    }
+
+    /// The completion a completions stream is on is the chunk's own `id`,
+    /// the newest one named: never an id the reply's words quote, never a
+    /// named frame's `run_id`, and nothing on the session arm.
+    #[test]
+    fn the_parser_names_the_completion_the_stream_is_on() {
+        let mut p = AgentStreamParser::new();
+        assert_eq!(p.completion(), None);
+        p.feed(
+            b"data: {\"id\": \"chatcmpl-a1\", \"object\": \"chat.completion.chunk\", \"choices\": [{\"index\": 0, \"delta\": {\"role\": \"assistant\"}, \"finish_reason\": null}]}\n\n",
+        );
+        assert_eq!(p.completion(), Some("chatcmpl-a1"));
+        // Words that quote another completion, and an approval frame naming
+        // its run, leave it where it is.
+        p.feed(
+            b"data: {\"id\": \"chatcmpl-a1\", \"choices\": [{\"index\": 0, \"delta\": {\"content\": \"see {\\\"id\\\": \\\"chatcmpl-zz\\\"}\"}, \"finish_reason\": null}]}\n\n",
+        );
+        p.feed(b"event: approval.request\ndata: {\"run_id\": \"chatcmpl-a1\", \"request_id\": \"r1\", \"id\": \"chatcmpl-qq\"}\n\n");
+        assert_eq!(p.completion(), Some("chatcmpl-a1"));
+        // A turn the lost-turn watch moved names its fresh completion.
+        p.feed(
+            b"data: {\"id\": \"chatcmpl-b2\", \"object\": \"chat.completion.chunk\", \"choices\": [{\"index\": 0, \"delta\": {\"role\": \"assistant\"}, \"finish_reason\": null}]}\n\n",
+        );
+        assert_eq!(p.completion(), Some("chatcmpl-b2"));
+        // A bare prefix is not an id.
+        let mut bare = AgentStreamParser::new();
+        bare.feed(b"data: {\"id\": \"chatcmpl-\", \"choices\": []}\n\n");
+        assert_eq!(bare.completion(), None);
+        // The session arm names its run in `run.started`, not here.
+        let mut session = AgentStreamParser::new();
+        session
+            .feed(b"event: run.started\ndata: {\"run_id\": \"run_1\", \"session_id\": \"s\"}\n\n");
+        assert_eq!(session.completion(), None);
+    }
+
+    /// A completion a stop interrupted ends `cancelled`: the completions
+    /// arm's `run.cancelled`. The words before it stand as the reply, and
+    /// nothing reads it as a failure. A plain `stop` finish is just the end.
+    #[test]
+    fn a_cancelled_finish_is_a_stop_not_an_error() {
+        let mut p = AgentStreamParser::new();
+        let events = p.feed(
+            concat!(
+                "data: {\"id\": \"chatcmpl-a1\", \"choices\": [{\"index\": 0, \"delta\": {\"content\": \"half a\"}, \"finish_reason\": null}]}\n\n",
+                "data: {\"id\": \"chatcmpl-a1\", \"object\": \"chat.completion.chunk\", \"choices\": [{\"index\": 0, \"delta\": {}, \"finish_reason\": \"cancelled\"}], \"hermes\": {\"completed\": false, \"partial\": false, \"failed\": false, \"error\": null, \"error_code\": \"agent_error\"}}\n\n",
+                "data: [DONE]\n\n",
+            )
+            .as_bytes(),
+        );
+        assert_eq!(
+            events,
+            vec![
+                AgentStreamEvent::Content {
+                    text: "half a".into()
+                },
+                AgentStreamEvent::Stopped
+            ]
+        );
+        let done = AgentStreamParser::new().feed(
+            b"data: {\"id\": \"chatcmpl-a1\", \"choices\": [{\"index\": 0, \"delta\": {}, \"finish_reason\": \"stop\"}]}\n\n",
+        );
+        assert!(done.is_empty(), "{done:?}");
     }
 
     #[test]
@@ -1838,7 +3023,10 @@ mod tests {
                     r#"data: {"message_id":"msg_1","text":"Checking the box first.","already_streamed":false}"#,
                     "\n\n",
                     "event: assistant.completed\n",
-                    r#"data: {"message":{"role":"assistant","content":"Hello"},"usage":{"prompt_tokens":12,"completion_tokens":3},"runtime":{}}"#,
+                    r#"data: {"message":{"role":"assistant","content":"Hello"},"runtime":{}}"#,
+                    "\n\n",
+                    "event: run.completed\n",
+                    r#"data: {"messages":[],"usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15},"runtime":{}}"#,
                     "\n\n",
                 )
                 .as_bytes(),
@@ -1905,7 +3093,10 @@ mod tests {
         let events = p.feed(
             concat!(
                 "event: assistant.completed\n",
-                r#"data: {"message":{"role":"assistant","content":"Done — the box is checked."},"usage":{"prompt_tokens":7,"completion_tokens":2}}"#,
+                r#"data: {"message":{"role":"assistant","content":"Done — the box is checked."}}"#,
+                "\n\n",
+                "event: run.completed\n",
+                r#"data: {"usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9}}"#,
                 "\n\n",
             )
             .as_bytes(),
@@ -1951,13 +3142,78 @@ mod tests {
         let mut p = AgentStreamParser::new();
         let events = p.feed(
             concat!(
-                "event: assistant.completed\n",
-                r#"data: {"message":{"role":"assistant","content":""},"usage":{"total_tokens":4}}"#,
+                "event: run.completed\n",
+                r#"data: {"messages":[],"usage":{"total_tokens":4}}"#,
                 "\n\n",
             )
             .as_bytes(),
         );
         assert_eq!(events, vec![]);
+    }
+
+    /// A whole session turn exactly as v0.22.4 streams it (captured from a
+    /// worktree agent on the pinned image, a scripted model behind the
+    /// gateway): the counts ride `run.completed`, spelled `input_tokens` /
+    /// `output_tokens`, and `assistant.completed` carries none.
+    #[test]
+    fn a_real_session_turn_reports_its_counts() {
+        const CAPTURED: &str = r##"event: run.started
+data: {"user_message": {"role": "user", "content": "usage probe"}, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "session_id": "fu-c2-probe", "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 1, "ts": 1793136731.461202}
+
+event: message.started
+data: {"message": {"id": "msg_ab733fc19b2f4862bc7de63d69315bc4", "role": "assistant"}, "session_id": "fu-c2-probe", "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 2, "ts": 1793136731.4612339}
+
+event: assistant.delta
+data: {"message_id": "msg_ab733fc19b2f4862bc7de63d69315bc4", "delta": "SEEN 1 user turns: usage probe || thread=None", "session_id": "fu-c2-probe", "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 3, "ts": 1793136731.6096802}
+
+event: assistant.completed
+data: {"session_id": "fu-c2-probe", "message_id": "msg_ab733fc19b2f4862bc7de63d69315bc4", "content": "SEEN 1 user turns: usage probe || thread=None", "completed": true, "partial": false, "interrupted": false, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 4, "ts": 1793136731.7383509}
+
+event: run.completed
+data: {"session_id": "fu-c2-probe", "message_id": "msg_ab733fc19b2f4862bc7de63d69315bc4", "completed": true, "partial": false, "interrupted": false, "messages": [{"role": "assistant", "content": "SEEN 1 user turns: usage probe || thread=None", "timestamp": 1793136731.6565225, "finish_reason": "stop", "reasoning": null}], "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}, "runtime": {"provider": "", "model": "", "route_source": "global", "requested": {"provider": "", "model": ""}}, "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 5, "ts": 1793136731.7383711}
+
+event: done
+data: {"session_id": "fu-c2-probe", "run_id": "run_caafc7a88e35432ca627e870623b4f1c", "seq": 6, "ts": 1793136731.738406}
+
+"##;
+        let mut p = AgentStreamParser::new();
+        let mut events = p.feed(CAPTURED.as_bytes());
+        events.extend(p.finish());
+        assert_eq!(
+            events,
+            vec![
+                AgentStreamEvent::RunStarted {
+                    run_id: "run_caafc7a88e35432ca627e870623b4f1c".into()
+                },
+                AgentStreamEvent::Content {
+                    text: "SEEN 1 user turns: usage probe || thread=None".into()
+                },
+                AgentStreamEvent::Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5
+                },
+            ]
+        );
+    }
+
+    /// The chat-completions spelling of the counts is still read on a
+    /// session frame, beside the Responses spelling Hermes sends there.
+    #[test]
+    fn session_usage_reads_either_spelling() {
+        for usage in [
+            r#"{"input_tokens":11,"output_tokens":3,"total_tokens":14}"#,
+            r#"{"prompt_tokens":11,"completion_tokens":3}"#,
+        ] {
+            let frame = format!("event: run.completed\ndata: {{\"usage\":{usage}}}\n\n");
+            assert_eq!(
+                AgentStreamParser::new().feed(frame.as_bytes()),
+                vec![AgentStreamEvent::Usage {
+                    prompt_tokens: 11,
+                    completion_tokens: 3
+                }],
+                "{usage}"
+            );
+        }
     }
 
     /// A completions stream that NAMES its failure frame still reads through
@@ -2007,7 +3263,7 @@ mod tests {
                 r#"data: {"session_id":"c1","message_id":"m1","content":"OK","completed":true,"runtime":{}}"#,
                 "\n\n",
                 "event: run.completed\n",
-                r#"data: {"session_id":"c1","message_id":"m1","messages":[],"usage":{"prompt_tokens":11,"completion_tokens":3},"runtime":{}}"#,
+                r#"data: {"session_id":"c1","message_id":"m1","messages":[],"usage":{"input_tokens":11,"output_tokens":3,"total_tokens":14},"runtime":{}}"#,
                 "\n\n",
                 "event: done\n",
                 "data: {}\n\n",
@@ -2052,6 +3308,27 @@ mod tests {
         let mut p = AgentStreamParser::new();
         let events = p.feed("event: run.cancelled\ndata: {\"run_id\":\"r1\"}\n\n".as_bytes());
         assert_eq!(events, vec![AgentStreamEvent::Stopped]);
+    }
+
+    /// An approval request is the door's to answer (fleet_approvals.rs), on
+    /// either stream: the consumer lands nothing for it, not a tool row and
+    /// not an error, and the frames around it read as they always did.
+    #[test]
+    fn an_approval_request_lands_nothing_on_either_stream() {
+        for run in ["run_1", "chatcmpl-1"] {
+            let mut p = AgentStreamParser::new();
+            let events = p.feed(
+                format!(
+                    "event: approval.request\ndata: {{\"execution_generation\": 1, \"command\": \"rm -rf /tmp/x\", \"description\": \"delete in root path\", \"request_id\": \"q1\", \"event\": \"approval.request\", \"run_id\": \"{run}\", \"choices\": [\"once\", \"deny\"]}}\n\nevent: assistant.delta\ndata: {{\"message_id\": \"m1\", \"delta\": \"ok\", \"run_id\": \"{run}\"}}\n\n"
+                )
+                .as_bytes(),
+            );
+            assert_eq!(
+                events,
+                vec![AgentStreamEvent::Content { text: "ok".into() }],
+                "{run}"
+            );
+        }
     }
 
     /// Three runs of one tool inside one reply are three calls — three ids,
@@ -2185,6 +3462,7 @@ mod tests {
         let body = session_turn_body(
             &json!("deploy with sk-ant-aaaaaaaaaaaaaaaaaaaaaaaaaa"),
             Some("the fallback key is sk-ant-bbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            None,
             &mut vault,
         );
         let message = body["message"].as_str().expect("message is a string");
@@ -2198,8 +3476,31 @@ mod tests {
 
         // No ephemeral prompt this turn: the key is absent, not null — Hermes
         // reads a null as a prompt.
-        let bare = session_turn_body(&json!("hello"), None, &mut vault);
+        let bare = session_turn_body(&json!("hello"), None, None, &mut vault);
         assert_eq!(bare, json!({ "message": "hello" }));
+    }
+
+    /// THE EFFORT RIDES WHERE HERMES READS IT. Its API server decodes a
+    /// request's effort from `model_options.reasoning_effort` only; the
+    /// OpenAI top-level `reasoning_effort` is ignored and the agent runs at
+    /// its configured default. Both arms spell it the same way, and a turn
+    /// with no pick carries no `model_options` at all.
+    #[test]
+    fn a_persona_turns_effort_rides_in_model_options_on_both_arms() {
+        let mut vault = SecretVault::default();
+        let session = session_turn_body(&json!("hi"), None, Some("high"), &mut vault);
+        assert_eq!(
+            session,
+            json!({ "message": "hi", "model_options": { "reasoning_effort": "high" } })
+        );
+        let completion = chat_payload("dex-ops", &json!([]), Some("low"));
+        assert_eq!(
+            completion,
+            json!({ "model": "dex-ops", "messages": [], "model_options": { "reasoning_effort": "low" } })
+        );
+        assert!(completion.get("reasoning_effort").is_none());
+        let none = chat_payload("dex-ops", &json!([]), None);
+        assert_eq!(none, json!({ "model": "dex-ops", "messages": [] }));
     }
 
     /// A stop is a verdict, not a failure. Hermes ends the stream with the
@@ -2359,6 +3660,74 @@ mod tests {
         assert_eq!(parse_message_count(&serde_json::json!({})), None);
     }
 
+    /// A port nothing listens on: bound once to learn a free one, then let go.
+    fn closed_port() -> u16 {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    }
+
+    /// A refused agent reads as refused, and nowhere in it is the agent's
+    /// address — reqwest's own Display would have been "error sending
+    /// request for url (http://127.0.0.1:<port>/v1/runs/r/stop)".
+    #[tokio::test]
+    async fn a_refused_agent_names_the_cause_and_not_the_dial_url() {
+        let entry = ManifestEntry {
+            model: "x-eng".into(),
+            url: format!("http://127.0.0.1:{}", closed_port()),
+            key: Some("k".into()),
+        };
+        let e = agent_post(&entry, "/v1/runs/r/stop")
+            .send()
+            .await
+            .expect_err("nothing listens there");
+        assert!(e.to_string().contains("for url"), "the leak this replaces");
+        let text = transport_error(e);
+        assert!(!text.contains("127.0.0.1"), "{text}");
+        assert!(!text.contains("for url"), "{text}");
+        assert!(!text.contains("/v1/runs"), "{text}");
+        assert!(text.to_ascii_lowercase().contains("refused"), "{text}");
+    }
+
+    /// The one transport failure a turn surfaces as text — a reply that
+    /// broke after the request went out — says what broke, not where.
+    #[tokio::test]
+    async fn a_turn_that_breaks_after_the_send_says_so_without_the_url() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = conn.read(&mut buf);
+            // Not HTTP: the request was taken, and the answer is garbage.
+            let _ = conn.write_all(b"HTTP/9.9 what\r\n\r\n");
+        });
+        let entry = ManifestEntry {
+            model: "x-eng".into(),
+            url: format!("http://127.0.0.1:{port}"),
+            key: None,
+        };
+        let stream = open_stream(agent_post(&entry, "/v1/chat/completions"), &json!({}))
+            .await
+            .expect("an answer, not a refusal");
+        server.join().unwrap();
+        assert_eq!(stream.status, 502);
+        let text: Vec<u8> = stream
+            .body
+            .map(|c| c.expect("the synthesized body"))
+            .collect::<Vec<_>>()
+            .await
+            .concat();
+        let text = String::from_utf8(text).unwrap();
+        assert!(
+            text.starts_with("the agent gateway failed after the request was sent: "),
+            "{text}"
+        );
+        assert!(!text.contains("127.0.0.1"), "{text}");
+        assert!(!text.contains(&port.to_string()), "{text}");
+        assert!(!text.contains("for url"), "{text}");
+    }
+
     #[tokio::test]
     async fn canned_stream_reads_back_word_chunks_then_done() {
         let stream = canned_chat_stream("one two", "mock");
@@ -2371,5 +3740,42 @@ mod tests {
         assert_eq!(collected.len(), 3); // one two [DONE]
         assert!(collected[0].starts_with(b"data: {"));
         assert_eq!(&*collected[2], b"data: [DONE]\n\n");
+    }
+
+    /// A session that carried turns before is looked up, and only Hermes' own
+    /// `session_not_found` says the room is gone. A bare 404 is a Hermes with
+    /// no session API, which waits like a container still booting.
+    #[test]
+    fn a_session_look_up_reads_gone_only_when_hermes_says_so() {
+        assert_eq!(session_lookup_answer(200, None), SessionCreate::Existing);
+        assert!(matches!(
+            session_lookup_answer(404, Some("session_not_found")),
+            SessionCreate::Lost(_)
+        ));
+        assert_eq!(session_lookup_answer(404, None), SessionCreate::NotReady);
+        assert_eq!(session_lookup_answer(503, None), SessionCreate::NotReady);
+        assert_eq!(
+            session_lookup_answer(401, Some("invalid_api_key")),
+            SessionCreate::NotReady
+        );
+    }
+
+    /// A create that Hermes refuses as `session_deleted` is a room gone for
+    /// good, not a container still coming up: the id is fenced and never
+    /// reused, so holding the turn for two minutes and answering "restarting"
+    /// was wrong every time.
+    #[test]
+    fn a_deleted_session_is_lost_not_a_container_booting() {
+        assert_eq!(session_create_answer(201, None), SessionCreate::Fresh);
+        assert_eq!(
+            session_create_answer(409, Some("session_exists")),
+            SessionCreate::Existing
+        );
+        assert!(matches!(
+            session_create_answer(409, Some("session_deleted")),
+            SessionCreate::Lost(_)
+        ));
+        assert_eq!(session_create_answer(409, None), SessionCreate::NotReady);
+        assert_eq!(session_create_answer(404, None), SessionCreate::NotReady);
     }
 }

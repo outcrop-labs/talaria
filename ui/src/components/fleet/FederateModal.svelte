@@ -13,7 +13,15 @@
   import { cn } from '@/lib/cn'
 
   interface FederateResult {
-    agents: Array<{ slug: string; model: string; status: 'federated' | 'exists' }>
+    agents: Array<{
+      slug: string
+      model: string
+      status: 'federated' | 'exists'
+      /** Per-agent secrets the config's inline credentials were sealed as. */
+      sealed?: string[]
+      /** Config paths of inline credentials Talaria supplies itself — not stored. */
+      dropped?: string[]
+    }>
     errors: string[]
   }
 
@@ -23,7 +31,9 @@
   // recreates each agent inside Talaria: our chassis, our orchestration, fresh
   // key and state volume, skills carried over. The source dir is not referenced
   // again afterwards.
-  let { onClose }: { onClose: () => void } = $props()
+  // onSealStored: hand over to the stored-config seal (configs federated
+  // before inline credentials were sealed on the way in).
+  let { onClose, onSealStored }: { onClose: () => void; onSealStored?: () => void } = $props()
 
   const qc = useQueryClient()
   let step = $state(0)
@@ -84,7 +94,8 @@
               each agent's <code class="text-fg">SOUL.md</code> + <code class="text-fg">config.yaml</code>).
               Each agent is recreated <em>natively</em>: it runs on Talaria itself, with a fresh key and state
               volume, models mapped into the registry, and its skills carried over. The source directory is never referenced
-              again. Agents whose handle already exists are skipped.
+              again. Agents whose handle already exists are skipped. A credential written inline in a config is
+              sealed as one of that agent's secrets, never stored as written.
             </p>
             <div>
               <label for="federate-dir" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Directory on server</label>
@@ -99,6 +110,14 @@
               />
             </div>
             {#if err}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{err}</p>{/if}
+            {#if onSealStored}
+              <p class="border-t border-line pt-3 text-xs leading-relaxed text-muted">
+                Federated agents before credentials were sealed on the way in?
+                <button type="button" class="text-accent underline-offset-2 hover:underline" onclick={onSealStored}>
+                  Seal the credentials their stored configs still hold
+                </button>
+              </p>
+            {/if}
           </div>
         {/if}
 
@@ -112,11 +131,26 @@
                    list so listStagger alone owns its rows (one cascade rule). -->
               <ul data-no-stagger use:listStagger class="max-h-56 divide-y divide-line overflow-y-auto rounded-lg border border-line">
                 {#each result.agents as a (a.slug)}
-                  <li class="flex items-center gap-2 px-3.5 py-2 text-sm">
-                    <span class="font-mono text-xs text-fg">{a.slug}</span>
-                    <span class={cn('ml-auto font-mono text-[10px] uppercase tracking-[0.05em]', a.status === 'federated' ? 'text-accent' : 'text-muted')}>
-                      {a.status === 'federated' ? 'federated' : 'already exists'}
-                    </span>
+                  <li class="px-3.5 py-2 text-sm">
+                    <div class="flex items-center gap-2">
+                      <span class="font-mono text-xs text-fg">{a.slug}</span>
+                      <span class={cn('ml-auto font-mono text-[10px] uppercase tracking-[0.05em]', a.status === 'federated' ? 'text-accent' : 'text-muted')}>
+                        {a.status === 'federated' ? 'federated' : 'already exists'}
+                      </span>
+                    </div>
+                    {#if a.sealed?.length}
+                      <p class="mt-1 text-xs leading-relaxed text-muted">
+                        Sealed {a.sealed.length} inline credential{a.sealed.length === 1 ? '' : 's'} as its secrets:
+                        <span class="font-mono text-fg">{a.sealed.join(', ')}</span>
+                      </p>
+                    {/if}
+                    {#if a.dropped?.length}
+                      <p class="mt-1 text-xs leading-relaxed text-muted">
+                        Not stored: <span class="font-mono text-fg">{a.dropped.join(', ')}</span>. Talaria supplies
+                        these itself: agents reach models through the gateway (the provider's key goes on Models), MCP
+                        servers through the MCP registry, and the API server answers to Talaria's own key.
+                      </p>
+                    {/if}
                   </li>
                 {/each}
               </ul>

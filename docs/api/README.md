@@ -6,25 +6,26 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-335 routes across 23 groups.
+353 routes across 24 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
 | [`account`](./account.md) | Sign-in, session, profile, members. | 18 |
 | [`activity`](./activity.md) | What happened, what it cost, what the machine is doing, what needs you. | 11 |
-| [`admin`](./admin.md) | Instance administration (admin session required). | 26 |
-| [`agents`](./agents.md) | Agent CRUD, registration, heartbeats, skills, runs. | 29 |
-| [`apps`](./apps.md) | The app platform surface and the app-server gateway. | 2 |
+| [`admin`](./admin.md) | Instance administration (admin session required). | 32 |
+| [`agents`](./agents.md) | Agent CRUD, skills, runs. | 27 |
+| [`apps`](./apps.md) | The app platform surface, the app-server gateway, the host's own app routes, and the SDK kit. | 8 |
 | [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views, workchains. | 19 |
 | [`brief`](./brief.md) | The personal brief: items, replies, delegation. | 5 |
-| [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 32 |
+| [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 33 |
 | [`files`](./files.md) | Uploads, artifacts, shares, downloads. | 19 |
-| [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 26 |
+| [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 27 |
 | [`inbox`](./inbox.md) | The focus inbox and its command surface. | 7 |
 | [`integrations`](./integrations.md) | Connected accounts — Google Workspace and the rest. | 42 |
-| [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, blueprints, search. | 21 |
+| [`internal`](./internal.md) | Service-to-service calls from the app host — never a user's or an agent's. | 4 |
+| [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, blueprints, search. | 20 |
 | [`llm`](./llm.md) | The OpenAI-compatible wire (llm.v1.*). | 2 |
-| [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 16 |
+| [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 17 |
 | [`models`](./models.md) | Model providers, gateway API keys, local backends. | 5 |
 | [`plans`](./plans.md) | Living plans: draft doc, members. | 4 |
 | [`research`](./research.md) | Cited research reports and their conversations. | 6 |
@@ -32,7 +33,7 @@
 | [`system`](./system.md) | Health and instance discovery endpoints. | 2 |
 | [`tasks`](./tasks.md) | Tickets, comments, dependencies, watchers, workflows. | 12 |
 | [`teams`](./teams.md) | Teams and their members. | 6 |
-| [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 18 |
+| [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 20 |
 
 **Auth vocabulary** (the route's guard class — resource-level ACLs like board
 membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTIONS.md)):
@@ -48,12 +49,13 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 | `admin` | an admin session (`require_admin`) |
 | `agent` | an agent credential (`tak_` key, `require_agent`/`agent_caller`) |
 | `dual` | session path and agent path both reach the handler |
-| `fleet` | internal fleet key (`fleet_caller`/`check_fleet_key`) |
+| `internal` | the root-derived service credential (`x-talaria-internal`) between the app host and the api — `require_internal` on the api's routes, `requireInternal` (loopback only) on the host's — never a user or agent |
 | `bearer-key` | a personal LLM-gateway API key (`authenticate_key`) |
 
 ---
 
 The **Returns** column everywhere in this reference is a heuristic: the top-level
-keys of the first success-shaped `json!({…})` literal in the handler. `…` means the
-shape is computed, not literal. Where a row matters to you, the source link at the
-top of its section is the truth.
+keys of the first success-shaped `json!({…})` literal in the handler — or, for a
+handler that answers through same-file helpers, every `Json(json!({…}))` shape they
+answer, joined by `or`. `…` means the shape is computed, not literal. Where a row
+matters to you, the source link at the top of its section is the truth.

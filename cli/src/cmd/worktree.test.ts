@@ -2,12 +2,38 @@
 // the generated ui/.env (marker + own URLs + shared encryption root).
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WORKTREE_ENV_KEYS, runWorktree, seedFleetPlane, stripOwnKeys, worktreeSlot } from './worktree'
+import { fileURLToPath } from 'node:url'
+import {
+  CLEAR_SEEDED_GATEWAY_PORTS,
+  COUNT_TABLES,
+  WORKTREE_ENV_KEYS,
+  runWorktree,
+  seedFleetPlane,
+  setupDiffers,
+  sharedUiNodeModules,
+  slotPorts,
+  stripOwnKeys,
+  worktreeSlot,
+} from './worktree'
+import { WORKTREE_COMPOSE, pgReadyArgs } from '../compose'
 import { fakeCtx, type FakeCtx } from '../testing'
 import { CliError } from '../ui'
+
+/** The read that says which compose project a container belongs to
+ *  (stack.ts containerProject), and docker's answer for one. */
+const INSPECT = (c: string) => ['inspect', c]
+const inspectJson = (labels: Record<string, string> | null) => JSON.stringify([{ Config: { Labels: labels } }])
+/** A fake ctx whose main Postgres is up, in main's own project. */
+const mainCtx = (env: Record<string, string> = {}): FakeCtx => {
+  const ctx = fakeCtx({ env })
+  ctx.plant(['docker', INSPECT('talaria-postgres-dev')], inspectJson({ 'com.docker.compose.project': 'talaria-dev' }))
+  return ctx
+}
+/** The table count runWorktree reads on each end of the seed. */
+const COUNT = (c: string) => ['exec', c, 'psql', '-U', 'talaria', '-d', 'talaria', '-tAc', COUNT_TABLES]
 
 const attempt = async (fn: () => Promise<unknown>): Promise<string> => {
   try {
@@ -19,20 +45,48 @@ const attempt = async (fn: () => Promise<unknown>): Promise<string> => {
 }
 
 describe('worktreeSlot', () => {
-  test('first slot with all four ports free', async () => {
+  test('first slot with every port free', async () => {
     const slot = await worktreeSlot(async () => false)
-    expect(slot).toEqual({ app: 5301, api: 5401, pg: 5601, redis: 6501 })
+    expect(slot).toEqual({
+      app: 5301,
+      api: 5401,
+      pg: 5601,
+      redis: 6501,
+      mcp: 5701,
+      ompAuth: 5801,
+      gatewayBase: 20100,
+    })
   })
 
-  test('skips slots where any one of the four is taken', async () => {
+  test('skips slots where any one of the ports is taken', async () => {
     const taken = (p: number): Promise<boolean> =>
-      Promise.resolve(p === 5301 || p === 5402 || p === 5603 || p === 6504)
-    // slot 1: app taken; slot 2: api taken; slot 3: pg taken; slot 4: redis
-    // taken → slot 5. The api port is in this list because it used not to be:
-    // every worktree shared :5274, and `talaria dev` adopts an api already
-    // there, so the second stack proxied to the first stack's database.
+      Promise.resolve(
+        [5301, 5402, 5603, 6504, 5705, 5806, 20700].includes(p),
+      )
+    // slots 1-4: app, api, pg, redis taken; 5: toolkit; 6: omp auth;
+    // 7: the gateway range's first port → slot 8. The api port is in this
+    // list because it used not to be: every worktree shared :5274, and
+    // `talaria dev` adopts an api already there, so the second stack proxied
+    // to the first stack's database. The toolkit, omp-auth and gateway ports
+    // are here for the same reason, one hop further out (see worktreeSlot).
     const slot = await worktreeSlot(taken)
-    expect(slot).toEqual({ app: 5305, api: 5405, pg: 5605, redis: 6505 })
+    expect(slot).toEqual(slotPorts(8))
+  })
+
+  test("a slot's ranges never overlap another slot's, or main's fixed ports", () => {
+    const main = [5273, 5274, 5276, 5280, 5544, 8770]
+    const seen = new Set<number>()
+    for (let c = 1; c <= 89; c++) {
+      const s = slotPorts(c)
+      const gateway = Array.from({ length: 100 }, (_, i) => s.gatewayBase + i)
+      for (const port of [s.app, s.api, s.pg, s.redis, s.mcp, s.ompAuth, ...gateway]) {
+        expect(main).not.toContain(port)
+        expect(seen.has(port)).toBe(false)
+        seen.add(port)
+      }
+    }
+    // main's agents allocate upward from 8770; the worktree ranges start far above.
+    expect(Math.min(...[...seen].filter((p) => p >= 8770))).toBeGreaterThan(8770 + 1000)
   })
 
   test('null when the range is exhausted', async () => {
@@ -62,7 +116,7 @@ describe('runWorktree — guards', () => {
     writeFileSync(join(root, 'ui/.env'), 'DATABASE_URL=x\n')
     const ctx = fakeCtx()
     ctx.root = root
-    ctx.plant(['docker', ['inspect', 'talaria-postgres-dev']], new Error('no such object'))
+    ctx.plant(['docker', INSPECT('talaria-postgres-dev')], new Error('no such object'))
     const msg = await attempt(() => runWorktree(ctx, 'demo'))
     expect(msg).toContain("isn't running")
     expect(ctx.calls.some((c) => c.args[0] === 'worktree')).toBe(false)
@@ -90,7 +144,7 @@ describe('runWorktree — happy path', () => {
     // module's own mkdir carries the ui/.env write from here.
     const wt = join(root, '..', 'talaria-demo')
     rmSync(wt, { recursive: true, force: true }) // a previous run may have leaked it into /tmp
-    const ctx = fakeCtx()
+    const ctx = mainCtx()
     ctx.root = root
     try {
       await runWorktree(ctx, 'demo')
@@ -102,6 +156,10 @@ describe('runWorktree — happy path', () => {
     expect(up.args).toContain('-p')
     expect(up.args).toContain('talaria-wt-demo')
     expect(up.args.slice(-2)).toEqual(['postgres', 'redis'])
+    // ...with the worktree file LAST: both on the default bridge, so the
+    // project creates no network and takes no subnet from docker's pools.
+    const files = up.args.flatMap((a, i) => (up.args[i - 1] === '-f' ? [a] : []))
+    expect(files.at(-1)).toBe(join(root, WORKTREE_COMPOSE))
     expect(ctx.env.TALARIA_PG_CONTAINER).toBe('talaria-pg-demo')
     expect(ctx.env.TALARIA_PG_PORT).toMatch(/^56\d\d$/)
     expect(ctx.env.TALARIA_REDIS_PORT).toMatch(/^65\d\d$/)
@@ -116,12 +174,27 @@ describe('runWorktree — happy path', () => {
     // `FATAL: database "talaria" does not exist` after the worktree and both
     // containers existed and before ui/.env was written, which is the step that
     // makes the checkout usable at all.
-    const mainReady = ctx.calls.findIndex(
-      (c) => c.args.includes('pg_isready') && c.args.includes('talaria-postgres-dev'),
-    )
+    //
+    // Both waits are a real query over TCP (pgReadyArgs), and the worktree's
+    // comes after its `up` and before the restore: the socket pg_isready they
+    // were passed against the entrypoint's temporary init server, and the
+    // seed then died with "the database system is shutting down".
+    const at = (args: string[]) => ctx.calls.findIndex((c) => JSON.stringify(c.args) === JSON.stringify(args))
+    const mainReady = at(pgReadyArgs('talaria-postgres-dev'))
+    const ownReady = at(pgReadyArgs('talaria-pg-demo'))
+    const upAt = ctx.calls.indexOf(up)
     const dump = ctx.calls.findIndex((c) => c.args.includes('pg_dump'))
     expect(mainReady).toBeGreaterThanOrEqual(0)
     expect(mainReady).toBeLessThan(dump)
+    expect(ownReady).toBeGreaterThan(upAt)
+    expect(ownReady).toBeLessThan(dump)
+    // ...and main is asked once more right before the dump, after this
+    // stack's own wait: a main restarted mid-creation failed the dump.
+    const mainProbe = JSON.stringify(pgReadyArgs('talaria-postgres-dev'))
+    const mainAgain = ctx.calls.map((c) => JSON.stringify(c.args)).lastIndexOf(mainProbe)
+    expect(mainAgain).toBeGreaterThan(ownReady)
+    expect(mainAgain).toBeLessThan(dump)
+    expect(ctx.calls.some((c) => c.args.includes('pg_isready'))).toBe(false)
 
     const env = readFileSync(join(wt, 'ui/.env'), 'utf8')
     const lines = env.split('\n')
@@ -155,6 +228,22 @@ describe('runWorktree — happy path', () => {
     // files their containers under the shared `talaria-fleet`.
     expect(lines).toContain(`TALARIA_GATEWAY_SELF_URL=http://host.docker.internal:${port}/api/llm/v1`)
     expect(lines).toContain('TALARIA_FLEET_PROJECT=talaria-wt-demo-fleet')
+    // ...and the api's loopback children and the agents' gateway ports move
+    // with the slot: on the shared :5280 the second stack's agents were served
+    // by the first stack's toolkit (401), and every stack's first agent asked
+    // for :8770.
+    const slotNo = port - 5300
+    expect(lines).toContain(`TALARIA_MCP_PORT=${5700 + slotNo}`)
+    expect(lines).toContain(`TALARIA_OMP_AUTH_PORT=${5800 + slotNo}`)
+    expect(lines).toContain(`TALARIA_GATEWAY_PORT_BASE=${20000 + slotNo * 100}`)
+    // ...and the gateway ports the seed copied from main are cleared in THIS
+    // stack's database, after the restore, so its first render assigns its own.
+    const restore = ctx.calls.findIndex((c) => c.args.includes('-i') && c.args.includes('talaria-pg-demo'))
+    const clear = ctx.calls.findIndex(
+      (c) => c.args.includes('talaria-pg-demo') && c.args.includes(CLEAR_SEEDED_GATEWAY_PORTS),
+    )
+    expect(clear).toBeGreaterThan(restore)
+    expect(ctx.calls.some((c) => c.args.includes(CLEAR_SEEDED_GATEWAY_PORTS) && c.args.includes('talaria-postgres-dev'))).toBe(false)
     // ...and the fleet plane exists for the renderer to write into — a hire
     // against a missing fleet/.env fails rather than inventing one.
     expect(existsSync(join(wt, 'fleet/agents'))).toBe(true)
@@ -165,6 +254,8 @@ describe('runWorktree — happy path', () => {
     // chassis missing" until someone copies the template by hand.
     expect(readFileSync(join(wt, 'fleet/chassis.yml'), 'utf8')).toBe('services:\n  agent:\n    image: hermes\n')
     expect(ctx.logLines).toContainEqual({ kind: 'ok', msg: 'fleet/chassis.yml (from template)' })
+    // A checkout with no worktree.ts of its own has nothing to compare.
+    expect(ctx.logLines.filter((l) => l.kind === 'warn')).toEqual([])
 
     // The strip-list is DERIVED from what the generated block writes, and this
     // is the guard that keeps it so: every KEY= line after the worktree marker
@@ -184,9 +275,10 @@ describe('runWorktree — happy path', () => {
       expect(lines.filter((l) => l.startsWith(`${key}=`))).toHaveLength(1)
     }
 
-      // node_modules shared by symlink
+      // node_modules shared by symlink — git named no primary here (the
+      // fake answers nothing), so the invoking checkout's, resolved
       expect(lstatSync(join(wt, 'ui/node_modules')).isSymbolicLink()).toBe(true)
-      expect(readlinkSync(join(wt, 'ui/node_modules'))).toBe(join(root, 'ui/node_modules'))
+      expect(readlinkSync(join(wt, 'ui/node_modules'))).toBe(realpathSync(join(root, 'ui/node_modules')))
     } finally {
       rmSync(wt, { recursive: true, force: true })
     }
@@ -202,7 +294,7 @@ describe('runWorktree — happy path', () => {
     )
     const wt = join(root, '..', 'talaria-inherit')
     rmSync(wt, { recursive: true, force: true })
-    const ctx = fakeCtx()
+    const ctx = mainCtx()
     ctx.root = root
     try {
       await runWorktree(ctx, 'inherit')
@@ -243,7 +335,7 @@ describe('runWorktree — happy path', () => {
     )
     const wt = join(root, '..', 'talaria-frombox')
     rmSync(wt, { recursive: true, force: true })
-    const ctx = fakeCtx()
+    const ctx = mainCtx()
     ctx.root = root
     try {
       await runWorktree(ctx, 'frombox')
@@ -268,6 +360,169 @@ describe('runWorktree — happy path', () => {
     } finally {
       rmSync(wt, { recursive: true, force: true })
     }
+  })
+})
+
+describe('runWorktree — readiness, and what a timed-out wait stops', () => {
+  const fixture = (name: string) => {
+    const root = mkdtempSync(join(tmpdir(), 'talaria-wt-'))
+    mkdirSync(join(root, 'ui/node_modules'), { recursive: true })
+    writeFileSync(join(root, 'ui/.env'), 'DATABASE_URL=postgres://t:t@127.0.0.1:5544/talaria\nTALARIA_SECRET_KEY=rootkey\n')
+    const wt = join(root, '..', `talaria-${name}`)
+    rmSync(wt, { recursive: true, force: true })
+    const ctx = mainCtx()
+    ctx.root = root
+    return { root, wt, ctx }
+  }
+
+  test("a worktree postgres that never serves its database stops the command before the seed", async () => {
+    const { root, wt, ctx } = fixture('neverready')
+    ctx.plant(['docker', pgReadyArgs('talaria-pg-neverready')], new Error('the database system is shutting down'))
+    try {
+      const msg = await attempt(() => runWorktree(ctx, 'neverready'))
+      expect(msg).toContain("never served its 'talaria' database")
+      // ...and says how to clear the half-made stack it leaves.
+      expect(msg).toContain('docker compose -p talaria-wt-neverready down -v')
+      // The wait's answer is READ now: it used to be discarded, and the seed
+      // ran straight into the temp server's shutdown.
+      expect(ctx.calls.some((c) => c.args.includes('pg_dump'))).toBe(false)
+      expect(existsSync(join(wt, 'ui/.env'))).toBe(false)
+    } finally {
+      rmSync(wt, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("main's database never answering stops it before anything is created", async () => {
+    const { root, wt, ctx } = fixture('mainasleep')
+    ctx.plant(['docker', pgReadyArgs('talaria-postgres-dev')], new Error('database "talaria" does not exist'))
+    try {
+      const msg = await attempt(() => runWorktree(ctx, 'mainasleep'))
+      expect(msg).toContain("'talaria' database never became ready")
+      expect(ctx.calls.some((c) => c.args[0] === 'worktree')).toBe(false)
+    } finally {
+      rmSync(wt, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('cli/ and mcp/ are installed from their own lockfiles; ui/ is linked', async () => {
+    const { root, wt, ctx } = fixture('deps')
+    const exec = ctx.exec
+    ctx.exec = async (cmd, args, opts) => {
+      // What a real checkout of the base ref carries: the two packages, and
+      // no node_modules in either (they are gitignored).
+      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'add') {
+        for (const pkg of ['cli', 'mcp']) {
+          mkdirSync(join(wt, pkg), { recursive: true })
+          writeFileSync(join(wt, pkg, 'package.json'), '{}\n')
+        }
+      }
+      return exec(cmd, args, opts)
+    }
+    try {
+      await runWorktree(ctx, 'deps')
+      const installs = ctx.calls.filter((c) => c.cmd === 'bun' && c.args[0] === 'install')
+      // The gate typechecks both when the diff touches them, and a fresh
+      // worktree had neither, so its first gate failed on a missing tsc.
+      expect(installs.map((c) => [c.args, c.opts?.cwd])).toEqual([
+        [['install', '--frozen-lockfile'], join(wt, 'cli')],
+        [['install', '--frozen-lockfile'], join(wt, 'mcp')],
+      ])
+      expect(lstatSync(join(wt, 'ui/node_modules')).isSymbolicLink()).toBe(true)
+    } finally {
+      rmSync(wt, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('a failed install warns and the stack is still made — the gate installs it later', async () => {
+    const { root, wt, ctx } = fixture('nodeps')
+    const exec = ctx.exec
+    ctx.exec = async (cmd, args, opts) => {
+      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(join(wt, 'cli'), { recursive: true })
+        writeFileSync(join(wt, 'cli/package.json'), '{}\n')
+      }
+      return exec(cmd, args, opts)
+    }
+    ctx.plant(['bun', ['install', '--frozen-lockfile']], new Error('offline'), join(wt, 'cli'))
+    try {
+      expect(await runWorktree(ctx, 'nodeps')).toBe(0)
+      expect(ctx.logLines.some((l) => l.kind === 'warn' && l.msg.includes('bun install in cli/ failed'))).toBe(true)
+      expect(existsSync(join(wt, 'ui/.env'))).toBe(true)
+    } finally {
+      rmSync(wt, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('runWorktree — the base ref\'s own setup', () => {
+  // `talaria worktree` runs the CLI of the checkout it is invoked from — the
+  // primary, usually on main — so a stack cut from rc took main's chassis
+  // and main's env rules, and said nothing. `git worktree add` is planted
+  // here to leave the files a real checkout of the base ref would carry.
+  test("the worktree's own chassis template wins, and a differing setup warns", async () => {
+    const root = mkdtempSync(join(tmpdir(), 'talaria-wt-'))
+    mkdirSync(join(root, 'ui/node_modules'), { recursive: true })
+    mkdirSync(join(root, 'scripts'), { recursive: true })
+    writeFileSync(join(root, 'scripts/chassis.template.yml'), 'image: hermes:older\n')
+    writeFileSync(join(root, 'ui/.env'), 'DATABASE_URL=postgres://t:t@127.0.0.1:5544/talaria\nTALARIA_SECRET_KEY=rootkey\n')
+    const wt = join(root, '..', 'talaria-fromrc')
+    rmSync(wt, { recursive: true, force: true })
+    const ctx = mainCtx()
+    ctx.root = root
+    const exec = ctx.exec
+    ctx.exec = async (cmd, args, opts) => {
+      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(join(wt, 'scripts'), { recursive: true })
+        writeFileSync(join(wt, 'scripts/chassis.template.yml'), 'image: hermes:pinned\n')
+        mkdirSync(join(wt, 'cli/src/cmd'), { recursive: true })
+        writeFileSync(join(wt, 'cli/src/cmd/worktree.ts'), '// the base ref writes more lines than this CLI does\n')
+      }
+      return exec(cmd, args, opts)
+    }
+    try {
+      await runWorktree(ctx, 'fromrc', 'origin/rc')
+      expect(readFileSync(join(wt, 'fleet/chassis.yml'), 'utf8')).toBe('image: hermes:pinned\n')
+      const warns = ctx.logLines.filter((l) => l.kind === 'warn').map((l) => l.msg)
+      expect(warns).toHaveLength(1)
+      expect(warns[0]).toContain("differs from origin/rc's own cli/src/cmd/worktree.ts")
+    } finally {
+      rmSync(wt, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('setupDiffers', () => {
+  const running = fileURLToPath(new URL('./worktree.ts', import.meta.url))
+  const checkout = (body?: string): string => {
+    const wt = mkdtempSync(join(tmpdir(), 'talaria-wt-own-'))
+    if (body !== undefined) {
+      mkdirSync(join(wt, 'cli/src/cmd'), { recursive: true })
+      writeFileSync(join(wt, 'cli/src/cmd/worktree.ts'), body)
+    }
+    return wt
+  }
+
+  test('the same setup is not a difference', () => {
+    const wt = checkout(readFileSync(running, 'utf8'))
+    expect(setupDiffers(running, wt)).toBe(false)
+    rmSync(wt, { recursive: true, force: true })
+  })
+
+  test('a different setup is', () => {
+    const wt = checkout('// another version\n')
+    expect(setupDiffers(running, wt)).toBe(true)
+    rmSync(wt, { recursive: true, force: true })
+  })
+
+  test('a base ref without the file has nothing to compare', () => {
+    const wt = checkout()
+    expect(setupDiffers(running, wt)).toBe(false)
+    rmSync(wt, { recursive: true, force: true })
   })
 })
 
@@ -322,5 +577,298 @@ describe('seedFleetPlane', () => {
     // the rest of the plane still lands
     expect(existsSync(join(dir, 'fleet/.env'))).toBe(true)
     rmSync(root, { recursive: true, force: true })
+  })
+})
+
+// ── ui/node_modules: the primary's, resolved (follow-up R21) ───────────────
+// A worktree cut by a CLI running in ANOTHER worktree linked that worktree's
+// `ui/node_modules` — itself a link to the primary's — and dangled the moment
+// that worktree was removed.
+describe('sharedUiNodeModules — which node_modules a new worktree links', () => {
+  const tree = () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'talaria-nm-')))
+    const primary = join(base, 'talaria')
+    mkdirSync(join(primary, '.git'), { recursive: true })
+    mkdirSync(join(primary, 'ui/node_modules'), { recursive: true })
+    // The invoking checkout is a linked worktree: its node_modules is a link
+    // to the primary's, as `talaria worktree` made it.
+    const invoking = join(base, 'talaria-older')
+    mkdirSync(join(invoking, 'ui'), { recursive: true })
+    symlinkSync(join(primary, 'ui/node_modules'), join(invoking, 'ui/node_modules'))
+    return { base, primary, invoking }
+  }
+
+  test("from a linked worktree: the primary's, found from git's common dir", async () => {
+    const { base, primary, invoking } = tree()
+    const ctx = fakeCtx()
+    ctx.plant(['git', ['rev-parse', '--git-common-dir']], join(primary, '.git'), invoking)
+    try {
+      expect(await sharedUiNodeModules(ctx, invoking)).toBe(join(primary, 'ui/node_modules'))
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  test('from the primary itself: git answers a relative `.git`, and that resolves against it', async () => {
+    const { base, primary } = tree()
+    const ctx = fakeCtx()
+    ctx.plant(['git', ['rev-parse', '--git-common-dir']], '.git\n', primary)
+    try {
+      expect(await sharedUiNodeModules(ctx, primary)).toBe(join(primary, 'ui/node_modules'))
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  test("git cannot say: the invoking checkout's own, resolved through every link", async () => {
+    const { base, primary, invoking } = tree()
+    const ctx = fakeCtx()
+    ctx.plant(['git', ['rev-parse', '--git-common-dir']], new Error('fatal: not a git repository'), invoking)
+    try {
+      // Not `<invoking>/ui/node_modules`: that is the link that dangles.
+      expect(await sharedUiNodeModules(ctx, invoking)).toBe(join(primary, 'ui/node_modules'))
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  test("a primary with no install: the invoking checkout's own, resolved", async () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'talaria-nm-')))
+    const primary = join(base, 'talaria')
+    mkdirSync(join(primary, '.git'), { recursive: true })
+    const elsewhere = join(base, 'cache/node_modules')
+    mkdirSync(elsewhere, { recursive: true })
+    const invoking = join(base, 'talaria-older')
+    mkdirSync(join(invoking, 'ui'), { recursive: true })
+    symlinkSync(elsewhere, join(invoking, 'ui/node_modules'))
+    const ctx = fakeCtx()
+    ctx.plant(['git', ['rev-parse', '--git-common-dir']], join(primary, '.git'), invoking)
+    try {
+      expect(await sharedUiNodeModules(ctx, invoking)).toBe(elsewhere)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  test('a bare common dir names no primary checkout', async () => {
+    const { base, invoking, primary } = tree()
+    const ctx = fakeCtx()
+    ctx.plant(['git', ['rev-parse', '--git-common-dir']], join(base, 'talaria.git'), invoking)
+    try {
+      // falls through to the invoking checkout's, resolved — still the real dir
+      expect(await sharedUiNodeModules(ctx, invoking)).toBe(join(primary, 'ui/node_modules'))
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  test('nothing anywhere: null', async () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'talaria-nm-')))
+    mkdirSync(join(base, 'talaria/ui'), { recursive: true })
+    const ctx = fakeCtx()
+    try {
+      expect(await sharedUiNodeModules(ctx, join(base, 'talaria'))).toBeNull()
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  test('runWorktree from a worktree links the primary, and the link outlives the invoking worktree', async () => {
+    const { base, primary, invoking } = tree()
+    writeFileSync(join(invoking, 'ui/.env'), 'DATABASE_URL=postgres://t:t@127.0.0.1:5544/talaria\nTALARIA_SECRET_KEY=rootkey\n')
+    const ctx = mainCtx()
+    ctx.root = invoking
+    ctx.plant(['git', ['rev-parse', '--git-common-dir']], join(primary, '.git'), invoking)
+    const wt = join(base, 'talaria-fromwt')
+    try {
+      await runWorktree(ctx, 'fromwt')
+      expect(readlinkSync(join(wt, 'ui/node_modules'))).toBe(join(primary, 'ui/node_modules'))
+      // The cleanup that removes the invoking worktree no longer takes this
+      // one's toolchain with it.
+      rmSync(invoking, { recursive: true, force: true })
+      expect(existsSync(join(wt, 'ui/node_modules'))).toBe(true)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  test('runWorktree with nothing to link warns and leaves no dangling link', async () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'talaria-nm-')))
+    const root = join(base, 'talaria')
+    mkdirSync(join(root, 'ui'), { recursive: true })
+    writeFileSync(join(root, 'ui/.env'), 'DATABASE_URL=postgres://t:t@127.0.0.1:5544/talaria\nTALARIA_SECRET_KEY=rootkey\n')
+    const ctx = mainCtx()
+    ctx.root = root
+    const wt = join(base, 'talaria-nolink')
+    try {
+      await runWorktree(ctx, 'nolink')
+      expect(() => lstatSync(join(wt, 'ui/node_modules'))).toThrow()
+      expect(ctx.logLines.some((l) => l.kind === 'warn' && l.msg.includes('no ui/node_modules'))).toBe(true)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+})
+
+// ── The seed says what it copied, and from where (follow-up R22) ───────────
+// Main's dev database was empty on this host, so every worktree "seeded (a
+// point-in-time copy of main)" and copied nothing. And a restore that broke
+// half way exited 0, because psql does without ON_ERROR_STOP.
+describe('runWorktree — what the seed copied', () => {
+  const fixture = (name: string, env: Record<string, string> = {}) => {
+    const root = mkdtempSync(join(tmpdir(), 'talaria-wt-'))
+    mkdirSync(join(root, 'ui/node_modules'), { recursive: true })
+    writeFileSync(join(root, 'ui/.env'), 'DATABASE_URL=postgres://t:t@127.0.0.1:5544/talaria\nTALARIA_SECRET_KEY=rootkey\n')
+    const wt = join(root, '..', `talaria-${name}`)
+    rmSync(wt, { recursive: true, force: true })
+    const ctx = mainCtx(env)
+    ctx.root = root
+    const done = () => {
+      rmSync(wt, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
+    }
+    return { root, wt, ctx, done }
+  }
+  const restoreOf = (ctx: FakeCtx, pgc: string) => ctx.calls.find((c) => c.args.includes('-i') && c.args.includes(pgc))
+
+  test("an empty main says so — it never claims a copy — and the dump still ran", async () => {
+    const { ctx, done } = fixture('emptymain')
+    ctx.plant(['docker', COUNT('talaria-postgres-dev')], '0\n')
+    try {
+      await runWorktree(ctx, 'emptymain')
+      const warn = ctx.logLines.find((l) => l.kind === 'warn' && l.msg.includes('has no tables'))
+      expect(warn?.msg).toContain("main's database (talaria-postgres-dev) has no tables")
+      expect(warn?.msg).toContain('this worktree starts empty, and the app migrates it on its first `talaria dev`')
+      expect(ctx.logLines.some((l) => l.kind === 'ok' && l.msg.startsWith('seeded'))).toBe(false)
+      // A dump or restore that fails still has to stop the command, so the
+      // pipe runs even when there is nothing to copy.
+      expect(ctx.calls.some((c) => c.args.includes('pg_dump'))).toBe(true)
+    } finally {
+      done()
+    }
+  })
+
+  test('a full copy says how many tables it carried', async () => {
+    const { ctx, done } = fixture('fullcopy')
+    ctx.plant(['docker', COUNT('talaria-postgres-dev')], '142\n')
+    ctx.plant(['docker', COUNT('talaria-pg-fullcopy')], '142\n')
+    try {
+      await runWorktree(ctx, 'fullcopy')
+      expect(ctx.logLines).toContainEqual({ kind: 'ok', msg: 'seeded (a point-in-time copy of main: 142 tables)' })
+      // main is counted BEFORE the dump reads it, this stack after the restore
+      const at = (args: string[]) => ctx.calls.findIndex((c) => JSON.stringify(c.args) === JSON.stringify(args))
+      const dump = ctx.calls.findIndex((c) => c.args.includes('pg_dump'))
+      expect(at(COUNT('talaria-postgres-dev'))).toBeLessThan(dump)
+      expect(at(COUNT('talaria-pg-fullcopy'))).toBeGreaterThan(dump)
+    } finally {
+      done()
+    }
+  })
+
+  test("a copy whose own count cannot be read says so — it never quotes main's as checked", async () => {
+    const { ctx, done } = fixture('unreadcopy')
+    ctx.plant(['docker', COUNT('talaria-postgres-dev')], '142\n')
+    ctx.plant(['docker', COUNT('talaria-pg-unreadcopy')], new Error('docker exited 1'))
+    try {
+      await runWorktree(ctx, 'unreadcopy')
+      expect(ctx.logLines).toContainEqual({
+        kind: 'ok',
+        msg: "seeded (a point-in-time copy of main: 142 tables; this worktree's count could not be read)",
+      })
+      expect(ctx.logLines).not.toContainEqual({ kind: 'ok', msg: 'seeded (a point-in-time copy of main: 142 tables)' })
+    } finally {
+      done()
+    }
+  })
+
+  test('the restore stops on the first failed statement', async () => {
+    const { ctx, done } = fixture('strict')
+    try {
+      await runWorktree(ctx, 'strict')
+      const restore = restoreOf(ctx, 'talaria-pg-strict')!
+      expect(restore.args.slice(-2)).toEqual(['-v', 'ON_ERROR_STOP=1'])
+    } finally {
+      done()
+    }
+  })
+
+  test('a restore that came up short dies with the teardown, before ui/.env', async () => {
+    const { wt, ctx, done } = fixture('short')
+    ctx.plant(['docker', COUNT('talaria-postgres-dev')], '142\n')
+    ctx.plant(['docker', COUNT('talaria-pg-short')], '17\n')
+    try {
+      const msg = await attempt(() => runWorktree(ctx, 'short'))
+      expect(msg).toContain('seed incomplete: main has 142 tables, this worktree\'s database 17')
+      expect(msg).toContain('docker compose -p talaria-wt-short down -v')
+      expect(existsSync(join(wt, 'ui/.env'))).toBe(false)
+    } finally {
+      done()
+    }
+  })
+
+  test('a failed dump or restore dies loudly, with the teardown', async () => {
+    for (const side of ['dump', 'restore'] as const) {
+      const { wt, ctx, done } = fixture(`fail${side}`)
+      const dumpArgs = ['exec', 'talaria-postgres-dev', 'pg_dump', '-U', 'talaria', '-d', 'talaria', '--clean', '--if-exists']
+      const restoreArgs = ['exec', '-i', `talaria-pg-fail${side}`, 'psql', '-U', 'talaria', '-d', 'talaria', '-q', '-v', 'ON_ERROR_STOP=1']
+      ctx.plant(['docker', side === 'dump' ? dumpArgs : restoreArgs], new Error('docker exited 3'))
+      try {
+        const msg = await attempt(() => runWorktree(ctx, `fail${side}`))
+        expect(msg).toContain('seed dump/restore failed: docker exited 3')
+        expect(msg).toContain(`docker compose -p talaria-wt-fail${side} down -v`)
+        expect(existsSync(join(wt, 'ui/.env'))).toBe(false)
+        expect(ctx.logLines.some((l) => l.msg.startsWith('seeded'))).toBe(false)
+      } finally {
+        done()
+      }
+    }
+  })
+
+  test("TALARIA_PG_CONTAINER naming a worktree's or a box's Postgres is refused before anything exists", async () => {
+    // By the name's shape alone (no docker answer needed: a container that is
+    // gone is refused too), and by the project docker puts a renamed one in.
+    // One predicate with `box new`, `box seed` and the primary's `talaria dev`
+    // (stack.ts refuseSideStackContainers), so the refusal is theirs.
+    for (const [pgc, project, whose] of [
+      ['talaria-pg-other', null, `worktree "other"'s postgres`],
+      ['devbox-alpha-postgres', null, "a devbox's stack (devbox-*)"],
+      ['renamed-pg', 'talaria-wt-other', 'a container of compose project talaria-wt-other'],
+      ['some-store', 'devbox-alpha', 'a container of compose project devbox-alpha'],
+    ] as const) {
+      const { ctx, done } = fixture('inherited', { TALARIA_PG_CONTAINER: pgc })
+      if (project) ctx.plant(['docker', INSPECT(pgc)], inspectJson({ 'com.docker.compose.project': project }))
+      try {
+        const msg = await attempt(() => runWorktree(ctx, 'inherited'))
+        expect(msg).toContain(`TALARIA_PG_CONTAINER=${pgc}   (${whose})`)
+        expect(msg).toContain('env -u TALARIA_PG_CONTAINER bun talaria worktree inherited')
+        expect(ctx.calls.some((c) => c.args[0] === 'worktree')).toBe(false)
+        expect(ctx.calls.some((c) => c.args.includes('pg_dump'))).toBe(false)
+      } finally {
+        done()
+      }
+    }
+  })
+
+  test("an operator's own main container (no stack's project) is still honoured", async () => {
+    for (const labels of [{ 'com.docker.compose.project': 'talaria-dev' }, {}, null] as (Record<string, string> | null)[]) {
+      const { ctx, done } = fixture('custommain', { TALARIA_PG_CONTAINER: 'my-postgres' })
+      ctx.plant(['docker', INSPECT('my-postgres')], inspectJson(labels))
+      try {
+        await runWorktree(ctx, 'custommain')
+        expect(ctx.calls.some((c) => c.args.includes('pg_dump') && c.args.includes('my-postgres'))).toBe(true)
+      } finally {
+        done()
+      }
+    }
+  })
+
+  test('an empty TALARIA_PG_CONTAINER is the default, as compose reads it', async () => {
+    const { ctx, done } = fixture('emptyvar', { TALARIA_PG_CONTAINER: '' })
+    try {
+      await runWorktree(ctx, 'emptyvar')
+      expect(ctx.calls.some((c) => c.args.includes('pg_dump') && c.args.includes('talaria-postgres-dev'))).toBe(true)
+    } finally {
+      done()
+    }
   })
 })

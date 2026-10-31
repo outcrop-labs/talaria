@@ -11,8 +11,8 @@ workspace = true
 [dependencies]
 futures-util = { workspace = true }
 sqlx = { workspace = true }
+talaria-error = { workspace = true }
 talaria-fleet-docker = { workspace = true }
-talaria-update-layout = { workspace = true }
 talaria-secretbox = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

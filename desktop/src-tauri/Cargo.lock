@@ -3798,6 +3798,7 @@ dependencies = [
 name = "talaria-desktop"
 version = "0.1.0"
 dependencies = [
+ "gtk",
  "notify-rust",
  "reqwest",
  "serde",
@@ -3809,6 +3810,7 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
+ "webkit2gtk",
  "webpki-root-certs",
 ]
 

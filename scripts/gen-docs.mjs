@@ -4,6 +4,9 @@
 //   docs/api/**            the HTTP API reference, one file per resource group
 //   docs/api/README.md     index + auth legend + envelope summary
 //   docs/CLI-REFERENCE.md  the CLI command reference
+//   scripts/skills/talaria-apps/references/skeleton.md
+//                          the skeleton `talaria-app scaffold` writes, for the
+//                          product skill Developer Agents build apps by
 //
 // THE RELIGION. Hand-maintained reference tables rot — the SDK doc listed
 // exports that didn't exist and missed ones that did, for months, and nothing
@@ -25,9 +28,11 @@
 // WHAT IS EXACT vs HEURISTIC. Path literals, methods, auth guards, body
 // member tables, audit/SSE markers and literal status codes are read from
 // the route source (see extractors below). The Returns column is a heuristic
-// — the top-level keys of the first success-shaped `json!({…})` literal,
-// `…` when the shape isn't a literal — and is marked as such in every file's
-// banner. Where the extractor would have to guess, it prints `…` instead.
+// — the top-level keys of the first success-shaped `json!({…})` literal (or,
+// for a handler that answers through same-file helpers, each shape those
+// helpers answer), `…` when the shape isn't a literal — and is marked as such
+// in every file's banner. Where the extractor would have to guess, it prints
+// `…` instead.
 // Never trust a doc over the code; this tool exists to make that cheap.
 //
 // USAGE
@@ -55,8 +60,16 @@ const ROUTES_DIR = join(ROOT, 'api/crates/talaria-api-routes/src/routes')
 const TS_RESIDENT_FILES = [
   'ui/src/routes/api/healthz.ts',
   'ui/src/routes/api/apps.$app.$.ts',
+  'ui/src/routes/api/app-host.$app.rebuild.ts',
+  'ui/src/routes/api/app-host.harnesses.ts',
+  'ui/src/routes/api/app-host.$app.harnesses.$id.cases.$name.ts',
+  'ui/src/routes/api/app-host.$app.lifecycle.ts',
+  'ui/src/routes/api/app-host.$app.trigger.$id.ts',
+  'ui/src/routes/api/sdk.kit.tgz.ts',
 ]
 const CHECK = process.argv.includes('--check')
+// The talaria-apps product skill's generated reference (renderSkillSkeleton).
+const SKILL_SKELETON = 'scripts/skills/talaria-apps/references/skeleton.md'
 
 // ── Grouping ────────────────────────────────────────────────────────────────
 // First path segment after /api/ → group file. EXHAUSTIVE BY DESIGN: an
@@ -68,8 +81,8 @@ const GROUPS = {
   account: { segs: ['auth', 'me', 'join', 'users'], blurb: 'Sign-in, session, profile, members.' },
   activity: { segs: ['activity', 'history', 'notifications', 'unreads', 'push', 'alerts', 'home', 'cost', 'host'], blurb: 'What happened, what it cost, what the machine is doing, what needs you.' },
   admin: { segs: ['admin'], blurb: 'Instance administration (admin session required).' },
-  agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'vision', 'runs'], blurb: 'Agent CRUD, registration, heartbeats, skills, runs.' },
-  apps: { segs: ['apps'], blurb: 'The app platform surface and the app-server gateway.' },
+  agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'runs'], blurb: 'Agent CRUD, skills, runs.' },
+  apps: { segs: ['apps', 'app-host', 'sdk'], blurb: 'The app platform surface, the app-server gateway, the host\'s own app routes, and the SDK kit.' },
   boards: { segs: ['boards', 'workchains'], blurb: 'Kanban boards, members, statuses, labels, views, workchains.' },
   brief: { segs: ['brief'], blurb: 'The personal brief: items, replies, delegation.' },
   comms: { segs: ['channels', 'chat', 'conversations', 'dms'], blurb: 'Channels, DMs, threads, chat streaming.' },
@@ -77,6 +90,7 @@ const GROUPS = {
   fleet: { segs: ['fleet'], blurb: 'The agent fleet: defs, containers, crons, federation.' },
   inbox: { segs: ['inbox'], blurb: 'The focus inbox and its command surface.' },
   integrations: { segs: ['integrations'], blurb: 'Connected accounts — Google Workspace and the rest.' },
+  internal: { segs: ['internal'], blurb: "Service-to-service calls from the app host — never a user's or an agent's." },
   knowledge: { segs: ['kb', 'rag', 'memory', 'search', 'templates', 'blueprints'], blurb: 'Knowledge base, RAG collections, org templates, blueprints, search.' },
   llm: { segs: ['llm'], blurb: 'The OpenAI-compatible wire (llm.v1.*).' },
   mcp: { segs: ['mcp'], blurb: 'MCP servers, governance, gateway, OAuth.' },
@@ -300,7 +314,7 @@ function handlerWithHelpers(stripped, span, locals, depth = 2, seen = new Set(),
 const KNOWN_HEADER_TAKERS = new Set([
   'require_user', 'require_admin', 'require_perm', 'require_view',
   'require_agent_manager', 'require_agent_manager_by_model', 'require_agent_reader',
-  'agent_caller', 'require_agent', 'fleet_caller', 'check_fleet_key',
+  'agent_caller', 'require_agent', 'require_internal',
   // Coding accounts' three gates, each a thin wrapper classified below:
   // the broker's per-agent scope, the feature toggle, and "may edit this
   // agent" (agents.manage OR the agent's owner).
@@ -331,9 +345,10 @@ function authClassRust(combined, locals, fileRaw) {
   // for the same admin-or-owner shape.
   // `broker_caller` is the same gate answering the caller's model as well
   // (the snapshot route audits who read a credential).
+  // The app host's root-derived service credential — no session or key reaches it.
+  if (has('require_internal(')) return { auth: 'internal' }
   if (has('broker_agent(') || has('broker_caller(')) return { auth: 'agent' }
   if (has('require_agent_editor(') || has('require_feature(') || has('require_share_rights(')) return { auth: 'session' }
-  if (has('check_fleet_key(') || has('fleet_caller(')) return { auth: 'fleet' }
   if (has('authenticate_key(')) return { auth: 'bearer-key' }
   if (has('require_agent(')) return { auth: 'agent' }
   // acting_user is session.rs's assistant-proxying-a-human resolver — the
@@ -519,6 +534,42 @@ function bodySchemaRust(combined, sigText, fileRaw) {
     fields.push({ name: key, expr, note, offset: m.index })
     callRe.lastIndex = parenIdx
   }
+  // A REQUIRED KEY THE HANDLER READS BY HAND. `match obj.get("installUrl") {
+  // None => return …400 }` next to member calls for the other keys rendered
+  // only the other keys, so POST /api/admin/apps documented a body without
+  // the one field it cannot run without. Only that form is read: a `None` arm
+  // that returns an error is the handler saying the key must be there. The
+  // type comes from the first accessor in the match block; anything else
+  // renders as `value`.
+  if (fields.length) {
+    const getRe = new RegExp(`\\bmatch\\s+${objVar}\\.get\\(\\s*"((?:[^"\\\\]|\\\\.)*)"\\s*\\)\\s*\\{`, 'g')
+    while ((m = getRe.exec(text))) {
+      const key = m[1]
+      if (fields.some((f) => f.name === key)) continue
+      const open = m.index + m[0].length - 1
+      const close = matchDelimRust(text, open)
+      if (close === -1) continue
+      const block = text.slice(open + 1, close)
+      if (!/^\s*None\s*=>\s*\{?\s*return\s+(?:Ok\(\s*house_error\(|Err\()/.test(block)) continue
+      // The FIRST accessor is the field's own shape — a later `.as_str()` is
+      // usually an element of the array or a member of the record.
+      const first = /\.as_(array|object|str|bool|i64|u64|f64)\(\)|Value::(Array|Object|String|Bool|Number)\(/.exec(block)
+      const kind = first ? (first[1] ?? first[2]).toLowerCase() : null
+      let expr =
+        kind === 'array' ? 'array'
+        : kind === 'object' ? 'record'
+        : kind === 'str' || kind === 'string' ? (/\burl_ok\(/.test(block) ? 'url' : 'string')
+        : kind === 'bool' ? 'bool'
+        : kind ? 'number'
+        : 'value'
+      if (/Value::Null\b/.test(block)) expr += '? nullable'
+      const callLine = combined.lineOf(m.index)
+      const run = commentRunAbove(fileRaw.split('\n'), callLine, 2)
+      const note = run.text.length && !run.trimmed ? run.text.join(' ') : ''
+      fields.push({ name: key, expr, note, offset: m.index })
+    }
+    fields.sort((a, b) => a.offset - b.offset)
+  }
   if (!fields.length) {
     // The handler READS a body but validates it imperatively (`obj.get("k")`
     // dispatch, element-wise array walks) instead of through the member
@@ -538,6 +589,7 @@ function bodySchemaRust(combined, sigText, fileRaw) {
     const ifOpen = text.indexOf('{', parenClose)
     const ifClose = matchDelimRust(text, ifOpen)
     const elseMatch = /\belse\s*\{/.exec(text.slice(ifClose))
+    const strip = ({ name, expr, note }) => ({ name, expr, note })
     if (ifClose !== -1 && elseMatch) {
       const elseOpen = ifClose + elseMatch.index + elseMatch[0].length - 1
       const elseClose = matchDelimRust(text, elseOpen)
@@ -545,8 +597,33 @@ function bodySchemaRust(combined, sigText, fileRaw) {
       const inElse = fields.filter((f) => f.offset > elseOpen && f.offset < elseClose)
       const outside = fields.filter((f) => !inIf.includes(f) && !inElse.includes(f))
       if ((inIf.length || inElse.length) && !outside.length) {
-        const strip = ({ name, expr, note }) => ({ name, expr, note })
         return { kind: 'union', branches: [inIf.map(strip), inElse.map(strip)].filter((b) => b.length).map((b) => ({ kind: 'fields', fields: b })) }
+      }
+    }
+    // THE EARLY-RETURN SPELLING of the same union: `if obj.contains_key("app")
+    // { …; return …; }` with no `else`, the other body read by the rest of the
+    // handler. Each such arm ends in a return, so a CHAIN of them (`update`,
+    // then `app`, then the rest — PUT /api/admin/apps) is one variant per arm,
+    // and everything after the last arm is the final variant; helpers
+    // appended past the handler's own text are not part of it.
+    const handlerEnd = combined.parts[0].text.length
+    const arms = []
+    const armRe = new RegExp(`if\\s+${objVar}\\.contains_key\\(`, 'g')
+    for (let a; (a = armRe.exec(text)); ) {
+      if (arms.length && a.index < arms[arms.length - 1][1]) continue // nested in the previous arm
+      const pOpen = text.indexOf('(', a.index)
+      const open = text.indexOf('{', matchDelimRust(text, pOpen))
+      const close = matchDelimRust(text, open)
+      if (close === -1 || !/\breturn\b[^;]*;\s*$/.test(text.slice(open + 1, close))) break
+      if (/^\s*else\b/.test(text.slice(close + 1))) break
+      arms.push([open, close])
+    }
+    if (arms.length) {
+      const branches = arms.map(([open, close]) => fields.filter((f) => f.offset > open && f.offset < close))
+      const after = fields.filter((f) => f.offset > arms[arms.length - 1][1] && f.offset < handlerEnd)
+      const covered = new Set([...branches.flat(), ...after])
+      if (branches.every((b) => b.length) && after.length && fields.every((f) => covered.has(f))) {
+        return { kind: 'union', branches: [...branches, after].map((b) => ({ kind: 'fields', fields: b.map(strip) })) }
       }
     }
   }
@@ -583,6 +660,39 @@ function returnsShapeRust(handlerStripped) {
   const success = [...out].reverse().find((k) => k.length && !k.includes('error'))
   if (success) return success.length ? '{' + success.join(', ') + '}' : '{}'
   return '…'
+}
+
+/** The Returns cell when the handler's own body has no success literal: the
+ *  handler hands its answer to same-file helpers (a verb per arm, a 202
+ *  builder), so the shapes live there. Only a literal a helper ANSWERS with —
+ *  `Json(json!({…}))` — counts: a helper's other `json!` values are upstream
+ *  payloads, audit diffs and stored rows, not responses. Every distinct
+ *  success shape is listed, in source order, joined by ` or ` (a pipe would
+ *  split the table cell); `…` when no
+ *  helper answers a literal either. */
+function returnsShapeHelpers(parts) {
+  const shapes = []
+  for (const { text } of parts) {
+    let i = 0
+    while (true) {
+      const idx = text.indexOf('json!(', i)
+      if (idx === -1) break
+      i = idx + 6
+      if (!/\bJson\s*\(\s*$/.test(text.slice(Math.max(0, idx - 20), idx))) continue
+      let j = idx + 6
+      while (j < text.length && /\s/.test(text[j])) j++
+      if (text[j] !== '{') continue
+      const close = matchDelimRust(text, j)
+      const keys = splitTop(text.slice(j + 1, close))
+        .map((p) => /^\s*(?:"((?:[^"\\]|\\.)*)"|([A-Za-z_$][\w$]*))\s*:/.exec(p))
+        .filter(Boolean)
+        .map((m) => m[1] ?? m[2])
+      if (!keys.length || keys.includes('error')) continue
+      const shape = '{' + keys.join(', ') + '}'
+      if (!shapes.includes(shape)) shapes.push(shape)
+    }
+  }
+  return shapes.length ? shapes.join(' or ') : '…'
 }
 
 const STATUS_NAMES = {
@@ -677,7 +787,10 @@ function extractRustRoute(file, entries) {
       method: e.method,
       ...auth,
       body: bodySchemaRust(combined, sigText, raw),
-      returns: returnsShapeRust(stripped.slice(span.start, span.end)),
+      returns: (() => {
+        const own = returnsShapeRust(stripped.slice(span.start, span.end))
+        return own === '…' ? returnsShapeHelpers(combined.parts.slice(1)) : own
+      })(),
       statuses: statusListRust(combined.text, sse),
       sse,
       audit: combined.text.includes('log_audit('),
@@ -790,8 +903,8 @@ function extractRoute(file) {
 }
 
 const KNOWN_REQUEST_TAKERS = new Set([
-  'requireUser', 'requireAdmin', 'requirePerm', 'requireView', 'requireAgent',
-  'agentCaller', 'fleetCaller', 'checkFleetKey', 'authenticateKey',
+  'requireUser', 'requireAdmin', 'requireInternal', 'requirePerm', 'requireView', 'requireAgent',
+  'agentCaller', 'authenticateKey',
   'actingUser', 'getSessionUser', 'updateSessionUser', 'taskActor',
   'parseBody', 'destroySession',
 ])
@@ -800,7 +913,8 @@ function authClassTS(clean, methodRaw) {
   const has = (s) => clean.includes(s)
   const perms = [...clean.matchAll(/(?:requirePerm\(request,\s*|hasPerm\(\s*[\w.]+,\s*)'([\w.-]+)'/g)].map((m) => m[1])
   const view = clean.match(/requireView\(\s*request,\s*'([^']+)'/)
-  if (has('fleetCaller(') || has('checkFleetKey(')) return { auth: 'fleet' }
+  // The api on this machine, with the root-derived service credential.
+  if (has('requireInternal(')) return { auth: 'internal' }
   if (has('authenticateKey(')) return { auth: 'bearer-key' }
   if (has('requireAgent(')) return { auth: 'agent' }
   const session = has('requireUser(') || has('requireAdmin(') || has('requirePerm(') || has('requireView(')
@@ -955,7 +1069,7 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 | \`admin\` | an admin session (\`require_admin\`) |
 | \`agent\` | an agent credential (\`tak_\` key, \`require_agent\`/\`agent_caller\`) |
 | \`dual\` | session path and agent path both reach the handler |
-| \`fleet\` | internal fleet key (\`fleet_caller\`/\`check_fleet_key\`) |
+| \`internal\` | the root-derived service credential (\`x-talaria-internal\`) between the app host and the api — \`require_internal\` on the api's routes, \`requireInternal\` (loopback only) on the host's — never a user or agent |
 | \`bearer-key\` | a personal LLM-gateway API key (\`authenticate_key\`) |`
 
 const GENERATED_BANNER = (extra = '') =>
@@ -1063,9 +1177,10 @@ function renderApiIndex(groupRoutes) {
   lines.push(AUTH_LEGEND, '')
   lines.push('---', '')
   lines.push('The **Returns** column everywhere in this reference is a heuristic: the top-level')
-  lines.push('keys of the first success-shaped `json!({…})` literal in the handler. `…` means the')
-  lines.push('shape is computed, not literal. Where a row matters to you, the source link at the')
-  lines.push('top of its section is the truth.')
+  lines.push('keys of the first success-shaped `json!({…})` literal in the handler — or, for a')
+  lines.push('handler that answers through same-file helpers, every `Json(json!({…}))` shape they')
+  lines.push('answer, joined by `or`. `…` means the shape is computed, not literal. Where a row')
+  lines.push('matters to you, the source link at the top of its section is the truth.')
   lines.push('')
   return lines.join('\n')
 }
@@ -1110,6 +1225,57 @@ async function renderCliReference() {
     if (c.kind === 'leaf') lines.push(...leafSection([tree.name], c))
   }
   return lines.join('\n').replace(/\n{3,}/g, '\n\n') + '\n'
+}
+
+// ── The talaria-apps skill's skeleton reference ─────────────────────────────
+// The product skill a Developer Agent builds apps by (scripts/skills/
+// talaria-apps) shows the skeleton `talaria-app scaffold` writes. Imported,
+// like the CLI tree: cli/src/cmd/app/skeleton.ts is the one source scaffold
+// and `talaria app new` write from, and it imports nothing, so this pass runs
+// with no node_modules anywhere. The example name is fixed so the output is.
+
+const SKELETON_EXAMPLE = { name: 'Field Notes', icon: '⬡' }
+
+/** A fence longer than any backtick run in `body`, so a file holding
+ *  template literals or a fence of its own renders whole. */
+function fenced(lang, body) {
+  const longest = Math.max(0, ...[...body.matchAll(/`+/g)].map((m) => m[0].length))
+  const fence = '`'.repeat(Math.max(3, longest + 1))
+  return [`${fence}${lang}`, body.replace(/\n$/, ''), fence]
+}
+
+const LANG = { '.json': 'json', '.ts': 'ts', '.svelte': 'svelte', '.md': 'markdown', '.gitignore': 'gitignore' }
+const langOf = (file) => LANG[Object.keys(LANG).find((ext) => file.endsWith(ext)) ?? ''] ?? ''
+
+async function renderSkillSkeleton() {
+  const { skeletonFiles, harnessStarterFiles, standaloneRepoFiles } = await import('../cli/src/cmd/app/skeleton.ts')
+  const app = skeletonFiles(SKELETON_EXAMPLE)
+  const harness = harnessStarterFiles({ name: SKELETON_EXAMPLE.name })
+  const repo = standaloneRepoFiles({ name: SKELETON_EXAMPLE.name })
+  const lines = []
+  lines.push('# The skeleton `talaria-app scaffold` writes', '')
+  lines.push('> **Generated** from `cli/src/cmd/app/skeleton.ts`, the one source `talaria-app scaffold` (and')
+  lines.push('> `talaria app new` in a Talaria checkout) writes from, by `bun run docs:api` in the Talaria')
+  lines.push('> repository. Do not edit it by hand: `bun run check` fails when it drifts from the source.')
+  lines.push('')
+  lines.push(`Shown for an app named "${SKELETON_EXAMPLE.name}". Scaffold writes the name you give it: \`--name\`, else a`)
+  lines.push("seed `talaria.json`'s `name`, else the repository's name without `talaria-app-`. Every path is")
+  lines.push("relative to the repo's root, which is the app's root. No file spells the app's slug: the instance")
+  lines.push('that installs the app decides it, and the surfaces read it from `useApp()`.')
+  lines.push('')
+  lines.push('| file | written |', '| :--- | :--- |')
+  for (const f of Object.keys(app)) lines.push(`| \`${f}\` | always${f === 'talaria.json' ? '; a seed `talaria.json` keeps every key it declares' : ''} |`)
+  for (const f of Object.keys(harness)) lines.push(`| \`${f}\` | with \`--harness\` |`)
+  for (const f of Object.keys(repo)) lines.push(`| \`${f}\` | when the repo has none${f === '.gitignore' ? '; an existing one gets the missing lines appended' : '; an existing one is kept'} |`)
+  lines.push('')
+  const section = (title, intro, files) => {
+    lines.push(`## ${title}`, '', ...intro, '')
+    for (const [file, body] of Object.entries(files)) lines.push(`### \`${file}\``, '', ...fenced(langOf(file), body), '')
+  }
+  section('The app', ['A work surface with a list and a record page below it (`/x/<slug>/items/<id>`), a document-store API, and one MCP tool.'], app)
+  section('With `--harness`', ['One JSON activity harness, and a reply recorded for its one fixture, so `talaria-app eval` runs offline from the first commit.'], harness)
+  section('The repo', ['The ignore list (the kit writes `.talaria/`) and a README that says how the app is checked.'], repo)
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n')
 }
 
 function leafSection(prefix, leaf) {
@@ -1206,7 +1372,7 @@ for (const r of routes) {
 if (routes.some((r) => r.path === APPS_DISPATCH)) {
   const r = routes.find((x) => x.path === APPS_DISPATCH)
   r.methods = [{ method: 'ANY', auth: 'session', body: null, returns: 'app-defined', statuses: null, sse: false, audit: false, note: [] }]
-  r.note = { text: ['The app-server gateway: `/api/apps/<slug>/*` dispatches into the app\'s own `server.ts`.', 'The host authenticates, checks the app is enabled and the user may reach it, then hands over a context (user, sub-path, namespaced store). The contract: the SDK doc.'], trimmed: false, source: 'doc' }
+  r.note = { text: ['The app-server gateway: `/api/apps/<slug>/*` dispatches into the app\'s own `server.ts`. Every path under it is the app\'s; the host\'s own app routes are under `/api/app-host/`.', 'The host authenticates, checks the app is enabled and the user may reach it, then hands over a context (user, grants, sub-path and segments, store, the platform API as the caller, the app\'s secrets, the abort signal). The contract: the SDK doc.'], trimmed: false, source: 'doc' }
 }
 
 // `$param` renders as `{param}`; trailing `$` as `*` — but sort by raw path.
@@ -1218,6 +1384,7 @@ const outputs = new Map()
 for (const [g, rs] of Object.entries(groupRoutes)) outputs.set(join(ROOT, `docs/api/${g}.md`), renderGroup(g, rs))
 outputs.set(join(ROOT, 'docs/api/README.md'), renderApiIndex(groupRoutes))
 outputs.set(join(ROOT, 'docs/CLI-REFERENCE.md'), await renderCliReference())
+outputs.set(join(ROOT, SKILL_SKELETON), await renderSkillSkeleton())
 
 // ── Write or check ──────────────────────────────────────────────────────────
 
@@ -1247,9 +1414,10 @@ if (problems.length) {
   for (const p of problems) console.error(`    ${p}`)
   console.error('')
   console.error('  WHAT TO DO INSTEAD:')
-  console.error('    Never edit docs/api/** or docs/CLI-REFERENCE.md by hand — they are generated.')
-  console.error('    Change the source (route, // doc: note, or CLI declaration), then run')
-  console.error('    `bun run docs:api` and commit the result with your change.')
+  console.error(`    Never edit docs/api/**, docs/CLI-REFERENCE.md or ${SKILL_SKELETON} by hand —`)
+  console.error('    they are generated. Change the source (route, // doc: note, CLI declaration, or')
+  console.error('    cli/src/cmd/app/skeleton.ts), then run `bun run docs:api` and commit the result')
+  console.error('    with your change.')
   console.error(`\n${BAR}\n`)
   process.exit(1)
 }

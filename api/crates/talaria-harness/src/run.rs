@@ -399,9 +399,8 @@ pub async fn capability_keys_for(pg: &sqlx::PgPool, model: &str) -> Vec<String> 
 // ── The context ──────────────────────────────────────────────────────────────
 
 /// What the CALLER knows about where this turn's spend belongs. The runner
-/// fills in the rest of `LedgerAttribution` — `agent_model` is the resolved
-/// base model and `tier` is `RunContext.tier`, neither of which a caller
-/// should have to restate.
+/// fills in the rest of `LedgerAttribution` — `agent_model`, the resolved
+/// base model, which a caller should not have to restate.
 #[derive(Debug, Clone, Default)]
 pub struct RunLedger {
     pub source: Option<LedgerSource>,
@@ -813,6 +812,7 @@ pub async fn execute(
     } else {
         let spec = ModelSpec {
             pin: def.model.pin,
+            slot: def.model.slot,
             role: def.model.role,
             chain: def.model.chain,
             user_id: def.model.user_id,
@@ -843,10 +843,11 @@ pub async fn execute(
     }
 
     // THE ID ACTUALLY CALLED. `model` stays the BASE persona — it is what the
-    // ledger has to name, because `record_usage` prices a row by finding the
-    // agent def and then the alias named by `tier`, and a routed id matches
-    // neither. `routed` is what goes on the wire, what the capability lookup
-    // asks about, and what the result and the run row name.
+    // ledger has to name: the relay books every call on the agent's key under
+    // the agent's model id, and the turn's attribution is recorded under the
+    // same name, so a routed id would match nothing. `routed` is what goes on
+    // the wire, what the capability lookup asks about, and what the result
+    // and the run row name.
     let routed = match &ctx.tier {
         Some(tier) => format!("{model}-{tier}"),
         None => model.clone(),
@@ -1103,9 +1104,10 @@ pub async fn execute(
     let mut kind: TransportKind;
     let mut tool_names: Vec<String>;
 
-    // The ledger row this turn belongs to, resolved ONCE. `agent_model` is
-    // the base persona and `tier` the alias name, because that is the pair
-    // `record_usage` prices from.
+    // The flow this turn's spend belongs to, resolved ONCE. `agent_model` is
+    // the base persona, the name the relay books the agent's calls under —
+    // a tier's calls too: the relay prices the model each call actually ran
+    // on, so the tier itself is not part of the attribution.
     let ledger = LedgerAttribution {
         agent_model: model.clone(),
         source: ctx
@@ -1115,7 +1117,6 @@ pub async fn execute(
             .unwrap_or(LedgerSource::Chat),
         ref_id: ctx.ledger.as_ref().and_then(|l| l.ref_id.clone()),
         task_id: ctx.ledger.as_ref().and_then(|l| l.task_id.clone()),
-        tier: ctx.tier.clone(),
     };
 
     loop {
@@ -1531,6 +1532,7 @@ mod tests {
     fn spec(pin: &'static str) -> ModelSpec<'static> {
         ModelSpec {
             pin: Some(pin),
+            slot: None,
             role: None,
             chain: None,
             user_id: None,
@@ -3616,8 +3618,8 @@ mod tests {
     #[tokio::test]
     async fn tells_the_transport_when_the_model_may_use_its_own_tools() {
         // The work session, the outreach check-in and the briefing follow-up
-        // are tool loops. `tools: []` does not weaken them — it disarms the
-        // agent and then trips `zero_tool_claim` for calling no tool.
+        // are tool loops, and say so: a 'none' policy is the wrong ask for
+        // them, and a Hermes session refuses it outright.
         let r = world(World {
             replies: replies(&["picked it up, running the tests now"]),
             ..Default::default()
@@ -3760,7 +3762,6 @@ mod tests {
         assert_eq!(ledger.source, LedgerSource::Chat);
         assert_eq!(ledger.ref_id, None);
         assert_eq!(ledger.task_id, None);
-        assert_eq!(ledger.tier, None);
     }
 
     #[tokio::test]
@@ -3784,7 +3785,6 @@ mod tests {
         assert_eq!(ledger.source, LedgerSource::Research);
         assert_eq!(ledger.ref_id, Some("run-9".into()));
         assert_eq!(ledger.task_id, None);
-        assert_eq!(ledger.tier, None);
     }
 
     #[tokio::test]
@@ -3823,11 +3823,11 @@ mod tests {
 
     #[tokio::test]
     async fn calls_the_tier_id_and_attributes_the_spend_to_the_base_agent() {
-        // `record_usage` prices a row by finding the agent def named by
-        // `agent_model`, then the alias named by `tier`. Hand it the routed
-        // id with a null tier and BOTH lookups miss: the row lands on an
-        // agent that does not exist, with no endpoint class, which means no
-        // price. A tier draft becomes free.
+        // The relay books an agent's calls under the agent's model id, and
+        // the turn's attribution must name the same agent or it joins
+        // nothing: hand it the routed id and the tier draft's spend lands
+        // `unattended`, on no ticket and no run. The wire still carries the
+        // routed id.
         let r = world(World {
             replies: replies(&["drafted"]),
             ..Default::default()
@@ -3845,7 +3845,6 @@ mod tests {
         assert_eq!(req_at(&r, 0).model, "engineer-engineering-opus");
         let ledger = req_at(&r, 0).ledger.expect("ledger");
         assert_eq!(ledger.agent_model, "engineer-engineering");
-        assert_eq!(ledger.tier, Some("opus".into()));
         // The RESULT names the id that answered, because that is the model
         // the fitness matrix is scoring.
         assert_eq!(res.model, Some("engineer-engineering-opus".into()));

@@ -2,12 +2,25 @@
 // when the stop gate has to say no. A wrong answer here fills the disk or
 // removes someone else's checkout. Run by `bun run check`.
 import { spawnSync } from 'node:child_process'
-import { dirname, resolve } from 'node:path'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   POLICY,
+  ageDays,
+  appDbOwner,
+  boxProjectOwners,
+  checkoutStands,
   classify,
   formatReport,
+  mcpPkgOwner,
+  orphanAppDbs,
+  orphanMcpPackages,
+  ownerKey,
+  orphanNetworks,
+  parseDockerTime,
+  parseLabels,
   removalAllowed,
   selectRemoval,
   verdict,
@@ -219,6 +232,368 @@ check('a stack acts on a compose project, never on a path', () => {
   eq(removalAllowed({ kind: 'stack', id: 'shipped', path: '' }, roots), true)
   eq(removalAllowed({ kind: 'stack', id: 'shipped', path: '/work/talaria-shipped' }, roots), false)
   eq(removalAllowed({ kind: 'stack', id: '../evil', path: '' }, roots), false)
+})
+
+// ── Orphan networks (follow-up A8) ──────────────────────────────────────────
+// Every compose project network holds a subnet from the daemon's ~30 address
+// pools; interrupted and half-torn-down stacks left theirs behind until
+// `compose up` failed with "all predefined address pools have been fully
+// subnetted". These pin what may be removed, and the much longer list of what
+// may not.
+
+const NOW = Date.parse('2026-10-27T20:00:00Z')
+const old = NOW - POLICY.orphanNetworkMinAgeMs - 1
+const net = (name, project, over = {}) => ({
+  id: 'a1b2c3d4e5f6',
+  name,
+  labels: project === null ? {} : { 'com.docker.compose.project': project, 'com.docker.compose.network': 'default' },
+  createdMs: old,
+  ...over,
+})
+const scanNets = (networks, containers = [], live = [], boxes) =>
+  orphanNetworks({
+    networks,
+    containers,
+    liveWorktree: (o) => live.includes(o),
+    ...(boxes ? { liveBox: (n) => boxes.includes(n) } : {}),
+    now: NOW,
+  }).map((r) => r.id)
+
+check('a talaria-* project network with nothing on it and nobody owning it is an orphan', () => {
+  eq(scanNets([net('talaria-wt-gone_default', 'talaria-wt-gone')]).join(), 'talaria-wt-gone_default')
+  eq(scanNets([net('talaria-appdb-x-probe_default', 'talaria-appdb-x-probe')]).join(), 'talaria-appdb-x-probe_default')
+  const [row] = orphanNetworks({
+    networks: [net('talaria-wt-gone_default', 'talaria-wt-gone')],
+    containers: [],
+    liveWorktree: () => false,
+    now: NOW,
+  })
+  eq(row.kind, 'orphan-network')
+  eq(row.networkId, 'a1b2c3d4e5f6')
+  eq(classify(row), 'remove')
+})
+
+check('the shared talaria network is never an orphan, whatever its labels say', () => {
+  eq(scanNets([net('talaria', 'talaria-dev'), net('talaria', null)]).length, 0)
+})
+
+check('a network outside a talaria-* or devbox-* project is not ours', () => {
+  eq(scanNets([net('supabase_network_x', 'x'), net('mine', null), net('mine', 'my-project')], [], [], []).length, 0)
+})
+
+// ── devbox networks (follow-up R20) ─────────────────────────────────────────
+// A box holds two networks — its project's `_default` and its private
+// `devbox-<name>-fleet` — and a box whose containers were removed without
+// `talaria box rm` (or an interrupted `box new`) left both holding subnets.
+
+check('a box project network with nothing on it and no box checkout is an orphan — both of its networks', () => {
+  const fleet = net('devbox-gone-fleet', 'devbox-gone', { labels: { 'com.docker.compose.project': 'devbox-gone', 'com.docker.compose.network': 'fleet' } })
+  eq(scanNets([net('devbox-gone_default', 'devbox-gone'), fleet], [], [], []).join(), 'devbox-gone_default,devbox-gone-fleet')
+  const [row] = orphanNetworks({ networks: [fleet], containers: [], liveWorktree: () => false, liveBox: () => false, now: NOW })
+  eq(row.kind, 'orphan-network')
+  eq(classify(row), 'remove')
+})
+
+check("a live box's networks stay — its own project, and the fleet project it renders", () => {
+  eq(scanNets([net('devbox-mobile_default', 'devbox-mobile')], [], [], ['mobile']).length, 0)
+  eq(scanNets([net('devbox-mobile-fleet_default', 'devbox-mobile-fleet')], [], [], ['mobile']).length, 0)
+  // ...and a box that is itself named `<x>-fleet` keeps its project network.
+  eq(scanNets([net('devbox-ops-fleet_default', 'devbox-ops-fleet')], [], [], ['ops-fleet']).length, 0)
+})
+
+check('a box network is kept when the caller cannot say whether its box lives', () => {
+  eq(scanNets([net('devbox-gone_default', 'devbox-gone')]).length, 0)
+})
+
+check('a box network something names, or whose project has a container, stays', () => {
+  const n = net('devbox-gone_default', 'devbox-gone')
+  eq(scanNets([n], [{ project: 'elsewhere', networks: ['devbox-gone_default'] }], [], []).length, 0)
+  eq(scanNets([n], [{ project: 'devbox-gone', networks: ['bridge'] }], [], []).length, 0)
+})
+
+check('a box network younger than the min age is mid-`up`', () => {
+  eq(scanNets([net('devbox-new_default', 'devbox-new', { createdMs: NOW - 1000 })], [], [], []).length, 0)
+})
+
+check("a box project's network named outside devbox-* is not the sweep's; nor is the tools layer", () => {
+  eq(scanNets([net('talaria-dev_default', 'devbox-gone'), net('custom', 'devbox-gone')], [], [], []).length, 0)
+  eq(scanNets([net('devbox-shared_default', 'devbox-shared')], [], [], []).length, 0)
+})
+
+check('box projects parse to the boxes that could own them', () => {
+  eq(JSON.stringify(boxProjectOwners('devbox-mobile')), '["mobile"]')
+  eq(JSON.stringify(boxProjectOwners('devbox-mobile-fleet')), '["mobile-fleet","mobile"]')
+  eq(JSON.stringify(boxProjectOwners('devbox-shared')), '[]')
+  eq(boxProjectOwners('talaria-wt-x'), null)
+  eq(boxProjectOwners('devbox-'), null)
+})
+
+check('a network a container names — even a stopped one — stays', () => {
+  const n = net('talaria-wt-gone_default', 'talaria-wt-gone')
+  eq(scanNets([n], [{ project: 'someone-else', networks: ['bridge', 'talaria-wt-gone_default'] }]).length, 0)
+})
+
+check('a network whose project still has any container stays (a stack, running or stopped)', () => {
+  const n = net('talaria-dogfood_internal', 'talaria-dogfood')
+  eq(scanNets([n], [{ project: 'talaria-dogfood', networks: ['talaria-dogfood'] }]).length, 0)
+})
+
+check("a live worktree's project network stays, its fleet's too", () => {
+  eq(scanNets([net('talaria-wt-live_default', 'talaria-wt-live')], [], ['live']).length, 0)
+  eq(scanNets([net('talaria-wt-live-fleet_default', 'talaria-wt-live-fleet')], [], ['live']).length, 0)
+})
+
+check('a network younger than the min age is mid-`up`, not an orphan; an unreadable age is young', () => {
+  eq(scanNets([net('talaria-wt-new_default', 'talaria-wt-new', { createdMs: NOW - 1000 })]).length, 0)
+  eq(scanNets([net('talaria-wt-odd_default', 'talaria-wt-odd', { createdMs: 0 })]).length, 0)
+})
+
+check('a pool probe the CLI could not remove is swept like an orphan', () => {
+  const probe = net('talaria-pool-probe-4242', null, { labels: { 'talaria.pool-probe': '1' } })
+  eq(scanNets([probe]).join(), 'talaria-pool-probe-4242')
+  eq(scanNets([probe], [{ project: '', networks: ['talaria-pool-probe-4242'] }]).length, 0)
+})
+
+check('orphan networks go on --apply only, never from the stop gate', () => {
+  const rows = [{ ...stale({ kind: 'orphan-network', id: 'talaria-wt-gone_default', path: '', networkId: 'a1b2c3d4e5f6' }), action: 'remove' }]
+  eq(selectRemoval(rows, 'gate').length, 0)
+  eq(selectRemoval(rows, 'apply').length, 1)
+  eq(selectRemoval(rows, 'report').length, 0)
+})
+
+check('the executor removes a network only by a talaria- or devbox- name and a docker id', () => {
+  const r = (over) => removalAllowed({ kind: 'orphan-network', id: 'talaria-wt-gone_default', networkId: 'a1b2c3d4e5f6', path: '', ...over }, roots)
+  eq(r({}), true)
+  eq(r({ id: 'talaria' }), false)
+  eq(r({ id: 'devbox-x_default' }), true)
+  eq(r({ id: 'devbox-x-fleet' }), true)
+  eq(r({ id: 'devbox' }), false)
+  eq(r({ id: 'devbox-' }), false)
+  eq(r({ id: 'supabase_network_x' }), false)
+  eq(r({ id: 'bridge' }), false)
+  eq(r({ networkId: 'talaria; rm -rf /' }), false)
+  eq(r({ networkId: undefined }), false)
+  eq(r({ path: '/work/talaria-gone' }), false)
+})
+
+check("docker's network fields parse", () => {
+  const l = parseLabels('com.docker.compose.network=default,com.docker.compose.project=talaria-wt-x,com.docker.compose.version=5.5.1')
+  eq(l['com.docker.compose.project'], 'talaria-wt-x')
+  eq(Object.keys(parseLabels('')).length, 0)
+  eq(parseDockerTime('2026-10-08 20:59:58.97940353 -0600 MDT'), Date.parse('2026-10-09T02:59:58.979Z'))
+  eq(parseDockerTime('2026-10-27 13:24:12 +0000 UTC'), Date.parse('2026-10-27T13:24:12Z'))
+  eq(parseDockerTime('yesterday'), 0)
+})
+
+check('an age prints in minutes under an hour — an orphan network qualifies at ten', () => {
+  const MIN = 60 * 1000
+  eq(ageDays(13 * MIN), '13m')
+  eq(ageDays(10 * 1000), '1m')
+  eq(ageDays(90 * MIN), '2h')
+  eq(ageDays(23 * 60 * MIN), '23h')
+  eq(ageDays(3 * DAY), '3d')
+  eq(ageDays(-1), '?')
+  eq(ageDays(Number.NaN), '?')
+})
+
+// ── App databases a gone checkout or box left running (N9) ─────────────────
+const dbRoots = { siblingParent: '/w', devboxHome: '/w/devboxes' }
+const appdb = (over = {}) => ({
+  id: 'a1b2c3d4e5f6a1b2c3d4e5f6',
+  name: 'talaria-appdb-gone-notes',
+  project: 'talaria-appdb-gone-notes',
+  running: true,
+  createdMs: NOW - 3 * DAY,
+  source: '/w/talaria-gone/app-data/notes/pg',
+  ...over,
+})
+
+check("an app database's owner is read from its cluster's mount: a sibling checkout, a box, or nobody", () => {
+  const o = (src) => JSON.stringify(appDbOwner(src, dbRoots))
+  eq(o('/w/talaria-gone/app-data/notes/pg'), JSON.stringify({ kind: 'checkout', dir: '/w/talaria-gone' }))
+  eq(o('/w/devboxes/b1/state/app-data/notes/pg'), JSON.stringify({ kind: 'box', name: 'b1', dir: '/w/devboxes/b1' }))
+  // The primary is `talaria`, not `talaria-<x>`: never placed, never swept.
+  eq(o('/w/talaria/app-data/notes/pg'), 'null')
+  eq(o('/w/devboxes/shared/x/pg'), 'null')
+  eq(o('/w/devboxes/.hidden/pg'), 'null')
+  eq(o('/w/other-repo/app-data/notes/pg'), 'null')
+  eq(o('/var/lib/docker/volumes/x/_data'), 'null')
+  eq(o('/data/app-data/notes/pg'), 'null')
+  eq(o('/w/talaria-gone'), JSON.stringify({ kind: 'checkout', dir: '/w/talaria-gone' }))
+  eq(o(''), 'null')
+})
+
+check("an app database whose checkout or box is gone is a row, running or stopped; a live owner's stays", () => {
+  const rows = orphanAppDbs({
+    dbs: [
+      appdb(),
+      appdb({ name: 'talaria-appdb-gonebox-notes', source: '/w/devboxes/gonebox/state/app-data/notes/pg', running: false }),
+      appdb({ name: 'talaria-appdb-live-notes', source: '/w/talaria-live/app-data/notes/pg' }),
+      appdb({ name: 'talaria-appdb-livebox-notes', source: '/w/devboxes/livebox/state/app-data/notes/pg' }),
+      appdb({ name: 'talaria-appdb-talaria-notes', source: '/w/talaria/app-data/notes/pg' }),
+      appdb({ name: 'talaria-appdb-image-notes', source: '/data/app-data/notes/pg' }),
+      appdb({ name: 'not-an-appdb', source: '/w/talaria-gone/app-data/x/pg' }),
+      appdb({ name: 'talaria-appdb-nomount-x', source: '' }),
+    ],
+    roots: dbRoots,
+    liveCheckout: (dir) => dir === '/w/talaria-live',
+    liveBox: (name) => name === 'livebox',
+    now: NOW,
+  })
+  eq(rows.map((r) => r.id).join(','), 'talaria-appdb-gone-notes,talaria-appdb-gonebox-notes')
+  eq(rows[0].kind, 'orphan-appdb')
+  eq(rows[0].path, '')
+  eq(rows[0].why, '/w/talaria-gone is gone; its data stays at /w/talaria-gone/app-data/notes/pg')
+  eq(rows[1].why, 'box gonebox is gone; its data stays at /w/devboxes/gonebox/state/app-data/notes/pg')
+  eq(rows[1].running, false)
+  eq(ageDays(rows[0].ageMs), '3d')
+})
+
+check('a checkout directory still on disk keeps its app databases, listed by git or not, .git or not', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'talaria-sweep-test-'))
+  try {
+    // A sibling that still exists but is no git worktree: half removed, or
+    // copied by hand. Its running database is not the sweep's.
+    mkdirSync(join(parent, 'talaria-stray', 'app-data', 'notes', 'pg'), { recursive: true })
+    eq(checkoutStands(join(parent, 'talaria-stray')), true)
+    eq(checkoutStands(join(parent, 'talaria-gone')), false)
+    const rows = orphanAppDbs({
+      dbs: [
+        appdb({ name: 'talaria-appdb-stray-notes', source: join(parent, 'talaria-stray', 'app-data', 'notes', 'pg') }),
+        appdb({ name: 'talaria-appdb-gone-notes', source: join(parent, 'talaria-gone', 'app-data', 'notes', 'pg') }),
+      ],
+      roots: { siblingParent: parent, devboxHome: join(parent, 'devboxes') },
+      liveCheckout: checkoutStands,
+      now: NOW,
+    })
+    eq(rows.map((r) => r.id).join(','), 'talaria-appdb-gone-notes')
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
+
+check('a caller that cannot say whether an owner lives keeps every app database', () => {
+  eq(orphanAppDbs({ dbs: [appdb()], roots: dbRoots, now: NOW }).length, 0)
+})
+
+check('orphan app databases go on --apply only, never from the stop gate, and the report says why', () => {
+  const [row] = orphanAppDbs({ dbs: [appdb()], roots: dbRoots, liveCheckout: () => false, now: NOW })
+  eq(classify(row), 'remove')
+  const rows = [{ ...row, action: 'remove' }]
+  eq(selectRemoval(rows, 'gate').length, 0)
+  eq(selectRemoval(rows, 'apply').length, 1)
+  eq(selectRemoval(rows, 'report').length, 0)
+  // Weighs nothing on disk: listed, never a reason for the gate to block.
+  eq(verdict(rows, { usedPct: 10 }).exit, 0)
+  const text = formatReport({ pressure: { usedPct: 10, avail: 1 }, remaining: rows, removed: [], notes: [] })
+  if (!text.includes('orphan-appdb talaria-appdb-gone-notes') || !text.includes('/w/talaria-gone is gone')) throw new Error(text)
+  if (!text.includes('bun talaria cleanup --apply')) throw new Error(text)
+})
+
+check('the executor removes an app database only by its name and a docker id, never a path', () => {
+  const r = (over) => removalAllowed({ kind: 'orphan-appdb', id: 'talaria-appdb-gone-notes', containerId: 'a1b2c3d4e5f6', path: '', ...over }, roots)
+  eq(r({}), true)
+  eq(r({ id: 'talaria-postgres-dev' }), false)
+  eq(r({ id: 'talaria-appdb-' }), false)
+  eq(r({ id: 'devbox-b1-postgres' }), false)
+  eq(r({ containerId: 'x; rm -rf /' }), false)
+  eq(r({ containerId: undefined }), false)
+  eq(r({ path: '/w/talaria-gone/app-data' }), false)
+})
+
+// ── MCP packages a gone worktree or box left running (UB3) ─────────────────
+const pkgRoots = { siblingParent: '/w' }
+const wtLabels = (dir, inst = 'gone') => ({ 'talaria.mcp.instance': inst, 'talaria.mcp.owner': 'worktree', 'talaria.mcp.checkout': dir })
+const boxLabels = (name) => ({ 'talaria.mcp.instance': name, 'talaria.mcp.owner': 'devbox' })
+const pkgC = (over = {}) => ({ id: 'c1c1c1c1c1c1c1c1', name: 'talaria-mcp-gone-search', labels: wtLabels('/w/talaria-gone'), running: true, createdMs: NOW - 2 * DAY, ...over })
+const pkgN = (over = {}) => ({ id: 'n1n1n1n1n1n1'.replace(/n/g, 'a'), name: 'talaria-mcp-gone', labels: wtLabels('/w/talaria-gone'), createdMs: old, attached: [], ...over })
+
+check("an MCP package's owner is read from its labels: a sibling checkout, a box, or nobody", () => {
+  const o = (labels) => JSON.stringify(mcpPkgOwner(labels, pkgRoots))
+  eq(o(wtLabels('/w/talaria-gone')), JSON.stringify({ kind: 'checkout', dir: '/w/talaria-gone' }))
+  eq(o(boxLabels('b1')), JSON.stringify({ kind: 'box', name: 'b1' }))
+  // The primary and an image install label themselves `instance`: never placed.
+  eq(o({ 'talaria.mcp.instance': 'talaria', 'talaria.mcp.owner': 'instance' }), 'null')
+  // A worktree label that names no checkout, or one outside the sibling root,
+  // or a sibling that is not `talaria-<x>`: nothing to place it by.
+  eq(o({ 'talaria.mcp.instance': 'x', 'talaria.mcp.owner': 'worktree' }), 'null')
+  eq(o(wtLabels('/elsewhere/talaria-gone')), 'null')
+  eq(o(wtLabels('/w/talaria-gone/nested')), 'null')
+  eq(o(wtLabels('/w/talaria')), 'null')
+  eq(o(wtLabels('/w/other-repo')), 'null')
+  eq(o(boxLabels('shared')), 'null')
+  eq(o(boxLabels('')), 'null')
+  eq(o({}), 'null')
+  eq(o(undefined), 'null')
+})
+
+check('a package whose worktree or box is gone is a row, containers before their network; a live owner keeps its own', () => {
+  const { rows, unmarked } = orphanMcpPackages({
+    containers: [
+      pkgC(),
+      pkgC({ id: 'c2c2c2c2c2c2c2c2', name: 'talaria-mcp-gonebox-fetch', labels: boxLabels('gonebox'), running: false }),
+      pkgC({ id: 'c3c3c3c3c3c3c3c3', name: 'talaria-mcp-live-search', labels: wtLabels('/w/talaria-live', 'live') }),
+      pkgC({ id: 'c4c4c4c4c4c4c4c4', name: 'talaria-mcp-livebox-x', labels: boxLabels('livebox') }),
+      pkgC({ id: 'c5c5c5c5c5c5c5c5', name: 'talaria-mcp-talaria-x', labels: { 'talaria.mcp.instance': 'talaria', 'talaria.mcp.owner': 'instance' } }),
+      pkgC({ id: 'c6c6c6c6c6c6c6c6', name: 'talaria-mcp-old-x', labels: {} }),
+      pkgC({ id: 'c7c7c7c7c7c7c7c7', name: 'talaria-postgres-dev' }),
+    ],
+    networks: [
+      // Only the gone package is attached, and it goes first: removable.
+      pkgN({ attached: ['c1c1c1c1c1c1c1c1'] }),
+      // Something else still names it, running or stopped: kept.
+      pkgN({ id: 'bbbbbbbbbbbb', name: 'talaria-mcp-gonebox', labels: boxLabels('gonebox'), attached: ['c2c2c2c2c2c2c2c2', 'ffffffffffff'] }),
+      // Too young: compose-style race guard.
+      pkgN({ id: 'cccccccccccc', name: 'talaria-mcp-gone2', labels: wtLabels('/w/talaria-gone2'), createdMs: NOW - 1000 }),
+      pkgN({ id: 'dddddddddddd', name: 'talaria-mcp-live', labels: wtLabels('/w/talaria-live', 'live') }),
+      pkgN({ id: 'eeeeeeeeeeee', name: 'talaria-mcp-older', labels: {} }),
+    ],
+    roots: pkgRoots,
+    liveCheckout: (dir) => dir === '/w/talaria-live',
+    liveBox: (name) => name === 'livebox',
+    now: NOW,
+  })
+  eq(rows.map((r) => `${r.kind}:${r.id}`).join(','), 'orphan-mcp-container:talaria-mcp-gone-search,orphan-mcp-container:talaria-mcp-gonebox-fetch,orphan-mcp-network:talaria-mcp-gone')
+  eq(rows[0].why, '/w/talaria-gone is gone')
+  eq(rows[1].why, 'box gonebox is gone')
+  eq(rows[1].running, false)
+  eq(rows[0].path, '')
+  eq(rows[0].owner, ownerKey(wtLabels('/w/talaria-gone')))
+  eq(ageDays(rows[0].ageMs), '2d')
+  eq(unmarked.join(','), 'container talaria-mcp-old-x,network talaria-mcp-older')
+})
+
+check('a caller that cannot say whether an owner lives keeps every package', () => {
+  eq(orphanMcpPackages({ containers: [pkgC()], networks: [pkgN()], roots: pkgRoots, now: NOW }).rows.length, 0)
+})
+
+check('orphan MCP packages go on --apply only, never from the stop gate, and the report says why', () => {
+  const { rows } = orphanMcpPackages({ containers: [pkgC()], networks: [pkgN({ attached: ['c1c1c1c1c1c1c1c1'] })], roots: pkgRoots, liveCheckout: () => false, now: NOW })
+  eq(rows.length, 2)
+  for (const r of rows) eq(classify(r), 'remove')
+  const marked = rows.map((r) => ({ ...r, action: 'remove' }))
+  eq(selectRemoval(marked, 'gate').length, 0)
+  eq(selectRemoval(marked, 'apply').length, 2)
+  eq(selectRemoval(marked, 'report').length, 0)
+  eq(verdict(marked, { usedPct: 10 }).exit, 0)
+  const text = formatReport({ pressure: { usedPct: 10, avail: 1 }, remaining: marked, removed: [], notes: [] })
+  if (!text.includes('orphan-mcp-container talaria-mcp-gone-search') || !text.includes('orphan-mcp-network talaria-mcp-gone')) throw new Error(text)
+  if (!text.includes('/w/talaria-gone is gone')) throw new Error(text)
+})
+
+check('the executor removes a package only by its name and a docker id, never a path', () => {
+  const c = (over) => removalAllowed({ kind: 'orphan-mcp-container', id: 'talaria-mcp-gone-search', containerId: 'a1b2c3d4e5f6', path: '', ...over }, roots)
+  eq(c({}), true)
+  eq(c({ containerId: 'zz1b2c3d4e5f6' }), false)
+  eq(c({ containerId: undefined }), false)
+  eq(c({ containerId: 'a1b2c3d4e5f6', id: 'talaria-postgres-dev' }), false)
+  eq(c({ containerId: 'a1b2c3d4e5f6', id: 'talaria-mcp-' }), false)
+  eq(c({ containerId: 'a1b2c3d4e5f6', path: '/w/talaria-gone' }), false)
+  const n = (over) => removalAllowed({ kind: 'orphan-mcp-network', id: 'talaria-mcp-gone', networkId: 'a1b2c3d4e5f6', path: '', ...over }, roots)
+  eq(n({}), true)
+  eq(n({ id: 'talaria' }), false)
+  eq(n({ id: 'talaria-dev_default' }), false)
+  eq(n({ networkId: 'x; rm -rf /' }), false)
 })
 
 check('build caches are reported at any disk reading', () => {

@@ -15,6 +15,10 @@
 import { confirm } from '@/components/ui/confirm.svelte'
 import { delJson, errorMessage, postJson, putJson } from '@/lib/fetch-json'
 
+/** The agent's own cap on a scheduled prompt: Hermes's `/api/jobs` refuses a
+ *  longer one, and the api bounds its prompt members by the same number. */
+export const MAX_CRON_PROMPT = 5_000
+
 export interface CronJob {
   id: string
   name: string
@@ -85,13 +89,26 @@ export function parseSchedule(raw: string): Sched {
   return { ...DEFAULT_SCHED, mode: 'custom', custom: s }
 }
 
+/** An interval in the largest whole unit it fills. Hermes stores every
+ *  interval in minutes (`every 6h` reads back as `every 360m`, `every 1d` as
+ *  `every 1440m`), so the display folds them back: whole days, then whole
+ *  hours, then minutes. Display only — `parseSchedule` keeps the minutes, so
+ *  an untouched edit form still round-trips the string Hermes stored. */
+function describeInterval(every: number, unit: 'm' | 'h'): string {
+  const minutes = unit === 'h' ? every * 60 : every
+  const say = (n: number, one: string, many: string) => (n === 1 ? `Every ${one}` : `Every ${n} ${many}`)
+  if (minutes > 0 && minutes % 1440 === 0) return say(minutes / 1440, 'day', 'days')
+  if (minutes > 0 && minutes % 60 === 0) return say(minutes / 60, 'hour', 'hours')
+  return say(minutes, 'minute', 'minutes')
+}
+
 /** Plain-English schedule for display — the cron string stays in the tooltip. */
 export function describeSchedule(raw: string): string {
   const s = parseSchedule(raw)
   const t = s.time
   switch (s.mode) {
     case 'interval':
-      return s.unit === 'h' ? (s.every === 1 ? 'Every hour' : `Every ${s.every} hours`) : `Every ${s.every} minutes`
+      return describeInterval(s.every, s.unit)
     case 'daily':
       return `Every day at ${t}`
     case 'weekdays':
@@ -131,6 +148,19 @@ export interface CronPatch {
   name: string
   schedule: string
   prompt: string
+}
+
+/** What an edit sends: only the fields the form changed. An untouched field
+ *  is never re-sent — a rename must not re-time a schedule, and a prompt
+ *  written before the 5,000-character cap (the CLI had none) must not block
+ *  a rename or a reschedule. The schedule compares against Hermes's own
+ *  display string, which is what the form was seeded from. */
+export function editPatch(job: Pick<CronJob, 'name' | 'schedule' | 'prompt'>, draft: CronPatch): Partial<CronPatch> {
+  const patch: Partial<CronPatch> = {}
+  if (draft.name !== job.name.trim()) patch.name = draft.name
+  if (draft.schedule !== job.schedule.trim()) patch.schedule = draft.schedule
+  if (draft.prompt !== job.prompt.trim()) patch.prompt = draft.prompt
+  return patch
 }
 
 /** A panel's own state, which the hook drives: the inline error channel —
@@ -193,7 +223,7 @@ export function useCronMutations(opts: CronMutationOptions) {
         await postJson(cronsOf(agentId), input)
       }),
 
-    edit: (agentId: string, jobId: string, patch: CronPatch) =>
+    edit: (agentId: string, jobId: string, patch: Partial<CronPatch>) =>
       run('edit', async () => {
         await putJson(`${cronsOf(agentId)}/${jobId}`, patch)
       }),

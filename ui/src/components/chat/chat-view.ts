@@ -135,6 +135,70 @@ export function sendRoute(ctx: {
   return ctx.intent === 'send-now' && !ctx.hasAttachments ? 'steer' : 'queue'
 }
 
+/** A fresh name for a turn this page sends (`turnId` on /api/chat): a v4
+ *  uuid. A Stop carries it, so the server can place a stop that reaches it
+ *  before the send does, or before the page knows the send's thread.
+ *  `crypto.getRandomValues`, not `randomUUID`: an instance served over plain
+ *  http on a LAN is not a secure context, and `randomUUID` is absent there. */
+export function newTurnId(): string {
+  const b = crypto.getRandomValues(new Uint8Array(16))
+  b[6] = (b[6]! & 0x0f) | 0x40
+  b[8] = (b[8]! & 0x3f) | 0x80
+  const hex = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+/** The longest a Stop pressed on a new thread's first turn waits for the
+ *  response to name the conversation, before it hangs up regardless. It is
+ *  the server's own longest wait for an agent to open a turn's stream
+ *  (talaria-gateway HEADERS_WINDOW, 300 s): a send to an agent that is coming
+ *  up is held for up to two minutes and then answered, so the server ends the
+ *  wait first. This bound only covers a response that never comes at all. */
+export const STOP_NAME_WAIT_MS = 300_000
+
+/** A Stop pressed before its turn's conversation has an id.
+ *
+ *  A new thread's id rides the response headers, and the server sends those
+ *  only once the agent has taken the turn. The stop route needs that id, so a
+ *  Stop pressed in that gap used to hang up the reader and tell the server
+ *  nothing: the turn ran to the end in the agent. Hanging up first cannot
+ *  work, because the abort ends the request that would have brought the id.
+ *  So the stop waits for the id, however long the agent takes to answer, the
+ *  way the server holds a stop for a turn that has not named itself yet:
+ *  `named` sends it to the server, then hangs up. A response that names no
+ *  turn of ours (a queued ack) is only hung up on. A response that names
+ *  nothing inside `waitMs` is hung up on all the same. Each of these acts at
+ *  most once. */
+export function stopOnceNamed(hangUp: () => void, waitMs = STOP_NAME_WAIT_MS) {
+  let done = false
+  const timer = setTimeout(() => {
+    if (done) return
+    done = true
+    hangUp()
+  }, waitMs)
+  const settle = () => {
+    if (done) return false
+    done = true
+    clearTimeout(timer)
+    return true
+  }
+  return {
+    /** The response named the conversation. `ownTurn` is false for a queued
+     *  ack: that answer is about a turn someone else is streaming, which this
+     *  Stop never meant. */
+    named(conversationId: string, ownTurn: boolean, sendStop: (conversationId: string) => void) {
+      if (!settle()) return
+      if (ownTurn) sendStop(conversationId)
+      hangUp()
+    },
+    /** The turn ended some other way (it failed, or the view hung up): drop
+     *  the wait without acting. */
+    cancel() {
+      settle()
+    },
+  }
+}
+
 const isMe = (viewer: Viewer, actor: string, type: string | undefined): boolean =>
   (type ?? 'user') === 'user' && (actor === viewer.id || actor === viewer.email)
 
@@ -200,6 +264,49 @@ export function stampFromServer(local: readonly DisplayMessage[], remote: readon
       reactions: r.reactions ?? m.reactions,
     }
   })
+}
+
+/** THE AGENT'S VERDICT ON A CALL, BROUGHT ONTO THE ROW ON SCREEN. Hermes'
+ *  completions stream calls every finished tool `completed`, a command its
+ *  approval gate refused included. The agent's talaria-events plugin tells
+ *  the server otherwise, and the server marks that call `error` on the stored
+ *  row (talaria-conversations `record_tool_failure`) and rings the
+ *  conversation's readers. A row this tab drew from the stream still says
+ *  `completed` until something brings the server's word over: this, on that
+ *  ring and on the live turn's poll.
+ *
+ *  Rows pair by id. A row this tab drew has no id until the post-turn stamp,
+ *  and pairs by index with the server's row in its place, when that row is
+ *  the agent's and not one a row on screen already holds: stampFromServer's
+ *  pairing, so a verdict only ever comes off the row that stamp would take
+ *  the id from. Never the server's newest row: an earlier reply not stamped
+ *  yet, a reply chained after a steered row, or one this tab has not drawn
+ *  is each the newest at some moment, and Hermes mints a turn's call ids
+ *  again on a later turn, so the wrong turn's call would be marked. A call
+ *  pairs by its tool-call id. Only ever toward `error`, and only a call's
+ *  status: the prose, chips and every other field stay what is on screen.
+ *  Answers `local` itself when nothing changed, so the caller can skip the
+ *  write. */
+export function foldToolVerdicts(local: DisplayMessage[], remote: readonly StoredMessage[]): DisplayMessage[] {
+  const failedOn = (r: StoredMessage | undefined): Set<string> =>
+    new Set((r?.tools ?? []).filter((t) => t.status === 'error' && t.id).map((t) => t.id!))
+  const byId = new Map(remote.filter((r) => r.role === 'assistant' && r.id).map((r) => [r.id!, r]))
+  const shown = new Set(local.map((m) => m.id).filter(Boolean))
+  let changed = false
+  const next = local.map((m, i) => {
+    if (m.role !== 'assistant' || !m.tools?.length) return m
+    const inPlace = remote[i]
+    const pair = m.id
+      ? byId.get(m.id)
+      : inPlace?.role === 'assistant' && !(inPlace.id && shown.has(inPlace.id))
+        ? inPlace
+        : undefined
+    const failed = failedOn(pair)
+    if (failed.size === 0 || !m.tools.some((t) => t.id && t.status !== 'error' && failed.has(t.id))) return m
+    changed = true
+    return { ...m, tools: m.tools.map((t) => (t.id && failed.has(t.id) ? { ...t, status: 'error' as const } : t)) }
+  })
+  return changed ? next : local
 }
 
 // One formatter per resolved zone ('' = the browser's) — turnTime runs per row.

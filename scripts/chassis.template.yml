@@ -2,15 +2,35 @@
 # Talaria stamps per-agent identity (key, model name, config/SOUL/skills
 # mounts, state volume) at render time; put only SHARED anatomy here.
 #
-# The fleet's brain is Talaria's own gateway: LLM_BASE_URL/API_KEY/MODEL are
+# The fleet's brain is Talaria's own gateway: LLM_BASE_URL/API_KEY are
 # provisioned into fleet/.env by Talaria (config plane is Talaria-owned), so
 # every agent call is guarded, metered, and observable. Configure the real
-# upstream model in-app on /models — no hand-editing here. HERMES_IMAGE
-# overrides the agent image.
+# upstream model in-app on /models — no hand-editing here.
+#
+# THE IMAGE IS PINNED, tag AND digest, so every host runs the Hermes this
+# render was checked against — never whatever `:latest` a host cached first.
+# A host pulls a pin it lacks on the next roll or start (on an image install
+# the post-deploy fleet roll moves running agents onto it; elsewhere, Roll
+# all). HERMES_IMAGE in fleet/.env overrides it. This line is copied into
+# fleet/chassis.yml once and never rewritten, so the render reads any stock
+# default it ever shipped as "not chosen" and renders the current pin
+# (HERMES_IMAGE_DEFAULTS, talaria-fleet-render). Bumping it:
+# docs/ARCHITECTURE.md, "The fleet" — the same string is the last entry of
+# HERMES_IMAGE_DEFAULTS and the workbench image's FROM, and tests fail if
+# they disagree.
 service:
-  image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+  image: ${HERMES_IMAGE:-nousresearch/hermes-agent:v0.22.4@sha256:7a69201726bc64db2072a1371557137c23312d29705cda2b8ea2a0214a50a4cf}
   command: gateway run
   restart: unless-stopped
+  # A roll recreates the container in place, so this is the outer bound on a
+  # stop: docker SIGKILLs past it. Hermes holds cron and /v1 runs open for up
+  # to agent.cron_drain_timeout (30s) plus a 10s cleanup reserve on SIGTERM,
+  # and docker's default 10s would cut them off. The drain itself does not
+  # come from docker's SIGTERM — s6-overlay would revive the gateway and KILL
+  # it 3s later — so Talaria first stops the gateway through s6 inside the
+  # container (talaria-fleet-docker, drain_gateway) and lets it finish. The
+  # render applies this default to a chassis that predates this line.
+  stop_grace_period: 45s
   # ── Sandbox limits ─────────────────────────────────────────────────────────
   # An agent with a workbench profile executes model-authored code, so treat the
   # container as hostile-by-default rather than as trusted infrastructure.
@@ -61,9 +81,11 @@ service:
   extra_hosts:
     - 'host.docker.internal:host-gateway'
   # ── External DNS ───────────────────────────────────────────────────────────
-  # Agents need real internet name resolution: the browser toolset fetches its
-  # agent-browser engine from npm on first use, and the web tools resolve
-  # remote hosts. Docker's default upstream is whatever the HOST's
+  # Agents need real internet name resolution: the browser toolset's
+  # agent-browser engine is installed from npm before an agent with the
+  # browser and the terminal on starts (in a one-shot run of this same
+  # service, so with these resolvers), and the web tools resolve remote
+  # hosts. Docker's default upstream is whatever the HOST's
   # /etc/resolv.conf pointed at when the network was created, which breaks
   # silently in two common ways: a loopback stub resolver on the host (docker
   # rewires containers to the bridge IP, where nothing listens) and a LAN/router
@@ -96,22 +118,23 @@ service:
     # pointed off the gateway) leaves this fallback in force. API_SERVER_KEY —
     # this agent's own Hermes API bearer, the one Talaria dials it with.
     # TALARIA_AGENT_KEY — this agent's own `tak_` credential, by design. A
-    # Developer Agent ALSO gets LLM_WORKBENCH_API_KEY as OPENAI_API_KEY (the
-    # sandbox harnesses' key — workbench-harnesses) and, with a coding account,
-    # OMP_AUTH_BROKER_TOKEN (= its own agent key). No other service carries the
-    # workbench key. The closed toolset default (no terminal, file, code
+    # Developer Agent ALSO gets LLM_WORKBENCH_API_KEY as
+    # TALARIA_WORKBENCH_API_KEY (the sandbox harness's key — workbench-harnesses;
+    # not OPENAI_API_KEY, which Hermes strips from every command the agent
+    # runs) and, with a coding account, OMP_AUTH_BROKER_TOKEN (= its own agent
+    # key). No other service carries the workbench key. Of these, Hermes
+    # strips only API_SERVER_KEY from the agent's terminal; the rest reach it.
+    # The closed toolset default (no terminal, file, code
     # execution or self-scheduling on a new agent — talaria-agent-defs
     # DEFAULT_DISABLED_FOR_NEW) is what keeps this environment out of a
     # prompt-injected `env | curl`; an agent whose manager opens a shell is an
     # agent whose manager accepted that its env is readable from it.
     LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:5273/api/llm/v1}
     LLM_API_KEY: ${LLM_API_KEY:-}
-    LLM_MODEL: ${LLM_MODEL:-}
     API_SERVER_ENABLED: 'true'
     API_SERVER_HOST: 0.0.0.0
     HERMES_ACCEPT_HOOKS: '1'
     HERMES_SKIP_CONFIG_MIGRATION: '1'
-    TALARIA_HEARTBEAT_SECONDS: ${TALARIA_HEARTBEAT_SECONDS:-0}
   volumes: []
 
 # Fresh installs get their own fleet network (created by `talaria setup`).

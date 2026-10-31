@@ -118,7 +118,7 @@ Source: [`api/crates/talaria-routes-integrations/src/secrets/secrets_git_push_ch
 > /api/secrets/git-push-check.
 >
 > THE PRE-PUSH GATE — the platform's own answer to "whose call is main".
-> GitHub's branch protection enforces the posture where the org's plan
+> A git host's own branch protection enforces the posture where it can;
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -131,6 +131,7 @@ Source: [`api/crates/talaria-routes-integrations/src/secrets/secrets_git_push_ch
 | :--- | :--- | :--- |
 | `repo` | `string(3, 400)` |  |
 | `refs` | `string[](1, 200, 0, 50)` | The refs git handed the hook: full ref names, ≤200 chars each, ≤50 of them (one push cannot honestly carry more). |
+| `host` | `string?(253)` |  |
 
 ## `/api/secrets/relay`
 
@@ -189,7 +190,7 @@ Source: [`api/crates/talaria-routes-integrations/src/secrets/secrets_share.rs`](
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apisecretsshare-body) | `…` | 200, 400, 403, 404 | audit |
+| POST | `session` | [body](#post-apisecretsshare-body) | `{secret}` | 200, 400, 403, 404 | audit |
 
 ### POST `/api/secrets/share` body
 

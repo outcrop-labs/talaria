@@ -4,18 +4,28 @@
 // so you can hack in it without any risk of breaking your primary dev stack.
 // Port of scripts/worktree.sh.
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
-import { compose, stackComposeFiles, waitFor } from '../compose'
+import { compose, waitForPostgres, worktreeComposeFiles } from '../compose'
 import { envValue } from '../envfile'
-import { PG_CONTAINER } from '../containers'
 import { NAME_RE, portTaken } from '../paths'
+import { containerProject, primaryContainer, refuseSideStackContainers, worktreeStackNames } from '../stack'
 
 /** The shared port slot: first c in 1..89 with app/api/pg/redis
  *  (53xx/54xx/56xx/65xx) all free, so any number of worktrees run at once
  *  without colliding. Injectable probe for tests.
+ *
+ *  The slot also owns the api's two loopback children — the toolkit MCP
+ *  (57xx) and the omp auth bridge (58xx) — and a hundred agent gateway ports
+ *  from 20000 + c·100. Each of those was one fixed number for every stack
+ *  (:5280, :5276, and 8770 upward from an empty database), and each one
+ *  collided the moment two stacks ran agents: the second api ADOPTED the
+ *  first stack's toolkit (which refused its agents' keys, 401), and the
+ *  second stack's first agent could not publish :8770. The gateway range is
+ *  probed at its first port only: the range is this slot's by construction.
  *
  *  THE API PORT IS IN HERE FOR A REASON. It was not, and the Rust api stayed on
  *  the fixed :5274 for every stack — while `talaria dev` ADOPTS an api already
@@ -24,18 +34,41 @@ import { NAME_RE, portTaken } from '../paths'
  *  pointed at the first worktree's database. Two app servers, one database, by
  *  default — the exact thing docs/WORKTREES.md and AGENTS.md forbid, and
  *  invisible, because the app answered normally with someone else's data. */
+export type WorktreeSlot = {
+  app: number
+  api: number
+  pg: number
+  redis: number
+  mcp: number
+  ompAuth: number
+  gatewayBase: number
+}
+
+export function slotPorts(c: number): WorktreeSlot {
+  return {
+    app: 5300 + c,
+    api: 5400 + c,
+    pg: 5600 + c,
+    redis: 6500 + c,
+    mcp: 5700 + c,
+    ompAuth: 5800 + c,
+    gatewayBase: 20000 + c * 100,
+  }
+}
+
 export async function worktreeSlot(
   taken: (port: number) => Promise<boolean> = (p) => portTaken(p),
-): Promise<{ app: number; api: number; pg: number; redis: number } | null> {
+): Promise<WorktreeSlot | null> {
   for (let c = 1; c <= 89; c++) {
-    if (
-      !(await taken(5300 + c)) &&
-      !(await taken(5400 + c)) &&
-      !(await taken(5600 + c)) &&
-      !(await taken(6500 + c))
-    ) {
-      return { app: 5300 + c, api: 5400 + c, pg: 5600 + c, redis: 6500 + c }
+    const slot = slotPorts(c)
+    let free = true
+    for (const port of Object.values(slot)) {
+      if (await taken(port)) {
+        free = false
+        break
+      }
     }
+    if (free) return slot
   }
   return null
 }
@@ -59,6 +92,9 @@ export const WORKTREE_ENV_KEYS = [
   'TALARIA_RUST_API_URL',
   'TALARIA_GATEWAY_SELF_URL',
   'TALARIA_FLEET_PROJECT',
+  'TALARIA_MCP_PORT',
+  'TALARIA_OMP_AUTH_PORT',
+  'TALARIA_GATEWAY_PORT_BASE',
 ] as const
 
 /** Main's ui/.env with every line this stack rewrites removed. */
@@ -100,12 +136,77 @@ export function seedFleetPlane(ctx: Ctx, templateRoot: string, dir: string): voi
 # provisioned here by the first render.
 LLM_BASE_URL=
 LLM_API_KEY=
-LLM_MODEL=
 `,
       { mode: 0o600 },
     )
   }
 }
+
+/** Whether the worktree's own checkout carries a different `talaria
+ *  worktree` from the one running. The command runs the CLI of the checkout
+ *  it is invoked from (the primary, usually on main), never the base ref's,
+ *  so a worktree cut from a newer ref gets the older setup and nothing says
+ *  so: on 2026-10-22 a stack cut from rc got no TALARIA_FLEET_PROJECT,
+ *  because the primary's CLI predated that line. A base ref that predates
+ *  this file has nothing to compare. */
+export function setupDiffers(running: string, wt: string): boolean {
+  const own = join(wt, 'cli/src/cmd/worktree.ts')
+  if (!existsSync(own) || !existsSync(running)) return false
+  return readFileSync(own, 'utf8') !== readFileSync(running, 'utf8')
+}
+
+/** The `ui/node_modules` a new worktree links: the PRIMARY checkout's, by
+ *  its physical path. It used to be the invoking checkout's own spelling,
+ *  `<root>/ui/node_modules` — and when that checkout was itself a worktree,
+ *  its node_modules was a link to the primary's, so the new link went
+ *  through it and dangled the moment that worktree was removed, taking the
+ *  new worktree's ui toolchain with it (follow-up R21).
+ *  The primary is the one checkout that outlives worktrees, and git names it:
+ *  every linked worktree shares its common dir, `<primary>/.git`. When git
+ *  cannot say (no git, a bare repository) or the primary has no install, the
+ *  invoking checkout's resolved through every link stands in. null: there is
+ *  nothing to link, and the caller says so rather than leave a dangling link
+ *  the gate would read as an install. */
+export async function sharedUiNodeModules(ctx: Ctx, root: string): Promise<string | null> {
+  try {
+    const out = (await ctx.exec('git', ['rev-parse', '--git-common-dir'], { cwd: root })).stdout.trim()
+    // Relative in the primary (`.git`), absolute in a linked worktree.
+    const common = out ? resolve(root, out) : ''
+    if (common && basename(common) === '.git') {
+      const primary = join(dirname(common), 'ui/node_modules')
+      if (existsSync(primary)) return realpathSync(primary)
+    }
+  } catch {
+    // no answer from git: fall through to the invoking checkout's own
+  }
+  const own = join(root, 'ui/node_modules')
+  return existsSync(own) ? realpathSync(own) : null
+}
+
+/** The packages a worktree installs from its own lockfiles (the install step
+ *  says why these and not ui/). */
+export const WORKTREE_INSTALLED_PACKAGES = ['cli', 'mcp'] as const
+
+/** Every table a database holds outside the system catalogs. Read on both
+ *  ends of the seed, so the command reports what the copy really carried. */
+export const COUNT_TABLES =
+  "select count(*) from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema')"
+
+/** How many tables `pgc`'s talaria database holds, or null when it cannot
+ *  say (the query failed, or answered something that is not a count). */
+export async function tableCount(ctx: Ctx, pgc: string): Promise<number | null> {
+  try {
+    const out = (await ctx.exec('docker', ['exec', pgc, 'psql', '-U', 'talaria', '-d', 'talaria', '-tAc', COUNT_TABLES])).stdout.trim()
+    return /^\d+$/.test(out) ? Number(out) : null
+  } catch {
+    return null
+  }
+}
+
+/** Clears the gateway ports a seed copied from main (see the seed step). */
+export const CLEAR_SEEDED_GATEWAY_PORTS =
+  "do $$ begin if to_regclass('public.agent_defs') is not null then " +
+  'update agent_defs set gateway_port = null where gateway_port is not null; end if; end $$;'
 
 export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promise<number> {
   const root = ctx.root
@@ -113,9 +214,10 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   const slot = await worktreeSlot()
   if (!slot) ctx.log.die('no free port slot — tear down some worktrees (docker compose -p talaria-wt-<n> down -v)')
   const wt = join(root, '..', `talaria-${name}`)
-  const project = `talaria-wt-${name}`
-  const pgc = `talaria-pg-${name}`
-  const redisc = `talaria-redis-${name}`
+  // One definition of the stack's docker names, shared with every command
+  // that acts on this stack later (stack.ts: reset, dev).
+  const { infra: project, pg: pgc, redis: redisc, fleet: fleetProject } = worktreeStackNames(name)
+  const teardown = `docker compose -p ${project} down -v && git worktree remove --force ${wt} && git branch -D wt/${name}`
 
   try {
     await ctx.exec('docker', ['--version'])
@@ -125,12 +227,20 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   if (!existsSync(join(root, 'ui/.env'))) {
     ctx.log.die('run `bun talaria setup` in the main checkout first (need ui/.env)')
   }
-  const mainPgc = ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER
-  try {
-    await ctx.exec('docker', ['inspect', mainPgc])
-  } catch {
-    ctx.log.die(`main Postgres (${mainPgc}) isn't running — start the main stack first`)
-  }
+  // The seed reads whatever TALARIA_PG_CONTAINER names, and `talaria dev` in
+  // a worktree sets exactly that variable to the worktree's own Postgres — in
+  // its own process, which every child inherits: the app, its harness runs,
+  // and any shell they open. A `talaria worktree` run from there copied that
+  // worktree's database and called it "a point-in-time copy of main". The
+  // variable stays an operator's override for main's container; one that
+  // names another stack's, by its name's shape or by the compose project
+  // docker puts it in, is refused before anything exists (R22). The same
+  // predicate `box new`, `box seed` and the primary's `talaria dev` use
+  // (stack.ts), so the commands that read main's containers cannot disagree
+  // about which one is main's.
+  await refuseSideStackContainers(ctx, ['TALARIA_PG_CONTAINER'], `worktree ${name}`)
+  const mainPgc = primaryContainer(ctx, 'TALARIA_PG_CONTAINER')
+  if ((await containerProject(ctx, mainPgc)) === null) ctx.log.die(`main Postgres (${mainPgc}) isn't running — start the main stack first`)
   // `inspect` only proves the CONTAINER exists. The seed below runs pg_dump
   // against the `talaria` DATABASE, and a just-started postgres has not created
   // it yet (the image's entrypoint does that during init), so a worktree
@@ -138,23 +248,11 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   //   psql: FATAL: database "talaria" does not exist
   // half way through — after the git worktree and both containers existed, and
   // before ui/.env was written, which is the one step that makes the checkout
-  // usable. `pg_isready -d` is the honest precondition: it answers for the
-  // database this is about to read, not just the process.
-  if (
-    !(await waitFor(
-      ctx,
-      'main postgres',
-      async () => {
-        try {
-          await ctx.exec('docker', ['exec', mainPgc, 'pg_isready', '-U', 'talaria', '-d', 'talaria'])
-          return true
-        } catch {
-          return false
-        }
-      },
-      30,
-    ))
-  ) {
+  // usable. The precondition is a real query against that database over TCP
+  // (waitForPostgres): `pg_isready -d`, the probe this used to be, says
+  // "accepting connections" for a database that does not exist, and over the
+  // socket it also passes against the entrypoint's temporary init server.
+  if (!(await waitForPostgres(ctx, mainPgc, 30))) {
     ctx.log.die(
       `main Postgres (${mainPgc}) is up but its 'talaria' database never became ready — is the main stack mid-boot, or did setup not finish?`,
     )
@@ -183,36 +281,98 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   // on the name conflict whenever main is running (the bash script's latent
   // bug; its own header says the worktree owns "its own Postgres + Redis").
   // The worktree app reaches main's sidecars via the TALARIA_*_URL lines that
-  // ride in ui/.env below.
-  if ((await compose(ctx, { files: stackComposeFiles(root, 'docker/dev-compose.yml'), project }, ['up', '-d', 'postgres', 'redis'])) !== 0) {
+  // ride in ui/.env below. The third file puts both on the default bridge, so
+  // this project creates no network: each one took a subnet from the
+  // daemon's ~30 address pools, and parallel stacks ran them dry
+  // (docker/worktree.compose.yml).
+  if ((await compose(ctx, { files: worktreeComposeFiles(root), project }, ['up', '-d', 'postgres', 'redis'])) !== 0) {
     ctx.log.die('worktree infra failed to start')
   }
-  await waitFor(
-    ctx,
-    'worktree postgres',
-    async () => {
-      try {
-        await ctx.exec('docker', ['exec', pgc, 'pg_isready', '-U', 'talaria', '-d', 'talaria'])
-        return true
-      } catch {
-        return false
-      }
-    },
-    40,
-  )
+  // The volume is always fresh, so this postgres ALWAYS runs the entrypoint's
+  // temporary init server first — socket only, before the `talaria` database
+  // exists, and shut down moments later. The socket probe this used to be
+  // passed against it, and its answer was not even read: the seed then died
+  // with "the database system is shutting down" or "database talaria does not
+  // exist". waitForPostgres cannot pass until the real server serves the real
+  // database, and a wait that runs out stops here, before the seed.
+  if (!(await waitForPostgres(ctx, pgc, 60))) {
+    ctx.log.die(
+      `worktree postgres (${pgc}) never served its 'talaria' database — see \`docker logs ${pgc}\`. ` +
+        `Tear the half-made stack down with: ${teardown}`,
+    )
+  }
   ctx.log.ok('infra up')
 
   ctx.log.say('Seeding the DB from your main environment')
+  // Main again, right before the dump reads it: the first wait ran before the
+  // git checkout and this stack's `up`, which take a minute on a busy host,
+  // and a main postgres restarted in between failed the dump with "the
+  // database system is starting up" (a `talaria dev` recreating it, seen
+  // while proving this change). Answered at once when main is up.
+  if (!(await waitForPostgres(ctx, mainPgc, 30))) {
+    ctx.log.die(
+      `main Postgres (${mainPgc}) stopped answering before the seed. ` +
+        `Tear the half-made stack down with: ${teardown}`,
+    )
+  }
+  // What the seed should carry, counted before the dump reads it. Main's dev
+  // database can be empty — on this host on 2026-10-27 it held no tables at
+  // all, and every worktree cut from it said "seeded (a point-in-time copy of
+  // main)" while it copied nothing, which read as a broken seed. So the
+  // count decides what this step says, and the restore is checked against it.
+  const mainTables = await tableCount(ctx, mainPgc)
   try {
+    // ON_ERROR_STOP: without it psql reports a statement that failed on
+    // stderr and still exits 0, so a restore that broke half way was
+    // "seeded" too. Now the first failed statement fails the pipe, and the
+    // command dies here.
     await ctx.pipe(
       ['docker', ['exec', mainPgc, 'pg_dump', '-U', 'talaria', '-d', 'talaria', '--clean', '--if-exists']],
-      ['docker', ['exec', '-i', pgc, 'psql', '-U', 'talaria', '-d', 'talaria', '-q']],
+      ['docker', ['exec', '-i', pgc, 'psql', '-U', 'talaria', '-d', 'talaria', '-q', '-v', 'ON_ERROR_STOP=1']],
       { quietDst: true },
     )
   } catch (e) {
-    ctx.log.die(`seed dump/restore failed: ${e instanceof Error ? e.message : String(e)}`)
+    ctx.log.die(
+      `seed dump/restore failed: ${e instanceof Error ? e.message : String(e)}. ` +
+        `Tear the half-made stack down with: ${teardown}`,
+    )
   }
-  ctx.log.ok('seeded (a point-in-time copy of main)')
+  if (mainTables === 0) {
+    ctx.log.warn(
+      `main's database (${mainPgc}) has no tables, so there was nothing to copy: this worktree starts ` +
+        'empty, and the app migrates it on its first `talaria dev`',
+    )
+  } else if (mainTables === null) {
+    ctx.log.ok("seeded (a point-in-time copy of main; main's table count could not be read)")
+  } else {
+    const ownTables = await tableCount(ctx, pgc)
+    if (ownTables !== null && ownTables < mainTables) {
+      ctx.log.die(
+        `seed incomplete: main has ${mainTables} tables, this worktree's database ${ownTables}. ` +
+          `Tear the half-made stack down with: ${teardown}`,
+      )
+    }
+    // An unread copy is not a checked one: say main's count, and that this
+    // side's could not be read, rather than quote main's as the copy's.
+    ctx.log.ok(
+      ownTables === null
+        ? `seeded (a point-in-time copy of main: ${mainTables} tables; this worktree's count could not be read)`
+        : `seeded (a point-in-time copy of main: ${mainTables} tables)`,
+    )
+  }
+  // The copied agent rows carry MAIN's gateway ports. This stack renders its
+  // own fleet from its own base (TALARIA_GATEWAY_PORT_BASE below), so a copied
+  // port would publish onto one of main's live agents. Clear them: the first
+  // render here assigns this stack's. Guarded so a main database that has no
+  // agent_defs yet seeds cleanly.
+  try {
+    await ctx.exec('docker', ['exec', pgc, 'psql', '-U', 'talaria', '-d', 'talaria', '-qc', CLEAR_SEEDED_GATEWAY_PORTS])
+  } catch (e) {
+    ctx.log.warn(
+      `could not clear the seeded gateway ports (${e instanceof Error ? e.message : String(e)}) — ` +
+        "a copied agent may claim one of main's ports when this stack renders it",
+    )
+  }
 
   ctx.log.say('Worktree ui/.env (own DB, shared encryption root)')
   // Copy main's env, then repoint state + app port. TALARIA_SECRET_KEY is KEPT
@@ -256,7 +416,17 @@ TALARIA_RUST_API_URL=http://127.0.0.1:${slot.api}
 # main fleet nor the cleanup sweep reads them as something else's. dev.ts
 # lifts both into the api (the renderer reads them; nothing else does).
 TALARIA_GATEWAY_SELF_URL=http://host.docker.internal:${slot.app}/api/llm/v1
-TALARIA_FLEET_PROJECT=${project}-fleet
+TALARIA_FLEET_PROJECT=${fleetProject}
+# The api's loopback children, on this stack's own ports. Both probe their port
+# first and ADOPT whatever answers there, so on the shared :5280 a second
+# stack's agents had their tool calls served by the first stack's toolkit,
+# which refused their keys (401); the omp auth bridge on :5276 the same way.
+TALARIA_MCP_PORT=${slot.mcp}
+TALARIA_OMP_AUTH_PORT=${slot.ompAuth}
+# Where this stack's agents' loopback gateway ports start. Every stack keeps
+# its ports in its own database, so each one's first agent asked for :8770 and
+# the second stack's \`up\` failed with "port is already allocated".
+TALARIA_GATEWAY_PORT_BASE=${slot.gatewayBase}
 `,
   )
   ctx.log.ok('ui/.env written')
@@ -265,26 +435,67 @@ TALARIA_FLEET_PROJECT=${project}-fleet
   // checkout: the renderer writes into it, and a hire against a missing
   // fleet/.env fails honestly rather than inventing one.
   ctx.log.say('Fleet config plane (fleet/)')
-  seedFleetPlane(ctx, root, wt)
+  // The chassis comes from the worktree's own checkout, so it matches the
+  // renderer that checkout runs. Taking it from the checkout this CLI runs in
+  // gave a stack cut from rc main's chassis: an older Hermes pin and env
+  // lines rc's renderer had dropped. A base ref without the template falls
+  // back to this checkout's.
+  seedFleetPlane(ctx, existsSync(join(wt, 'scripts/chassis.template.yml')) ? wt : root, wt)
   ctx.log.ok('fleet/ seeded')
 
   ctx.log.say('Sharing node_modules')
   if (!existsSync(join(wt, 'ui/node_modules'))) {
-    symlinkSync(join(root, 'ui/node_modules'), join(wt, 'ui/node_modules'))
+    const shared = await sharedUiNodeModules(ctx, root)
+    if (shared) {
+      symlinkSync(shared, join(wt, 'ui/node_modules'))
+      ctx.log.ok(`ui linked → ${shared}`)
+    } else {
+      ctx.log.warn(
+        `no ui/node_modules in the primary checkout or in ${root} to link — ` +
+          '`bun talaria dev` installs one into this worktree on its first run',
+      )
+    }
+  } else {
+    ctx.log.ok('ui linked')
   }
-  ctx.log.ok('linked')
+  // cli/ and mcp/ are INSTALLED, from the branch's own lockfiles, rather than
+  // linked: a fresh worktree had neither, and `bun run gate` typechecks both
+  // when the diff touches them — so the first gate in every new worktree
+  // failed on a missing `tsc` until someone ran `bun install` by hand. Both
+  // are small and bun hardlinks from its cache; a link would tie the branch
+  // to main's lockfile. ui/ stays linked: it is the large one, and the speed
+  // is the point. A failed install is not fatal — the gate installs a
+  // missing node_modules itself.
+  for (const pkg of WORKTREE_INSTALLED_PACKAGES) {
+    const dir = join(wt, pkg)
+    if (!existsSync(join(dir, 'package.json')) || existsSync(join(dir, 'node_modules'))) continue
+    if ((await ctx.run('bun', ['install', '--frozen-lockfile'], { cwd: dir })) === 0) {
+      ctx.log.ok(`${pkg} installed`)
+    } else {
+      ctx.log.warn(`bun install in ${pkg}/ failed — \`bun run gate\` retries it; or run \`bun install --frozen-lockfile\` in ${dir}`)
+    }
+  }
 
   ctx.log.raw(`
 Worktree "${name}" ready — fully isolated from main.
 
   Run it:   cd ${wt} && bun talaria dev
   App:      http://localhost:${slot.app}   (api :${slot.api} · Postgres :${slot.pg} · Redis :${slot.redis})
+  Agents:   gateway ports from :${slot.gatewayBase} · toolkit :${slot.mcp} · omp auth :${slot.ompAuth}
 
   Tear down when done:
     docker compose -p ${project} down -v
     git worktree remove --force ${wt} && git branch -D wt/${name}
   Or later, from the primary checkout:  bun talaria cleanup
 `)
+  const running = fileURLToPath(import.meta.url)
+  if (setupDiffers(running, wt)) {
+    ctx.log.warn(
+      `this stack was set up by ${running}, which differs from ${base}'s own cli/src/cmd/worktree.ts. ` +
+        `ui/.env, fleet/ and the ports follow the running checkout's rules, not ${base}'s. ` +
+        `Bring that checkout up to ${base} and recut, or check ui/.env against ${join(wt, 'docs/WORKTREES.md')}.`,
+    )
+  }
   return 0
 }
 

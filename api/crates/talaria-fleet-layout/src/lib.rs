@@ -78,6 +78,54 @@ pub fn agent_host() -> String {
     std::env::var("TALARIA_AGENT_HOST").unwrap_or_else(|_| "127.0.0.1".into())
 }
 
+/// TALARIA_AGENT_DIAL=container (docker/compose.yml deployments): the app runs
+/// ON the fleet network and dials compose service names, so loopback port
+/// publishing is skipped entirely — every install sharing one docker host
+/// allocates identical ports from the same seed data and would collide.
+pub fn dial_is_container() -> bool {
+    matches!(std::env::var("TALARIA_AGENT_DIAL"), Ok(v) if v == "container")
+}
+
+/// The operator's search endpoint AS AN AGENT CONTAINER CAN REACH IT, or None.
+/// The app's spelling is the app's view: on a host-run dev app a loopback
+/// address means the laptop, which an agent reaches as host.docker.internal
+/// (the chassis declares it); in a containerized stack a loopback address is
+/// the app container itself and reaches nothing from an agent, so it is
+/// withheld rather than rendered wrong. Any other host passes through as-is.
+///
+/// One rule for three readers: the fleet render hands the result to every
+/// agent as SEARXNG_URL, Admin → Search reads it back so the panel says what
+/// the render does, and the panel's "from agents" probe dials exactly it from
+/// inside a running agent. It rewrites; it never probes — a URL it passes may
+/// still be one the agents cannot connect to, which is what the probe is for.
+pub fn agent_search_url(app_url: &str, container_dial: bool) -> Option<String> {
+    let url = app_url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return Some(url.to_string());
+    };
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h, Some(p)),
+        _ => (authority, None),
+    };
+    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "0.0.0.0") {
+        return Some(url.to_string());
+    }
+    if container_dial {
+        return None;
+    }
+    let port = port.map(|p| format!(":{p}")).unwrap_or_default();
+    let path = if path.is_empty() {
+        String::new()
+    } else {
+        format!("/{path}")
+    };
+    Some(format!("{scheme}://host.docker.internal{port}{path}"))
+}
+
 /// Docker-level names inherited from the pre-Talaria stack: imported agents'
 /// state volumes (ai_hermes-<dept>) and the shared infra network (ai_default).
 /// These are volume/network NAMES, not a code dependency on that repo.
@@ -86,6 +134,26 @@ pub const LEGACY_DOCKER_PROJECT: &str = "ai";
 /// Where per-agent loopback gateway ports start (ensure_gateway_ports assigns
 /// upward from here, persisted on the def row).
 pub const GATEWAY_PORT_BASE: i64 = 8770;
+
+/// The base THIS process allocates gateway ports from:
+/// `TALARIA_GATEWAY_PORT_BASE` when it names a usable port, else
+/// [`GATEWAY_PORT_BASE`]. Every stack keeps its ports in its own database, so
+/// two stacks on one docker host both start at the same base, and the second
+/// one's first agent cannot publish the port the first one's holds ("port is
+/// already allocated"). `talaria worktree` writes a per-stack base for exactly
+/// that.
+pub fn gateway_port_base() -> i64 {
+    parse_gateway_port_base(std::env::var("TALARIA_GATEWAY_PORT_BASE").ok().as_deref())
+}
+
+/// The pure half of [`gateway_port_base`]: an unset, unparseable or
+/// unusable value falls back to the default rather than failing a render.
+/// Usable leaves room above for a stack's agents (100) below 65535.
+pub fn parse_gateway_port_base(raw: Option<&str>) -> i64 {
+    raw.and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|p| (1024..=65_435).contains(p))
+        .unwrap_or(GATEWAY_PORT_BASE)
+}
 
 /// The EXTERNAL docker network the whole fleet joins (compose never creates
 /// external networks — the docker module ensures it exists before any `up`).
@@ -111,6 +179,45 @@ pub async fn fleet_network_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_gateway_port_base_is_the_env_when_usable_and_the_default_otherwise() {
+        assert_eq!(parse_gateway_port_base(None), GATEWAY_PORT_BASE);
+        assert_eq!(parse_gateway_port_base(Some("20300")), 20300);
+        assert_eq!(parse_gateway_port_base(Some(" 20300\n")), 20300);
+        for bad in ["", "abc", "80", "0", "-1", "65500", "99999"] {
+            assert_eq!(
+                parse_gateway_port_base(Some(bad)),
+                GATEWAY_PORT_BASE,
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_operators_search_url_reaches_an_agent_only_where_it_can() {
+        // Nothing configured: nothing rendered — Hermes resolves its own floor.
+        assert_eq!(agent_search_url("", false), None);
+        assert_eq!(agent_search_url("   ", true), None);
+        // A real host passes through untouched, container or not.
+        assert_eq!(
+            agent_search_url("https://search.corp.example/", true).as_deref(),
+            Some("https://search.corp.example/")
+        );
+        // Loopback on a host-run app is the laptop, which an agent spells
+        // host.docker.internal; the port and any path survive.
+        assert_eq!(
+            agent_search_url("http://127.0.0.1:8888", false).as_deref(),
+            Some("http://host.docker.internal:8888")
+        );
+        assert_eq!(
+            agent_search_url("http://localhost:8080/searx", false).as_deref(),
+            Some("http://host.docker.internal:8080/searx")
+        );
+        // Loopback in a containerized stack is the app container itself —
+        // withheld, never rendered wrong.
+        assert_eq!(agent_search_url("http://127.0.0.1:8888", true), None);
+    }
 
     #[test]
     fn agent_key_var_uppercases_the_slug() {

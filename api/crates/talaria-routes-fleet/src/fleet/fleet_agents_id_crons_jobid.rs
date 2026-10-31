@@ -1,6 +1,7 @@
 // /api/fleet/agents/{id}/crons/{jobId}. One cron job: DELETE → remove. POST
 // { action } → pause | resume | run ("run" queues it for the next scheduler
-// tick, ≤60s). PUT { name? schedule? prompt? } → edit in place. Admin or
+// tick, ≤60s; a paused job is refused, because Hermes's run would resume it
+// for good). PUT { name? schedule? prompt? } → edit in place. Admin or
 // owner.
 
 use axum::Json;
@@ -13,7 +14,7 @@ use talaria_agent_crons::{
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{enum_member, optional_max_string_member, parse};
-use talaria_error::{house_error, object_or_400};
+use talaria_error::{house_error, object_or_400, store_answer};
 use talaria_session::{actor_of, require_agent_manager};
 use talaria_state::AppState;
 pub async fn delete(
@@ -22,6 +23,9 @@ pub async fn delete(
     headers: HeaderMap,
 ) -> Result<Response, Response> {
     let user = require_agent_manager(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     Ok(match remove_cron_job(&state.pg, &id, &job_id).await {
         Ok(()) => {
             audit(
@@ -33,7 +37,7 @@ pub async fn delete(
             );
             Json(json!({ "ok": true })).into_response()
         }
-        Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+        Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
     })
 }
 
@@ -72,7 +76,9 @@ pub async fn put(
             &talaria_body::too_small_msg(1),
         ));
     }
-    let prompt = match optional_max_string_member(obj, "prompt", 20_000) {
+    // The agent's own cap: Hermes's /api/jobs refuses a longer prompt
+    // (talaria_agent_crons::MAX_PROMPT_CHARS).
+    let prompt = match optional_max_string_member(obj, "prompt", 5_000) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
@@ -83,6 +89,9 @@ pub async fn put(
             StatusCode::BAD_REQUEST,
             &talaria_body::too_small_msg(1),
         ));
+    }
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
     }
     Ok(
         match edit_cron_job(
@@ -105,7 +114,7 @@ pub async fn put(
                 );
                 Json(json!({ "ok": true })).into_response()
             }
-            Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+            Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
         },
     )
 }
@@ -123,6 +132,9 @@ pub async fn post(
         Ok(a) => a,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let result = match action.as_str() {
         "pause" => pause_cron_job(&state.pg, &id, &job_id).await,
         "resume" => resume_cron_job(&state.pg, &id, &job_id).await,
@@ -139,7 +151,7 @@ pub async fn post(
             );
             Json(json!({ "ok": true })).into_response()
         }
-        Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+        Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
     })
 }
 

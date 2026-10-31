@@ -20,6 +20,7 @@ talaria-fleet-agents = { workspace = true }
 talaria-fleet-layout = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-notify = { workspace = true }
+talaria-params = { workspace = true }
 talaria-plan-doc = { workspace = true }
 talaria-retrieval-embed = { workspace = true }
 talaria-retrieval-index = { workspace = true }

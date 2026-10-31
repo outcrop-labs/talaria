@@ -49,7 +49,12 @@
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { loadAuthority, unclassified as unclassifiedHermes } from './hermes-skill-authority.mjs'
+import {
+  loadAuthority,
+  unclassified as unclassifiedHermes,
+  declaredSignpostNames,
+  replacedPathsNotCatalogued,
+} from './hermes-skill-authority.mjs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -325,8 +330,9 @@ const RULES = [
  *  site it policed was in the deleted engines, and the persona-conversation
  *  path it carried as its one permanent exception (channel-replies.ts) serves
  *  from the Rust api now. Model access in the live TS tier goes through the
- *  transports (gateway.ts, llm-gateway.ts) and the one runner that may call
- *  them (harness/run.ts). */
+ *  one runner (harness/run.ts) and its transports (harness/transport.ts), which
+ *  call the Rust relay on the app's gateway key — the TS tier holds no provider
+ *  key and reaches no model any other way. */
 
 const CENSUS = [
   {
@@ -373,7 +379,8 @@ const CENSUS = [
     // The ONE HTTP door for browser code: every request the app makes to its
     // own API goes through a verb in ui/src/lib/fetch-json.ts. Server files
     // fetch upstream services all the time (OAuth exchanges, MCP relays,
-    // safeFetch) and the SDK is its own published door — both excluded below.
+    // safeFetch), excluded below. The SDK is NOT a second door: since the
+    // client-parity pass its `api()` and `appApi()` are built on these verbs.
     pattern: /\bfetch\s*\(/g,
     what: 'a hand-rolled client fetch, bypassing the one HTTP door',
     fix: [
@@ -389,10 +396,11 @@ const CENSUS = [
       'frame rules than the chat parser. One door, one decision: non-2xx rejects with the server\'s',
       'own sentence, and every caller catches or deliberately swallows it in writing.',
       '',
-      'The two counted files below are the doors themselves, at their exact call counts — if the',
-      'door is renamed or emptied, the stale-census half of this check fails instead of the rule',
-      'going quietly inert. A fetch anywhere else in client code is a new stanza. If you believe',
-      'you need one, say so in the PR.',
+      'The counted file below is the door itself, at its exact call count — if the door is renamed',
+      'or emptied, the stale-census half of this check fails instead of the rule going quietly',
+      'inert. A fetch anywhere else in client code is a new stanza — the published SDK included:',
+      'it used to carry its own weaker copy (no status, no deadline, no streams) on the belief that',
+      "it could not import the app's door, and it can. If you believe you need one, say so in the PR.",
     ],
     exempt: (path) =>
       path.startsWith('ui/src/server/') ||
@@ -403,7 +411,6 @@ const CENSUS = [
       !path.startsWith('ui/src/'), // the mcp/ and cli/ trees are not the browser app
     sites: {
       'ui/src/lib/fetch-json.ts': 8, // the door: getJson, getJsonOr404, getJsonOr, getText, getBlob, sendJson, postStream, getStream
-      'ui/src/sdk/index.ts': 1, // the published SDK's own door — it cannot import the app's
     },
   },
   {
@@ -431,14 +438,9 @@ const CENSUS = [
       'divergent error contracts. PR 2 collapsed all of it into fetch-json; the audit line was',
       '"Invariant rule: the stanza lives only in fetch-json.ts", and this census is that line,',
       'executable.',
-      '',
-      'The SDK entry below is not a second door in the app: it is the same exception',
-      '`raw-client-fetch` above already carries — the published SDK cannot import the app\'s',
-      'door, so it is its own, and its count is exact.',
     ],
     sites: {
       'ui/src/lib/fetch-json.ts': 1, // the door: the one SAME_ORIGIN RequestInit every verb spreads
-      'ui/src/sdk/index.ts': 1, // the published SDK's own door — it cannot import the app's
     },
   },
 ]
@@ -1135,6 +1137,7 @@ for (const rule of CENSUS) {
     ['api/crates/talaria-harness-defs/src/registry.rs', 'fn every_backend_is_exercised_by_a_test_or_a_harness_surface'],
     ['api/crates/talaria-hermes-skills/src/lib.rs', 'fn every_catalogued_hermes_pack_is_classified'],
     ['api/crates/talaria-hermes-skills/src/lib.rs', 'fn every_replaced_pack_has_a_signpost_skill_occupying_the_name'],
+    ['api/crates/talaria-hermes-skills/src/lib.rs', 'fn every_replaced_path_names_a_catalogued_skill_not_a_category'],
   ]
   const missing = ANCHORS.filter(([path, anchor]) => !readFileSync(join(ROOT, path), 'utf8').includes(anchor))
   if (missing.length) {
@@ -1406,12 +1409,14 @@ for (const rule of CENSUS) {
   }
 }
 
-// HERMES BUNDLED SKILLS MUST STAY CLASSIFIED, AND EVERY REPLACED PACK MUST
-// HAVE A TALARIA SIGNPOST occupying the name agents reach for. Hermes adds
-// packs on image updates; a six-line prune array in docker.rs silently let
-// new conflicts in. The catalog is scripts/hermes-skill-authority.json —
-// classify a new path (replaced / keepExact / keepPrefix) before it teaches
-// the fleet a parallel vault. Signposts live in scripts/skills/<signpost>/.
+// HERMES BUNDLED SKILLS MUST STAY CLASSIFIED, AND EVERY SKILL NAME IN A
+// REPLACED PACK MUST BE OCCUPIED BY A TALARIA SIGNPOST. Hermes adds packs on
+// image updates, and its skills_sync defers a bundled skill only when a skill
+// in skills.external_dirs (/opt/skills) carries the same name — so a name
+// with no signpost is a skill Hermes writes onto every agent. The catalog is
+// scripts/hermes-skill-authority.json — classify a new path (replaced /
+// keepExact / keepPrefix) before it teaches the fleet a parallel vault.
+// Signposts live in scripts/skills/<signpost>/.
 {
   const catalogPath = join(ROOT, 'scripts/hermes-skill-authority.json')
   if (!existsSync(catalogPath)) {
@@ -1421,7 +1426,7 @@ for (const rule of CENSUS) {
       fix: [
         'The Hermes bundled-skill authority catalog is the tripwire for packs',
         'the image ships that conflict with Talaria. Restore the file, or the',
-        'fleet will prune an empty list and teach Notion again.',
+        'fleet will stop checking its signposts and teach Notion again.',
       ],
       found: [],
     })
@@ -1440,7 +1445,7 @@ for (const rule of CENSUS) {
           'teach the fleet a parallel workspace by omission.',
           ...unknown.map((u) => `  ${u}`),
         ],
-        found: unknown.map((u) => ({ file: 'scripts/hermes-skill-authority.json', line: 1, excerpt: u })),
+        found: unknown.map((u) => ({ path: 'scripts/hermes-skill-authority.json', line: 1, text: u })),
       })
     }
     const missing = []
@@ -1450,15 +1455,43 @@ for (const rule of CENSUS) {
         missing.push(`${r.path} → scripts/skills/${r.signpost}/SKILL.md (${r.why})`)
       }
     }
+    // A replaced path names one skill directory, never a category. Under a
+    // category prefix, a sibling Hermes adds next week classifies as replaced
+    // while no signpost holds its name, and nothing deletes it any more.
+    const categories = replacedPathsNotCatalogued(cat)
+    if (categories.length) {
+      failures.push({
+        id: 'hermes-skill-replaced-category',
+        what: 'a replaced Hermes path is not a catalogued skill directory',
+        fix: [
+          'Name the skill (email/himalaya), not its category (email). A category',
+          'prefix classifies every sibling Hermes adds as replaced while no',
+          'signpost holds its name, so Hermes syncs it onto every agent.',
+          ...categories.map((p) => `  ${p}`),
+        ],
+        found: categories.map((p) => ({ path: 'scripts/hermes-skill-authority.json', line: 1, text: p })),
+      })
+    }
+    // Every name, not any one: the frontmatter `name:` of each signpost is
+    // what Hermes matches, so a body that merely mentions a name is no cover.
+    const declared = declaredSignpostNames(ROOT)
+    for (const r of replaced) {
+      for (const n of r.names || []) {
+        if (!declared.has(n)) {
+          missing.push(`${r.path} ships "${n}" → no scripts/skills/*/SKILL.md declares name: ${n}`)
+        }
+      }
+    }
     if (missing.length) {
       failures.push({
         id: 'hermes-skill-signpost-missing',
         what: 'replaced Hermes packs without a Talaria signpost skill',
         fix: [
-          'Pruning a pack without occupying the name leaves agents searching',
-          'for "notion" / "github" / "email" and improvising. Add a short',
-          'SKILL.md at scripts/skills/<signpost>/ whose frontmatter name: is',
-          'the Hermes name, pointing at the talaria-toolkit playbook.',
+          'Hermes defers a bundled skill only to a same-named skill in',
+          '/opt/skills, so an unoccupied name is a skill it syncs onto every',
+          'agent. Add a short SKILL.md at scripts/skills/<signpost>/ whose',
+          'frontmatter name: is the Hermes name, pointing at the',
+          'talaria-toolkit playbook.',
           ...missing.map((m) => `  ${m}`),
         ],
         found: [],
@@ -2562,29 +2595,25 @@ const UNSET_SEAM_CENSUS = [
   }
 }
 
-// THE MANAGE-SECTION VIEW GRANTS, PINNED ACROSS THEIR THREE HOMES.
+// THE MANAGE-SECTION VIEW GRANTS, PINNED ACROSS THEIR TWO HOMES.
 //
 // GH #308 shipped exactly this way: /studio was added to nav.ts's
-// MANAGE_VIEWS (what Admin → People offers) but not to the TS server's
-// MANAGE_VIEW_ROUTES (the SPA's gate) nor the Rust const of the same name
-// (the api's authority) — a grant an admin could make that stopped working
-// at the door. No import reaches across any two of the three, so this is a
-// pin: read each list's own spelling and fail when one moves without the
-// others.
+// MANAGE_VIEWS (what Admin → People offers) but not to the Rust const of the
+// same name (the api's authority) — a grant an admin could make that stopped
+// working at the door. No import reaches across the two, so this is a pin:
+// read each list's own spelling and fail when one moves without the other.
+// (A third home, the TS server's MANAGE_VIEW_ROUTES mirror, is gone: the TS
+// host asks the api for a caller's grants instead of resolving its own copy.)
 {
   const navSrc = readFileSync(join(ROOT, 'ui/src/lib/nav.ts'), 'utf8')
   const navBlock = /export const MANAGE_VIEWS[^\n]*= \[([\s\S]*?)\n\]/.exec(navSrc)?.[1]
   const navRoutes = [...(navBlock ?? '').matchAll(/to: '([^']+)'/g)].map((m) => m[1])
-  const usersSrc = readFileSync(join(ROOT, 'ui/src/server/users.ts'), 'utf8')
-  const tsBlock = /const MANAGE_VIEW_ROUTES = \[([^\]]*)\]/.exec(usersSrc)?.[1]
-  const tsRoutes = [...(tsBlock ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
   const rustSrc = readFileSync(join(ROOT, 'api/crates/talaria-users/src/lib.rs'), 'utf8')
   const rustBlock = /pub const MANAGE_VIEW_ROUTES: \[&str; \d+\] = \[([\s\S]*?)\];/.exec(rustSrc)?.[1]
   const rustRoutes = [...(rustBlock ?? '').matchAll(/"([^"]+)"/g)].map((m) => m[1])
 
   const homes = [
     ["ui/src/lib/nav.ts MANAGE_VIEWS (the UI's offer list)", navRoutes],
-    ["ui/src/server/users.ts MANAGE_VIEW_ROUTES (the TS gate's mirror)", tsRoutes],
     ["api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES (the api's authority)", rustRoutes],
   ]
   const canonical = navRoutes
@@ -2604,13 +2633,12 @@ const UNSET_SEAM_CENSUS = [
   if (problems.length) {
     failures.push({
       id: 'manage-view-route-drift',
-      what: 'the manage-section view routes disagree between the UI list, the TS gate, and the Rust api',
+      what: 'the manage-section view routes disagree between the UI list and the Rust api',
       fix: [
-        'Add or remove the route in ALL THREE places — ui/src/lib/nav.ts MANAGE_VIEWS is the',
-        "UI's offer list, ui/src/server/users.ts MANAGE_VIEW_ROUTES the TS gate's mirror, and",
-        "api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES the api's authority (bump its",
-        '[&str; N] to match). A view on one list but not the others is a grant that cannot be',
-        'offered, or one that stops working at the door.',
+        'Add or remove the route in BOTH places — ui/src/lib/nav.ts MANAGE_VIEWS is the',
+        "UI's offer list, and api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES the api's",
+        'authority (bump its [&str; N] to match). A view on one list but not the other is a',
+        'grant that cannot be offered, or one that stops working at the door.',
         ...problems,
       ],
       found: [],
@@ -2736,6 +2764,99 @@ const UNSET_SEAM_CENSUS = [
         'neighbours directly, and the indirection only bought a way to forget.',
       ],
       found: dead,
+    })
+  }
+}
+
+// ── The image builds the ui from a context .dockerignore trims ──────────────
+// The Dockerfile's build stage runs `bun run build` in ui/ over `COPY . .` —
+// the repo minus .dockerignore. A ui build input outside ui/ that the ignore
+// file leaves out compiles everywhere else (dev, the gate, every PR job: none
+// of them builds the image) and fails only in rc-deploy, after the merge.
+// That shipped once: #604's SDK kit read cli/src/cmd/app/skeleton.ts and
+// docs/sdk/talaria.schema.json, both ignored, and every rc deploy failed from
+// that merge until the ignore file named them.
+//
+// The inputs are what the ui build can reach: relative imports out of ui/ in
+// its non-test sources and in the scripts its `build` runs, plus the
+// `join(UI|ui, '..', '<path>')` reads those scripts make.
+{
+  /** .dockerignore's own matching: patterns are relative to the context
+   *  root, `*` stays within a segment, `**` crosses them, a pattern that
+   *  matches a directory takes everything under it, and the LAST matching
+   *  line wins, so a `!` line re-admits a file its directory's line left out. */
+  const ignoreRules = existsSync(join(ROOT, '.dockerignore'))
+    ? readFileSync(join(ROOT, '.dockerignore'), 'utf8')
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith('#'))
+        .map((l) => {
+          const keep = l.startsWith('!')
+          const pat = (keep ? l.slice(1) : l).replace(/^\/+/, '').replace(/\/+$/, '')
+          const re = pat
+            .split(/(\*\*\/|\*\*|\*|\?)/)
+            .map((t) => (t === '**/' ? '(?:.*/)?' : t === '**' ? '.*' : t === '*' ? '[^/]*' : t === '?' ? '[^/]' : t.replace(/[.+^${}()|[\]\\]/g, '\\$&')))
+            .join('')
+          return { keep, re: new RegExp(`^${re}$`) }
+        })
+    : []
+  const ignored = (path) => {
+    const parts = path.split('/')
+    const prefixes = parts.map((_, i) => parts.slice(0, i + 1).join('/'))
+    let out = false
+    for (const r of ignoreRules) if (prefixes.some((p) => r.re.test(p))) out = !r.keep
+    return out
+  }
+
+  const uiPkg = JSON.parse(readFileSync(join(ROOT, 'ui/package.json'), 'utf8'))
+  const buildScripts = [...(uiPkg.scripts?.build ?? '').matchAll(/\bbun\s+(scripts\/[\w./-]+\.(?:ts|mjs|js))/g)].map((m) => `ui/${m[1]}`)
+  const inputs = new Map()
+  for (const [rel, text] of sources) {
+    if (rel.startsWith('ui/src/') && !/\.test\.[a-z]+$/.test(rel)) inputs.set(rel, text)
+  }
+  for (const rel of buildScripts) {
+    const abs = join(ROOT, rel)
+    if (existsSync(abs)) inputs.set(rel, stripComments(readFileSync(abs, 'utf8')))
+  }
+
+  const IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)['"](\.\.?\/[^'"]+)['"]/g
+  const UP_READ = /\bjoin\(\s*(?:UI|ui|uiRoot\(\))\s*,\s*['"]\.\.['"]\s*,\s*['"]([^'"]+)['"]/g
+  const norm = (p) => {
+    const out = []
+    for (const s of p.split('/')) {
+      if (s === '..') out.pop()
+      else if (s && s !== '.') out.push(s)
+    }
+    return out.join('/')
+  }
+  const left = []
+  for (const [rel, text] of inputs) {
+    const dir = rel.split('/').slice(0, -1).join('/')
+    const hits = [
+      ...[...text.matchAll(IMPORT)].map((m) => ({ index: m.index, target: norm(`${dir}/${m[1]}`) })),
+      ...[...text.matchAll(UP_READ)].map((m) => ({ index: m.index, target: norm(m[1]) })),
+    ]
+    for (const { index, target } of hits) {
+      if (target.startsWith('ui/')) continue
+      // An extensionless import names a module; the file it resolves to is
+      // what the context has to hold.
+      const file = ['', '.ts', '.js', '.mjs', '/index.ts'].map((x) => target + x).find((p) => existsSync(join(ROOT, p))) ?? target
+      if (!ignored(file)) continue
+      left.push({ path: rel, line: lineOf(text, index), text: `reads ${file}, which .dockerignore leaves out of the image's build context` })
+    }
+  }
+  if (left.length) {
+    failures.push({
+      id: 'image-build-input-ignored',
+      what: 'the ui build reads a file outside ui/ that .dockerignore leaves out, so the image build fails in rc-deploy',
+      fix: [
+        'Re-admit exactly that file in .dockerignore with a `!` line under the line that',
+        'leaves its directory out (see the "Not part of any build" block), with a note',
+        'saying what reads it. Do not un-ignore the whole directory: the context stays a',
+        'build of the source, not the machine.',
+        'Or move the file under ui/ and import it from there.',
+      ],
+      found: left,
     })
   }
 }

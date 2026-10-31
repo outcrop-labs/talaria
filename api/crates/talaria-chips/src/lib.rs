@@ -100,18 +100,6 @@ fn is_id(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-fn is_uuid(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 36
-        && b[8] == b'-'
-        && b[13] == b'-'
-        && b[18] == b'-'
-        && b[23] == b'-'
-        && b.iter()
-            .enumerate()
-            .all(|(i, c)| matches!(i, 8 | 13 | 18 | 23) || c.is_ascii_hexdigit())
-}
-
 /// Path-shaped recognition. An absolute URL keeps only its path and query.
 /// Unrecognized URLs return None — the caller leaves them as links.
 pub fn classify_href(raw: &str) -> Option<PlatformLink> {
@@ -709,13 +697,14 @@ fn prose_sources(text: &str, seen: &mut Vec<String>, out: &mut Vec<Value>) {
 /// fallback. Bounded and deduped by URL: the row is a trail, not the result
 /// set.
 ///
-/// STRUCTURED INCLUDES A TRUNCATED PAYLOAD. `/api/search` answers ten
-/// `{title, url, snippet, engine}` rows, pretty-printed by the MCP server —
-/// comfortably past the plugin's 4000-char clamp — so the common case is a
-/// payload that `serde_json` refuses. `parse_loose` has already rewound it to
-/// its last whole result, which is why prose is the LAST resort rather than
-/// the usual one: the prose walk can only label a chip by its host, and the
-/// snippet the engine wrote is the part a reader actually uses.
+/// STRUCTURED INCLUDES A TRUNCATED PAYLOAD. Hermes's own `web_search`
+/// answers `{success, data: {web: [{title, url, description, position}]}}`
+/// pretty-printed (indent 2), and a full page of rows runs past the plugin's
+/// 4000-char clamp — so a common case is a payload that `serde_json`
+/// refuses. `parse_loose` has already rewound it to its last whole result,
+/// which is why prose is the LAST resort rather than the usual one: the prose
+/// walk can only label a chip by its host, and the snippet the engine wrote is
+/// the part a reader actually uses.
 fn sources_from(result_v: &Value, raw: &str) -> Vec<Value> {
     let mut seen = Vec::new();
     let mut out = Vec::new();
@@ -1115,14 +1104,14 @@ impl Target {
 /// plugin stamps on every event (for a pinned agent that session id IS the
 /// conversation id), else a subagent hook's `parentSessionId`. Only a UUID
 /// counts: a Hermes session on the completions arm carries the harness's own
-/// id, which names no conversation and must not be mistaken for an address.
+/// id (`api-<16 hex>`), which names no conversation and must not be mistaken
+/// for an address. The id comes back in its canonical text, the spelling
+/// every conversation key and channel is written in.
 pub fn conversation_hint(body: &Value) -> Option<String> {
     ["conversationId", "sessionId", "parentSessionId"]
         .iter()
         .filter_map(|key| body.get(*key).and_then(Value::as_str))
-        .map(str::trim)
-        .find(|s| is_uuid(s))
-        .map(str::to_string)
+        .find_map(|s| talaria_params::uuid_canonical(s.trim()))
 }
 
 /// The rule, pure: one candidate is the target, several are an ambiguity,
@@ -1187,8 +1176,8 @@ pub async fn landing_target(
     agent: &str,
     conversation_id: Option<&str>,
 ) -> Result<Target, sqlx::Error> {
-    if let Some(id) = conversation_id.map(str::trim).filter(|s| is_uuid(s)) {
-        return addressed_target(pg, agent, id).await;
+    if let Some(id) = conversation_id.and_then(|s| talaria_params::uuid_canonical(s.trim())) {
+        return addressed_target(pg, agent, &id).await;
     }
     let mut live: Vec<Landed> = sqlx::query_as::<_, (String, String)>(
         "select m.id::text, m.conversation_id::text \
@@ -1426,6 +1415,63 @@ pub async fn surface_for_agent(
     write_chips(pg, &landed, &chips).await?;
     fan(pg, redis, &landed);
     Ok(Some(landed))
+}
+
+/// Write chips onto a row the caller already resolved (`landing_target`),
+/// and tell the open thread to refetch. The door that raises an agent's
+/// approval card names its conversation, so it lands there or nowhere.
+pub async fn land_chips(
+    pg: &PgPool,
+    redis: Option<redis::aio::ConnectionManager>,
+    landed: &Landed,
+    chips: &[Value],
+) -> Result<(), sqlx::Error> {
+    write_chips(pg, landed, chips).await?;
+    fan(pg, redis, landed);
+    Ok(())
+}
+
+/// Set one chip's `status` where it sits on a conversation's message, in its
+/// place in the row, and tell the open thread to refetch. An approval chip
+/// that a person or a deadline settled reads as what became of it, not as
+/// still waiting. The rest of the chip, and every other chip on the row, is
+/// left as it was; a row without that chip is left alone.
+pub async fn set_chip_status(
+    pg: &PgPool,
+    redis: Option<redis::aio::ConnectionManager>,
+    conversation_id: &str,
+    message_id: &str,
+    chip_id: &str,
+    status: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update messages set chips = ( \
+           select coalesce(jsonb_agg( \
+                    case when e.c->>'id' = $2 \
+                         then e.c || jsonb_build_object('status', $3::text) \
+                         else e.c end \
+                    order by e.ord), '[]'::jsonb) \
+             from jsonb_array_elements(chips) with ordinality e(c, ord) \
+         ) \
+         where id = $1::uuid and conversation_id = $4::uuid \
+           and exists (select 1 from jsonb_array_elements(chips) x(c) where x.c->>'id' = $2)",
+    )
+    .bind(message_id)
+    .bind(chip_id)
+    .bind(status)
+    .bind(conversation_id)
+    .execute(pg)
+    .await?;
+    fan(
+        pg,
+        redis,
+        &Landed {
+            conversation_id: Some(conversation_id.to_string()),
+            channel_id: None,
+            message_id: message_id.to_string(),
+        },
+    );
+    Ok(())
 }
 
 /// Idempotent pending row. `external_id` is the google pending id, or a
@@ -1950,7 +1996,7 @@ async fn lookup_title(
     link: &PlatformLink,
 ) -> Result<Option<String>, sqlx::Error> {
     // Fixture-shaped ids (b-1) are not rows. Only a uuid is worth a lookup.
-    if !is_uuid(&link.id) {
+    if !talaria_params::uuid_shaped(&link.id) {
         return Ok(None);
     }
     let title: Option<String> = match link.entity {
@@ -2127,6 +2173,29 @@ mod tests {
             );
             assert_eq!(
                 conversation_hint(&json!({ "sessionId": "20261020_143500_ab12" })),
+                None
+            );
+            // The completions arm's derived session (Hermes v0.22.4's
+            // `_derive_chat_session_id`): 16 hex digits, never an address.
+            assert_eq!(
+                conversation_hint(&json!({ "sessionId": "api-3f2504e04f8911d3" })),
+                None
+            );
+            // Every spelling the cast takes is the same conversation, and it
+            // comes back as the one text its rows and channels are keyed by.
+            for spelling in [
+                "22F1E3A0-0000-4000-8000-000000000001",
+                "{22f1e3a0-0000-4000-8000-000000000001}",
+                "22f1e3a0000040008000000000000001",
+            ] {
+                assert_eq!(
+                    conversation_hint(&json!({ "conversationId": spelling })).as_deref(),
+                    Some(id),
+                    "{spelling}"
+                );
+            }
+            assert_eq!(
+                conversation_hint(&json!({ "conversationId": format!("urn:uuid:{id}") })),
                 None
             );
             assert_eq!(conversation_hint(&json!({ "sessionId": "" })), None);
@@ -2758,9 +2827,9 @@ mod tests {
         assert_eq!(chips[0]["href"], "https://www.nytimes.com:443/a");
     }
 
-    /// THE CLAMP IS THE NORMAL CASE for a search. `/api/search` answers ten
-    /// rows and the MCP server pretty-prints them, so the payload that
-    /// reaches the tool-events door is a prefix of JSON. Read as prose it
+    /// THE CLAMP IS A NORMAL CASE for a search. A search tool that answers
+    /// ten pretty-printed rows runs past the plugin's clamp, so the payload
+    /// that reaches the tool-events door is a prefix of JSON. Read as prose it
     /// yields six chips labelled by host with no snippet; repaired, it
     /// yields the engine's own titles and snippets.
     #[test]

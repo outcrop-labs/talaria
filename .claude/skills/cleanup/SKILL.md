@@ -69,9 +69,26 @@ bun talaria cleanup            # report. Prints even when under the line
 bun talaria cleanup --apply    # remove the safe set, then report what remains
 ```
 
-`--apply` removes stale clean worktrees, stopped clean boxes, old `/tmp/talaria-*`, and
-compose projects whose directory is already gone. It will not remove the primary, the
-checkout you are in, a running stack, a dirty or unpushed tree, or a `.talaria-keep`.
+`--apply` removes stale clean worktrees, stopped clean boxes, old `/tmp/talaria-*`,
+compose projects whose directory is already gone, and **orphan networks**: a
+`talaria-*` or `devbox-*` compose project's network with nothing attached (running or
+stopped), no container left in its project, no live worktree or box owning it (a box
+lives while its `../devboxes/<name>/box.env` does), and at least ten minutes old.
+Each such network holds a subnet from docker's ~30 predefined address pools, and when
+they run out every `compose up` fails with `all predefined address pools have been fully
+subnetted` — the CLI names that error and points here. It also removes **orphan app
+databases**: a `talaria-appdb-*` container whose cluster is mounted from a sibling
+`talaria-<name>` directory that is gone, or from a box whose `box.env` is gone. A
+directory still on disk keeps its databases, checkout or not. A box removed without `talaria box rm`, or a worktree removed while its app ran,
+leaves them running, and each one holds the network it joined. The container goes; its
+data directory stays (postgres's uid owns it). And **orphan MCP packages**: a
+`talaria-mcp-*` container, and its package network once nothing else names it, whose
+owner labels name a sibling `talaria-<name>` checkout that is gone or a box whose
+`box.env` is gone. One without labels (made before the api wrote them) is named in the
+report and left alone. It will not remove the primary,
+the checkout you are in, a running stack, a dirty or unpushed tree, a `.talaria-keep`,
+the shared external `talaria` network, any network outside a `talaria-*` or
+`devbox-*` project, or an app database mounted from anywhere else.
 
 `talaria dev` prints one line when disk use crosses the threshold. It does not refuse
 to start — you may need the stack to finish the task that will free the space.

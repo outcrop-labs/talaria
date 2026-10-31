@@ -198,9 +198,9 @@ talaria-agent-secrets = { path = "crates/talaria-agent-secrets" }
 
 talaria-agent-skills = { path = "crates/talaria-agent-skills" }
 
-talaria-agent-writes = { path = "crates/talaria-agent-writes" }
+talaria-agent-web-search = { path = "crates/talaria-agent-web-search" }
 
-talaria-agents-registry = { path = "crates/talaria-agents-registry" }
+talaria-agent-writes = { path = "crates/talaria-agent-writes" }
 
 talaria-alerts = { path = "crates/talaria-alerts" }
 
@@ -208,7 +208,17 @@ talaria-api-facades = { path = "crates/talaria-api-facades" }
 
 talaria-api-routes = { path = "crates/talaria-api-routes" }
 
+talaria-app-harnesses = { path = "crates/talaria-app-harnesses" }
+
+talaria-approval-cards = { path = "crates/talaria-approval-cards" }
+
 talaria-approvals = { path = "crates/talaria-approvals" }
+
+talaria-app-agents = { path = "crates/talaria-app-agents" }
+
+talaria-app-manifest = { path = "crates/talaria-app-manifest" }
+
+talaria-app-triggers = { path = "crates/talaria-app-triggers" }
 
 talaria-apps = { path = "crates/talaria-apps" }
 
@@ -257,6 +267,8 @@ talaria-config = { path = "crates/talaria-config" }
 talaria-conversation-layout = { path = "crates/talaria-conversation-layout" }
 
 talaria-conversations = { path = "crates/talaria-conversations" }
+
+talaria-cron-output = { path = "crates/talaria-cron-output" }
 
 talaria-daily-brief = { path = "crates/talaria-daily-brief" }
 
@@ -315,10 +327,17 @@ talaria-fleet-reconcile = { path = "crates/talaria-fleet-reconcile" }
 talaria-fleet-render = { path = "crates/talaria-fleet-render" }
 
 talaria-fleet-resources = { path = "crates/talaria-fleet-resources" }
+talaria-fleet-seal = { path = "crates/talaria-fleet-seal" }
 
 talaria-gaps = { path = "crates/talaria-gaps" }
 
 talaria-gateway = { path = "crates/talaria-gateway" }
+
+talaria-git-host-types = { path = "crates/talaria-git-host-types" }
+
+talaria-git-hosts = { path = "crates/talaria-git-hosts" }
+
+talaria-forgejo = { path = "crates/talaria-forgejo" }
 
 talaria-github = { path = "crates/talaria-github" }
 
@@ -465,6 +484,9 @@ talaria-plan-drafts = { path = "crates/talaria-plan-drafts" }
 
 talaria-platform-agents = { path = "crates/talaria-platform-agents" }
 
+talaria-platform-events = { path = "crates/talaria-platform-events" }
+talaria-plugins = { path = "crates/talaria-plugins" }
+
 talaria-price-oracle = { path = "crates/talaria-price-oracle" }
 
 talaria-push = { path = "crates/talaria-push" }
@@ -608,8 +630,6 @@ talaria-uploads = { path = "crates/talaria-uploads" }
 
 talaria-users = { path = "crates/talaria-users" }
 
-talaria-vision = { path = "crates/talaria-vision" }
-
 talaria-web-search = { path = "crates/talaria-web-search" }
 
 talaria-work-dispatch = { path = "crates/talaria-work-dispatch" }
@@ -676,7 +696,6 @@ talaria-agent-role-templates = { workspace = true }
 talaria-agent-secrets = { workspace = true }
 talaria-agent-skills = { workspace = true }
 talaria-agent-writes = { workspace = true }
-talaria-agents-registry = { workspace = true }
 talaria-alerts = { workspace = true }
 talaria-api-facades = { workspace = true }
 talaria-api-routes = { workspace = true }
@@ -731,6 +750,7 @@ talaria-fleet-preflight = { workspace = true }
 talaria-fleet-reconcile = { workspace = true }
 talaria-fleet-render = { workspace = true }
 talaria-fleet-resources = { workspace = true }
+talaria-fleet-seal = { workspace = true }
 talaria-gaps = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-github = { workspace = true }
@@ -798,6 +818,7 @@ talaria-personal-agent = { workspace = true }
 talaria-plan-doc = { workspace = true }
 talaria-plan-drafts = { workspace = true }
 talaria-platform-agents = { workspace = true }
+talaria-plugins = { workspace = true }
 talaria-price-oracle = { workspace = true }
 talaria-push = { workspace = true }
 talaria-ratelimit = { workspace = true }
@@ -868,7 +889,6 @@ talaria-update-roll = { workspace = true }
 talaria-update-state = { workspace = true }
 talaria-uploads = { workspace = true }
 talaria-users = { workspace = true }
-talaria-vision = { workspace = true }
 talaria-web-search = { workspace = true }
 talaria-work-dispatch = { workspace = true }
 talaria-work-wait = { workspace = true }

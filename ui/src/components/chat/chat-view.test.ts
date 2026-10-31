@@ -2,13 +2,17 @@
 // shape — the stored→display mapping, the reaction-chip mapping, the
 // optimistic toggle, and the stamp merge that brings server ids/timestamps
 // onto rows the client drew itself.
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { StoredMessage } from '@/lib/conversations.svelte'
 import {
   cronJobFromMarker,
+  foldToolVerdicts,
+  newTurnId,
   reactionChips,
   sendRoute,
+  STOP_NAME_WAIT_MS,
   stampFromServer,
+  stopOnceNamed,
   toDisplay,
   toggleReactionLocal,
   turnTime,
@@ -209,5 +213,162 @@ describe('sendRoute', () => {
   it('attachments go the queue: the steer wire carries text only', () => {
     expect(ctx({ intent: 'send-now', hasAttachments: true })).toBe('queue')
     expect(ctx({ hasAttachments: true })).toBe('queue')
+  })
+})
+
+// A Stop pressed on a new thread's first turn, before the response headers
+// name the conversation: the stop waits for the id instead of hanging up the
+// request that would bring it.
+describe('newTurnId', () => {
+  it('draws a v4 uuid the api’s uuid check takes, fresh each time', () => {
+    const seen = new Set<string>()
+    for (let i = 0; i < 200; i++) {
+      const id = newTurnId()
+      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+      seen.add(id)
+    }
+    expect(seen.size).toBe(200)
+  })
+})
+
+describe('stopOnceNamed', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('sends the stop for the conversation the response names, then hangs up', () => {
+    const order: string[] = []
+    const latch = stopOnceNamed(() => order.push('hang up'))
+    expect(order).toEqual([])
+    latch.named('c-1', true, (id) => order.push(`stop ${id}`))
+    // The server is told before the reader hangs up, as on a thread that
+    // already has its id.
+    expect(order).toEqual(['stop c-1', 'hang up'])
+    // Once only: the wait's own timer and a second naming do nothing more.
+    vi.advanceTimersByTime(STOP_NAME_WAIT_MS * 2)
+    latch.named('c-1', true, (id) => order.push(`stop ${id}`))
+    expect(order).toEqual(['stop c-1', 'hang up'])
+  })
+
+  it('a queued ack names no turn of ours: hang up, send nothing', () => {
+    const sent: string[] = []
+    const hangUp = vi.fn()
+    stopOnceNamed(hangUp).named('c-1', false, (id) => sent.push(id))
+    expect(sent).toEqual([])
+    expect(hangUp).toHaveBeenCalledTimes(1)
+  })
+
+  it('a response that names nothing is hung up on at the wait, once', () => {
+    const hangUp = vi.fn()
+    const sent: string[] = []
+    const latch = stopOnceNamed(hangUp)
+    vi.advanceTimersByTime(STOP_NAME_WAIT_MS - 1)
+    expect(hangUp).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(hangUp).toHaveBeenCalledTimes(1)
+    // An id arriving after the wait gave up sends nothing: the reader has
+    // already hung up.
+    latch.named('c-1', true, (id) => sent.push(id))
+    expect(sent).toEqual([])
+    expect(hangUp).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancel drops the wait without acting', () => {
+    const hangUp = vi.fn()
+    const sent: string[] = []
+    const latch = stopOnceNamed(hangUp)
+    latch.cancel()
+    vi.advanceTimersByTime(STOP_NAME_WAIT_MS * 2)
+    latch.named('c-1', true, (id) => sent.push(id))
+    expect(hangUp).not.toHaveBeenCalled()
+    expect(sent).toEqual([])
+  })
+})
+
+// The agent's verdict on a call, brought onto a row the stream drew. The live
+// shape: Hermes' completions stream ended the refused `rm` `completed`; the
+// server's row says `error` (the tool-events door marked it).
+describe('foldToolVerdicts', () => {
+  const rm = { id: 'call_8b732cd27d', name: 'terminal', label: '💻 rm -rf /tmp/fu-canary', status: 'completed' as const }
+  const echo = { id: 'call_547dfba246', name: 'terminal', label: '💻 echo fu-safe-ok', status: 'completed' as const }
+  const failed = { ...rm, status: 'error' as const }
+  const user = (id: string): DisplayMessage => ({ role: 'user', content: 'go', id })
+
+  it('marks a landed row by id, only the failed call, and nothing else on it', () => {
+    const local: DisplayMessage[] = [user('u1'), { role: 'assistant', content: 'done', id: 'a1', tools: [rm, echo], chips: [] }]
+    const remote = [stored({ id: 'u1', role: 'user' }), stored({ id: 'a1', content: 'server prose', tools: [failed, echo] })]
+    const next = foldToolVerdicts(local, remote)
+    expect(next[1]!.tools!.map((t) => t.status)).toEqual(['error', 'completed'])
+    // Prose and every other field stay what is on screen.
+    expect(next[1]!.content).toBe('done')
+    expect(next[0]).toBe(local[0])
+  })
+
+  it('pairs the live row (no id yet) with the server row in its place', () => {
+    const local: DisplayMessage[] = [user('u1'), { role: 'assistant', content: 'stre', tools: [rm], status: 'streaming' }]
+    const remote = [stored({ id: 'u1', role: 'user' }), stored({ id: 'a-live', status: 'streaming', tools: [failed] })]
+    expect(foldToolVerdicts(local, remote)[1]!.tools![0]!.status).toBe('error')
+    // A row sent mid-turn sits beneath the live row on both sides; the pair holds.
+    const steered = [...local, user('u-steer')]
+    const remoteSteered = [...remote, stored({ id: 'u-steer', role: 'user' })]
+    expect(foldToolVerdicts(steered, remoteSteered)[1]!.tools![0]!.status).toBe('error')
+  })
+
+  // Hermes mints the same call id for the same call on a later turn, so a row
+  // that pairs with the wrong turn's row takes that turn's verdict.
+  it('never takes the verdict of a turn other than its own when ids repeat', () => {
+    const done = (content: string): DisplayMessage => ({ role: 'assistant', content, tools: [rm], status: 'complete' })
+    const live: DisplayMessage = { role: 'assistant', content: 'two', tools: [rm], status: 'streaming' }
+
+    // The earlier reply ended a moment ago and is not stamped yet; the next
+    // turn (a held or queued send) is already streaming, and the server has
+    // not written its row. The earlier reply's row failed the call.
+    const local = [user('u1'), done('one'), user('u2'), live]
+    const remote = [stored({ id: 'u1', role: 'user' }), stored({ id: 'a1', tools: [failed] }), stored({ id: 'u2', role: 'user' })]
+    const next = foldToolVerdicts(local, remote)
+    expect(next[1]!.tools![0]!.status).toBe('error')
+    expect(next[3]!.tools![0]!.status).toBe('completed')
+
+    // A reply chained after a steered row: the server holds a newer reply
+    // that failed the same call id; the live row is the earlier one.
+    const steering = [user('u1'), live, user('u-steer')]
+    const chained = [
+      stored({ id: 'u1', role: 'user' }),
+      stored({ id: 'a1', tools: [rm] }),
+      stored({ id: 'u-steer', role: 'user' }),
+      stored({ id: 'a2', status: 'streaming', tools: [failed] }),
+    ]
+    expect(foldToolVerdicts(steering, chained)).toBe(steering)
+
+    // The ring re-read holds a newer reply this tab has not drawn; the last
+    // row on screen (not stamped yet) is the earlier reply, which worked.
+    const behind = [user('u1'), done('one')]
+    const ahead = [
+      stored({ id: 'u1', role: 'user' }),
+      stored({ id: 'a1', tools: [rm] }),
+      stored({ id: 'u2', role: 'user' }),
+      stored({ id: 'a2', tools: [failed] }),
+    ]
+    expect(foldToolVerdicts(behind, ahead)).toBe(behind)
+  })
+
+  it('never pairs the live row with a row already on screen, nor a call by name', () => {
+    // The server's newest row is the earlier turn, still on screen by id: the
+    // live row (the same command, a call id Hermes minted again) is not it.
+    const earlier: DisplayMessage = { role: 'assistant', content: 'one', id: 'a1', tools: [failed] }
+    const live: DisplayMessage = { role: 'assistant', content: 'two', tools: [rm], status: 'streaming' }
+    const local = [user('u1'), earlier, user('u2'), live]
+    const remote = [stored({ id: 'u1', role: 'user' }), stored({ id: 'a1', tools: [failed] }), stored({ id: 'u2', role: 'user' })]
+    expect(foldToolVerdicts(local, remote)).toBe(local)
+    // A call with no id is never matched.
+    const bare: DisplayMessage[] = [{ role: 'assistant', content: 'x', id: 'a1', tools: [{ ...rm, id: undefined }] }]
+    expect(foldToolVerdicts(bare, [stored({ id: 'a1', tools: [{ ...failed, id: undefined }] })])).toBe(bare)
+  })
+
+  it('only ever moves toward error, and answers the same array when nothing changed', () => {
+    const local: DisplayMessage[] = [{ role: 'assistant', content: 'x', id: 'a1', tools: [failed, echo] }]
+    // The server saying `completed` for a call shown failed changes nothing.
+    expect(foldToolVerdicts(local, [stored({ id: 'a1', tools: [rm, echo] })])).toBe(local)
+    expect(foldToolVerdicts(local, [stored({ id: 'a1', tools: [failed, echo] })])).toBe(local)
+    expect(foldToolVerdicts(local, [])).toBe(local)
   })
 })

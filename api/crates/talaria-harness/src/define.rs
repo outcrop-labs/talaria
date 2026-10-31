@@ -1098,6 +1098,7 @@ mod tests {
             "writes one-line model blurbs",
             ModelSpec {
                 pin: None,
+                slot: None,
                 role: Some("utility"),
                 chain: None,
                 user_id: None,
@@ -1121,6 +1122,7 @@ mod tests {
             "judges",
             ModelSpec {
                 pin: None,
+                slot: None,
                 role: None,
                 chain: None,
                 user_id: None,
@@ -1147,6 +1149,7 @@ mod tests {
             "drafts a ticket",
             ModelSpec {
                 pin: None,
+                slot: None,
                 role: None,
                 chain: None,
                 user_id: None,
@@ -1170,6 +1173,7 @@ mod tests {
             "names chats",
             ModelSpec {
                 pin: None,
+                slot: None,
                 role: Some("utility"),
                 chain: None,
                 user_id: None,

@@ -38,6 +38,12 @@ pub struct FleetAgentEntry {
     pub agent: AgentModel,
     /// Model tiers requestable for this agent (alias names; main is implicit).
     pub tiers: Vec<String>,
+    /// The agent keeps its conversations as Hermes sessions. A session runs
+    /// the agent's main model whatever tier a message picks (Hermes fixes a
+    /// session's model at its first turn), so the chat surfaces read this to
+    /// say so instead of offering a tier that would not run.
+    #[serde(rename = "pinnedSessions")]
+    pub pinned_sessions: bool,
 }
 
 /// The agents that EXIST, which is a question only `agent_defs` can answer.
@@ -48,8 +54,8 @@ pub struct FleetAgentEntry {
 /// table means NONE, not "unknown".
 pub async fn list_fleet_agents(pg: &PgPool) -> Result<Vec<FleetAgentEntry>, sqlx::Error> {
     let agents = list_agents().await;
-    let rows: Vec<(String, Option<serde_json::Value>)> = sqlx::query_as(
-        "select d.model, v.config \
+    let rows: Vec<(String, Option<serde_json::Value>, bool)> = sqlx::query_as(
+        "select d.model, v.config, d.pinned_sessions \
          from agent_defs d \
          left join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
          where d.enabled",
@@ -71,19 +77,20 @@ pub async fn list_fleet_agents(pg: &PgPool) -> Result<Vec<FleetAgentEntry>, sqlx
             })
             .unwrap_or_default()
     };
-    let by_model: std::collections::HashMap<String, Vec<String>> = rows
+    let by_model: std::collections::HashMap<String, (Vec<String>, bool)> = rows
         .into_iter()
-        .map(|(model, config)| {
+        .map(|(model, config, pinned)| {
             let t = tiers_of(&config);
-            (model, t)
+            (model, (t, pinned))
         })
         .collect();
     Ok(agents
         .into_iter()
         .filter_map(|a| {
-            by_model.get(&a.id).map(|tiers| FleetAgentEntry {
+            by_model.get(&a.id).map(|(tiers, pinned)| FleetAgentEntry {
                 agent: a,
                 tiers: tiers.clone(),
+                pinned_sessions: *pinned,
             })
         })
         .collect())
@@ -176,9 +183,9 @@ pub struct FleetAgentStat {
     pub id: String,
     pub label: String,
     pub role: String,
+    /// `idle` when the agent's container is running, `offline` otherwise —
+    /// container reality, the same source as the roster's status dots.
     pub status: String,
-    pub last_seen: Option<String>,
-    pub last_activity: Option<String>,
     pub conversations: i64,
     pub messages: i64,
     pub last_used: Option<String>,
@@ -200,24 +207,19 @@ pub struct FleetOverview {
     pub totals: FleetTotals,
 }
 
-/// Owned fleet ops data — agents + Talaria-native usage. Heartbeats are the
-/// ideal liveness signal, but most agents don't heartbeat
-/// to Talaria yet; container reality (the roster status dots' own source)
-/// fills the gap, so the "online" count can never disagree with the green
-/// dots on the agents page: running container ⇒ online (`idle` when the
-/// registry says offline). `now` is epoch ms (house rule).
+/// Owned fleet ops data — agents + Talaria-native usage. Status is container
+/// reality (the roster status dots' own source), so the "online" count can
+/// never disagree with the green dots on the agents page: running container
+/// ⇒ `idle`, anything else ⇒ `offline`. (The old `fleet_agents` heartbeat
+/// registry is no longer read; a contract migration drops the table.) `now`
+/// is epoch ms (house rule).
 pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, sqlx::Error> {
     let agents = list_fleet_agents(pg).await?;
-    // Seed the registry from the fleet so every agent shows (offline until it
-    // heartbeats to Talaria), then read owned status.
-    let seed: Vec<String> = agents.iter().map(|a| a.agent.id.clone()).collect();
-    talaria_agents_registry::seed_fleet_names(pg, &seed).await?;
-    let registry = talaria_agents_registry::registry_by_name(pg, now).await?;
 
     // defs (enabled only) → container reality, keyed by the def's MODEL (the
     // agent id). A defs read that fails reads as "no containers".
-    let defs: Vec<(String, String)> =
-        sqlx::query_as("select model, department from agent_defs where enabled")
+    let defs: Vec<(String, String, String)> =
+        sqlx::query_as("select id::text, model, department from agent_defs where enabled")
             .fetch_all(pg)
             .await
             .unwrap_or_default();
@@ -225,10 +227,22 @@ pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, 
         Vec::new()
     } else {
         talaria_fleet_docker::container_status(
-            &defs.iter().map(|(_, d)| d.clone()).collect::<Vec<_>>(),
+            &defs.iter().map(|(_, _, d)| d.clone()).collect::<Vec<_>>(),
         )
         .await
         .unwrap_or_default()
+    };
+    // A container is found by department, and where two agents hold one (a
+    // pair from before a department became one agent's) it is the runner's
+    // alone: the other agent is offline, as the roster's dot says.
+    let shared = talaria_agent_defs::shared_departments(pg)
+        .await
+        .unwrap_or_default();
+    let own_container = |id: &str, dept: &str| {
+        shared
+            .iter()
+            .find(|s| s.department == dept)
+            .is_none_or(|s| s.runner().is_some_and(|r| r.id == id))
     };
     let by_dept: std::collections::HashMap<&str, &talaria_fleet_docker::AgentContainers> =
         containers
@@ -237,11 +251,12 @@ pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, 
             .collect();
     let container_up: std::collections::HashMap<&str, bool> = defs
         .iter()
-        .map(|(model, dept)| {
-            let running = by_dept
-                .get(dept.as_str())
-                .and_then(|c| c.managed.as_ref())
-                .is_some_and(|m| m.state == "running");
+        .map(|(id, model, dept)| {
+            let running = own_container(id, dept)
+                && by_dept
+                    .get(dept.as_str())
+                    .and_then(|c| c.managed.as_ref())
+                    .is_some_and(|m| m.state == "running");
             (model.as_str(), running)
         })
         .collect();
@@ -267,18 +282,14 @@ pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, 
     let stats: Vec<FleetAgentStat> = agents
         .iter()
         .map(|a| {
-            let reg = registry.get(&a.agent.id);
-            // registry status, 'offline' when absent
-            let reg_status = reg.map(|r| r.status.wire()).unwrap_or("offline");
-            let status = if reg_status == "offline"
-                && container_up
-                    .get(a.agent.id.as_str())
-                    .copied()
-                    .unwrap_or(false)
+            let status = if container_up
+                .get(a.agent.id.as_str())
+                .copied()
+                .unwrap_or(false)
             {
                 "idle"
             } else {
-                reg_status
+                "offline"
             };
             let (conversations, messages, last_used) = by_model
                 .get(a.agent.id.as_str())
@@ -289,8 +300,6 @@ pub async fn get_fleet_overview(pg: &PgPool, now: i64) -> Result<FleetOverview, 
                 label: a.agent.label.clone(),
                 role: a.agent.role.clone(),
                 status: status.to_string(),
-                last_seen: reg.and_then(|r| r.last_seen).map(iso),
-                last_activity: reg.and_then(|r| r.last_activity.clone()),
                 conversations: conversations as i64,
                 messages: messages as i64,
                 last_used: last_used.map(iso),

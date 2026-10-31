@@ -14,6 +14,10 @@ import { repoRoot } from './paths'
 export type Ctx = {
   /** Canonical (realpath'd) repo root. */
   root: string
+  /** Where the operator is standing (realpath'd process.cwd()), when known.
+   *  It can be another checkout than `root`: the installed shim always runs
+   *  the primary's CLI (stack.ts, refuseForeignCheckout). */
+  cwd?: string
   /** Capture-output exec (never a shell). Rejects on failure. */
   exec: (cmd: string, args: string[], opts?: ExecOpts) => Promise<ExecResult>
   /** Inherit-stdio run; resolves the exit code. */
@@ -25,7 +29,20 @@ export type Ctx = {
   env: Record<string, string | undefined>
   isTTY: boolean
   now: () => Date
+  /** Wait `ms` — the readiness polls' interval. Injected so a test can drive
+   *  a wait that runs out without spending its real minute. */
+  sleep: (ms: number) => Promise<void>
   log: Log
+}
+
+/** process.cwd(), physical spelling, or undefined if it cannot be read (a
+ *  deleted directory). */
+function standingDir(): string | undefined {
+  try {
+    return realpathSync(process.cwd())
+  } catch {
+    return undefined
+  }
 }
 
 export function realCtx(): Ctx {
@@ -34,6 +51,7 @@ export function realCtx(): Ctx {
   const here = realpathSync(dirname(fileURLToPath(import.meta.url)))
   return {
     root: repoRoot(here),
+    cwd: standingDir(),
     exec,
     run,
     pipe,
@@ -48,6 +66,7 @@ export function realCtx(): Ctx {
     env: process.env,
     isTTY: process.stdin.isTTY === true,
     now: () => new Date(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     log: makeLog(process.stdout.isTTY === true),
   }
 }

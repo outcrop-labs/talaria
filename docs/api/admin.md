@@ -7,14 +7,25 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-26 routes.
+32 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
+| [`/api/admin/app-harness-models`](#apiadminapp-harness-models) | GET | `admin` |
+| [`/api/admin/app-harness-models`](#apiadminapp-harness-models) | PUT | `admin` |
 | [`/api/admin/apps`](#apiadminapps) | GET | `session` + `view:/apps` |
 | [`/api/admin/apps`](#apiadminapps) | POST | `admin` |
 | [`/api/admin/apps`](#apiadminapps) | PUT | `admin` |
 | [`/api/admin/apps`](#apiadminapps) | DELETE | `admin` |
+| [`/api/admin/apps/catalogs`](#apiadminappscatalogs) | GET | `session` + `view:/apps` |
+| [`/api/admin/apps/catalogs`](#apiadminappscatalogs) | POST | `admin` |
+| [`/api/admin/apps/catalogs`](#apiadminappscatalogs) | PUT | `admin` |
+| [`/api/admin/apps/catalogs`](#apiadminappscatalogs) | DELETE | `admin` |
+| [`/api/admin/apps/change-request`](#apiadminappschange-request) | POST | `session` + `view:/apps` |
+| [`/api/admin/apps/install-requests`](#apiadminappsinstall-requests) | GET | `admin` |
+| [`/api/admin/apps/install-requests`](#apiadminappsinstall-requests) | PUT | `admin` |
+| [`/api/admin/apps/update-requests`](#apiadminappsupdate-requests) | GET | `admin` |
+| [`/api/admin/apps/update-requests`](#apiadminappsupdate-requests) | PUT | `admin` |
 | [`/api/admin/coding-accounts`](#apiadmincoding-accounts) | GET | `admin` |
 | [`/api/admin/coding-accounts`](#apiadmincoding-accounts) | PUT | `admin` |
 | [`/api/admin/decide`](#apiadmindecide) | GET | `admin` |
@@ -61,6 +72,8 @@
 | [`/api/admin/rag`](#apiadminrag) | PUT | `admin` |
 | [`/api/admin/search`](#apiadminsearch) | GET | `admin` |
 | [`/api/admin/search`](#apiadminsearch) | PUT | `admin` |
+| [`/api/admin/search/agents`](#apiadminsearchagents) | GET | `admin` |
+| [`/api/admin/search/agents`](#apiadminsearchagents) | PUT | `admin` |
 | [`/api/admin/secrets`](#apiadminsecrets) | GET | `admin` |
 | [`/api/admin/secrets`](#apiadminsecrets) | DELETE | `admin` |
 | [`/api/admin/settings`](#apiadminsettings) | GET | `admin` |
@@ -76,29 +89,70 @@
 | [`/api/admin/workspace-secrets`](#apiadminworkspace-secrets) | GET | `admin` |
 | [`/api/admin/workspace-secrets`](#apiadminworkspace-secrets) | POST | `admin` |
 
+## `/api/admin/app-harness-models`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_app_harness_models.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_app_harness_models.rs)
+
+> /api/admin/app-harness-models. The model each app harness runs on — the
+> setting an admin assigns on the harness's column in Admin → Models →
+> Fitness. GET → the assignments and the app harness slots that can take one.
+> PUT { slot, model|null } → assign (null = back to the harness's own chain).
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{assignments, slots, slotsError}` | 200 | — |
+| PUT | `admin` | [body](#put-apiadminapp-harness-models-body) | `{ok}` | 200, 400, 503 | audit |
+
+### PUT `/api/admin/app-harness-models` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `model` | `nullish` |  |
+
 ## `/api/admin/apps`
 
 Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_apps.rs)
 
-> /api/admin/apps. App administration. GET → installed apps (+ ?catalog=1
-> for the marketplace feed). Reads are open to anyone granted the /apps
-> Manage view; mutations (enable/disable, install, uninstall, catalog
-> source) stay admin-only — installing an app adds CODE to the deployment.
+> /api/admin/apps. App administration. GET → installed apps, each with its
+> triggers and their newest runs (+ ?catalog=1 for the marketplace feed,
+> ?updates=1 for whether each app's source has a newer commit); an app a
+> Developer Agent maintains carries `plugin` (its maintainer, owner, board
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `view:/apps` | — | `{apps, catalog, catalogUrl}` | 200 | — |
-| POST | `admin` | [body](#post-apiadminapps-body) | `{slug}` | 200, 400 | audit |
-| PUT | `admin` | [body](#put-apiadminapps-body) | `{ok, catalogUrl}` | 200, 400 | audit |
-| DELETE | `admin` | [body](#delete-apiadminapps-body) | `{ok}` | 200, 400 | audit |
+| GET | `session` + `view:/apps` | — | `{apps, catalog, updates}` | 200, 403 | — |
+| POST | `admin` | [body](#post-apiadminapps-body) | `{slug, sha, keptData, wipedData, build, buildError}` | 200, 400, 409 | audit |
+| PUT | `admin` | [body](#put-apiadminapps-body) | `{ok}` | 200, 400, 404 | audit |
+| DELETE | `admin` | [body](#delete-apiadminapps-body) | `{ok, data}` | 200, 400 | audit |
 
 ### POST `/api/admin/apps` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
+| `installUrl` | `url` | installUrl: a required URL; slug: optional override, 1..64 chars. |
 | `slug` | `string?(64)` |  |
+| `ref` | `string?(200)` | ref: a branch, tag or commit to install (default: the default branch). |
+| `secret` | `string?(200)` | secret: a workspace secret holding an https token for a host other than the GitHub connection's (its Spendable at list must name the host). |
+| `keptData` | `enum(adopt|wipe)?` | keptData: data an earlier install of the slug kept — "adopt" gives it to this app, "wipe" deletes it first (default: adopt only its own). |
 
-### PUT `/api/admin/apps` body
+### PUT `/api/admin/apps` body — variant 1
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `app` | `string(1)` |  |
+| `update` | `bool` |  |
+| `ref` | `string?(200)` | ref: follow another branch, tag or commit from now on (default: the recorded one). |
+
+### PUT `/api/admin/apps` body — variant 2
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `app` | `string(1)` |  |
+| `updatePolicy` | `enum(…)` |  |
+
+### PUT `/api/admin/apps` body — variant 3
 
 | field | schema | notes |
 | :--- | :--- | :--- |
@@ -109,8 +163,121 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/cr
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `app` | `string(1)` | app: required, min 1 char; wipeData: optional boolean. |
+| `app` | `string(1)` | app: required, min 1 char; wipeData: optional boolean — true deletes the data the app stored, absent or false keeps it for a reinstall. |
 | `wipeData` | `bool?` |  |
+
+## `/api/admin/apps/catalogs`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps_catalogs.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_apps_catalogs.rs)
+
+> /api/admin/apps/catalogs. The marketplace catalogs Manage → Apps →
+> Discover reads — a list the operator fills (talaria-apps `catalog`).
+> GET → the list, in order; POST { name, url } → add one at the end, then
+> read it once and say how many apps it lists or why it could not be read;
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` + `view:/apps` | — | `{catalogs}` | 200 | — |
+| POST | `admin` | [body](#post-apiadminappscatalogs-body) | `…` | 200, 400, 404, 409 | audit |
+| PUT | `admin` | [body](#put-apiadminappscatalogs-body) | `{ok, catalog}` | 200, 400, 404, 409 | audit |
+| DELETE | `admin` | [body](#delete-apiadminappscatalogs-body) | `{ok}` | 200, 400, 404, 409 | audit |
+
+### POST `/api/admin/apps/catalogs` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string(1, 200)` | What Discover calls this catalog, next to each app it lists. |
+| `url` | `string(1, 4000)` | The index's https URL (`{"apps": [...]}`). |
+
+### PUT `/api/admin/apps/catalogs` body — variant 1
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `order` | `uuid[](50)` |  |
+
+### PUT `/api/admin/apps/catalogs` body — variant 2
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `id` | `uuid` |  |
+| `name` | `string?(200)` |  |
+| `url` | `string?(4000)` |  |
+| `enabled` | `bool?` | false: Discover stops reading it, and the row stays in the list. |
+
+### DELETE `/api/admin/apps/catalogs` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `id` | `uuid` |  |
+
+## `/api/admin/apps/change-request`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps_change_request.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_apps_change_request.rs)
+
+> /api/admin/apps/change-request. "Request a change" on a plugin's card in
+> Manage → Apps: the request becomes a ticket for the plugin's maintaining
+> agent on the plugin's board (the board of the ticket that started it),
+> created and assigned by the person asking. Anyone who sees Manage → Apps
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` + `view:/apps` | [body](#post-apiadminappschange-request-body) | `{ok, taskId, ticketRef, boardId}` | 200, 400, 403, 404 | — |
+
+### POST `/api/admin/apps/change-request` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `app` | `string(1, 64)` |  |
+| `request` | `string(1)` | What should change, in the person's words: the ticket's description, its first line the title. |
+
+## `/api/admin/apps/install-requests`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps_install_requests.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_apps_install_requests.rs)
+
+> /api/admin/apps/install-requests. Agents' requests to install the app they
+> built (the workbench's `request_app_install`). GET → the pending queue;
+> PUT → approve (talaria-apps' credentialed install from the requested repo
+> and ref, then the plugin record: the requesting agent maintains it, the
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{requests}` | 200 | — |
+| PUT | `admin` | [body](#put-apiadminappsinstall-requests-body) | `{ok, status, line, slug, sha, build, buildError, warning}` | 200, 400, 404, 409 | — |
+
+### PUT `/api/admin/apps/install-requests` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `id` | `uuid` |  |
+| `action` | `enum(approve|reject)` |  |
+| `note` | `string?(500)` | Why the admin decided; posted on the requesting ticket with the outcome. |
+| `keptData` | `enum(adopt|wipe)?` | keptData: the answer to a 409 — data an earlier install of the slug kept from another repository is adopted, or wiped first. |
+
+## `/api/admin/apps/update-requests`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps_update_requests.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_apps_update_requests.rs)
+
+> /api/admin/apps/update-requests. Plugin updates waiting for an admin (the
+> `app_update` approval): the maintenance pass raises one when a plugin's
+> branch moves past the commit installed — a merged PR. GET → the pending
+> queue; PUT → approve (talaria-apps' update: fetch, build and probe beside
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{requests}` | 200 | — |
+| PUT | `admin` | [body](#put-apiadminappsupdate-requests-body) | `…` | 200, 400, 404 | — |
+
+### PUT `/api/admin/apps/update-requests` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `id` | `uuid` |  |
+| `action` | `enum(approve|reject)` |  |
+| `note` | `string?(500)` | Why the admin decided; posted on the plugin's ticket with the outcome. |
 
 ## `/api/admin/coding-accounts`
 
@@ -150,9 +317,9 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_decide.rs`](../../api/
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{providers, wires, config, configured, shadow, sites, speechRooms, toolShadow}` | 200 | — |
+| GET | `admin` | — | `{providers, wires, config, configured, shadow, sites, speechRooms}` | 200 | — |
 | POST | `admin` | [body](#post-apiadmindecide-body) | `{ok, kind, reason}` | 200, 400 | audit |
-| PUT | `admin` | [body](#put-apiadmindecide-body) | `{config, configured, toolShadow}` | 200, 400 | audit |
+| PUT | `admin` | [body](#put-apiadmindecide-body) | `{config, configured}` | 200, 400 | audit |
 
 ### POST `/api/admin/decide` body
 
@@ -172,7 +339,6 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_decide.rs`](../../api/
 | `wire` | `enum(…)` |  |
 | `apiKey` | `string? nullable(500)` |  |
 | `timeoutMs` | `number?(250, 60000)` |  |
-| `toolShadow` | `bool` |  |
 
 ## `/api/admin/domains`
 
@@ -310,7 +476,9 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_guardrails.rs`](../../
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `mode` | `enum(off|observe|annotate|strict)` |  |
+| `checks` | `record` |  |
 | `minConfidence` | `number(0, 1)` | Validated only — the stored config passes the number through as the client wrote it (a stored 1 reads back as 1, not 1.0). |
+| `policedHosts` | `array` |  |
 | `coach` | `bool` |  |
 
 ## `/api/admin/instance`
@@ -416,13 +584,13 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_model_roles.rs`](../..
 > /api/admin/model-roles. Model Roles — which model handles each activity
 > class. GET → the catalog of roles + current assignments + assignable
 > models + fitness issues. PUT { role, model|null } → assign (null = back
-> to auto). Admins only.
+> to auto); a `vision` assignment also re-renders the fleet. Admins only.
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `admin` | — | `{roles, assignments, models, issues, efforts}` | 200 | — |
-| PUT | `admin` | [body](#put-apiadminmodel-roles-body) | `…` | 200, 400 | audit |
+| PUT | `admin` | [body](#put-apiadminmodel-roles-body) | `{assignments, issues, efforts}` | 200, 400 | audit |
 
 ### PUT `/api/admin/model-roles` body
 
@@ -453,6 +621,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_outreach.rs`](../../ap
 | `intervalMinutes` | `number(15, 1440)` |  |
 | `dailyDmCap` | `number(1, 20)` |  |
 | `dailyDmTotalCap` | `number?(1, 500)` |  |
+| `proactiveAgents` | `array` |  |
 
 ## `/api/admin/password-accounts`
 
@@ -584,6 +753,29 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_search.rs`](../../api/
 | :--- | :--- | :--- |
 | `url` | `string(0, 300)` | url max 300 — empty is a real instruction. |
 
+## `/api/admin/search/agents`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_search_agents.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_search_agents.rs)
+
+> /api/admin/search/agents. AGENT WEB SEARCH — the one provider every fleet
+> agent's own Hermes searches with (talaria-agent-web-search). GET is the
+> setting with its keys MASKED (which vendors hold one, never the value),
+> the backends this build offers, and what the render hands every agent
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `…` | 200 | — |
+| PUT | `admin` | [body](#put-apiadminsearchagents-body) | `…` | 200, 400 | audit |
+
+### PUT `/api/admin/search/agents` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `backend` | `nullish` |  |
+| `extractBackend` | `nullish` |  |
+| `allowKeylessPublicTiers` | `bool?` |  |
+
 ## `/api/admin/secrets`
 
 Source: [`api/crates/talaria-routes-admin/src/admin/admin_secrets.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_secrets.rs)
@@ -652,6 +844,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_storage.rs`](../../api
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `mode` | `enum(local|internal|s3)` | Body key order: mode, the Target spread, replica — a bad mode answers before any Target field can. |
+| `replica` | `record` |  |
 
 ## `/api/admin/updates`
 
@@ -726,6 +919,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_workspace_secrets.rs`]
 | :--- | :--- | :--- |
 | `name` | `value` | name: the alphabet check ('lowercase letters, digits, - and _') sits before the max, like the entry key. |
 | `title` | `string(1, 80)` |  |
+| `entries` | `array` | entries: elements parse before the array bounds run. |
 | `kind` | `enum(vault|relay)?` |  |
 | `note` | `string? nullish(400)` |  |
 | `expiresAt` | `string? nullish(40)` |  |

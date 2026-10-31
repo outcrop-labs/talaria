@@ -9,6 +9,9 @@ use sqlx::PgPool;
 
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_gateway::fleet_chat::ToolCall;
+// Checked before a cast is asked for: a plugin's session id is anything the
+// container made up.
+use talaria_params::uuid_shaped;
 use talaria_secretbox::SecretBox;
 
 use std::sync::OnceLock;
@@ -1254,6 +1257,19 @@ pub async fn set_message_run_id(
     Ok(())
 }
 
+/// The Hermes run behind one assistant row, if the row was driven through a
+/// session. The auto-resume asks it about a dead turn: the run may still be
+/// alive in the container, and then the turn is picked back up rather than
+/// sent a second time.
+pub async fn message_run_id(pg: &PgPool, message_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("select hermes_run_id from messages where id = $1::uuid")
+            .bind(message_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.and_then(|(run,)| run))
+}
+
 /// The conversation's in-flight assistant row and the Hermes run behind it —
 /// what a stop or a steer has to name. `None` is "nothing is streaming", which
 /// is the whole of the refusal both routes answer with.
@@ -1264,8 +1280,8 @@ pub async fn set_message_run_id(
 /// reader looking at right now", and the reader is looking at a spinner over
 /// exactly this row — killing it out from under a stop would answer "nothing is
 /// streaming" to a person who can see that something is. The run id is absent
-/// for a turn that went through the full-history chat arm, which Hermes
-/// addresses by nothing either route could name.
+/// for a turn that went through the full-history chat arm: a stop names its
+/// completion id instead, which only its drain knows (talaria-chat-persist).
 pub async fn streaming_run(
     pg: &PgPool,
     conversation_id: &str,
@@ -1422,8 +1438,9 @@ pub async fn mark_message_resumed(pg: &PgPool, message_id: &str) -> Result<(), s
     Ok(())
 }
 
-/// Stamp a turn as STOPPED — a person pressed stop, or the doom-loop guard
-/// pulled the plug on an agent calling the same thing over and over. The row
+/// Stamp a turn as STOPPED — a person pressed stop. (An agent stuck calling
+/// the same thing over and over is halted inside Hermes by its own loop
+/// guard, which ends the turn with a reply rather than a stop.) The row
 /// itself lands COMPLETE, not errored: whatever the agent managed to say is
 /// what the person chose to keep, and an error status would put a retry
 /// affordance on a turn nobody wants retried. This stamp is what tells the
@@ -1470,43 +1487,6 @@ pub async fn set_message_guard(
         .bind(serde_json::to_value(findings).unwrap_or(Value::Null))
         .execute(pg)
         .await?;
-    Ok(())
-}
-
-/// Land chips on ONE named message row, merging by chip id.
-///
-/// `talaria_chips::surface_tool_chips` is the usual writer, and it cannot serve
-/// here: it resolves which row to write by asking where the agent is currently
-/// speaking, while a caller inside the persist already holds the row's id and
-/// must not land its chip on whatever row that lookup happens to pick. The
-/// merge is the same one that writer uses — a chip whose id is already on the
-/// row is left alone, so a guard that fires again inside one turn does not
-/// stack duplicates.
-pub async fn merge_message_chips(
-    pg: &PgPool,
-    message_id: &str,
-    chips: &[Value],
-) -> Result<(), sqlx::Error> {
-    if chips.is_empty() {
-        return Ok(());
-    }
-    sqlx::query(
-        "update messages set chips = ( \
-           select coalesce(jsonb_agg(c), '[]'::jsonb) from ( \
-             select c from jsonb_array_elements(chips) c \
-             union all \
-             select c from jsonb_array_elements($2::jsonb) c \
-             where not exists ( \
-               select 1 from jsonb_array_elements(chips) e \
-               where e->>'id' = c->>'id' \
-             ) \
-           ) s \
-         ) where id = $1::uuid",
-    )
-    .bind(message_id)
-    .bind(Value::Array(chips.to_vec()))
-    .execute(pg)
-    .await?;
     Ok(())
 }
 
@@ -1595,6 +1575,20 @@ pub async fn post_agent_turn(
     marker: &str,
     body: &str,
 ) -> Result<String, sqlx::Error> {
+    post_agent_turn_with(pg, conversation_id, marker, &serde_json::Map::new(), body).await
+}
+
+/// `post_agent_turn`, with more stamps in the row's `metadata` beside the
+/// marker — written by the same insert, so a reader that finds the row finds
+/// them too (the cron door's Hermes session id is what a later pull dedupes
+/// on). A stamp named `marker` is ignored: the marker argument is the key.
+pub async fn post_agent_turn_with(
+    pg: &PgPool,
+    conversation_id: &str,
+    marker: &str,
+    stamps: &serde_json::Map<String, Value>,
+    body: &str,
+) -> Result<String, sqlx::Error> {
     // Already said: hand back the same id so the caller's idea of "the turn I
     // posted" stays stable across re-entries.
     let said: Option<(String,)> = sqlx::query_as(
@@ -1609,17 +1603,43 @@ pub async fn post_agent_turn(
     if let Some((id,)) = said {
         return Ok(id);
     }
+    let mut metadata = stamps.clone();
+    metadata.insert("marker".into(), Value::String(marker.to_string()));
     let seq = next_seq(pg, conversation_id).await?;
-    let id = insert_streaming_assistant(
-        pg,
-        conversation_id,
-        seq,
-        &serde_json::json!({ "marker": marker }),
-    )
-    .await?;
+    let id = insert_streaming_assistant(pg, conversation_id, seq, &Value::Object(metadata)).await?;
     update_assistant(pg, &id, body, "", &[], "complete").await?;
     touch_conversation(pg, conversation_id, None).await?;
     Ok(id)
+}
+
+/// The Hermes thread this conversation's completions turns open on
+/// (talaria-gateway `fleet_chat::Thread`): 0 until a turn was moved off a
+/// session that lost one in a restart. A missing row is thread 0.
+pub async fn hermes_epoch(pg: &PgPool, conversation_id: &str) -> Result<i32, sqlx::Error> {
+    let epoch: Option<i32> =
+        sqlx::query_scalar("select hermes_epoch from conversations where id = $1::uuid")
+            .bind(conversation_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(epoch.unwrap_or(0))
+}
+
+/// Keep the thread a turn moved this conversation to. Only ever forward: a
+/// slower writer holding an older thread cannot move it back onto the
+/// session it left.
+pub async fn move_hermes_epoch(
+    pg: &PgPool,
+    conversation_id: &str,
+    epoch: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update conversations set hermes_epoch = greatest(hermes_epoch, $2) where id = $1::uuid",
+    )
+    .bind(conversation_id)
+    .bind(epoch)
+    .execute(pg)
+    .await?;
+    Ok(())
 }
 
 /// Bump the conversation's updated_at, setting a title from the first turn
@@ -1727,9 +1747,363 @@ pub async fn create_conversation(
     Ok(row.expect("insert … returning always yields a row").0)
 }
 
+// ── A tool call the stream called finished and the agent saw fail ────────────
+//
+// HERMES' COMPLETIONS STREAM CALLS EVERY FINISHED TOOL `completed`. Its
+// `hermes.tool.progress` frame for the end of a call carries no verdict
+// (v0.22.4 `_on_tool_complete` in api_server_openai_routes.py sends
+// `status: "completed"` whatever the result said), so a terminal command the
+// approval gate refused (`{"error": "Command denied: …", "status":
+// "blocked"}`) landed in `messages.tools` as a call that worked. The session
+// arm does not have this problem: its `tool.failed` says so. The completions
+// arm is the chat default, so this is most chats.
+//
+// The agent's talaria-events plugin is the one place the verdict exists: it
+// reads the result and posts `status: "error"` to /api/agents/tool-events,
+// keyed by the same tool-call id the stream's frames carry. That post and the
+// turn's own writes race, so the verdict is kept two ways and either order
+// lands it: the door records it here (Redis, for the turn still streaming)
+// and marks it on the reply row that was running when the call finished; the
+// turn folds the recorded verdicts into its tools when it lands. Only ever
+// toward `error`: a stream that said a call failed is never overruled by a
+// plugin that says it worked.
+//
+// A TOOL-CALL ID IS NOT UNIQUE ACROSS TURNS. Hermes keeps an id unique
+// within one session's history, and on this arm that history is only what
+// Talaria sends: the prior turns' words, none of their calls. A provider that
+// sends no id gets `deterministic_call_id(name, arguments, index)` (v0.22.4
+// message_sanitization.py), the same id every time the agent runs the same
+// command; some providers number their calls (`call_0`, `functions.x:0`)
+// turn after turn. So a verdict is scoped twice. By CONVERSATION: the
+// plugin's session id names it (the conversation itself on the session arm;
+// on this arm the derived `api-…` session, which the turn recorded against
+// its conversation when its stream opened, talaria-gateway
+// `record_attribution`); a verdict whose session names no conversation of
+// the agent's (a work session's run, a one-shot) is not kept, and the wire's
+// word stands. By TIME: the verdict carries when the call finished, and a
+// drive takes only the verdicts from after it was sent, the door marks only
+// the reply row that was running at that moment.
+
+/// How long the door keeps a verdict for a turn still running the call. A
+/// turn can work for hours (a knowledgebase buildout), and the turn reads the
+/// verdict only when it lands; the same window bounds which landed rows the
+/// door marks.
+const TOOL_FAILURE_SECS: u64 = 6 * 3_600;
+
+fn tool_failure_key(agent_model: &str, conversation_id: &str, tool_call_id: &str) -> String {
+    format!("tool-failed:{agent_model}:{conversation_id}:{tool_call_id}")
+}
+
+/// A tool-call id a model minted (`call_…`, `toolu_…`), or nothing: the id is
+/// part of a Redis key and a jsonb match, so only plain ids are taken.
+fn plain_call_id(id: &str) -> Option<&str> {
+    let id = id.trim();
+    (!id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':')))
+    .then_some(id)
+}
+
+/// When a verdict's call finished, in epoch ms: the plugin's own `at`, which
+/// is when the call ended in the container, not when the post reached the
+/// door (a backed-up queue delivers late). Never later than `now`, since no
+/// call finished in the future, and the door's own clock when the plugin sent
+/// none, or one older than the window a verdict is kept for.
+pub fn verdict_at(reported: Option<i64>, now: i64) -> i64 {
+    let floor = now - (TOOL_FAILURE_SECS as i64) * 1_000;
+    match reported {
+        Some(at) if at > floor => at.min(now),
+        _ => now,
+    }
+}
+
+/// The conversation of this agent's that a plugin's session id names, or
+/// none. The session arm's session is the conversation's own id; the
+/// completions arm's is the `api-…` session Hermes derived, which the chat
+/// turn recorded against its conversation when its stream opened.
+async fn verdict_conversation(
+    pg: &PgPool,
+    agent_model: &str,
+    session_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let session = session_id.trim();
+    if session.is_empty() {
+        return Ok(None);
+    }
+    if uuid_shaped(session) {
+        return sqlx::query_scalar(
+            "select id::text from conversations where id = $1::uuid and agent_model = $2",
+        )
+        .bind(session)
+        .bind(agent_model)
+        .fetch_optional(pg)
+        .await;
+    }
+    sqlx::query_scalar(
+        "select c.id::text from usage_attributions a \
+           join conversations c on c.id = a.ref_id and c.agent_model = a.agent_model \
+          where a.agent_model = $1 and a.affinity_key = $2 and a.source = 'chat'",
+    )
+    .bind(agent_model)
+    .bind(session)
+    .fetch_optional(pg)
+    .await
+}
+
+/// What the door did with a verdict it kept: the conversation it was kept
+/// for, and how many reply rows it marked failed (0 when the reply running
+/// the call does not hold it yet; the turn's own writes fold it in).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeptVerdict {
+    pub conversation_id: String,
+    pub marked: u64,
+}
+
+/// The agent's plugin saw `tool_call_id` fail at `at_ms` (`verdict_at`), in
+/// the session `session_id` names: keep that for the conversation's turn
+/// still running it, and mark it failed on the reply that was running when
+/// it finished, if that reply already holds the call. Answers the
+/// conversation it was kept for, so the door can ring the tabs that have it
+/// open; a session that names no conversation of this agent's keeps nothing
+/// and answers None.
+pub async fn record_tool_failure(
+    pg: &PgPool,
+    redis: Option<&mut redis::aio::ConnectionManager>,
+    agent_model: &str,
+    session_id: &str,
+    tool_call_id: &str,
+    at_ms: i64,
+) -> Result<Option<KeptVerdict>, sqlx::Error> {
+    let Some(id) = plain_call_id(tool_call_id) else {
+        return Ok(None);
+    };
+    let Some(conversation) = verdict_conversation(pg, agent_model, session_id).await? else {
+        tracing::debug!(
+            "[tool-events] {agent_model}: {id} failed in session {session_id:?}, which names no \
+             conversation — not kept"
+        );
+        return Ok(None);
+    };
+    // Before the row: a turn that lands after this line reads the verdict,
+    // and one that landed before it is marked below.
+    if let Some(conn) = redis {
+        let set: redis::RedisResult<()> = redis::cmd("SET")
+            .arg(tool_failure_key(agent_model, &conversation, id))
+            .arg(at_ms)
+            .arg("EX")
+            .arg(TOOL_FAILURE_SECS)
+            .query_async(conn)
+            .await;
+        if let Err(e) = set {
+            tracing::warn!("[tool-events] {agent_model}: could not keep {id} as failed: {e}");
+        }
+    }
+    // The reply that was running when the call finished is the newest one
+    // made before that moment. A newer reply is a later turn, which may hold
+    // the same id for a call of its own.
+    let marked = sqlx::query(
+        "update messages m \
+            set tools = (select coalesce(jsonb_agg(case when t->>'id' = $2 \
+                                                   then jsonb_set(t, '{status}', '\"error\"') \
+                                                   else t end order by n), '[]'::jsonb) \
+                           from jsonb_array_elements(m.tools) with ordinality as e(t, n)) \
+          where m.id = (select x.id from messages x \
+                         where x.conversation_id = $1::uuid and x.role = 'assistant' \
+                           and x.created_at <= to_timestamp($3::float8 / 1000) \
+                           and x.created_at > now() - make_interval(secs => $4) \
+                         order by x.created_at desc, x.id desc limit 1) \
+            and m.tools @> jsonb_build_array(jsonb_build_object('id', $2::text))",
+    )
+    .bind(&conversation)
+    .bind(id)
+    .bind(at_ms as f64)
+    .bind(TOOL_FAILURE_SECS as f64)
+    .execute(pg)
+    .await?;
+    Ok(Some(KeptVerdict {
+        conversation_id: conversation,
+        marked: marked.rows_affected(),
+    }))
+}
+
+/// Fold the verdicts the door recorded into a landing turn's tools: a call
+/// its plugin saw fail is `error`, whatever the stream said. `since_ms` is
+/// when this drive was sent; a verdict from before it is an earlier turn's
+/// call that happened to share an id (None takes every kept verdict, for a
+/// stream whose calls ran before this process saw it). Says whether anything
+/// changed. A Redis that cannot be read changes nothing — the door still
+/// marks the landed row when its post arrives.
+pub async fn fold_tool_failures(
+    redis: &mut redis::aio::ConnectionManager,
+    agent_model: &str,
+    conversation_id: &str,
+    since_ms: Option<i64>,
+    tools: &mut [ToolCall],
+) -> bool {
+    let open: Vec<String> = tools
+        .iter()
+        .filter(|t| t.status != "error")
+        .filter_map(|t| t.id.as_deref().and_then(plain_call_id).map(str::to_string))
+        .collect();
+    if open.is_empty() {
+        return false;
+    }
+    let keys: Vec<String> = open
+        .iter()
+        .map(|id| tool_failure_key(agent_model, conversation_id, id))
+        .collect();
+    let found: Vec<Option<String>> = match redis::cmd("MGET").arg(&keys).query_async(redis).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("[chat_persist] {agent_model}: tool verdicts unreadable: {e}");
+            return false;
+        }
+    };
+    let failed = failed_since(&open, found, since_ms);
+    mark_tool_failures(tools, &failed)
+}
+
+/// The ids whose kept verdict (`at`, in epoch ms) belongs to this drive: at
+/// or after `since_ms`. A value that is not a time counts as nothing.
+fn failed_since(open: &[String], found: Vec<Option<String>>, since_ms: Option<i64>) -> Vec<&str> {
+    open.iter()
+        .zip(found)
+        .filter(|(_, v)| {
+            v.as_deref()
+                .and_then(|v| v.parse::<i64>().ok())
+                .is_some_and(|at| since_ms.is_none_or(|since| at >= since))
+        })
+        .map(|(id, _)| id.as_str())
+        .collect()
+}
+
+/// Mark the calls named in `failed` as `error`. A call already `error` stays
+/// so; nothing is ever marked back to working. Says whether anything changed.
+pub fn mark_tool_failures(tools: &mut [ToolCall], failed: &[&str]) -> bool {
+    let mut changed = false;
+    for t in tools.iter_mut() {
+        if t.status != "error" && t.id.as_deref().is_some_and(|id| failed.contains(&id)) {
+            t.status = "error".to_string();
+            changed = true;
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn call(id: Option<&str>, status: &str) -> ToolCall {
+        ToolCall {
+            id: id.map(str::to_string),
+            name: "terminal".into(),
+            label: String::new(),
+            status: status.into(),
+        }
+    }
+
+    /// The plugin's verdict marks exactly the calls it names, only ever
+    /// toward `error`, and a call with no id is never matched.
+    #[test]
+    fn a_failed_verdict_marks_only_its_own_call() {
+        let mut tools = vec![
+            call(Some("call_a"), "completed"),
+            call(Some("call_b"), "completed"),
+            call(None, "completed"),
+            call(Some("call_c"), "running"),
+        ];
+        assert!(mark_tool_failures(&mut tools, &["call_b", "call_c"]));
+        let status: Vec<&str> = tools.iter().map(|t| t.status.as_str()).collect();
+        assert_eq!(status, ["completed", "error", "completed", "error"]);
+        // Nothing left to change: the second fold of a landing is a no-op.
+        assert!(!mark_tool_failures(&mut tools, &["call_b", "call_c"]));
+    }
+
+    #[test]
+    fn only_a_plain_call_id_keys_a_verdict() {
+        assert_eq!(plain_call_id(" call_9x2Lk "), Some("call_9x2Lk"));
+        assert_eq!(plain_call_id("toolu_01A.b:c-d"), Some("toolu_01A.b:c-d"));
+        for bad in ["", "   ", "call a", "call*", "a\"b", &"x".repeat(129)] {
+            assert_eq!(plain_call_id(bad), None, "{bad}");
+        }
+        assert_eq!(
+            tool_failure_key("ada-eng", "c0ffee00-0000-4000-8000-000000000001", "call_1"),
+            "tool-failed:ada-eng:c0ffee00-0000-4000-8000-000000000001:call_1"
+        );
+    }
+
+    /// The same call id in two turns of one conversation, as Hermes mints it
+    /// when the provider sends none (`deterministic_call_id("terminal",
+    /// '{"command": "git status"}', 0)` is the same `call_…` every time): the
+    /// first turn's call failed and kept a verdict; the second turn's
+    /// succeeded. The second drive was sent after the verdict, so the
+    /// verdict is not its own and its call stays `completed`. The first
+    /// turn, landing, takes it.
+    #[test]
+    fn a_repeated_call_id_takes_only_its_own_turns_verdict() {
+        let failed_at = 1_793_136_611_257_i64;
+        let first_sent = failed_at - 4_000;
+        let second_sent = failed_at + 90_000;
+        let kept = || vec![Some(failed_at.to_string())];
+        let open = vec!["call_3b1e0f9a2c4d".to_string()];
+
+        let mut second = vec![call(Some("call_3b1e0f9a2c4d"), "completed")];
+        let failed = failed_since(&open, kept(), Some(second_sent));
+        assert!(failed.is_empty(), "{failed:?}");
+        assert!(!mark_tool_failures(&mut second, &failed));
+        assert_eq!(second[0].status, "completed");
+
+        let mut first = vec![call(Some("call_3b1e0f9a2c4d"), "completed")];
+        let failed = failed_since(&open, kept(), Some(first_sent));
+        assert!(mark_tool_failures(&mut first, &failed));
+        assert_eq!(first[0].status, "error");
+
+        // A drive sent the very millisecond the call finished still owns it;
+        // a stream a restart handed back (no send time) takes every kept one.
+        assert_eq!(
+            failed_since(&open, kept(), Some(failed_at)),
+            ["call_3b1e0f9a2c4d"]
+        );
+        assert_eq!(failed_since(&open, kept(), None), ["call_3b1e0f9a2c4d"]);
+        // Nothing kept, or a value that is not a time, is no verdict.
+        assert!(failed_since(&open, vec![None], None).is_empty());
+        assert!(failed_since(&open, vec![Some("error".into())], None).is_empty());
+    }
+
+    /// A verdict is timed by when its call finished in the container, not
+    /// when the post reached the door; never in the future, and the door's
+    /// clock stands in for a time that is missing or older than the window.
+    #[test]
+    fn a_verdict_is_timed_by_its_call() {
+        let now = 1_793_136_700_000_i64;
+        assert_eq!(verdict_at(Some(now - 2_500), now), now - 2_500);
+        assert_eq!(verdict_at(Some(now + 60_000), now), now);
+        assert_eq!(verdict_at(None, now), now);
+        assert_eq!(verdict_at(Some(0), now), now);
+        assert_eq!(
+            verdict_at(Some(now - (TOOL_FAILURE_SECS as i64) * 1_000), now),
+            now
+        );
+    }
+
+    /// Only what the cast takes is cast: a completions session (`api-…`) and
+    /// anything else a container made up go to the attribution lookup.
+    #[test]
+    fn only_a_uuid_session_is_read_as_a_conversation_id() {
+        assert!(uuid_shaped("c0ffee00-0000-4000-8000-00000000000A"));
+        assert!(uuid_shaped("c0ffee00000040008000000000000001"));
+        for not in [
+            "api-6bc93538c8727c5a",
+            "",
+            "c0ffee00-0000-4000-8000-00000000000g",
+            "c0ffee00-0000-4000-8000-0000000000011",
+        ] {
+            assert!(!uuid_shaped(not), "{not}");
+        }
+    }
 
     fn row(id: &str, seq: i32) -> MessageRow {
         MessageRow {

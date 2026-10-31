@@ -34,8 +34,9 @@ Self-hosted hardware and cloud keys sit in separate sections.
   they were fetched. Spend uses the provider's reported charge when they send one; a published
   price is a labeled fallback, never an editable number. OpenRouter shows each endpoint's price,
   because the same model can cost a different amount depending on which endpoint served the call.
-- **Remove provider** — cascades: every agent on it gets new versions, a re-render, and a
-  restart.
+- **Remove provider** — cascades: every agent on it gets new versions and a re-render, and each
+  running one restarts onto them (offline for about a minute). An agent someone stopped stays
+  stopped and picks the change up when it next starts.
 
 ## Roles: which model runs what
 
@@ -49,8 +50,17 @@ slots run `auto`. Unfit assignments surface as warnings — they report, never b
 | **Chores** | Utility — plus the platform workers: blurb-writer, titler, summarizer, librarian |
 | **Writing** | Muse · Distiller · Concluder · Briefer |
 | **Oversight** | The QA judge |
-| **Reserved** | Vision · Image-generation · Embedding · Reranker |
+| **Agents' eyes** | Vision — reads images for every agent whose own model is not known to see; leave it empty and those agents cannot read an image |
+| **Reserved** | Image-generation · Embedding · Reranker |
 | Your assistant | Fixed — each person's assistant, set from their own settings |
+
+**How an agent sees.** Talaria knows a model can read images when a fitness run's vision probe
+passed, the provider's catalog lists image input, or you declared it. An agent whose main model
+is known to see gets images as pixels. Any other agent gets them through the Vision model, which
+describes each attached image and also reads the images tools hand back. Saving the Vision slot
+re-renders every agent. A new capability fact reaches agents the next time the fleet renders (any
+agent edit, **Roll**, or deploy). An agent has one image mode: if its main model sees but one of its
+tiers or fallbacks does not, a turn on that tier or fallback cannot read an attached image.
 
 ## Fitness: test before you trust
 
@@ -78,4 +88,6 @@ Each key carries its own ceilings (**Limits…** on the row): a spend cap in tok
 dollars over the org budget window, and a requests-per-minute throttle. They are the owner's
 to set — a leaked or runaway key then burns only what its owner decided it may. A personal cap
 can only tighten, never raise past, an admin's ceiling; hitting it answers `429 budget_exceeded`
-(or `rate_limit_exceeded`) with `retry-after`, which standard OpenAI clients honor.
+(or `rate_limit_exceeded`) with `retry-after`, which standard OpenAI clients honor. A budget
+refusal also says when the window's spend falls back under the cap, if nothing more is spent:
+`error.resets_at` (epoch seconds) and the same time in its message.

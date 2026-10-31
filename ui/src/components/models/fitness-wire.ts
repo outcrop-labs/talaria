@@ -13,7 +13,6 @@ import type { Capability, CapabilityFact, CapabilityKey } from '@/server/harness
 import type { EvalBand } from '@/server/harness/define'
 import type { ToolPolicy } from '@/server/harness/transport'
 import type { Finding } from '@/server/guardrails'
-import type { GatewayPulse } from '@/server/llm-gateway'
 import type { ModelRole } from '@/server/model-roles'
 import type { PlatformAgentId } from '@/server/platform-agents'
 
@@ -38,8 +37,12 @@ export type HarnessSource = 'builtin' | `app:${string}` | 'custom'
  *  measured, scored and archived into a report with nowhere to appear.
  *
  *  That is the largest single consumer of models in the product, and the page an
- *  admin uses to choose one said nothing about it. */
-export type SlotKind = 'role' | 'agent' | 'fleet'
+ *  admin uses to choose one said nothing about it.
+ *
+ *  'app' is one column per activity harness an enabled app ships
+ *  (`apps/<slug>/harnesses/*.ts`), id `<slug>/<harness id>`, bound to that
+ *  harness alone — see `SlotKind::App` in the Rust fitness scorer. */
+export type SlotKind = 'role' | 'agent' | 'fleet' | 'app'
 
 /** The fleet slots. TWO, NOT ONE, because they are genuinely different jobs and
  *  an org routinely runs different models behind them: a personal assistant
@@ -55,7 +58,8 @@ export type FleetSlotId = 'assistant' | 'agent'
  *  file reads them there. */
 export interface FitnessSlot {
   kind: SlotKind
-  id: ModelRole | PlatformAgentId | FleetSlotId
+  /** An app slot's id is `<slug>/<harness id>`. */
+  id: ModelRole | PlatformAgentId | FleetSlotId | `${string}/${string}`
   label: string
   hint: string
   requires: Capability[]
@@ -742,6 +746,11 @@ export interface MatrixView {
     minObservedRuns: number
   }
   registry: { harnesses: number; fixtures: number; provocations: number; unfixtured: string[] }
+  /** THE APP COLUMNS' MODEL SETTINGS — an app slot's key (`app:<slug>/<id>`)
+   *  to the model an admin assigned it, for the app columns on screen. An
+   *  unassigned slot is absent: the harness runs on its own chain. Written by
+   *  `PUT /api/admin/app-harness-models`. */
+  appModels: Record<string, string>
 }
 
 /** A RUN IN FLIGHT, as the drill-down can show it.
@@ -1287,6 +1296,16 @@ export interface Trial {
   note: string
   /** The model's reply, bounded. Null when the trial never got one. */
   raw: string | null
+}
+
+/** The gateway's live pulse over its recent calls — the api's wire shape. */
+export interface GatewayPulse {
+  /** Upstream calls in the last 15 minutes. */
+  requests: number
+  errors: number
+  /** Time-to-first-byte percentiles over those calls, ms. */
+  p50: number | null
+  p95: number | null
 }
 
 export interface LatencyReading extends GatewayPulse {

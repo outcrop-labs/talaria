@@ -98,7 +98,9 @@ export interface WaveSource extends SourceBase {
   kind: 'wave'
   axis: 'x' | 'y'
   wavelength: number
-  /** px per second. */
+  /** px per second. 0 is a STILL crest: the same bands, painted once. A field
+   *  on a surface where nothing is happening should not move (N11), and a
+   *  speed-0 wave is how it keeps the wave's shape without the loop. */
   speed: number
 }
 
@@ -154,7 +156,72 @@ export interface DitherEngineOptions {
   organic?: number
   /** Tween budget for source changes, ms. Mercury standard: 150–250. */
   tweenMs?: number
+  /**
+   * Only the cells within this many CSS px of the canvas edge can show: the
+   * caller hides the rest (DitherBorder's ring mask shows 2 px). 0 (default)
+   * is the whole canvas. A cell entirely inside the band's inner edge is never
+   * evaluated or drawn, so a ring costs its perimeter, not its area. Pass the
+   * visible width; the engine adds two device pixels of slack, as it does for
+   * a mask.
+   */
+  edgeBand?: number
+  /**
+   * Draw each dot on whole device pixels (default true): its left and top
+   * edges rounded to the device grid (a cover cell's far edges rounded too, so
+   * neighbours abut). A dot antialiased across pixel edges reads as a soft grey
+   * blot at a fractional position, and the two browsers antialias it
+   * differently — WebKit's accelerated canvas puts up to 1.7 times Chromium's
+   * ink into the same dot. Snapped, a dot is the same crisp pixels in both, at
+   * full alpha, and its erase is exact. `false` keeps the antialiased rect.
+   *
+   * A dot of 1.4 CSS px is 1.75 device px at DPR 1.25 and 2.8 at DPR 2, so no
+   * one whole width stands for it: rounded, its area is off by up to half, and
+   * a field reads denser or sparser at each DPR. So the columns take the two
+   * whole widths either side (1 and 2 device px at DPR 1.25) in the proportion
+   * that averages the dot's own width, spread evenly (`snapWidth`), and the
+   * rows do the same for height; the dots' area, and the field's look, are the
+   * same at every DPR.
+   */
+  snap?: boolean
+  /**
+   * How many alpha levels a dot can take (default 64). A live field rewrites a
+   * dot whenever its stored alpha changes, so the number of levels between the
+   * floor and the ceiling is what a passing crest costs. 64 levels (a step of
+   * 4/255) is below what the eye separates on a dot field and keeps a
+   * bright-ceilinged field's rewrites at or under the ones a 0.26-ceilinged
+   * field paid at 255 levels. 255 is exact.
+   */
+  alphaSteps?: number
 }
+
+/* LIVE_FIELD_TUNING — why every field's call site carries heavier numbers than
+ * it was designed with (#624's N11, round 7).
+ *
+ * Until `drawChanged` erased whole device pixels, a field built up: every
+ * rewrite of a dot left ink in the device pixels its fill half covered — a
+ * live field all the time, an idle one over its 200 ms entrance. How much
+ * depended on everything — the engine (Chromium never stops adding, WebKit
+ * settles at 2 to 4x), the DPR, the page zoom and the canvas's sub-pixel
+ * position — so people saw anything from the designed look to a solid slab.
+ *
+ * The owner asked for the fix without the UI going faint. So each field (the
+ * card wash and trace, the ticket strip, the list strip's wash and trace,
+ * generating blocks, the design splash, the stream tail, drafting ghosts, and
+ * the still empty state, brief crest and ambient panel) is tuned to the
+ * MEDIAN of that look over the environments people use: 8 sub-pixel positions
+ * at DPR 1, 1.25, 1.5, 1.75 and 2 in Chromium and in WebKitGTK on its default
+ * (accelerated) canvas, plus Chromium at 90% and 110% zoom, 4 to 6 s after
+ * mount (an idle field once settled). The fit ran on half of those positions
+ * and DPRs and was checked on the other half. It matches the median's ink and
+ * visible-dot area, carries at least its highlights (the share of pixels past
+ * alpha 64, and how bright its brightest dots get) where the field can, and
+ * puts no more weight over text than the median did. The weight comes from
+ * the sources' strength and the ceiling, at the designed floor-to-ceiling
+ * ratio or near it, and the dots snap to device pixels (`snap`), so they read
+ * crisp and the same in both browsers and at every DPR (the drafting ghost
+ * alone stays antialiased: see TicketGhost). The numbers live at the call
+ * sites; the method and the measurements are in #633.
+ */
 
 /* ── Bayer 8×8 ─────────────────────────────────────────────────────────── */
 
@@ -344,6 +411,95 @@ function lerpSource(from: DitherSource, to: DitherSource, e: number): DitherSour
   return out
 }
 
+/* ── The shared ticker ─────────────────────────────────────────────────── */
+
+// ONE requestAnimationFrame FOR EVERY ENGINE ON THE PAGE. A live field (a
+// travelling wave, a shimmer, a tween) wants every frame, because it paints
+// on the first frame past each bucket boundary and has to look at each frame
+// to find it. With a loop per engine that was one wake-up per field per frame:
+// a board with four working cards mounts eight fields (a wash and a trace
+// each), which was 480 rAF callbacks a second to paint at about 12 Hz
+// (follow-up UB5). Here an engine asks for the next frame and the ticker runs
+// every engine that asked, in the order they asked, in one callback.
+//
+// It paints exactly what the per-engine loops painted. Every rAF callback of
+// one frame is handed the same timestamp, so an engine run by the ticker sees
+// the `now` its own callback would have seen, makes the same bucket decision
+// and writes the same cells. An engine that asks again from inside its own
+// frame lands in the next frame, as a rAF requested inside a rAF callback
+// does. The order fields paint in within a frame changes nothing on screen:
+// each one owns its canvas.
+//
+// Not `subscribeToClock` (lib/motion.ts): this file imports nothing, because
+// the desktop launcher aliases it directly (see the note at the top), and the
+// motion clock runs whenever anything subscribes while an engine needs a
+// frame only while it is live.
+interface TickerClient {
+  tick(now: number): void
+}
+
+/** Slack for float error when a dot's edge is snapped out to whole device
+ *  pixels (`drawChanged`): an edge at 2.9999999 is the pixel boundary at 3. */
+const SNAP_EPS = 1e-6
+
+/** Eight thresholds in bit-reversed order: any run of eight columns (or rows)
+ *  takes the wider of a snapped dot's two widths in proportion to the dot's
+ *  fractional width, and the wide ones are spread out, never bunched. */
+const SNAP_SPREAD = [0, 4, 2, 6, 1, 5, 3, 7].map((k) => (k + 0.5) / 8)
+
+/** A snapped dot's width in device pixels in column (or row) `c`, for a dot
+ *  `s` device pixels wide: floor(s) or one more, so eight columns average s
+ *  (to within 1/16 px). Never under one pixel. */
+function snapWidth(s: number, c: number): number {
+  const base = Math.max(1, Math.floor(s + SNAP_EPS))
+  return base + (s - base > SNAP_SPREAD[c & 7]! ? 1 : 0)
+}
+
+/** The mean of `snapWidth` over eight columns: what a snapped dot's width
+ *  averages, so its alpha can carry the last 1/16 px. */
+function snapMean(s: number): number {
+  let w = 0
+  for (let c = 0; c < 8; c++) w += snapWidth(s, c)
+  return w / 8
+}
+
+const tickerQueue = new Set<TickerClient>()
+let tickerHandle = 0
+
+function tickerFrame(now: number): void {
+  tickerHandle = 0
+  const due = [...tickerQueue]
+  tickerQueue.clear()
+  for (const client of due) {
+    // A field that throws stops only itself, as its own loop did: it never
+    // reached its schedule(), and every field after it still paints this
+    // frame and asks for the next. Its error is still reported as uncaught,
+    // once this frame's paints are done.
+    try {
+      client.tick(now)
+    } catch (err) {
+      queueMicrotask(() => {
+        throw err
+      })
+    }
+  }
+}
+
+/** Run `client.tick` on the next frame. Asking twice before it runs is one tick. */
+function requestTick(client: TickerClient): void {
+  tickerQueue.add(client)
+  if (tickerHandle === 0) tickerHandle = requestAnimationFrame(tickerFrame)
+}
+
+/** Take back a request; the last one out cancels the frame. */
+function cancelTick(client: TickerClient): void {
+  tickerQueue.delete(client)
+  if (tickerQueue.size === 0 && tickerHandle !== 0) {
+    cancelAnimationFrame(tickerHandle)
+    tickerHandle = 0
+  }
+}
+
 /* ── Engine ────────────────────────────────────────────────────────────── */
 
 export class DitherEngine {
@@ -355,12 +511,15 @@ export class DitherEngine {
   private ghostSeq = 0
   private wCss = 0
   private hCss = 0
+  // Device px per CSS px of the backing store: where a dot's whole pixels are.
+  private dpr = 1
   // Position on the page-wide lattice — see `latticeOrigin`.
   private fx = 0
   private fy = 0
   private ox = 0
   private oy = 0
-  private raf = 0
+  // This engine's place in the shared ticker's queue (see above).
+  private readonly ticker: TickerClient = { tick: (now) => this.frame(now) }
   private reduced = false
   private lastShimmerBucket = -1
   private lastWaveBucket = -1
@@ -379,6 +538,13 @@ export class DitherEngine {
   private density: Float32Array | null = null
   private ink: Uint32Array | null = null
   private painted: Uint32Array | null = null
+  // The cells a frame rewrites, collected before any of them is drawn (see `paint`).
+  private changed: Int32Array | null = null
+  // Which cells can show at all (see `cellsThatShow`), or null for every one.
+  // Recomputed whenever `invalidate` has cleared it: geometry, the mask and
+  // the band only change through there.
+  private shows: Uint8Array | null = null
+  private showsValid = false
   private styles = new Map<number, string>()
   private cacheDirty = true
   private drew = false
@@ -400,6 +566,9 @@ export class DitherEngine {
       cover: opts.cover ?? false,
       organic: opts.organic ?? 0,
       tweenMs: opts.tweenMs ?? 200,
+      edgeBand: opts.edgeBand ?? 0,
+      snap: opts.snap ?? true,
+      alphaSteps: opts.alphaSteps ?? 64,
     }
     this.tones = resolveTones()
 
@@ -453,9 +622,17 @@ export class DitherEngine {
     this.fy = gy.frac
     this.ox = gx.cell
     this.oy = gy.cell
-    this.canvas.width = Math.round(wCss * dpr)
-    this.canvas.height = Math.round(hCss * dpr)
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    // NEVER BELOW ONE BACKING PIXEL PER CSS PX. A page zoomed out (DPR 0.9 at
+    // 90%) would put a pitch-2 field's dots under a device pixel apart, and
+    // dots that share a pixel can only be drawn by a full rebuild every frame
+    // (`drawChanged`): a splash at 90% went from 161k to 508k fills a second.
+    // At scale 1 the backing store keeps its dots a pixel apart and the
+    // compositor scales the canvas down, as it does any image.
+    const scale = Math.max(1, dpr)
+    this.dpr = scale
+    this.canvas.width = Math.round(wCss * scale)
+    this.canvas.height = Math.round(hCss * scale)
+    this.ctx.setTransform(scale, 0, 0, scale, 0, 0)
     this.invalidate()
     this.schedule()
   }
@@ -543,7 +720,7 @@ export class DitherEngine {
 
   destroy(): void {
     this.destroyed = true
-    cancelAnimationFrame(this.raf)
+    cancelTick(this.ticker)
     this.io?.disconnect()
     this.io = null
     if (this.onDocVisibility && typeof document !== 'undefined') {
@@ -553,6 +730,8 @@ export class DitherEngine {
     this.density = null
     this.ink = null
     this.painted = null
+    this.changed = null
+    this.shows = null
     this.styles.clear()
   }
 
@@ -562,6 +741,8 @@ export class DitherEngine {
   private invalidate(): void {
     this.cacheDirty = true
     this.painted = null
+    this.shows = null
+    this.showsValid = false
   }
 
   /** Where an in-flight tween currently sits — retargeting starts from here,
@@ -571,12 +752,11 @@ export class DitherEngine {
     return lerpSource(entry.from, entry.to, e)
   }
 
+  /** Ask the shared ticker for the next frame. Asking again before it runs
+   *  changes nothing, as the per-engine `raf` guard did. */
   private schedule(): void {
-    if (this.destroyed || this.raf) return
-    this.raf = requestAnimationFrame((now) => {
-      this.raf = 0
-      this.frame(now)
-    })
+    if (this.destroyed) return
+    requestTick(this.ticker)
   }
 
   private frame(now: number): void {
@@ -591,7 +771,9 @@ export class DitherEngine {
       else if (entry.ghost) this.entries.delete(id)
     }
 
-    const hasWave = !this.reduced && [...this.entries.values()].some((e) => e.to.kind === 'wave')
+    // Only a wave that travels needs frames: a speed-0 crest is a still
+    // picture, built once like any other static field.
+    const hasWave = !this.reduced && [...this.entries.values()].some((e) => e.to.kind === 'wave' && e.to.speed !== 0)
     const shimmering = !this.reduced && this.opts.shimmer > 0 && this.entries.size > 0
 
     // Shimmer repaints on its own slow clock (~6/s); don't burn full-rate
@@ -645,7 +827,7 @@ export class DitherEngine {
    * redrawn.
    */
   private paint(now: number, live: boolean): void {
-    const { ctx, wCss, hCss, tones } = this
+    const { wCss, hCss, tones } = this
     const { pitch, dot, alphaFloor, maxAlpha, shimmer, cover, organic } = this.opts
     if (wCss === 0 || hCss === 0) return
 
@@ -655,6 +837,12 @@ export class DitherEngine {
     const rows = Math.ceil((hCss + this.fy) / pitch)
     const cells = cols * rows
     const size = cover ? pitch : dot
+    // A snapped dot's columns and rows average its own width to within 1/16 of
+    // a device pixel (`snapWidth`); its alpha carries what is left, so a field
+    // holds the same ink at every DPR. Under a device pixel (a dot under 1 CSS
+    // px), the dot is one pixel and its alpha carries all of the difference.
+    const snapMeanW = snapMean(size * this.dpr)
+    const snapComp = this.opts.snap && !cover ? (size * this.dpr) ** 2 / (snapMeanW * snapMeanW) : 1
     const off = cover ? 0 : (pitch - dot) / 2
     const bucket = Math.floor(now / 160)
     const t = now / 1000
@@ -663,12 +851,15 @@ export class DitherEngine {
     // into the same 8 bits per channel the canvas stores — so two cells that
     // pack equal are two cells that PAINT equal, and the frame can write only
     // the ones that differ. A length change means the geometry moved under us:
-    // clear, and start the picture over.
+    // clear, and start the picture over. A frame that starts from a cleared
+    // canvas has nothing to erase under the cells it draws.
     let painted = this.painted
+    let fresh = false
     if (!painted || painted.length !== cells) {
-      ctx.clearRect(0, 0, wCss, hCss)
+      this.clearAll()
       painted = this.painted = new Uint32Array(cells)
       this.drew = false
+      fresh = true
     }
 
     const active: DitherSource[] = []
@@ -683,18 +874,11 @@ export class DitherEngine {
     const mask = this.mask
     if (active.length === 0 || (mask !== null && mask.length === 0)) {
       if (this.drew) {
-        ctx.clearRect(0, 0, wCss, hCss)
+        this.clearAll()
         painted.fill(0)
         this.drew = false
       }
       return
-    }
-
-    ctx.save()
-    if (mask && mask.length > 0) {
-      ctx.beginPath()
-      for (const r of mask) ctx.rect(r.x, r.y, r.w, r.h)
-      ctx.clip()
     }
 
     // THE FIELD IS GEOMETRY, so it is computed once and read per tick: a
@@ -718,9 +902,22 @@ export class DitherEngine {
     const writeDensity = building ? new Float32Array(cells) : null
     const writeInk = building ? new Uint32Array(cells) : null
 
+    // The cells whose pixel changes, decided for the whole field BEFORE any of
+    // them is drawn — see `drawChanged` for why the drawing is two passes.
+    let changed = this.changed
+    if (!changed || changed.length !== cells) changed = this.changed = new Int32Array(cells)
+    let nChanged = 0
+    // Computed on the first frame that draws after an `invalidate` — not only
+    // on a fresh one: a fade-in's first frame can return early with nothing
+    // to draw, and the frames after it are not fresh.
+    if (!this.showsValid || (this.shows !== null && this.shows.length !== cells)) {
+      this.shows = this.cellsThatShow(cols, rows, size, off)
+      this.showsValid = true
+    }
+    const shows = this.shows
+
     for (let cy = 0; cy < rows; cy++) {
       const y = cy * pitch - this.fy + pitch / 2
-      const top = cy * pitch - this.fy + off
       // Page cell indices: the matrix and the noise are read from these, so the
       // pattern is continuous across every field on the page. The FIELD is
       // still sampled in local coordinates, because sources are local.
@@ -732,7 +929,9 @@ export class DitherEngine {
 
         let density = 0
         let ink = 0
-        if (densityOf) {
+        if (shows !== null && shows[i] === 0) {
+          // Nothing of this cell can show: it stays empty, never evaluated.
+        } else if (densityOf) {
           density = densityOf[i]!
           ink = inkOf![i]!
         } else {
@@ -780,58 +979,47 @@ export class DitherEngine {
           density += (hash01(gx, gy, bucket) - 0.5) * shimmer
         }
 
-        // Nothing here — a cell that used to hold ink is erased, and the rest
-        // are left exactly as they are.
-        if (density <= 0.002) {
-          if (painted[i] !== 0) {
-            ctx.clearRect(cx * pitch - this.fx + off, top, size, size)
-            painted[i] = 0
-          }
-          continue
+        // Nothing here (0) — a cell that used to hold ink is erased, and the
+        // rest are left exactly as they are.
+        let packed = 0
+        if (density > 0.002) {
+          // TWO TIERS, NOT DOTS AND HOLES.
+          //
+          // Adopted from dither-kit (MIT, Boring-Software-Inc/dither-kit), whose
+          // engine puts the rule plainly: the scatter modulates between two tiers
+          // of the SAME colour rather than leaving holes, so nothing shows the
+          // background through. The CSS tile does this now and the canvas fields
+          // have to agree, or the two paths read as different materials.
+          //
+          // It also softens every change of state. A cell that crosses the
+          // threshold steps from the faint tier to the full one — a change in
+          // DEGREE — where before it appeared out of nothing, which the eye
+          // catches as an event.
+          //
+          // A cell with no field on it at all is still skipped: the tier is a
+          // floor under the texture, not a wash over the whole surface.
+          const threshold = (BAYER[(gy & 7) * 8 + (gx & 7)]! + 0.5) / 64
+          const lit = density > threshold
+
+          // The unlit tier is scaled by density rather than lifted off
+          // `alphaFloor`, so it fades out exactly where the field does instead of
+          // leaving a faint rectangle at the field's edge.
+          const alpha = cover
+            ? 1
+            : lit
+              ? alphaFloor + (maxAlpha - alphaFloor) * clamp01(density)
+              : maxAlpha * clamp01(density) * OFF_TIER
+          const steps = this.opts.alphaSteps
+          const a8 = cover ? 255 : Math.round((Math.round(clamp01(alpha * snapComp) * steps) / steps) * 255)
+          packed = ((ink << 8) | a8) >>> 0
         }
-
-        // TWO TIERS, NOT DOTS AND HOLES.
-        //
-        // Adopted from dither-kit (MIT, Boring-Software-Inc/dither-kit), whose
-        // engine puts the rule plainly: the scatter modulates between two tiers
-        // of the SAME colour rather than leaving holes, so nothing shows the
-        // background through. The CSS tile does this now and the canvas fields
-        // have to agree, or the two paths read as different materials.
-        //
-        // It also softens every change of state. A cell that crosses the
-        // threshold steps from the faint tier to the full one — a change in
-        // DEGREE — where before it appeared out of nothing, which the eye
-        // catches as an event.
-        //
-        // A cell with no field on it at all is still skipped: the tier is a
-        // floor under the texture, not a wash over the whole surface.
-        const threshold = (BAYER[(gy & 7) * 8 + (gx & 7)]! + 0.5) / 64
-        const lit = density > threshold
-
-        // The unlit tier is scaled by density rather than lifted off
-        // `alphaFloor`, so it fades out exactly where the field does instead of
-        // leaving a faint rectangle at the field's edge.
-        const alpha = cover
-          ? 1
-          : lit
-            ? alphaFloor + (maxAlpha - alphaFloor) * clamp01(density)
-            : maxAlpha * clamp01(density) * OFF_TIER
-        const packed = ((ink << 8) | (cover ? 255 : Math.round(alpha * 255))) >>> 0
         if (packed === painted[i]) continue
-        // CLEAR BEFORE FILL — an incremental fill is not an assignment. fillRect
-        // composites source-over, so a dimmer refill over a brighter dot
-        // BRIGHTENS it (0.016 over 0.063 reads 0.078), and every shimmer flip
-        // or passing wave crest stacked another layer: the field crept past its
-        // own maxAlpha into blotch. The clear makes the write absolute — the
-        // same pixels a full clear-and-redraw would have left.
-        ctx.clearRect(cx * pitch - this.fx + off, top, size, size)
-        ctx.fillStyle = this.styleOf(packed)
-        ctx.fillRect(cx * pitch - this.fx + off, top, size, size)
         painted[i] = packed
-        this.drew = true
+        changed[nChanged++] = i
       }
     }
-    ctx.restore()
+
+    if (nChanged > 0) this.drawChanged(changed, nChanged, cols, size, off, fresh)
 
     this.density = writeDensity ?? densityOf ?? this.density
     this.ink = writeInk ?? inkOf ?? this.ink
@@ -840,6 +1028,214 @@ export class DitherEngine {
     // frame that merely READ it must not throw it away — that mistake made the
     // cache useless: every other tick paid a full re-evaluation of the field.
     this.cacheDirty = live
+  }
+
+  /**
+   * Which cells can put a pixel on screen: those whose dot reaches a mask rect
+   * (the clip removes the rest anyway), and, with `edgeBand`, lies within the
+   * band. Null when every cell can. The others are left empty for good, which
+   * paints exactly what drawing them under the clip or the caller's mask did,
+   * and costs nothing per frame: the stream tail's mask is a few line
+   * fragments of a wide block, and a ring's band its perimeter.
+   */
+  private cellsThatShow(cols: number, rows: number, size: number, off: number): Uint8Array | null {
+    const band = this.opts.edgeBand
+    const mask = this.mask
+    if (band <= 0 && (mask === null || mask.length === 0)) return null
+    const { pitch } = this.opts
+    const slack = 2 / this.dpr
+    const out = new Uint8Array(cols * rows)
+    for (let cy = 0; cy < rows; cy++) {
+      const y0 = cy * pitch - this.fy + off
+      const y1 = y0 + size
+      for (let cx = 0; cx < cols; cx++) {
+        const x0 = cx * pitch - this.fx + off
+        const x1 = x0 + size
+        let ok = true
+        if (band > 0) {
+          const b = band + slack
+          ok = x0 < b || y0 < b || x1 > this.wCss - b || y1 > this.hCss - b
+        }
+        if (ok && mask && mask.length > 0) {
+          ok = false
+          for (const r of mask) {
+            // With slack: an antialiased clip lends coverage to the device
+            // pixels around its rect, not only to those inside it.
+            if (x0 < r.x + r.w + slack && x1 > r.x - slack && y0 < r.y + r.h + slack && y1 > r.y - slack) {
+              ok = true
+              break
+            }
+          }
+        }
+        out[cy * cols + cx] = ok ? 1 : 0
+      }
+    }
+    return out
+  }
+
+  /** Erase the whole backing store, in its own device pixels. In CSS px a
+   *  canvas whose width times the DPR is fractional would leave its last
+   *  device column cleared only by coverage. */
+  private clearAll(): void {
+    const { ctx, canvas } = this
+    ctx.save()
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.restore()
+  }
+
+  /**
+   * Write the cells a frame changed, so the canvas holds exactly what a full
+   * clear-and-redraw of the same frame would (#624's N11, round 7).
+   *
+   * AN INCREMENTAL FILL IS NOT AN ASSIGNMENT. `fillRect` composites
+   * source-over, so a refill over the old dot adds to it, and every passing
+   * crest or shimmer flip stacked another layer. Erasing the dot first is not
+   * enough on its own when the erase is the dot's own rect, because a dot
+   * almost never sits on whole device pixels: the house lattice puts a pitch-2
+   * dot at x.5, and pitch 4 / dot 1.4 is fractional at every DPR. The fill
+   * antialiases into the pixels it half covers, and the erase does not reach
+   * them in full. Chromium rounds a clear's rect to whole pixels and leaves
+   * those edge pixels alone, so each rewrite adds to them until they are
+   * opaque; WebKit clears them by coverage, so they settle at up to four times
+   * their weight. Either way a live field crept, from its first seconds: 4 to
+   * 40 times a full rebuild's alpha in Chromium after a minute, the dots
+   * swelling into their own halos.
+   *
+   * So the erase covers EVERY WHOLE DEVICE PIXEL THE DOT CAN TOUCH, and it is
+   * done outside the mask's clip, because a clip edge antialiases as well and
+   * a full rebuild starts from a canvas clear everywhere. Then the dots are
+   * filled inside the clip, as a full rebuild fills them.
+   *
+   * That is exact whenever no two dots share a device pixel, which holds when
+   * the gap between them (pitch − dot) is at least one device pixel. Every
+   * field in the product keeps its dots at least a CSS px apart, so that holds
+   * at any DPR of 1 or more; a field tuned past that would take the rebuild
+   * below. Cover mode (dots that touch) and a page zoomed out far
+   * enough that the gap is under a device pixel break it, and there a frame
+   * that changes anything is drawn as a full rebuild: exact, and dearer, and
+   * only there. (Redrawing just the erased footprint, clipped to it, was tried:
+   * the clip moves Chromium's rounding by a level.)
+   */
+  private drawChanged(changed: Int32Array, n: number, cols: number, size: number, off: number, fresh: boolean): void {
+    const { ctx, dpr, fx, fy, mask } = this
+    const { pitch } = this.opts
+    const painted = this.painted!
+    // A dot's rect, and the whole device pixels it can touch.
+    const dotX = (i: number) => (i % cols) * pitch - fx + off
+    const dotY = (i: number) => Math.floor(i / cols) * pitch - fy + off
+    const lo = (v: number) => Math.floor(v * dpr + SNAP_EPS)
+    const hi = (v: number) => Math.ceil(v * dpr - SNAP_EPS)
+    // The device pixels a dot covers: snapped (see `snap`), exactly its own
+    // pixels; antialiased, every pixel its rect touches.
+    const { snap, cover } = this.opts
+    const sDev = size * dpr
+    const from = (v: number) => (snap ? Math.round(v * dpr) : lo(v))
+    // The far edge of cell i's dot: a column's width, a row's height.
+    const toX = (i: number) => {
+      const x = dotX(i)
+      if (!snap) return hi(x + size)
+      return cover ? Math.round((x + size) * dpr) : Math.round(x * dpr) + snapWidth(sDev, i % cols)
+    }
+    const toY = (i: number) => {
+      const y = dotY(i)
+      if (!snap) return hi(y + size)
+      return cover ? Math.round((y + size) * dpr) : Math.round(y * dpr) + snapWidth(sDev, Math.floor(i / cols))
+    }
+    const fillDot = (i: number) => {
+      if (!snap) {
+        ctx.fillRect(dotX(i), dotY(i), size, size)
+        return
+      }
+      const x0 = from(dotX(i))
+      const y0 = from(dotY(i))
+      ctx.fillRect(x0, y0, toX(i) - x0, toY(i) - y0)
+    }
+    const clipToMask = () => {
+      if (!mask || mask.length === 0) return
+      ctx.beginPath()
+      for (const r of mask) ctx.rect(r.x, r.y, r.w, r.h)
+      ctx.clip()
+    }
+
+    // `1 - SNAP_EPS`: a gap of exactly one device pixel (pitch 3 / dot 2 at
+    // DPR 1) is disjoint, and float error must not tip it into the rebuild.
+    // Snapped, two neighbours' left edges are floor or ceil of pitch × DPR
+    // apart, so they never share a pixel while that floor is at least a dot's
+    // widest snapped width — column 0's, whose threshold is the lowest (and
+    // cover cells abut exactly). Antialiased, the gap has to be a whole device
+    // pixel.
+    const disjoint = snap
+      ? cover || Math.floor(pitch * dpr + SNAP_EPS) >= snapWidth(sDev, 0)
+      : (pitch - size) * dpr >= 1 - SNAP_EPS
+    if (fresh || disjoint) {
+      if (!fresh) {
+        // One erase per RUN of a row's rewritten dots, not one per dot: the
+        // pixels between two footprints belong to no dot and are always clear,
+        // so erasing across them changes nothing. A run stops at a dot that
+        // stays (its ink must survive); a cell with nothing on it can sit
+        // inside one. A crest passing through a field rewrites whole stretches
+        // of each row, so this is most of the erases.
+        ctx.save()
+        ctx.setTransform(1, 0, 0, 1, 0, 0)
+        for (let k = 0; k < n; ) {
+          const first = changed[k]!
+          const rowEnd = (Math.floor(first / cols) + 1) * cols
+          let last = first
+          let k2 = k + 1
+          while (k2 < n) {
+            const j = changed[k2]!
+            if (j >= rowEnd) break
+            let keeps = false
+            for (let m = last + 1; m < j; m++) {
+              if (painted[m] !== 0) {
+                keeps = true
+                break
+              }
+            }
+            if (keeps) break
+            last = j
+            k2++
+          }
+          const x0 = from(dotX(first))
+          const y0 = from(dotY(first))
+          ctx.clearRect(x0, y0, toX(last) - x0, toY(first) - y0)
+          k = k2
+        }
+        ctx.restore()
+      }
+      ctx.save()
+      clipToMask()
+      // A snapped dot is drawn in device pixels; the mask's clip, set above in
+      // CSS px, stays where it is.
+      if (snap) ctx.setTransform(1, 0, 0, 1, 0, 0)
+      for (let k = 0; k < n; k++) {
+        const i = changed[k]!
+        const packed = painted[i]!
+        if (packed === 0) continue
+        ctx.fillStyle = this.styleOf(packed)
+        fillDot(i)
+        this.drew = true
+      }
+      ctx.restore()
+      return
+    }
+
+    // Dots share device pixels, so no dot can be erased without erasing part
+    // of a neighbour: the frame is a full rebuild. Every cell is drawn, in the
+    // order a rebuild draws them.
+    this.clearAll()
+    ctx.save()
+    clipToMask()
+    if (snap) ctx.setTransform(1, 0, 0, 1, 0, 0)
+    for (let i = 0; i < painted.length; i++) {
+      const packed = painted[i]!
+      if (packed === 0) continue
+      ctx.fillStyle = this.styleOf(packed)
+      fillDot(i)
+      this.drew = true
+    }
+    ctx.restore()
   }
 
   /** The colour string for a packed pixel, built once per distinct pixel. The

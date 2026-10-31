@@ -131,10 +131,10 @@ Source: [`api/crates/talaria-routes-integrations/src/account/auth_providers.rs`]
 
 Source: [`api/crates/talaria-routes-integrations/src/account/auth_session.rs`](../../api/crates/talaria-routes-integrations/src/account/auth_session.rs)
 
-> GET /api/auth/session. The current user + their denied views + effective
-> permissions, read from the DB each time so an admin's access change applies
-> without re-login. The user's face — effective picture, status emoji and
-> text — is read fresh from the users row the same way, so a photo or status
+> GET /api/auth/session. The current user + their denied views + the app
+> views they hold + effective permissions, read from the DB each time so an
+> admin's access change applies without re-login. The user's face —
+> effective picture, status emoji and text — is read fresh from the users row
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -195,9 +195,9 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me_assistant.rs`](.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `…` | 200 | — |
-| POST | `session` | [body](#post-apimeassistant-body) | `…` | 200, 400 | — |
-| PATCH | `session` | [body](#patch-apimeassistant-body) | `…` | 200, 400 | — |
+| GET | `session` | — | `{assistant}` | 200 | — |
+| POST | `session` | [body](#post-apimeassistant-body) | `{assistant}` | 200, 400, 409 | — |
+| PATCH | `session` | [body](#patch-apimeassistant-body) | `{assistant}` | 200, 400 | — |
 
 ### POST `/api/me/assistant` body
 

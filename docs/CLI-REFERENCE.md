@@ -164,6 +164,7 @@ Positional `<slug>` (required) — lowercase kebab, same rule as install
 | :--- | :--- | :--- | :--- |
 | `--name` | value | — | display name (default: title-cased slug) |
 | `--icon` | value | — | nav icon (default: ⬡) |
+| `--harness` | bool | — | add a starter harness under harnesses/, with a recorded reply for its fixture |
 
 ## `talaria deploy`
 
@@ -293,7 +294,7 @@ talaria cleanup [--apply]
 
 | Flag | Kind | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--apply` | bool | — | remove the safe set (stale clean worktrees and boxes, old /tmp/talaria-*, orphan compose projects) |
+| `--apply` | bool | — | remove the safe set (stale clean worktrees and boxes, old /tmp/talaria-*, orphan compose projects, networks, app databases and MCP packages) |
 
 ### `talaria reset`
 

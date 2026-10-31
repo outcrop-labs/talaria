@@ -18,12 +18,13 @@ and which people may use it, down to individual tools.
 | See its tools | **{n} tools** on the card, or **Discover tools** to ask the server for its catalog — the card then says *ready*, *needs credentials*, *unreachable* or the server's own error |
 | Give it an API key | **Set credentials** on the card (or kebab → **Edit credentials…**): the publisher's declared fields, or free header rows; saving re-tests |
 | Connect an OAuth server | **Connect** on the card — signs in the *org* account so agents can use it. A provider that needs a registered app shows **Set up**: the provider's developer portal, the exact callback URL to register, client id/secret, scopes |
+| Disconnect the org's OAuth account | Kebab → **Disconnect org account** (admins): within a few minutes, without a restart, agents that carry the server can no longer use its tools (each call answers that the account isn't connected) until someone connects it again |
 | Re-check how it authenticates | Kebab → **Re-detect auth** (a server that was down at install, or that started speaking OAuth later) |
 | Carry it on every agent | In **Manage access**, check **all agents** — rows below become per-agent tool overrides |
 | Narrow one agent's tools | In **Manage access**, add that agent and pick a tool subset (**All tools** if untouched) |
 | Gate a person | In **Manage access**, add a person rule — everyone with an assigned agent may use it otherwise |
 | Turn one off | Kebab → **Disable server**; enable reverses it |
-| Remove one | Kebab → **Remove server** — every agent loses it on its next roll |
+| Remove one | Kebab → **Remove server** — every agent that carries it loses it within about a minute, without a restart |
 
 Cards say where a server came from: `built-in`, `app` (published by an app — lifecycle
 belongs to the Apps page), or a domain. **Switch to per-user auth** makes each person
@@ -76,7 +77,11 @@ estimates rather than provider invoices, and models without prices set on the
 [Models](./admin-models.md) page show as unattributed — the "ledger priced" alert is the
 honesty check. **Admin → Settings** also carries rolling-window LLM budgets (org-wide and
 per-caller token/$ ceilings, checked before every gateway call) and a minimum cron interval;
-both are unlimited/unset by default.
+both are unlimited/unset by default. An agent that reaches its budget ends the turn and says
+when the window reopens. If you raise the limit before then, the agent works again at once.
+One exception: a conversation in which the agent had switched to its fallback model stays on
+the fallback until that time, until it has been idle for about an hour, or until you restart
+the agent. New conversations use the main model.
 
 ## Apps (admin)
 

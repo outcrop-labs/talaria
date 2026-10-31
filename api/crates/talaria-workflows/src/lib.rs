@@ -105,12 +105,23 @@ pub struct WorkflowPatch {
     pub toolkits: Option<serde_json::Value>,
 }
 
+/// `Ok(false)` when no workflow has this id: nothing was written, and the
+/// route answers 404. Asked first, under the row's lock, so an empty patch
+/// says so too and a delete racing the patch cannot land between the two.
 pub async fn update_workflow(
     pg: &PgPool,
     id: &str,
     patch: &WorkflowPatch,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
     let mut tx = pg.begin().await?;
+    let found: Option<(i32,)> =
+        sqlx::query_as("select 1 from task_workflows where id = $1::uuid for update")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if found.is_none() {
+        return Ok(false);
+    }
     if let Some(v) = &patch.name {
         sqlx::query("update task_workflows set name = $1, updated_at = now() where id = $2::uuid")
             .bind(v)
@@ -162,23 +173,23 @@ pub async fn update_workflow(
         .await?;
     }
     tx.commit().await?;
-    Ok(())
+    Ok(true)
 }
 
-/// No 404 — a missed id deletes nothing and the route still answers ok.
-pub async fn delete_workflow(pg: &PgPool, id: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("delete from task_workflows where id = $1::uuid")
+/// Whether a workflow was there to delete: a missed id deletes nothing, and
+/// the route answers it 404.
+pub async fn delete_workflow(pg: &PgPool, id: &str) -> Result<bool, sqlx::Error> {
+    let done = sqlx::query("delete from task_workflows where id = $1::uuid")
         .bind(id)
         .execute(pg)
         .await?;
-    Ok(())
+    Ok(done.rows_affected() > 0)
 }
 
 // ── The match half ───────────────────────────────────────────────────────────
 
-/// What a match is decided against, borrowed: the heartbeat holds the
-/// tickets it just fetched and should not have to clone them to classify
-/// them.
+/// What a match is decided against, borrowed: a caller holding the ticket it
+/// just fetched should not have to clone it to classify it.
 pub struct MatchTarget<'a> {
     pub title: &'a str,
     pub description: Option<&'a str>,
@@ -186,8 +197,7 @@ pub struct MatchTarget<'a> {
     pub board_id: &'a str,
 }
 
-/// The workflow payload delivered WITH the work (dispatch + heartbeat +
-/// get_ticket). `skills`/`toolkits` ride as the row's jsonb, passthrough —
+/// The workflow payload delivered WITH the work (dispatch + get_ticket). `skills`/`toolkits` ride as the row's jsonb, passthrough —
 /// same reason as the CRUD half.
 #[derive(serde::Serialize)]
 pub struct WorkflowDelivery {
@@ -242,8 +252,8 @@ pub fn match_workflow(h: &Workflow, t: &MatchTarget<'_>) -> bool {
     !facets.is_empty() && facets.iter().all(|f| *f)
 }
 
-/// The match against a list the caller already holds. Batch callers (the
-/// heartbeat walks every servable ticket) MUST use this with one
+/// The match against a list the caller already holds. Batch callers (any
+/// walk over many tickets) MUST use this with one
 /// `list_workflows()` hoisted out of their loop — `workflows_for_task` per
 /// ticket re-reads the whole table each time. Kept as the single expression
 /// of the match so the hot path cannot drift from the one-off path.

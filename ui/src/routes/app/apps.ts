@@ -1,7 +1,32 @@
 // Shared types + API calls for the Apps page (Apps.svelte + its tabs).
-import { errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
+import { delJson, errorMessage, getJson, postJson, postJsonOr, putJson, putJsonOr } from '@/lib/fetch-json'
 import type { AppBuildInfo } from '@/lib/apps'
 
+/** Where an app installed from git came from, and the commit it runs. */
+export interface AppGitSource {
+  url: string
+  host: string
+  repo: string
+  /** The ref install or the last update asked for; null is the default branch. */
+  ref: string | null
+  /** Null only for an app installed before commits were recorded. */
+  sha: string | null
+  previousSha: string | null
+  installedAt: string | null
+  updatedAt: string | null
+}
+/** An installed app a Developer Agent maintains: who, for whom, where its
+ *  maintenance tickets go, and how its updates land. The source half is `git`. */
+export interface AppPlugin {
+  maintainer: { id: string; model: string | null; name: string | null } | null
+  owner: { id: string; name: string | null } | null
+  board: { id: string; name: string | null } | null
+  taskId: string | null
+  ticketRef: string | null
+  gitHost: string | null
+  /** approve: every update waits for an admin; auto: applied when seen. */
+  updatePolicy: 'approve' | 'auto'
+}
 export interface InstalledApp {
   slug: string
   name: string
@@ -12,7 +37,94 @@ export interface InstalledApp {
   mcp?: boolean
   enabled: boolean
   source: string | null
+  git?: AppGitSource | null
   build?: AppBuildInfo
+  /** talaria.json fails the manifest rules: why. Never enabled; removable. */
+  broken?: string
+  plugin?: AppPlugin | null
+  /** The app's triggers (talaria.json), each with its newest runs. */
+  triggers?: AppTriggerInfo[]
+}
+/** One run of an app's trigger, as talaria-app-triggers records it. */
+export interface AppTriggerRun {
+  state: 'queued' | 'running' | 'ok' | 'failed' | 'skipped'
+  event: string | null
+  /** The schedule's minute this run was for (cron only). */
+  dueAt: string | null
+  queuedAt: string
+  startedAt: string | null
+  finishedAt: string | null
+  /** The handler's own result line. */
+  detail: string | null
+  error: string | null
+}
+/** A declared trigger: a schedule (UTC) with its next minute, or an event. */
+export interface AppTriggerInfo {
+  id: string
+  cron?: string
+  event?: string
+  nextAt?: string | null
+  /** Newest first. */
+  runs: AppTriggerRun[]
+}
+/** An agent's request to install the app it built (`request_app_install`). */
+export interface AppInstallRequest {
+  id: string
+  agentId: string
+  agentModel: string
+  agentName: string | null
+  /** The registered git host the repo is on (Admin → Git hosts). */
+  hostId: string
+  repo: string
+  url: string
+  ref: string | null
+  why: string
+  taskId: string | null
+  ticketRef: string | null
+  boardId: string | null
+  boardName: string | null
+  ownerUserId: string | null
+  ownerName: string | null
+  status: string
+  createdAt: string
+}
+/** PUT /api/admin/apps/install-requests — the decision and the ticket line it wrote. */
+export interface InstallDecision {
+  ok: boolean
+  status: 'approved' | 'failed' | 'rejected'
+  line: string
+  slug: string | null
+  sha: string | null
+  build?: { ok: boolean; error?: string } | null
+  buildError?: string | null
+  warning?: string | null
+  /** On the 409: kept data from another repository; answer with keptData. */
+  error?: string
+  conflict?: KeptDataConflict
+}
+/** `git ls-remote` against an app's recorded ref (GET ?updates=1, admin). */
+export interface AppUpdateCheck {
+  current: string | null
+  latest: string | null
+  available: boolean
+  pinned: boolean
+  /** The source was not asked: it is read with a workspace secret, and a
+   *  check would spend a use of it. Update fetches with it. */
+  notChecked?: string
+  error?: string
+  checkedAt: string
+}
+/** PUT { app, update: true } — on failure, `rolledBack` true: the app still
+ *  runs `from`; false: the swap back failed and apps/<slug> holds `to`. */
+export interface AppUpdateResult {
+  ok: boolean
+  slug: string
+  from: string | null
+  to: string | null
+  ref: string | null
+  upToDate: boolean
+  rolledBack: boolean
+  error?: string
 }
 export interface CatalogApp {
   slug: string
@@ -23,15 +135,134 @@ export interface CatalogApp {
   author: string
   official: boolean
   version?: string
+  /** The catalog it was listed by (the first one, when several list it). */
+  catalog: { id: string; name: string }
+}
+/** One marketplace catalog — a list the operator fills
+ *  (/api/admin/apps/catalogs). */
+export interface AppCatalog {
+  id: string
+  name: string
+  url: string
+  enabled: boolean
+  position: number
+  createdBy: string | null
+}
+/** A catalog as Discover read it: how many apps it listed, or why it could
+ *  not be read (null both when it is turned off), and the slugs an earlier
+ *  catalog already showed. */
+export interface AppCatalogStatus extends AppCatalog {
+  apps: number | null
+  error: string | null
+  shadowed: string[]
 }
 export interface AdminApps {
   apps: InstalledApp[]
-  catalog: { apps: CatalogApp[]; error?: string } | null
-  catalogUrl: string
+  /** ?catalog=1: every enabled catalog's apps, one per slug, and each
+   *  catalog's status. An empty `catalogs` is the operator's choice — nothing
+   *  re-adds a default. */
+  catalog: { apps: CatalogApp[]; catalogs: AppCatalogStatus[] } | null
+  updates: Record<string, AppUpdateCheck> | null
 }
 
 export const fetchAdminApps = (withCatalog: boolean): Promise<AdminApps> =>
   getJson<AdminApps>(`/api/admin/apps${withCatalog ? '?catalog=1' : ''}`)
+
+/** POST — add a catalog at the end of the list. The answer reads it once:
+ *  `apps` is how many it lists, `error` why it could not be read (it is
+ *  added either way). */
+export const addCatalog = (name: string, url: string): Promise<{ ok: true; catalog: AppCatalog; apps: number | null; error: string | null }> =>
+  postJson('/api/admin/apps/catalogs', { name, url })
+
+/** PUT — edit one catalog (any of name, url, enabled). */
+export const editCatalog = (id: string, patch: { name?: string; url?: string; enabled?: boolean }): Promise<{ ok: true; catalog: AppCatalog }> =>
+  putJson('/api/admin/apps/catalogs', { id, ...patch })
+
+/** PUT — the whole list in this order (every id, once). */
+export const reorderCatalogs = (order: string[]): Promise<{ ok: true; catalogs: AppCatalog[] }> =>
+  putJson('/api/admin/apps/catalogs', { order })
+
+export const removeCatalog = (id: string): Promise<{ ok: true }> => delJson('/api/admin/apps/catalogs', { id })
+
+export const fetchAppUpdates = async (): Promise<Record<string, AppUpdateCheck>> =>
+  (await getJson<AdminApps>('/api/admin/apps?updates=1')).updates ?? {}
+
+/** A plugin update waiting for an admin (`app_update`): the plugin's branch
+ *  moved past the installed commit, usually a merged PR. */
+export interface AppUpdateRequest {
+  id: string
+  appSlug: string
+  repo: string
+  ref: string | null
+  fromSha: string | null
+  targetSha: string
+  /** Merged PR numbers the maintenance pass saw move the branch. */
+  prs: number[]
+  maintainer: string | null
+  boardName: string | null
+  createdAt: string
+}
+/** PUT /api/admin/apps/update-requests — the decision and its ticket line. */
+export interface UpdateDecision {
+  ok: boolean
+  status: 'applied' | 'failed' | 'rejected'
+  line: string
+  slug: string
+  from: string | null
+  to: string | null
+  upToDate: boolean
+  rolledBack: boolean
+  error?: string | null
+}
+
+export const fetchUpdateRequests = async (): Promise<AppUpdateRequest[]> =>
+  (await getJson<{ requests: AppUpdateRequest[] }>('/api/admin/apps/update-requests')).requests
+
+export const decideUpdateRequest = (body: Record<string, unknown>): Promise<UpdateDecision> =>
+  putJson<UpdateDecision>('/api/admin/apps/update-requests', body)
+
+/** "Request a change": a ticket for the plugin's maintainer on its board. */
+export const requestChange = (app: string, request: string): Promise<{ ok: true; taskId: string; ticketRef: string | null; boardId: string }> =>
+  postJson('/api/admin/apps/change-request', { app, request })
+
+export const fetchInstallRequests = async (): Promise<AppInstallRequest[]> =>
+  (await getJson<{ requests: AppInstallRequest[] }>('/api/admin/apps/install-requests')).requests
+
+/** Decide an install request. A 409 is an answer (kept data to adopt or wipe). */
+export const decideInstallRequest = async (body: Record<string, unknown>): Promise<InstallDecision> =>
+  putJsonOr<InstallDecision>('/api/admin/apps/install-requests', body, [409])
+
+export const shortSha = (sha: string | null | undefined): string => (sha ? sha.slice(0, 7) : '—')
+
+/** Data an earlier install kept under the slug, from another repository (or
+ *  an unrecorded one): the install answers 409 until it is told to adopt or
+ *  wipe it. */
+export interface KeptDataConflict {
+  slug: string
+  keptFrom: string | null
+  installing: string
+}
+export interface InstallAnswer {
+  error?: string
+  /** On the 409: the kept data and the repository being installed. */
+  conflict?: KeptDataConflict
+  slug?: string
+  keptData?: boolean
+  sha?: string
+  wipedData?: boolean
+  build?: { ok: boolean; error?: string } | null
+  buildError?: string
+}
+
+/** POST an install. A 409 is an answer: kept data the request must decide
+ *  about (`conflict` names the two repositories). */
+export const installApp = async (body: Record<string, unknown>): Promise<InstallAnswer> => {
+  try {
+    return await postJsonOr<InstallAnswer>('/api/admin/apps', body, [409])
+  } catch (e) {
+    return { error: errorMessage(e) }
+  }
+}
 
 export const post = async (body: Record<string, unknown>): Promise<{ error?: string; slug?: string }> => {
   const send = 'installUrl' in body ? postJson : putJson

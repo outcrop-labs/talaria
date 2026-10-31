@@ -155,7 +155,9 @@ pub fn workload_from(
         // A harness that has since been deleted from the registry still has rows
         // in `harness_runs`. Counting it would put volume in the denominator
         // that no model can ever be scored on, which reads as every model
-        // getting worse.
+        // getting worse. An enabled app's harness is NOT one of those: the
+        // registry carries the app layer (talaria-app-harnesses), so its runs
+        // count, and a disabled app's drop out with its columns.
         if !known.contains(row.harness.as_str()) {
             continue;
         }
@@ -732,6 +734,7 @@ mod tests {
             "Answers.",
             talaria_harness_model::ModelSpec {
                 pin: None,
+                slot: None,
                 role: None,
                 chain: Some(&[]),
                 user_id: None,
@@ -942,6 +945,24 @@ mod tests {
 
         assert_eq!(w.runs.keys().collect::<Vec<_>>(), vec!["ticket"]);
         close(w.per_day, 1.0);
+    }
+
+    #[test]
+    fn workload_counts_the_runs_of_a_harness_an_enabled_app_ships() {
+        // An app harness's server.ts runs land in `harness_runs` under its own
+        // id. Once the registry carries the app layer, that volume is real
+        // work the matrix can score — no longer dropped as an unknown id.
+        let app = RegisteredHarness {
+            source: HarnessSource::App("support"),
+            ..harness("support:triage", 2)
+        };
+        let observed_rows = [observed("titler", 70), observed("support:triage", 14)];
+        let without = workload_from(&observed_rows, &[harness("titler", 1)], 7);
+        assert!(!without.runs.contains_key("support:triage"));
+        let with = workload_from(&observed_rows, &[harness("titler", 1), app], 7);
+        close(with.runs["support:triage"], 2.0);
+        close(with.per_day, 12.0);
+        assert_eq!(with.harnesses, 2);
     }
 
     #[test]

@@ -28,7 +28,7 @@
 //   runs TWELVE turns, which is `MAX_SESSION_TURNS` exactly (six measured a
 //   shorter session than the one an agent actually runs and then asked
 //   whether the ticket had been finished; both models swept failed exactly
-//   the two fixtures a session cut off mid-work fails), and benches EIGHTEEN
+//   the two fixtures a session cut off mid-work fails), and benches SEVENTEEN
 //   of the persona's tools: the seven readers and writers the procedure
 //   names, `create_ticket` (deliberately present — see the side-finding
 //   fixture), the two escape hatches whose MISUSE is worth measuring, and the
@@ -703,6 +703,7 @@ pub fn work_session_harness() -> HarnessDefinition {
         // ticket as the assigned agent's own work.
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,
@@ -790,12 +791,10 @@ pub fn work_session_harness() -> HarnessDefinition {
     // read. (Kept as this comment: the field's default IS none.)
     //
     // THE TURN IS THE TOOL LOOP. Declared rather than left to the default:
-    // the runner's default transport sends `tools: []` / `tool_choice:
-    // 'none'`, which is right for every single-shot structured harness and
-    // fatal here — a work session that cannot call `get_ticket` cannot do
-    // work, and would then trip `zero_tool_claim` on every turn for having
-    // called no tool. The guard firing because the guard's own transport
-    // disarmed the agent.
+    // the default policy is 'none', which is right for every single-shot
+    // structured harness and fatal here — a work session runs on a Hermes
+    // session, which refuses a 'none' turn outright (`session_turn_refusal`),
+    // and a work session that cannot call `get_ticket` cannot do work.
     d.tools = Some(ToolPolicy::Own);
     // TEN MINUTES, against the persona gateway's two-minute default — the
     // run kind's `max_step_ms` (eleven minutes) is sized against it. An
@@ -862,7 +861,7 @@ pub fn work_session_harness() -> HarnessDefinition {
         // failed "hands a finished ticket to review" and "ends with the status
         // line" — exactly the shape of a session cut off mid-work.
         max_turns: Some(12),
-        // EIGHTEEN — the working set the header spells out, listers included.
+        // SEVENTEEN — the working set the header spells out, listers included.
         tools: vec![
             "list_boards",
             // THE LAST TOOL IN THE TOOLKIT NEVER PUT IN FRONT OF A MODEL.
@@ -881,7 +880,6 @@ pub fn work_session_harness() -> HarnessDefinition {
             "report_gap",
             "report_problem",
             "add_time",
-            "log_usage",
             "add_dependency",
             "search_knowledge",
             "post_to_channel",

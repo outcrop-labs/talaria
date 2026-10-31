@@ -9,9 +9,9 @@ use serde_json::Value;
 use sqlx::PgPool;
 
 use talaria_agent_defs::{
-    AgentDefRow, CompressionEdits, ConfigEdits, ModelTarget, NewVersion, UpsertDef,
-    add_version_if_changed, agent_def_by_id, agent_def_by_slug, apply_config_edits_over, dept_ok,
-    list_versions, slug_ok, upsert_agent_def,
+    AgentDefRow, CompressionEdits, ConfigEdits, ModelTarget, NewVersion, UpsertDef, UpsertDefError,
+    add_version_if_changed, agent_def_by_id, agent_def_by_slug, apply_config_edits_over,
+    department_holder, dept_ok, list_versions, slug_ok, upsert_agent_def,
 };
 use talaria_gateway::registry::list_endpoints;
 
@@ -109,6 +109,51 @@ pub async fn ensure_agent_key(slug: &str) -> Result<bool, String> {
     Ok(true)
 }
 
+/// `content` without `slug`'s per-agent lines — its HERMES_KEY line (with
+/// the comment [`ensure_agent_key`] seeded above it) and its
+/// TALARIA_AGENT_KEY line.
+fn without_agent_env_lines(content: &str, slug: &str) -> String {
+    let hermes = format!("HERMES_KEY_{}=", slug.to_uppercase());
+    let agent_key = format!("{}=", talaria_fleet_layout::agent_key_var(slug));
+    // The seeded comment rides out with the HERMES key line it announced
+    // — only that line's pattern owns it, never the agent-key line.
+    let comment = "# added by Talaria (agent create)";
+    let comment_line = format!("{comment}\n");
+    let mut next = String::with_capacity(content.len());
+    for line in content.lines() {
+        let is_hermes = line.starts_with(&hermes);
+        let is_agent_key = line.starts_with(&agent_key);
+        if is_hermes && next.ends_with(&comment_line) {
+            next.truncate(next.len() - comment_line.len());
+        }
+        if !is_hermes && !is_agent_key {
+            next.push_str(line);
+            next.push('\n');
+        }
+    }
+    next
+}
+
+/// Drop `slug`'s per-agent lines from the fleet .env, keeping it 0600.
+/// Best-effort: the DB is authoritative, and the next render's stale-line
+/// sweep drops a line for a slug no def holds anyway.
+async fn strip_agent_env_lines(slug: &str) {
+    let env_path = talaria_fleet_layout::fleet_env();
+    let Ok(content) = tokio::fs::read_to_string(&env_path).await else {
+        return;
+    };
+    let next = without_agent_env_lines(&content, slug);
+    if next != content {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = tokio::fs::write(&env_path, &next).await;
+        if let Ok(meta) = tokio::fs::metadata(&env_path).await {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o600);
+            let _ = tokio::fs::set_permissions(&env_path, perms).await;
+        }
+    }
+}
+
 pub struct CreateAgentInput {
     pub slug: String,
     pub department: String,
@@ -146,9 +191,20 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         .bind(&input.slug)
         .fetch_optional(pg)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| talaria_error::store_fault("[fleet-create] slug check failed", e))?;
     if exists.is_some() {
         return Err(format!("agent \"{}\" already exists", input.slug));
+    }
+    // A department is one agent's container and memory. Asked here too, not
+    // only under the write's lock, so a refusal leaves nothing behind (the
+    // fleet key below is a line in a file); the lock is the race's answer.
+    if let Some(taken) = department_holder(pg, &input.department, &input.slug)
+        .await
+        .map_err(|e| {
+            talaria_error::store_fault("[fleet-create] department holder read failed", e)
+        })?
+    {
+        return Err(taken.to_string());
     }
 
     // An empty-string templateId is no template (truthiness on the way in).
@@ -157,13 +213,15 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         Some(template_id) => {
             let template_version = list_versions(pg, template_id)
                 .await
-                .map_err(|e| e.to_string())?
+                .map_err(|e| {
+                    talaria_error::store_fault("[fleet-create] template versions read failed", e)
+                })?
                 .into_iter()
                 .next()
                 .ok_or("template agent has no versions")?;
             let from_slug = agent_def_by_id(pg, template_id)
                 .await
-                .map_err(|e| e.to_string())?
+                .map_err(|e| talaria_error::store_fault("[fleet-create] template read failed", e))?
                 .map(|d| d.slug)
                 .ok_or("template agent not found")?;
             (
@@ -174,7 +232,9 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         None => {
             // Platform defaults: main model from the first local endpoint
             // (else any).
-            let eps = list_endpoints(pg).await.map_err(|e| e.to_string())?;
+            let eps = list_endpoints(pg).await.map_err(|e| {
+                talaria_error::store_fault("[fleet-create] endpoints read failed", e)
+            })?;
             let ep = eps
                 .iter()
                 .find(|e| e.class == "local" && !e.models.is_empty())
@@ -209,9 +269,13 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         }
     };
 
-    let key_created = ensure_agent_key(&input.slug).await?;
+    // The fleet .env's own failure names its path: the operator's, in the
+    // log, and the caller's house 500 (as the rename's is).
+    let key_created = ensure_agent_key(&input.slug)
+        .await
+        .map_err(|e| talaria_error::store_fault("[fleet-create] agent key write failed", e))?;
 
-    let mut def = upsert_agent_def(
+    let mut def = match upsert_agent_def(
         pg,
         &UpsertDef {
             slug: &input.slug,
@@ -222,7 +286,33 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         },
     )
     .await
-    .map_err(|e| e.to_string())?;
+    {
+        Ok(def) => def,
+        // The race the pre-check above cannot see: another hire took the
+        // department between it and the write's lock. The key line this
+        // call just appended is a live credential for nobody — take it back
+        // out now rather than leave it to the next render's stale-line
+        // sweep, unless a def under this slug landed meanwhile (a second
+        // hire of the same slug), whose line it now is.
+        Err(UpsertDefError::DepartmentTaken(taken)) => {
+            if key_created
+                && agent_def_by_slug(pg, &input.slug)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_none()
+            {
+                strip_agent_env_lines(&input.slug).await;
+            }
+            return Err(taken.to_string());
+        }
+        Err(e) => {
+            return Err(talaria_error::store_fault(
+                "[fleet-create] def write failed",
+                e,
+            ));
+        }
+    };
     // MANAGED AND MANAGED-BY, IN ONE TRANSACTION, STRAIGHT AFTER THE ROW.
     // The def now exists under a slug that any later `create` will see as
     // taken; the ownership stamp has to land with it, or a process death
@@ -233,12 +323,15 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
     // transaction. (The version write that follows is idempotent on resume:
     // `add_version_if_changed` adds nothing a prior pass already wrote.)
     let manager = input.manager_user_id.as_deref().filter(|m| !m.is_empty());
-    let mut tx = pg.begin().await.map_err(|e| e.to_string())?;
+    let mut tx = pg
+        .begin()
+        .await
+        .map_err(|e| talaria_error::store_fault("[fleet-create] begin failed", e))?;
     sqlx::query("update agent_defs set managed = true, updated_at = now() where id = $1::uuid")
         .bind(&def.id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| talaria_error::store_fault("[fleet-create] managed stamp failed", e))?;
     if let Some(manager) = manager {
         sqlx::query(
             "insert into agent_managers (agent_id, user_id, added_by) \
@@ -248,10 +341,43 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         .bind(manager)
         .execute(&mut *tx)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| talaria_error::store_fault("[fleet-create] manager stamp failed", e))?;
     }
-    tx.commit().await.map_err(|e| e.to_string())?;
+    tx.commit()
+        .await
+        .map_err(|e| talaria_error::store_fault("[fleet-create] commit failed", e))?;
     def.managed = true;
+
+    // A template's config can name sealed literals (`${CONFIG_…}`, see
+    // talaria_agent_secrets::plan_config_seal). They are the template's
+    // secrets, and an agent's secrets are its managers' (docs/PERMISSIONS.md,
+    // "Agent managers"): the hirer manages the clone and could read them out
+    // of its environment. So the clone takes them along, before the version
+    // that names them, only when the hirer may already change the template.
+    // Otherwise they are left out of the clone and its first version's note
+    // says where.
+    let (config, note) = match template_id {
+        Some(template_id) if !talaria_agent_secrets::config_secret_handles(&config).is_empty() => {
+            if takes_template_secrets(pg, manager, template_id).await? {
+                talaria_agent_secrets::copy_config_secrets(pg, template_id, &def.id, &config)
+                    .await?;
+                (config, note)
+            } else {
+                let (kept, withheld) = talaria_agent_secrets::withhold_config_secrets(&config);
+                if withheld.is_empty() {
+                    // Handles outside `raw` only: nothing a render emits.
+                    (config, note)
+                } else {
+                    let note = format!(
+                        "{note}; left out the template's sealed credentials at {} — only its managers can pass them on",
+                        withheld.join(", ")
+                    );
+                    (kept, note)
+                }
+            }
+        }
+        _ => (config, note),
+    };
 
     add_version_if_changed(
         pg,
@@ -267,13 +393,41 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         },
     )
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| talaria_error::store_fault("[fleet-create] first version write failed", e))?;
 
     // The agent belongs to somebody from the transaction above — written in
     // this function rather than at the call sites so every create path (the
     // hire run, a personal assistant) lands with a manager and none of them
     // can forget.
     Ok(CreatedAgent { def, key_created })
+}
+
+/// May this hirer take a template's sealed config secrets into the clone?
+/// Only one who may already change the template: an admin or one of its
+/// managers. A hire nobody can be traced to lands admin-managed, so only
+/// those who manage every agent, the template included, can reach the
+/// clone, and it takes them too.
+async fn takes_template_secrets(
+    pg: &PgPool,
+    manager: Option<&str>,
+    template_id: &str,
+) -> Result<bool, String> {
+    let Some(user) = manager else {
+        return Ok(true);
+    };
+    let role: Option<String> = sqlx::query_scalar("select role from users where id = $1::uuid")
+        .bind(user)
+        .fetch_optional(pg)
+        .await
+        .map_err(|e| talaria_error::store_fault("[fleet-create] hirer role read failed", e))?;
+    talaria_agent_managers::manages_agent(
+        pg,
+        user,
+        role.as_deref().unwrap_or("member"),
+        template_id,
+    )
+    .await
+    .map_err(|e| talaria_error::store_fault("[fleet-create] template managers read failed", e))
 }
 
 /// The "already exists" resume: a re-entered `create` stage finds the def the
@@ -358,12 +512,33 @@ pub async fn delete_agent_forever(
         return Err("retire the agent first. Delete is for retired agents only.".into());
     }
 
-    // Containers first (should already be gone after retire; both slots,
-    // best-effort).
-    for slot in [talaria_fleet_docker::Slot::A, talaria_fleet_docker::Slot::B] {
-        let _ = talaria_fleet_docker::remove_container_by_name(
-            &talaria_fleet_docker::slot_container(&department, slot),
-        )
+    // Another agent in this department (a pair that predates the one-agent
+    // rule) means the department's container and volume are not this
+    // agent's alone: the other one runs in them, or will. Deleting this one
+    // removes its def and files, and leaves those to the agent still there.
+    let shared = talaria_agent_defs::department_holder(pg, &department, &slug)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(other) = &shared {
+        tracing::warn!(
+            "[fleet] deleting {slug}: its department \"{department}\" is also {}'s, so its container and memory volume stay",
+            other.holder_slug
+        );
+    }
+
+    // Containers first (should already be gone after retire; both service
+    // names, a legacy -b included; best-effort, and graceful — never a
+    // SIGKILL).
+    let slots: &[talaria_fleet_docker::Slot] = if shared.is_some() {
+        &[]
+    } else {
+        &[talaria_fleet_docker::Slot::A, talaria_fleet_docker::Slot::B]
+    };
+    for slot in slots {
+        let _ = talaria_fleet_docker::retire_container(&talaria_fleet_docker::slot_container(
+            &department,
+            *slot,
+        ))
         .await;
     }
 
@@ -382,7 +557,6 @@ pub async fn delete_agent_forever(
         "delete from board_agents where agent_model = $1",
         "delete from channel_agents where agent_model = $1",
         "delete from rag_collection_access where principal_type = 'agent' and principal_id = $1",
-        "delete from fleet_agents where name = $1",
     ] {
         sqlx::query(stmt)
             .bind(&model)
@@ -403,39 +577,12 @@ pub async fn delete_agent_forever(
     // diagnostic). The renderer now rewrites rather than skips, so this is
     // belt and braces; the lingering plaintext is the reason it matters.
     // Best-effort: the DB is authoritative; the next render re-materializes.
-    if let Ok(content) = tokio::fs::read_to_string(talaria_fleet_layout::fleet_env()).await {
-        let hermes = format!("HERMES_KEY_{}=", slug.to_uppercase());
-        let agent_key = format!("{}=", talaria_fleet_layout::agent_key_var(&slug));
-        // The seeded comment rides out with the HERMES key line it announced
-        // — only that line's pattern owns it, never the agent-key line.
-        let comment = "# added by Talaria (agent create)";
-        let comment_line = format!("{comment}\n");
-        let mut next = String::with_capacity(content.len());
-        for line in content.lines() {
-            let is_hermes = line.starts_with(&hermes);
-            let is_agent_key = line.starts_with(&agent_key);
-            if is_hermes && next.ends_with(&comment_line) {
-                next.truncate(next.len() - comment_line.len());
-            }
-            if !is_hermes && !is_agent_key {
-                next.push_str(line);
-                next.push('\n');
-            }
-        }
-        if next != content {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = tokio::fs::write(talaria_fleet_layout::fleet_env(), &next).await;
-            if let Ok(meta) = tokio::fs::metadata(talaria_fleet_layout::fleet_env()).await {
-                let mut perms = meta.permissions();
-                perms.set_mode(0o600);
-                let _ = tokio::fs::set_permissions(talaria_fleet_layout::fleet_env(), perms).await;
-            }
-        }
-    }
+    strip_agent_env_lines(&slug).await;
 
     // State volume: only for created agents (imported volumes are external
     // legacy).
     let removed_volume = source == "created"
+        && shared.is_none()
         && talaria_fleet_docker::remove_volume(&format!(
             "{}_hermes-{department}",
             talaria_fleet_layout::fleet_project()
@@ -496,5 +643,34 @@ mod tests {
         assert!(soul.contains("You are Sloane, the customer success agent."));
         assert!(soul.contains("- Keep humans in the loop"));
         assert!(soul.contains("- Never do dev work in chat"));
+    }
+
+    /// What a refused hire (and a delete) takes back out of the fleet .env:
+    /// that slug's two credential lines and the comment the hire seeded —
+    /// never a neighbour's, not even one whose slug it prefixes.
+    #[test]
+    fn a_slugs_env_lines_leave_with_their_comment_and_nothing_else_does() {
+        let env = "\
+LLM_API_KEY=abc
+# added by Talaria (agent create)
+HERMES_KEY_AVA=aaa
+# added by Talaria (agent create)
+HERMES_KEY_BEA=bbb
+HERMES_KEY_BEAU=ccc
+TALARIA_AGENT_KEY_BEA=tak_b
+TALARIA_AGENT_KEY_BEAU=tak_bu
+";
+        assert_eq!(
+            without_agent_env_lines(env, "bea"),
+            "\
+LLM_API_KEY=abc
+# added by Talaria (agent create)
+HERMES_KEY_AVA=aaa
+HERMES_KEY_BEAU=ccc
+TALARIA_AGENT_KEY_BEAU=tak_bu
+"
+        );
+        // A slug with no lines leaves the file as it was.
+        assert_eq!(without_agent_env_lines(env, "zed"), env);
     }
 }

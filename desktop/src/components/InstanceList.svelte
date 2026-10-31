@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { open, remove, shell } from '../lib/state.svelte'
+  import { hostOf } from '../lib/instances'
+  import { open, shell } from '../lib/state.svelte'
 
-  let confirming = $state<string | null>(null)
-
-  const hostOf = (url: string) => url.replace(/^https?:\/\//, '')
-  const labelOf = (id: string) => shell.instances.find((i) => i.id === id)?.label ?? 'instance'
+  // The highlighted row is the instance the person was last in. (It used to
+  // be the last one opened FROM HERE, so a switch made inside an instance
+  // left the wrong row lit.) The × is always in the Tab order — visible on
+  // hover and on keyboard focus — rather than display:none until hovered,
+  // which kept remove out of keyboard reach.
 </script>
 
 <nav class="overflow-y-auto" aria-label="Instances">
@@ -12,26 +14,25 @@
     <p class="px-4 py-3 text-xs text-dim">No instances yet.</p>
   {:else}
     {#each shell.instances as instance (instance.id)}
+      {@const host = hostOf(instance.url)}
       <div class="group relative">
         <button
-          class="row w-full border-b border-hairline px-4 py-2.5 text-left {
-            shell.activeId === instance.id
-              ? 'bg-raised shadow-[inset_2px_0_0_var(--color-gold)]'
-              : 'hover:bg-hover'
-          }"
+          class="row w-full border-b border-hairline py-2.5 pr-9 pl-4 text-left {shell.recentId === instance.id
+            ? 'bg-raised shadow-[inset_2px_0_0_var(--color-gold)]'
+            : 'hover:bg-hover'}"
           title={instance.url}
           onclick={() => void open(instance.id)}
         >
           <div class="truncate text-[13px] leading-tight text-readout">{instance.label}</div>
-          <div class="truncate font-mono text-[10px] leading-tight text-muted">
-            {hostOf(instance.url)}
-          </div>
+          {#if host !== instance.label}
+            <div class="truncate font-mono text-[10px] leading-tight text-muted">{host}</div>
+          {/if}
         </button>
         <button
-          class="absolute top-1/2 right-2 hidden -translate-y-1/2 rounded px-1 py-0.5 text-xs text-muted hover:text-danger group-hover:block"
+          class="absolute top-1/2 right-2 -translate-y-1/2 rounded px-1.5 py-0.5 text-xs text-muted opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 hover:text-danger focus-visible:opacity-100"
           title="Remove instance"
           aria-label="Remove {instance.label}"
-          onclick={() => (confirming = instance.id)}
+          onclick={() => (shell.confirmRemove = instance.id)}
         >
           ×
         </button>
@@ -39,33 +40,3 @@
     {/each}
   {/if}
 </nav>
-
-{#if confirming}
-  <div class="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
-    <div class="w-64 rounded-md border border-hairline bg-panel p-4">
-      <p class="text-sm text-readout">Remove {labelOf(confirming)}?</p>
-      <p class="mt-1 text-xs text-muted">
-        Its saved session is deleted with it. The instance itself is untouched.
-      </p>
-      <div class="mt-4 flex justify-end gap-2">
-        <button
-          class="rounded px-3 py-1.5 text-xs text-muted hover:bg-hover hover:text-readout"
-          onclick={() => (confirming = null)}
-        >
-          Cancel
-        </button>
-        <button
-          class="rounded border border-danger px-3 py-1.5 font-mono text-xs text-danger hover:bg-danger/10"
-          onclick={() => {
-            if (!confirming) return
-            const id = confirming
-            confirming = null
-            void remove(id)
-          }}
-        >
-          REMOVE
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}

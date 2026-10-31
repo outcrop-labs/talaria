@@ -12,6 +12,7 @@
   import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
+  import { anyLoading } from '@/components/ui/query-state'
   import Segmented from '@/components/ui/Segmented.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
@@ -20,12 +21,13 @@
   import HiringStrip from '@/components/fleet/HiringStrip.svelte'
   import RoleTemplatesTab from '@/components/fleet/RoleTemplatesTab.svelte'
   import FederateModal from '@/components/fleet/FederateModal.svelte'
+  import SealConfigsModal from '@/components/fleet/SealConfigsModal.svelte'
   import FleetCronsTab from '@/components/fleet/FleetCronsTab.svelte'
   import { errorMessage } from '@/lib/fetch-json'
   import { useFleet } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { fly, slide, staggerIn } from '@/lib/motion'
-  import { rollFleet, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
+  import { containersOf, rollFleet, rollRowsBySlug, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import AgentListRow from './AgentListRow.svelte'
@@ -96,7 +98,9 @@
   // failure sentence, the disabled Roll control — and the strip above the
   // roster reads the whole.
   const rollQuery = useFleetRoll(() => isAdmin)
-  const rollByDept = $derived(new Map((rollQuery.data?.rolls ?? []).map((r) => [r.department, r])))
+  // By slug, not department (`rollRowsBySlug`): an agent left out of a shared
+  // department reads its own idle row, not the runner's.
+  const rollBySlug = $derived(rollRowsBySlug(rollQuery.data?.rolls))
   const anyRolling = $derived(rollQuery.data?.rolling ?? false)
   // The confirm step lives in the page, above the roster, not in a dialog:
   // what is about to happen is visible beside the agents it happens to.
@@ -128,7 +132,7 @@
   const batchDone = $derived(batchRows.filter((r) => r.state === 'done').length)
   const batchFailed = $derived(batchRows.filter((r) => r.state === 'failed'))
   const runningCount = $derived(
-    (defsQuery.data?.defs ?? []).filter((d) => d.enabled && d.managed && (byDept.get(d.department)?.managed?.state === 'running')).length,
+    (defsQuery.data?.defs ?? []).filter((d) => d.enabled && d.managed && (containersOf(d, byDept)?.managed?.state === 'running')).length,
   )
   // The roster itself renders through QueryState below (a 500 must never read as
   // "no agents"). This copy is only for the create/duplicate modals' template
@@ -140,6 +144,7 @@
   let creating = $state(false)
   let duplicateFrom = $state<AgentDef | null>(null)
   let federateOpen = $state(false)
+  let sealOpen = $state(false)
   // The background design row (TALA-11): headline = first words of the
   // purpose while generating/erroring, the designed agent's name once
   // landed. Null when the store holds nothing.
@@ -153,8 +158,10 @@
 
   // Defs AND containers gate the roster together: tiles built from
   // `containers: null` read every agent as stopped, then flip. (A disabled
-  // containers query — non-admin — is never `isLoading`.)
-  const rosterLoading = $derived(defsQuery.isLoading || containersQuery.isLoading)
+  // containers query — non-admin — is never `isLoading`.) Through
+  // `anyLoading`, never `||`: with `||` the roster stayed on its skeletons
+  // for good whenever containers answered before defs (anyLoading says why).
+  const rosterLoading = $derived(anyLoading(defsQuery, containersQuery))
   const gridClasses = 'grid grid-cols-2 gap-3 sm:grid-cols-3'
   const listClasses = 'divide-y divide-line overflow-hidden rounded-lg border border-line bg-panel'
   // The list container classes only apply while there are items (or their
@@ -267,7 +274,7 @@
             size="sm"
             disabled={anyRolling || rollConfirming}
             onclick={() => (rollConfirming = true)}
-            title="Roll every running agent: a fresh container each, the old one finishes its replies first"
+            title="Roll every running agent: a fresh container each, recreated in place"
           >
             <Repeat size={14} />
             Roll all
@@ -321,7 +328,7 @@
                 Roll {runningCount === 1 ? 'the one running agent' : `all ${runningCount} running agents`}?
               </p>
               <p class="font-sans text-xs text-muted">
-                Each gets a fresh container beside its current one; the old one finishes its replies before it goes. A few roll at a time so the host stays responsive. Agents already mid-roll are skipped.
+                Each container is recreated in place: it stops, a fresh one starts on the current render, and the agent is offline for the minute or so that takes (chats wait for it). A few roll at a time so the host stays responsive. Agents already mid-roll are skipped.
               </p>
             </div>
             <CloseButton label="Cancel" onClick={() => (rollConfirming = false)} />
@@ -476,9 +483,9 @@
               {@const brainByAgent = new Map((data.brains ?? []).map((b) => [b.agent, b]))}
               {#each data.defs as d (d.id)}
                 {#if view === 'grid'}
-                  <AgentTile def={d} containers={byDept.get(d.department) ?? null} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
+                  <AgentTile def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} onDuplicate={() => (duplicateFrom = d)} />
                 {:else}
-                  <AgentListRow def={d} containers={byDept.get(d.department) ?? null} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
+                  <AgentListRow def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} onDuplicate={() => (duplicateFrom = d)} />
                 {/if}
               {/each}
             {/snippet}
@@ -490,7 +497,16 @@
       </div>
     {/key}
 
-    {#if federateOpen}<FederateModal onClose={() => (federateOpen = false)} />{/if}
+    {#if federateOpen}
+      <FederateModal
+        onClose={() => (federateOpen = false)}
+        onSealStored={() => {
+          federateOpen = false
+          sealOpen = true
+        }}
+      />
+    {/if}
+    {#if sealOpen}<SealConfigsModal onClose={() => (sealOpen = false)} />{/if}
     {#if creating}<CreateAgentModal open={creating} onClose={() => (creating = false)} templates={defs.filter((d) => d.enabled)} />{/if}
     {#if duplicateFrom}
       <CreateAgentModal open onClose={() => (duplicateFrom = null)} templates={defs} templateId={duplicateFrom.id} />

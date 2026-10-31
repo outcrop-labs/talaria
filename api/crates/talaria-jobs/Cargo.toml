@@ -19,8 +19,11 @@ talaria-comms-decay = { workspace = true }
 talaria-config = { workspace = true }
 talaria-attribution = { workspace = true }
 talaria-conversations = { workspace = true }
+talaria-cron-output = { workspace = true }
 talaria-inbox-focus = { workspace = true }
 talaria-tasks = { workspace = true }
+talaria-app-triggers = { workspace = true }
+talaria-platform-events = { workspace = true }
 talaria-tasks-types = { workspace = true }
 talaria-workchains = { workspace = true }
 talaria-kb = { workspace = true }
@@ -30,7 +33,10 @@ talaria-decide = { workspace = true }
 talaria-retrieval-http = { workspace = true }
 talaria-google-pending = { workspace = true }
 talaria-agent-auth = { workspace = true }
+talaria-approval-cards = { workspace = true }
 talaria-approvals = { workspace = true }
+talaria-apps = { workspace = true }
+talaria-audit = { workspace = true }
 talaria-digest = { workspace = true }
 talaria-fleet-preflight = { workspace = true }
 talaria-fleet-reconcile = { workspace = true }
@@ -39,6 +45,7 @@ talaria-fleet-resources = { workspace = true }
 talaria-mcp = { workspace = true }
 talaria-mcp-apply = { workspace = true }
 talaria-mcp-library = { workspace = true }
+talaria-skills-marketplace = { workspace = true }
 talaria-model-info = { workspace = true }
 talaria-notify = { workspace = true }
 talaria-outreach = { workspace = true }
@@ -62,6 +69,7 @@ talaria-teams = { workspace = true }
 talaria-update-job = { workspace = true }
 talaria-uploads = { workspace = true }
 talaria-work-dispatch = { workspace = true }
+talaria-plugins = { workspace = true }
 talaria-workbench-mcp = { workspace = true }
 talaria-workbench-queue = { workspace = true }
 tokio = { workspace = true }
@@ -82,5 +90,4 @@ talaria-gateway = { workspace = true }
 talaria-ticket-chat = { workspace = true }
 talaria-harness-defs = { workspace = true }
 talaria-harness = { workspace = true }
-talaria-web-search = { workspace = true }
 talaria-fleet-docker = { workspace = true }

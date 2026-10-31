@@ -1,33 +1,77 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { ExternalLink, Trash2 } from '@lucide/svelte'
+  import { ExternalLink, GitBranch, Trash2 } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
+  import Select from '@/components/ui/Select.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm, alert } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { p } from '@/router'
-  import { delJson, errorMessage, postJson } from '@/lib/fetch-json'
-  import { fetchAdminApps, post, type InstalledApp } from './apps'
+  import { delJson, errorMessage, postJson, putJson } from '@/lib/fetch-json'
+  import { relativeTime } from '@/lib/fleet'
+  import { fetchAdminApps, fetchAppUpdates, post, requestChange, shortSha, type AppPlugin, type AppTriggerInfo, type AppUpdateResult, type InstalledApp } from './apps'
+  import AppsInstallRequests from './AppsInstallRequests.svelte'
+  import AppsUpdateRequests from './AppsUpdateRequests.svelte'
+  import Textarea from '@/components/ui/Textarea.svelte'
 
   let { isAdmin }: { isAdmin: boolean } = $props()
 
   const qc = useQueryClient()
-  const query = createQuery(() => ({ queryKey: ['admin-apps'], queryFn: () => fetchAdminApps(false) }))
+  // Polled so the trigger lines follow their schedules while the tab is open.
+  const query = createQuery(() => ({ queryKey: ['admin-apps'], queryFn: () => fetchAdminApps(false), refetchInterval: 30_000 }))
+  // Whether each app's source has a newer commit: `git ls-remote` against its
+  // recorded ref, admin only (a check mints the app's GitHub read token; a
+  // source read with a workspace secret is not checked, `notChecked`).
+  const updates = createQuery(() => ({
+    queryKey: ['admin-apps-updates'],
+    queryFn: fetchAppUpdates,
+    enabled: isAdmin,
+    staleTime: 60_000,
+  }))
+  /** A trigger's hover: when it fires next, and its newest runs. */
+  function triggerTitle(t: AppTriggerInfo): string {
+    const head = t.cron ? `Runs on the schedule ${t.cron} (UTC)${t.nextAt ? `; next ${new Date(t.nextAt).toLocaleString()}` : ''}` : `Runs on every ${t.event}`
+    const runs = t.runs.map((r) => `${new Date(r.queuedAt).toLocaleString()} — ${r.state}${r.error ? `: ${r.error}` : r.detail ? `: ${r.detail}` : ''}`)
+    return [head, ...runs].join('\n')
+  }
   let busy = $state<string | null>(null)
+  /** The last update's outcome, per app, shown on its card. */
+  let results = $state<Record<string, { ok: boolean; text: string }>>({})
 
   const refresh = async () => {
     await qc.invalidateQueries({ queryKey: ['admin-apps'] })
+    await qc.invalidateQueries({ queryKey: ['admin-apps-updates'] })
     await qc.invalidateQueries({ queryKey: ['apps'] })
     await qc.invalidateQueries({ queryKey: ['session'] })
+  }
+
+  const update = async (a: InstalledApp) => {
+    busy = a.slug
+    delete results[a.slug]
+    try {
+      const r = await putJson<AppUpdateResult>('/api/admin/apps', { app: a.slug, update: true })
+      results[a.slug] = r.upToDate
+        ? { ok: true, text: `Already up to date (${shortSha(r.to)})` }
+        : r.ok
+          ? { ok: true, text: `Updated ${shortSha(r.from)} → ${shortSha(r.to)}` }
+          : r.rolledBack
+            ? { ok: false, text: `Update to ${shortSha(r.to)} failed and was rolled back; still running ${shortSha(r.from)}: ${r.error ?? 'unknown error'}` }
+            : { ok: false, text: `Update to ${shortSha(r.to)} failed and could not be rolled back: apps/${a.slug} now holds ${shortSha(r.to)}, which did not load: ${r.error ?? 'unknown error'}` }
+      await refresh()
+    } catch (e) {
+      results[a.slug] = { ok: false, text: `Could not update: ${errorMessage(e)}` }
+    } finally {
+      busy = null
+    }
   }
 
   const toggle = async (a: InstalledApp) => {
     busy = a.slug
     try {
       if (!a.enabled) {
-        const health = await postJson<{ ok: boolean; error?: string }>(`/api/apps/${a.slug}/rebuild`, {})
+        const health = await postJson<{ ok: boolean; error?: string }>(`/api/app-host/${a.slug}/rebuild`, {})
         if (!health.ok) {
           void alert({ title: `${a.name} cannot be enabled`, message: health.error ?? 'app failed to compile or load' })
           await refresh()
@@ -47,7 +91,7 @@
   const rebuild = async (a: InstalledApp) => {
     busy = a.slug
     try {
-      const health = await postJson<{ ok: boolean; error?: string }>(`/api/apps/${a.slug}/rebuild`, {})
+      const health = await postJson<{ ok: boolean; error?: string }>(`/api/app-host/${a.slug}/rebuild`, {})
       if (!health.ok) void alert({ title: `${a.name} is still broken`, message: health.error ?? 'app failed to compile or load' })
       await refresh()
     } catch (e) {
@@ -60,14 +104,22 @@
   const uninstall = async (a: InstalledApp) => {
     const ok = await confirm({
       title: `Uninstall ${a.name}?`,
-      message: 'Removes the app codebase from this deployment, stops its database, and deletes the data it stored. This cannot be undone.',
+      message: 'Removes the app codebase and its build from this deployment and stops its database. Agents lose its MCP server and every grant on it.',
       confirmLabel: 'Uninstall',
       danger: true,
     })
     if (!ok) return
+    // Data is kept unless the admin says otherwise: a reinstall reattaches it.
+    const wipeData = await confirm({
+      title: `Delete the data ${a.name} stored?`,
+      message: 'Keep it, and reinstalling the app picks it up again. Delete it, and every record the app stored is gone for good.',
+      confirmLabel: 'Delete data',
+      cancelLabel: 'Keep data',
+      danger: true,
+    })
     busy = a.slug
     try {
-      await delJson<{ ok: true }>('/api/admin/apps', { app: a.slug, wipeData: true }).catch((e) => {
+      await delJson<{ ok: true; data: 'wiped' | 'kept' | 'none' }>('/api/admin/apps', { app: a.slug, wipeData }).catch((e) => {
         void alert({ title: 'Could not uninstall', message: errorMessage(e) })
       })
       await refresh()
@@ -76,8 +128,49 @@
     }
   }
 
+  // A plugin's update policy: approve (every update waits for an admin) or
+  // auto (the maintenance sweep applies it when it sees it). Admin only.
+  const setPolicy = async (a: InstalledApp, updatePolicy: AppPlugin['updatePolicy']) => {
+    busy = a.slug
+    try {
+      await putJson<{ ok: true }>('/api/admin/apps', { app: a.slug, updatePolicy })
+      await refresh()
+    } catch (e) {
+      void alert({ title: 'Could not change the update policy', message: errorMessage(e) })
+    } finally {
+      busy = null
+    }
+  }
+
+  // "Request a change": a ticket for the plugin's maintaining agent on its
+  // board, filed by whoever asks (the api checks they could file one there).
+  let changing = $state<string | null>(null)
+  let changeText = $state('')
+  let filed = $state<Record<string, { ok: boolean; text: string; href?: string }>>({})
+  const sendChange = async (a: InstalledApp) => {
+    const text = changeText.trim()
+    if (!text) return
+    busy = a.slug
+    try {
+      const r = await requestChange(a.slug, text)
+      filed[a.slug] = {
+        ok: true,
+        text: `Filed ${r.ticketRef ?? 'a ticket'} for ${a.plugin?.maintainer?.name ?? a.plugin?.maintainer?.model ?? 'its maintainer'}`,
+        href: `/boards/${r.boardId}/${r.taskId}`,
+      }
+      changing = null
+      changeText = ''
+    } catch (e) {
+      filed[a.slug] = { ok: false, text: `Could not file it: ${errorMessage(e)}` }
+    } finally {
+      busy = null
+    }
+  }
+
   const apps = $derived(query.data?.apps ?? [])
 </script>
+
+{#if isAdmin}<AppsInstallRequests /><AppsUpdateRequests />{/if}
 
 {#snippet surfaceChips(surfaces: InstalledApp['surfaces'], mcp?: boolean)}
   <span class="flex gap-1">
@@ -86,6 +179,62 @@
     {#if surfaces.settings}<Chip title={`Settings panel: ${surfaces.settings}`}>settings</Chip>{/if}
     {#if mcp}<Chip title="Publishes MCP tools for agents. Govern access in Manage → MCP">mcp</Chip>{/if}
   </span>
+{/snippet}
+
+<!-- The activity harnesses the app ships (harnesses/*.ts), as the host last
+     checked them against the enabled apps: the ones registered for model
+     fitness, and the ones skipped. A disabled app registers none — its count
+     is what it would register once enabled. -->
+{#snippet harnessChips(a: InstalledApp)}
+  {@const registered = a.build?.harnesses?.registered ?? []}
+  {@const skipped = a.build?.harnesses?.problems ?? []}
+  {@const n = `${registered.length} harness${registered.length === 1 ? '' : 'es'}`}
+  {#if registered.length > 0 && a.enabled}
+    <Chip title={`Activity harnesses scored in Models → Fitness:\n${registered.join('\n')}`}>{n}</Chip>
+  {:else if registered.length > 0}
+    <Chip title={`Not registered while ${a.name} is disabled: enable it to score them in Models → Fitness.\n${registered.join('\n')}`}>
+      {n} · not registered
+    </Chip>
+  {/if}
+  {#if skipped.length > 0 && a.build?.status !== 'failed'}
+    <Chip tone="warn" title={skipped.join('\n')}>{skipped.length} harness{skipped.length === 1 ? '' : 'es'} skipped</Chip>
+  {/if}
+{/snippet}
+
+<!-- The app's triggers and how each last ran. A trigger that fails never
+     turns the app off, so this line is where an admin sees it: the failed
+     run's sentence in red, the app's own result line otherwise. The line
+     WRAPS rather than truncating: on a phone the run's sentence is most of
+     what there is to read, and an ellipsis there hid an event trigger's
+     detail entirely (a hover title is no help on a touch screen). -->
+{#snippet triggerLines(a: InstalledApp)}
+  {#each a.triggers ?? [] as t (t.id)}
+    {@const last = t.runs[0]}
+    {@const failed = t.runs.filter((r) => r.state === 'failed').length}
+    <div class="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-[11px] text-muted" data-app-trigger={t.id}>
+      <span class="shrink-0 text-fg">{t.id}</span>
+      <span class="shrink-0" title={triggerTitle(t)}>{t.cron ? `${t.cron} UTC` : `on ${t.event}`}</span>
+      {#if !last}
+        <span class="min-w-0 wrap-anywhere">{a.enabled ? 'not run yet' : 'off while the app is disabled'}</span>
+      {:else}
+        <span class={`shrink-0 ${last.state === 'failed' ? 'text-danger' : last.state === 'ok' ? 'text-fg' : ''}`}>
+          {last.state === 'ok' ? 'ran' : last.state} {relativeTime(last.finishedAt ?? last.startedAt ?? last.queuedAt)}
+        </span>
+        {#if last.state === 'failed' && last.error}
+          <span class="min-w-0 wrap-anywhere text-danger" data-app-trigger-detail>{last.error}</span>
+        {:else if last.detail}
+          <span class="min-w-0 wrap-anywhere" data-app-trigger-detail>{last.detail}</span>
+        {:else if last.state === 'skipped' && last.error}
+          <span class="min-w-0 wrap-anywhere" data-app-trigger-detail>{last.error}</span>
+        {/if}
+        {#if failed > 0 && last.state !== 'failed'}
+          <span class="shrink-0 text-danger" title={t.runs.filter((r) => r.state === 'failed').map((r) => r.error ?? '').join('\n')}>
+            {failed} of the last {t.runs.length} failed
+          </span>
+        {/if}
+      {/if}
+    </div>
+  {/each}
 {/snippet}
 
 {#if query.isLoading}
@@ -101,19 +250,121 @@
 {:else}
   <div class="space-y-3" data-app-cards>
     {#each apps as a (a.slug)}
-      <div class="flex items-center gap-4 rounded-lg border border-line bg-panel p-4">
+      <!-- Wraps on a phone: the actions drop below the app's lines instead of
+           squeezing them into a sliver beside the buttons. -->
+      <div class="flex flex-wrap items-center gap-4 rounded-lg border border-line bg-panel p-4 sm:flex-nowrap">
         <span class="w-8 text-center text-2xl text-accent">{a.icon}</span>
-        <div class="min-w-0 flex-1">
+        <div class="min-w-0 flex-1 basis-56">
           <div class="flex items-baseline gap-2">
             <span class="font-sans text-sm font-medium text-fg">{a.name}</span>
-            <span class="font-mono text-[10px] tracking-[0.05em] text-muted">v{a.version}</span>
+            {#if a.version}<span class="font-mono text-[10px] tracking-[0.05em] text-muted">v{a.version}</span>{/if}
             {@render surfaceChips(a.surfaces, a.mcp)}
-            {#if a.build?.status === 'building'}<Chip>compiling</Chip>{/if}
-            {#if a.build?.status === 'failed'}<Chip tone="danger" title={a.build.error}>build failed</Chip>{/if}
+            {#if a.broken}<Chip tone="danger" title={a.broken}>broken manifest</Chip>
+            {:else if a.build?.status === 'building'}<Chip>compiling</Chip>
+            {:else if a.build?.status === 'failed'}<Chip tone="danger" title={a.build.error}>build failed</Chip>{/if}
+            {@render harnessChips(a)}
           </div>
           <div class="truncate font-sans text-xs text-muted">{a.description}</div>
-          {#if a.build?.status === 'failed' && a.build.error}
+          {#if a.git}
+            {@const check = updates.data?.[a.slug]}
+            <div class="mt-1 flex items-center gap-2 font-mono text-[11px] text-muted" data-app-source>
+              <GitBranch size={11} />
+              <span class="truncate" title={a.git.url}>{a.git.repo}</span>
+              <span class="shrink-0 whitespace-nowrap">@ {a.git.ref ?? 'default branch'}</span>
+              <span class="shrink-0" title={a.git.sha ?? 'installed before commits were recorded'}>{shortSha(a.git.sha)}</span>
+              {#if check?.available}
+                <span class="shrink-0"><Chip tone="accent" title={`The source now points at ${shortSha(check.latest)}`}>update available</Chip></span>
+              {:else if check?.notChecked}
+                <span class="shrink-0" title={check.notChecked}>update not checked</span>
+              {:else if check?.error}
+                <span class="truncate text-danger" title={check.error}>update check failed</span>
+              {/if}
+            </div>
+          {/if}
+          {#if a.plugin}
+            {@const pl = a.plugin}
+            <!-- A plugin: the Developer Agent that maintains it, the person it
+                 is for, the board its maintenance tickets go to, and how its
+                 updates land. -->
+            <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-sans text-[11px] text-muted" data-app-plugin>
+              <span title="The Developer Agent that maintains this app">maintained by <span class="text-fg">{pl.maintainer?.name ?? pl.maintainer?.model ?? 'no agent'}</span></span>
+              {#if pl.owner}<span title="Who the app was built for">for <span class="text-fg">{pl.owner.name ?? 'a member'}</span></span>{/if}
+              {#if pl.board}<span title="Where its maintenance tickets go">tickets on <span class="text-fg">{pl.board.name ?? 'its board'}</span>{#if pl.ticketRef}{` · ${pl.ticketRef}`}{/if}</span>{/if}
+              {#if isAdmin}
+                <label class="flex items-center gap-1" title="approve: every update waits for an admin's approval. auto: an update is applied as soon as the maintenance sweep sees it.">
+                  updates
+                  <Select
+                    size="sm"
+                    aria-label={`Update policy for ${a.name}`}
+                    value={pl.updatePolicy}
+                    disabled={busy === a.slug}
+                    onchange={(e) => void setPolicy(a, e.currentTarget.value as AppPlugin['updatePolicy'])}
+                    class="w-40"
+                  >
+                    <option value="approve">need approval</option>
+                    <option value="auto">automatic</option>
+                  </Select>
+                </label>
+              {:else}
+                <span>updates {pl.updatePolicy === 'auto' ? 'automatic' : 'need approval'}</span>
+              {/if}
+              <button
+                type="button"
+                class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-accent"
+                title="Ask its maintainer for a change: a ticket on its board, assigned to the agent"
+                data-request-change
+                onclick={() => {
+                  changing = changing === a.slug ? null : a.slug
+                  changeText = ''
+                }}>Request a change</button
+              >
+            </div>
+            {#if changing === a.slug}
+              <div class="mt-2 space-y-2" data-request-change-form>
+                <Textarea
+                  bind:value={changeText}
+                  rows={3}
+                  maxlength={4000}
+                  placeholder={`What should change in ${a.name}? The first line becomes the ticket's title.`}
+                />
+                <div class="flex justify-end gap-2">
+                  <Button size="sm" variant="ghost" onclick={() => (changing = null)}>Cancel</Button>
+                  <Button size="sm" disabled={busy === a.slug || !changeText.trim()} onclick={() => void sendChange(a)}>
+                    {busy === a.slug ? 'Filing…' : 'File the ticket'}
+                  </Button>
+                </div>
+              </div>
+            {/if}
+            {#if filed[a.slug]}
+              {@const f = filed[a.slug]!}
+              <div class={`mt-1 font-sans text-[11px] ${f.ok ? 'text-muted' : 'text-danger'}`} data-request-change-result>
+                {#if f.href}<a href={f.href} class="text-fg hover:underline">{f.text}</a>{:else}{f.text}{/if}
+              </div>
+            {/if}
+          {/if}
+          {#if a.broken}
+            <div class="mt-1 truncate font-mono text-[11px] text-danger" title={a.broken}>{a.broken}</div>
+          {:else if a.build?.status === 'failed' && a.build.error}
             <div class="mt-1 truncate font-mono text-[11px] text-danger">{a.build.error}</div>
+          {/if}
+          <!-- A harness the platform skipped never disables the app, so this
+               line is the only place an admin learns one is missing from the
+               fitness matrix, and why. -->
+          {#if a.build?.status !== 'failed'}
+            {#each a.build?.harnesses?.problems ?? [] as problem (problem)}
+              <div class="mt-1 break-words font-mono text-[11px] text-warning" data-harness-problem>{problem}</div>
+            {/each}
+            <!-- Registered, and will not run as its author meant: a pin that
+                 names no platform agent resolves to nothing. -->
+            {#each a.build?.harnesses?.warnings ?? [] as warning (warning)}
+              <div class="mt-1 break-words font-mono text-[11px] text-warning" data-harness-warning>{warning}</div>
+            {/each}
+          {/if}
+          {#if !a.broken}{@render triggerLines(a)}{/if}
+          {#if results[a.slug]}
+            <div class={`mt-1 font-mono text-[11px] ${results[a.slug]!.ok ? 'text-fg' : 'text-danger'}`} data-app-update-result>
+              {results[a.slug]!.text}
+            </div>
           {/if}
         </div>
         {#if a.enabled && a.surfaces.work}
@@ -122,12 +373,25 @@
           </a>
         {/if}
         {#if isAdmin}
-          {#if a.build?.status === 'failed'}
+          {#if a.git && !a.broken}
+            <Button
+              size="sm"
+              variant={updates.data?.[a.slug]?.available ? 'primary' : 'ghost'}
+              disabled={busy === a.slug}
+              title="Fetch the newest commit of this app's ref, build and check it, then switch to it; a version that fails is rolled back"
+              onclick={() => void update(a)}
+            >
+              {busy === a.slug ? 'Working…' : 'Update'}
+            </Button>
+          {/if}
+          {#if a.build?.status === 'failed' && !a.broken}
             <Button size="sm" variant="ghost" disabled={busy === a.slug} onclick={() => void rebuild(a)}>Rebuild</Button>
           {/if}
-          <Button size="sm" variant={a.enabled ? 'ghost' : 'primary'} disabled={busy === a.slug} onclick={() => void toggle(a)}>
-            {a.enabled ? 'Disable' : 'Enable'}
-          </Button>
+          {#if !a.broken}
+            <Button size="sm" variant={a.enabled ? 'ghost' : 'primary'} disabled={busy === a.slug} onclick={() => void toggle(a)}>
+              {a.enabled ? 'Disable' : 'Enable'}
+            </Button>
+          {/if}
           <button
             title="Uninstall"
             disabled={busy === a.slug}

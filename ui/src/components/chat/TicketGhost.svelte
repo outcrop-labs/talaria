@@ -52,7 +52,7 @@
           spread: 0,
           // inner 0 + rim: the box is drawn as its BORDER — a band of cells
           // hugging the boundary, nothing in the interior.
-          strength: 0.55,
+          strength: 0.825,
           inner: 0,
           rim: 7,
         })
@@ -77,7 +77,7 @@
           h: r.h,
           radius: parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0,
           spread: 0,
-          strength: 0.6,
+          strength: 0.9,
         })
         clip.push({ x: r.x, y: r.y, w: r.w, h: r.h })
       })
@@ -98,7 +98,13 @@
 
 <div bind:this={root} class="relative h-32">
   {#if sources.length > 0}
-    <DitherLayer {sources} {mask} alphaFloor={0.26} maxAlpha={0.8} shimmer={0.08} />
+    <!-- Strengths, alphas and dot tuned to the median look the ghosts had while
+         their dots built up (N11): see LIVE_FIELD_TUNING in
+         lib/dither-engine.ts. The one field left antialiased: snapped, its
+         dense paths reach the median's ink with at most 0.85 of its visible
+         area; antialiased, they reach both. Its dots share pixels below DPR
+         1.67, so each frame there is a full rebuild. -->
+    <DitherLayer {sources} {mask} dot={1.4} snap={false} alphaFloor={0.3188} maxAlpha={0.981} shimmer={0.08} />
   {/if}
   <!-- Geometry donors: invisible (layout intact, nothing painted). Their
        border-radius is read as well as their box, so pills mask as pills and

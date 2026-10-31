@@ -24,13 +24,13 @@ talaria-gateway = { workspace = true }
 talaria-judge = { workspace = true }
 talaria-labels = { workspace = true }
 talaria-notify = { workspace = true }
+talaria-platform-events = { workspace = true }
 talaria-realtime = { workspace = true }
 talaria-retrieval = { workspace = true }
 talaria-statuses = { workspace = true }
 talaria-tasks-types = { workspace = true }
 talaria-ticket-chat = { workspace = true }
 talaria-workchains = { workspace = true }
-talaria-workflows = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 

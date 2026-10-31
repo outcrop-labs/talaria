@@ -15,10 +15,15 @@ Two views, one window:
 
 - **welcome** — the launcher (webview label `main`, local content from `desktop/src`) fills the
   window: the wing mark on the signature dither field, the instance list, add. The dither
-  ENGINE is not copied — `desktop/vite.config.ts` aliases `@dither` onto ui's
-  `dither-engine.ts` (which imports nothing, so it is safe to share), and only the
-  launcher-shaped wrappers (`WingMark.svelte`, `DitherLayer.svelte`) are per-side. Typography
-  is Mercury's IBM Plex pair.
+  material is not copied — `desktop/vite.config.ts` aliases `@dither` onto ui's
+  `dither-engine.ts` (which imports nothing, so it is safe to share) — but the launcher does
+  not run the live engine. `desktop/src/lib/dither-field.ts` paints the same field (ui's
+  `evalSource`, Bayer matrix, two-tier rule, clump hash and page lattice) ONCE, as pixels
+  through one `putImageData`, and `DitherField.svelte` repaints it only after its box or the
+  device pixel ratio has stopped changing. "The launcher's cost" below says why.
+  Typography is Mercury's IBM Plex pair, shipped inside the app (`@fontsource`, Latin and
+  Latin Extended, the two weights the launcher sets): the launcher makes no network request
+  before its first paint.
 - **active** — the instance's webview IS the window; the launcher is hidden (but alive).
   Switching happens **inside the instance UI**: the desktop switcher
   (`ui/src/components/app/DesktopSwitcher.svelte`) wears the current instance's identity
@@ -31,7 +36,8 @@ Two views, one window:
 
 Each instance webview gets its own `data_directory`, so cookie jars and localStorage never mix
 — cookies ignore ports, so without this, two dev instances on `127.0.0.1:530x` would silently
-share a session. Hidden webviews stay loaded: sessions and SSE survive a switch.
+share a session. Hidden webviews stay loaded, so sessions and SSE survive a switch, until an
+instance has been off screen for the suspend timeout ("Suspending inactive instances" below).
 
 Adding an instance: the shell normalizes the URL (bare hosts become `https://`, only http(s),
 credentials/paths stripped — an instance IS its origin), then probes the instance beacon
@@ -39,19 +45,89 @@ credentials/paths stripped — an instance IS its origin), then probes the insta
 what makes a URL "a Talaria instance"; the uuid is also the dedupe key. The label comes from
 `companyName`, falling back to host(:port).
 
+The probe has two bounds (`desktop/src-tauri/src/beacon.rs`): 5 s to connect, so a
+black-holed address fails in seconds, and 20 s in total, so a slow but live instance is
+added rather than refused. A failure is classified from the error's source chain — refused,
+does not resolve, timed out, unreachable, untrusted certificate, TLS failed — instead of
+reqwest's one sentence for all of them, and a TLS failure on a bare host suggests the
+`http://` address. Cancel and Escape work while the probe runs: `cancel_add_instance` aborts
+it, and a cancelled add never reaches the registry, even if the instance answers a moment
+later.
+
 The registry is `~/.local/share/app.talaria.desktop/instances.json` (atomic writes), and each
 instance's session data lives beside it in `instances/<id>/webview/`. Removing an instance
-deletes its data dir — the saved session dies with it; the instance itself is untouched.
+deletes its data dir — the saved session dies with it; the instance itself is untouched. The
+closed webview's WebKit network process can recreate its storage dir while it shuts down, so
+the remove deletes again 2 s and 10 s later. The registry also records the removal
+(`removed`), and each launch deletes a recorded dir that came back; a removal is dropped
+once a launch finds its dir gone. Nothing else under `instances/` is ever deleted: a dir no
+entry owns and no remove recorded may be the session of an entry a damaged registry lost.
+
+Neither file can stop the app from starting. A registry or `settings.json` that does not
+parse is moved aside next to itself (`instances.json.corrupt-<ms>`), whatever entries still
+parse are kept, and the launcher says what happened. The clean file written in its place
+records no removals, so no later launch deletes a data dir on the damaged file's word. A
+settings value this build does not know (a newer build wrote it) reads as the default. The
+registry also records `lastView`, the instance the window last showed or `null` for the
+launcher, so a relaunch lands where the person left. A registry from before that field
+reopens the most recently opened instance, and only one that was actually opened. It also
+keeps each instance's last page (`lastUrls`: path, query and hash), so a relaunch, or any
+open of an instance with no webview, returns to that page instead of the root. The pages
+are kept beside the entries, not in them: every other instance's in-app switcher reads the
+entries (`list_instances`), and one instance's paths are no business of another origin. A
+sign-in or callback page is never kept (`suspend::restorable_url`: `/login`, `/claim`,
+`/join`, `/auth`, `/oauth`, any `/api/` URL, any path with `callback` in it, any URL with a
+one-time value such as `code`, `state` or a `token` in its query or fragment); the instance
+root is used instead. A page on another origin (a link that left the instance) leaves the
+last page of the instance itself standing. Older builds ignore `lastUrls` and drop it on
+save.
+
+### Opening an instance, and when it does not load
+
+An instance with no webview yet (the first open of a session, a relaunch) is probed first,
+from the launcher, which shows "Opening X…" with a way to stay. An unreachable instance is
+then a sentence with Retry on the launcher, not a blank window or WebKit's error page — in
+the themed titlebar mode the only chrome is drawn by the page, so that page was a trap.
+The card also offers **Open anyway**, because the check is not the webview: it is the
+shell's own HTTP client, with no cookies and its own proxy lookup and TLS trust (on Linux,
+the proxy comes only from the environment). An instance behind a sign-in gate that refuses
+the beacon without a session, or one reachable only through a proxy set in the desktop's
+settings, fails the check and still loads in the webview. Open anyway opens it without the
+check; on Linux a page that then fails comes back as a load failure (below), and on macOS
+and Windows the person gets what the platform webview shows for a failed load, as every open
+did before the probe.
+
+**Linux only:** each instance webview's WebKitGTK `load-failed` signal is watched
+(`commands.rs::watch_load_failures`; the `webkit2gtk` crate is a Linux-only dependency). An
+http(s) main-frame load that fails — the instance went away mid-session, a full reload
+while it is down — closes that webview and returns to the launcher with WebKit's reason and
+Retry. A navigation that was replaced, a download, a link WebKit hands elsewhere (`mailto:`)
+or content it cannot show inline is answered "handled", so the page the person is on stays;
+left to WebKit, a `mailto:` link replaced the whole instance with "The URL can't be shown".
+macOS and Windows rely on the probe before a cold open.
+
+### The launcher follows the shell
+
+The launcher mirrors Rust's state rather than reading it once: Rust emits `shell-state` to
+the launcher webview on every change (view, active instance, titlebar, the registry, load
+failures), and the launcher re-reads it whenever it becomes visible. An instance's switcher,
+its Settings → Profile titlebar choice and a notification click all change that state while
+the launcher is hidden. Inside instances, ui's `desktop-settings.svelte.ts` re-reads the
+titlebar mode each time its webview is shown, for the same reason: the window is shared, and
+a choice made in one instance reaches the others.
 
 ## Security posture
 
-- **Instance webviews get the switcher, window chrome, and a notification post — nothing else.** The shell's
+- **Instance webviews get the switcher, window chrome, a notification post and the suspend
+  report — nothing else.** The shell's
   commands are gated behind capabilities (`AppManifest::commands` in `desktop/src-tauri/build.rs`);
   the launcher holds all of them (`capabilities/launcher.json`), and each REGISTERED instance
   origin gets a runtime grant (`grant_switcher` in `src-tauri/src/lib.rs`, via Tauri's
   dynamic-ACL) scoped to `list_instances`, `activate_instance`, `show_welcome`,
-  `get_desktop_settings`, `set_titlebar_mode`, `desktop_window`, `check_for_update`,
-  `install_update`, and `desktop_notify` on that one webview. No fs, no generic window API —
+  `get_desktop_settings`, `set_titlebar_mode`, `set_suspend_after`, `desktop_window`,
+  `check_for_update`, `install_update`, `desktop_notify` and `desktop_suspend_report` on that
+  one webview. A suspend report counts only as the answer to the question the shell just
+  asked that webview (a nonce). No fs, no generic window API —
   remote content can switch instances, move/close *this* window, and post a notification
   (title, body, and a same-origin path). An origin the user never registered gets no IPC at all.
 - Login happens inside each instance webview via the instance's own flows (password or
@@ -68,7 +144,11 @@ children can be misplaced ([tauri#10420]) and `auto_resize` breaks across resize
 VERTICALLY in the GTK container. The design leans on none of it: exactly ONE webview is
 visible at a time (`hide()`/`show()` decide who renders; bounds calls are belt-and-suspenders
 in logical units, applied once at the end of setup and again on every `WindowEvent::Resized`),
-so there is no side-by-side layout to get wrong. The setup pass matters: the first resize can
+so there is no side-by-side layout to get wrong. Visibility changes hide everything else FIRST,
+then show the one webview. And the shell never calls `Window::show()` on a window that is
+already visible: on Linux tao's show is gtk `show_all`, which re-shows every hidden child
+webview, and the vertical GtkBox then split the window between them (a notification click
+did exactly this). The setup pass matters: the first resize can
 arrive before shell state exists, and a missed `set_bounds` leaves the launcher webview at
 WebKitGTK's default 1×1. An undecorated window that never paints is not mapped on Wayland —
 the process is alive and the launch looks silent. `tauri` is exact-pinned (`=2.11.5`) in
@@ -84,6 +164,130 @@ The engine is WebKitGTK, so the instance UI runs under WebKit (Safari-family) se
 Blink. APIs Chrome has that WebKit lacks (e.g. `requestIdleCallback`) are landmines in ui/
 code even for browser Safari — feature-detect with `typeof x === 'function'`, never a bare
 reference (a bare global throws ReferenceError before `??` can fall back).
+
+## The launcher's cost
+
+Measured on a headless WebKitGTK 2.52 with no GPU (Mesa llvmpipe), 2026-10-28; the numbers
+and the rig are in the PR that made these changes. Three things made the launcher slow, and
+each has a rule now:
+
+- **No live canvas field.** ui's live engine over the whole window, with a shimmer and a
+  uniform grain, re-rolled about half of ~246 000 cells every 160 ms as individual 1-px
+  `clearRect` + `fillRect` pairs. WebKit's web process main thread sat at 97 %, a frame took
+  ~0.5 s, and every click, keystroke and IPC reply waited behind it (opening the add dialog
+  took 0.54–0.61 s to show). The static field idles at ~0 % and the same click shows in
+  ~80 ms. WebKit's renderer switches (`WEBKIT_DISABLE_COMPOSITING_MODE`,
+  `WEBKIT_DISABLE_DMABUF_RENDERER`, Skia CPU) changed nothing, so no env default is set.
+- **No overlay scrollbars.** WebKitGTK's overlay scrollbar fades in and out on every scroll,
+  and on a software renderer that fade composited the whole window at full rate for ~3 s —
+  300–400 % CPU after each scroll of a long instance list. The launcher styles
+  `::-webkit-scrollbar`, which has no fade.
+- **Nothing that waits on another process runs on the main thread.** A sync command runs on
+  the main thread in Tauri v2, which is also the GTK loop every webview paints from.
+  `desktop_notify` was sync, and a notification server that took 30 s to answer froze the
+  whole app for 30 s; it is async now, the D-Bus post runs on a blocking thread, and the page
+  gets its answer within 2 s.
+
+The window and every instance webview paint the launcher's ground (`#090a09`) until their
+page does, instead of GTK's grey and WebKit's white.
+
+Each OPENED instance keeps its webview, and with it a WebKit web process and, because of its
+own data directory, its own network process: about 110 MB + 13 MB for a trivial page, ~690
+MB for the real UI (2 web processes). 25 opened mock instances were 3.07 GB on the
+2026-10-28 rig (4.35 GB PSS on the 2026-10-29 one). An instance that stays off screen is
+suspended, which frees its web process: the next section.
+
+## Suspending inactive instances
+
+`desktop/src-tauri/src/suspend.rs` (the clock, the URL rule and the scripts), `commands.rs`
+(the wiring) and `watch.rs` (notifications while suspended).
+
+**When.** An instance whose page has not been on screen for the timeout is suspended: its
+webview is closed. "Not on screen" means another instance or the launcher has been showing.
+The instance the window shows counts only while the window itself is minimized or hidden,
+never while it is merely unfocused, so a page on a second monitor (an agent run streaming)
+stays. GTK on Wayland reports no minimized state, so there the shell counts its own minimize
+(the themed titlebar's button) until the window is focused again; on Wayland a window
+minimized by the compositor or by the OS titlebar's button is not seen as away, and its
+instance stays loaded. A compositor may also ignore the shell's minimize (sway and other
+wlroots window managers): the shell looks once, 750 ms after asking, and a window still
+focused then is counted as on screen. One that ignored it but lost focus within that moment
+counts as away until it is focused again. X11, macOS and Windows report minimized
+themselves. The timeout is
+`suspendAfterMinutes` in `settings.json`: 10 by default, `0` for Off, any whole number of
+minutes up to a day. The launcher and Settings → Profile offer Off, 5, 10, 30 and 60
+minutes; a value set by hand shows as its own choice. The clock ticks every 5 s.
+
+**Only a page that agrees.** Before it closes one, the shell asks the page
+(`suspend::report_js`) through ui's `window.__TALARIA_DESKTOP__` hook
+(`ui/src/lib/desktop-suspend.ts`). The page stays open, until it is next shown, when:
+
+- it has no hook: an instance whose Talaria predates it. Its notifications and its typed
+  input are its own page's business, so it behaves exactly as before;
+- it holds input a reload would lose:
+  - a field the person changed that is still on the page and differs from what it held
+    before their first change: text in an input, a textarea or a rich editor, a select
+    picked, a checkbox or radio toggled. ui keeps the chat composer's draft across a reload
+    (`lib/comms-drafts`; the editor is marked `data-desktop-draft`), so the composer's text
+    does not count. A half-written ticket field, an agent prompt mid-edit, a typed search
+    or an unsaved form's select does;
+  - anything marked `data-desktop-unsaved`: the pending-attachment chips over a composer
+    (uploaded, not yet sent, and not part of the draft). A file input is not counted
+    itself: every one in ui hands its file off on pick, as such a chip or a saved upload;
+  - not seen: input inside an embedded frame. The artifact preview is a sandboxed frame
+    with its own origin and a Google file pane is Google's, so the page cannot read either;
+- its page posts OS notifications and the shell cannot read them the way the page does
+  (below).
+
+A page that says it can go is closed once the shell has read its cookies and its
+notifications baseline, which can take a while on a slow instance. It is not asked again
+meanwhile, so one page never starts two closes or two watchers. Both reads are bounded (10 s
+for the cookie store, 30 s for the baseline), and a page the shell could not read in time
+stays.
+
+**What a restore brings back.** Showing a suspended instance by any route recreates its
+webview at its exact last page (path, query and hash), at once and with no probe: a launcher
+row, the in-app switcher, `Ctrl/Cmd+Shift+H` then a row, and the window restored or focused
+while that instance is the one it shows. A relaunch with it as `lastView` opens it at the
+same page (a cold open, so probed first, as before). A notification click opens the
+notification's own path instead. The recreated page also gets back its `sessionStorage`
+(where ui keeps each view's "where you were") and the scroll position of every box that was
+scrolled, retried while the page renders for up to five seconds and abandoned at the
+person's first scroll, key or click. Not restored: in-memory state a reload also loses (an
+open menu or dialog), input the page did not keep (such a page is never suspended),
+and scroll after a relaunch (only the URL is kept on disk).
+
+**What survives.**
+
+- *The session.* ui's session cookie is persistent (`Max-Age` 7 days), so it is on disk in
+  the instance's data directory and the restored page is still signed in.
+- *Notifications.* A suspended page posts nothing, so the shell does its job: `watch.rs`
+  reads `/api/notifications` with that instance's own cookies (taken from its webview's
+  store, sent only to its origin, redirects not followed), made live by `/api/me/events`
+  with the page's 30 s poll floor. The first read is taken while the page is still open: if
+  it fails for anything but a 401/403 (a proxy or certificate only the webview knows, the
+  instance down), the page is kept. After that every new row is posted, oldest first, with
+  the same clamps, tag and click as `desktop_notify`; a 401/403 ends the watcher. It runs
+  only when the page said it would post (ui's `browserNotifyEnabled`). The restored page's
+  own tracker takes its first read as a baseline, so nothing is posted twice. A row that
+  lands in the second or so between the restore and the page's first read is in the inbox
+  but gets no banner, as with any reload.
+- *The switcher, the titlebar mode, the launcher's state:* all read again when a page loads;
+  a hidden page did nothing else for the shell.
+
+**What it frees, and what it does not.** Measured 2026-10-29 on the headless rig (WebKitGTK
+2.52, llvmpipe): 25 opened mock instances with the launcher showing are 26 web processes,
+4.35 GB PSS (9.35 GB RSS) in all. All 25 suspended: one web process (the launcher's), 0.69 to
+0.72 GB PSS (2.0 GB RSS). The network processes stay: Tauri keeps each data directory's
+WebKit context alive for the app's life on Linux (tauri#14626), so each opened instance keeps
+its network process (about 13 MB PSS) until the app quits. The 25 watchers cost less than the
+rig resolves: stopping all 25 moved the shell process by 0.3 MB.
+
+**How fast.** A warm restore (row click to first paint) is ~0.76 s; a cold open is ~0.80 s;
+a switch to a live webview is 5 ms. A reload of the same page inside an existing webview
+paints in ~50 ms, so ~0.7 s of a restore is WebKit starting the web process and creating the
+webview. A pre-warm on hover could overlap at most the hover-to-click time with that, at the
+cost of a web process per hovered row; it is not done.
 
 ## Development: the box builds, the host runs
 
@@ -217,19 +421,33 @@ isolation that `data_directory` does not provide on macOS or Windows.
 
 ## Window chrome
 
+The window title is "Talaria — <instance>" while an instance is shown and "Talaria" on the
+launcher. On Wayland the OS titlebar is a `GtkHeaderBar` that tao builds with the first title
+and wraps in an event box, which keeps GTK from passing later titles to it, so the shell
+sets the header bar's title itself (`commands.rs::set_header_title`). On X11 the window
+manager draws the window's own title.
+
 The window ships `decorations: false`. Three titlebar modes live in
 `~/.local/share/app.talaria.desktop/settings.json` (themed / os / none). **Themed is the
 default on every OS**: custom min/max/close drawn in the webview (traffic-light side follows
 the OS — left on macOS, right elsewhere) and a bar you can drag. OS turns native decorations
 on. None hides both. Settings → Profile (inside the desktop app) and the launcher welcome
-screen both set it.
+screen both set it. Turning the OS titlebar on keeps the window's outer size (the content
+loses the titlebar's height), and the shell re-places the visible webview straight away
+rather than a frame later, which used to flash a band of bare window.
+
+The window opens at 1280×800, shrunk to fit the monitor it opens on when that is smaller
+(`layout::fit`: a 1440×900 panel at 167 % is 864×540 logical, and the fixed size put the
+themed min/max/close off-screen). The minimum is 760×480, also shrunk to fit.
 
 ## Updates
 
 A stable GitHub Release carries `latest.json` plus minisign signatures of the AppImage,
 the universal `.app.tar.gz`, and the NSIS installer. The running app checks
 `/releases/latest/download/latest.json` (Settings → Profile, or the launcher), verifies
-the payload against the pubkey in `tauri.conf.json`, replaces itself, and relaunches.
+the payload against the pubkey in `tauri.conf.json`, replaces itself, and relaunches. The
+check is bounded at 10 s (the plugin's default is no bound); the install is not, because the
+plugin applies one timeout to the check and to the whole download.
 RCs do not publish `latest.json` — `/releases/latest` is GitHub's stable pointer.
 
 Signing uses `TAURI_SIGNING_PRIVATE_KEY` (a GitHub Actions secret). Losing that key
@@ -244,7 +462,11 @@ there is no site-settings page inside the shell, so a page cannot grant it. The 
 through the OS notification service — the same path other desktop apps use. A click focuses
 this window, brings that instance forward, and opens the notification's path when it is a
 same-origin path. The app has to be running; a quit process is not listening. Tray and
-delivery after quit stay deferred.
+delivery after quit stay deferred. A suspended instance's notifications are posted by the
+shell itself ("Suspending inactive instances" above); an instance not opened this session
+posts none, as before. The post is off the main thread (see "The launcher's
+cost"), and the click never calls `show()` on the already-visible window (see the geometry
+section).
 
 ## Deferred on purpose
 

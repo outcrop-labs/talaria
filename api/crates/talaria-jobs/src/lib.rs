@@ -72,19 +72,10 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_outreach::register_outreach_job(Arc::new(OutreachDeps {
         state: state.clone(),
     }));
-    let _ =
-        talaria_web_search::CALL_MCP_TOOL.set(std::sync::Arc::new(|pg, sb, server, tool, args| {
-            Box::pin(async move {
-                talaria_mcp::registry::call_mcp_tool(&pg, &sb, &server, &tool, &args)
-                    .await
-                    .map(|out| (out.structured, out.text))
-            })
-        }));
     // The research harness's search loop dispatches to a registered MCP
-    // supplier through its own hook, and nothing set it: every org whose
-    // search supplier was a registered (non-platform) server got "The search
-    // tool failed" on every round. Same dispatcher, the tuple the other way
-    // round (text, structured).
+    // supplier through its own hook: without it, every org whose search
+    // supplier was a registered (non-platform) server got "The search tool
+    // failed" on every round. The tuple is (text, structured).
     let _ = talaria_harness_defs::CALL_MCP_TOOL.set(std::sync::Arc::new(
         |pg, sb, server, tool, args| {
             Box::pin(async move {
@@ -96,13 +87,50 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     ));
     let _ = talaria_fleet_create::RENDER_FLEET.set(std::sync::Arc::new(|pg, sb| {
         Box::pin(async move {
-            talaria_fleet_render::render_fleet(&pg, &sb, None)
+            talaria_fleet_render::render_fleet(&pg, &sb)
                 .await
                 .map(|_| ())
         })
     }));
     let _ = talaria_mcp_apply::ROLL_AGENT.set(std::sync::Arc::new(|pg, sb, dept| {
-        Box::pin(async move { talaria_fleet_reconcile::roll_agent(&pg, &sb, &dept).await })
+        Box::pin(async move {
+            use talaria_fleet_reconcile::RollOutcome;
+            match talaria_fleet_reconcile::roll_running_agent_outcome(&pg, &sb, &dept).await {
+                // Recreated and still booting past the roll's health wait:
+                // the queue moves on, and only a late wait that fails is a
+                // failure for the audit trail — in the shape mcp-apply
+                // writes its own (a container that comes up is no failure).
+                Ok(RollOutcome::StillStarting { late, .. }) => {
+                    tokio::spawn(async move {
+                        let error = match late.await {
+                            Ok(None) => return,
+                            Ok(Some(failed)) => failed,
+                            Err(e) => format!("its late health wait was lost: {e}"),
+                        };
+                        talaria_audit::log_audit(
+                            &pg,
+                            talaria_audit::AuditEntry {
+                                actor: "talaria",
+                                action: "mcp.roll_failed",
+                                target_type: "department",
+                                target_id: Some(&dept),
+                                target_label: None,
+                                before: None,
+                                after: Some(serde_json::json!({ "error": error })),
+                            },
+                        )
+                        .await;
+                    });
+                    Ok(None)
+                }
+                outcome => outcome.map(RollOutcome::into_verdict),
+            }
+        })
+    }));
+    let _ = talaria_mcp_apply::APPLY_AGENTS.set(std::sync::Arc::new(|pg, sb, depts| {
+        Box::pin(
+            async move { talaria_fleet_reconcile::apply_agent_changes(&pg, &sb, &depts).await },
+        )
     }));
     let _ = talaria_update_job::ROLL_FLEET.set(std::sync::Arc::new(|pg, sb| {
         Box::pin(async move { talaria_fleet_reconcile::roll_running_agents(&pg, &sb).await })
@@ -130,32 +158,17 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
                 talaria_approvals::announce_approval(&deps, &key).await;
             })
         }));
-    // THE ROLL'S OWN TWO EDGES. `roll_agent` reaches the renderer through
-    // them — a roll renders the incoming slot, brings it up, flips the
-    // manifest, then re-renders — and an edge nothing sets is a roll that
-    // returns "… not wired" into callers that discard it: the roster never
-    // changes, the logs stay silent, and the agent keeps running the config
-    // the operator just replaced. Same completeness rule as the job table
-    // above, one layer down.
-    let _ = talaria_fleet_reconcile::RENDER_FLEET.set(std::sync::Arc::new(|pg, sb, roll| {
+    // THE ROLL'S OWN EDGE. `roll_running_agent` reaches the renderer through it — a
+    // roll renders, then recreates the container on that render — and an
+    // edge nothing sets is a roll that returns "… not wired" into callers
+    // that discard it: the roster never changes, the logs stay silent, and
+    // the agent keeps running the config the operator just replaced. Same
+    // completeness rule as the job table above, one layer down.
+    let _ = talaria_fleet_reconcile::RENDER_FLEET.set(std::sync::Arc::new(|pg, sb| {
         Box::pin(async move {
-            let overlay =
-                roll.as_ref()
-                    .map(|(slug, slot, port)| talaria_fleet_render::RollOverlay {
-                        slug,
-                        slot: *slot,
-                        port: *port,
-                    });
-            talaria_fleet_render::render_fleet(&pg, &sb, overlay)
+            talaria_fleet_render::render_fleet(&pg, &sb)
                 .await
                 .map(|render| (render.agents.len(), render.warnings))
-        })
-    }));
-    let _ = talaria_fleet_reconcile::NEXT_FREE_PORT.set(std::sync::Arc::new(|pg| {
-        Box::pin(async move {
-            talaria_fleet_render::next_free_port(&pg)
-                .await
-                .map_err(|e| e.to_string())
         })
     }));
     let _ = talaria_fleet_docker::PREFLIGHT.set(|pool| {
@@ -164,11 +177,101 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         });
     });
     let _ = talaria_gateway::usage::NUDGE_AUTO_PRICES.set(talaria_price_oracle::nudge_auto_prices);
+    // THE LOST-TURN EDGE. A session whose turn died with its container is
+    // held by Hermes until the lost turn is acknowledged; the session arm
+    // repairs it through this edge (talaria-gateway `fleet_lost_turns`).
+    // Unset, every later turn of that conversation or work session answers
+    // `unknown_execution`, as it did before the edge existed.
+    let lost_turns_pg = state.pg.clone();
+    let _ = talaria_gateway::fleet_lost_turns::RESOLVE_LOST_TURNS.set(Arc::new(
+        move |model: String, session: String| {
+            let pg = lost_turns_pg.clone();
+            Box::pin(async move {
+                talaria_fleet_docker::discard_lost_turns(&pg, &model, &session).await
+            })
+        },
+    ));
     let spend_state = state.clone();
     let _ = talaria_price_oracle::LOAD_SPEND_KEYS.set(std::sync::Arc::new(move || {
         let state = spend_state.clone();
         Box::pin(async move { talaria_price_oracle::keys_for(&state).await })
     }));
+    // WHERE A REFUSED APPROVAL IS RECORDED. The fleet chat door refuses
+    // every Hermes approval request on a streamed turn that no card takes,
+    // and every one no answer could make land (talaria-gateway's
+    // fleet_approvals), and the gateway crate holds no pool. A card's own
+    // answers are recorded by talaria-approval-cards, with the person as the
+    // actor. Unwired, the answer still goes out and nothing is recorded.
+    let record_pg = state.pg.clone();
+    let _ = talaria_gateway::fleet_approvals::RECORD_APPROVAL.set(Arc::new(move |r| {
+        let pg = record_pg.clone();
+        Box::pin(async move {
+            // `model` is unique, so this is the agent's own def or nothing.
+            let agent_id = match sqlx::query_scalar::<_, String>(
+                "select id::text from agent_defs where model = $1",
+            )
+            .bind(&r.agent_model)
+            .fetch_optional(&pg)
+            .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!(
+                        "{LOG} approval record: def for {} unreadable: {e}",
+                        r.agent_model
+                    );
+                    None
+                }
+            };
+            talaria_audit::log_audit(
+                &pg,
+                talaria_audit::AuditEntry {
+                    actor: "talaria",
+                    action: "agent.approval_denied",
+                    target_type: "agent",
+                    target_id: agent_id.as_deref(),
+                    target_label: Some(&r.agent_model),
+                    before: None,
+                    after: Some(serde_json::json!({
+                        "choice": talaria_gateway::fleet_approvals::ANSWER,
+                        "description": r.description,
+                        "command": r.command,
+                        "runId": r.run_id,
+                        "answered": r.failure.is_none(),
+                        "error": r.failure,
+                        // Set when no answer could have made it land (a
+                        // protected write outside the agent's write root,
+                        // or an MCP form asking for fields nobody can type),
+                        // so nobody was asked; null for a policy refusal.
+                        "reason": r.reason,
+                    })),
+                },
+            )
+            .await;
+        })
+    }));
+    // WHERE AN APPROVAL A PERSON MAY ANSWER BECOMES A CARD. On an attended
+    // conversation turn, the door offers each request to this seam before it
+    // refuses it; talaria-approval-cards raises a card for a Developer
+    // Agent's request when the conversation's owner manages the agent, and
+    // its deadline answers `deny` if nobody does. Unwired, every request is
+    // refused, as before cards existed. The deadlines live in this process,
+    // so the cards a restart left waiting are closed (or re-armed) here.
+    let card_state = state.clone();
+    let _ = talaria_gateway::fleet_approvals::RAISE_CARD.set(Arc::new(move |ask| {
+        let state = card_state.clone();
+        Box::pin(async move {
+            let redis = state.redis().await.ok();
+            talaria_approval_cards::raise(&state.pg, redis, ask).await
+        })
+    }));
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let redis = state.redis().await.ok();
+            talaria_approval_cards::expire_overdue(&state.pg, redis).await;
+        });
+    }
     // THE RUN ASSEMBLY plan-draft, research, and reindex enqueue through.
     // The seam and its constructor (`work_dispatch::dispatch_deps`, which is
     // `real_run_deps` — the same assembly agent-hire calls directly) both
@@ -643,6 +746,10 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_digest::register_approval_escalation_job(real_digest_deps(state, rt.clone()));
     talaria_notify::register_notification_mail_job(real_drain_deps(state.pg.clone(), sb.clone()));
     talaria_work_dispatch::register_redispatch_job(state.pg.clone(), run.clone());
+    // The cron-output pull: a thread schedule's report the plugin's
+    // fire-and-forget push lost, read back from the agent's own session
+    // store and landed through the same door code.
+    talaria_cron_output::register_cron_pull_job(state.clone());
     talaria_runs_reclaim::register_reclaim_job(Arc::new(ReclaimDeps {
         due: due_fn(run.store.clone()),
         definition_for: run.definition_for.clone(),
@@ -657,9 +764,45 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_scheduler::register_job(talaria_workbench_queue::promotion_job_spec(
         state.pg.clone(),
     ));
+    // The workbench job sweep also runs the plugin maintenance pass: it needs
+    // Redis (resuming a maintainer's session) and the app host's credential
+    // (an `auto` update), both read when the pass runs, never at boot.
+    let upkeep: talaria_workbench_mcp::teardown::UpkeepRun = {
+        let state = state.clone();
+        let sb = sb.clone();
+        Arc::new(move || {
+            let state = state.clone();
+            let sb = sb.clone();
+            Box::pin(async move {
+                let deps = talaria_plugins::upkeep::UpkeepDeps {
+                    pg: state.pg.clone(),
+                    sb,
+                    redis: state.redis().await.ok(),
+                    host: talaria_apps::AppHost::new(state.cfg.secret_root.internal_token()),
+                };
+                match talaria_plugins::upkeep::upkeep_pass(&deps).await {
+                    Ok(report) => report.summary(),
+                    Err(e) => Some(format!("plugin upkeep could not run: {e}")),
+                }
+            })
+        })
+    };
     talaria_scheduler::register_job(talaria_workbench_mcp::teardown::job_sweep_spec(
         state.pg.clone(),
+        Some(upkeep),
     ));
+    // App triggers: the schedule half is a job (the one scheduler), the
+    // event half is the platform-event sink — both deliver to the app host
+    // under the root-derived service credential, and both write the run rows
+    // Manage → Apps reads.
+    {
+        let deps = talaria_app_triggers::TriggerDeps::new(
+            state.pg.clone(),
+            state.cfg.secret_root.internal_token(),
+        );
+        talaria_platform_events::set_sink(talaria_app_triggers::event_sink(deps.clone()));
+        talaria_scheduler::register_job(talaria_app_triggers::job_spec(deps));
+    }
     // The optional trio. mcp-library-refresh mirrors the official MCP
     // registry into the catalog table (leased: one walker per interval);
     // update-check and update-reconcile
@@ -670,6 +813,11 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         state.pg.clone(),
         talaria_mcp_library::library(),
     );
+    // skills-index-refresh mirrors Hermes' official skills index into the
+    // marketplace's catalog table (leased; a 304 most runs — the index is
+    // rebuilt daily). Optional like the MCP mirror: its absence is a slower
+    // first marketplace open, which nudges its own sync.
+    talaria_skills_marketplace::register_skills_index_refresh_job(state.pg.clone());
     talaria_mcp::pkg::register_pkg_reconcile_job(state.pg.clone());
     talaria_mcp::calls::register_mcp_calls_prune_job(state.pg.clone());
     talaria_mcp::health::register_mcp_health_job(state.pg.clone(), sb.clone(), rt.clone());
@@ -849,6 +997,18 @@ mod tests {
             "mcp-library-refresh fell out of the job table"
         );
         assert!(
+            names.contains(&JobName::SkillsIndexRefresh),
+            "skills-index-refresh fell out of the job table"
+        );
+        assert!(
+            names.contains(&JobName::CronOutputPull),
+            "cron-output-pull fell out of the job table — a thread's lost cron report would never land"
+        );
+        assert!(
+            names.contains(&JobName::AppTriggers),
+            "app-triggers fell out of the job table — every app's schedule would silently stop"
+        );
+        assert!(
             names.contains(&JobName::McpHealth),
             "mcp-health fell out of the job table — a revoked key or a dead MCP host would read healthy forever"
         );
@@ -879,24 +1039,30 @@ mod tests {
             "update-reconcile must stay optional: dormant installs legitimately run it as a no-op"
         );
 
-        // THE ROLL'S EDGES, the same completeness rule one layer down. These
-        // OnceLocks are how the reconcile crate reaches the renderer, and an
-        // unwired one makes `roll_agent` return "… not wired" — a sentence
+        // THE ROLL'S EDGE, the same completeness rule one layer down. This
+        // OnceLock is how the reconcile crate reaches the renderer, and an
+        // unwired one makes `roll_running_agent` return "… not wired" — a sentence
         // the control route discards while answering `{"rolling": true}`.
         // Nothing else in the crate graph runs boot, so this is the only
         // place the absence can be caught before an operator notices that
         // their agents never changed.
         assert!(
             talaria_fleet_reconcile::RENDER_FLEET.get().is_some(),
-            "the roll's overlay renderer fell out of the boot wiring — every roll would silently do nothing"
-        );
-        assert!(
-            talaria_fleet_reconcile::NEXT_FREE_PORT.get().is_some(),
-            "the roll's port allocator fell out of the boot wiring — every roll would silently do nothing"
+            "the roll's renderer fell out of the boot wiring — every roll would silently do nothing"
         );
         assert!(
             talaria_update_job::ROLL_FLEET.get().is_some(),
             "the post-deploy fleet roll fell out of the boot wiring — an update would land and leave every agent on the old container"
+        );
+        // The MCP queue's two edges: an unwired apply would leave every
+        // registry edit unrendered for running agents, in silence.
+        assert!(
+            talaria_mcp_apply::APPLY_AGENTS.get().is_some(),
+            "the MCP apply edge fell out of the boot wiring — registry edits would never reach a running agent"
+        );
+        assert!(
+            talaria_mcp_apply::ROLL_AGENT.get().is_some(),
+            "the MCP roll edge fell out of the boot wiring — a timeout or auth-mode edit would never reach a running agent"
         );
         // The announce edge a queued Google write calls. This assertion is the
         // one that was missing, and its absence is the whole story: the edge

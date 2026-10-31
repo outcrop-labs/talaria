@@ -302,6 +302,7 @@ pub fn work_mode_harness() -> HarnessDefinition {
         // the verdict under a model that never sat the exam.
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,
@@ -340,8 +341,9 @@ pub fn work_mode_harness() -> HarnessDefinition {
         rules: Some(vec!["zero_tool_claim", "pii_leak", "secret_leak"]),
         redact: true,
     });
-    // The tool loop is the subject; the runner's default transport disarms the
-    // model, and a disarmed model fails every fixture here for reasons of ours.
+    // The tool loop is the subject; the default, 'none', asks for one
+    // structured answer with no tool loop, and a model given no loop fails
+    // every fixture here for reasons of ours.
     d.tools = Some(ToolPolicy::Own);
 
     // The document tools it works with, and the Google ones the queued/immediate

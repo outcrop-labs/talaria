@@ -2,11 +2,14 @@
 // Runs detached from the client response (fed
 // by a teed branch), so an in-progress reply is saved even if the client
 // disconnects/reloads. Throttled flushes during streaming; final on end.
-// Also records the turn in the token ledger (real usage or a char estimate).
+// The turn's spend is not written here: the gateway relay meters every call
+// the agent makes, and `send_turn` hands the transport this conversation as
+// the flow those calls belong to (talaria-gateway usage.rs, "Attribution").
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+mod turn_stop;
+pub use turn_stop::{HELD_FOR, SentTurn, TurnAwaited, await_sent_turn, turn_sent};
+
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
@@ -17,24 +20,25 @@ use tokio::sync::mpsc;
 use sqlx::PgPool;
 use talaria_agent_auth::now_ms;
 use talaria_agent_defs::pinned_sessions_for_model;
-use talaria_body::utf16_len;
 use talaria_conversations::{
-    active_streaming_assistant, content_js_length, insert_streaming_assistant,
-    last_user_message_effort, mark_message_resumed, mark_message_stopped, merge_message_chips,
-    message_still_errored, next_seq, pinned_history_fits, prior_messages,
+    active_streaming_assistant, fold_tool_failures, hermes_epoch, insert_streaming_assistant,
+    last_user_message_effort, mark_message_resumed, mark_message_stopped, message_run_id,
+    message_still_errored, move_hermes_epoch, next_seq, pinned_history_fits, prior_messages,
     resurrect_streaming_assistant, set_message_guard, set_message_run_id, touch_conversation,
     unanswered_user_after, update_assistant,
 };
 use talaria_fleet_agents::routed_model_for;
 use talaria_fleet_layout::describe_agent;
+use talaria_gateway::fleet_approvals::ApprovalTurn;
 use talaria_gateway::fleet_chat::{
-    AgentStreamEvent, AgentStreamParser, ChatStream, SteerOutcome, ToolCall, chat_payload,
-    merge_tool, proxy_chat, proxy_session_turn, steer_run, stop_run,
+    AgentStreamEvent, AgentStreamParser, ChatStream, Thread, ToolCall, chat_payload, merge_tool,
+    proxy_chat_on, proxy_session_turn,
 };
+use talaria_gateway::fleet_lost_turns::reattach_session_run;
 use talaria_gateway::guard::{
     Finding, GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
 };
-use talaria_gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
+use talaria_gateway::usage::TurnAttribution;
 use talaria_model_efforts::efforts_for_model;
 use talaria_notify::{NotifyDeps, fan_conversation_event, notify_agent_reply};
 use talaria_plan_doc::{
@@ -349,54 +353,94 @@ pub fn session_turn_parts(messages: &[Value]) -> (Option<String>, Value) {
 }
 
 /// Send the turn the way the agent takes it: through its pinned session, or
-/// as the full-history completion every agent speaks. Returns the stream and
-/// how many characters of prompt actually left — the ledger's estimate when
-/// no usage frame comes back.
+/// as the full-history completion every agent speaks. Either way the
+/// transport is told the turn is this conversation's `chat` spend, so the
+/// relay books every call the agent makes for it under the conversation.
+///
+/// A SESSION RUNS THE AGENT'S MAIN MODEL, whatever tier the message picked:
+/// the session route carries no model, and Hermes pins a session's model at
+/// its first turn (a later per-request route is ignored). So on that arm the
+/// tier's effort is not sent — it was validated against the tier's levels,
+/// not the main model's, and the main runs at its own rendered level. The
+/// relay books what actually ran, call by call.
+///
+/// The completions arm opens on the conversation's Hermes thread
+/// (`conversations.hermes_epoch`), so a conversation whose derived session
+/// lost a turn in a restart stays on the fresh session its repair moved it
+/// to (talaria-gateway `fleet_chat::Thread`).
 pub async fn send_turn(
+    pg: &PgPool,
     pinned: bool,
     agent_model: &str,
     routed_model: &str,
     conversation_id: &str,
     messages: &[Value],
     effort: Option<&str>,
-) -> (ChatStream, usize) {
+) -> ChatStream {
     let messages = with_conversation_line(messages, conversation_id);
     let messages = messages.as_slice();
+    let attribution = TurnAttribution {
+        pg: pg.clone(),
+        agent_model: agent_model.to_string(),
+        source: "chat".into(),
+        ref_id: Some(conversation_id.to_string()),
+        task_id: None,
+        // The person who sent it (or queued it) is reading the reply.
+        attended: true,
+    };
     if pinned {
         let (system_message, message) = session_turn_parts(messages);
-        let prompt_chars = system_message
-            .as_deref()
-            .map(|s| s.encode_utf16().count())
-            .unwrap_or(0)
-            + content_js_length(&message);
         // A conversation with a reply in it was driven through this session
         // before, so the session must still be there: a fresh one is the
         // state volume gone, and the turn below takes the full-history arm
         // instead of answering from an empty room (the transport logs it).
         let history_expected = messages.iter().any(|m| m["role"] == "assistant");
+        let session_effort = effort.filter(|_| routed_model == agent_model);
         if let Some(upstream) = proxy_session_turn(
             agent_model,
             conversation_id,
             system_message.as_deref(),
             &message,
+            session_effort,
             None,
             history_expected,
+            Some(attribution.clone()),
         )
         .await
         {
-            return (upstream, prompt_chars);
+            return upstream;
         }
     }
-    let prompt_chars: usize = messages
-        .iter()
-        .map(|m| content_js_length(&m["content"]))
-        .sum();
-    let upstream = proxy_chat(
+    proxy_chat_on(
         &chat_payload(routed_model, &Value::Array(messages.to_vec()), effort),
         None,
+        Some(attribution),
+        conversation_thread(pg, conversation_id).await,
     )
-    .await;
-    (upstream, prompt_chars)
+    .await
+}
+
+/// The Hermes thread this conversation's completions turn opens on, and how
+/// a move to a fresh one is kept: the conversation's own row. A read that
+/// fails is thread 0, the opening every conversation started on; a move that
+/// cannot be kept still lands this turn, and the next one is refused once
+/// more and moves again.
+async fn conversation_thread(pg: &PgPool, conversation_id: &str) -> Thread {
+    let epoch = hermes_epoch(pg, conversation_id).await.unwrap_or_else(|e| {
+        tracing::warn!("[chat_persist] {conversation_id}: hermes thread read failed: {e}");
+        0
+    });
+    let (pg, id) = (pg.clone(), conversation_id.to_string());
+    Thread::conversation(
+        epoch,
+        Box::new(move |next| {
+            Box::pin(async move {
+                if let Err(e) = move_hermes_epoch(&pg, &id, next).await {
+                    tracing::warn!("[chat_persist] {id}: could not keep hermes thread {next}: {e}");
+                }
+            })
+        }),
+    )
 }
 
 /// The line that tells the agent which conversation this turn is: the
@@ -433,20 +477,25 @@ pub async fn continue_conversation(state: &AppState, conversation_id: &str, meta
 
 /// The auto-resume drive, through the same guard: a resumed turn and a queued
 /// turn can never both drive one conversation, whichever wins the race.
+/// `heard_at_ms` is when the dead attempt's stream last delivered anything
+/// (epoch ms).
 pub async fn resume_conversation(
     state: &AppState,
     conversation_id: &str,
     meta: &TurnMeta,
     row_id: &str,
+    heard_at_ms: i64,
 ) {
-    guarded_drive(state, conversation_id, meta, Some(row_id)).await;
+    guarded_drive(state, conversation_id, meta, Some((row_id, heard_at_ms))).await;
 }
 
+/// `resume` is the dead attempt's row, and when its stream was last heard
+/// from.
 async fn guarded_drive(
     state: &AppState,
     conversation_id: &str,
     meta: &TurnMeta,
-    resume: Option<&str>,
+    resume: Option<(&str, i64)>,
 ) {
     {
         let mut set = CONTINUING.lock().unwrap();
@@ -463,8 +512,10 @@ async fn continue_inner(
     state: &AppState,
     conversation_id: &str,
     meta: &TurnMeta,
-    resume: Option<&str>,
+    resume: Option<(&str, i64)>,
 ) {
+    let heard_at_ms = resume.map_or_else(now_ms, |(_, heard)| heard);
+    let resume = resume.map(|(row, _)| row);
     if active_streaming_assistant(&state.pg, conversation_id)
         .await
         .ok()
@@ -540,6 +591,46 @@ async fn continue_inner(
     // Decided before the row below exists: a fresh conversation's first
     // assistant row is the one being made here, and it must not count.
     let pinned = pinned_turn(&state.pg, &meta.agent_model, conversation_id, resume).await;
+    // A RESUMED SESSION TURN THE AGENT IS STILL HOLDING IS NOT SENT AGAIN. A
+    // v0.22 session turn outlives the stream that carried it: Hermes shields
+    // the run from its client hanging up, so a stream that died while the
+    // container lived (a network reset, a frozen container that came back)
+    // left the turn running, or finished, in the agent. Re-sending the
+    // message would put it into the session twice and the agent would do the
+    // work twice. The run door says whether the agent still has it, and the
+    // reattached stream lands its reply on this same row, a failed run as
+    // the error row its live stream would have made. A turn the agent no
+    // longer knows died with its container, and one Hermes fenced as
+    // `unknown` waits on the lost-turn repair: both are sent again below.
+    let held = match resume.filter(|_| pinned) {
+        Some(row) => match message_run_id(&state.pg, row).await.ok().flatten() {
+            Some(run) => {
+                // The run may be parked on an approval: its prompt is put
+                // to the tap again, and carded or refused like a live one,
+                // on the clock it has run on since the stream was lost.
+                let held = reattach_session_run(
+                    &meta.agent_model,
+                    &run,
+                    ApprovalTurn::attended_chat(conversation_id),
+                    heard_at_ms,
+                )
+                .await;
+                if held.is_some() {
+                    tracing::info!(
+                        "[chat_persist] {row}: {} still holds run {run}; picking it up instead of \
+                         sending the turn again",
+                        meta.agent_model
+                    );
+                }
+                held
+            }
+            None => None,
+        },
+        None => None,
+    };
+    // From here a person's stop on this thread waits for this turn to name
+    // itself rather than missing it (`OpeningTurn`).
+    let opening = OpeningTurn::take(conversation_id);
     let assistant_id = match resume {
         Some(row) => match resurrect_streaming_assistant(&state.pg, row).await {
             Ok(()) => row.to_string(),
@@ -571,15 +662,24 @@ async fn continue_inner(
         Some(e) if efforts_for_model(&state.pg, &routed).await.contains(&e) => Some(e),
         _ => None,
     };
-    let (upstream, prompt_chars) = send_turn(
-        pinned,
-        &meta.agent_model,
-        &routed,
-        conversation_id,
-        &messages,
-        honored.as_deref(),
-    )
-    .await;
+    let sent_at_ms = held.is_none().then(now_ms);
+    let upstream = match held {
+        // Nothing left this process: the turn the agent is finishing is
+        // metered at the relay, call by call, under its session's key.
+        Some(stream) => stream,
+        None => {
+            send_turn(
+                &state.pg,
+                pinned,
+                &meta.agent_model,
+                &routed,
+                conversation_id,
+                &messages,
+                honored.as_deref(),
+            )
+            .await
+        }
+    };
     // The row is marked error and the chain STOPS
     // HERE, before any persist. Persisting the error body instead parses zero
     // events, flushes an EMPTY 'complete' row, and the tail re-chains — and
@@ -603,13 +703,13 @@ async fn continue_inner(
     }
     let usage_meta = PersistMeta {
         agent_model: meta.agent_model.clone(),
-        prompt_chars,
         tier: meta.tier.clone(),
         plan: meta.plan.clone(),
         research_prompt: meta.research_prompt,
         work_prompts: meta.work_prompts.clone(),
         sender: meta.sender.clone(),
         resumed: resume.is_some(),
+        sent_at_ms,
     };
     // Detached — the chain's own tail continues it. The
     // plain-fn seam is load-bearing: this chain is continue → persist →
@@ -622,6 +722,7 @@ async fn continue_inner(
         assistant_id,
         conversation_id.to_string(),
         usage_meta,
+        opening,
     );
 }
 
@@ -632,6 +733,7 @@ fn spawn_persist(
     message_id: String,
     conversation_id: String,
     usage_meta: PersistMeta,
+    opening: OpeningTurn,
 ) {
     tokio::spawn(async move {
         persist_assistant_stream(
@@ -641,16 +743,16 @@ fn spawn_persist(
             conversation_id,
             Some(usage_meta),
             None,
+            opening,
         )
         .await;
     });
 }
 
-/// The usage-side facts the ledger needs about the turn.
+/// What the persist needs to know about the turn beyond its stream.
 #[derive(Debug, Clone)]
 pub struct PersistMeta {
     pub agent_model: String,
-    pub prompt_chars: usize,
     pub tier: Option<String>,
     pub plan: Option<PlanMeta>,
     /// Rides through to the continuation's TurnMeta — see TurnMeta.
@@ -664,137 +766,13 @@ pub struct PersistMeta {
     /// same row. The death path reads it: a resumed turn that dies again
     /// STAYS dead — one quiet retry, then the error is a person's to look at.
     pub resumed: bool,
-}
-
-// ── The doom-loop guard ─────────────────────────────────────────────────────
-//
-// An agent that calls the same thing with the same arguments over and over is
-// not working, it is stuck — and nothing downstream notices. The turn looks
-// busy, every frame resets the drain's idle ceiling, and the person watching
-// gets a spinner that never ends. So the stream is counted as it goes past, and
-// a pair that keeps coming back earns a word first and the plug second.
-
-/// Identical calls that earn the agent a word, and the count that ends the
-/// run — the defaults, and the settings keys an admin overrides them under.
-const LOOP_WARN_AT: u32 = 3;
-const LOOP_STOP_AT: u32 = 5;
-pub const LOOP_WARN_SETTING: &str = "chat.loop_warn_at";
-pub const LOOP_STOP_SETTING: &str = "chat.loop_stop_at";
-/// The ceiling on either threshold: past it the guard is off in all but
-/// name, and a setting that large is a typo, not a policy.
-const LOOP_MAX: u32 = 1_000;
-
-/// What a repeat count has earned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoopAction {
-    /// Say so: a chip for the person reading, and a steer into the live run.
-    Warn,
-    /// Past talking — interrupt the run, and say in the reply why it ends.
-    Stop,
-}
-
-/// The two counts the guard acts on, as the settings say or as the defaults
-/// stand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LoopThresholds {
-    pub warn_at: u32,
-    pub stop_at: u32,
-}
-
-impl Default for LoopThresholds {
-    fn default() -> Self {
-        LoopThresholds {
-            warn_at: LOOP_WARN_AT,
-            stop_at: LOOP_STOP_AT,
-        }
-    }
-}
-
-/// One threshold from its stored value: a number, or a string holding one;
-/// anything else, zero, or past the ceiling is the default. Pure, so the
-/// parsing is provable without a Postgres.
-fn loop_threshold_from(raw: &Value, default: u32) -> u32 {
-    let n = match raw {
-        Value::Number(n) => n.as_u64(),
-        Value::String(s) => s.trim().parse::<u64>().ok(),
-        _ => None,
-    };
-    match n {
-        Some(n) if (1..=u64::from(LOOP_MAX)).contains(&n) => n as u32,
-        _ => default,
-    }
-}
-
-/// The thresholds from their two stored values.
-pub fn loop_thresholds_from(warn: &Value, stop: &Value) -> LoopThresholds {
-    LoopThresholds {
-        warn_at: loop_threshold_from(warn, LOOP_WARN_AT),
-        stop_at: loop_threshold_from(stop, LOOP_STOP_AT),
-    }
-}
-
-/// The thresholds as `app_settings` holds them, read once per turn: a
-/// workbench that polls a build every thirty seconds is not a loop, and
-/// the admin who knows that raises the count here rather than in a rebuild.
-pub async fn loop_thresholds(pg: &PgPool) -> LoopThresholds {
-    let warn = talaria_gateway::settings::get_setting(pg, LOOP_WARN_SETTING, Value::Null).await;
-    let stop = talaria_gateway::settings::get_setting(pg, LOOP_STOP_SETTING, Value::Null).await;
-    loop_thresholds_from(&warn, &stop)
-}
-
-/// The guard's whole decision, pure. Each threshold fires on the EXACT count
-/// that reaches it, so a pair stuck at twelve repeats still produces one nudge
-/// and one stop rather than a nudge on every frame after the third. When an
-/// admin sets the two equal, the stop is what fires — a plug and a word at
-/// the same count would be a word nobody can act on.
-pub fn loop_verdict(count: u32, at: LoopThresholds) -> Option<LoopAction> {
-    if count == at.stop_at {
-        Some(LoopAction::Stop)
-    } else if count == at.warn_at {
-        Some(LoopAction::Warn)
-    } else {
-        None
-    }
-}
-
-/// A short stable key for a label, for the notice chip's id: the chip is
-/// per (tool, arguments), and the arguments are prose too long and too odd
-/// for an id.
-fn label_key(label: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    label.trim().hash(&mut h);
-    h.finish()
-}
-
-/// Count one COMPLETED call against this turn's tally and hand back what it
-/// earned.
-///
-/// The key is (tool name, label, result), where the label is the frame's
-/// rendering of the call's own arguments and the result is what the call
-/// produced — the tool's progress output as the stream carried it. Two
-/// identical calls that produce the SAME answer are the loop: the agent is
-/// asking a question it already has the answer to. The same call producing a
-/// different answer each time is polling — a job status, a log tail, a
-/// clock — and must never be touched. A call whose frame carried no label is
-/// not counted at all: every unlabelled call of one tool would collapse
-/// into a single key, and a tool legitimately used five times in a turn
-/// would read as a loop.
-fn count_repeat(
-    tally: &mut HashMap<(String, String, u64), u32>,
-    name: &str,
-    label: &str,
-    result: &str,
-    at: LoopThresholds,
-) -> Option<LoopAction> {
-    if label.trim().is_empty() {
-        return None;
-    }
-    let n = tally
-        .entry((name.to_string(), label.to_string(), label_key(result)))
-        .or_insert(0);
-    *n += 1;
-    loop_verdict(*n, at)
+    /// When this drive's request left for the agent (epoch ms). The landing
+    /// write takes only the tool verdicts from after it: an earlier turn's
+    /// verdict may carry the same call id (talaria-conversations
+    /// `fold_tool_failures`). None for a stream a restart handed back, whose
+    /// calls ran before this process saw it; that is the session arm, where
+    /// Hermes keeps a call id unique across the whole session.
+    pub sent_at_ms: Option<i64>,
 }
 
 /// A dead stream's reason, appended after whatever prose it had drained
@@ -806,6 +784,368 @@ fn with_error_line(content: &str, line: &str) -> String {
         line.to_string()
     } else {
         format!("{}\n\n{line}", content.trim_end())
+    }
+}
+
+/// THE COMPLETION EACH DRAIN IS READING, by its reply row: what a person's
+/// stop names on the completions arm (`/api/conversations/{id}/stop`). That
+/// arm's turn never announces a run the way a session's `run.started` does
+/// (stamped on the row as `hermes_run_id`), but while its request is open
+/// its completion id IS its Hermes run id (talaria-gateway
+/// fleet_abandoned.rs), and the drain is what holds the request open.
+///
+/// In memory, not on the row, because that is exactly the id's lifetime:
+/// it names the run only while this process holds the turn's request, so
+/// an entry goes when the drain stops reading, and a restart (which drops
+/// every request) leaves none behind. And not `hermes_run_id`: a run id on
+/// a row says the conversation is driven through a Hermes session
+/// (`pinned_history_fits`), which a completions turn is not.
+static OPEN_COMPLETIONS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// The completion the drain of this reply row is reading right now, if a
+/// completions-arm turn is streaming into it.
+pub fn open_completion(message_id: &str) -> Option<String> {
+    OPEN_COMPLETIONS
+        .lock()
+        .ok()
+        .and_then(|open| open.get(message_id).cloned())
+}
+
+/// One drain's entry in [`OPEN_COMPLETIONS`], kept to the completion its
+/// stream names last and removed when the drain stops reading.
+struct OpenCompletion {
+    message_id: String,
+    noted: Option<String>,
+}
+
+impl OpenCompletion {
+    fn new(message_id: &str) -> Self {
+        OpenCompletion {
+            message_id: message_id.to_string(),
+            noted: None,
+        }
+    }
+
+    /// True when the stream named a completion this drain had not noted.
+    fn note(&mut self, completion: Option<&str>) -> bool {
+        let Some(completion) = completion else {
+            return false;
+        };
+        if self.noted.as_deref() == Some(completion) {
+            return false;
+        }
+        self.noted = Some(completion.to_string());
+        if let Ok(mut open) = OPEN_COMPLETIONS.lock() {
+            open.insert(self.message_id.clone(), completion.to_string());
+        }
+        TURN_NAMED.notify_waiters();
+        true
+    }
+}
+
+impl Drop for OpenCompletion {
+    fn drop(&mut self) {
+        if self.noted.is_some()
+            && let Ok(mut open) = OPEN_COMPLETIONS.lock()
+        {
+            open.remove(&self.message_id);
+        }
+        TURN_NAMED.notify_waiters();
+    }
+}
+
+/// THE TURN EACH CONVERSATION IS OPENING IN THIS PROCESS, from the moment
+/// its send is accepted to the end of its drain's read: what a person's stop
+/// waits on when it arrives before the turn has named itself to Hermes.
+///
+/// A stop can land before the drain has read the first chunk naming the
+/// completion, or before the reply row exists at all: the page offers Stop
+/// the moment it sends. Without this, that stop found no handle and answered
+/// `hermes: false`, and the turn ran on. With it, the stop route waits —
+/// bounded by the control window — for the opening to name its reply row and
+/// its handle (the completion id, or the session's run id), then stops that
+/// (`/api/conversations/{id}/stop`).
+///
+/// Keyed by conversation: a conversation drives one turn at a time (a send
+/// while one streams is queued behind it). The first claim holds the key and
+/// a later one while it does is inert, so a queued send never hides the turn
+/// it queued behind. In memory, for the same reason as [`OPEN_COMPLETIONS`]:
+/// the handle means something only while this process holds the request.
+static OPENING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Opening>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Woken whenever an opening or an open completion changes, so a waiting
+/// stop reads again rather than polling.
+static TURN_NAMED: std::sync::LazyLock<tokio::sync::Notify> =
+    std::sync::LazyLock::new(tokio::sync::Notify::new);
+
+static OPENING_CLAIMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The thread's key in [`OPENING`]: its canonical text, so the send and the
+/// stop find one entry whichever spelling of the id each was given.
+fn opening_key(conversation_id: &str) -> String {
+    talaria_params::uuid_canonical(conversation_id).unwrap_or_else(|| conversation_id.to_string())
+}
+
+struct Opening {
+    claim: u64,
+    message_id: Option<String>,
+    run_id: Option<String>,
+    /// A person's stop outlived its wait: the drain sends it the moment the
+    /// turn names itself ([`hold_stop`]).
+    stop_held: bool,
+}
+
+/// One send's hold on its conversation's [`OPENING`] entry, dropped when the
+/// turn's drain stops reading (or when the send ends without one: queued,
+/// refused, failed). Inert when another opening already holds the key.
+pub struct OpeningTurn {
+    conversation_id: String,
+    claim: Option<u64>,
+    /// The send's own name for this turn, when the page gave one: held as
+    /// long as the opening, so the turn reads as ended once it is let go.
+    turn: Option<SentTurn>,
+}
+
+impl OpeningTurn {
+    /// Claim the conversation's opening. Taken by the send as soon as the
+    /// conversation is known and the caller's access checked, and by a
+    /// chained or resumed drive just before its row exists.
+    pub fn take(conversation_id: &str) -> Self {
+        let conversation_id = opening_key(conversation_id);
+        let claim = OPENING.lock().ok().and_then(|mut open| {
+            if open.contains_key(&conversation_id) {
+                return None;
+            }
+            let claim = OPENING_CLAIMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            open.insert(
+                conversation_id.clone(),
+                Opening {
+                    claim,
+                    message_id: None,
+                    run_id: None,
+                    stop_held: false,
+                },
+            );
+            Some(claim)
+        });
+        OpeningTurn {
+            conversation_id,
+            claim,
+            turn: None,
+        }
+    }
+
+    /// Keep the send's name for its turn ([`turn_sent`]) for as long as
+    /// this opening is held.
+    pub fn keep_turn(&mut self, turn: SentTurn) {
+        self.turn = Some(turn);
+    }
+
+    /// Hold a person's stop on this claim's own turn, for its drain to send
+    /// the moment the turn names itself. False for an inert claim: another
+    /// turn holds the thread's opening, and a stop meant for this send is
+    /// not handed to it.
+    pub fn hold_stop_here(&self) -> bool {
+        let Some(claim) = self.claim else {
+            return false;
+        };
+        let held = OPENING.lock().ok().is_some_and(|mut open| {
+            open.get_mut(&self.conversation_id)
+                .filter(|o| o.claim == claim)
+                .map(|o| o.stop_held = true)
+                .is_some()
+        });
+        TURN_NAMED.notify_waiters();
+        held
+    }
+
+    /// Change this claim's entry; `f` answers whether a held stop is now
+    /// this turn's to send (taken once). Under the same lock [`hold_stop`]
+    /// holds a stop under, so a stop is either held before the turn names
+    /// itself and sent here, or finds the name there and is sent by the route.
+    fn update(&self, f: impl FnOnce(&mut Opening) -> bool) -> bool {
+        let Some(claim) = self.claim else {
+            return false;
+        };
+        let mut send = false;
+        if let Ok(mut open) = OPENING.lock()
+            && let Some(entry) = open.get_mut(&self.conversation_id)
+            && entry.claim == claim
+        {
+            send = f(entry);
+        }
+        TURN_NAMED.notify_waiters();
+        send
+    }
+
+    /// The reply row the turn streams into.
+    fn row(&self, message_id: &str) {
+        self.update(|o| {
+            o.message_id = Some(message_id.to_string());
+            false
+        });
+    }
+
+    /// The session's run id, from `run.started`: the session arm's handle.
+    /// True when a held stop is now this drain's to send.
+    fn run(&self, run_id: &str) -> bool {
+        self.update(|o| {
+            o.run_id = Some(run_id.to_string());
+            std::mem::take(&mut o.stop_held)
+        })
+    }
+
+    /// The drain's completion is in [`OPEN_COMPLETIONS`] now. True when a
+    /// held stop is this drain's to send.
+    fn named(&self) -> bool {
+        self.update(|o| std::mem::take(&mut o.stop_held))
+    }
+}
+
+impl Drop for OpeningTurn {
+    fn drop(&mut self) {
+        let Some(claim) = self.claim else {
+            return;
+        };
+        if let Ok(mut open) = OPENING.lock()
+            && open
+                .get(&self.conversation_id)
+                .is_some_and(|o| o.claim == claim)
+        {
+            open.remove(&self.conversation_id);
+        }
+        TURN_NAMED.notify_waiters();
+    }
+}
+
+/// How a turn is addressed in Hermes, once it has named itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnHandle {
+    /// A completions turn: its reply row, and the completion the drain of
+    /// that row is reading ([`open_completion`] asks it again before every
+    /// send).
+    Completion { message_id: String },
+    /// A session turn: its run id.
+    Run { run_id: String },
+}
+
+/// What [`await_turn_handle`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Awaited {
+    Named(TurnHandle),
+    /// Nothing is opening in this conversation in this process, or the
+    /// opening ended (its drain stopped reading) before it named a handle.
+    Gone,
+    /// Still opening at the deadline: the agent had not answered the turn's
+    /// request with a stream naming it.
+    TimedOut,
+}
+
+/// A stop that waited out the control window: where it stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeldStop {
+    /// The turn named itself after all: stop it now.
+    Now(TurnHandle),
+    /// Held on the opening. The drain sends it the moment the turn names
+    /// itself.
+    Held,
+    /// Nothing is opening here any more.
+    Gone,
+}
+
+/// Hold a person's stop on the turn this process is opening in
+/// `conversation_id`, for its drain to send once the turn names itself.
+/// Under the opening's lock, so a turn that named itself while the stop
+/// waited is answered `Now`, never held for a drain that has already looked.
+pub fn hold_stop(conversation_id: &str) -> HeldStop {
+    let conversation_id = opening_key(conversation_id);
+    let Ok(mut open) = OPENING.lock() else {
+        return HeldStop::Gone;
+    };
+    let Some(entry) = open.get_mut(&conversation_id) else {
+        return HeldStop::Gone;
+    };
+    if let Some(run_id) = &entry.run_id {
+        return HeldStop::Now(TurnHandle::Run {
+            run_id: run_id.clone(),
+        });
+    }
+    if let Some(message_id) = &entry.message_id
+        && open_completion(message_id).is_some()
+    {
+        return HeldStop::Now(TurnHandle::Completion {
+            message_id: message_id.clone(),
+        });
+    }
+    entry.stop_held = true;
+    HeldStop::Held
+}
+
+/// Send a held stop from the drain, on its own task: the drain keeps reading
+/// the stream the stop is about to end. Nobody waits for it, so a completion
+/// Hermes has not bound yet is placed with the headers window's patience
+/// (`stop_completion_held`), not a waiting caller's control window.
+fn send_held_stop(agent_model: String, conversation_id: String, handle: TurnHandle) {
+    tokio::spawn(async move {
+        let done = match &handle {
+            TurnHandle::Completion { message_id } => {
+                let message_id = message_id.clone();
+                talaria_gateway::fleet_chat::stop_completion_held(&agent_model, move || {
+                    open_completion(&message_id)
+                })
+                .await
+                .map(|done| done.unwrap_or_else(|| "already over".into()))
+            }
+            TurnHandle::Run { run_id } => {
+                talaria_gateway::fleet_chat::stop_run(&agent_model, run_id)
+                    .await
+                    .map(|()| "told to stop".into())
+            }
+        };
+        match done {
+            Ok(done) => tracing::info!(
+                "[chat_persist] {conversation_id}: a person's stop, held until the agent opened the turn: the turn was {done}"
+            ),
+            Err(why) => tracing::warn!(
+                "[chat_persist] {conversation_id}: a person's stop, held until the agent opened the turn, was refused: {why}"
+            ),
+        }
+    });
+}
+
+/// Wait, until `deadline`, for the turn this process is opening in
+/// `conversation_id` to name itself: its reply row, and the completion its
+/// drain read or the run its session announced.
+pub async fn await_turn_handle(conversation_id: &str, deadline: tokio::time::Instant) -> Awaited {
+    let conversation_id = opening_key(conversation_id);
+    loop {
+        // Registered before the read, so a change between the read and the
+        // wait still wakes it.
+        let changed = TURN_NAMED.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        let state = OPENING.lock().ok().and_then(|open| {
+            open.get(&conversation_id)
+                .map(|o| (o.message_id.clone(), o.run_id.clone()))
+        });
+        let Some((message_id, run_id)) = state else {
+            return Awaited::Gone;
+        };
+        if let Some(run_id) = run_id {
+            return Awaited::Named(TurnHandle::Run { run_id });
+        }
+        if let Some(message_id) = message_id
+            && open_completion(&message_id).is_some()
+        {
+            return Awaited::Named(TurnHandle::Completion { message_id });
+        }
+        tokio::select! {
+            () = &mut changed => {}
+            () = tokio::time::sleep_until(deadline) => return Awaited::TimedOut,
+        }
     }
 }
 
@@ -822,40 +1162,34 @@ pub async fn persist_assistant_stream(
     conversation_id: String,
     usage_meta: Option<PersistMeta>,
     forward: Option<mpsc::Sender<Result<Bytes, std::io::Error>>>,
+    opening: OpeningTurn,
 ) {
     let mut content = String::new();
     let mut reasoning = String::new();
     let mut tools: Vec<ToolCall> = Vec::new();
-    let mut usage: Option<(i64, i64)> = None;
     // The agent gateway's failure frame, when one lands — the provider call
     // died inside the container and the 200-stream carries the reason. Without
     // this the turn reads as EMPTY COMPLETE, and the chain re-fires it forever
     // (prior_messages sees through empty rows, so the user's message reads as
     // forever unanswered).
     let mut frame_error: Option<String> = None;
-    // The run was interrupted — a person on /stop, or the guard below. Not an
-    // error and not a death: it decides how the turn LANDS, nothing more.
+    // The run was interrupted — a person on /stop. Not an error and not a
+    // death: it decides how the turn LANDS, nothing more.
+    //
+    // A LOOPING AGENT IS HERMES' TO STOP, not this drain's. The render turns
+    // on Hermes' own `tool_loop_guardrails` hard stops (talaria-fleet-render's
+    // `fleet_tool_loop_guardrails`), which see the real arguments and results
+    // and halt inside the agent loop with a reply that says why. The guard
+    // this drain used to run keyed on what the stream carries — a display
+    // preview and an empty result — and stopped legitimate work.
     let mut stopped = false;
-    // The live run's id, held as well as stamped: a steer or a stop fired from
-    // inside this loop has to name it, and the row is not where to go looking
-    // for something the loop just read.
-    let mut hermes_run: Option<String> = None;
-    // Identical (name, arguments, result) calls seen in this turn — the
-    // doom-loop tally — and the calls still open: their arguments from the
-    // started frame and the output their progress frames carried, so a call
-    // is counted ONCE, at completion, with what it produced. The thresholds
-    // are the settings' at the turn's start.
-    let loop_at = loop_thresholds(&state.pg).await;
-    let mut repeats: HashMap<(String, String, u64), u32> = HashMap::new();
-    let mut open_calls: HashMap<String, (String, String)> = HashMap::new();
-    // Set by the guard's stop task once the container ACCEPTED the stop — a
-    // run still going is a run that will write more, so the sentence that
-    // says why the turn ended is written at landing, under this, after the
-    // last delta rather than in the middle of them.
-    let loop_stop_ok = Arc::new(AtomicBool::new(false));
     let mut last_flush: Option<Instant> = None;
     let mut parser = AgentStreamParser::new();
     let mut stream = body;
+    // What a person's stop names while this reads a completions turn, and
+    // the opening it waits on until the stream names it.
+    let mut open = OpenCompletion::new(&message_id);
+    opening.row(&message_id);
 
     macro_rules! flush {
         ($status:expr) => {
@@ -870,48 +1204,47 @@ pub async fn persist_assistant_stream(
             .await;
         };
     }
-    macro_rules! ledger {
-        () => {
-            if let Some(meta) = &usage_meta {
-                let counts = TokenCounts {
-                    prompt_tokens: usage
-                        .map(|u| u.0)
-                        .unwrap_or_else(|| estimate_tokens(meta.prompt_chars)),
-                    completion_tokens: usage.map(|u| u.1).unwrap_or_else(|| {
-                        estimate_tokens(utf16_len(&content) + utf16_len(&reasoning))
-                    }),
-                    ..TokenCounts::default()
-                };
-                let pg = state.pg.clone();
-                let agent_model = meta.agent_model.clone();
-                let tier = meta.tier.clone();
-                let ref_id = conversation_id.clone();
-                let estimated = usage.is_none();
-                tokio::spawn(async move {
-                    let _ = record_usage(
-                        &pg,
-                        &UsageInput {
-                            agent_model: &agent_model,
-                            source: "chat",
-                            ref_id: Some(&ref_id),
-                            task_id: None,
-                            tier: tier.as_deref(),
-                            counts,
-                            estimated,
-                        },
-                    )
-                    .await;
-                });
+    // THE TURN'S LANDING WRITE carries the agent's own verdict on its tool
+    // calls. The completions stream calls every finished call `completed`;
+    // the agent's talaria-events plugin, which read the result, reports a
+    // failed one to the tool-events door, and the door keeps it per
+    // conversation and call id, with the time the call finished
+    // (talaria-conversations `fold_tool_failures`). Only the verdicts from
+    // after this drive was sent are its own. They are read before the write
+    // and once more after it: a verdict the door kept in between marked the
+    // row this write just replaced, and the second read is what puts it back.
+    let verdict_agent: Option<(String, Option<i64>)> = usage_meta
+        .as_ref()
+        .map(|m| (m.agent_model.clone(), m.sent_at_ms));
+    // The streaming flush's own handle on those verdicts, taken the first
+    // time a call with an id is open.
+    let mut verdict_redis = None;
+    macro_rules! land {
+        ($status:expr) => {
+            let mut redis = match &verdict_agent {
+                Some(_) if tools.iter().any(|t| t.id.is_some()) => state.redis().await.ok(),
+                _ => None,
+            };
+            if let (Some((agent, since)), Some(conn)) = (&verdict_agent, redis.as_mut()) {
+                fold_tool_failures(conn, agent, &conversation_id, *since, &mut tools).await;
+            }
+            flush!($status);
+            if let (Some((agent, since)), Some(conn)) = (&verdict_agent, redis.as_mut())
+                && fold_tool_failures(conn, agent, &conversation_id, *since, &mut tools).await
+            {
+                flush!($status);
             }
         };
     }
-
     // THE DRAIN HAS NO TOTAL TIMEOUT. Frames flowing — deltas, tool progress,
     // keep-alives — mean the agent is working, however long the work takes;
     // only `stream_idle()` of SILENCE ends the read. The total 600s request
     // timeout this replaced killed every turn longer than ten minutes
     // mid-flight: the API hung up on a container that was still working (the
     // "· interrupted" knowledgebase turns) and dropped its partial reply.
+    // When the stream last delivered anything: a resume after it dies
+    // reads an approval its tap never saw as asked no earlier than this.
+    let mut heard_at_ms = now_ms();
     let death: Option<TurnDeath> = loop {
         match tokio::time::timeout(stream_idle(), stream.next()).await {
             // Silence past the ceiling: the agent's gateway stopped talking.
@@ -935,6 +1268,7 @@ pub async fn persist_assistant_stream(
                 break Some(TurnDeath::Reset);
             }
             Ok(Some(Ok(chunk))) => {
+                heard_at_ms = now_ms();
                 if let Some(tx) = &forward {
                     // The client's branch ends on hang-up; ours drains on.
                     let _ = tx.send(Ok(chunk.clone())).await;
@@ -951,148 +1285,43 @@ pub async fn persist_assistant_stream(
                         } => {
                             tools =
                                 merge_tool(&tools, id.as_deref(), &name, &label, status.as_deref());
-                            // THE DOOM-LOOP GUARD, counted once per CALL, at
-                            // its END. The parser gives every call its own id
-                            // and sends that id again on each progress and
-                            // completion frame: the first sight of an id is
-                            // the call starting (its label is the arguments),
-                            // every running frame after it carries the tool's
-                            // output, and the terminal frame is when the call
-                            // has an answer to compare — the same call with
-                            // the same answer is the loop; with a changing
-                            // answer it is polling. A frame with no id (the
-                            // completions arm's older shape) is never
-                            // counted. Only this loop counts — the finish
-                            // loop below runs after the body has ended, where
-                            // there is no run left to steer or stop.
-                            let verdict = match (id.as_deref(), status.as_deref()) {
-                                (Some(i), Some("running")) => {
-                                    match open_calls.get_mut(i) {
-                                        None => {
-                                            open_calls.insert(
-                                                i.to_string(),
-                                                (label.clone(), String::new()),
-                                            );
-                                        }
-                                        Some((_, out)) if out.len() < 4_000 => {
-                                            out.push_str(&label);
-                                            out.push('\n');
-                                        }
-                                        Some(_) => {}
-                                    }
-                                    None
-                                }
-                                (Some(i), Some("completed" | "error")) => {
-                                    let (args, out) = open_calls
-                                        .remove(i)
-                                        .unwrap_or_else(|| (label.clone(), String::new()));
-                                    count_repeat(&mut repeats, &name, &args, &out, loop_at)
-                                        .map(|action| (action, args))
-                                }
-                                _ => None,
-                            };
-                            if let Some((action, label)) = verdict {
-                                let model = usage_meta.as_ref().map(|m| m.agent_model.clone());
-                                match action {
-                                    LoopAction::Warn => {
-                                        // The chip lands whether or not the
-                                        // agent can be reached: it is the
-                                        // person's explanation for a turn going
-                                        // nowhere, and the full-history arm has
-                                        // no run id to steer at all. Keyed by
-                                        // the call's arguments too, so a tool
-                                        // that loops on one input and later on
-                                        // another earns a notice each time.
-                                        let _ = merge_message_chips(
-                                            &state.pg,
-                                            &message_id,
-                                            &[json!({
-                                                "id": format!("loop:{name}:{:x}", label_key(&label)),
-                                                "kind": "notice",
-                                                "label": "Repeating the same call",
-                                                "detail": format!(
-                                                    "{name} has been called with the same \
-                                                     arguments {} times and answered the same \
-                                                     way each time",
-                                                    loop_at.warn_at
-                                                ),
-                                            })],
-                                        )
-                                        .await;
-                                        // Detached: a steer is answered in
-                                        // milliseconds or not at all, and the
-                                        // drain must keep reading the stream
-                                        // while it is.
-                                        if let (Some(model), Some(run)) =
-                                            (model.clone(), hermes_run.clone())
-                                        {
-                                            let said = format!(
-                                                "You have called {name} with the same arguments \
-                                                 {} times and got the same answer each time; it \
-                                                 is not getting you further. Change your \
-                                                 approach, or stop and say what is blocking you.",
-                                                loop_at.warn_at
-                                            );
-                                            let row = message_id.clone();
-                                            let tool = name.clone();
-                                            tokio::spawn(async move {
-                                                match steer_run(&model, &run, &said).await {
-                                                    SteerOutcome::Accepted => tracing::info!(
-                                                        "[chat_persist] {row}: steered a looping {tool}"
-                                                    ),
-                                                    other => tracing::warn!(
-                                                        "[chat_persist] {row}: the loop steer did \
-                                                         not land ({other:?})"
-                                                    ),
-                                                }
-                                            });
-                                        }
-                                    }
-                                    LoopAction::Stop => {
-                                        // Detached for the same reason, and the
-                                        // flag is what the landing reads: the
-                                        // sentence saying why the turn ended
-                                        // rides only on an ACCEPTED stop, and
-                                        // only after the last delta.
-                                        if let (Some(model), Some(run)) =
-                                            (model, hermes_run.clone())
-                                        {
-                                            let ok = loop_stop_ok.clone();
-                                            let row = message_id.clone();
-                                            let tool = name.clone();
-                                            tokio::spawn(async move {
-                                                match stop_run(&model, &run).await {
-                                                    Ok(()) => ok.store(true, Ordering::Relaxed),
-                                                    Err(e) => tracing::warn!(
-                                                        "[chat_persist] {row}: stopping a looping \
-                                                         {tool} failed: {e}"
-                                                    ),
-                                                }
-                                            });
-                                        }
-                                    }
-                                }
-                            }
                         }
-                        AgentStreamEvent::Usage {
-                            prompt_tokens,
-                            completion_tokens,
-                        } => {
-                            usage = Some((prompt_tokens, completion_tokens));
-                        }
+                        // The relay metered every call behind these counts.
+                        AgentStreamEvent::Usage { .. } => {}
                         AgentStreamEvent::Error { message } => {
                             frame_error = frame_error.or(Some(message));
                         }
                         // Stamped the moment the session names its run: a
-                        // stop or a steer that arrives mid-turn needs it,
-                        // and mid-turn is the only time either makes sense.
+                        // person's stop or steer that arrives mid-turn reads
+                        // it off the row, and mid-turn is the only time
+                        // either makes sense.
                         AgentStreamEvent::RunStarted { run_id } => {
                             let _ = set_message_run_id(&state.pg, &message_id, &run_id).await;
-                            hermes_run = Some(run_id);
+                            if opening.run(&run_id)
+                                && let Some(meta) = &usage_meta
+                            {
+                                send_held_stop(
+                                    meta.agent_model.clone(),
+                                    conversation_id.clone(),
+                                    TurnHandle::Run { run_id },
+                                );
+                            }
                         }
                         // Interrupted. The flag is read once, after the loops.
                         AgentStreamEvent::Stopped => stopped = true,
                     }
+                }
+                if open.note(parser.completion())
+                    && opening.named()
+                    && let Some(meta) = &usage_meta
+                {
+                    send_held_stop(
+                        meta.agent_model.clone(),
+                        conversation_id.clone(),
+                        TurnHandle::Completion {
+                            message_id: message_id.clone(),
+                        },
+                    );
                 }
                 // Stamped per CHUNK, not per parsed event: a keep-alive-only
                 // stretch still proves the writer is alive, and streamed_at —
@@ -1101,11 +1330,37 @@ pub async fn persist_assistant_stream(
                 // flushes immediately, then every 400ms.
                 if last_flush.is_none_or(|t| t.elapsed() > Duration::from_millis(400)) {
                     last_flush = Some(Instant::now());
+                    // A VERDICT KEPT MID-TURN STAYS ON THE LIVE ROW. The door
+                    // marks the running reply's call `error` the moment the
+                    // plugin posts, and this flush would write the stream's
+                    // `completed` back over it within 400 ms: a reader of the
+                    // row (the open tab's poll, a member's) would see the call
+                    // work again until the turn landed. The same kept
+                    // verdicts the landing write folds, read while the reply
+                    // holds a call with an id not already marked `error`
+                    // (a `completed` one included: that is the call a
+                    // verdict turns), so one MGET a flush from the first
+                    // such call to the landing.
+                    if let Some((agent, since)) = &verdict_agent
+                        && tools.iter().any(|t| t.id.is_some() && t.status != "error")
+                    {
+                        if verdict_redis.is_none() {
+                            verdict_redis = state.redis().await.ok();
+                        }
+                        if let Some(conn) = verdict_redis.as_mut() {
+                            fold_tool_failures(conn, agent, &conversation_id, *since, &mut tools)
+                                .await;
+                        }
+                    }
                     flush!("streaming");
                 }
             }
         }
     };
+    // The stream has ended, and with it the request the completion id named
+    // a run through: a stop from here on has nothing to interrupt.
+    drop(open);
+    drop(opening);
     for ev in parser.finish() {
         match ev {
             AgentStreamEvent::Content { text } => content.push_str(&text),
@@ -1118,12 +1373,7 @@ pub async fn persist_assistant_stream(
             } => {
                 tools = merge_tool(&tools, id.as_deref(), &name, &label, status.as_deref());
             }
-            AgentStreamEvent::Usage {
-                prompt_tokens,
-                completion_tokens,
-            } => {
-                usage = Some((prompt_tokens, completion_tokens));
-            }
+            AgentStreamEvent::Usage { .. } => {}
             AgentStreamEvent::Error { message } => {
                 frame_error = frame_error.or(Some(message));
             }
@@ -1143,8 +1393,7 @@ pub async fn persist_assistant_stream(
     // retrying a provider that just refused is the loop this closes.
     if let Some(message) = frame_error {
         content = with_error_line(&content, &format!("(agent error: {message})"));
-        flush!("error");
-        ledger!();
+        land!("error");
         return;
     }
     // A stream that DIED (as opposed to the agent refusing above) ends the
@@ -1155,26 +1404,15 @@ pub async fn persist_assistant_stream(
     // covers; a resume that dies again stays down (`resumed` gates it).
     if let Some(died) = death {
         content = with_error_line(&content, &format!("(agent error: {})", died.reason()));
-        flush!("error");
-        ledger!();
+        land!("error");
         if let Some(meta) = usage_meta.filter(|m| !m.resumed) {
-            maybe_resume(&state, &conversation_id, &message_id, &meta);
+            maybe_resume(&state, &conversation_id, &message_id, &meta, heard_at_ms);
         }
         return;
     }
-    // The guard's stop, once the container accepted it: the turn is a
-    // stopped one even if the stream ended on a verdict other than
-    // run.cancelled, and the reply says why it ends — after its last word.
-    if loop_stop_ok.load(Ordering::Relaxed) {
-        content.push_str(&format!(
-            "\n\n(stopped: the agent repeated the same call {} times with the same result)",
-            loop_at.stop_at
-        ));
-        stopped = true;
-    }
     // A STOPPED TURN IS NOT A FAULT, so it lands like any finished one.
-    // Somebody pressed stop — or the guard above pulled the plug on a loop —
-    // and the partial reply is exactly what they chose to keep: the row
+    // Somebody pressed stop, and the partial reply is exactly what they
+    // chose to keep: the row
     // lands COMPLETE with the content, reasoning and tools that arrived, and
     // the stamp beside it is what says the turn was cut short. An error
     // status would put a retry affordance on a turn nobody wants retried,
@@ -1182,12 +1420,11 @@ pub async fn persist_assistant_stream(
     // just stopped. Everything the completed path does — the guard over the
     // words, the rail's event, the reply notification, the chain — applies to
     // the words a stopped turn managed to say, with two exceptions below.
-    flush!("complete");
+    land!("complete");
     if stopped {
         let _ = mark_message_stopped(&state.pg, &message_id).await;
     }
     let _ = touch_conversation(&state.pg, &conversation_id, None).await;
-    ledger!();
     // TALA-33: a landed plan turn rewrites the plan's living document
     // server-side (detached; see `spawn_plan_doc_auto_sync`). Only the
     // completed path — the error and death paths above return early — and
@@ -1245,7 +1482,7 @@ pub async fn persist_assistant_stream(
             if mode == GuardMode::Strict && needs_redaction(&findings) {
                 content = redact_secrets(&content, None).0;
                 reasoning = redact_secrets(&reasoning, None).0;
-                flush!("complete");
+                land!("complete");
             }
             // Scrubbed: a pinned finding carries a verbatim excerpt of the
             // flagged span, and `zero_tool_claim` does not truncate its own.
@@ -1372,7 +1609,13 @@ pub async fn persist_assistant_stream(
 /// is the retry-once gate: a turn that dies twice stays dead where a person
 /// can see it. Detached, so the dying persist returns and the client branch
 /// closes on schedule.
-fn maybe_resume(state: &AppState, conversation_id: &str, message_id: &str, meta: &PersistMeta) {
+fn maybe_resume(
+    state: &AppState,
+    conversation_id: &str,
+    message_id: &str,
+    meta: &PersistMeta,
+    heard_at_ms: i64,
+) {
     let state = state.clone();
     let conversation_id = conversation_id.to_string();
     let message_id = message_id.to_string();
@@ -1398,13 +1641,155 @@ fn maybe_resume(state: &AppState, conversation_id: &str, message_id: &str, meta:
         // The stamp precedes the drive on purpose: if the drive then loses to
         // a newer turn (the active-streaming check inside), the row stays an
         // explained error rather than re-queueing itself forever.
-        resume_conversation(&state, &conversation_id, &turn, &message_id).await;
+        resume_conversation(&state, &conversation_id, &turn, &message_id, heard_at_ms).await;
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A drain's open completion is what a stop reads while the drain reads
+    /// the stream: the newest one the stream named, and nothing once the
+    /// drain lets go.
+    #[test]
+    fn the_open_completion_lives_as_long_as_the_drain_reads() {
+        let row = "8a6d1f0e-3b2c-4d5e-9f10-111213141516";
+        assert_eq!(open_completion(row), None);
+        let mut open = OpenCompletion::new(row);
+        // The session arm names none: nothing is noted.
+        open.note(None);
+        assert_eq!(open_completion(row), None);
+        open.note(Some("chatcmpl-a1"));
+        assert_eq!(open_completion(row).as_deref(), Some("chatcmpl-a1"));
+        // A moved turn's fresh completion replaces it.
+        open.note(Some("chatcmpl-b2"));
+        open.note(None);
+        assert_eq!(open_completion(row).as_deref(), Some("chatcmpl-b2"));
+        // Another row's drain is its own.
+        let other = OpenCompletion::new("other-row");
+        drop(other);
+        assert_eq!(open_completion(row).as_deref(), Some("chatcmpl-b2"));
+        drop(open);
+        assert_eq!(open_completion(row), None);
+    }
+
+    /// A stop that arrives while the thread's turn is still opening waits
+    /// for it to name itself: the completion its drain reads, or the run its
+    /// session announces. One that arrives with nothing opening, or after
+    /// the opening ended unnamed, is not kept waiting.
+    #[tokio::test]
+    async fn a_stop_waits_for_the_opening_turn_to_name_itself() {
+        let soon = || tokio::time::Instant::now() + Duration::from_secs(5);
+        let thread = "3c0a7e52-0d1b-4a8e-9b3a-5f6e7d8c9b01";
+        assert_eq!(await_turn_handle(thread, soon()).await, Awaited::Gone);
+
+        // Completions arm: the send claims the thread, the drain names the
+        // row and then the completion, while the stop is already waiting.
+        let opening = OpeningTurn::take(thread);
+        let waiting = tokio::spawn(async move { await_turn_handle(thread, soon()).await });
+        tokio::task::yield_now().await;
+        let row = "3c0a7e52-0d1b-4a8e-9b3a-5f6e7d8c9b02";
+        opening.row(row);
+        let mut open = OpenCompletion::new(row);
+        open.note(Some("chatcmpl-c3"));
+        assert_eq!(
+            waiting.await.unwrap(),
+            Awaited::Named(TurnHandle::Completion {
+                message_id: row.into()
+            })
+        );
+        // A queued send while it streams holds nothing, and its drop does
+        // not take the live turn's entry with it; nor does a spelling.
+        drop(OpeningTurn::take(&thread.to_ascii_uppercase()));
+        assert!(matches!(
+            await_turn_handle(&format!("{{{thread}}}"), soon()).await,
+            Awaited::Named(_)
+        ));
+        drop(open);
+        drop(opening);
+        assert_eq!(await_turn_handle(thread, soon()).await, Awaited::Gone);
+
+        // Session arm: the run id is the handle.
+        let opening = OpeningTurn::take(thread);
+        opening.row(row);
+        opening.run("run_42");
+        assert_eq!(
+            await_turn_handle(thread, soon()).await,
+            Awaited::Named(TurnHandle::Run {
+                run_id: "run_42".into()
+            })
+        );
+        drop(opening);
+
+        // An opening that ends without a name (the send failed, the stream
+        // never named the turn) releases the stop at once.
+        let opening = OpeningTurn::take(thread);
+        let waiting = tokio::spawn(async move { await_turn_handle(thread, soon()).await });
+        tokio::task::yield_now().await;
+        drop(opening);
+        assert_eq!(waiting.await.unwrap(), Awaited::Gone);
+
+        // One that never names itself is waited for to the deadline only.
+        let opening = OpeningTurn::take(thread);
+        let started = tokio::time::Instant::now();
+        let deadline = started + Duration::from_millis(200);
+        assert_eq!(await_turn_handle(thread, deadline).await, Awaited::TimedOut);
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        drop(opening);
+    }
+
+    /// A stop that waited out the window is held on the opening, and the
+    /// drain is told to send it exactly once, when the turn names itself; a
+    /// turn that named itself first is stopped by the route instead.
+    #[test]
+    fn a_held_stop_is_the_drains_to_send_once_the_turn_names_itself() {
+        let thread = "5d1e0c2b-7a3f-4e9d-8c6b-0a1b2c3d4e01";
+        assert_eq!(hold_stop(thread), HeldStop::Gone);
+
+        // Completions arm: held before the completion, sent by the drain.
+        let opening = OpeningTurn::take(thread);
+        let row = "5d1e0c2b-7a3f-4e9d-8c6b-0a1b2c3d4e02";
+        opening.row(row);
+        assert_eq!(hold_stop(thread), HeldStop::Held);
+        let mut open = OpenCompletion::new(row);
+        assert!(open.note(Some("chatcmpl-d4")));
+        assert!(opening.named(), "the held stop is the drain's to send");
+        assert!(!opening.named(), "and only once");
+        // Named now: a later stop is the route's own, nothing is held.
+        assert_eq!(
+            hold_stop(thread),
+            HeldStop::Now(TurnHandle::Completion {
+                message_id: row.into()
+            })
+        );
+        assert!(!opening.named());
+        drop(open);
+        drop(opening);
+
+        // Session arm: the run id carries it.
+        let opening = OpeningTurn::take(thread);
+        opening.row(row);
+        assert_eq!(hold_stop(thread), HeldStop::Held);
+        assert!(opening.run("run_7"), "the held stop rides the run's name");
+        assert_eq!(
+            hold_stop(thread),
+            HeldStop::Now(TurnHandle::Run {
+                run_id: "run_7".into()
+            })
+        );
+        drop(opening);
+
+        // An inert claim (a queued send) never carries a held stop.
+        let live = OpeningTurn::take(thread);
+        let queued = OpeningTurn::take(thread);
+        assert_eq!(hold_stop(thread), HeldStop::Held);
+        assert!(!queued.named());
+        assert!(live.named());
+        drop(queued);
+        drop(live);
+        assert_eq!(hold_stop(thread), HeldStop::Gone);
+    }
 
     /// The pinned turn is cut from the same list the full-history path
     /// sends: system rows fold into the ephemeral system message, the
@@ -1574,21 +1959,53 @@ mod tests {
             );
         }
 
-        /// The completions arm's own telemetry, same verdict: a failure rides
-        /// `hermes.tool.progress` with a status word, and it lands as `error`.
+        /// A terminal command Hermes' approval gate refused, as v0.22.4's
+        /// completions stream actually sends it (captured from a worktree
+        /// agent on the pinned image, the door answering the approval with
+        /// deny): the call ends `completed` on the wire, whatever its result
+        /// said. The agent's talaria-events plugin read the result
+        /// (`{"error": "BLOCKED: Command denied by user…"}`) and reported
+        /// `error`, and that verdict is what lands.
         #[test]
-        fn the_completions_arm_persists_error_too() {
-            let tools = fold(concat!(
-                "event: hermes.tool.progress\n",
-                r#"data: {"tool":"search","toolCallId":"c1","emoji":"🔎","status":"running"}"#,
+        fn a_call_hermes_refused_lands_as_error_from_the_plugins_verdict() {
+            let mut tools = fold(concat!(
+                r#"data: {"id": "chatcmpl-c0ba353357b94408a511aa1786f87", "object": "chat.completion.chunk", "created": 1793136610, "model": "ada-ops", "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}]}"#,
                 "\n\n",
                 "event: hermes.tool.progress\n",
-                r#"data: {"tool":"search","toolCallId":"c1","label":"quota exhausted","status":"error"}"#,
+                r#"data: {"tool": "terminal", "emoji": "\ud83d\udcbb", "label": "rm -rf /tmp/fu-canary", "toolCallId": "call_8b732cd27d", "status": "running"}"#,
                 "\n\n",
+                "event: approval.request\n",
+                r#"data: {"execution_generation": 1, "command": "rm -rf /tmp/fu-canary", "description": "delete in root path", "request_id": "8ac426f873db45509251debcfa952ef7", "allow_session": true, "allow_permanent": true, "event": "approval.request", "run_id": "chatcmpl-c0ba353357b94408a511aa1786f87", "timestamp": 1793136611.2572691, "session_id": "api-6bc93538c8727c5a", "choices": ["once", "session", "always", "deny"]}"#,
+                "\n\n",
+                "event: hermes.tool.progress\n",
+                r#"data: {"tool": "terminal", "toolCallId": "call_8b732cd27d", "status": "completed"}"#,
+                "\n\n",
+                r#"data: {"id": "chatcmpl-c0ba353357b94408a511aa1786f87", "object": "chat.completion.chunk", "created": 1793136610, "model": "ada-ops", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}}"#,
+                "\n\n",
+                "data: [DONE]\n\n",
             ));
             assert_eq!(tools.len(), 1, "{tools:?}");
+            assert_eq!(tools[0].id.as_deref(), Some("call_8b732cd27d"));
+            assert_eq!(tools[0].label, "💻 rm -rf /tmp/fu-canary");
+            // What the wire alone would persist: a refused command that "worked".
+            assert_eq!(tools[0].status, "completed");
+            // The plugin said error for this call id: the landing write folds it in.
+            assert!(talaria_conversations::mark_tool_failures(
+                &mut tools,
+                &["call_8b732cd27d"]
+            ));
             assert_eq!(tools[0].status, "error");
-            assert_eq!(tools[0].label, "quota exhausted");
+            // A verdict for some other call changes nothing.
+            let mut other = fold(concat!(
+                "event: hermes.tool.progress\n",
+                r#"data: {"tool": "terminal", "toolCallId": "call_547dfba246", "status": "completed"}"#,
+                "\n\n",
+            ));
+            assert!(!talaria_conversations::mark_tool_failures(
+                &mut other,
+                &["call_8b732cd27d"]
+            ));
+            assert_eq!(other[0].status, "completed");
         }
 
         /// The three words, and only the three: a completed call still
@@ -1634,160 +2051,6 @@ mod tests {
         );
         assert!(TurnDeath::Idle.reason().contains("went silent for "));
         assert!(TurnDeath::Idle.reason().ends_with("s mid-turn"));
-    }
-
-    /// The doom-loop guard, at its pure seam. The counting and the verdict are
-    /// the whole policy — the steer and the stop behind them are HTTP calls
-    /// into a live container, which no unit test here can stand in for.
-    mod doom_loop {
-        use super::*;
-
-        /// A fresh tally at the default thresholds, replayed over a list of
-        /// (tool, arguments, result) calls, so the bookkeeping is exercised
-        /// through the verdict rather than beside it.
-        fn replay(calls: &[(&str, &str, &str)]) -> Vec<Option<LoopAction>> {
-            let mut tally = HashMap::new();
-            calls
-                .iter()
-                .map(|(name, label, out)| {
-                    count_repeat(&mut tally, name, label, out, LoopThresholds::default())
-                })
-                .collect()
-        }
-
-        /// The thresholds, on the bare count: a nudge at three, the plug at
-        /// five, and silence everywhere else — including PAST five, so a pair
-        /// stuck at a dozen repeats still stops once.
-        #[test]
-        fn verdict_fires_once_per_threshold() {
-            let at = LoopThresholds::default();
-            assert_eq!(loop_verdict(0, at), None);
-            assert_eq!(loop_verdict(1, at), None);
-            assert_eq!(loop_verdict(2, at), None);
-            assert_eq!(loop_verdict(3, at), Some(LoopAction::Warn));
-            assert_eq!(loop_verdict(4, at), None);
-            assert_eq!(loop_verdict(5, at), Some(LoopAction::Stop));
-            assert_eq!(loop_verdict(6, at), None);
-            assert_eq!(loop_verdict(50, at), None);
-        }
-
-        /// The thresholds are the settings' when set: numbers, or strings
-        /// holding numbers; zero, nonsense, absence and the absurd fall back
-        /// to the defaults; and a stop set equal to the warn is the stop.
-        #[test]
-        fn thresholds_come_from_the_settings_and_fall_back_to_the_defaults() {
-            let at = loop_thresholds_from(&json!(8), &json!("20"));
-            assert_eq!(
-                at,
-                LoopThresholds {
-                    warn_at: 8,
-                    stop_at: 20
-                }
-            );
-            assert_eq!(loop_verdict(8, at), Some(LoopAction::Warn));
-            assert_eq!(loop_verdict(20, at), Some(LoopAction::Stop));
-            assert_eq!(loop_verdict(3, at), None);
-            assert_eq!(loop_verdict(5, at), None);
-
-            assert_eq!(
-                loop_thresholds_from(&Value::Null, &Value::Null),
-                LoopThresholds::default()
-            );
-            assert_eq!(
-                loop_thresholds_from(&json!(0), &json!("many")),
-                LoopThresholds::default()
-            );
-            assert_eq!(
-                loop_thresholds_from(&json!(-3), &json!(1_000_001)),
-                LoopThresholds::default()
-            );
-            let same = loop_thresholds_from(&json!(4), &json!(4));
-            assert_eq!(loop_verdict(4, same), Some(LoopAction::Stop));
-        }
-
-        /// The same call with the same answer five times: one word, then the
-        /// plug.
-        #[test]
-        fn a_repeating_call_with_one_answer_warns_then_stops() {
-            let calls = [("read_file", "a.rs", "fn main() {}"); 5];
-            assert_eq!(
-                replay(&calls),
-                vec![
-                    None,
-                    None,
-                    Some(LoopAction::Warn),
-                    None,
-                    Some(LoopAction::Stop)
-                ]
-            );
-        }
-
-        /// POLLING IS NOT A LOOP. The same call whose answer keeps changing —
-        /// a job status, a log tail, a clock — is an agent waiting for
-        /// something, and must never be touched.
-        #[test]
-        fn the_same_call_with_a_changing_answer_is_polling() {
-            let verdicts = replay(&[
-                ("job_status", "job-7", "queued"),
-                ("job_status", "job-7", "running 10%"),
-                ("job_status", "job-7", "running 40%"),
-                ("job_status", "job-7", "running 70%"),
-                ("job_status", "job-7", "running 90%"),
-                ("job_status", "job-7", "running 95%"),
-            ]);
-            assert!(verdicts.iter().all(Option::is_none), "{verdicts:?}");
-            // And the moment the answer stops moving, the count starts.
-            let stuck = replay(&[
-                ("job_status", "job-7", "running 95%"),
-                ("job_status", "job-7", "running 95%"),
-                ("job_status", "job-7", "running 95%"),
-            ]);
-            assert_eq!(stuck[2], Some(LoopAction::Warn));
-        }
-
-        /// The ARGUMENTS are what make it a loop. One tool used five times on
-        /// five different files is an agent working, and must never be touched.
-        #[test]
-        fn one_tool_on_different_arguments_is_not_a_loop() {
-            let verdicts = replay(&[
-                ("read_file", "a.rs", ""),
-                ("read_file", "b.rs", ""),
-                ("read_file", "c.rs", ""),
-                ("read_file", "d.rs", ""),
-                ("read_file", "e.rs", ""),
-            ]);
-            assert!(verdicts.iter().all(Option::is_none));
-        }
-
-        /// Two keys are counted apart: interleaving them does not add up to
-        /// one loop, and the key that does repeat still reaches its own
-        /// threshold.
-        #[test]
-        fn keys_are_counted_separately() {
-            let verdicts = replay(&[
-                ("grep", "needle", "x"),
-                ("read_file", "a.rs", "y"),
-                ("grep", "needle", "x"),
-                ("read_file", "a.rs", "y"),
-                ("grep", "needle", "x"),
-            ]);
-            assert_eq!(verdicts[4], Some(LoopAction::Warn));
-            assert_eq!(verdicts[3], None);
-        }
-
-        /// An unlabelled frame carries no arguments to compare, so it is not
-        /// counted — every such call of one tool would collide into a single
-        /// key and read as a loop the moment the tool was used three times.
-        #[test]
-        fn unlabelled_calls_are_never_counted() {
-            let verdicts = replay(&[
-                ("bash", "", "a"),
-                ("bash", "   ", "a"),
-                ("bash", "", "a"),
-                ("bash", "", "a"),
-            ]);
-            assert!(verdicts.iter().all(Option::is_none));
-        }
     }
 
     /// A stream that dies mid-prose keeps its prose: the reason lands after
@@ -1871,7 +2134,7 @@ mod tests {
     /// reach. `sync_plan_doc` runs the rewrite through the persona gateway
     /// (run_harness → real transport), which no unit test can fake from this
     /// module — so the DECISION is pure and tested here, and the wiring is
-    /// the single call site on the `flush!("complete")` path.
+    /// the single call site on the `land!("complete")` path.
     mod plan_auto_sync {
         use super::*;
 
