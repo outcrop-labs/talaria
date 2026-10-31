@@ -25,17 +25,23 @@ The desktop shell's own half (its OS backends, tray and badge) is
 - **An open tab.** `/api/me/events` (user-events.svelte.ts) invalidates the inbox query; the
   arrival record (notify-arrivals.ts) says which rows this browser has not surfaced; the
   decider (notify-decide.ts) makes one call per browser: a toast in the tab the person is
-  looking at, else one OS banner from the leader tab, else nothing. The inbox query also polls
-  every 30 s, hidden tabs included.
-- **A closed browser.** Web Push: talaria-push encrypts the row (RFC 8291) under the
+  looking at, else one OS banner from the leader tab, else nothing. When this browser cannot
+  post a banner (not granted, a plain-http origin, or switched off here), the visible tab
+  touched last toasts instead, so a Talaria window on another monitor still shows it. The
+  inbox query also polls every 30 s, hidden tabs included.
+- **Every Talaria tab closed.** Web Push: talaria-push encrypts the row (RFC 8291) under the
   instance VAPID identity (RFC 8292) and posts it to every subscription; the service worker
   (`ui/src/sw.ts`) shows it unless the person is looking at Talaria or the leader tab
-  already showed it.
+  already showed it. The browser itself must be running: on Linux and Windows closing its
+  last window quits it, and Settings says so on those systems.
 - **The desktop shell.** The page posts through `shellShowNotification` instead of the
   browser's API; see [`DESKTOP.md`](./DESKTOP.md).
 - **The click.** Every path (toast, OS banner via the worker, the shell's event, the
   `new Notification` fallback) goes through `notify-open.ts`: the href is checked, the app
-  routes in place, and the row is marked read.
+  routes in place, and the row is marked read. A notification with no openable link (an
+  empty href, or one the rule refuses) leaves the person on the page they are on; only the
+  worker, with no window to focus, opens `/`. Only a row id is ever marked read: the
+  summary's `talaria-summary` and the confirmation banner's empty id are not rows.
 
 ## Asking for permission
 
@@ -45,15 +51,18 @@ a Block is near-permanent. Talaria never prompts on load.
 - **The card** (`NotifyPrompt.svelte`, rules in `notify-prompt.ts`) shows only when the
   permission is `default`, the context is secure, this is not the shell, the page has been
   open at least 10 s and touched, and a reason just fired: an arrival was toasted in this
-  focused tab, or the tab came back into view after one landed while it was hidden.
+  focused tab, or the person came back to the tab (into view, or focused) after one landed
+  while they were not looking at it.
 - **"Not now"** is remembered on the account (`users.notify_prefs.prompt`, written by
   `PATCH /api/notifications {prompt:{dismissed:true}}`): 7 days after the first, 30 after
-  the second, never after the third. A grant ends it.
+  the second, never after the third. A grant ends it. An answer also holds for the page's
+  life, whatever a refetch or a failed write says.
 - **The bell's row** stays: "Turn on desktop alerts", "Desktop alerts are blocked in
   \<Browser\>" (with the steps), or, on a plain-http dev stack, why it cannot work.
 - **Settings → Notifications → Desktop alerts** shows the same state live, with the one
-  control that state allows, and whether this browser is registered for closed-browser
-  alerts.
+  control that state allows, whether this browser is registered for alerts with every
+  Talaria tab closed, and, on Linux and Windows, that closing the browser's last window
+  quits it (and stops them).
 - **Turn on** calls `Notification.requestPermission()` synchronously inside the click. On a
   grant it files the push subscription and shows a local "Desktop alerts are on" banner
   through the same registration a push uses.
@@ -80,6 +89,9 @@ turns an origin restart into a 502 or 524.
 - On every reopen the user stream refetches every query it drives (the stream carries no
   replay).
 - A subscriber is dropped the moment its client leaves, not on the topic's next publish.
+- On SIGTERM the api ends every open stream (`talaria_realtime::end_streams`) before its
+  graceful drain, so the drain is not held open by connected browsers; each reconnects after
+  its `retry:` to the instance that replaces it.
 
 ## One banner per notification per browser
 
@@ -98,6 +110,12 @@ turns an origin restart into a 502 or 524.
 - **The worker** skips a push when a window is focused and visible, or when that version is
   already bannered or on screen. On WebKit it never skips, because Safari revokes
   subscriptions after silent pushes.
+- **Banners off.** With no banner to post, the tab the person looks at toasts; else the
+  visible tab with the latest input (ties to the lowest tab id). Each tab knows its own input
+  exactly and the others' only as of their last announcement, so the true latest tab always
+  picks itself: a race can show an arrival twice, never zero times.
+- **Back/forward cache.** A page restored from it starts a new runtime (lock, registry) on
+  `pageshow`.
 - Without Web Locks or BroadcastChannel every tab decides alone, and the tag plus the
   bannered store still collapse duplicates.
 
@@ -107,7 +125,9 @@ A browser with no record for this person baselines silently (a fresh profile mus
 replay the inbox). Every later read, including the first after a reload, a reopen or a
 deploy, surfaces what landed since. Up to three arrivals show one by one, oldest first;
 more than three show as one summary ("5 new — …", tag `talaria-summary`) whose click opens
-the bell. Rows read elsewhere are never surfaced.
+the bell. Rows read elsewhere are never surfaced, and neither is a row version this browser
+already showed as a banner (the worker's, while every tab was closed), so the summary never
+stacks on top of the worker's per-row banners.
 
 ## Push lifecycle
 
@@ -116,8 +136,9 @@ the bell. Rows read elsewhere are never surfaced.
   A subscription bound to an old instance key is unsubscribed and replaced.
 - **Subscribe.** `POST /api/push/subscribe` stores the hex SHA-256 of the session that filed
   it (`session_hash`); the session id itself is never stored.
-- **Sign-out.** The client unsubscribes (bounded at 2 s), and `POST /api/auth/logout`
-  deletes every row with that session's hash. Other sessions' rows stay.
+- **Sign-out.** The client unsubscribes (bounded at 2 s) and closes every banner the origin
+  still has up, the OS notification centre included; `POST /api/auth/logout` deletes every
+  row with that session's hash. Other sessions' rows stay.
 - **Delivery.** Devices are posted four at a time, at most 32 in flight per process, each
   POST bounded (5 s to connect, 15 s in all). The plaintext is held under 3,000 bytes; a 413
   gets one minimal resend. 429, 5xx and transport failures are retried at most twice
@@ -135,8 +156,12 @@ the bell. Rows read elsewhere are never surfaced.
 ## Server rules
 
 - **Href.** A row stores only a same-origin path: a leading `/`, not `//`, no backslash, no
-  control characters, at most 2,048 bytes. Anything else is stored as `''` (logged once per
-  kind).
+  control characters, no `.` or `..` path segment in any `%2e` spelling, at most 2,048
+  bytes. Anything else is stored as `''` (logged once per kind). The page
+  (`notify-open.ts`) and the worker (`sw.ts`) apply the same rule before they open, and
+  also refuse a path that would leave the origin when parsed again: `/..//evil.example`
+  resolves to the path `//evil.example`, which a router or `navigate()` reads as another
+  host.
 - **DMs.** One unread `dm` row per conversation. A new message refreshes it in place (same
   id, the newest body, `created_at = now()`), publishes it, and pushes with `renotify`; it
   sends no new mail. Reading the channel to its newest message clears the row (and any
