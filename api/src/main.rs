@@ -185,4 +185,8 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
     tracing::info!("shutdown signal received — draining");
+    // Event streams never finish on their own, and the graceful drain waits
+    // on every response: end them now, so the drain is not held open by the
+    // browsers that are connected (each reconnects after its `retry:`).
+    talaria_realtime::end_streams();
 }

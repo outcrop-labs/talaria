@@ -468,8 +468,41 @@ fn topic_frames(
 /// rather than pinging into the void until the client gives up — an
 /// EventSource reconnects on stream end and gets a fresh subscriber, recovery
 /// from the server's own initiative.
+///
+/// AND IT ENDS ON SHUTDOWN (`end_streams`): a graceful shutdown waits for
+/// every response to finish, and an event stream never does on its own — so
+/// a SIGTERM left the process serving open streams, and ticking its
+/// scheduler, until the container's stop timeout killed it.
 fn sse_response(rx: mpsc::Receiver<String>) -> Response {
-    let mut res = Sse::new(topic_frames(rx))
+    sse_response_until(rx, streams_ending())
+}
+
+/// Flipped once, by the binary's shutdown signal.
+static STREAMS_END: std::sync::LazyLock<tokio::sync::watch::Sender<bool>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::channel(false).0);
+
+/// End every open event stream, and every one opened after: the process is
+/// shutting down. Each client sees a clean end and reconnects after the
+/// `retry:` it was given — to the instance that replaces this one. Called by
+/// the binary when the shutdown signal lands, before the graceful drain
+/// waits on in-flight responses.
+pub fn end_streams() {
+    STREAMS_END.send_replace(true);
+}
+
+/// Resolves once `end_streams` has run (at once, if it already has).
+fn streams_ending() -> impl std::future::Future<Output = ()> + Send + 'static {
+    let mut rx = STREAMS_END.subscribe();
+    async move {
+        let _ = rx.wait_for(|ended| *ended).await;
+    }
+}
+
+fn sse_response_until(
+    rx: mpsc::Receiver<String>,
+    until: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Response {
+    let mut res = Sse::new(topic_frames(rx).take_until(until))
         .keep_alive(
             KeepAlive::new()
                 .interval(Duration::from_millis(PING_EVERY_MS))
@@ -754,6 +787,31 @@ mod tests {
         let waited = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
         assert!(waited.is_err(), "a quiet stream must not end: {waited:?}");
         drop(rx);
+    }
+
+    // A shutdown ends an open stream — even one whose subscriber is alive
+    // and silent — so the graceful drain is not held open by it.
+    #[tokio::test]
+    async fn a_shutdown_ends_an_open_stream() {
+        let (tx, rx) = mpsc::channel::<String>(1);
+        let (end_tx, mut end_rx) = tokio::sync::watch::channel(false);
+        let until = async move {
+            let _ = end_rx.wait_for(|e| *e).await;
+        };
+        let res = sse_response_until(rx, until);
+        let body = tokio::spawn(body_of(res));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !body.is_finished(),
+            "an open stream must not end on its own"
+        );
+        end_tx.send_replace(true);
+        let body = tokio::time::timeout(Duration::from_secs(2), body)
+            .await
+            .expect("the stream ends on shutdown")
+            .unwrap();
+        assert!(body.starts_with(": connected\nretry: 3000\n\n"), "{body:?}");
+        drop(tx);
     }
 
     // The new read-sync event is a number and a tag, nothing else.
