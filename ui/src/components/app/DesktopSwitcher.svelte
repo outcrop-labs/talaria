@@ -14,6 +14,7 @@
     shellShowWelcome,
     type ShellInstance,
   } from '@/lib/desktop-shell'
+  import { createBadgeReporter } from '@/lib/desktop-badge'
   import { findCurrentInstance, instanceDisplayLabel } from '@/lib/desktop-instance'
   import type { NotificationsPayload } from '@/lib/notifications'
 
@@ -40,29 +41,25 @@
   // count, the same number the bell shows. Read from the query cache the bell
   // and the toasts already keep fresh, rather than through a query of its
   // own, so a signed-out page (the login screen mounts this too) fetches
-  // nothing. Debounced: a burst of refetches is one report. The shell keeps
-  // a share per instance and shows the sum.
+  // nothing; lib/desktop-badge debounces it and reports 0 when signed out.
+  // The shell keeps a share per instance and shows the sum.
   const queries = inDesktopShell() ? useQueryClient() : null
   $effect(() => {
     if (!queries) return
-    let reported: number | undefined
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const report = () => {
-      const unread = queries.getQueryData<NotificationsPayload>(['notifications'])?.unread
-      if (typeof unread !== 'number' || unread === reported) return
-      clearTimeout(timer)
-      timer = setTimeout(() => {
-        reported = unread
-        void shellSetBadge(unread)
-      }, 500)
-    }
+    const badge = createBadgeReporter((count) => void shellSetBadge(count))
+    const report = () =>
+      badge.update(
+        queries.getQueryData<NotificationsPayload>(['notifications'])?.unread,
+        queries.getQueryData<{ user?: unknown }>(['session'])?.user === null,
+      )
     report()
     const stop = queries.getQueryCache().subscribe((event) => {
-      if (event.query.queryKey[0] === 'notifications') report()
+      const key = event.query.queryKey[0]
+      if (key === 'notifications' || key === 'session') report()
     })
     return () => {
       stop()
-      clearTimeout(timer)
+      badge.stop()
     }
   })
 
