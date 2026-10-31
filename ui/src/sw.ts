@@ -25,8 +25,9 @@
 //     recently focused one — is FOCUSED FIRST (inside the click's
 //     activation), then asked to route there in place; only if it does not
 //     answer within a second is it navigated, and only with no window at all
-//     is one opened. The href is checked first: a path on this origin, or
-//     `/`.
+//     is one opened. The href is checked first: a path on this origin
+//     (lib/notify-open.ts's rule, inlined), else no navigation at all — an
+//     open window stays where it is, and only a new window opens at `/`.
 //
 // A build entry (vite.config.ts), not a public/ verbatim asset: it is
 // bundled to an unhashed /sw.js so the registration URL in
@@ -44,6 +45,8 @@ const ICON = '/icons/notify-192.png'
 const BADGE = '/icons/notify-badge-96.png'
 /** How long a page has to answer "open this" before the worker navigates it. */
 const OPEN_ACK_MS = 1000
+/** A notification row's id (inlined: lib/notify-open.ts `isRowId`). */
+const ROW_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 interface PushNote {
   id?: string
@@ -111,19 +114,32 @@ function isWebKit(): boolean {
   return /AppleWebKit/.test(ua) && !/Chrome|Chromium|Edg|OPR/.test(ua)
 }
 
-/** The in-app path an href may open (inlined: lib/notify-open.ts). */
-function safeHref(raw: unknown, origin: string): string {
+/** The in-app path an href may open, or null (inlined: lib/notify-open.ts
+ *  `safeInAppHref` — sw.test.ts runs both over one table). A leading `/`,
+ *  not `//`, no backslash or control, no `.`/`..` segment in any `%2e`
+ *  spelling, and the resolved path must stay on this origin when it is
+ *  resolved AGAIN: `/..//evil.example` resolves to the path `//evil.example`,
+ *  which `navigate()` and `openWindow()` read as another host. */
+function safeHref(raw: unknown, origin: string): string | null {
   const h = typeof raw === 'string' ? raw.trim() : ''
-  if (!h || h.length > 2048 || !h.startsWith('/') || h.startsWith('//')) return '/'
+  if (!h || h.length > 2048 || !h.startsWith('/') || h.startsWith('//')) return null
   for (let i = 0; i < h.length; i++) {
     const c = h.charCodeAt(i)
-    if (c < 0x20 || c === 0x7f || c === 0x5c) return '/'
+    if (c < 0x20 || c === 0x7f || c === 0x5c) return null
   }
+  const dot = (h.split(/[?#]/, 1)[0] ?? '').split('/').some((seg) => {
+    const x = seg.toLowerCase().replaceAll('%2e', '.')
+    return x === '.' || x === '..'
+  })
+  if (dot) return null
   try {
     const u = new URL(h, origin)
-    return u.origin === origin ? u.pathname + u.search + u.hash : '/'
+    if (u.origin !== origin) return null
+    const path = u.pathname + u.search + u.hash
+    if (path.startsWith('//') || new URL(path, origin).origin !== origin) return null
+    return path
   } catch {
-    return '/'
+    return null
   }
 }
 
@@ -197,6 +213,8 @@ sw.addEventListener('notificationclick', (event: NotificationEvent) => {
   const data = (event.notification.data || {}) as { id?: string; href?: string; summary?: boolean }
   event.notification.close()
   const origin = sw.location.origin
+  // null: no openable link (none, or one the rule refused). An open window
+  // then stays on the page it is on; with no window, Talaria opens home.
   const href = safeHref(data.href, origin)
   const id = typeof data.id === 'string' ? data.id : ''
   // The "N new" summary banner names no row: a click opens the bell.
@@ -204,19 +222,20 @@ sw.addEventListener('notificationclick', (event: NotificationEvent) => {
   const work = (async () => {
     // Opening it is reading it. Same-origin (fetch's default credentials),
     // so the session cookie rides (SameSite=Lax) and no CSRF token is needed.
-    if (id && !summary) {
+    // Only a row's id: the summary's and the confirmation banner's are not.
+    if (ROW_ID.test(id) && !summary) {
       void fetch('/api/notifications', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [id] }),
       }).catch(() => {})
     }
-    const target = new URL(href, origin).href
+    const target = href ? new URL(href, origin).href : null
     const wins = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true })
     // matchAll lists the most recently focused window first.
-    let win: WindowClient | undefined = wins.find((w) => w.url === target) ?? wins[0]
+    let win: WindowClient | undefined = (target ? wins.find((w) => w.url === target) : undefined) ?? wins[0]
     if (!win) {
-      await sw.clients.openWindow(href)
+      await sw.clients.openWindow(href ?? '/')
       return
     }
     // FOCUS FIRST, inside the click's activation: a focus after an await on
@@ -226,10 +245,11 @@ sw.addEventListener('notificationclick', (event: NotificationEvent) => {
     } catch {
       /* no activation (a synthetic click): the route still changes */
     }
-    if (await askToOpen(win, { id, href, ...(summary ? { summary } : {}) })) return
+    if (await askToOpen(win, { id, href: href ?? '', ...(summary ? { summary } : {}) })) return
     // The page did not answer (an older build, a frozen tab): navigate it,
-    // and focus the client navigate() RETURNS — the old one is gone.
-    if (typeof win.navigate === 'function') {
+    // and focus the client navigate() RETURNS — the old one is gone. With no
+    // link there is nowhere to send it: it was focused above.
+    if (target && typeof win.navigate === 'function') {
       try {
         const moved = await win.navigate(target)
         if (moved) await moved.focus().catch(() => undefined)
