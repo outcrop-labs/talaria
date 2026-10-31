@@ -179,6 +179,15 @@ export function useChannelEvents(
       });
       if (ev.type === "channel")
         void qc.invalidateQueries({ queryKey: ["channels"] });
+    }, {
+      // Reconnecting (lib/sse.ts): a deploy's 502 no longer leaves the room
+      // silently frozen, and a REopen refetches what the gap may have dropped.
+      reconnect: true,
+      onOpen: ({ first }) => {
+        if (first) return;
+        void qc.invalidateQueries({ queryKey: ["channel-messages", cid] });
+        void qc.invalidateQueries({ queryKey: ["channel", cid] });
+      },
     });
   });
 }

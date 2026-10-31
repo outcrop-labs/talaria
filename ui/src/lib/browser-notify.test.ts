@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  NOTIFY_BADGE,
+  NOTIFY_ICON,
+  bannerOptions,
   browserNotifyEnabled,
   effectiveNotifyPermission,
   ensurePushSubscription,
+  permissionState,
+  requestBrowserNotify,
+  sameServerKey,
   setBrowserNotifyPref,
   shouldBrowserNotify,
   urlB64ToUint8Array,
@@ -91,5 +97,82 @@ describe('urlB64ToUint8Array (the VAPID key decode)', () => {
 describe('ensurePushSubscription (outside a browser)', () => {
   it('answers unsupported instead of throwing where the APIs are absent', async () => {
     expect(await ensurePushSubscription()).toBe('unsupported')
+  })
+})
+
+describe('permissionState — the insecure origin says so', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('reads insecure BEFORE the browser\'s own "denied" on a plain-http origin', () => {
+    vi.stubGlobal('window', { isSecureContext: false, localStorage: localStorageStub })
+    vi.stubGlobal('Notification', { permission: 'denied' })
+    expect(permissionState()).toBe('insecure')
+    expect(browserNotifyEnabled()).toBe(false)
+  })
+
+  it('reads the browser on a secure origin', () => {
+    vi.stubGlobal('window', { isSecureContext: true, localStorage: localStorageStub })
+    vi.stubGlobal('Notification', { permission: 'default' })
+    expect(permissionState()).toBe('default')
+  })
+
+  it('never prompts from an insecure origin', async () => {
+    const requestPermission = vi.fn()
+    vi.stubGlobal('window', { isSecureContext: false })
+    vi.stubGlobal('Notification', { permission: 'denied', requestPermission })
+    expect(await requestBrowserNotify()).toBe('insecure')
+    expect(requestPermission).not.toHaveBeenCalled()
+  })
+
+  it('prompts from the default state, synchronously inside the call', async () => {
+    let state: NotificationPermission = 'default'
+    const requestPermission = vi.fn(() => {
+      state = 'granted'
+      return Promise.resolve(state)
+    })
+    vi.stubGlobal('window', { isSecureContext: true })
+    vi.stubGlobal('Notification', {
+      get permission() {
+        return state
+      },
+      requestPermission,
+    })
+    const p = requestBrowserNotify()
+    // Called before the first await yields: the click's activation holds.
+    expect(requestPermission).toHaveBeenCalledTimes(1)
+    expect(await p).toBe('granted')
+  })
+})
+
+describe('sameServerKey (the key-mismatch heal)', () => {
+  const want = new Uint8Array([4, 1, 2, 3])
+  it('compares the bound key byte for byte', () => {
+    expect(sameServerKey(new Uint8Array([4, 1, 2, 3]).buffer, want)).toBe(true)
+    expect(sameServerKey(new Uint8Array([4, 1, 2, 9]).buffer, want)).toBe(false)
+    expect(sameServerKey(new Uint8Array([4, 1, 2]).buffer, want)).toBe(false)
+  })
+  it('treats an engine that hides the key as unknown — kept, never a resubscribe loop', () => {
+    expect(sameServerKey(null, want)).toBeNull()
+    expect(sameServerKey(undefined, want)).toBeNull()
+  })
+})
+
+describe('bannerOptions (what every OS banner carries)', () => {
+  it('brands it, tags it by row, dates it, and carries the click data', () => {
+    const o = bannerOptions({ id: 'n1', title: 'T', body: 'B', href: '/x', createdAt: '2026-10-31T12:00:00.000Z' }) as NotificationOptions & {
+      renotify: boolean
+      timestamp: number
+    }
+    expect(o.tag).toBe('n1')
+    expect(o.icon).toBe(NOTIFY_ICON)
+    expect(o.badge).toBe(NOTIFY_BADGE)
+    expect(o.data).toEqual({ id: 'n1', href: '/x', v: '2026-10-31T12:00:00.000Z' })
+    expect(o.timestamp).toBe(Date.parse('2026-10-31T12:00:00.000Z'))
+    expect(o.renotify).toBe(false)
+  })
+  it('re-alerts only when asked, under the same tag', () => {
+    const o = bannerOptions({ id: 'dm1', title: 'T', renotify: true }) as NotificationOptions & { renotify: boolean }
+    expect(o.renotify).toBe(true)
+    expect(o.tag).toBe('dm1')
   })
 })

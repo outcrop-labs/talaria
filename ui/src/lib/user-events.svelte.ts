@@ -18,33 +18,51 @@ import { useQueryClient } from '@tanstack/svelte-query'
 export type UserEvent =
   | { type: 'run'; runId: string; state: string }
   | { type: 'notification'; notificationId: string }
+  /** Something was READ (another tab, a channel read to its end): the count
+   *  after it. The bell drops now instead of on its next poll. */
+  | { type: 'notifications'; unread: number }
   | { type: 'brief'; briefId: string; seq: number }
   | { type: 'channel'; channelId: string }
   | { type: 'conversation'; conversationId: string }
   | { type: 'typing'; channelId: string; userId: string; typing: boolean }
 
 type Listener = (event: UserEvent) => void
+type OpenListener = (info: { first: boolean }) => void
 
 let close: (() => void) | null = null
 let refs = 0
 const listeners = new Set<Listener>()
+const openListeners = new Set<OpenListener>()
 
 function connect(): void {
   if (close) return
   // The singleton subscriber registry stays here — this is the one stream with
-  // N consumers — but the connection itself goes through the shared door.
-  close = openStream('/api/me/events', (data) => {
-    // A frame we cannot parse is a frame we ignore — every consumer's own
-    // poll floor is what makes that safe rather than silent.
-    let parsed: UserEvent
-    try {
-      parsed = JSON.parse(data) as UserEvent
-    } catch {
-      return
-    }
-    if (!parsed || typeof parsed.type !== 'string') return
-    for (const fn of listeners) fn(parsed)
-  })
+  // N consumers — but the connection itself goes through the shared door,
+  // which RECONNECTS it: a deploy or an api restart is a 502/524 at the edge,
+  // and the firehose comes back on a backoff instead of staying dead until a
+  // reload. Every (re)open tells the open-listeners, which refetch whatever
+  // the stream may have missed while it was down (it carries no replay).
+  close = openStream(
+    '/api/me/events',
+    (data) => {
+      // A frame we cannot parse is a frame we ignore — every consumer's own
+      // poll floor is what makes that safe rather than silent.
+      let parsed: UserEvent
+      try {
+        parsed = JSON.parse(data) as UserEvent
+      } catch {
+        return
+      }
+      if (!parsed || typeof parsed.type !== 'string') return
+      for (const fn of listeners) fn(parsed)
+    },
+    {
+      reconnect: true,
+      onOpen: (info) => {
+        for (const fn of openListeners) fn(info)
+      },
+    },
+  )
 }
 
 function disconnect(): void {
@@ -67,6 +85,14 @@ export function onUserEvent(fn: Listener): () => void {
   }
 }
 
+/** Hear every (re)open of the firehose — the moment to refetch what a gap
+ *  may have dropped. Does not open the stream on its own; returns the
+ *  unsubscribe. */
+export function onUserStreamOpen(fn: OpenListener): () => void {
+  openListeners.add(fn)
+  return () => openListeners.delete(fn)
+}
+
 /** A component's subscription to the firehose, for exactly its lifetime:
  *  the shared connection opens with the first subscriber and closes with the
  *  last. Call during component init. Events carry ids only — the listener's
@@ -76,6 +102,18 @@ export function onUserEvent(fn: Listener): () => void {
 export function useUserEvents(fn: Listener): void {
   $effect(() => onUserEvent((event) => fn(event)))
 }
+
+/** Every query key the map below drives — refetched on each reopen. */
+export const USER_STREAM_KEYS = [
+  'notifications',
+  'unreads',
+  'home',
+  'channels',
+  'conversations',
+  'research-runs',
+  'research-run',
+  'daily-brief',
+] as const
 
 /** The app-wide invalidation map, one line per event: what refetches when
  *  the firehose ticks. Mounted once (AppLayout) so a badge or a list moves
@@ -87,10 +125,23 @@ export function useUserEvents(fn: Listener): void {
  *  finished only on its own page's poll — which pauses in a hidden tab. */
 export function useUserEventInvalidation(): void {
   const qc = useQueryClient()
+  // EVERY KEY THIS MAP DRIVES refetches when the stream (re)opens: whatever
+  // was published while it was down (a deploy, a laptop asleep, the edge's
+  // idle cut) is gone from the wire, and the ordinary reads are the replay.
+  // The FIRST open refetches only the inbox — the other reads were made
+  // moments ago, and the inbox is what the arrival record surfaces from.
+  $effect(() =>
+    onUserStreamOpen(({ first }) => {
+      void qc.invalidateQueries({ queryKey: ['notifications'] })
+      if (first) return
+      for (const key of USER_STREAM_KEYS) void qc.invalidateQueries({ queryKey: [key] })
+    }),
+  )
   $effect(() =>
     onUserEvent((event) => {
       switch (event.type) {
         case 'notification':
+        case 'notifications':
           void qc.invalidateQueries({ queryKey: ['notifications'] })
           void qc.invalidateQueries({ queryKey: ['home'] })
           void qc.invalidateQueries({ queryKey: ['unreads'] })
