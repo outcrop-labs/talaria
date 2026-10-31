@@ -10,7 +10,9 @@
 //     (the desktop switcher beside the logo in ui/), so each registered
 //     instance origin is granted, at runtime, a minimal capability: the
 //     switcher commands, window chrome (titlebar mode, min/max/close/drag),
-//     and a notification post — no fs, nothing else.
+//     the notification commands and the badge — no fs, no core:* (no event
+//     channel: a remote origin that could listen could hear another
+//     instance's events), nothing else.
 //
 // Every instance webview gets its own data directory, so cookie jars and
 // localStorage never mix. A hidden webview stays loaded (sessions and SSE
@@ -18,6 +20,11 @@
 // then, if its page agrees, it is closed, and showing it again recreates it at
 // the exact page it was on (suspend.rs; the shell watches its notifications
 // meanwhile, watch.rs).
+//
+// Closing the window keeps the shell running where the desktop can show it
+// (background.rs, tray.rs), so notifications still arrive; Quit is always
+// one step away. On Linux one process serves every launch: a second one
+// hands the window back to the first and exits (notify/linux.rs).
 //
 // The shell owns all geometry: WebKitGTK mis-places new child webviews until
 // their first set_bounds (tauri#10420) and auto_resize breaks across resize
@@ -33,6 +40,7 @@
 // that silently never appears. The one failure setup still returns is an app
 // data dir that cannot be found or created, where nothing could be saved.
 
+mod background;
 mod beacon;
 mod commands;
 mod layout;
@@ -40,6 +48,7 @@ mod notify;
 mod registry;
 mod settings;
 mod suspend;
+mod tray;
 mod watch;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -89,6 +98,9 @@ pub struct Suspended {
     pub session: Vec<(String, String)>,
     /// Its notifications, while the page is gone (watch.rs).
     pub watcher: Option<tauri::async_runtime::JoinHandle<()>>,
+    /// What that watcher posted, merged back into the page's record when it
+    /// is restored (watch::Handback).
+    pub handback: Option<watch::Shared>,
 }
 
 /// Lock discipline: no code holds one of these mutexes while it takes another,
@@ -163,24 +175,41 @@ impl ShellState {
     }
 }
 
-/// Grant one instance origin the switcher, window-chrome, updater,
-/// notification and suspend command set — the only IPC remote content ever
-/// gets, and only for origins the user registered.
+/// The switcher, window-chrome, updater, notification, badge and suspend
+/// command set: the only IPC remote content ever gets, and only for origins
+/// the user registered. Every entry is one of the shell's own commands
+/// (build.rs). Never a `core:` permission: `core:event` would let an
+/// instance page listen, and an `Any`-target event matches every listener
+/// (tauri's `EventTarget::Any` short-circuits the webview filter), so one
+/// instance could hear another's.
+pub const INSTANCE_PERMISSIONS: &[&str] = &[
+    "allow-list-instances",
+    "allow-activate-instance",
+    "allow-show-welcome",
+    "allow-get-desktop-settings",
+    "allow-set-titlebar-mode",
+    "allow-desktop-window",
+    "allow-check-for-update",
+    "allow-install-update",
+    "allow-desktop-notify",
+    "allow-set-suspend-after",
+    "allow-desktop-suspend-report",
+    "allow-desktop-notification-status",
+    "allow-desktop-notification-request",
+    "allow-desktop-notification-test",
+    "allow-desktop-set-badge",
+    "allow-desktop-quit",
+    "allow-set-close-to-background",
+];
+
+/// Grant one instance origin `INSTANCE_PERMISSIONS`, for its own webview.
 fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Result<(), String> {
-    let capability = tauri::ipc::CapabilityBuilder::new(format!("switcher-{}", instance.id))
-        .webview(format!("instance-{}", instance.id))
-        .remote(instance.url.clone())
-        .permission("allow-list-instances")
-        .permission("allow-activate-instance")
-        .permission("allow-show-welcome")
-        .permission("allow-get-desktop-settings")
-        .permission("allow-set-titlebar-mode")
-        .permission("allow-desktop-window")
-        .permission("allow-check-for-update")
-        .permission("allow-install-update")
-        .permission("allow-desktop-notify")
-        .permission("allow-set-suspend-after")
-        .permission("allow-desktop-suspend-report");
+    let capability = INSTANCE_PERMISSIONS.iter().fold(
+        tauri::ipc::CapabilityBuilder::new(format!("switcher-{}", instance.id))
+            .webview(format!("instance-{}", instance.id))
+            .remote(instance.url.clone()),
+        |capability, permission| capability.permission(*permission),
+    );
     app.add_capability(capability)
         .map_err(|e| format!("granting the instance switcher access: {e}"))
 }
@@ -220,7 +249,18 @@ fn http_client() -> reqwest::Client {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    // `--notify-selftest[=<path>]`: the notification backend's report, with
+    // no window (desktop-package.yml runs it on every platform's build).
+    if let Some(path) = notify::selftest_arg(std::env::args().skip(1)) {
+        std::process::exit(notify::selftest(path));
+    }
+    // One process per session: a second launch hands the window back to the
+    // first (with its activation token) and leaves before it builds one.
+    #[cfg(target_os = "linux")]
+    if notify::linux::single_instance() {
+        std::process::exit(0);
+    }
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
@@ -308,6 +348,9 @@ pub fn run() {
                 suspended: Mutex::new(HashMap::new()),
                 self_minimized: AtomicBool::new(false),
             });
+            app.manage(tray::Tray::default());
+            notify::init(app.handle());
+            background::init(app.handle());
             // The suspend clock. Each tick is a few lock reads on the main
             // thread; a page is only asked once it is due.
             let handle = app.handle().clone();
@@ -340,7 +383,9 @@ pub fn run() {
             tauri::WindowEvent::Focused(true) => {
                 commands::window_returned(window.app_handle(), true);
             }
-            tauri::WindowEvent::CloseRequested { .. } => commands::remember_all(window.app_handle()),
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                background::close_requested(window, api);
+            }
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
@@ -360,7 +405,56 @@ pub fn run() {
             commands::check_for_update,
             commands::install_update,
             commands::desktop_notify,
+            commands::desktop_notification_status,
+            commands::desktop_notification_request,
+            commands::desktop_notification_test,
+            commands::desktop_set_badge,
+            commands::desktop_quit,
+            commands::set_close_to_background,
         ])
-        .run(tauri::generate_context!())
-        .expect("talaria desktop shell exited unexpectedly");
+        .build(tauri::generate_context!())
+        .expect("talaria desktop shell could not start");
+    app.run(|handle, event| match event {
+        // The dock icon, clicked with the window closed to the background.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => background::present_main(handle, None),
+        // Cmd+Q, the app menu's Quit, or `app.exit`: remember every page.
+        tauri::RunEvent::ExitRequested { .. } => commands::remember_all(handle),
+        _ => {}
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_remote_origin_gets_a_core_permission() {
+        assert!(
+            INSTANCE_PERMISSIONS.iter().all(|p| !p.starts_with("core:")),
+            "{INSTANCE_PERMISSIONS:?}"
+        );
+        // Each is one of the shell's own generated command permissions.
+        assert!(INSTANCE_PERMISSIONS.iter().all(|p| p.starts_with("allow-")));
+        for needed in [
+            "allow-desktop-notify",
+            "allow-desktop-notification-status",
+            "allow-desktop-set-badge",
+            "allow-desktop-quit",
+        ] {
+            assert!(INSTANCE_PERMISSIONS.contains(&needed), "{needed}");
+        }
+    }
+
+    #[test]
+    fn every_instance_permission_has_a_generated_command() {
+        let build = include_str!("../build.rs");
+        for permission in INSTANCE_PERMISSIONS {
+            let command = permission.trim_start_matches("allow-").replace('-', "_");
+            assert!(
+                build.contains(&format!("\"{command}\"")),
+                "{command} is not in build.rs"
+            );
+        }
+    }
 }

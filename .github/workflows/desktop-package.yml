@@ -62,7 +62,11 @@
 # NOT SIGNED, DELIBERATELY. There is no Apple Developer certificate and no
 # Windows signing key in this repo, so macOS builds are not notarized
 # (Gatekeeper wants a right-click → Open the first time) and Windows builds
-# carry no publisher signature (SmartScreen warns). The honest answer to "is
+# carry no publisher signature (SmartScreen warns). The macOS app IS ad-hoc
+# signed (tauri.macos.conf.json `signingIdentity: "-"`): no identity vouches
+# for it, but the signature binds it to `app.talaria.desktop`, which is what
+# UNUserNotificationCenter ties notification permission to. The macOS job
+# asserts that identity, and runs the notification self-test against it. The honest answer to "is
 # this installer really Talaria's?" is to build it from the tag or to read the
 # workflow run that produced it — which is why the assets ship with a
 # SHA256SUMS. Signing is a provisioning decision, recorded with the other
@@ -427,6 +431,27 @@ jobs:
         working-directory: desktop
         run: bun run build -- --target universal-apple-darwin --config "{\"version\":\"$VERSION\"}"
 
+      # The identity notifications hang on (D5): an ad-hoc signature over the
+      # whole bundle, identifier app.talaria.desktop, and the binary linked
+      # against UserNotifications. A bundle that loses any of these posts
+      # nothing, or posts as someone else.
+      - name: Check the signature and the bundle identity
+        working-directory: desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos
+        run: |
+          set -eu
+          codesign -dv --verbose=4 Talaria.app 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -qx 'Identifier=app.talaria.desktop' "$RUNNER_TEMP/codesign.txt" \
+            || { echo "::error::the bundle is not signed as app.talaria.desktop"; exit 1; }
+          grep -qx 'Signature=adhoc' "$RUNNER_TEMP/codesign.txt" \
+            || { echo "::error::the bundle is not ad-hoc signed (signingIdentity in tauri.macos.conf.json)"; exit 1; }
+          codesign --verify --deep --strict --verbose=2 Talaria.app
+          otool -L Talaria.app/Contents/MacOS/talaria-desktop | tee "$RUNNER_TEMP/otool.txt"
+          grep -q 'UserNotifications.framework' "$RUNNER_TEMP/otool.txt" \
+            || { echo "::error::the binary does not link UserNotifications"; exit 1; }
+          id=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' Talaria.app/Contents/Info.plist)
+          echo "CFBundleIdentifier=$id"
+          [ "$id" = app.talaria.desktop ] || { echo "::error::CFBundleIdentifier is $id"; exit 1; }
+
       - name: Collect installers
         working-directory: desktop/src-tauri/target/universal-apple-darwin/release/bundle
         run: |
@@ -475,6 +500,40 @@ jobs:
             find "$app" -maxdepth 4 | head -30
             exit 1
           fi
+
+          # The notification self-test (notify/macos.rs), launched through
+          # LaunchServices so it runs as the bundle a person opens: backend
+          # "un", the bundle id, the authorization (notDetermined on a fresh
+          # runner), and a post that AGREES with it — an error unless
+          # authorized, never a silent success. Direct exec is the fallback
+          # when this runner has no session for `open`.
+          st=$RUNNER_TEMP/st.json
+          rm -f "$st"
+          open -n "$app/Talaria.app" --args "--notify-selftest=$st" || true
+          for _ in $(seq 1 30); do [ -s "$st" ] && break; sleep 1; done
+          if [ ! -s "$st" ]; then
+            echo "open did not run the self-test; running the bundle's binary directly"
+            "$exe" "--notify-selftest=$st"
+          fi
+          cat "$st"
+          python3 - "$st" <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          assert r["backend"] == "un", r
+          assert r["bundleId"] == "app.talaria.desktop", r
+          auth = r["authorization"]
+          assert auth and not auth.startswith("error"), r
+          granted = auth in ("authorized", "provisional", "ephemeral")
+          assert (r["post"] == "ok") == granted, f"post {r['post']!r} disagrees with authorization {auth!r}"
+          print(f"self-test: un, {r['bundleId']}, {auth}, post: {r['post']}")
+          PY
+          # The same flag on the binary outside its bundle: UN cannot run
+          # there, and the status must say which path it took instead.
+          cp "$exe" "$RUNNER_TEMP/talaria-desktop-bare"
+          "$RUNNER_TEMP/talaria-desktop-bare" "--notify-selftest=$RUNNER_TEMP/st-bare.json"
+          cat "$RUNNER_TEMP/st-bare.json"
+          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["backend"] == "ns-legacy (unbundled dev run)", r' \
+            "$RUNNER_TEMP/st-bare.json"
 
           "$exe" >"$RUNNER_TEMP/app.log" 2>&1 &
           pid=$!
@@ -587,6 +646,18 @@ jobs:
           $exe = Get-ChildItem -Path $env:LOCALAPPDATA, $env:ProgramFiles -Filter talaria-desktop.exe -Recurse -Depth 4 -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $exe) { throw 'talaria-desktop.exe was not installed where an installer should have put it' }
           Write-Host "installed at $($exe.FullName)"
+          $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($exe.FullName))
+          if (-not $text.Contains('app.talaria.desktop')) { throw 'the installed exe does not carry app.talaria.desktop' }
+          # The notification self-test (notify/windows.rs): toasts must be
+          # attributed to Talaria's own AUMID, by the installer's shortcut or
+          # the registry entry, never PowerShell's.
+          $st = Join-Path $env:RUNNER_TEMP 'st.json'
+          Start-Process $exe.FullName -ArgumentList "--notify-selftest=$st" -Wait
+          $report = Get-Content $st -Raw
+          Write-Host $report
+          $r = $report | ConvertFrom-Json
+          if ($r.attribution -notin @('shortcut', 'registry')) { throw "toasts are attributed by $($r.attribution)" }
+          if ($r.aumid -ne 'app.talaria.desktop') { throw "the AUMID is $($r.aumid)" }
           $app = Start-Process $exe.FullName -PassThru
           Start-Sleep -Seconds 20
           if ($app.HasExited) { throw "the app exited within 20s (code $($app.ExitCode))" }

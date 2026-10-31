@@ -2,16 +2,22 @@
   import Panel from '@/components/ui/Panel.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
   import {
     desktopSettings,
     loadDesktopSettings,
+    setCloseToBackground,
     setSuspendAfter,
     setTitlebarMode,
   } from '@/lib/desktop-settings.svelte'
   import {
     shellCheckForUpdate,
     shellInstallUpdate,
+    shellNotificationStatus,
+    shellRequestNotificationPermission,
+    shellSendTestNotification,
     type DesktopUpdate,
+    type ShellNotificationStatus,
     type TitlebarMode,
   } from '@/lib/desktop-shell'
 
@@ -60,6 +66,115 @@
       await setSuspendAfter(Number(id))
     } catch (e) {
       suspendMsg = e instanceof Error ? e.message : String(e)
+    }
+  }
+
+  // OS notifications, as the shell reads them from the OS (D9): what posts
+  // them, whether the OS lets it, a real test banner, and what closing the
+  // window does. Null: a shell that predates the commands, and the section
+  // stays hidden. Nothing here is assumed: no service, no "On".
+  let notify = $state<ShellNotificationStatus | null>(null)
+  let notifyBusy = $state(false)
+  let notifyMsg = $state('')
+  let notifyFailed = $state(false)
+
+  const readNotify = async () => {
+    try {
+      notify = await shellNotificationStatus()
+    } catch (e) {
+      notifyMsg = e instanceof Error ? e.message : String(e)
+      notifyFailed = true
+    }
+  }
+
+  $effect(() => {
+    void readNotify()
+    const again = () => {
+      if (!document.hidden) void readNotify()
+    }
+    document.addEventListener('visibilitychange', again)
+    return () => document.removeEventListener('visibilitychange', again)
+  })
+
+  const shownBy = (s: ShellNotificationStatus): string => {
+    if (s.server) return `${s.server.name} ${s.server.version} (spec ${s.server.spec})`
+    if (s.backend === 'un') return 'macOS Notification Center'
+    if (s.backend.startsWith('winrt')) return 'Windows notifications'
+    return s.backend
+  }
+
+  const notifyLine = $derived.by((): { text: string; tone: 'ok' | 'warn' | 'bad' } | null => {
+    if (!notify) return null
+    switch (notify.permission) {
+      case 'granted':
+        return { text: `On — shown by ${shownBy(notify)}`, tone: 'ok' }
+      case 'not-determined':
+        return { text: 'Not allowed yet', tone: 'warn' }
+      case 'denied':
+        return { text: 'Blocked in System Settings', tone: 'bad' }
+      default:
+        return {
+          text: `Notification service unavailable: ${(notify.detail ?? 'no reason given').replace(/^unavailable:\s*/, '')}`,
+          tone: 'bad',
+        }
+    }
+  })
+
+  const backgroundLine = $derived.by((): string => {
+    switch (notify?.background) {
+      case 'tray':
+        return 'Closing the window keeps Talaria in the tray. Quit from the tray menu, Ctrl+Q, or the switcher.'
+      case 'menu-bar':
+        return 'Closing the window keeps Talaria in the dock and the menu bar. Quit with Cmd+Q or the menu bar.'
+      case 'minimize':
+        return 'Closing the window minimizes Talaria — this desktop shows no tray icons. Quit with Ctrl+Q or the switcher.'
+      default:
+        return 'On this platform, closing the window still quits Talaria.'
+    }
+  })
+
+  const allow = async () => {
+    notifyBusy = true
+    notifyMsg = ''
+    notifyFailed = false
+    try {
+      notify = (await shellRequestNotificationPermission()) ?? notify
+    } catch (e) {
+      notifyMsg = e instanceof Error ? e.message : String(e)
+      notifyFailed = true
+    } finally {
+      notifyBusy = false
+    }
+  }
+
+  const test = async () => {
+    notifyBusy = true
+    notifyMsg = ''
+    notifyFailed = false
+    try {
+      const result = await shellSendTestNotification()
+      if (!result) return
+      notify = result.status
+      if (result.ok) notifyMsg = `Sent — shown by ${shownBy(result.status)}`
+      else {
+        notifyMsg = `Not shown: ${result.error ?? 'the notification service refused it'}`
+        notifyFailed = true
+      }
+    } catch (e) {
+      notifyMsg = e instanceof Error ? e.message : String(e)
+      notifyFailed = true
+    } finally {
+      notifyBusy = false
+    }
+  }
+
+  const chooseBackground = async (on: boolean) => {
+    try {
+      await setCloseToBackground(on)
+      await readNotify()
+    } catch (e) {
+      notifyMsg = e instanceof Error ? e.message : String(e)
+      notifyFailed = true
     }
   }
 
@@ -116,6 +231,66 @@
     <Segmented options={suspendOptions} value={suspendValue} onChange={(id) => void chooseSuspend(id)} />
     {#if suspendMsg}
       <p class="mt-2 font-sans text-sm text-danger">{suspendMsg}</p>
+    {/if}
+  </Panel>
+{/if}
+
+{#if notify}
+  <Panel as="section">
+    <div class="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Notifications</div>
+    <p class="mb-3 max-w-xl font-sans text-sm text-muted">
+      The desktop app posts banners through your operating system, for every
+      instance you have open. What the OS says right now:
+    </p>
+    {#if notifyLine}
+      <p
+        class="mb-1 font-sans text-sm {notifyLine.tone === 'ok'
+          ? 'text-fg'
+          : notifyLine.tone === 'warn'
+            ? 'text-muted'
+            : 'text-danger'}"
+        data-testid="desktop-notify-status"
+      >
+        {notifyLine.text}
+      </p>
+    {/if}
+    {#if notify.lastError}
+      <p class="mb-1 font-sans text-xs text-danger">Last error: {notify.lastError}</p>
+    {:else if notify.pending}
+      <p class="mb-1 font-sans text-xs text-muted">
+        The last banner was handed over and had not been confirmed when Talaria checked.
+      </p>
+    {/if}
+    <div class="mt-3 flex flex-wrap items-center gap-3">
+      {#if notify.permission === 'not-determined'}
+        <Button size="sm" disabled={notifyBusy} onclick={() => void allow()}>Allow notifications</Button>
+      {:else if notify.permission === 'denied'}
+        <Button size="sm" variant="outline" disabled={notifyBusy} onclick={() => void allow()}>
+          Open System Settings
+        </Button>
+      {/if}
+      <Button size="sm" variant="outline" disabled={notifyBusy} onclick={() => void test()}>
+        Send test notification
+      </Button>
+      {#if notifyMsg}
+        <span class="font-sans text-sm {notifyFailed ? 'text-danger' : 'text-muted'}" data-testid="desktop-notify-result">
+          {notifyMsg}
+        </span>
+      {/if}
+    </div>
+    {#if notify.background !== 'none'}
+      <div class="mt-4">
+        <Toggle
+          checked={notify.closeToBackground}
+          onChange={(on) => void chooseBackground(on)}
+          label="Keep running in the background when the window closes"
+        />
+        <p class="mt-1 max-w-xl font-sans text-xs text-muted">
+          {notify.closeToBackground ? backgroundLine : 'Closing the window quits Talaria, and no banners arrive until you open it again.'}
+        </p>
+      </div>
+    {:else}
+      <p class="mt-4 max-w-xl font-sans text-xs text-muted">{backgroundLine}</p>
     {/if}
   </Panel>
 {/if}

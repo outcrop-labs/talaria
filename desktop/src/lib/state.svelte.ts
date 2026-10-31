@@ -11,13 +11,17 @@ import {
   activateInstance,
   errorText,
   getShellState,
+  notificationStatus,
   onShellState,
   probeInstance,
   removeInstance,
+  requestNotifications,
   setSuspendAfter,
   setTitlebarMode,
+  type Background,
   type Instance,
   type LoadFailure,
+  type NotificationStatus,
   type ShellSnapshot,
   type TitlebarMode,
 } from './instances'
@@ -58,6 +62,13 @@ export const shell = $state({
   error: '',
   adding: false,
   confirmRemove: null as string | null,
+  /** What closing the window does on this desktop (the snapshot's). */
+  background: 'none' as Background,
+  closeToBackground: true,
+  /** The OS's notification state, read at boot and on every return here. */
+  notify: null as NotificationStatus | null,
+  /** The macOS prompt is up (the Allow card's click). */
+  asking: false,
 })
 
 let dismissedFailure = 0
@@ -79,6 +90,8 @@ function sync(s: ShellSnapshot) {
   shell.loaded = s.loaded
   shell.suspended = s.suspended ?? []
   shell.notices = s.notices.filter((n) => !dismissedNotices.has(n))
+  shell.background = s.background ?? shell.background
+  shell.closeToBackground = s.closeToBackground ?? shell.closeToBackground
   shell.recentId = mostRecent(s.instances)
   applyFailure(s.failure)
   if (shell.confirmRemove && !s.instances.some((i) => i.id === shell.confirmRemove)) {
@@ -100,6 +113,28 @@ export async function refresh() {
   } catch (e) {
     shell.error = errorText(e)
     shell.ready = true
+  }
+  void readNotify()
+}
+
+/** The OS's notification state. A shell too old to say leaves it null. */
+export async function readNotify() {
+  try {
+    shell.notify = await notificationStatus()
+  } catch {
+    shell.notify = null
+  }
+}
+
+/** The Allow card's click: macOS asks the person, once. */
+export async function allowNotifications() {
+  shell.asking = true
+  try {
+    shell.notify = await requestNotifications()
+  } catch (e) {
+    shell.error = errorText(e)
+  } finally {
+    shell.asking = false
   }
 }
 
@@ -220,5 +255,6 @@ export async function boot() {
     shell.error = errorText(e)
     shell.ready = true
   }
+  void readNotify()
   if (reopen) await open(reopen)
 }

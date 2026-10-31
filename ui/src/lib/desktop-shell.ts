@@ -49,6 +49,9 @@ export interface DesktopSettings {
   /** Minutes an instance's page may stay off screen before the shell
    *  suspends it; 0 is Off. Absent: a shell that predates suspending. */
   suspendAfterMinutes?: number
+  /** Closing the window keeps the shell running so notifications arrive.
+   *  Absent: a shell that predates it (Close quits). */
+  closeToBackground?: boolean
 }
 
 export type DesktopWindowAction = 'minimize' | 'toggleMaximize' | 'close' | 'startDragging'
@@ -88,14 +91,104 @@ export async function shellInstallUpdate(): Promise<void> {
   await ipc().then((invoke) => invoke('install_update'))
 }
 
+/** One OS banner for this instance (interface I-2). `kind` is the
+ *  notification's kind (`dm`, `approval_pending`): the shell picks urgency and
+ *  category from it and drops anything that is not a plain slug. `renotify`
+ *  re-alerts a banner already up under the same tag. An older shell ignores
+ *  both. */
 export async function shellShowNotification(n: {
   title: string
   body?: string
   tag?: string
   href?: string
+  kind?: string
+  renotify?: boolean
 }): Promise<void> {
   if (!inDesktopShell()) return
   await ipc().then((invoke) =>
-    invoke('desktop_notify', { title: n.title, body: n.body, tag: n.tag, href: n.href }),
+    invoke('desktop_notify', {
+      title: n.title,
+      body: n.body,
+      tag: n.tag,
+      href: n.href,
+      kind: n.kind,
+      renotify: n.renotify,
+    }),
   )
 }
+
+/** What the shell knows about OS notifications, as the OS reports it now
+ *  (desktop/src-tauri/src/notify/mod.rs `Status`). */
+export interface ShellNotificationStatus {
+  /** `fdo` (Linux), `un` (macOS), `ns-legacy (unbundled dev run)`, `winrt`,
+   *  `winrt-powershell`. */
+  backend: string
+  permission: 'granted' | 'denied' | 'not-determined' | 'unavailable'
+  /** The Linux notification server, as it names itself. */
+  server?: { name: string; vendor: string; version: string; spec: string }
+  capabilities?: string[]
+  /** The reason in words: `unavailable: org.freedesktop.DBus.Error.…`. */
+  detail?: string
+  lastError?: string
+  lastPostedAt?: number
+  /** The last post had not been answered when the page was told. */
+  pending: boolean
+  closeToBackground: boolean
+  /** What closing the window does on this desktop now. */
+  background: 'tray' | 'menu-bar' | 'minimize' | 'none'
+}
+
+export interface ShellTestResult {
+  ok: boolean
+  error?: string
+  status: ShellNotificationStatus
+}
+
+/** A shell older than a command refuses it as unknown or not allowed: that
+ *  is "this shell has no such feature", answered as null, not an error. */
+export const isMissingCommand = (e: unknown): boolean =>
+  /not found|not allowed|unknown command/i.test(String(e))
+
+async function optional<T>(cmd: string, args?: Record<string, unknown>): Promise<T | null> {
+  if (!inDesktopShell()) return null
+  const invoke = await ipc()
+  try {
+    return await invoke<T>(cmd, args)
+  } catch (e) {
+    if (isMissingCommand(e)) return null
+    throw e
+  }
+}
+
+/** The notification service's state. Null: a shell that predates the
+ *  command, or a browser. */
+export const shellNotificationStatus = (): Promise<ShellNotificationStatus | null> =>
+  optional<ShellNotificationStatus>('desktop_notification_status')
+
+/** Ask the OS (macOS shows its prompt, or opens System Settings when denied
+ *  before). From a click only. */
+export const shellRequestNotificationPermission = (): Promise<ShellNotificationStatus | null> =>
+  optional<ShellNotificationStatus>('desktop_notification_request')
+
+/** One real banner through the shell's own path, and what happened to it. */
+export const shellSendTestNotification = (): Promise<ShellTestResult | null> =>
+  optional<ShellTestResult>('desktop_notification_test')
+
+/** This instance's unread count, for the dock and launcher badge. Best
+ *  effort: a badge that cannot be set is not worth an error. */
+export async function shellSetBadge(count: number): Promise<void> {
+  try {
+    await optional('desktop_set_badge', { count: Math.max(0, Math.floor(count)) })
+  } catch {
+    // Swallowed — see above.
+  }
+}
+
+/** Quit the desktop app (Close only hides it, so notifications arrive). */
+export async function shellQuit(): Promise<void> {
+  await optional('desktop_quit')
+}
+
+/** Whether closing the window keeps the app running. Null: an older shell. */
+export const shellSetCloseToBackground = (on: boolean): Promise<DesktopSettings | null> =>
+  optional<DesktopSettings>('set_close_to_background', { on })

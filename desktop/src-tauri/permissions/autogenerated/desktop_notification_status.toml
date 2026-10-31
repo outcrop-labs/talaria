@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-notification-status"
+description = "Enables the desktop_notification_status command without any pre-configured scope."
+commands.allow = ["desktop_notification_status"]
+
+[[permission]]
+identifier = "deny-desktop-notification-status"
+description = "Denies the desktop_notification_status command without any pre-configured scope."
+commands.deny = ["desktop_notification_status"]

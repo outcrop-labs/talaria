@@ -4,6 +4,7 @@
   import RemoveDialog from './components/RemoveDialog.svelte'
   import Titlebar from './components/Titlebar.svelte'
   import Welcome from './components/Welcome.svelte'
+  import { quit } from './lib/instances'
   import { boot, shell } from './lib/state.svelte'
 
   // The launcher is one full-window view: brand, the instance list, add.
@@ -16,6 +17,18 @@
 
   onMount(() => {
     void boot()
+    // Quit from the launcher too: closing the window only hides Talaria on
+    // a desktop that can show it in the tray or the menu bar. Cmd+Q on macOS
+    // is the app menu's own.
+    const mac = /Mac|iPhone|iPad/.test(navigator.userAgent)
+    const onKey = (e: KeyboardEvent) => {
+      if (!mac && e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'q') {
+        e.preventDefault()
+        void quit()
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
   })
 </script>
 

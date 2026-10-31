@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ChevronDown } from '@lucide/svelte'
+  import { useQueryClient } from '@tanstack/svelte-query'
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { useInstanceBranding } from '@/lib/instance-branding.svelte'
@@ -8,10 +9,13 @@
     inDesktopShell,
     shellActivateInstance,
     shellListInstances,
+    shellQuit,
+    shellSetBadge,
     shellShowWelcome,
     type ShellInstance,
   } from '@/lib/desktop-shell'
   import { findCurrentInstance, instanceDisplayLabel } from '@/lib/desktop-instance'
+  import type { NotificationsPayload } from '@/lib/notifications'
 
   // The desktop instance switcher — exists ONLY inside the Talaria desktop
   // shell, where the shell grants this origin three commands. In a browser
@@ -32,6 +36,36 @@
     void refresh()
   })
 
+  // The dock and launcher badge (interface I-5): this instance's unread
+  // count, the same number the bell shows. Read from the query cache the bell
+  // and the toasts already keep fresh, rather than through a query of its
+  // own, so a signed-out page (the login screen mounts this too) fetches
+  // nothing. Debounced: a burst of refetches is one report. The shell keeps
+  // a share per instance and shows the sum.
+  const queries = inDesktopShell() ? useQueryClient() : null
+  $effect(() => {
+    if (!queries) return
+    let reported: number | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const report = () => {
+      const unread = queries.getQueryData<NotificationsPayload>(['notifications'])?.unread
+      if (typeof unread !== 'number' || unread === reported) return
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        reported = unread
+        void shellSetBadge(unread)
+      }, 500)
+    }
+    report()
+    const stop = queries.getQueryCache().subscribe((event) => {
+      if (event.query.queryKey[0] === 'notifications') report()
+    })
+    return () => {
+      stop()
+      clearTimeout(timer)
+    }
+  })
+
   const current = $derived(
     findCurrentInstance(
       instances,
@@ -45,6 +79,9 @@
   // A function, so the menu re-reads the live list on every open — switching
   // elsewhere (or adding) shouldn't leave this dropdown stale. Labels fall
   // back to the host so an instance with no company name still has a row.
+  // Closing the window keeps Talaria running so notifications arrive, so the
+  // menu ends with the way out (Ctrl+Q works too: the shell itself handles it
+  // in every page, whatever its Talaria version).
   const items = (): ContextMenuEntry[] => [
     ...instances.map((instance): ContextMenuEntry => ({
       label: instanceDisplayLabel(instance),
@@ -53,6 +90,8 @@
     })),
     ...(instances.length ? ['sep' as const] : []),
     { label: 'Add or manage instances', onSelect: () => void shellShowWelcome() },
+    'sep',
+    { label: 'Quit Talaria', onSelect: () => void shellQuit() },
   ]
 </script>
 
