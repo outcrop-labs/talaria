@@ -286,7 +286,10 @@ and scroll after a relaunch (only the URL is kept on disk).
   one "N new in <instance>" banner. A failed stream — a 502 while the instance restarts, a
   deploy, Cloudflare dropping an idle connection — is reopened with backoff (1 s doubling to
   30 s, reset after a minute up), every reopen reads the rows again, and the 30 s poll floor
-  keeps reading through the outage; a 401/403 ends the watcher. Each read sets the
+  keeps reading through the outage; a 401/403 from the instance itself (its JSON) ends the
+  watcher, while a Cloudflare challenge (`cf-mitigated`, an HTML 403) counts as an outage —
+  the shell's requests also name themselves (`User-Agent: Talaria-Desktop`), which a bot
+  filter wants. Each read sets the
   instance's share of the badge from the server's `unread`. A click on a watcher's banner
   marks the row read (`PUT /api/notifications` with the instance's cookies) and restores
   the instance at its path. **The restore hands back** what the watcher posted: it is
@@ -342,6 +345,11 @@ In the app: *Add instance* → `http://127.0.0.1:5302`. The switcher appears the
 instance's UI loads (login screen included). Prove isolation with a second instance on the
 same host at a different port (another box, or the primary stack) — log into both and swap;
 both sessions survive.
+
+Quit the installed Talaria before a dev run (Ctrl+Q, or its tray or switcher Quit — closing
+the window keeps it running). The single-instance name is shared, as is the data directory, so
+with it running a dev build hands over to it and exits at once: the terminal says "Talaria is
+already running; brought it forward (this is a dev build: …)".
 
 One dev-loop trap: `tauri dev`'s watcher kills and relaunches the app on source/config
 change, and on WebKitGTK that kill has been observed to corrupt the relaunched process
@@ -502,14 +510,21 @@ the rate limits, the status record and the click route. One backend per OS:
   ship `Talaria.desktop`, flatpak/AppImage/pacman `app.talaria.desktop`, and existing pins
   keep working) — the instance's label in front of the body, escaped when the server
   advertises `body-markup`, the urgency and category, and the server's own id from the last
-  post of the same (instance, tag) as `replaces_id` (never an invented one). A click comes
+  post of the same (instance, tag) as `replaces_id` (never an invented one). A re-alert is
+  not a replace: the spec has a replaced notification update "with no visual cues", so the
+  shell closes the old banner (`CloseNotification`) and posts a new one (GNOME Shell 50 would
+  re-show a replaced one too — `notificationDaemon.js` resets `acknowledged` — but nothing
+  obliges another server to). Signals count only from the server: the match rule names its
+  sender, and each signal's unique name is checked against the name's owner, because a
+  signal addressed to the shell skips match rules. A click comes
   with the server's xdg-activation token, which GTK hands to the compositor, so the window
   takes focus from another app on Wayland (D7) instead of only changing page. The same
   connection emits `com.canonical.Unity.LauncherEntry` for the badge (Plasma, Ubuntu Dock,
   Dash-to-Dock; stock GNOME shows none) with the detected id — Tauri's own
   `set_badge_count` assumes `Talaria.desktop` — and owns `app.talaria.desktop.Shell`: a
   second launch calls its `Activate(token)` with `$XDG_ACTIVATION_TOKEN` and exits 0 before
-  it builds a window.
+  it builds a window. The name is released at `RunEvent::Exit`, before the updater's
+  relaunch spawns the next process, so that one never hands over to the one leaving.
 - **macOS** (`notify/macos.rs`) posts through UNUserNotificationCenter in a bundled run,
   with a delegate of our own: `willPresent` answers banner + list + sound (with the window
   closed to the menu bar Talaria is often the active app, and macOS hides banners for it
@@ -541,9 +556,9 @@ place, with no reload; a page with no listener — a Talaria older than it — g
 **What the person sees and controls.** Settings → Desktop → Notifications reads the
 status from the OS (`desktop_notification_status`): "On — shown by GNOME Shell 50 (spec
 1.2)", "Not allowed yet", "Blocked in System Settings", or "Notification service
-unavailable: …" with the D-Bus error; the last error; Allow (macOS) or Open System Settings;
-**Send test notification**, which posts through the real path and reports what happened;
-and **Keep running in the background**. The launcher shows the same ask on macOS, a notice
+unavailable: …" with the D-Bus error; that instance's own last error; Allow (macOS) or
+Open System Settings; **Send test notification**, which posts through the real path and
+reports what happened; and **Keep running in the background**. The launcher shows the same ask on macOS, a notice
 when Linux has no notification service, the no-tray notice, and Quit.
 
 **Closing the window** (`src-tauri/src/background.rs`, `tray.rs`) keeps Talaria running so
@@ -552,22 +567,33 @@ notifications arrive, with `closeToBackground` on (the default):
 - macOS: the window hides; the dock and a menu-bar item (Open Talaria, Quit) stay; the
   dock icon reopens it.
 - Linux with a tray: the window hides; the tray icon has Open Talaria and Quit Talaria, and
-  its tooltip the unread sum. A tray needs the appindicator library — probed with `dlopen`
-  BEFORE any tray call, because libappindicator-sys panics without it — AND an
-  `org.kde.StatusNotifierWatcher` on the bus, which the shell follows live (turning on
-  GNOME's AppIndicator extension takes effect at once).
+  the unread sum as the label beside it (appindicator has no tooltip — tray-icon's
+  `set_tooltip` does nothing on Linux — and the label shows where the host draws Ayatana
+  labels, as the GNOME AppIndicator extension does). A tray needs the appindicator library —
+  probed with `dlopen` BEFORE any tray call, because libappindicator-sys panics without it —
+  AND an `org.kde.StatusNotifierWatcher` on the bus, which the shell follows live (turning on
+  GNOME's AppIndicator extension takes effect at once). If the host goes while the window is
+  hidden to it (the extension turned off, updated or crashed), the window comes back, with a
+  notice: its icon is gone, and a hidden window with no icon is a process nobody can reach.
 - Linux without one (stock GNOME): the window **minimizes** instead — it stays in the dash
-  and Alt+Tab, and the dash's Quit works — and a one-time notice says how to quit. A hidden
-  window with no icon anywhere would be a process nobody can see or quit.
+  and Alt+Tab — and a one-time notice says how to quit. A hidden window with no icon anywhere
+  would be a process nobody can see or quit.
+- On Linux the dash's (or a dock's) **Quit is not a way out**: the shell exports no
+  `app.quit` action, so GNOME's `shell_app_request_quit` falls back to deleting each window —
+  the same close request as ×, which minimizes or hides to the tray like × does. The notice
+  says so. Exporting a GApplication `quit` action is the follow-up; it needs the GTK app id
+  on, which changes the Wayland `app_id` the desktop files are matched by.
 - Windows: Close quits, as before (no single-instance guard yet, so a hidden window would
   let a Start-menu relaunch open a second process on the same WebView2 profile).
 
 Quit is always one step away: Ctrl+Q (Cmd+Q on macOS) in every page — injected by the
-shell, so it works on any instance version — the switcher's Quit Talaria, the launcher's
-Quit, the tray's Quit. With the setting off, Close quits everywhere.
+shell, so it works on any instance version, and the page on screen gets the keyboard focus
+whenever the window comes back — the switcher's Quit Talaria, the launcher's Quit, the
+tray's Quit. With the setting off, Close quits everywhere.
 
 **The badge** is the sum of every instance's unread count: each page reports its own
-(`desktop_set_badge`, from the bell's query, debounced), a suspended instance's watcher
+(`desktop_set_badge`, from the bell's query, debounced to the count it settles on; a
+signed-out page reports 0), a suspended instance's watcher
 reports its share from each read, and removing an instance drops its share. macOS: the dock
 badge, cleared at 0. Linux: the LauncherEntry above. Windows: none yet.
 
