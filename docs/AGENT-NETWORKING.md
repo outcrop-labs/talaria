@@ -161,12 +161,15 @@ agent's volume stays there and would run them; Camofox (`browser.cloud_provider:
 a `CAMOFOX_URL` secret with no provider written) needs no engine at all. Hermes calls both of
 those local and skips the check for them. So with the terminal closed, the render closes the
 `browser` toolset for an agent whose config picks one of them (`fleet_browser_local_close`),
-and the grid says so on that agent. A CDP endpoint (`browser.cdp_url`) or a hosted provider
-(`browser.cloud_provider`) keeps Hermes' check and is left alone. The render reads the
-terminal where Hermes does: the toolset grid's list, and a `platform_toolsets.api_server` list
-a def authored, which replaces Hermes' default bundle (the grid does not show that one). What
-it cannot see (a `BROWSER_CDP_URL` secret, a hosted provider's credentials in the env) it
-reads as absent, which errs toward closing. The boundaries for what any agent may reach are:
+and the grid says so on that agent. A CDP endpoint (`browser.cdp_url`, or a `BROWSER_CDP_URL`
+secret on the agent, which Hermes reads first) or a hosted provider (`browser.cloud_provider`)
+keeps Hermes' check and is left alone. The render reads the terminal where Hermes does: the
+toolset grid's list, and a `platform_toolsets.api_server` list a def authored, which replaces
+Hermes' default bundle (the grid does not show that one). A hosted provider's credentials are
+not a way around this: `BROWSER_USE_API_KEY` and `BROWSERBASE_API_KEY` are refused as an
+agent's secrets, so Hermes never finds them in its env to pick one by. What the render cannot
+see at all (a live `/browser connect`) it reads as absent, which errs toward closing. The
+boundaries for what any agent may reach are:
 
 - the `browser` and `terminal` toolsets off, for an agent that must not reach your network;
 - host services bound to loopback only (the chassis note on `host.docker.internal`); and

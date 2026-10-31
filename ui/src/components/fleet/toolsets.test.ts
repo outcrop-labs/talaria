@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  type AuthoredBrowser,
   MANDATORY_DISABLED,
   authoredBrowser,
   browserNote,
@@ -283,6 +284,28 @@ describe('authoredBrowser: the def’s own browser, as Hermes reads it', () => {
       kind: 'exec',
       via: 'browser.backend: browser-use',
     })
+  })
+
+  it('reads a BROWSER_CDP_URL secret as the CDP endpoint, as the renderer does', () => {
+    const viaSecret = { kind: 'cdp', via: 'a BROWSER_CDP_URL secret' }
+    expect(authoredBrowser(cfg({ backend: 'off' }), ['FIGMA_TOKEN', 'BROWSER_CDP_URL'])).toEqual(viaSecret)
+    expect(authoredBrowser(cfg({ backend: false }), ['BROWSER_CDP_URL'])).toEqual(viaSecret)
+    expect(authoredBrowser(cfg({ backend: ' Camofox ' }), ['BROWSER_CDP_URL'])).toEqual(viaSecret)
+    // The env name wins over the config key (`_get_cdp_override_raw`).
+    expect(authoredBrowser(cfg({ backend: 'off', cdp_url: 'http://chrome:9222' }), ['BROWSER_CDP_URL'])).toEqual(viaSecret)
+    // It turns a Camofox selection off, which with no backend is Browser Use mode.
+    expect(authoredBrowser(cfg({ cloud_provider: 'camofox' }), ['BROWSER_CDP_URL'])).toBeNull()
+    // A def with no browser block stays on Hermes' default.
+    expect(authoredBrowser({ raw: {} }, ['BROWSER_CDP_URL'])).toBeNull()
+    // Other names choose nothing: the local browser stays local.
+    expect(authoredBrowser(cfg({ backend: 'off' }), ['BROWSERBASE_BASE_URL', 'FIGMA_TOKEN'])).toEqual({
+      kind: 'local',
+      via: 'browser.backend: off',
+    })
+    const terminalClosed = toolsetRows([...GOVERNED, 'terminal'].sort(), FLOOR, ['terminal'])
+    expect(browserNote(terminalClosed, viaSecret as AuthoredBrowser)).toBe(
+      'Browser: the built-in browser tools on the CDP endpoint this agent’s secrets supply (a BROWSER_CDP_URL secret). Hermes keeps its private-address check for a remote browser, so it does not need the terminal.',
+    )
   })
 
   it('reads what leaves Hermes on its default, and every missing level, as null', () => {
