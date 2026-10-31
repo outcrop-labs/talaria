@@ -29,14 +29,17 @@
   // Ambient, not decorative-loud: one drifting crest plus an edge, both well
   // under half strength, so the words stay the brightest thing in the box.
   const FIELD: DitherSource[] = [
+    // Strengths and alphas tuned to the median look this still field had once
+    // its entrance had built it up (N11): see LIVE_FIELD_TUNING in
+    // lib/dither-engine.ts.
     { id: 'crest', kind: 'wave', axis: 'x', wavelength: 320, speed: 0, strength: 0.34, tone: 'accent' },
-    { id: 'top', kind: 'edge', side: 'top', depth: 120, strength: 0.3 },
-    { id: 'grain', kind: 'uniform', strength: 0.06 },
+    { id: 'top', kind: 'edge', side: 'top', depth: 120, strength: 0.225 },
+    { id: 'grain', kind: 'uniform', strength: 0.045 },
   ]
 </script>
 
 <header class="relative overflow-hidden rounded-lg border border-line bg-surface px-7 py-7">
-  <DitherLayer sources={FIELD} pitch={4} dot={1.6} organic={0.6} alphaFloor={0.05} maxAlpha={0.4} />
+  <DitherLayer sources={FIELD} pitch={4} dot={1.6} organic={0.6} alphaFloor={0.0845} maxAlpha={0.676} />
 
   <div class="relative">
     <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">

@@ -84,10 +84,8 @@
       sources = [
         ...paths,
         // Seed-varied so the six ghosts don't shimmer in lockstep.
-        { id: 'flow', kind: 'wave', axis: 'y', wavelength: 120 + seed * 9, speed: 22 + seed * 3, strength: 0.675 },
-        { id: 'drift', kind: 'wave', axis: 'x', wavelength: 64 + seed * 5, speed: -10 - seed * 2, strength: 0.375 },
-        // The even scatter the build-up left through the paths (N11).
-        { id: 'grain', kind: 'uniform', strength: 0.2 },
+        { id: 'flow', kind: 'wave', axis: 'y', wavelength: 120 + seed * 9, speed: 22 + seed * 3, strength: 0.45 },
+        { id: 'drift', kind: 'wave', axis: 'x', wavelength: 64 + seed * 5, speed: -10 - seed * 2, strength: 0.25 },
       ]
       mask = clip
     }
@@ -100,9 +98,13 @@
 
 <div bind:this={root} class="relative h-32">
   {#if sources.length > 0}
-    <!-- Strengths and alphas tuned to the look the ghosts had while their dots
-         built up (N11): see LIVE_FIELD_TUNING in lib/dither-engine.ts. -->
-    <DitherLayer {sources} {mask} alphaFloor={0.75} maxAlpha={1} shimmer={0.08} />
+    <!-- Strengths, alphas and dot tuned to the median look the ghosts had while
+         their dots built up (N11): see LIVE_FIELD_TUNING in
+         lib/dither-engine.ts. The one field left antialiased: snapped, its
+         dense paths reach the median's ink with at most 0.85 of its visible
+         area; antialiased, they reach both. Its dots share pixels below DPR
+         1.67, so each frame there is a full rebuild. -->
+    <DitherLayer {sources} {mask} dot={1.4} snap={false} alphaFloor={0.3188} maxAlpha={0.981} shimmer={0.08} />
   {/if}
   <!-- Geometry donors: invisible (layout intact, nothing painted). Their
        border-radius is read as well as their box, so pills mask as pills and

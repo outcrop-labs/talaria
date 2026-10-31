@@ -107,20 +107,18 @@
   >
   {#if session || wait}
     <div class="pointer-events-none absolute inset-0 z-[5]" aria-hidden="true">
-      <!-- Tuned to the look this wash had across browsers, DPRs and sub-pixel
-           positions while its dots built up (N11): see LIVE_FIELD_TUNING in
-           lib/dither-engine.ts. The grain is the even scatter that build-up
-           left between crests. -->
+      <!-- Tuned to the median look this wash had across browsers, DPRs and
+           sub-pixel positions while its dots built up (N11): see
+           LIVE_FIELD_TUNING in lib/dither-engine.ts. -->
       <DitherLayer
         sources={[
-          { id: 'lull', kind: 'edge', side: 'top', depth: 34, strength: 0.2 },
-          { id: 'drift', kind: 'wave', axis: 'x', wavelength: 200, speed: 12, strength: 0.375 },
-          { id: 'grain', kind: 'uniform', strength: 0.056 },
+          { id: 'lull', kind: 'edge', side: 'top', depth: 34, strength: 0.24 },
+          { id: 'drift', kind: 'wave', axis: 'x', wavelength: 200, speed: 12, strength: 0.15 },
         ]}
         pitch={4}
         dot={1.4}
-        alphaFloor={0.037}
-        maxAlpha={0.25}
+        alphaFloor={0.2025}
+        maxAlpha={0.94}
       />
     </div>
     <!-- The trace: while a session is LIVE, the same field the wash renders
@@ -130,13 +128,13 @@
     {#if session}
       <DitherBorder
         sources={[
-          { id: 'trace', kind: 'edge', side: 'top', depth: 30, strength: 0.33 },
-          { id: 'trace-drift', kind: 'wave', axis: 'x', wavelength: 200, speed: 12, strength: 0.75 },
+          { id: 'trace', kind: 'edge', side: 'top', depth: 30, strength: 0.22 },
+          { id: 'trace-drift', kind: 'wave', axis: 'x', wavelength: 200, speed: 12, strength: 1 },
         ]}
         pitch={4}
         dot={1.4}
-        alphaFloor={0.375}
-        maxAlpha={0.5}
+        alphaFloor={0.1172}
+        maxAlpha={0.977}
       />
     {/if}
     {#if wait}

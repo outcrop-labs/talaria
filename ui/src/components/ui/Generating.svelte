@@ -48,18 +48,18 @@
   // Under reduced motion the engine stops driving waves and the field settles,
   // which leaves the block textured and still rather than blank.
   //
-  // Strengths and alphas are tuned to the look the block had across browsers,
+  // Strengths and alphas are tuned to the median look the block had across browsers,
   // DPRs and sub-pixel positions while its dots built up (N11): see
   // LIVE_FIELD_TUNING in lib/dither-engine.ts.
   const sources: DitherSource[] = [
-    { id: 'lull', kind: 'edge', side: 'top', depth: 34, strength: 0.36 },
+    { id: 'lull', kind: 'edge', side: 'top', depth: 34, strength: 0.27 },
     { id: 'drift-a', kind: 'wave', axis: 'x', wavelength: 150, speed: 26, strength: 0.8 },
     { id: 'drift-b', kind: 'wave', axis: 'x', wavelength: 64, speed: -14, strength: 0.44 },
   ]
 </script>
 
 <div class={cn('relative overflow-hidden rounded-lg border border-line p-4', className)}>
-  <DitherLayer {sources} alphaFloor={0.225} maxAlpha={0.3} />
+  <DitherLayer {sources} alphaFloor={0.0669} maxAlpha={0.714} />
   {#if label}
     <div class="relative flex items-center gap-2 font-sans text-sm text-muted">
       <WaitingMark {site} class="text-accent" />

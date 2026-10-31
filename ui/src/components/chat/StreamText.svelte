@@ -107,8 +107,8 @@
   const sources = $derived<DitherSource[]>(
     active
       ? [
-          { id: 'stream-veil', kind: 'uniform', strength: 0.275 },
-          { id: 'stream-drift', kind: 'wave', axis: 'x', wavelength: 150, speed: 16, strength: 0.1 },
+          { id: 'stream-veil', kind: 'uniform', strength: 0.33 },
+          { id: 'stream-drift', kind: 'wave', axis: 'x', wavelength: 150, speed: 16, strength: 0.24 },
         ]
       : [],
   )
@@ -176,9 +176,9 @@
 </script>
 
 <div class={cn('relative', className)}>
-  <!-- Strengths and alphas tuned to the look the tail had while its dots
-       built up (N11): see LIVE_FIELD_TUNING in lib/dither-engine.ts. -->
-  <DitherLayer {sources} {mask} alphaFloor={0.12} maxAlpha={0.8} shimmer={0.15} />
+  <!-- Strengths and alphas tuned to the median look the tail had while its
+       dots built up (N11): see LIVE_FIELD_TUNING in lib/dither-engine.ts. -->
+  <DitherLayer {sources} {mask} alphaFloor={0.1911} maxAlpha={0.91} shimmer={0.15} />
   <!-- `relative` so the content paints above the canvas: both are positioned,
        and DOM order is what decides. The same pattern as Generating.svelte. -->
   <div class="relative" bind:this={contentEl}>
