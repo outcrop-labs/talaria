@@ -63,6 +63,7 @@
 // always did, and the next render writes the file, without a terminal-less
 // agent in it.
 
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -104,6 +105,45 @@ const TIMEOUT_COOLDOWN: Duration = Duration::from_secs(300);
 
 /// When the last one-shot timed out, if one did since this api started.
 static LAST_TIMEOUT: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// The one-shot names a sweep is watching ([`sweep_after_timeout`]). A start
+/// skips its install while its name is here: the sweep force-removes
+/// whatever container lands under the name, so it would remove that start's
+/// own one-shot mid-install. The cooldown does not cover this on its own: it
+/// is fleet-wide, and another agent's install that succeeds ends it (the
+/// egress works again) while this name's sweep still runs.
+static SWEEPING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// Holds a name in [`SWEEPING`] for as long as it lives: the sweep's task
+/// owns it, so the name is released when the sweep ends, or if it panics.
+struct Sweeping(String);
+
+impl Sweeping {
+    fn hold(name: &str) -> Self {
+        SWEEPING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name.to_string());
+        Sweeping(name.to_string())
+    }
+}
+
+impl Drop for Sweeping {
+    fn drop(&mut self) {
+        SWEEPING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// Whether a sweep still watches `name`.
+fn being_swept(name: &str) -> bool {
+    SWEEPING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(name)
+}
 
 /// Why a one-shot did not install.
 #[derive(Debug, PartialEq)]
@@ -158,11 +198,21 @@ async fn wanted(department: &str) -> bool {
 /// The one-shot's container name: fixed per service, so a one-shot that
 /// runs past the cap is removed by name, and a second start of the same
 /// agent cannot run a second install beside the first (docker refuses the
-/// name). The name is never left behind: `--rm` is docker's AutoRemove, so
-/// a one-shot whose api died mid-install finishes and removes itself
-/// (measured: the container outlives a killed compose CLI, then goes when
-/// it exits). It never matches an agent's own container, which compose
-/// names `<project>-<service>-1` ([`crate::slot_container`]).
+/// name). It never matches an agent's own container, which compose names
+/// `<project>-<service>-1` ([`crate::slot_container`]).
+///
+/// THE NAME CAN BE LEFT BEHIND. `--rm` is docker's AutoRemove, which removes
+/// a container once it has RUN and exited: a one-shot whose api died
+/// mid-install finishes and removes itself (measured: it outlives a killed
+/// compose CLI, then goes when it exits). A one-shot that never started is
+/// not covered. Under heavy IO a start's compose CLI was killed at the cap
+/// while the daemon was still creating its container; the remove after the
+/// kill ran before the create landed, or ran out its own time, and the
+/// create then landed with nobody left to start it. That container sat in
+/// `created` (seen: `agent-eng-browser-engine`), and every later start's
+/// install failed at once on its name, so the agent never got its browser
+/// tools. So a start clears a leftover first ([`clear_leftover`]), and a
+/// timed-out one-shot is watched until it is gone ([`sweep_after_timeout`]).
 fn one_shot_name(project: &str, service: &str) -> String {
     format!("{project}-{service}-browser-engine")
 }
@@ -206,6 +256,33 @@ pub(crate) async fn ensure(department: &str, service: &str) {
         return;
     }
     let name = one_shot_name(&talaria_fleet_layout::fleet_project(), service);
+    if being_swept(&name) {
+        tracing::warn!(
+            "[fleet] {service}: browser engine ({PACKAGE}) install skipped for this start: this agent's last install timed out less than {}s ago, and its name ({name}) is still watched for a container that lands late, which would remove this start's own. An engine already on the agent's volume still works; a start after the watch installs",
+            SWEEP_FOR.as_secs()
+        );
+        return;
+    }
+    // An earlier one-shot's container under this name: cleared first, or
+    // this start's install would fail on the name (and every one after it).
+    match clear_leftover("docker", &name).await {
+        Leftover::None => {}
+        Leftover::Cleared(state) => tracing::warn!(
+            "[fleet] {service}: removed the browser engine install container an earlier start left {state} ({name}) — installing again"
+        ),
+        Leftover::Running => {
+            tracing::warn!(
+                "[fleet] {service}: an earlier start's browser engine install ({name}) is still running — this start runs no second one beside it; the agent starts with whatever engine its volume has"
+            );
+            return;
+        }
+        Leftover::Stuck(why) => {
+            tracing::warn!(
+                "[fleet] {service}: browser engine ({PACKAGE}) install skipped for this start: a container an earlier install left ({name}) could not be cleared: {why}"
+            );
+            return;
+        }
+    }
     let args = crate::compose_args(&install_args(service, &name));
     let outcome = run("docker", &args, &name, INSTALL_TIMEOUT).await;
     {
@@ -219,8 +296,9 @@ pub(crate) async fn ensure(department: &str, service: &str) {
     match outcome {
         Ok(()) => tracing::info!("[fleet] {service}: browser engine ({PACKAGE}) is installed"),
         Err(Failure::TimedOut) => tracing::warn!(
-            "[fleet] {service}: browser engine ({PACKAGE}) not installed, so this start has no browser tools: the install ran past {}s and was removed; starts skip it for {}s",
+            "[fleet] {service}: browser engine ({PACKAGE}) not installed, so this start has no browser tools: the install ran past {}s and its container is removed (its name is watched {}s for one that lands late); starts skip it for {}s",
             INSTALL_TIMEOUT.as_secs(),
+            SWEEP_FOR.as_secs(),
             TIMEOUT_COOLDOWN.as_secs()
         ),
         Err(Failure::Failed(e)) => tracing::warn!(
@@ -253,19 +331,21 @@ async fn run(program: &str, args: &[String], name: &str, cap: Duration) -> Resul
             // the start (re)creates the agent on it. pm publishes atomically
             // under its store's lock (a staging dir, then a rename), so that
             // overlap could not leave a half-written engine, but the cap is
-            // only a bound if the one-shot is really gone: remove it.
-            let removed = tokio::time::timeout(
-                Duration::from_secs(20),
-                tokio::process::Command::new(program)
-                    .args(["rm", "-f", name])
-                    .stdin(std::process::Stdio::null())
-                    .kill_on_drop(true)
-                    .output(),
-            )
-            .await;
-            if !matches!(&removed, Ok(Ok(o)) if o.status.success()) {
-                tracing::debug!("[fleet] {name}: remove after the timeout: {removed:?}");
+            // only a bound if the one-shot is really gone: remove it. And a
+            // create the daemon had not finished when the CLI died lands
+            // after this remove, as a container nobody starts: watched for
+            // off the start's path, and removed when it appears.
+            if !docker_ok(program, &["container", "rm", "-f", name], DOCKER_CALL).await {
+                tracing::debug!("[fleet] {name}: the remove after the timeout did not land");
             }
+            // Held before this returns, so no start can run a one-shot
+            // under the name between the timeout and the sweep's first read.
+            let held = Sweeping::hold(name);
+            let (program, name) = (program.to_string(), name.to_string());
+            tokio::spawn(async move {
+                let _held = held;
+                sweep_after_timeout(&program, &name, SWEEP_EVERY, SWEEP_FOR).await;
+            });
             return Err(Failure::TimedOut);
         }
     };
@@ -276,6 +356,153 @@ async fn run(program: &str, args: &[String], name: &str, cap: Duration) -> Resul
         &String::from_utf8_lossy(&out.stdout),
         &String::from_utf8_lossy(&out.stderr),
     )))
+}
+
+/// How long one docker call of the leftover handling may take: a remove of a
+/// stopped container, an inspect.
+const DOCKER_CALL: Duration = Duration::from_secs(20);
+
+/// After a timed-out one-shot, how often and for how long its name is
+/// watched for a container that landed late ([`sweep_after_timeout`]). No
+/// start runs a one-shot of its own under the name while the sweep still
+/// watches it: [`ensure`] skips the install for a name in [`SWEEPING`].
+/// The cooldown, though longer, is fleet-wide and ends at any install that
+/// succeeds, so it cannot promise that on its own.
+const SWEEP_EVERY: Duration = Duration::from_secs(5);
+const SWEEP_FOR: Duration = Duration::from_secs(120);
+
+/// What a start found under the one-shot's name before running one.
+#[derive(Debug, PartialEq)]
+enum Leftover {
+    /// Nothing: the name is free.
+    None,
+    /// A container an earlier one-shot left in this state (`created`: its
+    /// CLI died between the daemon's create and its start; `exited` or
+    /// `dead`: its remove did not land), now removed.
+    Cleared(String),
+    /// An earlier start's install is still running under the name.
+    Running,
+    /// It could not be read or removed: why.
+    Stuck(String),
+}
+
+/// One docker call (`program` is `docker`; the tests pass a stand-in):
+/// whether it exited zero within `cap`.
+async fn docker_ok(program: &str, args: &[&str], cap: Duration) -> bool {
+    matches!(docker_out(program, args, cap).await, Ok((true, _, _)))
+}
+
+/// One docker call's exit, stdout and stderr, or why it could not be had.
+async fn docker_out(
+    program: &str,
+    args: &[&str],
+    cap: Duration,
+) -> Result<(bool, String, String), String> {
+    match tokio::time::timeout(
+        cap,
+        tokio::process::Command::new(program)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    {
+        Ok(Ok(out)) => Ok((
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        )),
+        Ok(Err(e)) => Err(format!("{program}: {e}")),
+        Err(_) => Err(format!("docker did not answer in {}s", cap.as_secs())),
+    }
+}
+
+/// The state of the container under `name`: `Ok(None)` when there is none.
+async fn one_shot_state(program: &str, name: &str) -> Result<Option<String>, String> {
+    let (ok, stdout, stderr) = docker_out(
+        program,
+        &["container", "inspect", "-f", "{{.State.Status}}", name],
+        DOCKER_CALL,
+    )
+    .await?;
+    if ok {
+        return Ok(Some(stdout));
+    }
+    // Docker's wording for a name no container holds: "No such container"
+    // from `docker container inspect` (29.8.1 here); a bare `docker inspect`
+    // says "no such object", lower case on 29.x. `container` keeps an image,
+    // volume or network of the same name from answering instead.
+    if stderr.to_ascii_lowercase().contains("no such") {
+        return Ok(None);
+    }
+    Err(if stderr.is_empty() {
+        "docker container inspect failed with no output".into()
+    } else {
+        stderr
+    })
+}
+
+/// Clear what an earlier one-shot left under `name` before a start runs
+/// its own: a container that is not running is removed (`docker rm`,
+/// unforced, which refuses one that runs); a running one is left to finish,
+/// and this start runs no second install beside it.
+async fn clear_leftover(program: &str, name: &str) -> Leftover {
+    match one_shot_state(program, name).await {
+        Ok(None) => Leftover::None,
+        Ok(Some(state)) if matches!(state.as_str(), "running" | "restarting" | "paused") => {
+            Leftover::Running
+        }
+        Ok(Some(state)) => match docker_out(program, &["container", "rm", name], DOCKER_CALL).await
+        {
+            Ok((true, _, _)) => Leftover::Cleared(state),
+            Ok((false, _, stderr)) => Leftover::Stuck(stderr),
+            Err(why) => Leftover::Stuck(why),
+        },
+        Err(why) => Leftover::Stuck(why),
+    }
+}
+
+/// After a timed-out one-shot: watch `name` for `within`, every `every`,
+/// and remove whatever container is there — the create that landed after
+/// the remove, or a remove that did not land. An empty name is no proof:
+/// the late create can land at any point in the window. Done early once a
+/// remove has landed and the name reads empty after it. Off every start's
+/// path.
+async fn sweep_after_timeout(program: &str, name: &str, every: Duration, within: Duration) {
+    let deadline = tokio::time::Instant::now() + within;
+    let mut removed = false;
+    let mut present = false;
+    loop {
+        match one_shot_state(program, name).await {
+            Ok(None) => {
+                present = false;
+                if removed {
+                    return;
+                }
+            }
+            Ok(Some(state)) => {
+                present = true;
+                if docker_ok(program, &["container", "rm", "-f", name], DOCKER_CALL).await {
+                    removed = true;
+                    tracing::warn!(
+                        "[fleet] {name}: removed the browser engine install container that was {state} after its install timed out"
+                    );
+                }
+            }
+            Err(why) => tracing::debug!("[fleet] {name}: sweep read failed: {why}"),
+        }
+        if tokio::time::Instant::now() + every > deadline {
+            if present {
+                tracing::warn!(
+                    "[fleet] {name}: a browser engine install container is still there {}s after its install timed out — the next start clears it",
+                    within.as_secs()
+                );
+            }
+            return;
+        }
+        tokio::time::sleep(every).await;
+    }
 }
 
 /// What a failed one-shot said, both streams, trimmed to the last few lines
@@ -424,6 +651,146 @@ mod tests {
         const { assert!(TIMEOUT_COOLDOWN.as_secs() >= 3 * INSTALL_TIMEOUT.as_secs()) };
     }
 
+    /// A stand-in for docker in a directory of its own, removed when it is
+    /// dropped (a test that fails still leaves nothing on the tmpfs).
+    struct FakeDocker {
+        dir: std::path::PathBuf,
+        script: String,
+        state: std::path::PathBuf,
+    }
+
+    impl Drop for FakeDocker {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// A stand-in for docker that keeps one container's state in a file
+    /// beside it: `container inspect` prints it (no file: a lower-case
+    /// "error: no such container", as docker 29 words its misses — a
+    /// case-sensitive match misread one as a stuck container and skipped
+    /// every install), `container rm` refuses a running one, `container rm
+    /// -f` removes whatever is there. Anything but a `container` call fails.
+    fn fake_docker(tag: &str) -> FakeDocker {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "talaria-browser-engine-test-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("test dir");
+        let state = dir.join("state");
+        let script = dir.join("docker");
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+S="{state}"
+[ "$1" = container ] || exit 2
+shift
+case "$1" in
+  inspect) [ -f "$S" ] && {{ cat "$S"; exit 0; }}; echo "error: no such container: x" >&2; exit 1 ;;
+  rm)
+    if [ "$2" = "-f" ]; then rm -f "$S"; exit 0; fi
+    [ -f "$S" ] || {{ echo "Error: No such container: x" >&2; exit 1; }}
+    [ "$(cat "$S")" = running ] && {{ echo "Error response from daemon: cannot remove container: container is running" >&2; exit 1; }}
+    rm -f "$S"; exit 0 ;;
+esac
+exit 2
+"#,
+                state = state.display()
+            ),
+        )
+        .expect("fake docker");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        // Another test's child, forked while the script was open for
+        // writing, holds that descriptor until it execs: executing the
+        // script then fails with ETXTBSY. Wait until it runs.
+        for _ in 0..100 {
+            match std::process::Command::new(&script).arg("probe").output() {
+                Err(e) if e.raw_os_error() == Some(26) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20))
+                }
+                _ => break,
+            }
+        }
+        FakeDocker {
+            script: script.to_str().expect("utf-8 path").to_string(),
+            dir,
+            state,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_one_shot_left_behind_is_cleared_before_a_start_runs_its_own() {
+        let fake = fake_docker("leftover");
+        let (docker, state) = (fake.script.as_str(), &fake.state);
+        // Nothing there: the name is free.
+        assert_eq!(clear_leftover(docker, "x").await, Leftover::None);
+        // Created and never started (its CLI died before the start), or
+        // exited with its remove lost: removed, and the start goes on.
+        for left in ["created", "exited", "dead"] {
+            std::fs::write(state, left).expect("state");
+            assert_eq!(
+                clear_leftover(docker, "x").await,
+                Leftover::Cleared(left.to_string())
+            );
+            assert!(!state.exists(), "{left} was not removed");
+        }
+        // Still running: an earlier start's install, left to finish — no
+        // second one beside it, and it is not killed.
+        std::fs::write(state, "running").expect("state");
+        assert_eq!(clear_leftover(docker, "x").await, Leftover::Running);
+        assert!(state.exists());
+        // Docker answering with something else: not guessed at.
+        assert!(matches!(
+            clear_leftover("/nonexistent/talaria-docker", "x").await,
+            Leftover::Stuck(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_one_shot_whose_create_lands_after_its_timeout_is_removed() {
+        let fake = fake_docker("sweep");
+        let (docker, state) = (fake.script.clone(), &fake.state);
+        // The remove after the timeout found nothing; the daemon's create
+        // lands a moment later, as a container nobody will start.
+        let sweep = {
+            let docker = docker.clone();
+            tokio::spawn(async move {
+                sweep_after_timeout(
+                    &docker,
+                    "x",
+                    Duration::from_millis(50),
+                    Duration::from_secs(5),
+                )
+                .await;
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        std::fs::write(state, "created").expect("state");
+        tokio::time::timeout(Duration::from_secs(10), sweep)
+            .await
+            .expect("the sweep ends")
+            .expect("the sweep task");
+        assert!(!state.exists(), "the late one-shot was not removed");
+        // A sweep that only ever reads the name empty watches its whole
+        // window (a late create can land at any point in it), and no more.
+        let started = Instant::now();
+        sweep_after_timeout(
+            &docker,
+            "x",
+            Duration::from_millis(50),
+            Duration::from_millis(400),
+        )
+        .await;
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(350) && took < Duration::from_secs(3),
+            "{took:?}"
+        );
+    }
+
     #[tokio::test]
     async fn a_one_shot_past_the_cap_is_a_timeout_and_is_killed() {
         // `sleep` stands in for docker, so no daemon is needed: a one-shot
@@ -443,6 +810,35 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_one_shot_keeps_its_name_from_a_start_until_its_sweep_ends() {
+        // Two agents' installs overlap; one times out and the other then
+        // succeeds, which ends the fleet-wide cooldown. The timed-out one's
+        // name is still watched, and its sweep force-removes whatever lands
+        // under it, so a start of that agent must not run a one-shot there
+        // (`ensure` checks `being_swept`): the name is held from the timeout
+        // on, before `run` returns.
+        let name = format!("talaria-held-{}", std::process::id());
+        let got = run("sleep", &["30".into()], &name, Duration::from_millis(200)).await;
+        assert_eq!(got, Err(Failure::TimedOut));
+        assert!(being_swept(&name), "the name is not held after the timeout");
+        // The hold is the sweep task's: it ends with the task, panic or not.
+        let probe = format!("talaria-held-probe-{}", std::process::id());
+        let task = {
+            let probe = probe.clone();
+            tokio::spawn(async move {
+                let _held = Sweeping::hold(&probe);
+                panic!("a sweep that panics");
+            })
+        };
+        assert!(task.await.is_err());
+        assert!(!being_swept(&probe), "a panicked sweep kept its name");
+        let held = Sweeping::hold(&probe);
+        assert!(being_swept(&probe));
+        drop(held);
+        assert!(!being_swept(&probe));
     }
 
     #[tokio::test]

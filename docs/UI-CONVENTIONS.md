@@ -321,6 +321,12 @@ rule is only about a fill matching its container.
   acquired its signal yet. `lib/skeleton-static.ts` owns it; a skeleton is a
   transparent box that gets masked out of one page-wide field, so neighbouring
   blocks are windows onto the same material and NOT independent effects.
+- The static re-rolls at 8Hz, and it rides the page clock (`lib/motion.ts`
+  `subscribeToClock`) as a PERIODIC subscriber: `subscribeToClock(fn, 125)`
+  runs on the first frame of each 125 ms tick, and while only periodic
+  subscribers are left the clock sleeps between ticks instead of running every
+  frame. Anything that changes slower than the frame rate should subscribe that
+  way rather than filter 60 frames a second down to the few it uses.
 - Static has no direction and no phase, so there is no `delay` and no stagger
   on a skeleton — sweeps and fills imply a completion a fetch cannot promise.
   Size and shape are the only things a call site chooses (`h-*`, `w-*`, and a

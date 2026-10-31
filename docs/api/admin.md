@@ -590,7 +590,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_model_roles.rs`](../..
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `admin` | — | `{roles, assignments, models, issues, efforts}` | 200 | — |
-| PUT | `admin` | [body](#put-apiadminmodel-roles-body) | `…` | 200, 400 | audit |
+| PUT | `admin` | [body](#put-apiadminmodel-roles-body) | `{assignments, issues, efforts}` | 200, 400 | audit |
 
 ### PUT `/api/admin/model-roles` body
 

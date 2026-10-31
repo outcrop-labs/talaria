@@ -51,6 +51,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use talaria_agent_auth::ensure_agent_api_key;
+use talaria_error::store_fault;
 use talaria_secretbox::SecretBox;
 use talaria_workbench_harnesses::{
     MCP_CONFIG_FILE, MODELS_CONFIG_FILE, PI_CODING_AGENT_DIR, WORKBENCH_KEY_ENV,
@@ -462,7 +463,7 @@ pub async fn ensure_agent_env_keys(
     let known: Vec<(String,)> = sqlx::query_as("select slug from agent_defs")
         .fetch_all(pg)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| store_fault("[fleet] render: agent slugs read failed", e))?;
     let known: std::collections::HashSet<String> = known.into_iter().map(|(s,)| s).collect();
     let mut next = strip_stale_agent_lines(&current, &known);
     let mut append: Vec<String> = Vec::new();
@@ -1156,10 +1157,44 @@ fn apply_service_defaults(svc: &mut Map<String, Value>) {
 fn config_yaml_text(model: &str, version: i32, routed: &Map<String, Value>) -> String {
     let body = yaml11_emit(&Value::Object(routed.clone()));
     format!(
-        "# Rendered by Talaria — {model} v{version}. Do not hand-edit; edit in Talaria.\n{}{}...\n",
+        "{RENDERED_HEADER}{model} v{version}{RENDERED_HEADER_TAIL}\n{}{}...\n",
         body,
         if body.ends_with('\n') { "" } else { "\n" }
     )
+}
+
+/// The rendered config.yaml's first line is
+/// `<RENDERED_HEADER><model> v<version><RENDERED_HEADER_TAIL>`: which version
+/// of the agent the render last wrote, read back by [`rendered_version`].
+const RENDERED_HEADER: &str = "# Rendered by Talaria — ";
+const RENDERED_HEADER_TAIL: &str = ". Do not hand-edit; edit in Talaria.";
+
+/// The version a rendered config.yaml's header names ([`config_yaml_text`]),
+/// or None for a file that does not start with one.
+pub fn parse_rendered_version(text: &str) -> Option<i32> {
+    text.lines()
+        .next()?
+        .strip_prefix(RENDERED_HEADER)?
+        .strip_suffix(RENDERED_HEADER_TAIL)?
+        .rsplit_once(" v")?
+        .1
+        .parse()
+        .ok()
+}
+
+/// Which version of `slug`'s config the last render wrote for it — the
+/// header of `fleet/agents/<slug>/config.yaml`. That file is what a running
+/// agent reads in place, so this is the version its live settings and soul
+/// come from; whether the container itself was created from this render (the
+/// settings Hermes reads only at start, the env) is `container_fit`'s answer
+/// (talaria-fleet-docker). None when nothing was rendered for it.
+pub async fn rendered_version(slug: &str) -> Option<i32> {
+    let path = talaria_fleet_layout::fleet_dir()
+        .join("agents")
+        .join(slug)
+        .join("config.yaml");
+    let text = tokio::fs::read_to_string(path).await.ok()?;
+    parse_rendered_version(&text)
 }
 
 /// render_fleet — regenerate everything the managed fleet runs on. See the
@@ -1167,8 +1202,11 @@ fn config_yaml_text(model: &str, version: i32, routed: &Map<String, Value>) -> S
 pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, String> {
     // One agent per department's container: a second one is left out of
     // everything below, by name.
-    let (targets, left_out) =
-        department_runners(managed_agents(pg).await.map_err(|e| e.to_string())?);
+    let (targets, left_out) = department_runners(
+        managed_agents(pg)
+            .await
+            .map_err(|e| store_fault("[fleet] render: managed agents read failed", e))?,
+    );
     let agent_search_url =
         agent_search_url(&talaria_search::search_url(pg).await, dial_is_container());
     // The operator's agent web-search choice (Admin → Search), the same for
@@ -1327,7 +1365,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             .collect::<Vec<_>>(),
     )
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[fleet] render: gateway ports read or write failed", e))?;
 
     // Read once, ahead of the loop: omp's model roles are the same for every
     // Developer Agent (the data is read-only for the render's duration). A
@@ -1409,7 +1447,12 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         // until the secret is set again under that name.
         let held = talaria_agent_secrets::held_config_secrets(pg, &def.id)
             .await
-            .map_err(|e| format!("{}: agent secrets read failed: {e}", def.slug))?;
+            .map_err(|e| {
+                store_fault(
+                    &format!("[fleet] render: {}: agent secrets read failed", def.slug),
+                    e,
+                )
+            })?;
         let (config, withheld, missing) =
             talaria_agent_secrets::withhold_unheld_config_secrets(&version.config, &held);
         if !withheld.is_empty() {
@@ -1478,7 +1521,12 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
 
         let agent_servers = talaria_mcp::registry::servers_for_agent(pg, &def.model)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                store_fault(
+                    &format!("[fleet] render: {}: MCP servers read failed", def.slug),
+                    e,
+                )
+            })?;
         for name in &authored_servers {
             if name != "talaria" && !agent_servers.iter().any(|s| &s.name == name) {
                 let line = format!(
@@ -3783,7 +3831,7 @@ async fn write_fleet_manifest(
     )
     .fetch_all(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[fleet] render: manifest read failed", e))?;
 
     let env = tokio::fs::read_to_string(talaria_fleet_layout::fleet_env())
         .await
@@ -5067,6 +5115,31 @@ service:
         // document, which a single-document loader refuses.
         let spliced = format!("{text}  - stale\nplugins:\n  enabled: []\n");
         assert!(serde_yaml_ng::from_str::<Value>(&spliced).is_err());
+    }
+
+    #[test]
+    fn the_rendered_version_is_read_back_from_the_header() {
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!({ "default": "m" }));
+        assert_eq!(
+            parse_rendered_version(&config_yaml_text("x-eng", 3, &routed)),
+            Some(3)
+        );
+        // A model id that itself carries " v" is read from the right.
+        assert_eq!(
+            parse_rendered_version(&config_yaml_text("acme v2-ops", 41, &routed)),
+            Some(41)
+        );
+        // Anything else is no version: a hand-written file, an empty one,
+        // another renderer's header.
+        assert_eq!(parse_rendered_version("model: x\n"), None);
+        assert_eq!(parse_rendered_version(""), None);
+        assert_eq!(
+            parse_rendered_version(
+                "# Rendered by Talaria — Oh My Pi's gateway provider. Do not hand-edit.\n"
+            ),
+            None
+        );
     }
 
     #[test]

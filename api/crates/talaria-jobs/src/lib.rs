@@ -93,7 +93,39 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         })
     }));
     let _ = talaria_mcp_apply::ROLL_AGENT.set(std::sync::Arc::new(|pg, sb, dept| {
-        Box::pin(async move { talaria_fleet_reconcile::roll_running_agent(&pg, &sb, &dept).await })
+        Box::pin(async move {
+            use talaria_fleet_reconcile::RollOutcome;
+            match talaria_fleet_reconcile::roll_running_agent_outcome(&pg, &sb, &dept).await {
+                // Recreated and still booting past the roll's health wait:
+                // the queue moves on, and only a late wait that fails is a
+                // failure for the audit trail — in the shape mcp-apply
+                // writes its own (a container that comes up is no failure).
+                Ok(RollOutcome::StillStarting { late, .. }) => {
+                    tokio::spawn(async move {
+                        let error = match late.await {
+                            Ok(None) => return,
+                            Ok(Some(failed)) => failed,
+                            Err(e) => format!("its late health wait was lost: {e}"),
+                        };
+                        talaria_audit::log_audit(
+                            &pg,
+                            talaria_audit::AuditEntry {
+                                actor: "talaria",
+                                action: "mcp.roll_failed",
+                                target_type: "department",
+                                target_id: Some(&dept),
+                                target_label: None,
+                                before: None,
+                                after: Some(serde_json::json!({ "error": error })),
+                            },
+                        )
+                        .await;
+                    });
+                    Ok(None)
+                }
+                outcome => outcome.map(RollOutcome::into_verdict),
+            }
+        })
     }));
     let _ = talaria_mcp_apply::APPLY_AGENTS.set(std::sync::Arc::new(|pg, sb, depts| {
         Box::pin(

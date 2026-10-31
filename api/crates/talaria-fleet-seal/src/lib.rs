@@ -110,10 +110,15 @@ pub struct AgentSeal {
     /// Whether applying recreates its container (it is running, and gains
     /// secrets).
     pub roll: bool,
+    /// Whether its container WAS recreated: false for an agent its roll left
+    /// alone because it stopped between the state read and the roll (its
+    /// stopped container is removed instead — `removed`).
     pub rolled: bool,
     /// Whether applying removes its container (it exists, stopped, and the
     /// agent gains secrets), so its next start creates one that holds them.
     pub remove_stopped: bool,
+    /// Whether its stopped container was removed — planned (`remove_stopped`)
+    /// or because its roll found it stopped.
     pub removed: bool,
 }
 
@@ -372,12 +377,24 @@ pub async fn seal_stored_configs(
         }
         // 2. A container that holds them: the roll, or the stopped one gone.
         let step2 = if agent.roll {
-            match talaria_fleet_reconcile::roll_running_agent(pg, sb, &department).await {
-                Ok(None) => {
+            use talaria_fleet_reconcile::RollOutcome;
+            match talaria_fleet_reconcile::roll_running_agent_outcome(pg, sb, &department).await {
+                // Recreated: the new container holds the secrets — booting
+                // still, for a container slower than the roll's health wait,
+                // but created with them, which is what step 3 needs.
+                Ok(RollOutcome::Rolled | RollOutcome::StillStarting { .. }) => {
                     agent.rolled = true;
                     Ok(())
                 }
-                Ok(Some(soft)) => Err(format!("the roll did not finish ({soft})")),
+                // The agent stopped between the state read above and the
+                // roll, which leaves a stopped agent as it is: nothing was
+                // recreated, so the stopped container still lacks the
+                // secrets — the stopped branch's step, not a roll.
+                Ok(RollOutcome::LeftAlone) => match container.as_deref() {
+                    Some(name) => left_alone_step(name, &mut agent).await,
+                    None => Ok(()),
+                },
+                Ok(RollOutcome::Soft(soft)) => Err(format!("the roll did not finish ({soft})")),
                 Err(e) => Err(format!("the roll did not finish ({e})")),
             }
         } else if let (true, Some(name)) = (agent.remove_stopped, &container) {
@@ -432,6 +449,33 @@ pub async fn seal_stored_configs(
         }
     }
     Ok(report)
+}
+
+/// Step 2 for an agent its roll left alone — stopped between the state read
+/// and the roll, so no container was recreated with its secrets: what the
+/// stopped branch does, by the container's state now. A stopped one is
+/// removed (`agent.removed`), a gone one needs nothing; one running again (a
+/// start since the roll looked) still lacks them, so the agent is skipped.
+async fn left_alone_step(name: &str, agent: &mut AgentSeal) -> Result<(), String> {
+    match talaria_fleet_docker::container_state(name).await {
+        Ok(Some(false)) => match talaria_fleet_docker::remove_stopped_container(name).await {
+            Ok(()) => {
+                agent.removed = true;
+                Ok(())
+            }
+            Err(e) => Err(format!(
+                "it stopped before its roll, and its stopped container could not be removed ({e})"
+            )),
+        },
+        Ok(None) => Ok(()),
+        Ok(Some(true)) => Err(
+            "it stopped before its roll and was started again before the roll could recreate it"
+                .into(),
+        ),
+        Err(e) => Err(format!(
+            "it stopped before its roll, and its container's state could not be read ({e})"
+        )),
+    }
 }
 
 /// One applied agent's audit row, names and paths only. A skipped agent

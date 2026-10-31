@@ -109,8 +109,24 @@ Admins can roll the whole fleet from the roster: **Roll all** asks first, in the
 rolls every running agent the same way, in place, a couple at a time so the host stays
 responsive (tick *Also start and roll agents that are stopped* to include the stopped ones).
 Each agent's row shows where its roll stands: rolling, rolled, or failed with the reason, and an
-agent mid-roll cannot be rolled again until it finishes. The strip above the roster keeps the
-tally and every failure sentence until you dismiss it.
+agent mid-roll cannot be rolled again until it finishes. A roll waits three minutes for the fresh
+container to report healthy; one that is still booting then (a slow disk can take longer) shows
+*starting* rather than *failed*, and turns to rolled once it is up — or to failed, with the
+reason, if it is not up twelve minutes later or stops running for half a minute on its own.
+Stopping or retiring it while it starts clears the chip rather than calling the roll failed.
+A *starting* agent's roll has done its part, so **Roll** and **Roll all** stay available: rolling
+it again recreates its container and starts its boot over. Two agents that share a department (a pair from
+before a department became one agent's) are rolled once, as the agent that runs in its
+container; the other is listed as skipped. The strip above the roster keeps the tally and every
+failure sentence until you dismiss it.
+
+Start, stop, restart, retire and re-hire wait up to three and a half minutes for docker. When
+docker is slower than that (an image pull, a starved disk), the control stops waiting but the
+action goes on, and the row says so — *still stopping*, *still starting* and so on — until the
+roster shows the agent in its new state. A control that is refused (the agent is mid-roll, is not
+running, or shares its department with an older agent; you no longer manage it) or that fails says
+so in a notice, with the reason; one docker has not confirmed yet reads *not confirmed yet*, since
+it may still land.
 
 ### Config
 
@@ -119,9 +135,20 @@ agent. When the apply does not land (a roll step failed, the container never rep
 the roll found the agent mid-roll, the agent is retired, or it has no container of its own), the
 version is still saved, and the form stays open and says *Saved as version N, not applied:* with
 the reason, rather than closing as if it had worked. A soul saved from the workspace says the
-same in a notice. Pressing **Save & apply** again with nothing changed saves nothing new, so it
-has nothing new to apply: the form says version N is still not applied, with the same reason.
-Once that clears, **Roll** the agent from the roster to put version N on it.
+same in a notice. A roll whose fresh container is still booting past the roll's three-minute
+wait has applied: the form closes, says so in a notice, and the roster shows the agent
+*starting* until it is up. **Save & apply** with nothing changed saves nothing new, and it puts
+the current version on an agent that does not run it: a version saved with **Save version** and
+never applied, or one whose roll did not land, is applied then (rendered, and rolled only where
+the render moved the container), even from a form you just opened. A running agent already on the
+current version, or a stopped one (its next start puts the current version on), closes quietly.
+If that apply does not land either, or docker will not say what the agent runs, the form stays
+open with *Version N is not applied:* and why.
+
+A **Save & apply** (or an MCP change) whose roll is still going after three and a half minutes —
+a slow recreate and its health check — is saved all the same: the form says *Saved as version N.
+Applying it is taking longer…*, and the roster notes the agent *still applying* until it lands.
+That save has not failed, and the apply goes on without the form.
 
 - **Main model** — its brain.
 - **Model tiers (aliases)** — named slots (like `opus`) you can address per-message with a

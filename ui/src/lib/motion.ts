@@ -85,26 +85,100 @@ export function onReducedMotion(cb: (reduced: boolean) => void): () => void {
  */
 type ClockSubscriber = (elapsedMs: number) => void
 
-const clockSubs = new Set<ClockSubscriber>()
-let clockHandle = 0
-let clockOrigin = 0
-
-function clockFrame(now: number): void {
-  if (clockOrigin === 0) clockOrigin = now
-  const elapsed = now - clockOrigin
-  for (const fn of clockSubs) fn(elapsed)
-  clockHandle = requestAnimationFrame(clockFrame)
+interface ClockEntry {
+  fn: ClockSubscriber
+  /** 0: every frame. Otherwise the subscriber's period, in ms of the clock. */
+  every: number
+  /** The clock reading at which a periodic subscriber is next due. */
+  due: number
 }
 
-/** Subscribe to the shared frame loop. Returns an unsubscribe. */
-export function subscribeToClock(fn: ClockSubscriber): () => void {
-  clockSubs.add(fn)
+const clockSubs = new Set<ClockEntry>()
+let clockHandle = 0
+let clockTimer: ReturnType<typeof setTimeout> | null = null
+let clockOrigin = 0
+
+/**
+ * How early the clock wakes for frames before a periodic subscriber is due:
+ * one 60 Hz frame. The subscriber has to run on the FIRST frame past its
+ * boundary — the one an every-frame loop would have run it on — and a timer
+ * aimed at the boundary itself could land just after that frame began.
+ */
+const CLOCK_LEAD_MS = 17
+
+function clockFrame(now: number): void {
+  clockHandle = 0
+  if (clockOrigin === 0) clockOrigin = now
+  const elapsed = now - clockOrigin
+  for (const e of clockSubs) {
+    if (e.every <= 0) e.fn(elapsed)
+    else if (elapsed >= e.due) {
+      e.due = (Math.floor(elapsed / e.every) + 1) * e.every
+      e.fn(elapsed)
+    }
+  }
+  scheduleClock()
+}
+
+function requestClockFrame(): void {
+  if (clockTimer !== null) {
+    clearTimeout(clockTimer)
+    clockTimer = null
+  }
   if (clockHandle === 0) clockHandle = requestAnimationFrame(clockFrame)
+}
+
+/**
+ * Ask for the next frame — or, when every subscriber is periodic, sleep until
+ * just before the soonest one is due. A skeleton re-rolls at 8 Hz; running 60
+ * frames a second to find the 8 that change anything was the whole of its
+ * idle cost (UB6). The frames the subscribers see are the same ones: a
+ * periodic subscriber still runs on the first frame past its boundary, with
+ * that frame's clock reading — as long as the timer fires within the
+ * `CLOCK_LEAD_MS` lead. A timer later than that (a main thread busy for more
+ * than a frame) lands it on the next frame instead, as such a stall delays an
+ * every-frame loop too.
+ */
+function scheduleClock(): void {
+  if (clockSubs.size === 0 || clockHandle !== 0 || clockTimer !== null) return
+  let next = Infinity
+  for (const e of clockSubs) {
+    if (e.every <= 0) {
+      requestClockFrame()
+      return
+    }
+    next = Math.min(next, e.due)
+  }
+  const wait = clockOrigin === 0 ? 0 : clockOrigin + next - CLOCK_LEAD_MS - performance.now()
+  if (wait <= 0) requestClockFrame()
+  else
+    clockTimer = setTimeout(() => {
+      clockTimer = null
+      requestClockFrame()
+    }, wait)
+}
+
+/**
+ * Subscribe to the shared frame loop. Returns an unsubscribe.
+ *
+ * `everyMs` makes the subscription periodic: it runs on the first frame at or
+ * past each multiple of `everyMs` on the clock (and on the first frame after
+ * it subscribes), instead of on every frame. While only periodic subscribers
+ * are left, the loop sleeps between their ticks.
+ */
+export function subscribeToClock(fn: ClockSubscriber, everyMs = 0): () => void {
+  const entry: ClockEntry = { fn, every: everyMs, due: 0 }
+  clockSubs.add(entry)
+  // A new subscriber is due now: wake for the next frame whatever the loop was
+  // waiting on.
+  requestClockFrame()
   return () => {
-    clockSubs.delete(fn)
+    clockSubs.delete(entry)
     if (clockSubs.size === 0) {
       cancelAnimationFrame(clockHandle)
       clockHandle = 0
+      if (clockTimer !== null) clearTimeout(clockTimer)
+      clockTimer = null
       clockOrigin = 0
     }
   }

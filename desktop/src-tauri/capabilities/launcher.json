@@ -16,6 +16,7 @@
     "allow-remove-instance",
     "allow-get-desktop-settings",
     "allow-set-titlebar-mode",
+    "allow-set-suspend-after",
     "allow-desktop-window",
     "allow-check-for-update",
     "allow-install-update"

@@ -26,7 +26,12 @@ branch on the host.
 ## What `new` actually does
 
 1. Ensures the primary dev stack is up (its Postgres is the seed source; the
-   shared embeddings are started non-fatally, the `talaria dev` posture).
+   shared embeddings are started non-fatally, the `talaria dev` posture). It
+   starts a stopped service and creates a missing one, and never recreates a
+   running one (`up --no-recreate`): the checkout running `box new` is often not
+   the one that started the primary, and a compose file that differs from that
+   one would otherwise recreate the owner's Postgres. `box start` brings the
+   embeddings up the same way.
    Main's containers are the dev-compose names, or the shell's
    `TALARIA_*_CONTAINER` override. An override that names a worktree's or a box's
    container is refused before anything is created, for `box seed` too. A
@@ -50,7 +55,20 @@ branch on the host.
 6. Writes the box's `ui/.env`: its own service-DNS URLs, its own state dirs,
    `TALARIA_AGENT_DIAL=container`, `TALARIA_FLEET_PROJECT=devbox-<name>-fleet`
    — and the primary's `TALARIA_SECRET_KEY`/`AUTH_*` verbatim, so sealed
-   secrets decrypt and your primary login works unchanged.
+   secrets decrypt and your primary login works unchanged. Every line the box
+   writes is dropped from the copied file first, and so is everything that names
+   a worktree's stack (`TALARIA_WORKTREE`, its api, toolkit, auth-bridge and
+   gateway ports): `box new` run with a worktree's CLI copies that worktree's
+   `ui/.env`, and the first match wins. So are `TALARIA_APP_DATA_DIR` and
+   `TALARIA_APP_BUILDS_DIR`, which a primary may set by hand: the box derives
+   both from its own `TALARIA_APPS_DIR`, as `state/app-data` and
+   `state/app-builds`. `TALARIA_EMBED_URL` names the embeddings container step 1
+   started, the shell's `TALARIA_EMBED_CONTAINER` when it sets one. The Rust api
+   reads no `.env` file, so the box's `talaria dev` hands it every line of this
+   block it reads: the dial, the fleet, apps and uploads dirs, the gateway URLs,
+   and the qdrant, embeddings and storage addresses. It does that only for the
+   box's own stack, a `ui/.env` with the block's `TALARIA_DEVBOX` and no
+   `TALARIA_WORKTREE`: a primary's or a worktree's api is handed none of them.
 7. Seeds starter data from the primary (below).
 8. Runs any `--setup` hooks inside the fresh box (provisioning; `npm i -g`
    hooks land in the shared tools layer, below), then installs deps and
@@ -249,8 +267,15 @@ pushed. A box whose containers went without `box rm` (or an interrupted `box new
 can leave its two networks, `devbox-<name>_default` and `devbox-<name>-fleet`, each
 holding a subnet from docker's address pools: `--apply` removes such a network once
 nothing names it, its project has no container left, `../devboxes/<name>/box.env` is
-gone, and it is at least ten minutes old. The shared tools layer
-(`../devboxes/shared`) is a cache — it stays.
+gone, and it is at least ten minutes old. Its app databases (`talaria-appdb-*`,
+which run on `restart: unless-stopped`) outlive it the same way: `--apply` removes one
+whose cluster is mounted from a box whose `box.env` is gone, and leaves its data
+directory. Its MCP packages do too: a package container and its `talaria-mcp-<box>`
+network are made outside any compose project, so the api labels both with their owner
+(`talaria.mcp.owner=devbox`), and `--apply` removes them once the box's `box.env` is
+gone, the network only when nothing else names it. One made before the labels is named
+in the report and left alone. The shared tools layer (`../devboxes/shared`) is a
+cache — it stays.
 
 ## Troubleshooting
 

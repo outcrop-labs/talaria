@@ -55,6 +55,7 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 ---
 
 The **Returns** column everywhere in this reference is a heuristic: the top-level
-keys of the first success-shaped `json!({…})` literal in the handler. `…` means the
-shape is computed, not literal. Where a row matters to you, the source link at the
-top of its section is the truth.
+keys of the first success-shaped `json!({…})` literal in the handler — or, for a
+handler that answers through same-file helpers, every `Json(json!({…}))` shape they
+answer, joined by `or`. `…` means the shape is computed, not literal. Where a row
+matters to you, the source link at the top of its section is the truth.

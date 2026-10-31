@@ -47,9 +47,12 @@
     field === 'none'
       ? []
       : [
-          { id: 'base', kind: 'edge', side: 'top', depth: 40, strength: 0.12 },
+          // Strength and alphas tuned to the median look the ambient field had
+          // once its entrance had built it up (N11): see LIVE_FIELD_TUNING in
+          // lib/dither-engine.ts. `selected` (unused today) scales with it.
+          { id: 'base', kind: 'edge', side: 'top', depth: 40, strength: 0.18 },
           ...(field === 'selected'
-            ? [{ id: 'mark', kind: 'edge', side: 'top', depth: 44, strength: 0.5, tone: 'accent' } as DitherSource]
+            ? [{ id: 'mark', kind: 'edge', side: 'top', depth: 44, strength: 0.75, tone: 'accent' } as DitherSource]
             : []),
         ],
   )
@@ -60,7 +63,7 @@
   class={cn('rounded-lg border border-line bg-panel p-6', field !== 'none' && 'relative overflow-hidden', className)}
   {...rest}
 >
-  {#if field !== 'none'}<DitherLayer {sources} organic={0.5} />{/if}
+  {#if field !== 'none'}<DitherLayer {sources} organic={0.5} alphaFloor={0.1407} maxAlpha={0.43} />{/if}
   {#if field !== 'none'}
     <!-- The field is decoration behind the content, so the content needs its
          own stacking context to stay above it. -->

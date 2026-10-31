@@ -10,8 +10,8 @@
 // and refuses a shell override that names another stack's. Spelling
 // `ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER` at the call site is how
 // `talaria reset` run in a worktree came to reset main: nothing sets that var
-// in a worktree. The box seed sources and the primary's `talaria dev`, which
-// mean MAIN's containers on purpose, name them through stack.ts
+// in a worktree. The box and worktree seed sources and the primary's
+// `talaria dev`, which mean MAIN's containers on purpose, name them through stack.ts
 // primaryContainer (dev by way of devStack, whose names its readiness probes
 // use too), after a shell override that is a worktree's or a box's has been
 // refused: a worktree's `talaria dev` exports its own TALARIA_PG_CONTAINER to

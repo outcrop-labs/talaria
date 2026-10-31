@@ -17,6 +17,7 @@ use sqlx::PgPool;
 
 use std::collections::{HashMap, HashSet};
 
+use talaria_error::store_fault;
 use talaria_fleet_docker::Slot;
 use talaria_secretbox::SecretBox;
 
@@ -121,11 +122,24 @@ pub struct RollRecord {
 impl RollRecord {
     /// Whether this record has aged past [`ROLL_OUTCOME_TTL_MS`] — only a
     /// finished roll expires; a roll still marked rolling is kept until its
-    /// verdict overwrites it.
+    /// verdict overwrites it. The exception is a roll noted
+    /// [`STILL_STARTING`] for longer than its late wait can run
+    /// ([`STILL_STARTING_STALE_MS`]): the task that would have written its
+    /// verdict died with its api process (a restart), so no verdict is
+    /// coming, and the row would otherwise read rolling for good.
     pub fn expired(&self, now: i64) -> bool {
-        self.state != RollState::Rolling && now - self.updated > ROLL_OUTCOME_TTL_MS
+        if self.state == RollState::Rolling {
+            return self.detail.as_deref() == Some(STILL_STARTING)
+                && now - self.updated > STILL_STARTING_STALE_MS;
+        }
+        now - self.updated > ROLL_OUTCOME_TTL_MS
     }
 }
+
+/// How long after its `still starting` note a row can still be waiting on a
+/// live late watcher: the late wait, plus one inspect's timeout and poll past
+/// its deadline, plus headroom.
+const STILL_STARTING_STALE_MS: i64 = ROLL_LATE_HEALTH_WAIT_MS as i64 + 60_000;
 
 static ROLL_REGISTRY: LazyLock<Mutex<HashMap<String, RollRecord>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -148,11 +162,65 @@ fn record_roll(record: RollRecord) {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .insert(record.department.clone(), record.clone());
+    mirror_roll(record);
+}
+
+/// Mirror one registry write to the sink (the Redis hash), off the caller's
+/// path and outside the registry's lock.
+fn mirror_roll(record: RollRecord) {
     if let Some(sink) = ROLL_SINK.get() {
         let sink = sink.clone();
         tokio::spawn(async move { sink(record).await });
     }
 }
+
+/// Record `record` only if the department's row is still the one a roll that
+/// started at `since` left `rolling` — what a still-starting roll's late
+/// health verdict writes ([`watch_late_health`]). A newer roll of the same
+/// department has its own row by then, and its verdict is not overwritten
+/// with an older roll's.
+fn record_roll_if_current(since: i64, record: RollRecord) -> bool {
+    // The check and the write under one guard: a newer roll's `rolling`
+    // landing between them would otherwise be overwritten.
+    {
+        let mut map = ROLL_REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+        let current = map
+            .get(&record.department)
+            .is_some_and(|r| r.since == since && r.state == RollState::Rolling);
+        if !current {
+            return false;
+        }
+        map.insert(record.department.clone(), record.clone());
+    }
+    mirror_roll(record);
+    true
+}
+
+/// The registry's row for one department in this process, if any — how a
+/// caller that just applied a change tells a roll whose container is still
+/// starting ([`STILL_STARTING`]) from one that finished.
+pub fn roll_record(department: &str) -> Option<RollRecord> {
+    let now = now_ms();
+    ROLL_REGISTRY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(department)
+        .filter(|r| !r.expired(now))
+        .cloned()
+}
+
+/// Whether the department's roll recreated its container, which has not
+/// reported healthy yet: the row stays `rolling` with this note until it does
+/// (`done`) or the late wait gives up (`failed`).
+pub fn still_starting(department: &str) -> bool {
+    roll_record(department).is_some_and(|r| {
+        r.state == RollState::Rolling && r.detail.as_deref() == Some(STILL_STARTING)
+    })
+}
+
+/// The registry note of a roll whose recreated container outlived the health
+/// wait and is still starting — the roster's chip reads it, like `queued`.
+pub const STILL_STARTING: &str = "still starting";
 
 /// This process's view of every roll it recorded, expired outcomes pruned.
 pub fn roll_records() -> Vec<RollRecord> {
@@ -195,10 +263,19 @@ pub static RENDER_FLEET: OnceLock<
     >,
 > = OnceLock::new();
 
-/// How long a recreated container gets to report healthy: the chassis
-/// healthcheck's 60s start period plus five 15s probes, then headroom for
-/// a slow first boot of a freshly pulled image.
+/// How long a roll waits for its recreated container to report healthy: the
+/// chassis healthcheck's 60s start period plus five 15s probes, then headroom
+/// for a slow first boot of a freshly pulled image. This is what a caller
+/// waits on, so it stays bounded; a container still starting when it passes
+/// is watched on ([`ROLL_LATE_HEALTH_WAIT_MS`]) rather than called failed.
 const ROLL_HEALTH_WAIT_MS: u64 = 180_000;
+
+/// How much longer a roll whose recreated container is still `starting` at
+/// [`ROLL_HEALTH_WAIT_MS`] is watched, off every caller's path, before its
+/// row says `failed`. Under heavy IO a recreated agent took about four
+/// minutes to log its first line and then came up healthy; until this, its
+/// row kept a `failed` the agent no longer deserved.
+const ROLL_LATE_HEALTH_WAIT_MS: u64 = 720_000;
 
 // ── Applying a change ────────────────────────────────────────────────────────
 //
@@ -297,13 +374,17 @@ pub async fn apply_running_agents(
     let managed: Vec<(String, String)> = sqlx::query_as(DEPARTMENT_RUNNERS_SQL)
         .fetch_all(pg)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| store_fault("[fleet] apply: department runners read failed", e))?;
     let mut rolled = Vec::new();
     for (department, display_name) in &managed {
         match apply_one(pg, sb, department).await {
-            Applied::Untouched => {}
-            Applied::Rolled(Ok(None)) => rolled.push(display_name.clone()),
-            Applied::Rolled(Ok(Some(error))) | Applied::Rolled(Err(error)) => warnings.push(error),
+            Applied::Untouched | Applied::Rolled(Ok(RollOutcome::LeftAlone)) => {}
+            Applied::Rolled(Ok(RollOutcome::Rolled | RollOutcome::StillStarting { .. })) => {
+                rolled.push(display_name.clone())
+            }
+            Applied::Rolled(Ok(RollOutcome::Soft(error))) | Applied::Rolled(Err(error)) => {
+                warnings.push(error)
+            }
             Applied::Unconfirmed(warning) => warnings.push(warning),
         }
     }
@@ -344,8 +425,8 @@ fn apply_step(fit: talaria_fleet_docker::ContainerFit) -> ApplyStep {
 enum Applied {
     /// In place, or a stopped agent left stopped.
     Untouched,
-    /// The roll's verdict ([`roll_running_agent`]'s shape).
-    Rolled(Result<Option<String>, String>),
+    /// How the roll the fit asked for ended.
+    Rolled(Result<RollOutcome, String>),
     /// Docker would not describe the container: the sentence for the caller.
     Unconfirmed(String),
 }
@@ -395,7 +476,10 @@ fn unconfirmed_apply(department: &str) -> String {
     )
 }
 
-/// [`apply_one`] in [`roll_running_agent`]'s verdict shape.
+/// [`apply_one`] in [`roll_running_agent`]'s verdict shape. A roll whose
+/// recreated container is still starting when the health wait passes is an
+/// apply that landed: the container runs the render, and the roll registry
+/// says `still starting` until it reports healthy ([`still_starting`]).
 async fn apply_rendered(
     pg: &PgPool,
     sb: &SecretBox,
@@ -403,7 +487,7 @@ async fn apply_rendered(
 ) -> Result<Option<String>, String> {
     match apply_one(pg, sb, department).await {
         Applied::Untouched => Ok(None),
-        Applied::Rolled(verdict) => verdict,
+        Applied::Rolled(outcome) => outcome.map(RollOutcome::into_verdict),
         Applied::Unconfirmed(warning) => Ok(Some(warning)),
     }
 }
@@ -436,8 +520,61 @@ enum Rolled {
     Done,
     /// A soft failure, with its sentence.
     Soft(String),
-    /// [`RollMode::IfRunning`] found the agent not running and left it.
+    /// [`RollMode::IfRunning`] found the agent not running and left it — or,
+    /// for a legacy `-b` agent, a stop asked of it during its move home.
     LeftStopped,
+    /// Recreated, and still `starting` when [`ROLL_HEALTH_WAIT_MS`] passed:
+    /// the sentence a caller is answered with, while the rest of the wait
+    /// runs on ([`watch_late_health`]) — reading stops against the same
+    /// `stops_before` mark the roll took when it started.
+    StillStarting { detail: String, stops_before: u64 },
+    /// Recreated, then stopped by a person before it reported healthy (a
+    /// stop asked of it during the health wait): the change is on the
+    /// container, and the row says `idle`, not `failed`.
+    StoppedStarting,
+}
+
+/// How a roll ended, for a caller that does more than relay one sentence:
+/// what [`roll_running_agent`]'s verdict folds together, kept apart.
+#[derive(Debug)]
+pub enum RollOutcome {
+    /// Recreated, and healthy — or recreated and then stopped by a person
+    /// before it reported healthy: either way the container holds the
+    /// change.
+    Rolled,
+    /// Recreated nothing: the agent was stopped, gone, or would not be
+    /// described when the recreate held the service's lock (or a stop was
+    /// asked of a legacy `-b` agent during its move home). Its next start
+    /// reads the render; the registry row is `idle`.
+    LeftAlone,
+    /// Recreated, and not healthy yet when the bounded health wait passed:
+    /// a boot slower than the wait, not a failed one. `detail` is the
+    /// sentence for a caller; `late` is the rest of the wait, already
+    /// running on its own task, which answers `None` once the container
+    /// reports healthy (its row turns `done`) or the failure sentence its
+    /// row says instead. A caller that is not waiting on anyone can await it
+    /// to report a real failure; the registry is right either way.
+    StillStarting { detail: String, late: LateHealth },
+    /// A soft failure, with its sentence (the registry row says `failed`).
+    Soft(String),
+}
+
+/// The rest of a still-starting roll's health wait ([`RollOutcome::StillStarting`]).
+pub type LateHealth = tokio::task::JoinHandle<Option<String>>;
+
+impl RollOutcome {
+    /// The verdict shape ([`roll_running_agent`]'s): `Ok(None)` for a roll
+    /// that recreated the container or rightly left it alone, `Some` with
+    /// the sentence for a soft failure. A container still starting is a
+    /// roll that landed — its registry row says so until it is up.
+    pub fn into_verdict(self) -> Option<String> {
+        match self {
+            RollOutcome::Rolled | RollOutcome::LeftAlone | RollOutcome::StillStarting { .. } => {
+                None
+            }
+            RollOutcome::Soft(soft) => Some(soft),
+        }
+    }
 }
 
 /// The roll verdict. `Err` is a failed step (the caller decides what that
@@ -455,26 +592,39 @@ enum Rolled {
 /// not describe when the recreate holds the service's lock is left as it is,
 /// and its next start reads the render. `Ok(None)` either way — the change is
 /// in place for a stopped agent too, waiting for its start — and the roll
-/// registry records the second as `idle`, not `rolled`.
+/// registry records the second as `idle`, not `rolled`. A caller that must
+/// say which happened (the seal, the update job's list of rolled agents)
+/// asks [`roll_running_agent_outcome`].
 pub async fn roll_running_agent(
     pg: &PgPool,
     sb: &SecretBox,
     department: &str,
 ) -> Result<Option<String>, String> {
+    roll_running_agent_outcome(pg, sb, department)
+        .await
+        .map(RollOutcome::into_verdict)
+}
+
+/// [`roll_running_agent`], answering how it ended ([`RollOutcome`]).
+pub async fn roll_running_agent_outcome(
+    pg: &PgPool,
+    sb: &SecretBox,
+    department: &str,
+) -> Result<RollOutcome, String> {
     roll_agent_mode(pg, sb, department, None, RollMode::IfRunning).await
 }
 
 /// One member of a fleet-wide roll batch, its batch stamped on its registry
 /// records so the live picture can group them. `include_stopped` is the
 /// batch's `all`: the person asked for stopped agents to be rolled — and so
-/// started — too; otherwise this is [`roll_running_agent`].
+/// started — too; otherwise this is [`roll_running_agent_outcome`].
 async fn roll_agent_in_batch(
     pg: &PgPool,
     sb: &SecretBox,
     department: &str,
     batch: &str,
     include_stopped: bool,
-) -> Result<Option<String>, String> {
+) -> Result<RollOutcome, String> {
     roll_agent_mode(pg, sb, department, Some(batch), batch_mode(include_stopped)).await
 }
 
@@ -484,26 +634,29 @@ async fn roll_agent_mode(
     department: &str,
     batch: Option<&str>,
     mode: RollMode,
-) -> Result<Option<String>, String> {
+) -> Result<RollOutcome, String> {
     // One roll per department at a time. The in-process set answers first
     // (cheap, and what a double-click hits); the Postgres session-level
     // advisory lock serializes across api instances. `try` rather than a
     // blocking wait: a second roll queued behind the first would only roll
     // the fresh container again, so "already rolling" is the honest verdict.
     let Some(_guard) = RollGuard::take(department) else {
-        return Ok(Some(format!(
+        return Ok(RollOutcome::Soft(format!(
             "department \"{department}\" is already mid-roll — wait for it to finish"
         )));
     };
-    let mut conn = pg.acquire().await.map_err(|e| e.to_string())?;
+    let mut conn = pg
+        .acquire()
+        .await
+        .map_err(|e| store_fault("[fleet] roll: no database connection for the roll lock", e))?;
     let key = roll_lock_key(department);
     let locked: (bool,) = sqlx::query_as("select pg_try_advisory_lock(hashtext($1))")
         .bind(&key)
         .fetch_one(&mut *conn)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| store_fault("[fleet] roll: advisory lock failed", e))?;
     if !locked.0 {
-        return Ok(Some(format!(
+        return Ok(RollOutcome::Soft(format!(
             "department \"{department}\" is already mid-roll on another api instance — wait for it to finish"
         )));
     }
@@ -520,16 +673,14 @@ async fn roll_agent_mode(
         batch: batch.map(str::to_string),
     });
     let outcome = roll_agent_locked(pg, sb, department, mode).await;
+    // A container still starting keeps its row `rolling`, noted, until the
+    // late wait decides (never a `failed` for an agent that then comes up).
     let (state, detail) = match &outcome {
         Ok(Rolled::Done) => (RollState::Done, None),
         Ok(Rolled::Soft(soft)) => (RollState::Failed, Some(soft.clone())),
-        Ok(Rolled::LeftStopped) => (RollState::Idle, None),
+        Ok(Rolled::LeftStopped | Rolled::StoppedStarting) => (RollState::Idle, None),
+        Ok(Rolled::StillStarting { .. }) => (RollState::Rolling, Some(STILL_STARTING.to_string())),
         Err(thrown) => (RollState::Failed, Some(thrown.clone())),
-    };
-    let verdict = match outcome {
-        Ok(Rolled::Done | Rolled::LeftStopped) => Ok(None),
-        Ok(Rolled::Soft(soft)) => Ok(Some(soft)),
-        Err(thrown) => Err(thrown),
     };
     record_roll(RollRecord {
         department: department.to_string(),
@@ -551,7 +702,107 @@ async fn roll_agent_mode(
         tracing::warn!("[fleet] roll lock for {department} could not be released: {e}");
         let _ = conn.close().await;
     }
-    verdict
+    match outcome {
+        Ok(Rolled::Done | Rolled::StoppedStarting) => Ok(RollOutcome::Rolled),
+        Ok(Rolled::LeftStopped) => Ok(RollOutcome::LeftAlone),
+        Ok(Rolled::Soft(soft)) => Ok(RollOutcome::Soft(soft)),
+        Ok(Rolled::StillStarting {
+            detail,
+            stops_before,
+        }) => {
+            // Off the caller's path, after the roll's locks are released: the
+            // wait goes on, and only the registry row it left is written.
+            let late = tokio::spawn(watch_late_health(
+                pg.clone(),
+                department.to_string(),
+                since,
+                stops_before,
+                batch.map(str::to_string),
+            ));
+            Ok(RollOutcome::StillStarting { detail, late })
+        }
+        Err(thrown) => Err(thrown),
+    }
+}
+
+/// The rest of a still-starting roll's health wait, for
+/// [`ROLL_LATE_HEALTH_WAIT_MS`]: its registry row turns `done` once the
+/// container reports healthy; `idle` as soon as it is not running after a
+/// person asked it to stop (a stop through the controls, or a retire);
+/// `failed` with the sentence once it has stayed down for
+/// [`talaria_fleet_docker::DOWN_SETTLE`] with no stop asked (it exited, or
+/// keeps crashing), or when the wait runs out with it still not healthy.
+/// `None` is anything but a failure — and so is a roll a newer roll of the
+/// department superseded: the newer one owns the row by then, is left
+/// alone, and reports its own end.
+async fn watch_late_health(
+    pg: PgPool,
+    department: String,
+    since: i64,
+    stops_before: u64,
+    batch: Option<String>,
+) -> Option<String> {
+    let seen =
+        talaria_fleet_docker::wait_health(&pg, &department, ROLL_LATE_HEALTH_WAIT_MS, stops_before)
+            .await;
+    let waited = (now_ms() - since) / 1000;
+    let failure = late_health_failure(seen, &department, waited);
+    let stopped = seen == talaria_fleet_docker::HealthWait::Stopped;
+    let written = record_roll_if_current(
+        since,
+        RollRecord {
+            department: department.clone(),
+            state: if stopped {
+                RollState::Idle
+            } else if failure.is_none() {
+                RollState::Done
+            } else {
+                RollState::Failed
+            },
+            since,
+            updated: now_ms(),
+            detail: failure.clone(),
+            batch,
+        },
+    );
+    if !written {
+        tracing::info!(
+            "[fleet] {department}: a newer roll owns its row — this roll's late health verdict is not recorded"
+        );
+        return None;
+    }
+    match &failure {
+        None if stopped => tracing::info!(
+            "[fleet] {department}: a stop was asked of it {waited}s after its roll started, before it reported healthy — the roll is not called failed"
+        ),
+        None => tracing::info!(
+            "[fleet] {department}: the recreated container reported healthy {waited}s after its roll started — the roll is done"
+        ),
+        Some(why) => tracing::warn!("[fleet] {department}: {why}"),
+    }
+    failure
+}
+
+/// The sentence a late health wait ends on, or `None` for a container that
+/// reported healthy, or that a person stopped.
+fn late_health_failure(
+    seen: talaria_fleet_docker::HealthWait,
+    department: &str,
+    waited_secs: i64,
+) -> Option<String> {
+    use talaria_fleet_docker::HealthWait;
+    match seen {
+        HealthWait::Healthy | HealthWait::Stopped => None,
+        HealthWait::Down => Some(format!(
+            "department \"{department}\": the recreated container stopped running before it reported healthy — see its logs"
+        )),
+        HealthWait::Unreadable => Some(format!(
+            "department \"{department}\": docker did not describe the recreated container in the {waited_secs}s since its roll, so whether it came up is unknown — see `docker ps` and its logs"
+        )),
+        HealthWait::Starting | HealthWait::Unhealthy => Some(format!(
+            "department \"{department}\": the recreated container did not report healthy within {waited_secs}s of its roll — see its logs"
+        )),
+    }
 }
 
 async fn roll_agent_locked(
@@ -574,7 +825,7 @@ async fn roll_agent_locked(
     .bind(department)
     .fetch_all(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[fleet] roll: department agents read failed", e))?;
     let Some((slug, display_name, active)) = rows.first().cloned() else {
         return Ok(Rolled::Soft(format!(
             "no managed agent in department \"{department}\""
@@ -601,6 +852,19 @@ async fn roll_agent_locked(
     // is always a plain one: the agent was running when the apply decided
     // to roll it, and the move is what takes it from -b to its home.
     let legacy = active.as_deref() == Some("b");
+    // The move holds the department's move lock from here until the home
+    // container is up (talaria-fleet-docker, "A legacy `-b` agent moving
+    // home"): every control verb waits for it before it resolves the
+    // agent's service, so none addresses the home service while `-b` still
+    // serves, and none is in flight while `-b` is read below. A stop that
+    // arrives meanwhile leaves its intent first; the move reads it before
+    // the retire.
+    let moving = if legacy {
+        Some(talaria_fleet_docker::lock_move(department).await)
+    } else {
+        None
+    };
+    let stops_before = talaria_fleet_docker::stop_mark(department);
     // The move home starts the home container whatever `-b` was doing, so a
     // roll that must not start an agent checks `-b` first (and again before
     // the retire, below): one that is not running (or that docker will not
@@ -627,12 +891,17 @@ async fn roll_agent_locked(
             Err(e) => Err(e),
         };
         // The read above came before the render and the pull — minutes, for a
-        // new pin — so a roll that must not start an agent reads `-b` again,
+        // new pin. A stop asked of the agent meanwhile is waiting for this
+        // move: honour it before anything is retired — the def goes back on
+        // `-b`, and the stop, once the move lock is free, stops `-b` there.
+        // Otherwise a roll that must not start an agent reads `-b` again,
         // under its service's lock, just before the retire that lets the home
         // container start: one stopped meanwhile stays where it is
-        // (`retire_running`). A stop that lands after the def points home
-        // addresses the home service instead, and is not seen here.
+        // (`retire_running`).
+        let stop_asked =
+            ready.is_ok() && talaria_fleet_docker::stopped_since(department, stops_before);
         let moved = match ready {
+            Ok(()) if stop_asked => Ok(Some(None)),
             Ok(()) => {
                 let retired = if mode == RollMode::IfRunning {
                     talaria_fleet_docker::retire_running(
@@ -647,7 +916,7 @@ async fn roll_agent_locked(
                 };
                 match retired {
                     Ok(talaria_fleet_docker::Retired::Done) => Ok(None),
-                    Ok(talaria_fleet_docker::Retired::LeftAlone(seen)) => Ok(Some(seen)),
+                    Ok(talaria_fleet_docker::Retired::LeftAlone(seen)) => Ok(Some(Some(seen))),
                     Err(e) if talaria_fleet_docker::container_running(&legacy).await => Err(e),
                     Err(e) => {
                         tracing::warn!(
@@ -664,13 +933,18 @@ async fn roll_agent_locked(
             Ok(Some(seen)) => {
                 let _ = set_active_slot(pg, &slug, "b").await;
                 let _ = render(pg, sb).await;
-                if seen == talaria_fleet_docker::Observed::Unreadable {
-                    return Ok(Rolled::Soft(unconfirmed_apply(department)));
+                match seen {
+                    None => tracing::info!(
+                        "[fleet] {display_name} ({department}): a stop was asked of it while its roll moved it home — left in its legacy -b container for the stop; its next start reads the render"
+                    ),
+                    Some(talaria_fleet_docker::Observed::Unreadable) => {
+                        return Ok(Rolled::Soft(unconfirmed_apply(department)));
+                    }
+                    Some(seen) => tracing::info!(
+                        "[fleet] {display_name} ({department}): its legacy -b container was {} by the time its roll would retire it — left as it is; its next start reads the render",
+                        seen.describe()
+                    ),
                 }
-                tracing::info!(
-                    "[fleet] {display_name} ({department}): its legacy -b container was {} by the time its roll would retire it — left as it is; its next start reads the render",
-                    seen.describe()
-                );
                 return Ok(Rolled::LeftStopped);
             }
             Err(e) => {
@@ -704,13 +978,56 @@ async fn roll_agent_locked(
     } else {
         talaria_fleet_docker::fleet_recreate(pg, department).await?;
     }
-    if !talaria_fleet_docker::wait_healthy(pg, department, ROLL_HEALTH_WAIT_MS).await {
-        return Ok(Rolled::Soft(format!(
-            "{display_name}: the recreated container did not report healthy within {}s — see its logs",
-            ROLL_HEALTH_WAIT_MS / 1000
-        )));
+    // The agent is home (or was never away): a verb waiting on the move
+    // addresses the home container from here.
+    drop(moving);
+    // A stop asked of the agent since its roll started, and carried out once
+    // the recreate let go of the service's lock, ends either health wait as
+    // a stop, not a failure (`stops_before` was read before the render).
+    let verdict = health_verdict(
+        talaria_fleet_docker::wait_health(pg, department, ROLL_HEALTH_WAIT_MS, stops_before).await,
+        &display_name,
+        stops_before,
+    );
+    if matches!(verdict, Rolled::StoppedStarting) {
+        tracing::info!(
+            "[fleet] {display_name} ({department}): a stop was asked of it before its recreated container reported healthy — the roll landed, and the agent is stopped"
+        );
     }
-    Ok(Rolled::Done)
+    Ok(verdict)
+}
+
+/// The roll's verdict from its bounded health wait. A container still
+/// running when the wait passed has not come up YET — whether docker reads
+/// its healthcheck as `starting` or, past the start period and retries, as
+/// `unhealthy` — so it is still starting, and the late wait decides. A
+/// container a person stopped meanwhile is a roll that landed and was then
+/// stopped. A container that stopped running on its own, or that docker
+/// would not describe at all, is a failure.
+fn health_verdict(
+    seen: talaria_fleet_docker::HealthWait,
+    display_name: &str,
+    stops_before: u64,
+) -> Rolled {
+    use talaria_fleet_docker::HealthWait;
+    match seen {
+        HealthWait::Healthy => Rolled::Done,
+        HealthWait::Starting | HealthWait::Unhealthy => Rolled::StillStarting {
+            detail: format!(
+                "{display_name}: the recreated container has not reported healthy within {}s and is still starting — the roll finishes when it does",
+                ROLL_HEALTH_WAIT_MS / 1000
+            ),
+            stops_before,
+        },
+        HealthWait::Stopped => Rolled::StoppedStarting,
+        HealthWait::Down => Rolled::Soft(format!(
+            "{display_name}: the recreated container stopped running before it reported healthy — see its logs"
+        )),
+        HealthWait::Unreadable => Rolled::Soft(format!(
+            "{display_name}: docker did not describe the recreated container in the {}s after its roll, so whether it came up is unknown — see `docker ps` and its logs",
+            ROLL_HEALTH_WAIT_MS / 1000
+        )),
+    }
 }
 
 /// One render through the wired edge.
@@ -728,7 +1045,7 @@ async fn set_active_slot(pg: &PgPool, slug: &str, slot: &str) -> Result<(), Stri
         .execute(pg)
         .await
         .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| store_fault("[fleet] roll: active slot write failed", e))
 }
 
 /// What [`reconcile_fleet`] did: the render's agent count, the agents it
@@ -775,7 +1092,7 @@ pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileRes
     let managed: Vec<(String, String)> = sqlx::query_as(DEPARTMENT_RUNNERS_SQL)
         .fetch_all(pg)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| store_fault("[fleet] reconcile: department runners read failed", e))?;
     let states = if managed.is_empty() {
         Vec::new()
     } else {
@@ -839,7 +1156,7 @@ pub async fn roll_running_agents(
     let managed: Vec<(String, String)> = sqlx::query_as(DEPARTMENT_RUNNERS_SQL)
         .fetch_all(pg)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| store_fault("[fleet] roll: department runners read failed", e))?;
     let running: HashSet<String> = if managed.is_empty() {
         HashSet::new()
     } else {
@@ -856,9 +1173,16 @@ pub async fn roll_running_agents(
         if !running.contains(department) {
             continue;
         }
-        match roll_running_agent(pg, sb, department).await {
-            Ok(None) => rolled.push(display_name.clone()),
-            Ok(Some(error)) => warnings.push(error),
+        // Named rolled only when its container was recreated: one stopped
+        // after the sweep above is left as it is, and is not on the list.
+        match roll_running_agent_outcome(pg, sb, department).await {
+            Ok(RollOutcome::Rolled) => rolled.push(display_name.clone()),
+            Ok(RollOutcome::StillStarting { detail, .. }) => {
+                rolled.push(display_name.clone());
+                warnings.push(detail);
+            }
+            Ok(RollOutcome::LeftAlone) => {}
+            Ok(RollOutcome::Soft(error)) => warnings.push(error),
             Err(e) => warnings.push(e),
         }
     }
@@ -911,12 +1235,37 @@ pub struct RollFailure {
 
 pub type RollFailureHook = Arc<dyn Fn(RollFailure) -> BoxFuture<'static, ()> + Send + Sync>;
 
-/// Decide the batch — managed, enabled, currently running (every managed
-/// enabled agent with `all`), minus departments already mid-roll — and return
-/// at once; the rolls themselves run detached, `roll_concurrency()` at a time
-/// in roster order. Each roll goes through `roll_agent_in_batch`, so the
+/// Split agents ranked within their departments (department, then the
+/// render's runner order) into each department's runner and the agents left
+/// out of a department another agent runs in: `(slug, department, runner's
+/// display name)`.
+fn department_runners(
+    ranked: Vec<(String, String, String, String)>,
+) -> (
+    Vec<(String, String, String, String)>,
+    Vec<(String, String, String)>,
+) {
+    let mut runners: Vec<(String, String, String, String)> = Vec::new();
+    let mut left_out = Vec::new();
+    for row in ranked {
+        match runners.last() {
+            Some(runner) if runner.2 == row.2 => {
+                left_out.push((row.1, row.2, runner.3.clone()));
+            }
+            _ => runners.push(row),
+        }
+    }
+    (runners, left_out)
+}
+
+/// Decide the batch — one roll per department, of the agent that runs in its
+/// container, managed, enabled, currently running (every managed enabled
+/// agent with `all`), minus departments already mid-roll — and return at
+/// once; the rolls themselves run detached, `roll_concurrency()` at a time in
+/// roster order. Each roll goes through `roll_agent_in_batch`, so the
 /// registry carries its start and its verdict, and a failed one also reaches
-/// `on_failed`.
+/// `on_failed` — a container still starting at the health wait only once its
+/// late wait fails.
 pub async fn start_roll_batch(
     pg: &PgPool,
     sb: &SecretBox,
@@ -924,13 +1273,24 @@ pub async fn start_roll_batch(
     all: bool,
     on_failed: RollFailureHook,
 ) -> Result<RollBatch, String> {
-    let managed: Vec<(String, String, String, String)> = sqlx::query_as(
-        "select id::text, slug, department, display_name from agent_defs \
-         where managed and enabled order by slug",
+    // Every managed, enabled agent, ranked within its department the way the
+    // render picks the one it runs there ([`DEPARTMENT_RUNNERS_SQL`]). A
+    // department is ONE container: a pair that predates the one-agent rule
+    // is rolled once, as its runner, and the agent left out is named as
+    // skipped rather than rolled — it has no container of its own.
+    let ranked: Vec<(String, String, String, String)> = sqlx::query_as(
+        "select d.id::text, d.slug, d.department, d.display_name from agent_defs d \
+         where d.managed and d.enabled \
+         order by d.department, \
+           exists (select 1 from agent_versions v \
+             where v.agent_id = d.id and v.version = d.current_version) desc, \
+           d.created_at, d.id",
     )
     .fetch_all(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[fleet] roll batch: agents read failed", e))?;
+    let (mut managed, left_out) = department_runners(ranked);
+    managed.sort_by(|a, b| a.1.cmp(&b.1));
     let running: HashSet<String> = if managed.is_empty() {
         HashSet::new()
     } else {
@@ -946,6 +1306,14 @@ pub async fn start_roll_batch(
         rolling: Vec::new(),
         skipped: Vec::new(),
     };
+    for (slug, department, runner) in left_out {
+        plan.skipped.push(RollSkip {
+            slug,
+            why: format!(
+                "shares department \"{department}\" with {runner}, which runs in its container"
+            ),
+        });
+    }
     let mut queue: Vec<(String, String, String, String)> = Vec::new();
     for (id, slug, department, display_name) in managed {
         if is_rolling(&department) {
@@ -989,12 +1357,23 @@ pub async fn start_roll_batch(
         tokio::spawn(async move {
             // A closed semaphore is impossible here (nobody closes it); a
             // failed acquire would only mean the runtime is going down.
-            let Ok(_permit) = semaphore.acquire_owned().await else {
+            let Ok(permit) = semaphore.acquire_owned().await else {
                 return;
             };
             let error = match roll_agent_in_batch(&pg, &sb, &department, &batch, all).await {
-                Ok(None) => return,
-                Ok(Some(soft)) => soft,
+                Ok(RollOutcome::Rolled | RollOutcome::LeftAlone) => return,
+                // Recreated and still booting: the batch moves on (the slot
+                // frees as it always did, at the health wait), and only a
+                // late wait that fails is a failure to report.
+                Ok(RollOutcome::StillStarting { late, .. }) => {
+                    drop(permit);
+                    match late.await {
+                        Ok(None) => return,
+                        Ok(Some(failed)) => failed,
+                        Err(e) => format!("its late health wait was lost: {e}"),
+                    }
+                }
+                Ok(RollOutcome::Soft(soft)) => soft,
                 Err(thrown) => thrown,
             };
             tracing::warn!("[fleet] roll of {display_name} ({department}) failed: {error}");
@@ -1117,6 +1496,156 @@ mod tests {
         // Every other batch member is rolled only if it still runs when its
         // recreate holds the service's lock.
         assert_eq!(batch_mode(false), RollMode::IfRunning);
+    }
+
+    #[test]
+    fn a_batch_rolls_each_department_once_as_its_runner() {
+        let row = |id: &str, slug: &str, dept: &str, name: &str| {
+            (
+                id.to_string(),
+                slug.to_string(),
+                dept.to_string(),
+                name.to_string(),
+            )
+        };
+        // Ranked as the query ranks them: by department, the runner first.
+        let (runners, left_out) = department_runners(vec![
+            row("1", "ada", "ops", "Ada"),
+            row("2", "zed", "research", "Zed"),
+            row("3", "ava", "research", "Ava"),
+            row("4", "bob", "eng", "Bob"),
+        ]);
+        let slugs: Vec<&str> = runners.iter().map(|r| r.1.as_str()).collect();
+        assert_eq!(slugs, vec!["ada", "zed", "bob"]);
+        // The agent left out of a shared department is named, with whose
+        // container it is — never queued as a second roll of the same one.
+        assert_eq!(
+            left_out,
+            vec![("ava".to_string(), "research".to_string(), "Zed".to_string())]
+        );
+        let (runners, left_out) = department_runners(Vec::new());
+        assert!(runners.is_empty() && left_out.is_empty());
+    }
+
+    #[test]
+    fn a_container_still_running_at_the_health_wait_is_still_starting() {
+        use talaria_fleet_docker::HealthWait;
+        assert!(matches!(
+            health_verdict(HealthWait::Healthy, "Ava", 0),
+            Rolled::Done
+        ));
+        // Still booting: docker reads it as `starting`, or — past the
+        // healthcheck's start period and retries — `unhealthy`; neither is
+        // a failure while the container runs. The late wait reads stops
+        // against the roll's own mark.
+        for seen in [HealthWait::Starting, HealthWait::Unhealthy] {
+            match health_verdict(seen, "Ava", 7) {
+                Rolled::StillStarting {
+                    detail,
+                    stops_before,
+                } => {
+                    assert!(detail.starts_with("Ava: "), "{detail}");
+                    assert!(detail.contains("still starting"), "{detail}");
+                    assert_eq!(stops_before, 7);
+                }
+                _ => panic!("{seen:?} is still starting"),
+            }
+        }
+        // A person's stop during the wait: the roll landed, then stopped.
+        assert!(matches!(
+            health_verdict(HealthWait::Stopped, "Ava", 0),
+            Rolled::StoppedStarting
+        ));
+        // Down on its own is the failure; so is a docker that never said.
+        match health_verdict(HealthWait::Down, "Ava", 0) {
+            Rolled::Soft(why) => assert!(why.contains("stopped running"), "{why}"),
+            _ => panic!("a container that is not running failed its roll"),
+        }
+        match health_verdict(HealthWait::Unreadable, "Ava", 0) {
+            Rolled::Soft(why) => assert!(why.contains("did not describe"), "{why}"),
+            _ => panic!("a container docker never described is not a roll that landed"),
+        }
+    }
+
+    #[test]
+    fn the_late_wait_is_done_on_healthy_quiet_on_a_stop_and_failed_otherwise() {
+        use talaria_fleet_docker::HealthWait;
+        assert_eq!(late_health_failure(HealthWait::Healthy, "ops", 240), None);
+        assert_eq!(late_health_failure(HealthWait::Stopped, "ops", 300), None);
+        let late = late_health_failure(HealthWait::Starting, "ops", 900).expect("a failure");
+        assert!(late.contains("within 900s"), "{late}");
+        assert!(late_health_failure(HealthWait::Unhealthy, "ops", 900).is_some());
+        let down = late_health_failure(HealthWait::Down, "ops", 300).expect("a failure");
+        assert!(down.contains("stopped running"), "{down}");
+        let unread = late_health_failure(HealthWait::Unreadable, "ops", 900).expect("a failure");
+        assert!(unread.contains("in the 900s"), "{unread}");
+    }
+
+    #[test]
+    fn a_still_starting_row_expires_once_no_late_wait_can_be_watching_it() {
+        let now = now_ms();
+        let starting = |updated: i64| RollRecord {
+            detail: Some(STILL_STARTING.into()),
+            updated,
+            ..rec("stale", RollState::Rolling, updated)
+        };
+        // Within the late wait (and its margin): kept.
+        assert!(!starting(now - ROLL_LATE_HEALTH_WAIT_MS as i64).expired(now));
+        // Past it: its watcher died with its process, and it drops.
+        assert!(starting(now - STILL_STARTING_STALE_MS - 1).expired(now));
+        // A roll still in its own steps (a pull, a drain) keeps its row
+        // however long they run.
+        let rolling = rec("stale", RollState::Rolling, now - 2 * ROLL_OUTCOME_TTL_MS);
+        assert!(!rolling.expired(now));
+        // A verdict keeps for the outcome TTL.
+        assert!(!rec("stale", RollState::Done, now - 60_000).expired(now));
+        assert!(rec("stale", RollState::Done, now - ROLL_OUTCOME_TTL_MS - 1).expired(now));
+    }
+
+    #[test]
+    fn a_late_verdict_lands_only_on_its_own_rows_rolling_record() {
+        let since = now_ms() - 200_000;
+        record_roll(RollRecord {
+            detail: Some(STILL_STARTING.into()),
+            ..rec("late-a", RollState::Rolling, since)
+        });
+        assert!(still_starting("late-a"));
+        assert!(record_roll_if_current(
+            since,
+            rec("late-a", RollState::Done, now_ms())
+        ));
+        assert_eq!(
+            roll_record("late-a").map(|r| r.state),
+            Some(RollState::Done)
+        );
+        assert!(!still_starting("late-a"));
+        // A newer roll owns the row: an older roll's late verdict is dropped.
+        let newer = now_ms();
+        record_roll(rec("late-b", RollState::Rolling, newer));
+        assert!(!record_roll_if_current(
+            since,
+            rec("late-b", RollState::Failed, now_ms())
+        ));
+        assert_eq!(
+            roll_record("late-b").map(|r| r.state),
+            Some(RollState::Rolling)
+        );
+        // A row that already has its verdict is not overwritten either.
+        record_roll(rec("late-c", RollState::Done, since));
+        assert!(!record_roll_if_current(
+            since,
+            rec("late-c", RollState::Failed, now_ms())
+        ));
+    }
+
+    #[test]
+    fn a_left_alone_or_still_starting_roll_is_no_soft_failure() {
+        assert_eq!(RollOutcome::Rolled.into_verdict(), None);
+        assert_eq!(RollOutcome::LeftAlone.into_verdict(), None);
+        assert_eq!(
+            RollOutcome::Soft("department \"ops\" is already mid-roll".into()).into_verdict(),
+            Some("department \"ops\" is already mid-roll".into())
+        );
     }
 
     #[test]

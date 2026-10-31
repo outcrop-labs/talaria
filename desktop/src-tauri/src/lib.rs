@@ -13,8 +13,11 @@
 //     and a notification post — no fs, nothing else.
 //
 // Every instance webview gets its own data directory, so cookie jars and
-// localStorage never mix; hidden webviews stay loaded (sessions and SSE
-// survive a switch).
+// localStorage never mix. A hidden webview stays loaded (sessions and SSE
+// survive a switch) until it has been off screen for the suspend timeout;
+// then, if its page agrees, it is closed, and showing it again recreates it at
+// the exact page it was on (suspend.rs; the shell watches its notifications
+// meanwhile, watch.rs).
 //
 // The shell owns all geometry: WebKitGTK mis-places new child webviews until
 // their first set_bounds (tauri#10420) and auto_resize breaks across resize
@@ -36,7 +39,14 @@ mod layout;
 mod notify;
 mod registry;
 mod settings;
-use std::{fs, path::PathBuf, sync::Mutex};
+mod suspend;
+mod watch;
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+    path::PathBuf,
+    sync::{Mutex, atomic::AtomicBool},
+};
 
 use serde::Serialize;
 use tauri::Manager;
@@ -70,6 +80,17 @@ pub struct AddAttempt {
     pub abort: tokio::task::AbortHandle,
 }
 
+/// An instance whose webview the shell closed (suspend.rs). Showing it again
+/// recreates the webview at `page` and puts its session and scroll back.
+pub struct Suspended {
+    /// The last page, as recorded (`last_urls`) when it was suspended.
+    pub page: Option<String>,
+    pub scroll: Vec<suspend::Scroll>,
+    pub session: Vec<(String, String)>,
+    /// Its notifications, while the page is gone (watch.rs).
+    pub watcher: Option<tauri::async_runtime::JoinHandle<()>>,
+}
+
 /// Lock discipline: no code holds one of these mutexes while it takes another,
 /// except `adding`, which an add holds through registration, and which nothing
 /// takes while holding another. Async commands run on tokio workers while sync
@@ -98,6 +119,14 @@ pub struct ShellState {
     failure_seq: std::sync::atomic::AtomicU64,
     adding: Mutex<Option<AddAttempt>>,
     add_seq: std::sync::atomic::AtomicU64,
+    /// Local id → the last page it showed (registry `lastUrls`).
+    last_urls: Mutex<BTreeMap<String, String>>,
+    /// The suspend clock (suspend.rs).
+    activity: Mutex<suspend::Activity>,
+    suspended: Mutex<HashMap<String, Suspended>>,
+    /// The shell minimized the window itself and it has not been focused
+    /// since: GTK on Wayland reports no minimized state of its own.
+    self_minimized: AtomicBool,
 }
 
 impl ShellState {
@@ -120,14 +149,23 @@ impl ShellState {
         // writes cannot land out of order.
         let active = self.active.lock().unwrap().clone();
         let removed = self.removed.lock().unwrap().clone();
+        let last_urls = self.last_urls.lock().unwrap().clone();
         let instances = self.instances.lock().unwrap();
-        registry::save(&self.registry_path, &instances, active.as_deref(), &removed)
+        registry::save(
+            &self.registry_path,
+            &registry::Record {
+                instances: &instances,
+                last_view: active.as_deref(),
+                removed: &removed,
+                last_urls: &last_urls,
+            },
+        )
     }
 }
 
-/// Grant one instance origin the switcher, window-chrome, updater, and
-/// notification command set — the only IPC remote content ever gets, and only for origins
-/// the user registered.
+/// Grant one instance origin the switcher, window-chrome, updater,
+/// notification and suspend command set — the only IPC remote content ever
+/// gets, and only for origins the user registered.
 fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Result<(), String> {
     let capability = tauri::ipc::CapabilityBuilder::new(format!("switcher-{}", instance.id))
         .webview(format!("instance-{}", instance.id))
@@ -140,40 +178,45 @@ fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Resu
         .permission("allow-desktop-window")
         .permission("allow-check-for-update")
         .permission("allow-install-update")
-        .permission("allow-desktop-notify");
+        .permission("allow-desktop-notify")
+        .permission("allow-set-suspend-after")
+        .permission("allow-desktop-suspend-report");
     app.add_capability(capability)
         .map_err(|e| format!("granting the instance switcher access: {e}"))
 }
 
-/// Beacon client. The platform verifier is preferred (enterprise CAs), but
-/// it refuses to build when the system store is empty — a Flatpak whose
-/// `SSL_CERT_FILE` points at a host path the sandbox cannot see, or a
-/// runtime whose probe paths are empty. That error aborts setup, and a
-/// `.desktop` launch (`Terminal=false`) shows nothing. Mozilla's roots
-/// still verify the beacon.
+/// An HTTP client for the shell's own requests. The platform verifier is
+/// preferred (enterprise CAs), but it refuses to build when the system store
+/// is empty — a Flatpak whose `SSL_CERT_FILE` points at a host path the
+/// sandbox cannot see, or a runtime whose probe paths are empty. That error
+/// aborts setup, and a `.desktop` launch (`Terminal=false`) shows nothing.
+/// Mozilla's roots still verify.
 ///
-/// Two bounds, not one: a short connect timeout so a black-holed address
-/// fails in seconds, and a longer total so a slow-but-alive instance is not
-/// refused (beacon.rs has the numbers and why).
-fn http_client() -> reqwest::Client {
-    let build = || {
-        reqwest::Client::builder()
-            .connect_timeout(beacon::CONNECT_TIMEOUT)
-            .timeout(beacon::TOTAL_TIMEOUT)
-            .redirect(reqwest::redirect::Policy::limited(3))
-    };
+/// Every client has the short connect bound, so a black-holed address fails
+/// in seconds; `configure` adds the rest.
+pub(crate) fn build_client(
+    configure: impl Fn(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
+) -> reqwest::Client {
+    let build = || configure(reqwest::Client::builder().connect_timeout(beacon::CONNECT_TIMEOUT));
     match build().build() {
         Ok(client) => client,
         Err(_) => {
             let certs = webpki_root_certs::TLS_SERVER_ROOT_CERTS
                 .iter()
                 .filter_map(|der| reqwest::Certificate::from_der(der.as_ref()).ok());
-            build()
-                .tls_certs_only(certs)
-                .build()
-                .expect("beacon client")
+            build().tls_certs_only(certs).build().expect("http client")
         }
     }
+}
+
+/// Beacon client: two bounds, not one — the connect bound, and a longer total
+/// so a slow-but-alive instance is not refused (beacon.rs has the numbers and
+/// why).
+fn http_client() -> reqwest::Client {
+    build_client(|b| {
+        b.timeout(beacon::TOTAL_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::limited(3))
+    })
 }
 
 pub fn run() {
@@ -191,7 +234,8 @@ pub fn run() {
             let data_root = dir.join("instances");
             let mut notices = Vec::new();
 
-            let loaded = registry::load(&registry_path);
+            let mut loaded = registry::load(&registry_path);
+            let last_urls = std::mem::take(&mut loaded.last_urls);
             notices.extend(loaded.notice.clone());
             let (loaded_settings, settings_notice) = settings::load(&settings_path);
             notices.extend(settings_notice);
@@ -218,9 +262,12 @@ pub fn run() {
                 // below has no active instance yet.
                 if let Err(e) = registry::save(
                     &registry_path,
-                    &loaded.instances,
-                    reopen.as_deref(),
-                    &swept.pending,
+                    &registry::Record {
+                        instances: &loaded.instances,
+                        last_view: reopen.as_deref(),
+                        removed: &swept.pending,
+                        last_urls: &last_urls,
+                    },
                 ) {
                     eprintln!("talaria-desktop: {e}");
                 }
@@ -256,6 +303,27 @@ pub fn run() {
                 failure_seq: Default::default(),
                 adding: Mutex::new(None),
                 add_seq: Default::default(),
+                last_urls: Mutex::new(last_urls),
+                activity: Mutex::new(suspend::Activity::default()),
+                suspended: Mutex::new(HashMap::new()),
+                self_minimized: AtomicBool::new(false),
+            });
+            // The suspend clock. Each tick is a few lock reads on the main
+            // thread; a page is only asked once it is due.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut every = tokio::time::interval(suspend::TICK);
+                every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    every.tick().await;
+                    let app = handle.clone();
+                    if handle
+                        .run_on_main_thread(move || commands::suspend_tick(&app))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
             });
             // After state exists, and after decorations (they change the
             // client rect). The initial Resized often already happened.
@@ -264,10 +332,16 @@ pub fn run() {
             }
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::Resized(_)) {
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Resized(_) => {
                 layout::relayout(window);
+                commands::window_returned(window.app_handle(), false);
             }
+            tauri::WindowEvent::Focused(true) => {
+                commands::window_returned(window.app_handle(), true);
+            }
+            tauri::WindowEvent::CloseRequested { .. } => commands::remember_all(window.app_handle()),
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_instances,
@@ -280,6 +354,8 @@ pub fn run() {
             commands::remove_instance,
             commands::get_desktop_settings,
             commands::set_titlebar_mode,
+            commands::set_suspend_after,
+            commands::desktop_suspend_report,
             commands::desktop_window,
             commands::check_for_update,
             commands::install_update,

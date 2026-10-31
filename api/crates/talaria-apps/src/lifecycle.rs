@@ -1131,15 +1131,33 @@ async fn truncate_store(slug: &str) -> Result<(), String> {
     .map(|_| ())
 }
 
+/// `--mount` for a bind of `src` at `dst`, the form that REFUSES a source the
+/// daemon's host does not have. `-v src:dst` creates a missing source as an
+/// empty root-owned directory on that host instead. The path is this
+/// process's, and the daemon resolves it on its own host, so the two differ
+/// wherever this api runs in a container without the same-path mount: a box
+/// whose api took its app dirs from its cwd did exactly that (follow-ups UB1,
+/// UB4). Fields are CSV-quoted, which is how docker parses `--mount`, so a
+/// comma in a path stays in the path.
+pub(crate) fn bind_mount(src: &Path, dst: &str) -> String {
+    let field = |k: &str, v: &str| format!("\"{k}={}\"", v.replace('"', "\"\""));
+    format!(
+        "type=bind,{},{}",
+        field("src", &src.display().to_string()),
+        field("dst", dst)
+    )
+}
+
 /// Remove an app's data directory. The database files inside belong to the
 /// database container's user, which this process usually is not, so what it
 /// cannot remove itself is removed by a throwaway container of the same
-/// image, with no network, mounting only this directory.
+/// image, with no network, mounting only this directory (`bind_mount`: a
+/// directory the daemon's host lacks is an error, never a new one).
 pub async fn remove_data_dir(dir: &Path) -> Result<(), String> {
     if remove_tree(dir).await.is_ok() {
         return Ok(());
     }
-    let mount = format!("{}:/d", dir.display());
+    let mount = bind_mount(dir, "/d");
     docker(
         &[
             "run",
@@ -1148,7 +1166,7 @@ pub async fn remove_data_dir(dir: &Path) -> Result<(), String> {
             "none",
             "--entrypoint",
             "sh",
-            "-v",
+            "--mount",
             &mount,
             &db_image(),
             "-c",
@@ -1244,6 +1262,21 @@ mod live;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // UB4: the data directory is bound with `--mount`, which refuses a
+    // missing source; `-v` makes one, root-owned, on the daemon's host.
+    #[test]
+    fn the_data_dir_is_bound_so_a_missing_source_is_refused() {
+        assert_eq!(
+            bind_mount(Path::new("/srv/talaria/app-data/notes"), "/d"),
+            r#"type=bind,"src=/srv/talaria/app-data/notes","dst=/d""#
+        );
+        // docker reads --mount as CSV: a comma or a quote in a path stays in it.
+        assert_eq!(
+            bind_mount(Path::new(r#"/srv/a,b/"q"/notes"#), "/d"),
+            r#"type=bind,"src=/srv/a,b/""q""/notes","dst=/d""#
+        );
+    }
 
     /// Credentials that record every ask and hand out nothing.
     #[derive(Default)]

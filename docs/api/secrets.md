@@ -190,7 +190,7 @@ Source: [`api/crates/talaria-routes-integrations/src/secrets/secrets_share.rs`](
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apisecretsshare-body) | `…` | 200, 400, 403, 404 | audit |
+| POST | `session` | [body](#post-apisecretsshare-body) | `{secret}` | 200, 400, 403, 404 | audit |
 
 ### POST `/api/secrets/share` body
 

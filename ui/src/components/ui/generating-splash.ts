@@ -49,7 +49,9 @@ export function splashLabel(base: string, seconds: number): string {
  * duplicate it here.
  */
 export const splashSources: DitherSource[] = [
-  { id: 'splash-lull', kind: 'edge', side: 'top', depth: 46, strength: 0.14 },
-  { id: 'splash-drift-a', kind: 'wave', axis: 'x', wavelength: 240, speed: 20, strength: 0.42 },
-  { id: 'splash-drift-b', kind: 'wave', axis: 'y', wavelength: 90, speed: -11, strength: 0.24 },
+  // Strengths tuned with the splash's alphas to the median look it had while
+  // its dots built up (N11): see LIVE_FIELD_TUNING in lib/dither-engine.ts.
+  { id: 'splash-lull', kind: 'edge', side: 'top', depth: 46, strength: 0.07 },
+  { id: 'splash-drift-a', kind: 'wave', axis: 'x', wavelength: 240, speed: 20, strength: 0.63 },
+  { id: 'splash-drift-b', kind: 'wave', axis: 'y', wavelength: 90, speed: -11, strength: 0.36 },
 ]

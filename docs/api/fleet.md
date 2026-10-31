@@ -76,7 +76,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs`]
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcontrol-body) | `…` | 200, 202, 400, 404, 409, 500, … | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcontrol-body) | `{ok, rolling} or {ok, pending, state} or {ok, warming} or {ok} or {ok, render} or {ok, removedVolume}` | 200, 202, 400, 404, 409, 500, … | audit |
 
 ### POST `/api/fleet/agents/{id}/control` body
 
@@ -280,7 +280,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_edit.rs`](../.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidedit-body) | `{ok, version, created, applied, notes}` | 200, 400, 404 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidedit-body) | `{ok, version, created, applied, notes}` | 200, 202, 400, 404 | audit |
 
 ### POST `/api/fleet/defs/{id}/edit` body
 
@@ -364,7 +364,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_mcp.rs`](../..
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `agent-reader` | — | `{agent, canInstall, servers, legacy}` | 200, 404 | — |
-| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidmcp-body) | `…` | 200, 400, 404 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidmcp-body) | `…` | 200, 202, 400, 404 | audit |
 
 ### POST `/api/fleet/defs/{id}/mcp` body
 
@@ -553,8 +553,8 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_roll.rs`](../../api/cr
 
 > /api/fleet/roll — roll every agent container at once, in-platform. Admin.
 >   POST  queue an in-place roll of every managed, enabled agent that is
->         running (`{"all": true}`: every managed enabled agent). Answers at
->         once; the rolls run detached, TALARIA_FLEET_ROLL_CONCURRENCY
+>         running (`{"all": true}`: every managed enabled agent), once per
+>         department — the agent that runs in its container. Answers at
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
