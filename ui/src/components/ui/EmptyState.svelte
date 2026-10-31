@@ -64,10 +64,13 @@
   // (#625), and repainted only on a resize, a theme flip or a source change.
   // The frame is the one reduced-motion readers already saw.
   const sources: DitherSource[] = [
-    { id: 'n', kind: 'edge', side: 'top', depth: 60, strength: 0.28 },
-    { id: 's', kind: 'edge', side: 'bottom', depth: 60, strength: 0.28 },
-    { id: 'w', kind: 'edge', side: 'left', depth: 80, strength: 0.2 },
-    { id: 'e', kind: 'edge', side: 'right', depth: 80, strength: 0.2 },
+    // Tuned, with the alphas below, to the median look this still field had
+    // across browsers, DPRs and sub-pixel positions once its entrance had built
+    // it up (N11): see LIVE_FIELD_TUNING in lib/dither-engine.ts.
+    { id: 'n', kind: 'edge', side: 'top', depth: 60, strength: 0.21 },
+    { id: 's', kind: 'edge', side: 'bottom', depth: 60, strength: 0.21 },
+    { id: 'w', kind: 'edge', side: 'left', depth: 80, strength: 0.15 },
+    { id: 'e', kind: 'edge', side: 'right', depth: 80, strength: 0.15 },
   ]
 </script>
 
@@ -101,7 +104,7 @@
     <!-- A still field: no shimmer, so the engine builds it once and parks
          (see the sources above for why). -->
     {#if wantsVignette}
-      <DitherLayer {sources} organic={0.55} alphaFloor={0.04} maxAlpha={0.38} />
+      <DitherLayer {sources} organic={0.55} alphaFloor={0.0518} maxAlpha={0.703} />
     {/if}
     <div
       class={cn(
