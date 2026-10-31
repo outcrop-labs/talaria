@@ -27,7 +27,7 @@
   import { useFleet } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { fly, slide, staggerIn } from '@/lib/motion'
-  import { containersOf, rollFleet, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
+  import { containersOf, rollFleet, rollRowsBySlug, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import AgentListRow from './AgentListRow.svelte'
@@ -98,7 +98,9 @@
   // failure sentence, the disabled Roll control — and the strip above the
   // roster reads the whole.
   const rollQuery = useFleetRoll(() => isAdmin)
-  const rollByDept = $derived(new Map((rollQuery.data?.rolls ?? []).map((r) => [r.department, r])))
+  // By slug, not department (`rollRowsBySlug`): an agent left out of a shared
+  // department reads its own idle row, not the runner's.
+  const rollBySlug = $derived(rollRowsBySlug(rollQuery.data?.rolls))
   const anyRolling = $derived(rollQuery.data?.rolling ?? false)
   // The confirm step lives in the page, above the roster, not in a dialog:
   // what is about to happen is visible beside the agents it happens to.
@@ -481,9 +483,9 @@
               {@const brainByAgent = new Map((data.brains ?? []).map((b) => [b.agent, b]))}
               {#each data.defs as d (d.id)}
                 {#if view === 'grid'}
-                  <AgentTile def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
+                  <AgentTile def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} onDuplicate={() => (duplicateFrom = d)} />
                 {:else}
-                  <AgentListRow def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollByDept.get(d.department)} onDuplicate={() => (duplicateFrom = d)} />
+                  <AgentListRow def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} onDuplicate={() => (duplicateFrom = d)} />
                 {/if}
               {/each}
             {/snippet}

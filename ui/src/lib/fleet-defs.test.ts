@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { containersOf, editNotApplied, type AgentContainers, type DepartmentShare } from './fleet-defs'
+import { containersOf, editNotApplied, ROLL_STILL_STARTING, rollInProgress, rollRowsBySlug, type AgentContainers, type DepartmentShare, type FleetRollRow } from './fleet-defs'
 
 // Containers are found by department, and a department is one container. Where
 // two agents hold one (a pair from before a department became one agent's), the
@@ -81,9 +81,32 @@ describe('editNotApplied', () => {
   })
 
   it('says nothing for a no-op apply when the form saw no version fail', () => {
-    // A fresh form cannot tell an unchanged running config from one that
-    // never applied, so it closes as it always did.
+    // An answer that carries no `inEffect` either way (an api from before
+    // the route could tell) closes a fresh form, as it always did.
     expect(editNotApplied({ version: 3, created: false, applied: false })).toBeNull()
+  })
+
+  // The route now tells a no-op Save & apply whether the agent runs the
+  // current version — so a fresh form no longer closes on one that never
+  // applied, and an old memory no longer outranks the route.
+  it('says why a no-op apply did not put the current version on', () => {
+    expect(
+      editNotApplied({
+        version: 6,
+        created: false,
+        applied: false,
+        inEffect: false,
+        warning: 'it was saved and never applied — Bob still runs version 5; nothing changed since, so Save & apply had nothing new to apply. Roll the agent to put it on',
+      }),
+    ).toBe(
+      'Version 6 is not applied: it was saved and never applied — Bob still runs version 5; nothing changed since, so Save & apply had nothing new to apply. Roll the agent to put it on',
+    )
+  })
+
+  it('closes quietly on a no-op apply the route says is in effect, whatever the form remembers', () => {
+    expect(editNotApplied({ version: 3, created: false, applied: false, inEffect: true })).toBeNull()
+    // Rolled from the roster since the form saw version 3 fail.
+    expect(editNotApplied({ version: 3, created: false, applied: false, inEffect: true }, held)).toBeNull()
   })
 
   it('says nothing once a new version applied, or for a different version', () => {
@@ -95,5 +118,61 @@ describe('editNotApplied', () => {
     expect(editNotApplied({ version: 4, created: true, applied: false, warning: 'no managed agent in department "desk"' }, held)).toBe(
       'Saved as version 4, not applied: no managed agent in department "desk"',
     )
+  })
+})
+
+// A roll's row holds the Roll controls only while the roll is in its steps. A
+// row noted `still starting` has let go of its locks (the route takes a new
+// roll), and its late wait can run twelve minutes: it must not hold them.
+describe('rollInProgress', () => {
+  const row = (state: FleetRollRow['state'], detail: string | null = null): FleetRollRow => ({
+    slug: 'ava',
+    department: 'research',
+    displayName: 'Ava',
+    state,
+    since: 1,
+    detail,
+    batch: null,
+  })
+
+  it('is a roll in its steps, queued ones included', () => {
+    expect(rollInProgress(row('rolling'))).toBe(true)
+    expect(rollInProgress(row('rolling', 'queued'))).toBe(true)
+  })
+
+  it('is not a roll whose container is still starting', () => {
+    expect(ROLL_STILL_STARTING).toBe('still starting')
+    expect(rollInProgress(row('rolling', ROLL_STILL_STARTING))).toBe(false)
+  })
+
+  it('is not a finished roll, or no row at all', () => {
+    expect(rollInProgress(row('done'))).toBe(false)
+    expect(rollInProgress(row('failed', 'the recreated container stopped running before it reported healthy'))).toBe(false)
+    expect(rollInProgress(row('idle'))).toBe(false)
+    expect(rollInProgress(undefined)).toBe(false)
+    expect(rollInProgress(null)).toBe(false)
+  })
+})
+
+// The roster reads each agent's own row. A pair that shares a department has
+// two rows with one department: the runner's roll, and the left-out agent's
+// idle row. Keyed by department, the last one won and both tiles read it.
+describe('rollRowsBySlug', () => {
+  const runner: FleetRollRow = { slug: 'pippa', department: 'personal-pip', displayName: 'Pippa', state: 'rolling', since: 5, detail: null, batch: 'b1' }
+  const leftOut: FleetRollRow = { slug: 'pipdup', department: 'personal-pip', displayName: 'Pip Dup', state: 'idle', since: null, detail: null, batch: null }
+
+  it('gives each agent of a shared department its own row, in either order', () => {
+    for (const rows of [[runner, leftOut], [leftOut, runner]]) {
+      const bySlug = rollRowsBySlug(rows)
+      expect(bySlug.get('pippa')).toBe(runner)
+      expect(bySlug.get('pipdup')).toBe(leftOut)
+      expect(rollInProgress(bySlug.get('pippa'))).toBe(true)
+      expect(rollInProgress(bySlug.get('pipdup'))).toBe(false)
+    }
+  })
+
+  it('is empty with no picture yet', () => {
+    expect(rollRowsBySlug(undefined).size).toBe(0)
+    expect(rollRowsBySlug(null).size).toBe(0)
   })
 })

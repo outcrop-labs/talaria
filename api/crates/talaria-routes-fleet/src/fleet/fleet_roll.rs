@@ -1,13 +1,18 @@
 // /api/fleet/roll — roll every agent container at once, in-platform. Admin.
 //   POST  queue an in-place roll of every managed, enabled agent that is
-//         running (`{"all": true}`: every managed enabled agent). Answers at
+//         running (`{"all": true}`: every managed enabled agent), once per
+//         department — the agent that runs in its container. Answers at
 //         once; the rolls run detached, TALARIA_FLEET_ROLL_CONCURRENCY
 //         (default 2) departments at a time, departments already mid-roll
-//         skipped and named.
+//         and agents left out of a department another agent runs in skipped
+//         and named.
 //   GET   the live picture — one row per managed agent: rolling / idle /
-//         failed / done, since when, and the failure sentence. This
-//         instance's registry merged with the Redis hash every instance's
-//         rolls write, so a second api answers the same.
+//         failed / done, since when, and the failure sentence; an agent left
+//         out of a shared department reads idle. `rolling` is whether a roll
+//         is in its steps anywhere: a row noted `still starting` has
+//         released its locks (a new roll of it is accepted), so it does not
+//         count. This instance's registry merged with the Redis hash every
+//         instance's rolls write, so a second api answers the same.
 
 use axum::Json;
 use axum::extract::State;
@@ -17,7 +22,7 @@ use redis::AsyncCommands;
 use serde_json::{Value, json};
 use talaria_api_facades::fleet::reconcile::{
     ROLL_OUTCOME_TTL_MS, ROLL_REGISTRY_KEY, ROLL_SINK, RollFailure, RollRecord, RollState,
-    merge_roll_records, roll_records, start_roll_batch,
+    STILL_STARTING, merge_roll_records, roll_records, start_roll_batch,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{optional_boolean_member, parse};
@@ -89,9 +94,21 @@ async fn remote_records(state: &AppState) -> (Vec<RollRecord>, bool) {
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     require_admin(&state, &headers).await?;
     wire_roll_sink(&state);
-    let defs: Vec<(String, String, String)> = match sqlx::query_as(
-        "select slug, department, display_name from agent_defs \
-         where managed and enabled order by slug",
+    // Each row says whether its agent is the one that runs in its
+    // department's container — the render's runner (one with a current
+    // version, then the oldest). A department is one container, so its roll
+    // is the runner's: an agent left out of a department another agent runs
+    // in (a pair from before the one-agent rule) has no roll of its own, and
+    // reads idle rather than the runner's state.
+    let defs: Vec<(String, String, String, bool)> = match sqlx::query_as(
+        "select slug, department, display_name, runner from ( \
+           select d.slug, d.department, d.display_name, \
+             row_number() over (partition by d.department order by \
+               exists (select 1 from agent_versions v \
+                 where v.agent_id = d.id and v.version = d.current_version) desc, \
+               d.created_at, d.id) = 1 as runner \
+           from agent_defs d where d.managed and d.enabled \
+         ) ranked order by slug",
     )
     .fetch_all(&state.pg)
     .await
@@ -106,9 +123,18 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
     let mut rolls: Vec<Value> = Vec::new();
     let mut rolling = false;
     let mut latest: Option<&RollRecord> = None;
-    for (slug, department, display_name) in &defs {
-        let record = by_dept.get(department.as_str()).copied();
-        if record.is_some_and(|r| r.state == RollState::Rolling) {
+    for (slug, department, display_name, runner) in &defs {
+        let record = by_dept
+            .get(department.as_str())
+            .copied()
+            .filter(|_| *runner);
+        // A roll whose container is still starting has finished its steps
+        // and let go of its locks: the late wait only writes its verdict.
+        // Counted as rolling, it would hold every Roll control (and the
+        // picture's fast poll) for up to the late wait's twelve minutes.
+        if record.is_some_and(|r| {
+            r.state == RollState::Rolling && r.detail.as_deref() != Some(STILL_STARTING)
+        }) {
             rolling = true;
         }
         // An idle row is an apply's roll that found its agent stopped and

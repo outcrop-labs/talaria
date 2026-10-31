@@ -273,14 +273,41 @@ export interface FleetRollRow {
   state: FleetRollState
   /** Epoch ms the roll started (or was queued); null when idle. */
   since: number | null
-  /** The failure sentence, or a progress note ("queued") while rolling. */
+  /** The failure sentence, or a progress note while rolling: "queued" (a
+   *  batch member waiting for a slot) or "still starting" (recreated, and not
+   *  healthy yet when the roll's health wait passed; the row turns done once
+   *  it is, or failed if it never is). */
   detail: string | null
   batch: string | null
 }
 
+/** The note on a `rolling` row whose container was recreated and had not
+ *  reported healthy when the roll's health wait passed (talaria-fleet-reconcile
+ *  STILL_STARTING). The roll's steps are over: only its verdict is to come. */
+export const ROLL_STILL_STARTING = 'still starting'
+
+/** Whether a row's roll is in its steps — what holds the Roll controls. A row
+ *  noted `still starting` is not: its roll has let go of its locks (the route
+ *  accepts a new one), and the late wait only writes its verdict, for up to
+ *  twelve minutes. Its chip still reads *starting*. */
+export function rollInProgress(row: FleetRollRow | null | undefined): boolean {
+  return row?.state === 'rolling' && row.detail !== ROLL_STILL_STARTING
+}
+
+/** The roll picture's rows by agent slug — what each tile and row reads its
+ *  own line from. Not by department: the picture has one row per agent, and
+ *  an agent left out of a department another agent runs in (a pair from
+ *  before the one-agent rule) has its own row there, idle. Keyed by
+ *  department, it wore the runner's chip and its Roll control followed the
+ *  runner's roll. */
+export function rollRowsBySlug(rows: FleetRollRow[] | null | undefined): Map<string, FleetRollRow> {
+  return new Map((rows ?? []).map((r) => [r.slug, r]))
+}
+
 export interface FleetRollPicture {
   ok: boolean
-  /** Whether any department is mid-roll right now. */
+  /** Whether any department's roll is in its steps right now — rows noted
+   *  `still starting` do not count (`rollInProgress`). */
   rolling: boolean
   /** The most recent batch on record, if any. */
   batch: string | null
@@ -376,14 +403,27 @@ export async function saveAgentEdit(
    *  reports none simply shows nothing. */
   notes?: string[]
   /** Why an asked-for apply did not land (`applied: false`): the roll
-   *  failed (a step threw, or the container never reported healthy), found
-   *  the department mid-roll or no agent to roll, or the agent has no
-   *  container of its own. The version is saved either way. */
+   *  failed (a step threw, or the container stopped running before it was
+   *  healthy), found the department mid-roll or no agent to roll, or the
+   *  agent has no container of its own. The version is saved either way.
+   *  On a Save & apply with nothing changed (`created: false`): why the
+   *  agent does not run the current version. */
   warning?: string
+  /** Only on a Save & apply with nothing changed: whether the agent runs the
+   *  current version (or, stopped, will on its next start). */
+  inEffect?: boolean
   error?: string
 }> {
   try {
-    return await postJson<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean; notes?: string[]; warning?: string }>(
+    return await postJson<{
+      ok?: boolean
+      version?: number
+      created?: boolean
+      applied?: boolean
+      notes?: string[]
+      warning?: string
+      inEffect?: boolean
+    }>(
       `/api/fleet/defs/${id}/edit`,
       edit,
     )
@@ -402,17 +442,27 @@ export interface UnappliedVersion {
  *  or null when there is none. A saved version that is not running is not a
  *  success to close on: the editor shows this in place instead.
  *
+ *  A Save & apply with nothing changed creates nothing, so there is nothing
+ *  new to apply; the route then says whether the agent runs the current
+ *  version (`inEffect`), with the reason in `warning` when it does not — a
+ *  version saved without an apply, a roll that never landed. Before it did,
+ *  that answer was silence, and a freshly opened form closed on it.
+ *
  *  `unapplied` is the version this editor already saw saved and not applied,
- *  passed only for a save that asked to apply. A second Save & apply of that
- *  same draft creates nothing, and the route applies only a version it just
- *  created, so it answers with no warning at all: read alone, that silence
- *  closed the form as if the earlier version were now running. */
+ *  passed only for a save that asked to apply: what is said for a no-op
+ *  answer that carries no `inEffect` either way. */
 export function editNotApplied(
-  r: { version?: number; created?: boolean; applied?: boolean; warning?: string },
+  r: { version?: number; created?: boolean; applied?: boolean; inEffect?: boolean; warning?: string },
   unapplied: UnappliedVersion | null = null,
 ): string | null {
   const why = r.warning?.trim()
+  // A Save & apply with nothing changed saved nothing: the route says
+  // whether the agent runs the current version (`inEffect`), and why not.
+  if (why && r.created === false && r.version) return `Version ${r.version} is not applied: ${why}`
   if (why) return r.version ? `Saved as version ${r.version}, not applied: ${why}` : `Saved, not applied: ${why}`
+  // The route checked, and the agent runs it (a roll from the roster since,
+  // say): nothing this editor remembers outranks that.
+  if (r.inEffect === true) return null
   if (unapplied && r.version === unapplied.version && r.created === false && r.applied !== true) {
     return `Version ${unapplied.version} is still not applied, and nothing changed since it was saved, so Save & apply had nothing new to apply. Roll the agent to put it on once this clears: ${unapplied.why}`
   }

@@ -51,6 +51,84 @@ export interface AgentControlsState {
   act: (action: FleetAction, label: string, confirmMsg?: string) => Promise<void>
 }
 
+// ── A control the route is still carrying out ──
+// The control route runs a verb on a task of its own and answers within
+// 210 s; past that it answers 202 `{ pending: true }` and the verb goes on (a
+// stop waiting out an image pull, a legacy agent's move home, a slow disk).
+// The roster used to show nothing then: the call returned, the spinner went,
+// and the agent sat in its old state with no word of the verb still under
+// way. So a pending answer leaves a note for the agent until the roster
+// shows the state the verb was for. Kept per agent id rather than per
+// component: the tile's controls and its right-click menu are separate
+// instances, and either may have asked.
+export interface StillWorking {
+  action: FleetAction
+  /** Epoch ms of the 202. */
+  since: number
+  /** A restart's agent seen down or warming since — its bounce, so the next
+   *  running reading is the restarted container, not the one before it. */
+  bounced: boolean
+}
+
+/** A verb's own deadline (the image pull's is 20 minutes) — past this the
+ *  note stops claiming anything and the roster's own state stands. */
+const STILL_WORKING_FOR_MS = 20 * 60_000
+
+const stillWorkingById = $state<Record<string, StillWorking>>({})
+
+/** The pending verb noted for an agent, if any. */
+export function stillWorkingOf(id: string): StillWorking | null {
+  return stillWorkingById[id] ?? null
+}
+
+/** The note's words: what the verb is still doing. */
+export const STILL_WORKING_LABEL: Record<FleetAction, string> = {
+  up: 'still starting',
+  stop: 'still stopping',
+  restart: 'still restarting',
+  roll: 'still rolling',
+  retire: 'still retiring',
+  unretire: 'still re-hiring',
+  delete: 'still deleting',
+}
+
+/** Whether the roster now shows what a pending verb was for. */
+export function stillWorkingArrived(w: StillWorking, d: AgentDef, c: AgentContainers | null, now = Date.now()): boolean {
+  if (now - w.since > STILL_WORKING_FOR_MS) return true
+  const { running } = healthOf(d, c)
+  switch (w.action) {
+    case 'up':
+    case 'unretire':
+      return d.enabled && running
+    case 'stop':
+      return !running
+    case 'retire':
+      return !d.enabled && !(c?.managed?.state === 'running')
+    case 'restart':
+      return w.bounced && running
+    default:
+      return true
+  }
+}
+
+/** Note a verb the route answered 202 for: `state` is the container as the
+ *  202 described it (a restart already caught down has bounced). */
+export function noteStillWorking(id: string, action: FleetAction, state?: string, now = Date.now()): void {
+  stillWorkingById[id] = { action, since: now, bounced: state !== undefined && state !== 'running' }
+}
+
+/** Fold the roster's latest reading into an agent's note: a restart's bounce
+ *  is remembered, and a note whose state has arrived is cleared. */
+export function settleStillWorking(d: AgentDef, c: AgentContainers | null): void {
+  const w = stillWorkingById[d.id]
+  if (!w) return
+  if (w.action === 'restart' && !w.bounced) {
+    const h = healthOf(d, c).health
+    if (h === 'down' || h === 'warming') w.bounced = true
+  }
+  if (stillWorkingArrived(w, d, c)) delete stillWorkingById[d.id]
+}
+
 // Shared control logic for one agent def. Takes a getter so the def stays
 // live across roster refetches (call during component init).
 export function useAgentControls(def: () => AgentDef): AgentControlsState {
@@ -59,8 +137,13 @@ export function useAgentControls(def: () => AgentDef): AgentControlsState {
   const act = async (action: FleetAction, label: string, confirmMsg?: string) => {
     if (confirmMsg && !(await confirm({ title: label, message: confirmMsg, confirmLabel: label }))) return
     pending = label
+    const id = def().id
+    delete stillWorkingById[id]
     try {
-      await controlAgent(def().id, action)
+      const answer = await controlAgent(id, action)
+      // 202: the verb outlived the route's answer and goes on. Say so until
+      // the roster catches up (AgentControls), rather than nothing.
+      if (answer.pending) noteStillWorking(id, action, answer.state)
       await qc.invalidateQueries({ queryKey: ['fleet-containers'] })
       await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
       // A roll lands in the fleet-wide roll picture too (the registry the

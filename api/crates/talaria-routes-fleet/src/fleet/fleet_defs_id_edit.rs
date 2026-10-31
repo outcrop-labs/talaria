@@ -217,7 +217,7 @@ pub async fn post(
     .unwrap_or(false);
     // The compaction knobs, and what the answer owes the caller about them.
     // note: `compression` — `{ threshold?: number|null (0.1..1), thresholdTokens?: number|null (1000..10000000) }`; null clears a knob, absent leaves it; a threshold under 0.75 saves and the answer's `notes` says Hermes raises it for models under 512K context
-    let (compression, notes) = match parse_compression(obj, "compression") {
+    let (compression, mut notes) = match parse_compression(obj, "compression") {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
@@ -225,8 +225,8 @@ pub async fn post(
         return Ok(gate);
     }
 
-    let def: Option<(String, String, bool, String)> = match sqlx::query_as(
-        "select id::text, department, managed, display_name from agent_defs where id = $1::uuid",
+    let def: Option<(String, String, bool, String, String, bool)> = match sqlx::query_as(
+        "select id::text, department, managed, display_name, slug, enabled from agent_defs where id = $1::uuid",
     )
     .bind(&id)
     .fetch_optional(&state.pg)
@@ -235,7 +235,7 @@ pub async fn post(
         Ok(row) => row,
         Err(e) => return Ok(internal("[fleet/defs/edit] def read failed", e)),
     };
-    let Some((def_id, department, managed, display_name)) = def else {
+    let Some((def_id, department, managed, display_name, slug, enabled)) = def else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
 
@@ -362,6 +362,46 @@ pub async fn post(
         )
         .await;
     }
+    // A Save & apply with nothing changed creates no version, so there is
+    // nothing new to apply — and the answer used to be the same silence
+    // whether the agent ran this version or not, so a freshly opened form
+    // closed on a version that had never been applied. The route now says
+    // which (`version_in_effect`): no warning when the agent runs it (or,
+    // stopped, will on its next start), the reason when it does not.
+    if !created && apply && managed {
+        let warning =
+            match talaria_agent_defs::runner_instead_of(&state.pg, &def_id, &department).await {
+                Ok(Some(runner)) => Some(talaria_agent_defs::shared_department_refusal(
+                    "roll",
+                    &display_name,
+                    &department,
+                    &runner.display_name,
+                )),
+                Ok(None) => {
+                    version_in_effect(&state, &slug, &department, &display_name, enabled, version)
+                        .await
+                        .err()
+                }
+                Err(e) => {
+                    return Ok(internal(
+                        "[fleet/defs/edit] department share read failed",
+                        e,
+                    ));
+                }
+            };
+        let mut out = json!({
+            "ok": true,
+            "version": version,
+            "created": created,
+            "applied": false,
+            "inEffect": warning.is_none(),
+            "notes": notes,
+        });
+        if let Some(warning) = warning {
+            out["warning"] = json!(warning);
+        }
+        return Ok(Json(out).into_response());
+    }
     if created && apply && managed {
         // ONE CONTAINER PER DEPARTMENT. The apply below reaches the container
         // by department, and where an older agent holds this one's too (a
@@ -418,7 +458,18 @@ pub async fn post(
                 .unwrap_or_else(|e| Err(format!("the apply's task failed: {e}")))
         };
         match verdict {
-            Ok(None) => applied = true,
+            Ok(None) => {
+                applied = true;
+                // The roll recreated the container on this version, and it
+                // is still booting past the roll's health wait: applied, and
+                // the roster's roll chip reads "still starting" until it is
+                // up — said here too, since the form closes on an apply.
+                if talaria_api_facades::fleet::reconcile::still_starting(&department) {
+                    notes.push(format!(
+                        "{display_name} is still starting on version {version}: its recreated container has not reported healthy yet — the roster shows when it is up"
+                    ));
+                }
+            }
             Ok(Some(warning)) => {
                 return Ok(Json(json!({
                     "ok": true,
@@ -462,12 +513,110 @@ pub async fn post(
     .into_response())
 }
 
+/// Whether `version` — the agent's current one, which a Save & apply with
+/// nothing changed did not re-apply — is what the agent runs. `Ok` when it
+/// is: the last render wrote it (`rendered_version`, the config.yaml a
+/// running Hermes reads in place) and the running container was created from
+/// that render (`container_fit` = Matches: its env and the settings Hermes
+/// reads only at start). A stopped agent is `Ok` too — its next start renders
+/// and recreates whatever moved, as an apply to a stopped agent leaves it.
+/// `Err` is the sentence the form shows when it is not.
+async fn version_in_effect(
+    state: &AppState,
+    slug: &str,
+    department: &str,
+    display_name: &str,
+    enabled: bool,
+    version: i32,
+) -> Result<(), String> {
+    use talaria_api_facades::fleet::docker::{
+        CONTAINER_FIT_PATIENT, ContainerFit, container_fit, container_fit_within,
+    };
+    if !enabled {
+        return Err(format!(
+            "{display_name} is retired, so nothing runs it — re-hire it to put it on"
+        ));
+    }
+    let mut fit = container_fit(&state.pg, department).await;
+    if fit == ContainerFit::Unknown {
+        fit = container_fit_within(&state.pg, department, CONTAINER_FIT_PATIENT).await;
+    }
+    let rendered = talaria_api_facades::fleet::render::rendered_version(slug).await;
+    version_state(fit, rendered, display_name, version)
+}
+
+/// [`version_in_effect`]'s decision, from the container's fit and the
+/// version the last render wrote.
+fn version_state(
+    fit: talaria_api_facades::fleet::docker::ContainerFit,
+    rendered: Option<i32>,
+    display_name: &str,
+    version: i32,
+) -> Result<(), String> {
+    use talaria_api_facades::fleet::docker::ContainerFit;
+    const TAIL: &str = "nothing changed since, so Save & apply had nothing new to apply. Roll the agent to put it on";
+    match fit {
+        ContainerFit::NotRunning => Ok(()),
+        ContainerFit::Unknown => Err(format!(
+            "docker did not say whether {display_name} is running it, so it may not be — roll the agent to be sure"
+        )),
+        ContainerFit::Matches if rendered == Some(version) => Ok(()),
+        ContainerFit::Matches => Err(format!(
+            "it was saved and never applied — {display_name} still runs {}; {TAIL}",
+            rendered.map_or_else(
+                || "an earlier render".to_string(),
+                |v| format!("version {v}")
+            )
+        )),
+        ContainerFit::Differs => Err(format!(
+            "{display_name}'s running container was created from an earlier render (a setting it reads only at start, its env or its image moved, and no roll has landed since); {TAIL}"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn body(json: Value) -> Map<String, Value> {
         json.as_object().cloned().expect("an object literal")
+    }
+
+    /// A Save & apply with nothing changed says whether the agent runs the
+    /// current version — quiet only when it does, or when it is stopped and
+    /// its next start reads the render.
+    #[test]
+    fn a_no_op_apply_is_quiet_only_when_the_version_is_in_effect() {
+        use talaria_api_facades::fleet::docker::ContainerFit;
+        // Running, created from the render that wrote this version.
+        assert_eq!(
+            version_state(ContainerFit::Matches, Some(4), "Ava", 4),
+            Ok(())
+        );
+        // Stopped or gone: its next start renders and recreates what moved.
+        assert_eq!(
+            version_state(ContainerFit::NotRunning, Some(3), "Ava", 4),
+            Ok(())
+        );
+        assert_eq!(
+            version_state(ContainerFit::NotRunning, None, "Ava", 4),
+            Ok(())
+        );
+        // Saved without an apply: the render still holds version 3.
+        let never = version_state(ContainerFit::Matches, Some(3), "Ava", 4).unwrap_err();
+        assert!(
+            never.starts_with("it was saved and never applied"),
+            "{never}"
+        );
+        assert!(never.contains("Ava still runs version 3"), "{never}");
+        assert!(never.contains("Roll the agent"), "{never}");
+        // Rendered, but the container is from an earlier render (a roll that
+        // did not land).
+        let moved = version_state(ContainerFit::Differs, Some(4), "Ava", 4).unwrap_err();
+        assert!(moved.contains("created from an earlier render"), "{moved}");
+        // Docker would not say: not claimed either way.
+        let unknown = version_state(ContainerFit::Unknown, Some(4), "Ava", 4).unwrap_err();
+        assert!(unknown.contains("docker did not say"), "{unknown}");
     }
 
     /// Absent is not null: one leaves the def's stored block alone, the other

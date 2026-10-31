@@ -1156,10 +1156,44 @@ fn apply_service_defaults(svc: &mut Map<String, Value>) {
 fn config_yaml_text(model: &str, version: i32, routed: &Map<String, Value>) -> String {
     let body = yaml11_emit(&Value::Object(routed.clone()));
     format!(
-        "# Rendered by Talaria — {model} v{version}. Do not hand-edit; edit in Talaria.\n{}{}...\n",
+        "{RENDERED_HEADER}{model} v{version}{RENDERED_HEADER_TAIL}\n{}{}...\n",
         body,
         if body.ends_with('\n') { "" } else { "\n" }
     )
+}
+
+/// The rendered config.yaml's first line is
+/// `<RENDERED_HEADER><model> v<version><RENDERED_HEADER_TAIL>`: which version
+/// of the agent the render last wrote, read back by [`rendered_version`].
+const RENDERED_HEADER: &str = "# Rendered by Talaria — ";
+const RENDERED_HEADER_TAIL: &str = ". Do not hand-edit; edit in Talaria.";
+
+/// The version a rendered config.yaml's header names ([`config_yaml_text`]),
+/// or None for a file that does not start with one.
+pub fn parse_rendered_version(text: &str) -> Option<i32> {
+    text.lines()
+        .next()?
+        .strip_prefix(RENDERED_HEADER)?
+        .strip_suffix(RENDERED_HEADER_TAIL)?
+        .rsplit_once(" v")?
+        .1
+        .parse()
+        .ok()
+}
+
+/// Which version of `slug`'s config the last render wrote for it — the
+/// header of `fleet/agents/<slug>/config.yaml`. That file is what a running
+/// agent reads in place, so this is the version its live settings and soul
+/// come from; whether the container itself was created from this render (the
+/// settings Hermes reads only at start, the env) is `container_fit`'s answer
+/// (talaria-fleet-docker). None when nothing was rendered for it.
+pub async fn rendered_version(slug: &str) -> Option<i32> {
+    let path = talaria_fleet_layout::fleet_dir()
+        .join("agents")
+        .join(slug)
+        .join("config.yaml");
+    let text = tokio::fs::read_to_string(path).await.ok()?;
+    parse_rendered_version(&text)
 }
 
 /// render_fleet — regenerate everything the managed fleet runs on. See the
@@ -4955,6 +4989,31 @@ service:
         // document, which a single-document loader refuses.
         let spliced = format!("{text}  - stale\nplugins:\n  enabled: []\n");
         assert!(serde_yaml_ng::from_str::<Value>(&spliced).is_err());
+    }
+
+    #[test]
+    fn the_rendered_version_is_read_back_from_the_header() {
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!({ "default": "m" }));
+        assert_eq!(
+            parse_rendered_version(&config_yaml_text("x-eng", 3, &routed)),
+            Some(3)
+        );
+        // A model id that itself carries " v" is read from the right.
+        assert_eq!(
+            parse_rendered_version(&config_yaml_text("acme v2-ops", 41, &routed)),
+            Some(41)
+        );
+        // Anything else is no version: a hand-written file, an empty one,
+        // another renderer's header.
+        assert_eq!(parse_rendered_version("model: x\n"), None);
+        assert_eq!(parse_rendered_version(""), None);
+        assert_eq!(
+            parse_rendered_version(
+                "# Rendered by Talaria — Oh My Pi's gateway provider. Do not hand-edit.\n"
+            ),
+            None
+        );
     }
 
     #[test]
