@@ -21,7 +21,8 @@
 //! every pinned launcher); the instance's label in front of the body, escaped
 //! when the server parses markup; a category and an urgency from the kind;
 //! and the server's own id from the last post of the same (instance, tag) as
-//! `replaces_id`, never an invented one.
+//! `replaces_id`, never an invented one — except for a re-alert, which closes
+//! that banner and posts a new one, since a replace may be silent.
 
 use std::{
     collections::HashMap,
@@ -287,6 +288,20 @@ pub async fn post(post: &Post, previous: Option<u32>) -> Result<u32, String> {
             return Err(format!("showing the notification: {e}"));
         }
     };
+    // A re-alert is a new banner. The spec has a replaced notification update
+    // "with no visual cues", so a server may well update one silently
+    // (GNOME Shell 50 happens to re-show it; nothing obliges another server
+    // to): close the old one — it leaves the list too — and post afresh.
+    let (previous, closed) = match previous {
+        Some(id) if post.renotify => {
+            if let Err(e) = call(&conn, "CloseNotification", &(id,)).await {
+                reset_if_broken(&e);
+                eprintln!("talaria-desktop: closing notification {id} to re-alert: {e}");
+            }
+            (None, Some(id))
+        }
+        other => (other, None),
+    };
     let entry = desktop_entry();
     let body = body_text(&post.instance, post.body.as_deref(), markup);
     let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
@@ -314,7 +329,7 @@ pub async fn post(post: &Post, previous: Option<u32>) -> Result<u32, String> {
                 .deserialize()
                 .map_err(|e| format!("reading the notification id: {e}"))?;
             eprintln!(
-                "talaria-desktop: {}: posted {} as {id}{}{}",
+                "talaria-desktop: {}: posted {} as {id}{}{}{}",
                 post.label,
                 post.tag,
                 if urgency == Urgency::Critical {
@@ -322,7 +337,8 @@ pub async fn post(post: &Post, previous: Option<u32>) -> Result<u32, String> {
                 } else {
                     ""
                 },
-                previous.map_or(String::new(), |p| format!(", replacing {p}"))
+                previous.map_or(String::new(), |p| format!(", replacing {p}")),
+                closed.map_or(String::new(), |c| format!(", a re-alert after closing {c}"))
             );
             Ok(id)
         }
@@ -398,11 +414,44 @@ pub fn set_badge(_app: &AppHandle, total: u32) {
     });
 }
 
+/// Is this signal the notification server's? The rule's sender makes the
+/// bus deliver only the server's broadcasts, but a signal ADDRESSED to this
+/// connection skips match rules, and zbus cannot check a well-known sender
+/// itself. So the sender's unique name is compared with the server's: asked
+/// once, and again whenever it differs (a restarted server has a new one).
+async fn from_server(
+    conn: &Connection,
+    owner: &mut Option<String>,
+    sender: Option<&zbus::names::UniqueName<'_>>,
+) -> bool {
+    let Some(sender) = sender else {
+        return false;
+    };
+    if owner.as_deref() == Some(sender.as_str()) {
+        return true;
+    }
+    *owner = conn
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "GetNameOwner",
+            &(SERVICE,),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.body().deserialize::<String>().ok());
+    owner.as_deref() == Some(sender.as_str())
+}
+
 /// Every signal the shell needs from the notification server, on one stream.
+/// Only the server's own count: any session-bus peer can emit an
+/// `ActionInvoked` with one of our ids.
 async fn listen(conn: Connection) {
     let rule = match MatchRule::builder()
         .msg_type(MessageType::Signal)
-        .interface(SERVICE)
+        .sender(SERVICE)
+        .and_then(|b| b.interface(SERVICE))
         .map(|b| b.build())
     {
         Ok(rule) => rule,
@@ -418,6 +467,7 @@ async fn listen(conn: Connection) {
             return;
         }
     };
+    let mut owner = None;
     while let Some(message) = stream.next().await {
         let Ok(message) = message else {
             continue;
@@ -426,6 +476,13 @@ async fn listen(conn: Connection) {
         let Some(member) = header.member() else {
             continue;
         };
+        if !from_server(&conn, &mut owner, header.sender()).await {
+            eprintln!(
+                "talaria-desktop: ignored {member} from {}, which is not the notification server",
+                header.sender().map_or("nobody", |s| s.as_str())
+            );
+            continue;
+        }
         let body = message.body();
         match member.as_str() {
             "ActivationToken" => {
@@ -584,7 +641,12 @@ pub fn single_instance() -> bool {
                 match asked {
                     Ok(Ok(_)) => {
                         eprintln!(
-                            "talaria-desktop: Talaria is already running; brought it forward"
+                            "talaria-desktop: Talaria is already running; brought it forward{}",
+                            if cfg!(debug_assertions) {
+                                " (this is a dev build: quit the running Talaria first — Ctrl+Q, or its tray or switcher Quit — to run this one)"
+                            } else {
+                                ""
+                            }
                         );
                         true
                     }
@@ -608,6 +670,27 @@ pub fn single_instance() -> bool {
             }
         }
     })
+}
+
+/// Give up the single-instance name before the process goes (`RunEvent::Exit`).
+/// The updater's relaunch spawns the new process before this one exits: a new
+/// process that still found the name held would hand over to this dying one
+/// and exit too, leaving nothing running. Bounded; the bus frees the name at
+/// exit anyway.
+pub fn release_single_instance() {
+    if !CLAIMED.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    let Some(conn) = CONN.lock().unwrap().clone() else {
+        return;
+    };
+    tauri::async_runtime::block_on(async move {
+        match tokio::time::timeout(Duration::from_secs(1), conn.release_name(SHELL_NAME)).await {
+            Ok(Ok(_)) => eprintln!("talaria-desktop: released {SHELL_NAME}"),
+            Ok(Err(e)) => eprintln!("talaria-desktop: releasing {SHELL_NAME}: {e}"),
+            Err(_) => eprintln!("talaria-desktop: releasing {SHELL_NAME}: no answer in 1 s"),
+        }
+    });
 }
 
 /// The self-test: the server and one real post. Run it on a test bus only.

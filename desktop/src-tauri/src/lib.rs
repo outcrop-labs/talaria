@@ -214,6 +214,10 @@ fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Resu
         .map_err(|e| format!("granting the instance switcher access: {e}"))
 }
 
+/// What the shell's own requests call themselves (the crate version is
+/// decorative — the release tag stamps the real one — so none is claimed).
+pub(crate) const USER_AGENT: &str = "Talaria-Desktop";
+
 /// An HTTP client for the shell's own requests. The platform verifier is
 /// preferred (enterprise CAs), but it refuses to build when the system store
 /// is empty — a Flatpak whose `SSL_CERT_FILE` points at a host path the
@@ -222,11 +226,19 @@ fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Resu
 /// Mozilla's roots still verify.
 ///
 /// Every client has the short connect bound, so a black-holed address fails
-/// in seconds; `configure` adds the rest.
+/// in seconds, and says what it is (reqwest sends no User-Agent of its own,
+/// and a bot filter in front of an instance challenges a request with none);
+/// `configure` adds the rest.
 pub(crate) fn build_client(
     configure: impl Fn(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
 ) -> reqwest::Client {
-    let build = || configure(reqwest::Client::builder().connect_timeout(beacon::CONNECT_TIMEOUT));
+    let build = || {
+        configure(
+            reqwest::Client::builder()
+                .connect_timeout(beacon::CONNECT_TIMEOUT)
+                .user_agent(USER_AGENT),
+        )
+    };
     match build().build() {
         Ok(client) => client,
         Err(_) => {
@@ -420,6 +432,13 @@ pub fn run() {
         tauri::RunEvent::Reopen { .. } => background::present_main(handle, None),
         // Cmd+Q, the app menu's Quit, or `app.exit`: remember every page.
         tauri::RunEvent::ExitRequested { .. } => commands::remember_all(handle),
+        // The last event before the process goes (and before an updater
+        // relaunch spawns its successor): the single-instance name is free
+        // for the next launch at once.
+        tauri::RunEvent::Exit => {
+            #[cfg(target_os = "linux")]
+            notify::linux::release_single_instance();
+        }
         _ => {}
     });
 }

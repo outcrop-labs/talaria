@@ -1,7 +1,9 @@
 //! The tray icon (Linux, through appindicator) and the menu-bar item (macOS):
-//! Open Talaria and Quit, and the unread sum as the tooltip. A left click
-//! opens the window where the platform reports one (macOS; appindicator
-//! only ever shows the menu).
+//! Open Talaria and Quit, and the unread sum — the tooltip on macOS, the
+//! label beside the icon on Linux (appindicator has no tooltip: tray-icon's
+//! `set_tooltip` is a no-op there; its title is the Ayatana label, which the
+//! GNOME AppIndicator extension draws). A left click opens the window where
+//! the platform reports one (macOS; appindicator only ever shows the menu).
 //!
 //! On Linux it is built only once background.rs has found the appindicator
 //! library AND a tray host on the bus — never before, because the tray crate
@@ -77,20 +79,51 @@ fn build(app: &AppHandle) -> tauri::Result<TrayIcon> {
     builder.build(app)
 }
 
-/// The tooltip carries the unread sum across every instance.
+/// The tooltip (macOS) or the label (Linux) carries the unread sum across
+/// every instance.
 pub fn set_unread(app: &AppHandle, total: u32) {
     let Some(tray) = app.try_state::<Tray>() else {
         return;
     };
-    let tooltip = match total {
-        0 => "Talaria".to_string(),
-        1 => "Talaria — 1 unread".to_string(),
-        n => format!("Talaria — {n} unread"),
-    };
     // Cloned out first: the call goes through the main thread, which must
     // never wait on this lock.
     let icon = tray.0.lock().unwrap().clone();
-    if let Some(icon) = icon {
-        let _ = icon.set_tooltip(Some(tooltip));
+    let Some(icon) = icon else {
+        return;
+    };
+    if cfg!(target_os = "linux") {
+        // A label takes panel space, so it is only the count, and only when
+        // there is one.
+        let _ = icon.set_title(label(total));
+    } else {
+        let _ = icon.set_tooltip(Some(tooltip(total)));
+    }
+}
+
+/// The menu-bar tooltip.
+pub fn tooltip(total: u32) -> String {
+    match total {
+        0 => "Talaria".to_string(),
+        1 => "Talaria — 1 unread".to_string(),
+        n => format!("Talaria — {n} unread"),
+    }
+}
+
+/// The panel label beside the Linux tray icon: the count, or nothing.
+pub fn label(total: u32) -> Option<String> {
+    (total > 0).then(|| total.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_unread_sum_is_a_tooltip_or_a_bare_count() {
+        assert_eq!(tooltip(0), "Talaria");
+        assert_eq!(tooltip(1), "Talaria — 1 unread");
+        assert_eq!(tooltip(7), "Talaria — 7 unread");
+        assert_eq!(label(0), None);
+        assert_eq!(label(12).as_deref(), Some("12"));
     }
 }

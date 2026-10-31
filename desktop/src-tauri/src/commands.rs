@@ -229,6 +229,24 @@ pub(crate) fn set_view(app: &AppHandle, view: View) -> Result<(), String> {
     Ok(())
 }
 
+/// Give the webview on screen the keyboard focus. A window brought back from
+/// hidden or minimized holds no focused widget (a hidden child loses it), so
+/// Ctrl+Q and typing did nothing until a click into the page.
+pub(crate) fn focus_view(app: &AppHandle) {
+    let state = app.state::<ShellState>();
+    let view = *state.view.lock().unwrap();
+    let active = state.active.lock().unwrap().clone();
+    let label = match (view, active) {
+        (View::Active, Some(id)) => instance_label(&id),
+        _ => "main".to_string(),
+    };
+    if let Some(webview) = app.get_webview(&label)
+        && let Err(e) = webview.set_focus()
+    {
+        eprintln!("talaria-desktop: focusing {label}: {e}");
+    }
+}
+
 /// GTK on Wayland: the OS titlebar is tao's own `GtkHeaderBar`, built with the
 /// window's first title and wrapped in a `GtkEventBox`. GTK passes a new window
 /// title on to a header bar only when the header bar IS the titlebar, so
@@ -1361,7 +1379,7 @@ pub async fn desktop_notify(
         Ok(Ok(result)) => result,
         Ok(Err(e)) => Err(format!("posting the notification: {e}")),
         Err(_) => {
-            notify::record_pending(&app);
+            notify::record_pending(&app, webview.label());
             eprintln!(
                 "talaria-desktop: the notification service has not answered in {} s; the post continues",
                 NOTIFY_WAIT.as_secs()
@@ -1374,8 +1392,8 @@ pub async fn desktop_notify(
 /// The notification service's state, as the OS reports it now: for Settings
 /// → Desktop and the launcher. No service, no "On".
 #[tauri::command]
-pub async fn desktop_notification_status(app: AppHandle) -> notify::Status {
-    notify::status(&app).await
+pub async fn desktop_notification_status(app: AppHandle, webview: Webview) -> notify::Status {
+    notify::status(&app, webview.label()).await
 }
 
 /// Ask the OS for permission (macOS: the system prompt when it has not asked
@@ -1389,7 +1407,7 @@ pub async fn desktop_notification_request(
     if !notify::allow_every(&app, "request", webview.label(), notify::REQUEST_EVERY) {
         return Err("rate limited".into());
     }
-    Ok(notify::request(&app).await)
+    Ok(notify::request(&app, webview.label()).await)
 }
 
 #[derive(Serialize)]
@@ -1430,7 +1448,7 @@ pub async fn desktop_notification_test(
             TEST_WAIT.as_secs()
         )),
     };
-    let status = notify::status(&app).await;
+    let status = notify::status(&app, webview.label()).await;
     Ok(TestResult {
         ok: outcome.is_ok(),
         error: outcome.err(),

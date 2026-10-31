@@ -13,8 +13,14 @@
 //!     extension later takes effect at once.
 //!   * Linux without one (stock GNOME) — the window MINIMIZES instead. A
 //!     hidden window with no icon anywhere would be a process nobody can see
-//!     or quit; minimized, it stays in the dash and Alt+Tab, and the dash's
-//!     Quit works. A one-time notice says how to quit.
+//!     or quit; minimized, it stays in the dash and Alt+Tab. A one-time
+//!     notice says how to quit. The dash's (or a dock's) Quit is NOT one of
+//!     the ways: the shell exports no `app.quit` action, so GNOME's
+//!     `shell_app_request_quit` falls back to deleting each window — the same
+//!     close request as × — and that minimizes (or hides to the tray) too.
+//!   * The tray host leaving while the window is closed to it (the GNOME
+//!     AppIndicator extension turned off, updated or crashed) — the window
+//!     comes back, with a notice, since its icon is gone (`tray_host_changed`).
 //!   * Windows — Close quits, as before: it has no single-instance guard yet,
 //!     so a hidden window would let a Start-menu relaunch open a second
 //!     process on the same WebView2 profile (W2-D).
@@ -84,7 +90,8 @@ pub fn tray_library() -> bool {
 }
 
 /// The bus said a tray host came or went (linux.rs). A new one gets the tray
-/// icon now; a vanished one sends Close back to minimizing.
+/// icon now; a vanished one sends Close back to minimizing, and gives back a
+/// window that was hidden to it.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn tray_host_changed(owned: bool) {
     let was = TRAY_HOST.swap(owned, Ordering::Relaxed);
@@ -94,15 +101,33 @@ pub fn tray_host_changed(owned: bool) {
             if owned { "present" } else { "gone" }
         );
     }
-    if owned
-        && tray_library()
-        && let Some(app) = crate::notify::app()
-    {
-        let handle = app.clone();
+    let Some(app) = crate::notify::app() else {
+        return;
+    };
+    let handle = app.clone();
+    if owned && tray_library() {
         let _ = app.run_on_main_thread(move || {
             crate::tray::ensure(&handle);
         });
+    } else if was && !owned {
+        let _ = app.run_on_main_thread(move || tray_gone(&handle));
     }
+}
+
+/// The tray host left while the window may be hidden to it. With its icon
+/// gone, a hidden window is a process nobody can see or reach: bring the
+/// window back (without stealing focus — there is no activation token) and
+/// say why. Main thread.
+fn tray_gone(app: &AppHandle) {
+    let Some(window) = app.get_window("main") else {
+        return;
+    };
+    if window.is_visible().unwrap_or(true) {
+        return;
+    }
+    eprintln!("talaria-desktop: the tray went away with the window closed to it; showing it");
+    present_main(app, None);
+    notice(app, TRAY_GONE_NOTICE);
 }
 
 /// In setup, once the app is registered: the menu-bar item on macOS; on
@@ -188,14 +213,28 @@ fn notice_once(app: &AppHandle, mode: Mode) {
             eprintln!("talaria-desktop: {e}");
         }
     }
-    let body = match mode {
-        Mode::Tray => {
-            "Closing the window keeps Talaria running in the tray so notifications arrive. Quit: the tray menu, Ctrl+Q, or the switcher's Quit. Change it in Settings → Desktop."
-        }
-        _ => {
-            "Talaria keeps running so notifications arrive. Quit: Ctrl+Q, the switcher's Quit, or Quit in the dock. Change it in Settings → Desktop."
-        }
-    };
+    notice(
+        app,
+        match mode {
+            Mode::Tray => TRAY_NOTICE,
+            _ => MINIMIZE_NOTICE,
+        },
+    );
+}
+
+/// What the first close to the tray says. The dock's Quit is named because it
+/// looks like a way out and is not one (see the module doc).
+const TRAY_NOTICE: &str = "Closing the window keeps Talaria running in the tray so notifications arrive. Quit: the tray menu, Ctrl+Q, or the switcher's Quit — the dock's Quit only closes the window, as × does. Change it in Settings → Desktop.";
+
+/// What the first close to a minimized window says (no tray on this desktop).
+const MINIMIZE_NOTICE: &str = "Talaria keeps running so notifications arrive. Quit: Ctrl+Q or the switcher's Quit — the dock's Quit only closes the window, as × does. Change it in Settings → Desktop.";
+
+/// What the window coming back from a vanished tray says.
+const TRAY_GONE_NOTICE: &str = "The tray icon went away, so Talaria's window is back. Closing it now minimizes it. Quit: Ctrl+Q or the switcher's Quit.";
+
+/// One of the shell's own banners, about the window itself (Linux). Each is
+/// a re-alert: a later notice is shown afresh, not folded into an old one.
+fn notice(app: &AppHandle, body: &'static str) {
     eprintln!("talaria-desktop: background notice: {body}");
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -207,7 +246,7 @@ fn notice_once(app: &AppHandle, mode: Mode) {
             tag: "background-notice".into(),
             href: None,
             kind: None,
-            renotify: false,
+            renotify: true,
             source: crate::notify::Source::Page,
         };
         if let Err(e) = crate::notify::post(&app, post).await {
@@ -268,6 +307,7 @@ pub fn present_main(app: &AppHandle, token: Option<String>) {
             eprintln!("talaria-desktop: {e}");
         }
     }
+    crate::commands::focus_view(app);
     crate::commands::window_returned(app, false);
 }
 

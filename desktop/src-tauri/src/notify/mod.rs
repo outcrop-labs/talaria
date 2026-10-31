@@ -507,8 +507,9 @@ pub struct Status {
     pub background: &'static str,
 }
 
-/// The last post's outcome.
-#[derive(Debug, Default)]
+/// One caller's last post's outcome. Kept per label: instance B's Settings
+/// never shows A's error or timing.
+#[derive(Debug, Default, Clone)]
 struct Recorded {
     last_error: Option<String>,
     last_posted_at: Option<i64>,
@@ -522,7 +523,7 @@ pub struct Notifier {
     replaces: Mutex<Replaces>,
     limits: Mutex<Limits>,
     badges: Mutex<Badges>,
-    recorded: Mutex<Recorded>,
+    recorded: Mutex<HashMap<String, Recorded>>,
     /// The badge total last handed to the OS, so an unchanged count is not
     /// re-sent on every page refetch.
     applied_badge: Mutex<Option<u32>>,
@@ -572,7 +573,7 @@ pub async fn post(app: &AppHandle, post: Post) -> Result<(), String> {
             "talaria-desktop: {}: re-alerting {}{}",
             post.label,
             post.tag,
-            previous.map_or(String::new(), |id| format!(" in place of {id}"))
+            previous.map_or(String::new(), |id| format!(" (was {id})"))
         );
     }
     let outcome = os::post(&post, previous).await;
@@ -588,6 +589,7 @@ pub async fn post(app: &AppHandle, post: Post) -> Result<(), String> {
             );
             {
                 let mut recorded = state.recorded.lock().unwrap();
+                let recorded = recorded.entry(post.label.clone()).or_default();
                 recorded.last_error = None;
                 recorded.pending = false;
                 recorded.last_posted_at = Some(crate::registry::now_ms());
@@ -599,6 +601,7 @@ pub async fn post(app: &AppHandle, post: Post) -> Result<(), String> {
         }
         Err(e) => {
             let mut recorded = state.recorded.lock().unwrap();
+            let recorded = recorded.entry(post.label.clone()).or_default();
             recorded.last_error = Some(e.clone());
             recorded.pending = false;
             Err(e)
@@ -608,8 +611,14 @@ pub async fn post(app: &AppHandle, post: Post) -> Result<(), String> {
 
 /// The post was handed over and has not been answered yet: recorded, so the
 /// status says so instead of the page reading it as a success.
-pub fn record_pending(app: &AppHandle) {
-    notifier(app).recorded.lock().unwrap().pending = true;
+pub fn record_pending(app: &AppHandle, label: &str) {
+    notifier(app)
+        .recorded
+        .lock()
+        .unwrap()
+        .entry(label.to_string())
+        .or_default()
+        .pending = true;
 }
 
 /// A critical kind asks for the window's attention, at most once a minute
@@ -747,13 +756,14 @@ pub fn set_badge(app: &AppHandle, label: &str, count: u32) {
     apply_badge(app, total);
 }
 
-/// An instance is gone: its badge share, its banners' map entries and its
-/// rate limits go with it.
+/// An instance is gone: its badge share, its banners' map entries, its rate
+/// limits and its last outcome go with it.
 pub fn forget_label(app: &AppHandle, label: &str) {
     let state = notifier(app);
     let total = state.badges.lock().unwrap().remove(label);
     state.replaces.lock().unwrap().forget_label(label);
     state.limits.lock().unwrap().forget_label(label);
+    state.recorded.lock().unwrap().remove(label);
     apply_badge(app, total);
 }
 
@@ -775,30 +785,32 @@ fn apply_badge(app: &AppHandle, total: u32) {
     crate::tray::set_unread(app, total);
 }
 
-/// The full status: what the backend reports, what the last post did, and
-/// what closing the window does.
-pub async fn status(app: &AppHandle) -> Status {
+/// The full status for the caller `label`: what the backend reports, what
+/// that caller's last post did, and what closing the window does.
+pub async fn status(app: &AppHandle, label: &str) -> Status {
     let os = os::probe().await;
-    combine(app, os)
+    combine(app, os, label)
 }
 
 /// Ask the OS for permission where it has a prompt (macOS: from this click,
 /// never at launch; denied: open System Settings), then report.
-pub async fn request(app: &AppHandle) -> Status {
+pub async fn request(app: &AppHandle, label: &str) -> Status {
     let os = os::request().await;
-    combine(app, os)
+    combine(app, os, label)
 }
 
-fn combine(app: &AppHandle, os: OsStatus) -> Status {
-    let (last_error, last_posted_at, pending) = {
-        let state = notifier(app);
-        let recorded = state.recorded.lock().unwrap();
-        (
-            recorded.last_error.clone(),
-            recorded.last_posted_at,
-            recorded.pending,
-        )
-    };
+fn combine(app: &AppHandle, os: OsStatus, label: &str) -> Status {
+    let Recorded {
+        last_error,
+        last_posted_at,
+        pending,
+    } = notifier(app)
+        .recorded
+        .lock()
+        .unwrap()
+        .get(label)
+        .cloned()
+        .unwrap_or_default();
     Status {
         backend: os.backend,
         permission: os.permission,

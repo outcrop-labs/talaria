@@ -26,7 +26,8 @@
 //! restarts, a deploy, Cloudflare dropping an idle connection — is reopened
 //! with backoff (1 s doubling to 30 s, reset after a minute healthy), every
 //! reopen refetches, and the 30 s poll floor keeps running through the whole
-//! outage. A 401 or 403 (signed out, session expired) ends it; a restore ends
+//! outage. A 401 or 403 from the instance itself (signed out, session
+//! expired: its JSON, not a Cloudflare challenge page) ends it; a restore ends
 //! it too, and hands back what it posted (`Handback`), so the restored page
 //! never posts it again. Each read also sets the instance's share of the
 //! badge from the server's `unread`.
@@ -39,7 +40,7 @@ use std::{
 
 use reqwest::{
     StatusCode,
-    header::{ACCEPT, COOKIE},
+    header::{ACCEPT, CONTENT_TYPE, COOKIE, HeaderMap},
 };
 use serde::Deserialize;
 use tauri::AppHandle;
@@ -372,19 +373,36 @@ pub struct Handback {
 pub type Shared = Arc<Mutex<Handback>>;
 
 /// An SSE body, fed as it arrives: complete events come out, a partial one
-/// waits for the rest.
+/// waits for the rest. Bytes are buffered and only a complete event is
+/// decoded, so a character or a CRLF split across two chunks survives; every
+/// line ending (CRLF, LF, a lone CR) is a newline, as the spec says.
 #[derive(Debug, Default)]
 pub struct Frames {
-    buf: String,
+    buf: Vec<u8>,
+    /// The last byte seen was a CR: an LF next completes it.
+    cr: bool,
 }
 
 impl Frames {
     /// The `data` of every complete event in what has arrived so far.
-    pub fn push(&mut self, chunk: &str) -> Vec<String> {
-        self.buf.push_str(&chunk.replace("\r\n", "\n"));
+    pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
+        for &byte in chunk {
+            if std::mem::take(&mut self.cr) {
+                self.buf.push(b'\n');
+                if byte == b'\n' {
+                    continue;
+                }
+            }
+            if byte == b'\r' {
+                self.cr = true;
+            } else {
+                self.buf.push(byte);
+            }
+        }
         let mut out = Vec::new();
-        while let Some(end) = self.buf.find("\n\n") {
-            let event: String = self.buf.drain(..end + 2).collect();
+        while let Some(end) = self.buf.windows(2).position(|w| w == b"\n\n") {
+            let event: Vec<u8> = self.buf.drain(..end + 2).collect();
+            let event = String::from_utf8_lossy(&event);
             let data: Vec<&str> = event
                 .lines()
                 .filter_map(|l| l.strip_prefix("data:"))
@@ -478,6 +496,24 @@ enum Fetch {
     Failed,
 }
 
+/// The instance itself said the session is gone: a 401 or 403 with its own
+/// JSON body. A Cloudflare challenge (`cf-mitigated`, an HTML page) or any
+/// other proxy's refusal is an outage like a 502 — retried with the poll
+/// floor, never read as signed out, or an instance behind Cloudflare would
+/// stop its banners for good on the first challenge.
+pub fn signed_out(status: StatusCode, headers: &HeaderMap) -> bool {
+    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+        && !headers.contains_key("cf-mitigated")
+        && headers
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| {
+                v.trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with("application/json")
+            })
+}
+
 async fn fetch(client: &reqwest::Client, origin: &str, cookie: &str) -> Fetch {
     let response = client
         .get(format!("{origin}/api/notifications"))
@@ -486,9 +522,7 @@ async fn fetch(client: &reqwest::Client, origin: &str, cookie: &str) -> Fetch {
         .send()
         .await;
     match response {
-        Ok(r) if matches!(r.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => {
-            Fetch::SignedOut
-        }
+        Ok(r) if signed_out(r.status(), r.headers()) => Fetch::SignedOut,
         Ok(r) if r.status().is_success() => match r.json::<Payload>().await {
             Ok(p) => Fetch::Rows(p.notifications, p.unread),
             Err(_) => Fetch::Failed,
@@ -509,7 +543,8 @@ fn client() -> reqwest::Client {
 pub enum Baseline {
     /// The rows the page has already surfaced: the watcher starts from them.
     Ready(Arrivals),
-    /// 401 or 403: the page is signed out and is not fetching either.
+    /// The instance's own 401 or 403: the page is signed out and is not
+    /// fetching either.
     SignedOut,
     /// Anything else: a proxy or a certificate only the webview knows, the
     /// instance down. The shell cannot do the page's job, so the page stays.
@@ -571,7 +606,7 @@ async fn run(mut watch: Watch) {
             .send()
             .await;
         let mut response = match stream {
-            Ok(r) if matches!(r.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => {
+            Ok(r) if signed_out(r.status(), r.headers()) => {
                 eprintln!("talaria-desktop: {label}: signed out; no notifications while suspended");
                 return;
             }
@@ -599,7 +634,7 @@ async fn run(mut watch: Watch) {
                 let check = match read {
                     Ok(Ok(Some(bytes))) => {
                         let mut check = false;
-                        for data in frames.push(&String::from_utf8_lossy(&bytes)) {
+                        for data in frames.push(&bytes) {
                             match frame(&data) {
                                 Frame::Notification => check = true,
                                 Frame::Unread(n) => {
@@ -940,11 +975,11 @@ mod tests {
     #[test]
     fn frames_split_events_across_chunks_and_skip_comments() {
         let mut f = Frames::default();
-        assert!(f.push(": connected\n\n").is_empty());
-        assert!(f.push("data: {\"type\":\"notif").is_empty());
+        assert!(f.push(b": connected\n\n").is_empty());
+        assert!(f.push(b"data: {\"type\":\"notif").is_empty());
         assert_eq!(
             f.push(
-                "ication\",\"notificationId\":\"n1\"}\n\ndata: {\"type\":\"run\"}\r\n\r\n: ping\n\n"
+                b"ication\",\"notificationId\":\"n1\"}\n\ndata: {\"type\":\"run\"}\r\n\r\n: ping\n\n"
             ),
             vec![
                 r#"{"type":"notification","notificationId":"n1"}"#.to_string(),
@@ -962,6 +997,66 @@ mod tests {
         assert_eq!(frame(r#"{"type":"notifications"}"#), Frame::Other);
         assert_eq!(frame(r#"{"type":"run","runId":"r"}"#), Frame::Other);
         assert_eq!(frame("not json"), Frame::Other);
+    }
+
+    #[test]
+    fn frames_keep_a_character_or_a_crlf_split_across_chunks() {
+        let event = "data: {\"type\":\"notification\",\"title\":\"Zoë — 日本\"}\r\n\r\n".as_bytes();
+        // Every split point, including inside the multibyte characters and
+        // between a CR and its LF.
+        for at in 1..event.len() {
+            let mut f = Frames::default();
+            let mut out = f.push(&event[..at]);
+            out.extend(f.push(&event[at..]));
+            assert_eq!(
+                out,
+                vec![r#"{"type":"notification","title":"Zoë — 日本"}"#.to_string()],
+                "split at {at}"
+            );
+        }
+        // A lone CR is a line ending too.
+        let mut f = Frames::default();
+        assert_eq!(f.push(b"data: a\r\rdata: b\n\n"), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn only_the_instances_own_refusal_is_signed_out() {
+        let headers = |pairs: &[(&'static str, &'static str)]| {
+            let mut h = HeaderMap::new();
+            for (k, v) in pairs {
+                h.insert(*k, v.parse().unwrap());
+            }
+            h
+        };
+        let json = headers(&[("content-type", "application/json")]);
+        assert!(signed_out(StatusCode::UNAUTHORIZED, &json));
+        assert!(signed_out(StatusCode::FORBIDDEN, &json));
+        assert!(signed_out(
+            StatusCode::FORBIDDEN,
+            &headers(&[("content-type", "Application/JSON; charset=utf-8")])
+        ));
+        // A Cloudflare managed challenge: 403, cf-mitigated, an HTML page.
+        assert!(!signed_out(
+            StatusCode::FORBIDDEN,
+            &headers(&[
+                ("content-type", "text/html; charset=UTF-8"),
+                ("cf-mitigated", "challenge")
+            ])
+        ));
+        assert!(!signed_out(
+            StatusCode::FORBIDDEN,
+            &headers(&[
+                ("content-type", "application/json"),
+                ("cf-mitigated", "challenge")
+            ])
+        ));
+        assert!(!signed_out(
+            StatusCode::FORBIDDEN,
+            &headers(&[("content-type", "text/html")])
+        ));
+        assert!(!signed_out(StatusCode::FORBIDDEN, &HeaderMap::new()));
+        assert!(!signed_out(StatusCode::BAD_GATEWAY, &json));
+        assert!(!signed_out(StatusCode::OK, &json));
     }
 
     #[test]
