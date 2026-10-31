@@ -4,7 +4,8 @@ import { useQueryClient } from '@tanstack/svelte-query'
 import { Archive, Copy, Play, Repeat, RotateCw, SlidersHorizontal, Square, Trash2, UserPlus } from '@lucide/svelte'
 import { confirm } from '@/components/ui/confirm.svelte'
 import { useContextMenu, type ContextMenuController, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
-import { controlAgent, type AgentContainers, type AgentDef, type FleetAction } from '@/lib/fleet-defs'
+import { controlAgent, type AgentContainers, type AgentDef, type ControlAnswer, type FleetAction, type FleetRollRow } from '@/lib/fleet-defs'
+import { pushToast, type ToastSpec } from '@/lib/toast.svelte'
 
 // ── Health: one word from container reality. 'warming' = the healthcheck's
 // start_period — the container is up but its gateway isn't serving yet.
@@ -61,12 +62,21 @@ export interface AgentControlsState {
 // shows the state the verb was for. Kept per agent id rather than per
 // component: the tile's controls and its right-click menu are separate
 // instances, and either may have asked.
+//
+// `apply` is a saved config change whose apply outlived the def edit's or the
+// MCP tab's answer (the same 210 s bound, a 202 `pending`): the version is
+// saved, and its render and roll go on.
+export type StillWorkingAction = FleetAction | 'apply'
+
 export interface StillWorking {
-  action: FleetAction
+  action: StillWorkingAction
   /** Epoch ms of the 202. */
   since: number
-  /** A restart's agent seen down or warming since — its bounce, so the next
-   *  running reading is the restarted container, not the one before it. */
+  /** An apply's: epoch ms its request was sent (`noteStillApplying`). */
+  sentAt?: number
+  /** A restart's (or an apply's roll's) agent seen down or warming since —
+   *  its bounce, so the next reading is the new container, not the one
+   *  before it. */
   bounced: boolean
 }
 
@@ -82,7 +92,7 @@ export function stillWorkingOf(id: string): StillWorking | null {
 }
 
 /** The note's words: what the verb is still doing. */
-export const STILL_WORKING_LABEL: Record<FleetAction, string> = {
+export const STILL_WORKING_LABEL: Record<StillWorkingAction, string> = {
   up: 'still starting',
   stop: 'still stopping',
   restart: 'still restarting',
@@ -90,13 +100,41 @@ export const STILL_WORKING_LABEL: Record<FleetAction, string> = {
   retire: 'still retiring',
   unretire: 'still re-hiring',
   delete: 'still deleting',
+  apply: 'still applying',
 }
 
-/** Whether the roster now shows what a pending verb was for. */
-export function stillWorkingArrived(w: StillWorking, d: AgentDef, c: AgentContainers | null, now = Date.now()): boolean {
+/** For an apply noted without its send time: how long before its 202 its
+ *  roll can have started, the route's bound (210 s) with a margin. */
+const APPLY_ROLL_WINDOW_MS = 300_000
+
+/** The roll picture's `since` is the server's clock and `sentAt` the
+ *  browser's: a roll this apply started reads as up to this much before the
+ *  send on a skewed clock. A roll that started earlier still, and has a
+ *  verdict, is an older roll's (its drain, stop, recreate and health check
+ *  take longer than this). */
+const APPLY_CLOCK_SKEW_MS = 15_000
+
+/** Whether the roster now shows what a pending verb was for. `roll` is the
+ *  agent's row in the roll picture, when the viewer sees it (admins). */
+export function stillWorkingArrived(
+  w: StillWorking,
+  d: AgentDef,
+  c: AgentContainers | null,
+  now = Date.now(),
+  roll?: FleetRollRow | null,
+): boolean {
   if (now - w.since > STILL_WORKING_FOR_MS) return true
-  const { running } = healthOf(d, c)
+  const { health, running } = healthOf(d, c)
   switch (w.action) {
+    case 'apply':
+      // The apply's roll has its verdict on the roll picture: done, failed
+      // or idle, for a roll that began once its request was sent. A roll
+      // row from before the send is an older roll's, and its verdict is not
+      // this apply's. Without the picture: the agent bounced and is healthy
+      // again. An apply that ends in place never bounces, and the note gives
+      // up at the cap.
+      if (roll?.since != null && roll.since >= applySince(w)) return roll.state !== 'rolling'
+      return w.bounced && health === 'up'
     case 'up':
     case 'unretire':
       return d.enabled && running
@@ -111,22 +149,57 @@ export function stillWorkingArrived(w: StillWorking, d: AgentDef, c: AgentContai
   }
 }
 
+/** The earliest `since` a roll row can carry and be an apply's own. */
+function applySince(w: StillWorking): number {
+  return w.sentAt != null ? w.sentAt - APPLY_CLOCK_SKEW_MS : w.since - APPLY_ROLL_WINDOW_MS
+}
+
 /** Note a verb the route answered 202 for: `state` is the container as the
  *  202 described it (a restart already caught down has bounced). */
-export function noteStillWorking(id: string, action: FleetAction, state?: string, now = Date.now()): void {
+export function noteStillWorking(id: string, action: StillWorkingAction, state?: string, now = Date.now()): void {
   stillWorkingById[id] = { action, since: now, bounced: state !== undefined && state !== 'running' }
+}
+
+/** Note a saved change whose apply the route answered 202 for: `sentAt` is
+ *  when its request was sent (taken before the call), so a roll that ended
+ *  just before the save cannot read as this apply's verdict. */
+export function noteStillApplying(id: string, sentAt: number, now = Date.now()): void {
+  stillWorkingById[id] = { action: 'apply', since: now, bounced: false, sentAt }
 }
 
 /** Fold the roster's latest reading into an agent's note: a restart's bounce
  *  is remembered, and a note whose state has arrived is cleared. */
-export function settleStillWorking(d: AgentDef, c: AgentContainers | null): void {
+export function settleStillWorking(d: AgentDef, c: AgentContainers | null, roll?: FleetRollRow | null): void {
   const w = stillWorkingById[d.id]
   if (!w) return
-  if (w.action === 'restart' && !w.bounced) {
+  if ((w.action === 'restart' || w.action === 'apply') && !w.bounced) {
     const h = healthOf(d, c).health
     if (h === 'down' || h === 'warming') w.bounced = true
   }
-  if (stillWorkingArrived(w, d, c)) delete stillWorkingById[d.id]
+  if (stillWorkingArrived(w, d, c, Date.now(), roll)) delete stillWorkingById[d.id]
+}
+
+/** Each verb as the sentence names it. */
+const CONTROL_VERB: Record<FleetAction, string> = {
+  up: 'start',
+  stop: 'stop',
+  restart: 'restart',
+  roll: 'roll',
+  retire: 'retire',
+  unretire: 're-hire',
+  delete: 'delete',
+}
+
+/** The toast a control's answer owes the person, or null for one that
+ *  landed (or is still landing: a 202 has its own note). The body is the
+ *  route's own sentence — a refusal says why (not running, mid-roll, a shared
+ *  department), a failure points at the server log. A 503 is a verb docker
+ *  has not confirmed, which may still land, so it is not called a failure. */
+export function controlAnswerToast(action: FleetAction, name: string, answer: ControlAnswer): ToastSpec | null {
+  if (!answer.error) return null
+  const verb = CONTROL_VERB[action]
+  const title = answer.status === 503 ? `${name}: the ${verb} is not confirmed yet` : `Could not ${verb} ${name}`
+  return { title, body: answer.error, tone: 'danger' }
 }
 
 // Shared control logic for one agent def. Takes a getter so the def stays
@@ -137,10 +210,15 @@ export function useAgentControls(def: () => AgentDef): AgentControlsState {
   const act = async (action: FleetAction, label: string, confirmMsg?: string) => {
     if (confirmMsg && !(await confirm({ title: label, message: confirmMsg, confirmLabel: label }))) return
     pending = label
-    const id = def().id
+    const { id, displayName } = def()
     delete stillWorkingById[id]
     try {
       const answer = await controlAgent(id, action)
+      // A refused or failed control resolves `{ error }`: it used to go
+      // nowhere, so a 409 or a 500 left the roster exactly as it was with no
+      // word of why. The route's sentence goes in a toast.
+      const failed = controlAnswerToast(action, displayName, answer)
+      if (failed) pushToast(failed)
       // 202: the verb outlived the route's answer and goes on. Say so until
       // the roster catches up (AgentControls), rather than nothing.
       if (answer.pending) noteStillWorking(id, action, answer.state)

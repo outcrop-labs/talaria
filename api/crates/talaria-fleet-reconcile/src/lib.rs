@@ -17,6 +17,7 @@ use sqlx::PgPool;
 
 use std::collections::{HashMap, HashSet};
 
+use talaria_error::store_fault;
 use talaria_fleet_docker::Slot;
 use talaria_secretbox::SecretBox;
 
@@ -373,7 +374,7 @@ pub async fn apply_running_agents(
     let managed: Vec<(String, String)> = sqlx::query_as(DEPARTMENT_RUNNERS_SQL)
         .fetch_all(pg)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| store_fault("[fleet] apply: department runners read failed", e))?;
     let mut rolled = Vec::new();
     for (department, display_name) in &managed {
         match apply_one(pg, sb, department).await {
@@ -644,13 +645,16 @@ async fn roll_agent_mode(
             "department \"{department}\" is already mid-roll — wait for it to finish"
         )));
     };
-    let mut conn = pg.acquire().await.map_err(|e| e.to_string())?;
+    let mut conn = pg
+        .acquire()
+        .await
+        .map_err(|e| store_fault("[fleet] roll: no database connection for the roll lock", e))?;
     let key = roll_lock_key(department);
     let locked: (bool,) = sqlx::query_as("select pg_try_advisory_lock(hashtext($1))")
         .bind(&key)
         .fetch_one(&mut *conn)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| store_fault("[fleet] roll: advisory lock failed", e))?;
     if !locked.0 {
         return Ok(RollOutcome::Soft(format!(
             "department \"{department}\" is already mid-roll on another api instance — wait for it to finish"
@@ -821,7 +825,7 @@ async fn roll_agent_locked(
     .bind(department)
     .fetch_all(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[fleet] roll: department agents read failed", e))?;
     let Some((slug, display_name, active)) = rows.first().cloned() else {
         return Ok(Rolled::Soft(format!(
             "no managed agent in department \"{department}\""
@@ -1041,7 +1045,7 @@ async fn set_active_slot(pg: &PgPool, slug: &str, slot: &str) -> Result<(), Stri
         .execute(pg)
         .await
         .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| store_fault("[fleet] roll: active slot write failed", e))
 }
 
 /// What [`reconcile_fleet`] did: the render's agent count, the agents it
@@ -1088,7 +1092,7 @@ pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileRes
     let managed: Vec<(String, String)> = sqlx::query_as(DEPARTMENT_RUNNERS_SQL)
         .fetch_all(pg)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| store_fault("[fleet] reconcile: department runners read failed", e))?;
     let states = if managed.is_empty() {
         Vec::new()
     } else {
@@ -1152,7 +1156,7 @@ pub async fn roll_running_agents(
     let managed: Vec<(String, String)> = sqlx::query_as(DEPARTMENT_RUNNERS_SQL)
         .fetch_all(pg)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| store_fault("[fleet] roll: department runners read failed", e))?;
     let running: HashSet<String> = if managed.is_empty() {
         HashSet::new()
     } else {
@@ -1284,7 +1288,7 @@ pub async fn start_roll_batch(
     )
     .fetch_all(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[fleet] roll batch: agents read failed", e))?;
     let (mut managed, left_out) = department_runners(ranked);
     managed.sort_by(|a, b| a.1.cmp(&b.1));
     let running: HashSet<String> = if managed.is_empty() {

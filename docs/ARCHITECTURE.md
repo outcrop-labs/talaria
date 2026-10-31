@@ -265,7 +265,14 @@ multiplexer.
   answers at once; a failed install is logged and the agent starts without browser tools. A
   start waits at most 90 s for it (a host whose egress drops packets would otherwise hold it
   for minutes in pm's own retries); a one-shot past that is removed, and the timeout makes
-  every start skip the install for the next 5 minutes. The render writes no `browser:` block
+  every start skip the install for the next 5 minutes. A one-shot whose CLI is killed between
+  the daemon's create and its start is never started, so `--rm` never removes it: the start
+  watches its name for two minutes after a timeout and removes whatever lands there (that
+  agent's starts skip the install while it watches: another agent's install that succeeds
+  ends the fleet-wide cooldown, and the watch would remove a new one-shot), and
+  every start first clears a one-shot an earlier one left that is not running (a running one
+  is left to finish, and that start runs no second install). Without that, one stray in
+  `created` made every later install fail on its name. The render writes no `browser:` block
   of its own: Hermes's default stands, and a def that authored its own backend keeps it.
   With the terminal closed, a backend Hermes would run as a local browser (the built-in
   tools on this Chromium, or Camofox) has the `browser` toolset closed by the render

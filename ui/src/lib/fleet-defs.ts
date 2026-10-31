@@ -1,7 +1,7 @@
 // Harness registry client (admin): agent definitions + LLM endpoints.
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
-import { errorMessage, getJson, getList, patchJson, postJson, putJson } from '@/lib/fetch-json'
+import { errorMessage, getJson, getList, HttpError, patchJson, postJson, putJson } from '@/lib/fetch-json'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
@@ -410,8 +410,12 @@ export async function saveAgentEdit(
    *  agent does not run the current version. */
   warning?: string
   /** Only on a Save & apply with nothing changed: whether the agent runs the
-   *  current version (or, stopped, will on its next start). */
+   *  current version (or, stopped, will on its next start). A version that
+   *  was not in effect is applied, and this says whether it now is. */
   inEffect?: boolean
+  /** A 202: the version is saved, and its apply (the render, a roll) was
+   *  still going when the route stopped waiting (210 s). It goes on. */
+  pending?: boolean
   error?: string
 }> {
   try {
@@ -423,6 +427,7 @@ export async function saveAgentEdit(
       notes?: string[]
       warning?: string
       inEffect?: boolean
+      pending?: boolean
     }>(
       `/api/fleet/defs/${id}/edit`,
       edit,
@@ -430,6 +435,20 @@ export async function saveAgentEdit(
   } catch (e) {
     return { error: errorMessage(e) }
   }
+}
+
+/** The sentence for a save whose apply outlived the route's answer (a 202,
+ *  `pending`), or null for any other answer. The version IS saved — never
+ *  "failed" — and its render and roll go on; the roster notes the agent
+ *  *still applying* until it lands. A Save & apply with nothing changed
+ *  (`created: false`) saved nothing new: it is applying a version saved
+ *  earlier, and says that instead. */
+export function editStillApplying(r: { version?: number; created?: boolean; pending?: boolean }): string | null {
+  if (!r.pending) return null
+  const rest = "is taking longer than this form waits (a roll's recreate and health check), and it goes on: the roster shows the agent when it lands."
+  if (r.created === false && r.version) return `Applying version ${r.version} ${rest}`
+  const saved = r.version ? `Saved as version ${r.version}.` : 'Saved.'
+  return `${saved} Applying it ${rest}`
 }
 
 /** A version this editor saw saved and not applied, and the route's reason. */
@@ -442,15 +461,16 @@ export interface UnappliedVersion {
  *  or null when there is none. A saved version that is not running is not a
  *  success to close on: the editor shows this in place instead.
  *
- *  A Save & apply with nothing changed creates nothing, so there is nothing
- *  new to apply; the route then says whether the agent runs the current
- *  version (`inEffect`), with the reason in `warning` when it does not — a
- *  version saved without an apply, a roll that never landed. Before it did,
- *  that answer was silence, and a freshly opened form closed on it.
+ *  A Save & apply with nothing changed creates no version. When the agent
+ *  does not run the current version (one saved without an apply, a roll
+ *  that never landed), the route applies it, and says whether the agent runs
+ *  it now (`inEffect`), with the reason in `warning` when it does not: the
+ *  apply failed, the agent is retired, docker did not say.
  *
  *  `unapplied` is the version this editor already saw saved and not applied,
- *  passed only for a save that asked to apply: what is said for a no-op
- *  answer that carries no `inEffect` either way. */
+ *  passed only for a save that asked to apply. It speaks only for a no-op
+ *  answer that carries no `inEffect` either way, which this api's managed
+ *  answers always carry: an api from before it did. */
 export function editNotApplied(
   r: { version?: number; created?: boolean; applied?: boolean; inEffect?: boolean; warning?: string },
   unapplied: UnappliedVersion | null = null,
@@ -463,8 +483,10 @@ export function editNotApplied(
   // The route checked, and the agent runs it (a roll from the roster since,
   // say): nothing this editor remembers outranks that.
   if (r.inEffect === true) return null
+  // No `inEffect` either way: the answer does not say whether the version
+  // this editor saw unapplied runs now, and silence is not proof it does.
   if (unapplied && r.version === unapplied.version && r.created === false && r.applied !== true) {
-    return `Version ${unapplied.version} is still not applied, and nothing changed since it was saved, so Save & apply had nothing new to apply. Roll the agent to put it on once this clears: ${unapplied.why}`
+    return `Version ${unapplied.version} is still not applied, as far as this form can tell: the answer did not say whether the agent runs it now. Roll the agent to put it on once this clears: ${unapplied.why}`
   }
   return null
 }
@@ -555,12 +577,16 @@ export interface ControlAnswer {
   pending?: boolean
   state?: 'running' | 'stopped' | 'gone' | 'unknown'
   error?: string
+  /** With `error`: the HTTP status it came with (none when the request never
+   *  got an answer). A 503 is a verb docker has not confirmed yet — it may
+   *  still land — which is not a refusal. */
+  status?: number
 }
 
 export async function controlAgent(id: string, action: FleetAction): Promise<ControlAnswer> {
   try {
     return await postJson<ControlAnswer>(`/api/fleet/agents/${id}/control`, { action })
   } catch (e) {
-    return { error: errorMessage(e) }
+    return { error: errorMessage(e), ...(e instanceof HttpError ? { status: e.status } : {}) }
   }
 }

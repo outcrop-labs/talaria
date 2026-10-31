@@ -230,7 +230,11 @@ they are wire contract, pinned by its tests.
 - A database error is never a 400's message either. In the Rust api, a store whose `Err` is a
   sentence a route puts on the wire hands a database failure up as `talaria_error::store_fault`
   (logged where it happened, with the sqlx text), and the route answers that sentence with
-  `store_answer`: the house 500. Every other sentence keeps its 400.
+  `store_answer`: the house 500. Every other sentence keeps its 400. The fleet's render and
+  apply chain (`render_fleet`, the apply, the roll) does the same at every database read and
+  write, so a store fault reaches an apply's `warning`, the roll picture and the endpoints
+  route's *re-render failed (…)* as that sentence; a file path, a YAML or a docker error stays
+  the operator's own text.
 - Secrets: sealed at rest, **never echoed** — GETs return set-flags (`passSet`) or masked keys.
   An empty string on a round-tripped masked field means "keep", not "clear".
 

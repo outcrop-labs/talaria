@@ -27,7 +27,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use talaria_agent_defs::{add_version_if_changed, list_versions};
 use talaria_agent_mcp::apply_mcp_edits;
-use talaria_api_facades::fleet::reconcile::apply_agent_change;
+use talaria_api_facades::fleet::docker::ANSWER_WITHIN;
 use talaria_api_facades::mcp::apply::bump_tool_lists;
 use talaria_api_facades::mcp::health::{missing_tools, tool_names};
 use talaria_api_facades::mcp::oauth::has_oauth_tokens;
@@ -43,6 +43,8 @@ use talaria_body::{
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_agent_manager, require_agent_reader, secretbox_or_500};
 use talaria_state::AppState;
+
+use super::fleet_defs_id_edit::{BoundedApply, bounded_apply, bounded_render};
 
 /// The def columns this route reads.
 struct Def {
@@ -354,6 +356,9 @@ pub async fn post(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
+    // When the request began: the apply answers within what is left of the
+    // bound (`bounded_apply`).
+    let started = std::time::Instant::now();
     let user = require_agent_manager(&state, &headers, &id).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
@@ -543,6 +548,8 @@ pub async fn post(
     bump_tool_lists(&state.pg, &touched_servers).await;
     let mut applied = false;
     let mut warning: Option<String> = None;
+    // The apply outlived the bound and goes on (`bounded_apply`): a 202.
+    let mut pending = false;
     // ONE CONTAINER PER DEPARTMENT: where an older agent holds this one's
     // department too (a pair from before a department became one agent's),
     // the department's container is the other agent's and the render leaves
@@ -558,7 +565,15 @@ pub async fn post(
     };
     if let Some(runner) = &runs_instead {
         let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
-        let _ = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb).await;
+        // Bounded like the apply below (`bounded_render`): the change is
+        // written, and the answer does not wait on a render past the bound.
+        bounded_render(
+            &state,
+            sb,
+            ANSWER_WITHIN.saturating_sub(started.elapsed()),
+            "[fleet/defs/mcp]",
+        )
+        .await;
         warning = Some(talaria_agent_defs::shared_department_refusal(
             "roll",
             &def.display_name,
@@ -567,31 +582,41 @@ pub async fn post(
         ));
     } else if (touched_registry || created) && apply && def.managed {
         let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
-        // On its own task, like the def edit's apply: a client that goes
-        // away must not kill a recreate halfway.
-        let verdict = {
-            let (pg, department) = (state.pg.clone(), def.department.clone());
-            tokio::spawn(async move { apply_agent_change(&pg, &sb, &department).await })
-                .await
-                .unwrap_or_else(|e| Err(format!("the apply's task failed: {e}")))
-        };
-        match verdict {
-            Ok(None) => applied = true,
-            Ok(Some(w)) => warning = Some(w),
+        // On its own task and answered within the bound, like the def edit's
+        // apply (`bounded_apply`): a client that goes away must not kill a
+        // recreate halfway, and a roll that outlasts the app proxy's 300 s
+        // must not answer a 502 for a change that is already written. Past
+        // the bound: 202, `pending`, and the apply goes on.
+        match bounded_apply(
+            &state,
+            sb,
+            &def.department,
+            ANSWER_WITHIN.saturating_sub(started.elapsed()),
+            "[fleet/defs/mcp]",
+        )
+        .await
+        {
+            BoundedApply::Settled(Ok(None)) => applied = true,
+            BoundedApply::Settled(Ok(Some(w))) => warning = Some(w),
             // A step that threw (the render, the image pull, the recreate)
             // is an apply that did not land, and the assignment or the new
             // version above is already written: answered like a soft
             // failure, the reason in `warning` — the edit route's answer
             // (its decision 12). A bare 400 said nothing of the saved change.
-            Err(e) => {
-                tracing::warn!("[fleet/defs/mcp] roll of {} failed: {e}", def.department);
-                warning = Some(format!("the roll failed — {e}"));
-            }
+            BoundedApply::Settled(Err(e)) => warning = Some(format!("the roll failed — {e}")),
+            BoundedApply::StillApplying => pending = true,
         }
     } else if touched_registry || created {
-        // Not applying: still re-render so the next start carries the change.
+        // Not applying: still re-render so the next start carries the change,
+        // within the same bound (`bounded_render`).
         let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
-        let _ = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb).await;
+        bounded_render(
+            &state,
+            sb,
+            ANSWER_WITHIN.saturating_sub(started.elapsed()),
+            "[fleet/defs/mcp]",
+        )
+        .await;
     }
     let mut out = Map::new();
     out.insert("ok".into(), json!(true));
@@ -602,6 +627,10 @@ pub async fn post(
     }
     if let Some(w) = warning {
         out.insert("warning".into(), json!(w));
+    }
+    if pending {
+        out.insert("pending".into(), json!(true));
+        return Ok((StatusCode::ACCEPTED, Json(Value::Object(out))).into_response());
     }
     Ok(Json(Value::Object(out)).into_response())
 }

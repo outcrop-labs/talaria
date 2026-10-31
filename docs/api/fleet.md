@@ -280,7 +280,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_edit.rs`](../.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidedit-body) | `{ok, version, created, applied, notes}` | 200, 400, 404 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidedit-body) | `{ok, version, created, applied, notes}` | 200, 202, 400, 404 | audit |
 
 ### POST `/api/fleet/defs/{id}/edit` body
 
@@ -364,7 +364,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_mcp.rs`](../..
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `agent-reader` | — | `{agent, canInstall, servers, legacy}` | 200, 404 | — |
-| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidmcp-body) | `…` | 200, 400, 404 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidmcp-body) | `…` | 200, 202, 400, 404 | audit |
 
 ### POST `/api/fleet/defs/{id}/mcp` body
 

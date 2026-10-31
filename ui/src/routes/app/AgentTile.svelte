@@ -48,7 +48,7 @@
         <p class="truncate font-sans text-xs text-danger" title={roll.detail}>{roll.detail}</p>
       {/if}
       <div class="flex justify-end">
-        <AgentControls def={d} {containers} {running} {rolling} onManage={openManage} {onDuplicate} />
+        <AgentControls def={d} {containers} {running} {rolling} {roll} onManage={openManage} {onDuplicate} />
       </div>
     </Panel>
   {/snippet}
