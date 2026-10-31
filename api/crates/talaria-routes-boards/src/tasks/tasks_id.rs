@@ -18,7 +18,7 @@ use talaria_body::{
     optional_uuid_member, parse,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_mentions::{Mentionee, notify_mentions};
+use talaria_mentions::{Mentionee, notify_added_mentions};
 use talaria_notify::NotifyDeps;
 use talaria_refs::{MessageRef, RefChip, RefUser, resolve_refs};
 use talaria_session::{SessionUser, require_user};
@@ -393,9 +393,11 @@ pub async fn put(
         && description_input.is_some()
         && description_input != Some(task.description.clone())
     {
-        // A description that GAINS an @mention notifies board members —
-        // same contract as comments. Only on actual change, never on
-        // other patches.
+        // A description that GAINS an @mention notifies the people it gains
+        // — only them. The whole text used to be re-run on every save, so
+        // each punctuation fix re-told everyone already mentioned (55
+        // rapid edits were 55 rows). Only on actual change, never on other
+        // patches.
         let (sender_id, sender_label) = match session_user.as_ref() {
             Some(user) => (
                 user.id.clone(),
@@ -411,6 +413,7 @@ pub async fn put(
         let board_id = task.board_id.clone();
         let task_id = task.id.clone();
         let content = description_input.clone().flatten().unwrap_or_default();
+        let before = task.description.clone().unwrap_or_default();
         let where_ = updated
             .ticket_ref
             .clone()
@@ -428,11 +431,12 @@ pub async fn put(
                 })
                 .collect();
             let href = format!("/boards/{board_id}/{task_id}");
-            let _ = notify_mentions(
+            notify_added_mentions(
                 &notify,
                 &members,
                 &sender_id,
                 &sender_label,
+                &before,
                 &content,
                 &where_,
                 &href,

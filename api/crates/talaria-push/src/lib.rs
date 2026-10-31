@@ -15,11 +15,24 @@
 // the push service's endpoint), a VAPID keypair born once and SEALED in
 // app_settings (the private half under the instance secretbox — never
 // plaintext, never logged), and `deliver`, fanned to every subscription of
-// a user from the single notification writer. 2xx touches last_seen_at,
-// 404/410 deletes the row (the service already forgot it), anything else
-// logs and keeps.
+// a user from the single notification writer.
+//
+// DELIVERY DEGRADES PER DEVICE, NEVER ACROSS THEM. A person's devices are
+// posted in parallel (four at a time), every POST is bounded (5 s to
+// connect, 15 s in all) and the whole process holds at most 32 in flight —
+// one hung push service used to hold a person's other devices for as long
+// as it liked (75 s measured), and every notification spawned its own
+// unbounded fan. The payload is clamped under the 4,096-byte record every
+// push service guarantees; a 413 still gets one minimal resend. 429, 5xx and
+// transport failures are retried twice at most. The row records every
+// attempt (`last_status`, `last_error`, `last_attempt_at`): 2xx resets
+// `failures`, 404/410 prune at once (the service already forgot it), and
+// 401/403 prune at three in a row — except a refusal of the INSTANCE's own
+// token (Apple's `BadJwtToken` family), which is this server's fault and no
+// device's.
 
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use base64::Engine as _;
 use futures_util::future::BoxFuture;
@@ -42,16 +55,19 @@ const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STA
 /// app_settings key for the VAPID keypair row. Pub because the live suite
 /// cleans the row by name — the key IS the plane's storage contract.
 pub const VAPID_KEY: &str = "push_vapid";
-/// The JWT's `sub` — RFC 8292 wants an operator contact the push service
-/// could reach; it is informational, never routed to.
+/// The JWT's `sub` when nothing better is known — RFC 8292 wants an operator
+/// contact the push service could reach. The instance's own public https
+/// URL is preferred (`vapid_subject`): `.local` routes nowhere, and Apple's
+/// service is reported to refuse placeholder subjects with a 403 that would
+/// otherwise read as every Safari subscription's fault.
 const VAPID_SUB_MAILTO: &str = "mailto:notifications@talaria.local";
 /// JWT lifetime: long enough for slow deliveries, short enough that a leaked
 /// token dies on its own (RFC 8292 suggests ≥ 12h tolerance, services
 /// commonly cap at 24h).
 const VAPID_TTL_SECS: i64 = 12 * 60 * 60;
-/// aes128gcm's record size — comfortably above any payload this plane sends
-/// (the notification body is truncated to 200 UTF-16 units before it ever
-/// gets here), so the single record the scheme allows stays single.
+/// aes128gcm's record size — above any payload this plane sends
+/// (`push_payload` holds the plaintext under `PAYLOAD_MAX_BYTES`, whatever a
+/// writer handed over), so the single record the scheme allows stays single.
 const RECORD_SIZE: u32 = 4096;
 
 // ── HKDF (RFC 5869) ───────────────────────────────────────────────────────────
@@ -208,12 +224,22 @@ use p256::ecdsa::{Signature, SigningKey};
 /// server: aud = the ENDPOINT's origin, exp = now + 12h, sub = a contact.
 /// The signature is the raw 64-byte r‖s, base64url — RFC 8292's shape, not
 /// the DER one JWT tooling usually emits.
-pub fn vapid_jwt(signing: &SigningKey, audience_origin: &str, now_unix: i64) -> String {
+pub fn vapid_jwt(
+    signing: &SigningKey,
+    audience_origin: &str,
+    now_unix: i64,
+    subject: &str,
+) -> String {
     let header = "{\"alg\":\"ES256\",\"typ\":\"JWT\"}";
-    let claims = format!(
-        "{{\"aud\":\"{audience_origin}\",\"exp\":{exp},\"sub\":\"{VAPID_SUB_MAILTO}\"}}",
-        exp = now_unix + VAPID_TTL_SECS,
-    );
+    // serde_json, not format!: the subject is configuration (a URL), and a
+    // quote in it must not break the claims object. The three claims RFC
+    // 8292 names, nothing else.
+    let claims = serde_json::json!({
+        "aud": audience_origin,
+        "exp": now_unix + VAPID_TTL_SECS,
+        "sub": subject,
+    })
+    .to_string();
     let signing_input = format!(
         "{}.{}",
         B64U.encode(header.as_bytes()),
@@ -228,8 +254,13 @@ pub fn vapid_jwt(signing: &SigningKey, audience_origin: &str, now_unix: i64) -> 
 
 /// The Authorization header value for a delivery: `vapid t=<jwt>, k=<public>`.
 /// k is the UNCOMPRESSED public key (65 bytes, 0x04 prefix included).
-pub fn vapid_authorization(signing: &SigningKey, audience_origin: &str, now_unix: i64) -> String {
-    let jwt = vapid_jwt(signing, audience_origin, now_unix);
+pub fn vapid_authorization(
+    signing: &SigningKey,
+    audience_origin: &str,
+    now_unix: i64,
+    subject: &str,
+) -> String {
+    let jwt = vapid_jwt(signing, audience_origin, now_unix, subject);
     // to_sec1_point hands back an owned point — bind it, then borrow: the
     // bytes must outlive the encode below.
     let point = signing.verifying_key().to_sec1_point(false);
@@ -343,6 +374,35 @@ fn public_65(secret: &p256::SecretKey) -> [u8; 65] {
         .expect("uncompressed p256 is 65 bytes")
 }
 
+// ── The VAPID subject ────────────────────────────────────────────────────────
+
+/// The `sub` claim: the instance's public https URL when one is configured
+/// (`AUTH_PUBLIC_URL`), else its verified hosting domain, else the mailto
+/// placeholder. Pure, so the precedence is pinned by a test.
+pub fn pick_subject(public_url: Option<&str>, verified_base: Option<&str>) -> String {
+    if let Some(u) = public_url
+        .map(str::trim)
+        .filter(|u| u.starts_with("https://"))
+    {
+        return u.trim_end_matches('/').to_string();
+    }
+    if let Some(u) = verified_base
+        .map(str::trim)
+        .filter(|u| u.starts_with("https://"))
+    {
+        return u.trim_end_matches('/').to_string();
+    }
+    VAPID_SUB_MAILTO.to_string()
+}
+
+/// This instance's subject, read fresh (one env read and one settings read
+/// per delivery — a domain verified a minute ago is the subject now).
+pub async fn vapid_subject(pg: &PgPool) -> String {
+    let public = talaria_auth_config::get_auth_config().public_url;
+    let verified = talaria_instance::instance_base_url(pg).await;
+    pick_subject(public.as_deref(), verified.as_deref())
+}
+
 // ── The send edge (injectable, the DrainDeps pattern) ────────────────────────
 
 /// One delivery as the plane sees it: where, with what headers, carrying
@@ -353,16 +413,80 @@ pub struct PushPost {
     pub body: Vec<u8>,
 }
 
-pub type PostPushFn =
-    Arc<dyn Fn(PushPost) -> BoxFuture<'static, Result<u16, String>> + Send + Sync>;
+/// What a push service answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushAnswer {
+    pub status: u16,
+    /// `Retry-After` in whole seconds, when the service sent the
+    /// delta-seconds form (the date form is read as absent).
+    pub retry_after: Option<u64>,
+    /// The start of the response body — where a refusal names its reason
+    /// (`{"reason":"BadJwtToken"}`).
+    pub body: String,
+}
+
+impl PushAnswer {
+    /// An answer with no Retry-After and no body — what a fake edge mostly
+    /// needs.
+    pub fn status(status: u16) -> Self {
+        Self {
+            status,
+            retry_after: None,
+            body: String::new(),
+        }
+    }
+}
+
+/// Why a POST got no HTTP answer at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PushFailure {
+    /// The connect or the whole exchange ran past its bound.
+    Timeout(String),
+    /// The connection could not be made.
+    Connect(String),
+    /// Anything else the transport refused (a request that never left).
+    Other(String),
+}
+
+impl std::fmt::Display for PushFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PushFailure::Timeout(e) => write!(f, "timeout: {e}"),
+            PushFailure::Connect(e) => write!(f, "connect: {e}"),
+            PushFailure::Other(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+pub type PushResult = Result<PushAnswer, PushFailure>;
+
+pub type PostPushFn = Arc<dyn Fn(PushPost) -> BoxFuture<'static, PushResult> + Send + Sync>;
+
+/// Connect bound for one POST.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Whole-exchange bound for one POST (connect, send, answer, body).
+const POST_TIMEOUT: Duration = Duration::from_secs(15);
+/// How much of a refusal's body is kept — enough for a reason code.
+const ANSWER_BODY_CHARS: usize = 512;
 
 /// The production edge over reqwest (rustls — the no-OpenSSL invariant is
-/// the whole reason this module is hand-rolled). One client, built once:
-/// pushes are rare, but a client per delivery would pay the pool tax every
-/// time.
+/// the whole reason this module is hand-rolled). One client, built once, and
+/// BOUNDED: a push service that accepts the connection and never answers
+/// used to hold the delivery for as long as it liked.
 pub fn real_post_push() -> PostPushFn {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    let client = CLIENT.get_or_init(reqwest::Client::new).clone();
+    let client = CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(POST_TIMEOUT)
+                .build()
+                .unwrap_or_else(|e| {
+                    tracing::error!("[push] could not build the bounded client ({e}); falling back to the default");
+                    reqwest::Client::new()
+                })
+        })
+        .clone();
     Arc::new(move |post: PushPost| {
         let client = client.clone();
         Box::pin(async move {
@@ -376,8 +500,35 @@ pub fn real_post_push() -> PostPushFn {
                 .body(post.body)
                 .send()
                 .await
-                .map_err(|e| e.to_string())?;
-            Ok(resp.status().as_u16())
+                .map_err(|e| {
+                    if e.is_timeout() {
+                        PushFailure::Timeout(e.to_string())
+                    } else if e.is_connect() {
+                        PushFailure::Connect(e.to_string())
+                    } else {
+                        PushFailure::Other(e.to_string())
+                    }
+                })?;
+            let status = resp.status().as_u16();
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok());
+            // The body is read under the same 15 s bound; a service that
+            // answers the status and stalls the body still settles.
+            let body: String = resp
+                .text()
+                .await
+                .unwrap_or_default()
+                .chars()
+                .take(ANSWER_BODY_CHARS)
+                .collect();
+            Ok(PushAnswer {
+                status,
+                retry_after,
+                body,
+            })
         })
     })
 }
@@ -391,7 +542,209 @@ pub struct PushNote {
     pub title: String,
     pub body: String,
     pub href: String,
+    /// The writer's kind (`mention`, `dm`, …) — a hint the worker may read.
+    pub kind: String,
+    /// A row brought up to date in place (a newer DM in the same
+    /// conversation): the OS should re-show it under the same tag rather
+    /// than replace it silently.
+    pub renotify: bool,
+    /// The row's createdAt as the list serves it (ISO, ms precision) — the
+    /// VERSION the worker and the pages record as bannered, so one version
+    /// of a row is shown once per browser and a refreshed row again.
+    pub created_at: String,
 }
+
+/// Title and body bounds before the byte budget applies.
+const TITLE_MAX_CHARS: usize = 200;
+const BODY_MAX_CHARS: usize = 600;
+/// The plaintext budget. RFC 8030 push services only guarantee a 4,096-byte
+/// body; aes128gcm adds 86 bytes of header, 16 of tag and 1 delimiter, so
+/// 3,000 leaves room for every engine's own framing.
+pub const PAYLOAD_MAX_BYTES: usize = 3_000;
+/// The 413 resend's title bound.
+const MINIMAL_TITLE_CHARS: usize = 80;
+
+/// The first `max` chars, with '…' only when something was cut.
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+fn payload_json(note: &PushNote, title: &str, body: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "id": note.id,
+        "title": title,
+        "body": body,
+        "href": note.href,
+        "kind": note.kind,
+        "renotify": note.renotify,
+        "createdAt": note.created_at,
+    }))
+    .expect("plain strings serialize")
+}
+
+/// The JSON the worker decrypts, held under `PAYLOAD_MAX_BYTES`: the title
+/// and body are clamped, then the body shrinks, then the title, until it
+/// fits. A writer may hand over anything (a 2,500-character plan title, an
+/// unbounded approval detail); the push service never sees more than its
+/// guarantee.
+pub fn push_payload(note: &PushNote) -> Vec<u8> {
+    let mut title_chars = note.title.chars().count().min(TITLE_MAX_CHARS);
+    let mut body_chars = note.body.chars().count().min(BODY_MAX_CHARS);
+    loop {
+        let out = payload_json(
+            note,
+            &clip(&note.title, title_chars),
+            &clip(&note.body, body_chars),
+        );
+        if out.len() <= PAYLOAD_MAX_BYTES || (title_chars == 0 && body_chars == 0) {
+            if out.len() <= PAYLOAD_MAX_BYTES {
+                return out;
+            }
+            return minimal_payload(note);
+        }
+        if body_chars > 0 {
+            body_chars = body_chars * 3 / 4;
+        } else {
+            title_chars = title_chars * 3 / 4;
+        }
+    }
+}
+
+/// The 413 resend: `{id, title, href}` with the title at 80 characters —
+/// enough for the worker to show something and open the right page.
+pub fn minimal_payload(note: &PushNote) -> Vec<u8> {
+    let href = if note.href.len() + MINIMAL_TITLE_CHARS * 4 + 128 <= PAYLOAD_MAX_BYTES {
+        note.href.as_str()
+    } else {
+        ""
+    };
+    serde_json::to_vec(&serde_json::json!({
+        "id": note.id,
+        "title": clip(&note.title, MINIMAL_TITLE_CHARS),
+        "href": href,
+    }))
+    .expect("plain strings serialize")
+}
+
+/// Retry spacing, injectable so the live suite need not sleep ten seconds.
+#[derive(Debug, Clone)]
+pub struct PushPolicy {
+    /// The waits before the first and second retry when the service named
+    /// none.
+    pub backoff: [Duration; 2],
+    /// The longest `Retry-After` honored; a service asking for longer is
+    /// taken at its word and not retried this time.
+    pub retry_after_cap: Duration,
+}
+
+impl Default for PushPolicy {
+    fn default() -> Self {
+        Self {
+            backoff: [Duration::from_secs(2), Duration::from_secs(8)],
+            retry_after_cap: Duration::from_secs(60),
+        }
+    }
+}
+
+/// The wait before retry number `retries_done + 1`, or `None` when this
+/// answer is final. Retried: 429, 5xx, a timeout, a connect failure — at
+/// most twice. `Retry-After` wins when it is within the cap; past it the
+/// service asked for more patience than a notification is worth.
+pub fn retry_delay(
+    retries_done: usize,
+    result: &PushResult,
+    policy: &PushPolicy,
+) -> Option<Duration> {
+    if retries_done >= policy.backoff.len() {
+        return None;
+    }
+    match result {
+        Ok(a) if a.status == 429 || (500..600).contains(&a.status) => match a.retry_after {
+            Some(secs) => {
+                let wait = Duration::from_secs(secs);
+                (wait <= policy.retry_after_cap).then_some(wait)
+            }
+            None => Some(policy.backoff[retries_done]),
+        },
+        Err(PushFailure::Timeout(_) | PushFailure::Connect(_)) => {
+            Some(policy.backoff[retries_done])
+        }
+        _ => None,
+    }
+}
+
+/// Apple's refusals of the INSTANCE's token rather than the subscription:
+/// the JWT itself is bad, expired, missing or unverifiable. Counting these
+/// against devices would prune every Safari subscription for a fault that
+/// lives in this server's configuration.
+const INSTANCE_JWT_FAULTS: &[&str] = &[
+    "BadJwtToken",
+    "ExpiredProviderToken",
+    "InvalidProviderToken",
+    "MissingProviderToken",
+];
+
+/// What a final answer does to the row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tend {
+    /// 2xx: touch liveness, reset the failure count.
+    Delivered,
+    /// 404/410: the service has forgotten it — prune now.
+    Gone,
+    /// 401/403 naming the subscription: count it; prune at three in a row.
+    Refused,
+    /// 401/403 naming the instance's own token: log loudly, count nothing.
+    InstanceFault,
+    /// Anything else (5xx or 429 past retries, 413 past its resend, a
+    /// transport failure): count it, keep the row.
+    Failed,
+}
+
+/// Consecutive counted failures that prune a row refused by its service.
+pub const REFUSALS_TO_PRUNE: i32 = 3;
+
+pub fn classify(result: &PushResult) -> Tend {
+    match result {
+        Ok(a) if (200..300).contains(&a.status) => Tend::Delivered,
+        Ok(a) if a.status == 404 || a.status == 410 => Tend::Gone,
+        Ok(a) if a.status == 401 || a.status == 403 => {
+            if INSTANCE_JWT_FAULTS.iter().any(|r| a.body.contains(r)) {
+                Tend::InstanceFault
+            } else {
+                Tend::Refused
+            }
+        }
+        _ => Tend::Failed,
+    }
+}
+
+/// `last_error` for a final answer: the status and the start of the body,
+/// or the transport's own sentence.
+fn error_text(result: &PushResult) -> Option<String> {
+    match result {
+        Ok(a) if (200..300).contains(&a.status) => None,
+        Ok(a) => Some(
+            format!("{} {}", a.status, a.body.trim())
+                .trim()
+                .chars()
+                .take(300)
+                .collect(),
+        ),
+        Err(e) => Some(e.to_string().chars().take(300).collect()),
+    }
+}
+
+/// Every POST in the process waits for one of these. A burst (a mention to a
+/// whole board, an admin fan-out) queues here instead of opening a socket
+/// per device at once.
+static IN_FLIGHT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(32);
+/// A person's devices posted at once.
+const PER_USER_PARALLEL: usize = 4;
 
 fn now_unix() -> i64 {
     std::time::SystemTime::now()
@@ -400,18 +753,193 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-/// Send one note to every device browser of one person. Per subscription:
-/// encrypt against ITS keys, prove with the instance VAPID identity, POST,
-/// then tend the row — 2xx touches liveness, 404/410 prunes (the service
-/// has already forgotten the subscription), anything else logs and keeps
-/// for the next notification to retry. A subscription whose row cannot be
-/// encrypted (bad key material) is pruned too: it can never succeed.
+async fn prune(pg: &PgPool, endpoint: &str) {
+    let _ = sqlx::query("delete from push_subscriptions where endpoint = $1")
+        .bind(endpoint)
+        .execute(pg)
+        .await;
+}
+
+/// Write the final answer onto the row (see `Tend`).
+async fn tend(pg: &PgPool, endpoint: &str, result: &PushResult) {
+    let status: Option<i32> = result.as_ref().ok().map(|a| i32::from(a.status));
+    let error = error_text(result);
+    match classify(result) {
+        Tend::Delivered => {
+            let _ = sqlx::query(
+                "update push_subscriptions set last_seen_at = now(), failures = 0, \
+                 last_status = $2, last_error = null, last_attempt_at = now() \
+                 where endpoint = $1",
+            )
+            .bind(endpoint)
+            .bind(status)
+            .execute(pg)
+            .await;
+        }
+        Tend::Gone => {
+            // The push service has forgotten this subscription — the
+            // browser unregistered, was reset, or expired it. The row's
+            // only remaining job is making every future delivery fail.
+            prune(pg, endpoint).await;
+        }
+        Tend::InstanceFault => {
+            tracing::error!(
+                "[push] a push service refused THIS INSTANCE's VAPID token ({}) — an instance configuration fault, not the device's; the row is kept and not counted",
+                error.as_deref().unwrap_or("")
+            );
+            let _ = sqlx::query(
+                "update push_subscriptions set last_status = $2, last_error = $3, \
+                 last_attempt_at = now() where endpoint = $1",
+            )
+            .bind(endpoint)
+            .bind(status)
+            .bind(&error)
+            .execute(pg)
+            .await;
+        }
+        tended @ (Tend::Refused | Tend::Failed) => {
+            let failures: Option<i32> = sqlx::query_scalar(
+                "update push_subscriptions set failures = failures + 1, last_status = $2, \
+                 last_error = $3, last_attempt_at = now() where endpoint = $1 \
+                 returning failures",
+            )
+            .bind(endpoint)
+            .bind(status)
+            .bind(&error)
+            .fetch_optional(pg)
+            .await
+            .ok()
+            .flatten();
+            if tended == Tend::Refused && failures.is_some_and(|n| n >= REFUSALS_TO_PRUNE) {
+                tracing::warn!(
+                    "[push] a subscription was refused {REFUSALS_TO_PRUNE} times in a row; pruning"
+                );
+                prune(pg, endpoint).await;
+            } else {
+                tracing::warn!(
+                    "[push] delivery to an endpoint failed ({}); keeping the row",
+                    error.as_deref().unwrap_or("")
+                );
+            }
+        }
+    }
+}
+
+/// One device: encrypt against ITS keys, prove with the instance VAPID
+/// identity, POST under the process-wide bound, retry what is worth it,
+/// resend minimal once on a 413, then tend the row with the final answer.
+#[allow(clippy::too_many_arguments)]
+async fn deliver_one(
+    pg: &PgPool,
+    keys: &VapidKeys,
+    post: &PostPushFn,
+    policy: &PushPolicy,
+    subject: &str,
+    payload: &[u8],
+    minimal: &[u8],
+    (endpoint, p256dh_b64, auth_b64): (String, String, String),
+) {
+    // Decode the subscription's key material; unreadable rows are dead
+    // weight that can never deliver — prune rather than retry forever.
+    let key_bytes = B64U
+        .decode(p256dh_b64.as_bytes())
+        .or_else(|_| B64.decode(p256dh_b64.as_bytes()));
+    let auth_bytes = B64U
+        .decode(auth_b64.as_bytes())
+        .or_else(|_| B64.decode(auth_b64.as_bytes()));
+    let (key_bytes, auth_bytes): (Vec<u8>, Vec<u8>) = match (key_bytes, auth_bytes) {
+        (Ok(k), Ok(a)) if k.len() == 65 && a.len() == 16 => (k, a),
+        _ => {
+            tracing::warn!("[push] a subscription has unreadable keys; pruning");
+            prune(pg, &endpoint).await;
+            return;
+        }
+    };
+    let Ok(subscriber_key) = PublicKey::from_sec1_bytes(&key_bytes) else {
+        tracing::warn!("[push] a subscription's p256dh is not a p256 point; pruning");
+        prune(pg, &endpoint).await;
+        return;
+    };
+    let auth: [u8; 16] = auth_bytes.try_into().expect("len checked above");
+    let Ok(url) = url::Url::parse(&endpoint) else {
+        tracing::warn!("[push] a subscription endpoint does not parse; pruning");
+        prune(pg, &endpoint).await;
+        return;
+    };
+    let origin = url.origin().ascii_serialization();
+    let mut plaintext = payload;
+    let mut resent_minimal = false;
+    let mut retries = 0usize;
+    loop {
+        let salt: [u8; 16] = {
+            let mut s = [0u8; 16];
+            _ = getrandom::fill(&mut s);
+            s
+        };
+        let ephemeral = EphemeralSecret::generate();
+        let body = aes128gcm_encrypt(plaintext, &subscriber_key, &auth, &salt, &ephemeral);
+        let authorization = vapid_authorization(&keys.signing, &origin, now_unix(), subject);
+        let result = {
+            let _permit = IN_FLIGHT.acquire().await;
+            post(PushPost {
+                endpoint: endpoint.clone(),
+                authorization,
+                body,
+            })
+            .await
+        };
+        if matches!(&result, Ok(a) if a.status == 413) && !resent_minimal {
+            // The service refused the size. Once, the smallest thing that
+            // still shows and still opens the right page.
+            tracing::warn!(
+                "[push] a push service refused the payload size (413); resending minimal"
+            );
+            resent_minimal = true;
+            plaintext = minimal;
+            continue;
+        }
+        if let Some(wait) = retry_delay(retries, &result, policy) {
+            retries += 1;
+            tokio::time::sleep(wait).await;
+            continue;
+        }
+        tend(pg, &endpoint, &result).await;
+        return;
+    }
+}
+
+/// Send one note to every device browser of one person, the default retry
+/// spacing and this instance's VAPID subject.
 pub async fn deliver_push(
     pg: &PgPool,
     sb: &SecretBox,
     post: &PostPushFn,
     user_id: &str,
     note: &PushNote,
+) {
+    let subject = vapid_subject(pg).await;
+    deliver_push_with(
+        pg,
+        sb,
+        post,
+        user_id,
+        note,
+        &PushPolicy::default(),
+        &subject,
+    )
+    .await;
+}
+
+/// `deliver_push` with the spacing and subject handed in — the live suite's
+/// door. The person's devices go four at a time; each settles on its own.
+pub async fn deliver_push_with(
+    pg: &PgPool,
+    sb: &SecretBox,
+    post: &PostPushFn,
+    user_id: &str,
+    note: &PushNote,
+    policy: &PushPolicy,
+    subject: &str,
 ) {
     let rows: Vec<(String, String, String)> = match sqlx::query_as(
         "select endpoint, p256dh, auth from push_subscriptions where user_id = $1::uuid",
@@ -434,91 +962,14 @@ pub async fn deliver_push(
         // configuration state, not a per-delivery one.
         return;
     };
-    let payload = serde_json::to_vec(&serde_json::json!({
-        "id": note.id,
-        "title": note.title,
-        "body": note.body,
-        "href": note.href,
-    }))
-    .expect("plain strings serialize");
-    for (endpoint, p256dh_b64, auth_b64) in rows {
-        // Decode the subscription's key material; unreadable rows are dead
-        // weight that can never deliver — prune rather than retry forever.
-        let key_bytes = B64U
-            .decode(p256dh_b64.as_bytes())
-            .or_else(|_| B64.decode(p256dh_b64.as_bytes()));
-        let auth_bytes = B64U
-            .decode(auth_b64.as_bytes())
-            .or_else(|_| B64.decode(auth_b64.as_bytes()));
-        let (key_bytes, auth_bytes): (Vec<u8>, Vec<u8>) = match (key_bytes, auth_bytes) {
-            (Ok(k), Ok(a)) if k.len() == 65 && a.len() == 16 => (k, a),
-            _ => {
-                tracing::warn!("[push] a subscription has unreadable keys; pruning");
-                let _ = sqlx::query("delete from push_subscriptions where endpoint = $1")
-                    .bind(&endpoint)
-                    .execute(pg)
-                    .await;
-                continue;
-            }
-        };
-        let Ok(subscriber_key) = PublicKey::from_sec1_bytes(&key_bytes) else {
-            tracing::warn!("[push] a subscription's p256dh is not a p256 point; pruning");
-            let _ = sqlx::query("delete from push_subscriptions where endpoint = $1")
-                .bind(&endpoint)
-                .execute(pg)
-                .await;
-            continue;
-        };
-        let auth: [u8; 16] = auth_bytes.try_into().expect("len checked above");
-        let Ok(url) = url::Url::parse(&endpoint) else {
-            tracing::warn!("[push] a subscription endpoint does not parse; pruning");
-            let _ = sqlx::query("delete from push_subscriptions where endpoint = $1")
-                .bind(&endpoint)
-                .execute(pg)
-                .await;
-            continue;
-        };
-        let origin = url.origin().ascii_serialization();
-        let salt: [u8; 16] = {
-            let mut s = [0u8; 16];
-            _ = getrandom::fill(&mut s);
-            s
-        };
-        let ephemeral = EphemeralSecret::generate();
-        let body = aes128gcm_encrypt(&payload, &subscriber_key, &auth, &salt, &ephemeral);
-        let authorization = vapid_authorization(&keys.signing, &origin, now_unix());
-        let outcome = post(PushPost {
-            endpoint: endpoint.clone(),
-            authorization,
-            body,
+    let payload = push_payload(note);
+    let minimal = minimal_payload(note);
+    use futures_util::StreamExt as _;
+    futures_util::stream::iter(rows)
+        .for_each_concurrent(PER_USER_PARALLEL, |row| {
+            deliver_one(pg, &keys, post, policy, subject, &payload, &minimal, row)
         })
         .await;
-        match outcome {
-            Ok(code) if (200..300).contains(&code) => {
-                let _ = sqlx::query(
-                    "update push_subscriptions set last_seen_at = now() where endpoint = $1",
-                )
-                .bind(&endpoint)
-                .execute(pg)
-                .await;
-            }
-            Ok(404) | Ok(410) => {
-                // The push service has forgotten this subscription — the
-                // browser unregistered, was reset, or expired it. The row's
-                // only remaining job is making every future delivery fail.
-                let _ = sqlx::query("delete from push_subscriptions where endpoint = $1")
-                    .bind(&endpoint)
-                    .execute(pg)
-                    .await;
-            }
-            Ok(code) => {
-                tracing::warn!("[push] delivery to an endpoint answered {code}; keeping the row");
-            }
-            Err(e) => {
-                tracing::warn!("[push] delivery to an endpoint failed: {e}");
-            }
-        }
-    }
 }
 
 // ── The plane: installed once at boot, consulted by the single writer ────────
@@ -546,7 +997,8 @@ pub fn install_push_plane(pg: PgPool, sb: SecretBox) {
 /// The single writer's hook: every notification row that lands with an
 /// in-app or both route also reaches closed tabs. Detached — a push service
 ///'s latency must never ride a request — and quiet: the row in the database
-/// is the record, the delivery is best-effort on top of it.
+/// is the record, the delivery is best-effort on top of it. The network work
+/// itself waits on the process-wide bound inside.
 pub fn push_notification(user_id: &str, note: PushNote) {
     let Some(plane) = PLANE.get() else { return };
     let pg = plane.pg.clone();
@@ -680,6 +1132,158 @@ mod tests {
         assert_eq!(&body[21..86], ephemeral.as_slice());
     }
 
+    fn note(title: &str, body: &str, href: &str) -> PushNote {
+        PushNote {
+            id: "6f1c1c1e-0000-4000-8000-000000000001".into(),
+            title: title.into(),
+            body: body.into(),
+            href: href.into(),
+            kind: "plan-share".into(),
+            renotify: false,
+            created_at: "2026-10-31T12:00:00.000Z".into(),
+        }
+    }
+
+    // The ceiling every push service guarantees, whatever a writer hands
+    // over: a 2,500-character plan title (the reproduced 413), a body of
+    // escaped quotes, a maximal href. The plaintext stays valid JSON under
+    // 3,000 bytes, so the encrypted record stays under 4,096.
+    #[test]
+    fn the_payload_fits_the_push_ceiling_for_any_writer() {
+        let cases = [
+            note(&"Ü".repeat(2500), "", "/plan/x"),
+            note("t", &"\"".repeat(5000), "/plan/x"),
+            note(
+                &"😀".repeat(900),
+                &"😀".repeat(900),
+                &format!("/{}", "a".repeat(2047)),
+            ),
+            note("", "", ""),
+        ];
+        for n in &cases {
+            let out = push_payload(n);
+            assert!(out.len() <= PAYLOAD_MAX_BYTES, "{} bytes", out.len());
+            let v: Value = serde_json::from_slice(&out).expect("valid JSON");
+            assert_eq!(v["id"], n.id.as_str());
+            // The encrypted body: header 86 + plaintext + delimiter + tag.
+            assert!(86 + out.len() + 1 + 16 <= 4096);
+        }
+        // An ordinary note goes out whole, with the new hints.
+        let v: Value = serde_json::from_slice(&push_payload(&note("Hi", "there", "/a"))).unwrap();
+        assert_eq!(v["title"], "Hi");
+        assert_eq!(v["body"], "there");
+        assert_eq!(v["kind"], "plan-share");
+        assert_eq!(v["renotify"], false);
+        assert_eq!(v["createdAt"], "2026-10-31T12:00:00.000Z");
+        // The clamp is 200 title chars, with an ellipsis only when cut.
+        let v: Value =
+            serde_json::from_slice(&push_payload(&note(&"a".repeat(300), "", "/"))).unwrap();
+        assert_eq!(v["title"].as_str().unwrap().chars().count(), 200);
+        assert!(v["title"].as_str().unwrap().ends_with('…'));
+    }
+
+    #[test]
+    fn the_413_resend_is_id_title_and_href_only() {
+        let v: Value =
+            serde_json::from_slice(&minimal_payload(&note(&"b".repeat(500), "body", "/x")))
+                .unwrap();
+        let mut keys: Vec<&String> = v.as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["href", "id", "title"]);
+        assert_eq!(v["title"].as_str().unwrap().chars().count(), 80);
+        assert_eq!(v["href"], "/x");
+    }
+
+    fn answer(status: u16, retry_after: Option<u64>, body: &str) -> PushResult {
+        Ok(PushAnswer {
+            status,
+            retry_after,
+            body: body.into(),
+        })
+    }
+
+    #[test]
+    fn retries_are_for_throttles_outages_and_transport_only() {
+        let p = PushPolicy::default();
+        let s2 = Duration::from_secs(2);
+        let s8 = Duration::from_secs(8);
+        // 5xx with no Retry-After: 2 s then 8 s, then final (3 attempts).
+        assert_eq!(retry_delay(0, &answer(500, None, ""), &p), Some(s2));
+        assert_eq!(retry_delay(1, &answer(503, None, ""), &p), Some(s8));
+        assert_eq!(retry_delay(2, &answer(500, None, ""), &p), None);
+        // 429 names its wait; it is honored within the cap.
+        assert_eq!(retry_delay(0, &answer(429, Some(2), ""), &p), Some(s2));
+        assert_eq!(
+            retry_delay(0, &answer(429, Some(60), ""), &p),
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(retry_delay(0, &answer(429, Some(61), ""), &p), None);
+        // Transport: a timeout or a refused connect retries; anything else
+        // the transport refused does not.
+        assert_eq!(
+            retry_delay(0, &Err(PushFailure::Timeout("t".into())), &p),
+            Some(s2)
+        );
+        assert_eq!(
+            retry_delay(1, &Err(PushFailure::Connect("c".into())), &p),
+            Some(s8)
+        );
+        assert_eq!(
+            retry_delay(0, &Err(PushFailure::Other("o".into())), &p),
+            None
+        );
+        // Final answers are final.
+        for code in [201, 400, 403, 404, 410, 413] {
+            assert_eq!(retry_delay(0, &answer(code, None, ""), &p), None, "{code}");
+        }
+    }
+
+    #[test]
+    fn row_tending_by_answer() {
+        assert_eq!(classify(&answer(201, None, "")), Tend::Delivered);
+        assert_eq!(classify(&answer(404, None, "")), Tend::Gone);
+        assert_eq!(classify(&answer(410, None, "")), Tend::Gone);
+        assert_eq!(classify(&answer(403, None, "")), Tend::Refused);
+        assert_eq!(classify(&answer(401, None, "unauthorized")), Tend::Refused);
+        // Apple's refusal of the instance's own token is not the device's.
+        assert_eq!(
+            classify(&answer(403, None, "{\"reason\":\"BadJwtToken\"}")),
+            Tend::InstanceFault
+        );
+        assert_eq!(
+            classify(&answer(403, None, "{\"reason\":\"ExpiredProviderToken\"}")),
+            Tend::InstanceFault
+        );
+        assert_eq!(classify(&answer(500, None, "")), Tend::Failed);
+        assert_eq!(classify(&answer(413, None, "")), Tend::Failed);
+        assert_eq!(classify(&answer(429, None, "")), Tend::Failed);
+        assert_eq!(
+            classify(&Err(PushFailure::Timeout("t".into()))),
+            Tend::Failed
+        );
+    }
+
+    #[test]
+    fn the_subject_prefers_the_public_https_url() {
+        assert_eq!(
+            pick_subject(
+                Some("https://talaria.example.com/"),
+                Some("https://other.example")
+            ),
+            "https://talaria.example.com"
+        );
+        // A plain-http public URL is not a contact a push service accepts.
+        assert_eq!(
+            pick_subject(
+                Some("http://192.168.0.9:5273"),
+                Some("https://talaria.example.com")
+            ),
+            "https://talaria.example.com"
+        );
+        assert_eq!(pick_subject(None, None), VAPID_SUB_MAILTO);
+        assert_eq!(pick_subject(Some(""), None), VAPID_SUB_MAILTO);
+    }
+
     // The VAPID half: a JWT a push service can verify, carrying exactly the
     // three claims RFC 8292 names, signed over the exact input string, with
     // the raw r‖s (not DER) signature shape.
@@ -687,7 +1291,12 @@ mod tests {
     fn vapid_jwt_verifies_and_carries_the_right_claims() {
         let signing = SigningKey::generate();
         let now = 1_700_000_000i64;
-        let jwt = vapid_jwt(&signing, "https://push.example.example", now);
+        let jwt = vapid_jwt(
+            &signing,
+            "https://push.example.example",
+            now,
+            VAPID_SUB_MAILTO,
+        );
         let parts: Vec<&str> = jwt.split('.').collect();
         assert_eq!(parts.len(), 3);
         assert_eq!(
@@ -712,7 +1321,12 @@ mod tests {
 
         // The Authorization header pairs it with the UNCOMPRESSED public
         // key — the same 65 bytes a service decodes to check it.
-        let authz = vapid_authorization(&signing, "https://push.example.example", now);
+        let authz = vapid_authorization(
+            &signing,
+            "https://push.example.example",
+            now,
+            VAPID_SUB_MAILTO,
+        );
         let point = signing.verifying_key().to_sec1_point(false);
         let want_k = B64U.encode(point.as_bytes());
         assert!(authz.starts_with("vapid t="));

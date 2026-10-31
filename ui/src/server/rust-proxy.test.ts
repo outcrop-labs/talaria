@@ -372,6 +372,28 @@ describe('maybeProxy', () => {
     expect(res!.headers.get('server')).toBeNull()
   })
 
+  it('carries an event stream’s no-buffer switch to the edge — x-accel-buffering rides through', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(': connected\nretry: 3000\n\n', {
+            status: 200,
+            headers: {
+              'content-type': 'text/event-stream',
+              'cache-control': 'no-cache, no-transform',
+              'x-accel-buffering': 'no',
+            },
+          }),
+      ),
+    )
+    const res = await maybeProxy(req('/api/me/events'), '/api/me/events')
+    expect(res!.headers.get('content-type')).toBe('text/event-stream')
+    expect(res!.headers.get('cache-control')).toBe('no-cache, no-transform')
+    expect(res!.headers.get('x-accel-buffering')).toBe('no')
+  })
+
   it('carries a download’s name and its sandbox belt — disposition, CSP, nosniff ride through', async () => {
     vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
     // Exactly what serve_upload answers for a non-inline file: the name in

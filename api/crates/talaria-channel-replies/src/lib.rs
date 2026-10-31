@@ -12,9 +12,9 @@
 // says is for it. Everything else is the room being a channel, which is
 // the point.
 //
-// The other two exports are the post's fan-out: DM peer notifications (deduped
-// while one sits unread) and human @mention notifications. Both are fired
-// detached by the messages route.
+// The other two exports are the post's fan-out: DM peer notifications (one
+// row per conversation, refreshed by every message) and human @mention
+// notifications. Both are fired detached by the messages route.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -66,9 +66,14 @@ pub static ROOM_COMMENT_FANOUT: OnceLock<
 
 // ── Notification fan-out ─────────────────────────────────────────────────────
 
-/// Notify the other side of a DM about a new message. Deduped: while a DM
-/// notification for this channel sits unread, further messages fold into it —
-/// no pile-up from a fast back-and-forth.
+/// Notify the other side of a DM about a new message. ONE ROW PER
+/// CONVERSATION, and every message rings it: while a DM row for this channel
+/// sits unread, the new message REFRESHES that row in place (same id, the
+/// newest line as its body, re-alerted under the same OS tag) instead of
+/// being skipped. Skipping was the bug: the first DM rang, and every later
+/// one stayed silent until someone happened to clear that bell row — reading
+/// the conversation did not. Reading it to its end now clears the row
+/// (`/api/channels/{id}/read`), and the next DM files a fresh one.
 pub async fn notify_dm_message(
     deps: &NotifyDeps,
     channel_id: &str,
@@ -80,41 +85,46 @@ pub async fn notify_dm_message(
     let members = list_channel_members(&deps.pg, channel_id)
         .await
         .unwrap_or_default();
+    // 200 UTF-16 units, '…' added only past the bound.
+    let body = if talaria_body::utf16_len(content) > 200 {
+        format!("{}…", talaria_body::truncate_utf16(content, 200))
+    } else {
+        content.to_string()
+    };
+    let title = format!("{sender_label} sent you a message");
+    let input = talaria_notify::NotificationInput {
+        kind: "dm",
+        title: &title,
+        body: Some(&body),
+        href: Some(&href),
+    };
     for m in members {
         if m.user_id == sender_user_id {
             continue;
         }
-        let pending: Option<i32> =
-            sqlx::query_scalar(
-                "select 1 from notifications \
-                 where user_id = $1::uuid and kind = 'dm' and href = $2 and read_at is null limit 1",
-            )
-            .bind(&m.user_id)
-            .bind(&href)
-            .fetch_optional(&deps.pg)
-            .await
-            .ok()
-            .flatten();
-        if pending.is_some() {
-            continue;
-        }
-        // 200 UTF-16 units, '…' added only past the bound.
-        let body = if talaria_body::utf16_len(content) > 200 {
-            format!("{}…", talaria_body::truncate_utf16(content, 200))
-        } else {
-            content.to_string()
-        };
-        let _ = talaria_notify::add_notification(
-            deps,
-            &m.user_id,
-            &talaria_notify::NotificationInput {
-                kind: "dm",
-                title: &format!("{sender_label} sent you a message"),
-                body: Some(&body),
-                href: Some(&href),
-            },
+        let pending: Option<String> = sqlx::query_scalar(
+            "select id::text from notifications \
+             where user_id = $1::uuid and kind = 'dm' and href = $2 and read_at is null \
+             order by created_at desc limit 1",
         )
-        .await;
+        .bind(&m.user_id)
+        .bind(&href)
+        .fetch_optional(&deps.pg)
+        .await
+        .ok()
+        .flatten();
+        if let Some(id) = pending {
+            match talaria_notify::refresh_notification(deps, &id, &m.user_id, &input).await {
+                Ok(true) => continue,
+                // Read between the look and the update: a fresh row, below.
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::error!("[dm] refreshing the DM row failed: {e}");
+                    continue;
+                }
+            }
+        }
+        let _ = talaria_notify::add_notification(deps, &m.user_id, &input).await;
     }
 }
 

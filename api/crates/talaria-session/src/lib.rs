@@ -220,6 +220,28 @@ pub async fn destroy_session(
     Ok(())
 }
 
+/// The request's session as a STABLE, NON-SECRET handle: the hex SHA-256 of
+/// the cookie's opaque id. A row that must die with this session (a push
+/// subscription) stores this, never the id itself — the id is a bearer
+/// credential, and a database dump must not hand out live sessions. `None`
+/// when the request carries no session cookie.
+pub fn session_hash_of(headers: &HeaderMap) -> Option<String> {
+    let sid = parse_cookies(headers).and_then(|c| c.get(SESSION_COOKIE).cloned())?;
+    if sid.is_empty() {
+        return None;
+    }
+    Some(session_hash(&sid))
+}
+
+/// The hash `session_hash_of` stores, for one id.
+pub fn session_hash(sid: &str) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(sid.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 fn invalid(what: &'static str) -> redis::RedisError {
     // UnexpectedReturnType is redis-rs's kind for "the value wasn't the shape
     // the caller needed" — the closest fit for an unparseable session body.
@@ -688,6 +710,20 @@ mod tests {
         assert_eq!(percent_decode("%ZZ"), None);
         // Broken UTF-8 after decode: decline rather than throw.
         assert_eq!(percent_decode("%FF"), None);
+    }
+
+    #[test]
+    fn the_session_hash_is_stable_hex_and_never_the_id() {
+        // SHA-256("abc"), the FIPS 180-2 vector.
+        assert_eq!(
+            session_hash("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let h = session_hash_of(&with(&[("cookie", "a=1; talaria_session=sess-123")])).unwrap();
+        assert_eq!(h, session_hash("sess-123"));
+        assert!(!h.contains("sess-123"));
+        assert!(session_hash_of(&with(&[("cookie", "a=1")])).is_none());
+        assert!(session_hash_of(&HeaderMap::new()).is_none());
     }
 
     #[test]

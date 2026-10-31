@@ -4488,6 +4488,25 @@ alter table tasks drop column if exists conversation_id`,
   `update plugins set git_host_id = null
     where git_host_id is not null and git_host_id not in (select id from git_hosts)`,
   `alter table plugins add constraint plugins_git_host_id_fkey foreign key (git_host_id) references git_hosts(id)`,
+  // ── Push subscriptions know their session and their health (2026-10-31) ──
+  // `session_hash` is the hex SHA-256 of the session that filed the row (the
+  // id itself is a credential and is never stored): signing out deletes this
+  // browser's row and no other. `failures` counts consecutive failed
+  // deliveries (2xx resets it; three refusals in a row prune the row), and
+  // `last_status` / `last_error` / `last_attempt_at` record the latest
+  // attempt — what a devices panel reads to say why a browser stopped
+  // getting alerts. ADD COLUMN with a constant default is metadata-only on
+  // PG 11+, so this does not rewrite the table.
+  //
+  // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
+  `alter table push_subscriptions
+     add column if not exists session_hash text,
+     add column if not exists failures int not null default 0,
+     add column if not exists last_status int,
+     add column if not exists last_error text,
+     add column if not exists last_attempt_at timestamptz`,
+  `create index if not exists push_subscriptions_session_idx
+     on push_subscriptions (session_hash) where session_hash is not null`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

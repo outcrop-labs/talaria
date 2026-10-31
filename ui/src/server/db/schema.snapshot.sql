@@ -1163,7 +1163,12 @@ CREATE TABLE public.push_subscriptions (
     p256dh text NOT NULL,
     auth text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    last_seen_at timestamp with time zone DEFAULT now() NOT NULL
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    session_hash text,
+    failures integer DEFAULT 0 NOT NULL,
+    last_status integer,
+    last_error text,
+    last_attempt_at timestamp with time zone
 );
 CREATE TABLE public.quality_reviews (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -2102,6 +2107,7 @@ CREATE INDEX outreach_events_agent_idx ON public.outreach_events USING btree (ag
 CREATE INDEX plan_drafts_conversation_idx ON public.plan_drafts USING btree (conversation_id, created_at DESC);
 CREATE INDEX plugin_notices_by_kind ON public.plugin_notices USING btree (app_slug, kind);
 CREATE INDEX provider_spend_window_idx ON public.provider_spend USING btree (window_start, endpoint_id);
+CREATE INDEX push_subscriptions_session_idx ON public.push_subscriptions USING btree (session_hash) WHERE (session_hash IS NOT NULL);
 CREATE INDEX push_subscriptions_user_idx ON public.push_subscriptions USING btree (user_id);
 CREATE INDEX research_runs_conversation_idx ON public.research_runs USING btree (conversation_id);
 CREATE INDEX research_runs_created_idx ON public.research_runs USING btree (created_at DESC);

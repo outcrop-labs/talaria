@@ -109,14 +109,90 @@ pub async fn notify_mentions(
     if mentions.is_empty() {
         return;
     }
-    for m in members {
-        if m.user_id == sender_user_id {
-            continue;
-        }
-        let tokens = user_mention_tokens(m.name.as_deref(), m.email.as_deref());
-        if !tokens.iter().any(|t| mentions.contains(t)) {
-            continue;
-        }
+    let to: Vec<&Mentionee> = members
+        .iter()
+        .filter(|m| m.user_id != sender_user_id && answers_to(m, &mentions))
+        .collect();
+    notify_these(
+        notify,
+        &to,
+        sender_user_id,
+        sender_label,
+        content,
+        where_,
+        href,
+    )
+    .await;
+}
+
+/// Does this member answer to any of these @tokens?
+fn answers_to(m: &Mentionee, mentions: &[String]) -> bool {
+    user_mention_tokens(m.name.as_deref(), m.email.as_deref())
+        .iter()
+        .any(|t| mentions.contains(t))
+}
+
+/// The members an EDIT newly addresses: mentioned by the new text and not by
+/// the old one, never the sender. By person, not by token — a member who was
+/// `@ada` before and is `@ada-lovelace` now was already told. Pure, so the
+/// rule is pinned by a test.
+pub fn newly_mentioned<'a>(
+    members: &'a [Mentionee],
+    sender_user_id: &str,
+    old: &str,
+    new: &str,
+) -> Vec<&'a Mentionee> {
+    let now = mention_tokens(new);
+    if now.is_empty() {
+        return Vec::new();
+    }
+    let before = mention_tokens(old);
+    members
+        .iter()
+        .filter(|m| m.user_id != sender_user_id)
+        .filter(|m| answers_to(m, &now) && !answers_to(m, &before))
+        .collect()
+}
+
+/// `notify_mentions` for an EDIT of text that already notified once (a
+/// ticket description): only the people the edit ADDS are told. Re-running
+/// the whole text on every save filed a fresh "mentioned you" for every
+/// mention already there — 55 rapid edits were 55 rows, 55 pushes and, by
+/// default, 55 emails.
+#[allow(clippy::too_many_arguments)]
+pub async fn notify_added_mentions(
+    notify: &NotifyDeps,
+    members: &[Mentionee],
+    sender_user_id: &str,
+    sender_label: &str,
+    old_content: &str,
+    new_content: &str,
+    where_: &str,
+    href: &str,
+) {
+    let to = newly_mentioned(members, sender_user_id, old_content, new_content);
+    notify_these(
+        notify,
+        &to,
+        sender_user_id,
+        sender_label,
+        new_content,
+        where_,
+        href,
+    )
+    .await;
+}
+
+async fn notify_these(
+    notify: &NotifyDeps,
+    to: &[&Mentionee],
+    sender_user_id: &str,
+    sender_label: &str,
+    content: &str,
+    where_: &str,
+    href: &str,
+) {
+    for m in to {
         let body = if content.chars().count() > 200 {
             let clipped: String = content.chars().take(200).collect();
             format!("{clipped}…")
@@ -174,6 +250,47 @@ mod tests {
         assert_eq!(mention_tokens("@ada @ADA @ada"), ["ada"]);
         // A token boundary: '@ada-x' is one token, never 'ada' plus 'x'.
         assert_eq!(mention_tokens("@ada-x"), ["ada-x"]);
+    }
+
+    fn member(id: &str, name: &str, email: &str) -> Mentionee {
+        Mentionee {
+            user_id: id.into(),
+            name: Some(name.into()),
+            email: Some(email.into()),
+        }
+    }
+
+    #[test]
+    fn an_edit_notifies_only_the_people_it_adds() {
+        let members = [
+            member("a", "Ada Lovelace", "ada@x.test"),
+            member("c", "Cy Young", "cy@x.test"),
+            member("s", "Sam Sender", "sam@x.test"),
+        ];
+        let ids = |v: Vec<&Mentionee>| v.iter().map(|m| m.user_id.clone()).collect::<Vec<_>>();
+        // A punctuation edit with the same mention: nobody.
+        assert!(newly_mentioned(&members, "s", "@ada look", "@ada look!").is_empty());
+        // Adding @cy: Cy only.
+        assert_eq!(
+            ids(newly_mentioned(
+                &members,
+                "s",
+                "@ada look",
+                "@ada and @cy look"
+            )),
+            ["c"]
+        );
+        // Another token for someone already mentioned is not news.
+        assert!(newly_mentioned(&members, "s", "@ada", "@ada-lovelace").is_empty());
+        // Removing a mention notifies nobody.
+        assert!(newly_mentioned(&members, "s", "@ada @cy", "@ada").is_empty());
+        // The sender never hears about themselves.
+        assert!(newly_mentioned(&members, "s", "", "@sam").is_empty());
+        // From an empty description, every mention is new.
+        assert_eq!(
+            ids(newly_mentioned(&members, "s", "", "@ada @cy")),
+            ["a", "c"]
+        );
     }
 
     #[test]

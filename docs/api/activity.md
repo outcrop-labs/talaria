@@ -103,16 +103,16 @@ Source: [`api/crates/talaria-routes-fleet/src/models/host.rs`](../../api/crates/
 Source: [`api/crates/talaria-routes-comms/src/activity/notifications.rs`](../../api/crates/talaria-routes-comms/src/activity/notifications.rs)
 
 > /api/notifications. The caller's inbox: GET is the bell's one read (list,
-> unread, prefs, digest, the instance switch, whether THIS user may flip it),
-> PUT marks read — by ids, by href, or all of them — and PATCH changes
-> routing. The mail fan-out behind the prefs
+> unread, prefs, digest, the instance switch, whether THIS user may flip it,
+> and the desktop-alerts soft ask's memory), PUT marks read — by ids, by
+> href, or all of them — and tells the person's other tabs, and PATCH
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{notifications, unread, prefs, digest, delivery, canSetDelivery}` | 200 | — |
+| GET | `session` | — | `{notifications, unread, prefs, digest, delivery, canSetDelivery, prompt}` | 200 | — |
 | PUT | `session` | [body](#put-apinotifications-body) | `{ok}` | 200, 400 | — |
-| PATCH | `session` | [body](#patch-apinotifications-body) | `{prefs, digest, delivery, canSetDelivery}` | 200, 400, 403 | audit |
+| PATCH | `session` | [body](#patch-apinotifications-body) | `{prefs, digest, delivery, canSetDelivery, prompt}` | 200, 400, 403 | audit |
 
 ### PUT `/api/notifications` body
 
