@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { blockedSteps, detectBrowser, insecureExplanation } from './notify-help'
+import { blockedSteps, closedTabsNote, detectBrowser, insecureExplanation } from './notify-help'
 
 const UA = {
   chromeLinux:
@@ -22,7 +22,8 @@ describe('detectBrowser', () => {
     expect(detectBrowser(UA.edgeWin)).toEqual({ engine: 'chromium', name: 'Edge', os: 'windows' })
     expect(detectBrowser(UA.firefoxMac)).toEqual({ engine: 'firefox', name: 'Firefox', os: 'mac' })
     expect(detectBrowser(UA.safariMac)).toEqual({ engine: 'safari', name: 'Safari', os: 'mac' })
-    expect(detectBrowser(UA.webkitGtk)).toEqual({ engine: 'safari', name: 'Safari', os: 'linux' })
+    // WebKit on Linux is GNOME Web (Epiphany), whose UA is Safari's shape.
+    expect(detectBrowser(UA.webkitGtk)).toEqual({ engine: 'safari', name: 'GNOME Web', os: 'linux' })
   })
 
   it('takes Brave from its own flag — its UA is Chrome on purpose', () => {
@@ -57,11 +58,30 @@ describe('blockedSteps', () => {
     expect(win.os[1]).toContain('Do not disturb')
     const linux = blockedSteps(detectBrowser(UA.chromeLinux))
     expect(linux.os[0]).toBe('On Linux (GNOME): Settings → Notifications → turn Chrome on.')
-    expect(linux.os[1]).toContain('Do Not Disturb')
+    expect(linux.os[1]).toBe('On KDE Plasma: System Settings → Notifications → Application Settings → Chrome → turn on Show popups.')
+    expect(linux.os[2]).toContain('Do Not Disturb')
+  })
+
+  it('never sends a Linux person to Safari', () => {
+    const web = blockedSteps(detectBrowser(UA.webkitGtk))
+    expect(web.browser.join(' ')).not.toContain('Safari')
+    expect(web.browser[0]).toContain('GNOME Web')
   })
 
   it('closes by saying no reload is needed', () => {
     expect(blockedSteps(detectBrowser(UA.chromeLinux)).closing).toBe('This page notices the change; no reload needed.')
+  })
+})
+
+describe('closedTabsNote', () => {
+  it('says the browser must be running, and what quits it on each OS', () => {
+    const linux = closedTabsNote(detectBrowser(UA.chromeLinux))
+    expect(linux).toBe(
+      'With every Talaria tab closed, alerts still arrive while Chrome is running. On Linux, closing its last window quits it — keep one window open, on any site.',
+    )
+    expect(closedTabsNote(detectBrowser(UA.edgeWin))).toContain('On Windows, closing its last window quits it')
+    expect(closedTabsNote(detectBrowser(UA.firefoxMac))).toContain('On a Mac it keeps running with no windows open')
+    expect(closedTabsNote(detectBrowser('curl/8.0'))).toBe('With every Talaria tab closed, alerts still arrive while your browser is running.')
   })
 })
 

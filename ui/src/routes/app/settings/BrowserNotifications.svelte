@@ -17,7 +17,7 @@
   } from '@/lib/browser-notify'
   import { inDesktopShell } from '@/lib/desktop-shell'
   import { saveNotifyPrompt } from '@/lib/notifications'
-  import { blockedSteps, detectBrowser, insecureExplanation } from '@/lib/notify-help'
+  import { blockedSteps, closedTabsNote, detectBrowser, insecureExplanation } from '@/lib/notify-help'
   import { turnOnResult } from '@/lib/notify-prompt'
 
   // Desktop alerts: an OS banner when Talaria is not what the person is
@@ -29,7 +29,9 @@
   //
   //   default     → Turn on (the native prompt runs inside the click)
   //   granted     → On / Off (this browser's own switch) and whether this
-  //                 browser is registered for closed-browser alerts
+  //                 browser is registered for alerts with every Talaria tab
+  //                 closed — which need the browser itself running (on
+  //                 Linux and Windows, its last window quits it)
   //   denied      → where to unblock it: the browser's switch and the OS's
   //   insecure    → why a plain-http dev stack cannot alert, no control
   //   unsupported → that it cannot
@@ -104,9 +106,9 @@
           Desktop alerts are blocked in {browser?.name ?? 'this browser'}.
         {:else if perm === 'default'}
           Off. Turn on to get a desktop alert when someone needs you — mentions, DMs, approvals — while Talaria is in
-          another tab or window, and when this browser is closed.
+          another tab or window, or every Talaria tab is closed.
         {:else if on}
-          On. An alert pops up when something lands while Talaria is in another tab or window, and when this browser is
+          On. An alert pops up when something lands while Talaria is in another tab or window, or every Talaria tab is
           closed. The in-app toast shows while you're looking at Talaria.
         {:else}
           Off in this browser. Turn on to get desktop alerts again.
@@ -129,12 +131,13 @@
   {#if !shell && perm === 'granted' && on}
     <div class="mt-2 font-sans text-xs text-muted" data-push-status={push.state}>
       {#if push.state === 'registered'}
-        This browser is registered for closed-browser alerts.
+        This browser is registered for alerts with Talaria's tabs closed.
+        {#if browser}{closedTabsNote(browser)}{/if}
       {:else if push.state === 'failed'}
-        Registration for closed-browser alerts failed: {push.reason}. Open-tab alerts are unaffected; switching Off and On
-        retries.
+        Registration for alerts with Talaria's tabs closed failed: {push.reason}. Open-tab alerts are unaffected;
+        switching Off and On retries.
       {:else if push.state === 'unsupported'}
-        This browser can't receive alerts while it is closed; open-tab alerts still work.
+        This browser can't receive alerts with Talaria's tabs closed; open-tab alerts still work.
       {/if}
     </div>
   {/if}

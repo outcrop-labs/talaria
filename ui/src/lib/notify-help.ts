@@ -36,7 +36,8 @@ export function detectBrowser(ua: string, opts: { brave?: boolean } = {}): Brows
   if (/Chrome\/|Chromium\/|HeadlessChrome\//.test(ua)) {
     return { engine: 'chromium', name: opts.brave ? 'Brave' : 'Chrome', os }
   }
-  if (/Safari\//.test(ua) && /Version\//.test(ua)) return { engine: 'safari', name: 'Safari', os }
+  // WebKit off the Mac is GNOME Web (Epiphany): Safari's UA shape, not Safari.
+  if (/Safari\//.test(ua) && /Version\//.test(ua)) return { engine: 'safari', name: os === 'linux' ? 'GNOME Web' : 'Safari', os }
   return { engine: 'other', name: 'your browser', os }
 }
 
@@ -73,7 +74,8 @@ export function blockedSteps(info: BrowserInfo): BlockedSteps {
       )
       break
     case 'safari':
-      browser.push('Open Safari → Settings → Websites → Notifications, and set this site to Allow.')
+      if (info.os === 'linux') browser.push("Open GNOME Web's permissions for this site and allow notifications.")
+      else browser.push('Open Safari → Settings → Websites → Notifications, and set this site to Allow.')
       break
     default:
       browser.push("Open your browser's settings for this site and allow notifications.")
@@ -95,13 +97,33 @@ export function blockedSteps(info: BrowserInfo): BlockedSteps {
     case 'linux':
       os.push(
         `On Linux (GNOME): Settings → Notifications → turn ${info.name} on.`,
-        'Do Not Disturb hides banners while it is on.',
+        `On KDE Plasma: System Settings → Notifications → Application Settings → ${info.name} → turn on Show popups.`,
+        'Do Not Disturb hides banners while it is on (GNOME: the clock menu; Plasma: the notifications tray).',
       )
       break
     default:
       os.push(`Check that your system allows notifications from ${info.name}, and that Do Not Disturb is off.`)
   }
   return { browser, os, closing: 'This page notices the change; no reload needed.' }
+}
+
+/** Whether an alert still arrives once every Talaria tab is closed, said
+ *  for this OS. A push is delivered to the browser PROCESS, so it needs no
+ *  Talaria tab — but it does need the browser running, and on Linux and
+ *  Windows closing the last window (of any site) quits it. On a Mac the
+ *  browser keeps running with no window open until it is quit. */
+export function closedTabsNote(info: BrowserInfo): string {
+  const lead = `With every Talaria tab closed, alerts still arrive while ${info.name} is running.`
+  switch (info.os) {
+    case 'mac':
+      return `${lead} On a Mac it keeps running with no windows open, until you quit it.`
+    case 'linux':
+      return `${lead} On Linux, closing its last window quits it — keep one window open, on any site.`
+    case 'windows':
+      return `${lead} On Windows, closing its last window quits it — keep one window open, on any site.`
+    default:
+      return lead
+  }
 }
 
 /** Why a plain-http dev stack cannot alert, naming the origin it is on.
