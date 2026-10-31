@@ -5,6 +5,7 @@
   import {
     desktopSettings,
     loadDesktopSettings,
+    setSuspendAfter,
     setTitlebarMode,
   } from '@/lib/desktop-settings.svelte'
   import {
@@ -31,6 +32,36 @@
     { id: 'os', label: 'OS', title: 'The operating system titlebar' },
     { id: 'none', label: 'None', title: 'No titlebar' },
   ]
+
+  // How long an instance may stay off screen before the shell gives back its
+  // memory (desktop/src-tauri/src/suspend.rs). Shown only by a shell that
+  // has the setting; a value set by hand that is not listed shows as its own.
+  const suspendChoices: { id: string; label: string; title: string }[] = [
+    { id: '0', label: 'Off', title: 'Keep every opened instance loaded' },
+    { id: '5', label: '5 min', title: 'Suspend after 5 minutes off screen' },
+    { id: '10', label: '10 min', title: 'Suspend after 10 minutes off screen' },
+    { id: '30', label: '30 min', title: 'Suspend after 30 minutes off screen' },
+    { id: '60', label: '1 h', title: 'Suspend after an hour off screen' },
+  ]
+  const suspendValue = $derived(
+    settings.suspendAfterMinutes === undefined ? null : String(settings.suspendAfterMinutes),
+  )
+  const suspendOptions = $derived(
+    suspendValue === null || suspendChoices.some((c) => c.id === suspendValue)
+      ? suspendChoices
+      : [...suspendChoices, { id: suspendValue, label: `${suspendValue} min`, title: 'Set in settings.json' }].sort(
+          (a, b) => Number(a.id) - Number(b.id),
+        ),
+  )
+  let suspendMsg = $state('')
+  const chooseSuspend = async (id: string) => {
+    suspendMsg = ''
+    try {
+      await setSuspendAfter(Number(id))
+    } catch (e) {
+      suspendMsg = e instanceof Error ? e.message : String(e)
+    }
+  }
 
   const check = async () => {
     updateBusy = true
@@ -72,6 +103,22 @@
     onChange={(id) => void setTitlebarMode(id)}
   />
 </Panel>
+
+{#if suspendValue !== null}
+  <Panel as="section">
+    <div class="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Inactive instances</div>
+    <p class="mb-3 max-w-xl font-sans text-sm text-muted">
+      An instance you have not had on screen for this long gives back its
+      memory, and opens again at the same page the moment you return to it.
+      A page with unsent typing stays loaded. The window you are looking at
+      counts only while it is minimized.
+    </p>
+    <Segmented options={suspendOptions} value={suspendValue} onChange={(id) => void chooseSuspend(id)} />
+    {#if suspendMsg}
+      <p class="mt-2 font-sans text-sm text-danger">{suspendMsg}</p>
+    {/if}
+  </Panel>
+{/if}
 
 <Panel as="section">
   <div class="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Updates</div>

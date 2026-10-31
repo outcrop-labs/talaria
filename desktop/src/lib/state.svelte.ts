@@ -14,6 +14,7 @@ import {
   onShellState,
   probeInstance,
   removeInstance,
+  setSuspendAfter,
   setTitlebarMode,
   type Instance,
   type LoadFailure,
@@ -37,8 +38,12 @@ export const shell = $state({
   view: 'welcome' as ShellSnapshot['view'],
   activeId: null as string | null,
   titlebar: 'themed' as TitlebarMode,
+  /** Minutes off screen before an instance is suspended; 0 is Off. */
+  suspendAfterMinutes: 10,
   /** Instances with a live webview: opening them needs no probe. */
   loaded: [] as string[],
+  /** Instances the shell suspended: warm, so no probe either. */
+  suspended: [] as string[],
   /** Startup notices (an unreadable registry or settings file). */
   notices: [] as string[],
   /** The first snapshot has arrived. */
@@ -70,7 +75,9 @@ function sync(s: ShellSnapshot) {
   shell.view = s.view
   shell.activeId = s.activeId
   shell.titlebar = s.titlebar
+  shell.suspendAfterMinutes = s.suspendAfterMinutes ?? shell.suspendAfterMinutes
   shell.loaded = s.loaded
+  shell.suspended = s.suspended ?? []
   shell.notices = s.notices.filter((n) => !dismissedNotices.has(n))
   shell.recentId = mostRecent(s.instances)
   applyFailure(s.failure)
@@ -105,10 +112,12 @@ const painted = () =>
   ])
 
 /**
- * Open an instance. One without a live webview is probed first, so an
- * unreachable one becomes a message with a retry here instead of a blank
- * window, or WebKit's error page with no way back. `fresh` skips the probe:
- * the add just made it, or the person chose "Open anyway" over its answer.
+ * Open an instance. One opened cold (no webview this session) is probed
+ * first, so an unreachable one becomes a message with a retry here instead of
+ * a blank window, or WebKit's error page with no way back. A live one and a
+ * suspended one are warm: the shell starts the load on the click, with no
+ * probe. `fresh` skips the probe too: the add just made it, or the person
+ * chose "Open anyway" over its answer.
  *
  * Before Rust hides this webview, the launcher is put at rest and painted:
  * WebKitGTK presents a hidden view's LAST frame when it is shown again, so a
@@ -122,7 +131,8 @@ export async function open(id: string, o: { fresh?: boolean; settle?: boolean } 
   shell.error = ''
   shell.problem = null
   let settle = o.settle ?? false
-  if (!o.fresh && !shell.loaded.includes(id)) {
+  const warm = shell.loaded.includes(id) || shell.suspended.includes(id)
+  if (!o.fresh && !warm) {
     shell.opening = { id, label: instance.label }
     settle = true
     try {
@@ -170,6 +180,15 @@ export async function setTitlebar(mode: TitlebarMode) {
   shell.error = ''
   try {
     shell.titlebar = (await setTitlebarMode(mode)).titlebar
+  } catch (e) {
+    shell.error = errorText(e)
+  }
+}
+
+export async function setSuspend(minutes: number) {
+  shell.error = ''
+  try {
+    shell.suspendAfterMinutes = (await setSuspendAfter(minutes)).suspendAfterMinutes
   } catch (e) {
     shell.error = errorText(e)
   }

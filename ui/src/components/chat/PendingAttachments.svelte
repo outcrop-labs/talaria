@@ -12,7 +12,10 @@
   <!-- The strip slides open/closed (composer height change); individual chips
       fade only when added to or removed from an already-open strip — local
       transitions keep first-chip/last-chip from double-animating. -->
-  <div transition:slide={{ duration: 150 }} class="flex flex-wrap gap-2">
+  <!-- data-desktop-unsaved: an uploaded, unsent attachment lives only in its
+      composer's state (the draft keeps text, not chips), so a reload loses it.
+      The desktop shell never suspends a page showing one (lib/desktop-suspend). -->
+  <div transition:slide={{ duration: 150 }} class="flex flex-wrap gap-2" data-desktop-unsaved>
     {#each items as a (a.id)}
       <div
         in:fade={{ duration: 150 }}

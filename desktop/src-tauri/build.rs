@@ -15,6 +15,8 @@ fn main() {
             "remove_instance",
             "get_desktop_settings",
             "set_titlebar_mode",
+            "set_suspend_after",
+            "desktop_suspend_report",
             "desktop_window",
             "check_for_update",
             "install_update",
