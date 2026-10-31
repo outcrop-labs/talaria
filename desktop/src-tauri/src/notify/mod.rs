@@ -182,6 +182,7 @@ pub fn urgency_of(kind: Option<&str>) -> Urgency {
 }
 
 /// The freedesktop category for the kinds that are a person talking.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn category_of(kind: Option<&str>) -> Option<&'static str> {
     match kind {
         Some("dm" | "agent-reply" | "agent-outreach" | "mention" | "kb-comment") => {
@@ -193,6 +194,7 @@ pub fn category_of(kind: Option<&str>) -> Option<&'static str> {
 
 /// A body for a server that parses markup (`body-markup`): `&`, `<` and `>`
 /// as entities, so a DM saying `<b>` shows `<b>`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn escape_markup(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {

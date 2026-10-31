@@ -201,7 +201,7 @@ fn notice_once(app: &AppHandle, mode: Mode) {
     tauri::async_runtime::spawn(async move {
         let post = crate::notify::Post {
             label: "main".into(),
-            instance: "Talaria".into(),
+            instance: String::new(),
             title: "Talaria is still running".into(),
             body: Some(body.into()),
             tag: "background-notice".into(),

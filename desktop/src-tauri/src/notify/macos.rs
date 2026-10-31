@@ -223,7 +223,9 @@ fn request_authorization() -> Result<bool, String> {
 fn add(identifier: &str, post: &Post) -> Result<(), String> {
     let content = UNMutableNotificationContent::new();
     content.setTitle(&NSString::from_str(&post.title));
-    content.setSubtitle(&NSString::from_str(&post.instance));
+    if !post.instance.is_empty() {
+        content.setSubtitle(&NSString::from_str(&post.instance));
+    }
     content.setBody(&NSString::from_str(post.body.as_deref().unwrap_or("")));
     content.setThreadIdentifier(&NSString::from_str(&post.label));
     content.setSound(Some(&UNNotificationSound::defaultSound()));

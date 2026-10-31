@@ -177,7 +177,9 @@ fn backend() -> &'static str {
 fn notification(post: &Post) -> notify_rust::Notification {
     let mut notification = notify_rust::Notification::new();
     notification.summary(&post.title);
-    notification.subtitle(&post.instance);
+    if !post.instance.is_empty() {
+        notification.subtitle(&post.instance);
+    }
     if let Some(body) = &post.body {
         notification.body(body);
     }

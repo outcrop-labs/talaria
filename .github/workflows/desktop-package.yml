@@ -253,10 +253,14 @@ jobs:
       # desktop job says the same), and `rpm` is the only extra: its
       # /usr/bin/rpmbuild is what Tauri's rpm bundler shells out to. dpkg is
       # NOT needed — the deb bundler writes its own ar members.
+      # libayatana-appindicator3-dev: the shell has a tray (background.rs), and
+      # with tauri's tray-icon feature the bundler asks pkg-config where the
+      # appindicator library lives — it puts it in the AppImage, and makes the
+      # deb and rpm depend on it — and aborts the build when it cannot find one.
       - name: Tauri system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev rpm
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev rpm
 
       # The bundle targets come from tauri.linux.conf.json (tauri merges the
       # platform file automatically); --config adds the version on top. The

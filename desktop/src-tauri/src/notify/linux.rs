@@ -160,9 +160,11 @@ pub fn desktop_entry() -> &'static DesktopEntry {
     })
 }
 
-/// The banner body: the instance first, because one shell shows many.
+/// The banner body: the instance first, because one shell shows many. The
+/// shell's own notices name no instance.
 pub fn body_text(instance: &str, body: Option<&str>, markup: bool) -> String {
     let text = match body.filter(|b| !b.is_empty()) {
+        Some(body) if instance.is_empty() => body.to_string(),
         Some(body) => format!("{instance}: {body}"),
         None => instance.to_string(),
     };
@@ -562,7 +564,9 @@ pub fn single_instance() -> bool {
                 CLAIMED.store(true, Ordering::Relaxed);
                 false
             }
-            Ok(_) => {
+            // zbus answers a DoNotQueue request for an owned name with
+            // NameTaken; a bus that queued it anyway says InQueue/Exists.
+            Ok(_) | Err(zbus::Error::NameTaken) => {
                 let token = std::env::var("XDG_ACTIVATION_TOKEN")
                     .or_else(|_| std::env::var("DESKTOP_STARTUP_ID"))
                     .unwrap_or_default();
@@ -736,5 +740,9 @@ mod tests {
             "A&amp;B: &lt;b&gt;&amp;"
         );
         assert_eq!(body_text("A&B", Some("<b>&"), false), "A&B: <b>&");
+        assert_eq!(
+            body_text("", Some("the shell's own"), false),
+            "the shell's own"
+        );
     }
 }
