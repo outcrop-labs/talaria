@@ -3,7 +3,7 @@
 // primary dev environment, its own private fleet, and the agent CLIs inside.
 // Port of scripts/devbox `new` + `build`. Full story: docs/DEVBOX.md.
 
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf, ParsedArgs } from '../../cli'
@@ -56,11 +56,21 @@ const lineKey = (line: string): string | null => /^\s*(?:export\s+)?([A-Za-z_][A
  *    worktree's CLI reads THAT worktree's ui/.env, and these lines are not in
  *    the block, so they rode into the box: its api bound the worktree's
  *    :54xx, and TALARIA_WORKTREE made the box name its app databases and MCP
- *    packages after the worktree.
+ *    packages after the worktree;
+ *  - the app data and build directories (BOX_OWN_DIRS), which `talaria
+ *    setup` never writes and an operator may set by hand. Inherited, they
+ *    point the box's app databases and builds at the primary's own
+ *    directories. Stripped, both readers derive them from the block's
+ *    TALARIA_APPS_DIR, as `<state>/app-data` and `<state>/app-builds`
+ *    (talaria-users `app_data_dir`, ui/src/server/app-build/paths.ts).
  *
  *  Everything else rides verbatim: TALARIA_SECRET_KEY/AUTH_* MUST, or sealed
  *  secrets seeded from the primary couldn't decrypt (the worktree rule). */
-const stripsAlso = (key: string): boolean => key.startsWith('TALARIA_S3_') || (WORKTREE_INHERITED_VARS as readonly string[]).includes(key)
+export const BOX_OWN_DIRS = ['TALARIA_APP_DATA_DIR', 'TALARIA_APP_BUILDS_DIR'] as const
+const stripsAlso = (key: string): boolean =>
+  key.startsWith('TALARIA_S3_') ||
+  (WORKTREE_INHERITED_VARS as readonly string[]).includes(key) ||
+  (BOX_OWN_DIRS as readonly string[]).includes(key)
 
 /** The block `talaria box new` appends to the box's ui/.env. */
 function boxBlock(o: { name: string; state: string; s3: { bucket: string; key: string; secret: string }; embedContainer: string }): string {
@@ -119,6 +129,22 @@ export function boxUiEnv(
   return `${kept}
 
 ${block}`
+}
+
+/** What `box new` copies into the clone for `rel` (a gitignored tree under
+ *  the checkout): the directory it resolves to, or null when there is none.
+ *  `talaria worktree` links a worktree's ui/node_modules to the primary's,
+ *  and `cp -a` copies a link as a link: the box got one naming a host path
+ *  its container does not have, `bun install` stopped at "could not open the
+ *  node_modules directory", and `box new` from any worktree failed there
+ *  (found proving UB1). The resolved directory is the same snapshot a
+ *  primary's `box new` takes. */
+export function snapshotSource(root: string, rel: string): string | null {
+  try {
+    return realpathSync(join(root, rel))
+  } catch {
+    return null
+  }
 }
 
 /** A YAML single-quoted scalar — all this file's values are plain strings, and
@@ -277,11 +303,10 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
   // local builds — copy them or the box's builds silently differ from the
   // primary's. Same for the installed node_modules (snapshot; bun install
   // below reconciles lockfile drift). btrfs reflinks make these near-free —
-  // hence cp, not fs.cp.
+  // hence cp, not fs.cp. From what each one RESOLVES to (snapshotSource).
   for (const p of ['apps/leadworks', 'apps/waypoint', 'ui/node_modules', 'mcp/node_modules']) {
-    if (existsSync(join(root, p))) {
-      await ctx.exec('cp', ['-a', '--reflink=auto', join(root, p), join(hostRepo, p)], { timeoutMs: 600_000 })
-    }
+    const src = snapshotSource(root, p)
+    if (src) await ctx.exec('cp', ['-a', '--reflink=auto', src, join(hostRepo, p)], { timeoutMs: 600_000 })
   }
   const head = (await ctx.exec('git', ['-C', hostRepo, 'log', '--oneline', '-1'])).stdout.split('\n')[0]!.slice(0, 60)
   ctx.log.ok(`cloned ${head}`)

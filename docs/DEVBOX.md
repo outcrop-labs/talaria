@@ -59,9 +59,16 @@ branch on the host.
    writes is dropped from the copied file first, and so is everything that names
    a worktree's stack (`TALARIA_WORKTREE`, its api, toolkit, auth-bridge and
    gateway ports): `box new` run with a worktree's CLI copies that worktree's
-   `ui/.env`, and the first match wins. `TALARIA_EMBED_URL` names the embeddings
-   container step 1 started, the shell's `TALARIA_EMBED_CONTAINER` when it sets
-   one.
+   `ui/.env`, and the first match wins. So are `TALARIA_APP_DATA_DIR` and
+   `TALARIA_APP_BUILDS_DIR`, which a primary may set by hand: the box derives
+   both from its own `TALARIA_APPS_DIR`, as `state/app-data` and
+   `state/app-builds`. `TALARIA_EMBED_URL` names the embeddings container step 1
+   started, the shell's `TALARIA_EMBED_CONTAINER` when it sets one. The Rust api
+   reads no `.env` file, so the box's `talaria dev` hands it every line of this
+   block it reads: the dial, the fleet, apps and uploads dirs, the gateway URLs,
+   and the qdrant, embeddings and storage addresses. It does that only for the
+   box's own stack, a `ui/.env` with the block's `TALARIA_DEVBOX` and no
+   `TALARIA_WORKTREE`: a primary's or a worktree's api is handed none of them.
 7. Seeds starter data from the primary (below).
 8. Runs any `--setup` hooks inside the fresh box (provisioning; `npm i -g`
    hooks land in the shared tools layer, below), then installs deps and
@@ -263,7 +270,12 @@ nothing names it, its project has no container left, `../devboxes/<name>/box.env
 gone, and it is at least ten minutes old. Its app databases (`talaria-appdb-*`,
 which run on `restart: unless-stopped`) outlive it the same way: `--apply` removes one
 whose cluster is mounted from a box whose `box.env` is gone, and leaves its data
-directory. The shared tools layer (`../devboxes/shared`) is a cache — it stays.
+directory. Its MCP packages do too: a package container and its `talaria-mcp-<box>`
+network are made outside any compose project, so the api labels both with their owner
+(`talaria.mcp.owner=devbox`), and `--apply` removes them once the box's `box.env` is
+gone, the network only when nothing else names it. One made before the labels is named
+in the report and left alone. The shared tools layer (`../devboxes/shared`) is a
+cache — it stays.
 
 ## Troubleshooting
 

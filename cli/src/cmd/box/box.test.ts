@@ -5,10 +5,10 @@
 // process behavior is planted.
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { boxUiEnv, overrideYaml, parseEnvFlags, composeEnvTpl, runNew } from './new'
+import { boxUiEnv, overrideYaml, parseEnvFlags, composeEnvTpl, runNew, snapshotSource } from './new'
 import { repointChassis, seedFleetEnv, runSeed } from './seed'
 import { runEnter } from './enter'
 import { runInstall } from './install'
@@ -137,6 +137,143 @@ TALARIA_PG_PORT=5605
     const out = boxUiEnv(stale, { name: 'demo', state: '/s', s3: { bucket: 'b', key: 'k', secret: 's' } })
     expect(out).not.toContain('=stale-')
     expect(keysOf(out)).toEqual(keysOf(block))
+  })
+
+  // Found proving UB1: a `talaria worktree` checkout links ui/node_modules to
+  // the primary's, and `cp -a` copied the link, which names a host path the
+  // box's container does not have. The snapshot is taken from the directory.
+  test('the snapshot copies come from what each tree resolves to, never a link', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'talaria-box-snap-'))
+    try {
+      const primary = join(tmp, 'primary', 'ui', 'node_modules')
+      mkdirSync(join(primary, '.bin'), { recursive: true })
+      const wt = join(tmp, 'talaria-wt')
+      mkdirSync(join(wt, 'ui'), { recursive: true })
+      mkdirSync(join(wt, 'mcp', 'node_modules'), { recursive: true })
+      symlinkSync(primary, join(wt, 'ui', 'node_modules'))
+      symlinkSync(join(tmp, 'nowhere'), join(wt, 'apps-gone'))
+      expect(snapshotSource(wt, 'ui/node_modules')).toBe(realpathSync(primary))
+      expect(snapshotSource(wt, 'mcp/node_modules')).toBe(realpathSync(join(wt, 'mcp', 'node_modules')))
+      expect(snapshotSource(wt, 'apps/leadworks')).toBeNull()
+      expect(snapshotSource(wt, 'apps-gone')).toBeNull()
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  // UB2: `talaria setup` never writes these two, but an operator may set them
+  // by hand in the primary's ui/.env. Inherited, they pointed the box's app
+  // databases and builds at the primary's directories.
+  test("boxUiEnv drops the primary's app data and build directories, in every spelling a reader accepts", () => {
+    const primary = [
+      'TALARIA_SECRET_KEY=keep-exactly-this-root',
+      'TALARIA_APP_DATA_DIR=/home/op/talaria/app-data',
+      'export TALARIA_APP_BUILDS_DIR=/home/op/talaria/app-builds',
+      'TALARIA_APP_DATA_DIR =/home/op/elsewhere',
+      '  TALARIA_APP_BUILDS_DIR= /home/op/elsewhere',
+      'TALARIA_APP_DATA_DIRS_NOTE=not-this-one',
+    ].join('\n')
+    const out = boxUiEnv(primary, { name: 'demo', state: '/phys/state', s3: { bucket: 'b', key: 'k', secret: 's' } })
+    expect(out).not.toContain('/home/op/')
+    expect(keysOf(out)).not.toContain('TALARIA_APP_DATA_DIR')
+    expect(keysOf(out)).not.toContain('TALARIA_APP_BUILDS_DIR')
+    // Only the exact keys: a longer name that starts the same rides.
+    expect(out.split('\n')).toContain('TALARIA_APP_DATA_DIRS_NOTE=not-this-one')
+    expect(out.split('\n')).toContain('TALARIA_SECRET_KEY=keep-exactly-this-root')
+    // With both gone, the box's own apps dir is what both readers derive them from.
+    expect(out.split('\n')).toContain('TALARIA_APPS_DIR=/phys/state/apps')
+  })
+
+  // UB1: the api has no .env loader, so a box's api sees a block line only if
+  // `talaria dev` lifts it (dev.ts BOX_API_ENV_VARS). Read from the api's own
+  // source: a block key any crate reads that the lift leaves out fails here.
+  test("every line of the box block the Rust api reads reaches the box's api", async () => {
+    const { apiEnv, API_ENV_KEYS } = await import('../dev')
+    const block = boxUiEnv('', { name: 'demo', state: '/phys/state', s3: { bucket: 'b', key: 'k', secret: 's' } })
+    const apiRoot = join(import.meta.dir, '../../../../api')
+    const sources: string[] = []
+    const walk = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.name === 'target' || e.name.startsWith('.')) continue
+        const p = join(dir, e.name)
+        if (e.isDirectory()) walk(p)
+        else if (e.name.endsWith('.rs')) sources.push(readFileSync(p, 'utf8'))
+      }
+    }
+    walk(apiRoot)
+    expect(sources.length).toBeGreaterThan(100)
+    // The box compose sets TALARIA_DEVBOX in the container's own environment,
+    // which the api inherits; ui/.env's copy is for `talaria dev`'s branch.
+    const fromCompose = new Set(['TALARIA_DEVBOX'])
+    const read = keysOf(block).filter((k) => sources.some((s) => s.includes(`"${k}"`)))
+    expect(read).toContain('TALARIA_AGENT_DIAL')
+    expect(read).toContain('TALARIA_FLEET_DIR')
+    for (const k of read) {
+      if (fromCompose.has(k)) continue
+      expect(API_ENV_KEYS).toContain(k)
+    }
+    // And the values the box's api then runs with are the block's.
+    const api = apiEnv({ TALARIA_DEVBOX: 'demo' }, block)
+    expect(api).toMatchObject({
+      TALARIA_AGENT_DIAL: 'container',
+      TALARIA_FLEET_DIR: '/phys/state/fleet',
+      TALARIA_APPS_DIR: '/phys/state/apps',
+      TALARIA_UPLOADS_DIR: '/phys/state/uploads',
+      TALARIA_MCP_GW_URL: 'http://devbox:5273/api/mcp/gw',
+      TALARIA_QDRANT_URL: 'http://qdrant:6333',
+      TALARIA_S3_URL: 'http://storage:9000',
+      TALARIA_S3_BUCKET: 'b',
+      TALARIA_S3_ACCESS_KEY: 'k',
+      TALARIA_S3_SECRET_KEY: 's',
+      TALARIA_EMBED_URL: 'http://talaria-embeddings-dev:80',
+    })
+    // The block's own marker is enough: the shell need not carry it.
+    expect(apiEnv({}, block)).toMatchObject({ TALARIA_AGENT_DIAL: 'container', TALARIA_FLEET_DIR: '/phys/state/fleet' })
+  })
+
+  // The box block's keys are lifted only for the box's own stack. A
+  // worktree's ui/.env is the primary's with only its own stack's lines
+  // replaced, so a dir an operator set by hand in the primary's (docs/APPS.md
+  // names TALARIA_APPS_DIR, ui/.env.example TALARIA_UPLOADS_DIR) would ride
+  // into the worktree's api and point its apps, app databases and uploads at
+  // the primary's.
+  test("a primary's hand-set dirs and service lines never reach a worktree's api, nor the primary's", async () => {
+    const { apiEnv, BOX_API_ENV_KEYS } = await import('../dev')
+    const { stripOwnKeys } = await import('../worktree')
+    const handSet = [
+      'TALARIA_FLEET_DIR=/home/op/talaria/fleet',
+      'TALARIA_APPS_DIR=/home/op/talaria/apps',
+      'TALARIA_UPLOADS_DIR=/var/lib/talaria/uploads',
+      'TALARIA_MCP_GW_URL=http://127.0.0.1:5273/api/mcp/gw',
+      'TALARIA_AGENT_DIAL=container',
+      'TALARIA_QDRANT_URL=http://127.0.0.1:6333',
+      'TALARIA_EMBED_URL=http://127.0.0.1:8081',
+      'TALARIA_S3_URL=http://127.0.0.1:9000',
+      'TALARIA_S3_BUCKET=primary',
+      'TALARIA_S3_ACCESS_KEY=pk',
+      'TALARIA_S3_SECRET_KEY=ps',
+    ]
+    // Every box key the api reads is in the hand-set list, so none goes untested.
+    expect([...BOX_API_ENV_KEYS].sort()).toEqual(keysOf(handSet.join('\n')).sort())
+    const primary = ['DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5432/talaria', 'TALARIA_SECRET_KEY=k', ...handSet].join('\n')
+    const worktree = `${stripOwnKeys(primary)}\nTALARIA_WORKTREE=demo\nDATABASE_URL=postgres://talaria:pw@127.0.0.1:5605/talaria\n`
+    for (const [what, env] of [['the primary', apiEnv({}, primary)], ['a worktree', apiEnv({}, worktree)]] as const) {
+      for (const k of BOX_API_ENV_KEYS) expect(`${what}: ${k}=${env[k]}`).toBe(`${what}: ${k}=undefined`)
+    }
+    expect(apiEnv({}, worktree)).toMatchObject({ TALARIA_WORKTREE: 'demo', TALARIA_SECRET_KEY: 'k' })
+  })
+
+  test("a worktree cut inside a box keeps the box's dirs out of its api, and the box keeps them", async () => {
+    const { apiEnv, BOX_API_ENV_KEYS } = await import('../dev')
+    const { stripOwnKeys } = await import('../worktree')
+    const box = boxUiEnv('DATABASE_URL=x\nTALARIA_SECRET_KEY=k\n', { name: 'demo', state: '/phys/state', s3: { bucket: 'b', key: 'k', secret: 's' } })
+    // The box compose sets TALARIA_DEVBOX in the shell of everything inside it.
+    expect(apiEnv({ TALARIA_DEVBOX: 'demo' }, box).TALARIA_APPS_DIR).toBe('/phys/state/apps')
+    const inner = `${stripOwnKeys(box)}\nTALARIA_WORKTREE=inner\n`
+    const env = apiEnv({ TALARIA_DEVBOX: 'demo' }, inner)
+    for (const k of BOX_API_ENV_KEYS) expect(`${k}=${env[k]}`).toBe(`${k}=undefined`)
+    // A shell that names a worktree is not the box's own stack either.
+    expect(apiEnv({ TALARIA_DEVBOX: 'demo', TALARIA_WORKTREE: 'inner' }, box).TALARIA_FLEET_DIR).toBeUndefined()
   })
 
   test("F19: TALARIA_EMBED_URL dials the primary's embeddings container as `box new` started it", () => {

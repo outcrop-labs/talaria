@@ -113,7 +113,13 @@ data so you still have realistic agents/boards/tickets to work against.
    written rather than kept by hand): `envValue` takes the *first* match, so a
    leftover line would shadow the one written here. That is exactly how a
    worktree once answered every `/api/*` with `upstream unreachable` — its own
-   api healthy on `:54xx`, its app still dialling main's `:5274`.
+   api healthy on `:54xx`, its app still dialling main's `:5274`. The rest of
+   main's env is copied as it is, but the api is not handed the lines only a
+   devbox's block is meant to set (`TALARIA_FLEET_DIR`, `TALARIA_APPS_DIR`,
+   `TALARIA_UPLOADS_DIR`, the agent dial and the service addresses):
+   `talaria dev` lifts those for a box's own stack only, so a directory set by
+   hand in main's `ui/.env` never points the worktree's api at main's fleet,
+   apps, app databases or uploads.
 5. Seeds the fleet config plane the way `talaria setup` seeds the primary's:
    `fleet/skills`, `fleet/hooks`, `fleet/agents`, **`fleet/chassis.yml` from
    the worktree's own `scripts/chassis.template.yml`** and a blank `fleet/.env`.
@@ -247,6 +253,13 @@ recut, or check the new `ui/.env` against step 4.
   `talaria-<name>` directory that is gone; `--apply` removes the container and leaves
   the data directory. A directory still on disk keeps its databases, whether or not
   git still lists it, and one mounted from anywhere else is never touched.
+- **And MCP packages.** A package served over HTTP runs detached on its own
+  `talaria-mcp-<name>` network, and neither is a compose project's, so a worktree
+  removed while one ran left both behind, the network holding a subnet. The api
+  labels each with the checkout it runs from (`talaria.mcp.checkout`). `bun talaria
+  cleanup` lists one whose sibling `talaria-<name>` directory is gone, and `--apply`
+  removes the container, then the network once nothing else names it. One with no
+  labels (made before them) is named in the report and left alone.
 - **The app's port is strict.** `talaria dev` hands vite this worktree's `PORT` with
   `--strictPort` (the primary's `5273` too), and checks the port before anything
   starts: a port already taken stops it with the holder's pid and command (or the
