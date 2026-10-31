@@ -8,6 +8,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   CLEAR_SEEDED_GATEWAY_PORTS,
+  SCRUB_SEEDED_PUSH_STATE,
+  SEED_DUMP_ARGS,
   COUNT_TABLES,
   WORKTREE_ENV_KEYS,
   runWorktree,
@@ -244,6 +246,18 @@ describe('runWorktree — happy path', () => {
     )
     expect(clear).toBeGreaterThan(restore)
     expect(ctx.calls.some((c) => c.args.includes(CLEAR_SEEDED_GATEWAY_PORTS) && c.args.includes('talaria-postgres-dev'))).toBe(false)
+    // PUSH STATE STAYS ON MAIN: the dump leaves push_subscriptions' rows
+    // behind (main's real browsers), and main's VAPID key is deleted from
+    // THIS copy after the restore — never from main.
+    const dumpCall = ctx.calls.find((c) => c.args.includes('pg_dump'))!
+    expect(dumpCall.args).toEqual(['exec', 'talaria-postgres-dev', ...SEED_DUMP_ARGS])
+    expect(dumpCall.args).toContain('--exclude-table-data=push_subscriptions')
+    const scrub = ctx.calls.findIndex(
+      (c) => c.args.includes('talaria-pg-demo') && c.args.includes(SCRUB_SEEDED_PUSH_STATE),
+    )
+    expect(scrub).toBeGreaterThan(restore)
+    expect(SCRUB_SEEDED_PUSH_STATE).toContain("delete from app_settings where key = 'push_vapid'")
+    expect(ctx.calls.some((c) => c.args.includes(SCRUB_SEEDED_PUSH_STATE) && c.args.includes('talaria-postgres-dev'))).toBe(false)
     // ...and the fleet plane exists for the renderer to write into — a hire
     // against a missing fleet/.env fails rather than inventing one.
     expect(existsSync(join(wt, 'fleet/agents'))).toBe(true)
@@ -809,7 +823,7 @@ describe('runWorktree — what the seed copied', () => {
   test('a failed dump or restore dies loudly, with the teardown', async () => {
     for (const side of ['dump', 'restore'] as const) {
       const { wt, ctx, done } = fixture(`fail${side}`)
-      const dumpArgs = ['exec', 'talaria-postgres-dev', 'pg_dump', '-U', 'talaria', '-d', 'talaria', '--clean', '--if-exists']
+      const dumpArgs = ['exec', 'talaria-postgres-dev', ...SEED_DUMP_ARGS]
       const restoreArgs = ['exec', '-i', `talaria-pg-fail${side}`, 'psql', '-U', 'talaria', '-d', 'talaria', '-q', '-v', 'ON_ERROR_STOP=1']
       ctx.plant(['docker', side === 'dump' ? dumpArgs : restoreArgs], new Error('docker exited 3'))
       try {
