@@ -555,9 +555,10 @@ async fn race_body(pg: &PgPool) {
 }
 
 /// The single writer keeps only a same-origin path (talaria-notify
-/// `openable_href`): a producer handed an absolute or protocol-relative href
-/// files the row with `''`, so no click path — the bell, a toast, the worker,
-/// the shell — can be walked off the instance by a notification.
+/// `openable_href`): a producer handed an absolute or protocol-relative href,
+/// or a path with a dot segment that resolves to one, files the row with
+/// `''`, so no click path — the bell, a toast, the worker, the shell — can be
+/// walked off the instance by a notification.
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_single_writer_stores_only_a_same_origin_href() {
@@ -574,6 +575,12 @@ async fn the_single_writer_stores_only_a_same_origin_href() {
         ("https://evil.example", ""),
         ("//evil.example", ""),
         ("/\\evil.example", ""),
+        // Dot segments: `/..//evil.example` resolves to the PATH
+        // `//evil.example`, another host once a client parses it again.
+        ("/..//evil.example", ""),
+        ("/.//evil.example", ""),
+        ("/a/..//evil.example", ""),
+        ("/%2e%2e//evil.example", ""),
         ("/boards/b/t", "/boards/b/t"),
     ] {
         add_notification(
