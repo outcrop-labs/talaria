@@ -30,7 +30,8 @@
 //     stack's value. `talaria dev` lifts the shell over ui/.env, so a stale
 //     `DATABASE_URL=…:5544` put a second server on main's database;
 //   · a command that reads or starts MAIN's containers by name (the seed
-//     source of `talaria box new`/`box seed`, the primary's `talaria dev`)
+//     source of `talaria box new`/`box seed` and of `talaria worktree`, the
+//     primary's `talaria dev`)
 //     finds a TALARIA_*_CONTAINER in the shell that names a worktree's or a
 //     box's container. A worktree's `talaria dev` sets exactly those
 //     variables in its own process, so every process it starts inherits them
@@ -287,8 +288,9 @@ export function refuseWorktreeEnvOverride(ctx: Ctx, stack: DevStack, uiEnv: stri
 // dev-compose.yml names the primary's containers `${TALARIA_*_CONTAINER:-…}`,
 // and the shell is the primary's override point for them. Some commands read
 // or start MAIN's containers on purpose: `talaria box new` and `box seed` copy
-// main's postgres (and storage, and qdrant) into a box, and the primary's
-// `talaria dev` brings main's infra up. They read those variables from the
+// main's postgres (and storage, and qdrant) into a box, `talaria worktree`
+// copies main's postgres into a worktree, and the primary's `talaria dev`
+// brings main's infra up. They read those variables from the
 // shell. But a worktree's `talaria dev` sets TALARIA_PG_CONTAINER and
 // TALARIA_REDIS_CONTAINER (and the two ports) to its own, in its own process,
 // so the app, its harness runs and every shell they open inherit them. From

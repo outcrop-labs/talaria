@@ -294,7 +294,7 @@ talaria cleanup [--apply]
 
 | Flag | Kind | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--apply` | bool | — | remove the safe set (stale clean worktrees and boxes, old /tmp/talaria-*, orphan compose projects and networks) |
+| `--apply` | bool | — | remove the safe set (stale clean worktrees and boxes, old /tmp/talaria-*, orphan compose projects, networks and app databases) |
 
 ### `talaria reset`
 
