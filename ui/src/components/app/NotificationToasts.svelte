@@ -14,14 +14,14 @@
   } from '@/lib/browser-notify'
   import { inDesktopShell } from '@/lib/desktop-shell'
   import { putJson } from '@/lib/fetch-json'
-  import { saveNotifyPrompt, useNotifications, type Notification } from '@/lib/notifications'
+  import { saveNotifyPrompt, useNotifications, type Notification, type NotificationsPayload } from '@/lib/notifications'
   import { PersistedArrivals, present, summaryTitle, type Arrival } from '@/lib/notify-arrivals'
   import { idbBanneredStore, markBannered, wasBannered } from '@/lib/notify-bannered'
   import { CLAIM_WINDOW_MS, decide } from '@/lib/notify-decide'
   import { blockedSteps, detectBrowser, type BlockedSteps } from '@/lib/notify-help'
   import { browserLeaderEdges, startNotifyLeader, type NotifyLeader } from '@/lib/notify-leader'
   import { openNotification } from '@/lib/notify-open'
-  import { shouldAsk, turnOnResult } from '@/lib/notify-prompt'
+  import { shouldAsk, turnOnResult, type PromptMemory } from '@/lib/notify-prompt'
   import { useSession } from '@/lib/session'
   import { pushToast } from '@/lib/toast.svelte'
   import { navigateHref } from '@/router'
@@ -75,6 +75,10 @@
   // Soft-ask state.
   let askTrigger = $state(0)
   let promptShown = $state(false)
+  // Answered on this page (Not now, or turned on): the card does not come
+  // back before the page is reloaded, whatever a refetch races in with —
+  // or whether the PATCH that records the answer landed at all.
+  let promptAnswered = false
   let promptMessage = $state<string | null>(null)
   let promptBlocked = $state<BlockedSteps | null>(null)
   const browser = typeof navigator !== 'undefined' ? detectBrowser(navigator.userAgent, { brave: 'brave' in navigator }) : null
@@ -94,48 +98,72 @@
       origin: location.origin,
     })
   const openBell = () => window.dispatchEvent(new CustomEvent('talaria:open-notifications'))
+  /** The catch-up summary's tag — one OS copy, replaced by the next. */
+  const SUMMARY_KEY = 'talaria-summary'
 
   // ── The tab registry and the leader lock ─────────────────────────────────
   $effect(() => {
-    const edges = browserLeaderEdges()
-    const l = startNotifyLeader({
-      ...edges,
-      self: () => ({ visible: document.visibilityState === 'visible', focused: document.hasFocus() }),
-    })
-    leader = l
-    const announce = () => l.announce()
-    const input = () => l.noteInput()
-    const onVisible = () => {
-      l.announce()
-      // Back to a tab that missed arrivals while hidden: a reason to ask.
-      if (document.visibilityState === 'visible' && hiddenArrivals > 0) {
+    const start = () => {
+      const l = startNotifyLeader({
+        ...browserLeaderEdges(),
+        self: () => ({ visible: document.visibilityState === 'visible', focused: document.hasFocus() }),
+      })
+      leader = l
+      // A read-only diagnostics hook (the status panel and the live checks read it).
+      ;(window as unknown as { __talariaNotify?: object }).__talariaNotify = {
+        tabId: l.tabId,
+        isLeader: () => leader?.isLeader() ?? false,
+        alone: l.alone,
+        recent: () => recent.slice(),
+      }
+    }
+    start()
+    // Arrivals landed while the person was not looking at this tab (hidden,
+    // or visible on another monitor while they typed elsewhere): coming back
+    // to it is a reason to ask.
+    const askIfMissed = (back: boolean) => {
+      if (back && hiddenArrivals > 0) {
         hiddenArrivals = 0
         askTrigger++
       }
     }
-    const bye = () => l.close()
-    window.addEventListener('focus', announce)
-    window.addEventListener('blur', announce)
+    const onFocus = () => {
+      leader?.announce()
+      askIfMissed(lookingHere())
+    }
+    const onBlur = () => leader?.announce()
+    const input = () => leader?.noteInput()
+    const onVisible = () => {
+      leader?.announce()
+      askIfMissed(document.visibilityState === 'visible')
+    }
+    // Leaving: release the lock and say goodbye, so the next tab leads now.
+    // A page restored from the back/forward cache comes back with that
+    // runtime closed — it starts a new one (a new tab id, a new place in the
+    // lock's queue) instead of deciding with no registry.
+    const bye = () => {
+      leader?.close()
+      leader = null
+    }
+    const back = (e: PageTransitionEvent) => {
+      if (e.persisted && !leader) start()
+    }
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('blur', onBlur)
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('pointerdown', input, { capture: true })
     window.addEventListener('keydown', input, { capture: true })
     window.addEventListener('pagehide', bye)
-    // A read-only diagnostics hook (the status panel and the live checks read it).
-    ;(window as unknown as { __talariaNotify?: object }).__talariaNotify = {
-      tabId: l.tabId,
-      isLeader: () => l.isLeader(),
-      alone: l.alone,
-      recent: () => recent.slice(),
-    }
+    window.addEventListener('pageshow', back)
     return () => {
-      window.removeEventListener('focus', announce)
-      window.removeEventListener('blur', announce)
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('blur', onBlur)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('pointerdown', input, { capture: true })
       window.removeEventListener('keydown', input, { capture: true })
       window.removeEventListener('pagehide', bye)
-      l.close()
-      leader = null
+      window.removeEventListener('pageshow', back)
+      bye()
     }
   })
 
@@ -146,6 +174,8 @@
     const fromShell = (e: Event) => {
       const d = (e as CustomEvent<{ id?: string; href?: string }>).detail ?? {}
       e.preventDefault()
+      // The catch-up summary names no row (its id is its tag): open the bell.
+      if (d.id === SUMMARY_KEY) return openBell()
       void open({ id: typeof d.id === 'string' ? d.id : '', href: d.href })
     }
     window.addEventListener('talaria:notification-open', fromShell)
@@ -194,13 +224,22 @@
     void surface(tracker.arrive(rows))
   })
 
-  async function surface(arrivals: Arrival<Notification>[]) {
+  async function surface(all: Arrival<Notification>[]) {
+    // A version this browser already showed as an OS banner — the worker's
+    // push while every tab was closed, say — is not surfaced again: one alert
+    // per notification per browser, and a catch-up summary must not stack a
+    // banner on top of the worker's per-row ones. The bell still lists them.
+    const arrivals: Arrival<Notification>[] = []
+    for (const a of all) {
+      if (await wasBannered(bannered, a.row.id, a.row.createdAt)) note(a.row.id, 'none: already bannered')
+      else arrivals.push(a)
+    }
     const p = present(arrivals)
     if (!p) return
     if (!lookingHere()) hiddenArrivals += arrivals.length
     if (p.kind === 'summary') {
       await surfaceOne({
-        key: 'talaria-summary',
+        key: SUMMARY_KEY,
         id: '',
         title: summaryTitle(p.count, p.newest.title),
         body: undefined,
@@ -242,12 +281,19 @@
     summary: boolean
   }) {
     const l = leader
-    const self = { visible: document.visibilityState === 'visible', focused: document.hasFocus() }
+    const self = {
+      visible: document.visibilityState === 'visible',
+      focused: document.hasFocus(),
+      tabId: l?.tabId,
+      lastInputAt: l?.lastInputAt() ?? 0,
+    }
+    const bannersOn = browserNotifyEnabled()
     const decision = decide({
       read: n.read,
       self,
       others: l?.others() ?? [],
       isLeader: l?.isLeader() ?? true,
+      bannersOn,
       now: Date.now(),
     })
     const toast = () =>
@@ -260,16 +306,14 @@
     if (decision === 'toast') {
       toast()
       l?.claim(n.key, n.version)
-      askTrigger++
-      note(n.key, 'toast')
+      // In front of the person: a reason to ask now. A toast in a visible
+      // window they are not typing in asks when they come to it (focus).
+      if (lookingHere()) askTrigger++
+      note(n.key, self.focused ? 'toast' : 'toast: banners off, the visible tab touched last')
       return
     }
-    if (decision !== 'banner') return note(n.key, 'none: another tab has it')
-    if (!browserNotifyEnabled()) {
-      // No banners in this browser (not granted, or switched off here): a
-      // visible-but-unfocused window still gets the in-app toast.
-      if (self.visible) toast()
-      return note(n.key, self.visible ? 'toast: banners off here' : 'none: banners off here')
+    if (decision !== 'banner') {
+      return note(n.key, bannersOn ? 'none: another tab has it' : 'none: banners off, another tab shows it')
     }
     if (l && (await l.waitForClaim(n.key, n.version, CLAIM_WINDOW_MS))) return note(n.key, 'none: claimed by a tab')
     if (await wasBannered(bannered, n.key, n.version)) return note(n.key, 'none: already bannered')
@@ -312,7 +356,7 @@
     untrack(() => {
       if (t === handledTrigger) return
       handledTrigger = t
-      if (promptShown) return
+      if (promptShown || promptAnswered) return
       const ask = shouldAsk({
         permission: perm,
         inShell: shell,
@@ -337,8 +381,8 @@
       const r = turnOnResult(after)
       if (r.kind === 'on') {
         promptShown = false
-        await saveNotifyPrompt('granted')
-        void qc.invalidateQueries({ queryKey: ['notifications'] })
+        promptAnswered = true
+        rememberPrompt(await saveNotifyPrompt('granted'))
       } else if (r.kind === 'closed' || r.kind === 'unavailable') {
         promptMessage = r.message
       } else if (browser) {
@@ -351,7 +395,16 @@
 
   async function notNow() {
     promptShown = false
-    await saveNotifyPrompt('dismissed')
+    promptAnswered = true
+    rememberPrompt(await saveNotifyPrompt('dismissed'))
+  }
+
+  /** The PATCH's own answer goes straight into the cache, so the next ask
+   *  reads the new memory without waiting on a refetch; then refetch. */
+  function rememberPrompt(memory: PromptMemory | null) {
+    if (memory) {
+      qc.setQueryData<NotificationsPayload>(['notifications'], (old) => (old ? { ...old, prompt: memory } : old))
+    }
     void qc.invalidateQueries({ queryKey: ['notifications'] })
   }
 </script>

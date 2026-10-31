@@ -64,6 +64,8 @@ export interface NotifyLeader {
   announce(): void
   /** The person touched this tab. */
   noteInput(): void
+  /** When the person last touched this tab, ms epoch (0 = never). */
+  lastInputAt(): number
   /** This tab has the arrival (it toasted it): tell the others. */
   claim(id: string, version: string): void
   /** Resolves true if another tab claims this arrival within `ms`. */
@@ -174,6 +176,7 @@ export function startNotifyLeader(env: LeaderEnv): NotifyLeader {
     noteInput: () => {
       lastInputAt = now()
     },
+    lastInputAt: () => lastInputAt,
     claim: (id, version) => {
       const key = claimKey(id, version)
       claims.set(key, now())

@@ -139,8 +139,10 @@ export function useLogout() {
     // session filed, so a browser that could not answer is covered too.
     // Imported here, not at the top: the SDK kit re-exports this module's
     // session hooks, and the push plane is no app's business.
-    const { stopPushSubscription } = await import('@/lib/browser-notify')
-    await stopPushSubscription(2000)
+    // Its banners go with it: the next person at this machine must not read
+    // the last one's mentions in the notification centre.
+    const { closeShownNotifications, stopPushSubscription } = await import('@/lib/browser-notify')
+    await Promise.all([stopPushSubscription(2000), closeShownNotifications()])
     // The nav button fires and forgets this, so a refused sign-out surfaces
     // here rather than as an unhandled rejection — and the session is
     // re-checked either way, because the person is still signed in.

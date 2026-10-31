@@ -316,7 +316,8 @@ export function sameServerKey(bound: ArrayBuffer | null | undefined, want: Uint8
 
 export type PushOutcome = 'subscribed' | 'unsupported' | 'denied' | 'failed'
 
-/** What the Settings row says about closed-browser alerts in this browser. */
+/** What the Settings row says about alerts with every Talaria tab closed
+ *  (Web Push) in this browser. */
 export type PushStatus =
   | { state: 'unknown' }
   | { state: 'registered' }
@@ -422,4 +423,24 @@ export async function stopPushSubscription(timeoutMs = 2000): Promise<void> {
   await Promise.race([work, new Promise<void>((r) => (timer = setTimeout(r, timeoutMs)))])
   clearTimeout(timer)
   setPushStatus({ state: 'unknown' })
+}
+
+/** Close every banner this origin still has up — on screen and in the OS
+ *  notification centre (GNOME's list, macOS's, Windows' Action Center): a
+ *  sign-out must not leave the signed-out person's mentions for the next
+ *  person at this machine to read. Bounded like the unsubscribe. The shell
+ *  posts natively and clears its own. */
+export async function closeShownNotifications(timeoutMs = 1000): Promise<void> {
+  if (inDesktopShell() || typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return
+  const work = (async () => {
+    try {
+      const reg = await navigator.serviceWorker.getRegistration()
+      for (const n of (await reg?.getNotifications()) ?? []) n.close()
+    } catch {
+      /* nothing to close, or no registration */
+    }
+  })()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([work, new Promise<void>((r) => (timer = setTimeout(r, timeoutMs)))])
+  clearTimeout(timer)
 }

@@ -172,6 +172,31 @@ describe('openStream', () => {
     stop()
   })
 
+  it('a kick during the session probe opens ONE source, not two', async () => {
+    // The probe answers "signed in", but only after the person came back.
+    let answer: (r: Response) => void = () => {}
+    fetchMock.mockImplementation(() => new Promise<Response>((r) => (answer = r)))
+    const got: string[] = []
+    const stop = openStream('/x', (d) => got.push(d), { reconnect: true })
+    for (let i = 0; i < PROBE_AFTER; i++) {
+      at(i).fail()
+      if (i < PROBE_AFTER - 1) vi.advanceTimersByTime(backoffDelay(i + 1))
+    }
+    await vi.advanceTimersByTimeAsync(backoffDelay(PROBE_AFTER))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // The tab comes back mid-probe: one source opens now…
+    win.fire('online')
+    expect(FakeES.all).toHaveLength(PROBE_AFTER + 1)
+    // …and the probe's late "yes" does not open another.
+    answer(new Response(JSON.stringify({ user: { id: 'u' } }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(FakeES.all).toHaveLength(PROBE_AFTER + 1)
+    at(PROBE_AFTER).onmessage?.({ data: 'once' })
+    expect(got).toEqual(['once'])
+    stop()
+    expect(at(PROBE_AFTER).closed).toBe(true)
+  })
+
   it('a probe that fails (api down) keeps reconnecting', async () => {
     fetchMock.mockRejectedValue(new Error('502'))
     const stop = openStream('/x', () => {}, { reconnect: true })

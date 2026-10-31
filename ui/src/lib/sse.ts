@@ -87,7 +87,11 @@ export function openStream(
   }
 
   const connect = () => {
-    if (stopped) return
+    // One source at a time. A kick() (online, the tab back in view) while the
+    // fifth failure's session probe is in flight connects; the probe's own
+    // answer must not open a SECOND source — stop() would never close the
+    // first, and every frame would be dispatched twice.
+    if (stopped || es) return
     clearTimers()
     const source = new EventSource(url)
     es = source
