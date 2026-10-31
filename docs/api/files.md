@@ -102,14 +102,14 @@ Source: [`api/crates/talaria-routes-knowledge/src/files/artifact_folders_id.rs`]
 > /api/artifact-folders/{id}. One artifact folder. GET → the
 > folder + its grants (what the Share dialog reads). PUT → rename / icon /
 > reparent / re-share. DELETE → remove (its artifacts and child folders fall
-> back to the root).
+> back to the root). A well-formed id that names no folder is a 404 on all
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{folder, editors}` | 200, 403, 404 | — |
 | PUT | `session` + `perm:artifacts.create` `perm:artifacts.publish` | [body](#put-apiartifact-foldersid-body) | `{folder}` | 200, 400, 403, 404 | — |
-| DELETE | `session` + `perm:artifacts.create` | — | `{ok}` | 200, 403 | — |
+| DELETE | `session` + `perm:artifacts.create` | — | `{ok}` | 200, 403, 404 | — |
 
 ### PUT `/api/artifact-folders/{id}` body
 

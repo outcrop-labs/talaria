@@ -2,7 +2,7 @@
 // order: perm, body, then the id — so a member with a bad body gets the 403,
 // a non-uuid id the house 400 ("not a uuid"), and a well-formed id that
 // names no workflow a 404 on the PUT, an empty patch included: a write to
-// nothing is not an ok. The DELETE still answers ok for a missed id.
+// nothing is not an ok. The DELETE of a missed id is the same 404.
 
 use super::workflows::{match_json, toolkits_json, validate_workflow_body};
 use axum::Json;
@@ -59,8 +59,9 @@ pub async fn delete(
     if let Some(gate) = uuid_gate("workflows", "DELETE", &id) {
         return Ok(gate);
     }
-    if let Err(e) = delete_workflow(&state.pg, &id).await {
-        return Ok(internal("[workflows] delete failed", e));
+    match delete_workflow(&state.pg, &id).await {
+        Ok(true) => Ok(Json(json!({ "ok": true })).into_response()),
+        Ok(false) => Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => Ok(internal("[workflows] delete failed", e)),
     }
-    Ok(Json(json!({ "ok": true })).into_response())
 }

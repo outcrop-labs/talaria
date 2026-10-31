@@ -26,7 +26,7 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import { slide } from '@/lib/motion'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { queueChatMessage, steerChat, stopChat, streamChat, type ChatFocus, type ChatKind } from '@/lib/chat'
+  import { queueChatMessage, steerChat, stopChat, stopTurn, streamChat, type ChatFocus, type ChatKind } from '@/lib/chat'
   import { HttpError } from '@/lib/fetch-json'
   import { mergeTool } from '@/lib/sse-parse'
   import { onUserEvent } from '@/lib/user-events.svelte'
@@ -45,6 +45,7 @@
     sendRoute,
     stampFromServer,
     stopOnceNamed,
+    newTurnId,
     toDisplay,
     toggleReactionLocal,
     turnTime,
@@ -185,6 +186,8 @@
   // so one copy action covers both plain and markdown wants).
   const menu = useContextMenu()
   let abortCtrl: AbortController | null = null
+  // The streaming turn's own name (`turnId`), which a Stop carries.
+  let turnId: string | null = null
   let convId: string | null = null
   let scrollEl = $state<HTMLDivElement | null>(null)
   // The mid-turn send is this surface's own: every other composer host has a
@@ -735,10 +738,12 @@
     userStopped = false
 
     const ctrl = new AbortController()
+    const turn = newTurnId()
     abortCtrl = ctrl
+    turnId = turn
     try {
       for await (const ev of streamChat(
-        { model: agentModel, conversationId: convId ?? undefined, content: text, tier: tier || undefined, effort: effort || undefined, ...splitAttachments(atts), kind, templateId, ...focusField() },
+        { model: agentModel, conversationId: convId ?? undefined, content: text, tier: tier || undefined, effort: effort || undefined, ...splitAttachments(atts), kind, templateId, ...focusField(), turnId: turn },
         (meta) => {
           if (!convId) {
             convId = meta.conversationId
@@ -754,7 +759,7 @@
           if (pendingStop?.ctrl === ctrl) {
             const { latch } = pendingStop
             pendingStop = null
-            latch.named(meta.conversationId, meta.messageId !== '', (id) => void stopChat(id).catch(() => {}))
+            latch.named(meta.conversationId, meta.messageId !== '', (id) => void stopChat(id, turn).catch(() => {}))
           }
         },
         ctrl.signal,
@@ -793,6 +798,7 @@
       }
       streaming = false
       abortCtrl = null
+      if (turnId === turn) turnId = null
       // Pick up whatever happened meanwhile: queued messages, and the
       // follow-up turn the server chains for them (the resuming poller
       // animates it live once it appears). Skipped on a reader stop — a sync
@@ -816,24 +822,37 @@
    *  keypress, not on a round trip, and a 409 (the turn finished on its own)
    *  is nothing to report. Everything `userStopped` means is unchanged.
    *
+   *  Every stop names this page's own send (`turnId`), so one that reaches
+   *  the server before the send does is held for it rather than answered
+   *  409 and lost.
+   *
    *  A new thread's first turn has no id to stop yet: it rides the response
-   *  headers, which the server sends once the agent has taken the turn. A
-   *  hang-up then would end the very request that brings the id, and the
-   *  turn would run on in the agent with nobody told. So the transcript
-   *  freezes now, the request stays open, and the stop goes out the moment
-   *  the answer names the thread (`stopOnceNamed`). Until then the composer
-   *  keeps its stop face, and a message sent meanwhile is held, as for any
-   *  first turn that has no id yet; it queues behind the stopped turn. */
+   *  headers, which the server sends once the agent has taken the turn. So
+   *  the transcript freezes now and the stop goes out at once by the send's
+   *  name alone (`stopTurn`), which the server places as soon as the send
+   *  claims its thread, even if this page is closed by then. The reader
+   *  still does not hang up early: the abort would end the very request
+   *  that brings the thread's id, and the page would not know its own
+   *  thread. It hangs up the moment the answer names the thread
+   *  (`stopOnceNamed`), stopping by that id as well. Until then the
+   *  composer keeps its stop face, and a message sent meanwhile is held, as
+   *  for any first turn that has no id yet; it queues behind the stopped
+   *  turn. */
   const stop = () => {
     const id = convId
     const ctrl = abortCtrl
+    const turn = turnId ?? undefined
     if (id) {
-      void stopChat(id).catch(() => {})
+      void stopChat(id, turn).catch(() => {})
       ctrl?.abort()
       return
     }
     if (!ctrl || pendingStop?.ctrl === ctrl) return
     freezeStopped()
+    // The server hears this stop now, by the send's own name: it waits for
+    // the send or holds the stop for it, so a page closed right after Stop,
+    // or a view that starts a new chat, no longer takes the stop along.
+    if (turn) void stopTurn(turn).catch(() => {})
     pendingStop = { ctrl, latch: stopOnceNamed(() => ctrl.abort()) }
   }
 

@@ -6,7 +6,7 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-352 routes across 24 groups.
+353 routes across 24 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
@@ -17,7 +17,7 @@
 | [`apps`](./apps.md) | The app platform surface, the app-server gateway, the host's own app routes, and the SDK kit. | 8 |
 | [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views, workchains. | 19 |
 | [`brief`](./brief.md) | The personal brief: items, replies, delegation. | 5 |
-| [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 32 |
+| [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 33 |
 | [`files`](./files.md) | Uploads, artifacts, shares, downloads. | 19 |
 | [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 27 |
 | [`inbox`](./inbox.md) | The focus inbox and its command surface. | 7 |

@@ -16,6 +16,7 @@ use talaria_agent_defs::{
     AgentDefRow, CompressionEdits, ConfigEdits, ModelTarget, add_version_if_changed,
     apply_config_edits, list_versions,
 };
+use talaria_error::store_fault;
 use talaria_fleet_create::{CreateAgentInput, create_agent, ensure_agent_key, restamp_slug};
 
 /// Whether a create refusal is the one-agent-per-department rule: the
@@ -352,12 +353,17 @@ pub async fn create_personal_agent(
             );
             personal_agent_for(&state.pg, user.id)
                 .await
-                .map_err(|e| e.to_string())?
+                .map_err(|e| store_fault("[personal-agent] assistant read failed", e))?
                 .ok_or_else(|| {
                     "your assistant is still being set up — it appears here in a moment".to_string()
                 })
         }
-        Detached::Lost(why) => Err(format!("creating the assistant did not finish: {why}")),
+        // A panic's text is the server's, never the caller's: logged here,
+        // and the route answers the house 500.
+        Detached::Lost(why) => Err(store_fault(
+            "[personal-agent] creating the assistant did not finish",
+            why,
+        )),
     }
 }
 
@@ -369,7 +375,7 @@ async fn create_whole(
     let pg = &state.pg;
     if let Some(existing) = personal_agent_for(pg, user.id)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| store_fault("[personal-agent] assistant read failed", e))?
     {
         if !existing.enabled {
             // ONE CONTAINER PER DEPARTMENT. Where another agent holds this
@@ -381,7 +387,7 @@ async fn create_whole(
             // stays retired, and the owner is told without naming the other.
             if talaria_agent_defs::runner_instead_of(pg, &existing.id, &existing.department)
                 .await
-                .map_err(|e| e.to_string())?
+                .map_err(|e| store_fault("[personal-agent] department holder read failed", e))?
                 .is_some()
             {
                 return Err(ASSISTANT_DISPLACED.to_string());
@@ -392,7 +398,7 @@ async fn create_whole(
             .bind(&existing.id)
             .execute(pg)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| store_fault("[personal-agent] re-enable failed", e))?;
         }
         // Make sure their personal RAG exists + their agent is bound to it.
         let qd = qdrant::real_deps();
@@ -430,7 +436,7 @@ async fn create_whole(
     )
     .fetch_optional(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[personal-agent] template read failed", e))?;
 
     let owner_name = owner_first_name(user);
     let display_name = input
@@ -475,14 +481,14 @@ async fn create_whole(
         .bind(&def.id)
         .execute(pg)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| store_fault("[personal-agent] owner stamp failed", e))?;
     // A personal assistant works for ONE person, so the recall the closed
     // default keeps off a shared agent (`session_search`) is this person's
     // own: open it now that the owner is marked. The create path could not
     // know — it writes the shared-agent default for every new def.
     talaria_agent_defs::open_toolsets(pg, &def.id, talaria_agent_defs::SHARED_AGENT_DISABLED)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| store_fault("[personal-agent] toolset open failed", e))?;
     sqlx::query(
         "insert into user_agent_access (user_id, agent_model) values ($1::uuid, $2) \
          on conflict do nothing",
@@ -491,7 +497,7 @@ async fn create_whole(
     .bind(&def.model)
     .execute(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[personal-agent] owner access grant failed", e))?;
     // ...and start it ALLOWED on the boards it will be told it owns: GET
     // /api/boards owner-proxies the owner's boards to a personal assistant
     // from the moment it exists, and every board-scoped route answers the
@@ -507,7 +513,7 @@ async fn create_whole(
     .bind(user.id)
     .execute(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[personal-agent] board grant failed", e))?;
 
     // Personal RAG: a private collection bound to the user + this agent,
     // seeded with any private docs they already have.
@@ -542,7 +548,7 @@ async fn create_whole(
 
     personal_agent_for(pg, user.id)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| store_fault("[personal-agent] assistant read failed", e))?
         .ok_or_else(|| "assistant vanished during creation".to_string())
 }
 
@@ -565,19 +571,26 @@ async fn rename_agent_slug(
         .bind(new_slug)
         .fetch_optional(pg)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| store_fault("[personal-agent] handle check failed", e))?;
     if exists.is_some() {
         return Err(format!("agent \"{new_slug}\" already exists"));
     }
     let new_model = format!("{new_slug}-{}", def.department);
-    ensure_agent_key(new_slug).await?;
+    // The fleet .env's own failure names its path: the operator's, in the
+    // log, and the caller's house 500.
+    ensure_agent_key(new_slug)
+        .await
+        .map_err(|e| store_fault("[personal-agent] rename: agent key write failed", e))?;
     // ONE TRANSACTION: the def's slug and every table keyed on its model
     // move together or not at all — a rename that landed on agent_defs and
     // died on conversations would leave threads, grants and schedules
     // pointing at a model that no longer exists. The skills directory
     // moves after the commit (best-effort, as before): a directory that
     // stayed under the old slug is a missing skill, not a split identity.
-    let mut tx = pg.begin().await.map_err(|e| e.to_string())?;
+    let mut tx = pg
+        .begin()
+        .await
+        .map_err(|e| store_fault("[personal-agent] rename: begin failed", e))?;
     for (sql, bind) in [
         (
             "update agent_defs set slug = $1, model = $2, updated_at = now() where id = $3::uuid",
@@ -640,9 +653,21 @@ async fn rename_agent_slug(
         for b in bind {
             q = q.bind(b);
         }
-        q.execute(&mut *tx).await.map_err(|e| e.to_string())?;
+        match q.execute(&mut *tx).await {
+            Ok(_) => {}
+            // Another rename took the handle between the check above and
+            // this write: the caller's conflict, not a store fault.
+            Err(sqlx::Error::Database(db))
+                if db.is_unique_violation() && db.table() == Some("agent_defs") =>
+            {
+                return Err(format!("agent \"{new_slug}\" already exists"));
+            }
+            Err(e) => return Err(store_fault("[personal-agent] rename: write failed", e)),
+        }
     }
-    tx.commit().await.map_err(|e| e.to_string())?;
+    tx.commit()
+        .await
+        .map_err(|e| store_fault("[personal-agent] rename: commit failed", e))?;
     // Created agents keep their skills under fleet/agents/<slug>/ — carry them.
     let from = talaria_fleet_layout::fleet_dir()
         .join("agents")
@@ -698,10 +723,13 @@ pub async fn update_personal_agent(
             );
             personal_agent_for(&state.pg, user.id)
                 .await
-                .map_err(|e| e.to_string())?
+                .map_err(|e| store_fault("[personal-agent] assistant read failed", e))?
                 .ok_or_else(|| "assistant vanished during update".to_string())
         }
-        Detached::Lost(why) => Err(format!("the assistant's update did not finish: {why}")),
+        Detached::Lost(why) => Err(store_fault(
+            "[personal-agent] the assistant's update did not finish",
+            why,
+        )),
     }
 }
 
@@ -718,7 +746,7 @@ async fn update_whole(
     .bind(user.id)
     .fetch_optional(pg)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| store_fault("[personal-agent] assistant read failed", e))?;
     let Some((id, slug, model, department, display_name, managed, enabled)) = def else {
         return Err("no assistant yet. Create one first.".into());
     };
@@ -746,7 +774,7 @@ async fn update_whole(
         .bind(&id)
         .execute(pg)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| store_fault("[personal-agent] display name write failed", e))?;
     }
 
     let new_handle = patch.handle.map(str::trim).filter(|h| !h.is_empty());
@@ -763,7 +791,7 @@ async fn update_whole(
 
     let latest = list_versions(pg, &id)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| store_fault("[personal-agent] versions read failed", e))?
         .into_iter()
         .next();
     if let Some(latest) = latest {
@@ -796,8 +824,12 @@ async fn update_whole(
                 .collect();
             // `contextLength` rides only when truthy — null and 0 both
             // drop off the main target (ModelTarget's own serde rule).
-            let mut main: ModelTarget =
-                serde_json::from_value(target.clone()).map_err(|e| e.to_string())?;
+            let mut main: ModelTarget = serde_json::from_value(target.clone()).map_err(|e| {
+                store_fault(
+                    "[personal-agent] a model tier in the stored config is not a model target",
+                    e,
+                )
+            })?;
             main.context_length = main.context_length.filter(|c| *c != 0);
             config = apply_config_edits(
                 pg,
@@ -835,16 +867,19 @@ async fn update_whole(
             },
         )
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| store_fault("[personal-agent] version write failed", e))?
         .1;
         if (created || rehandled) && managed && enabled {
             // A render failure fails the whole PATCH — after
             // the version row was written; that write stands. Only the
             // apply's roll is best-effort.
-            let sb = state.secretbox().await.map_err(|e| e.to_string())?;
-            let rf = talaria_fleet_create::RENDER_FLEET
-                .get()
-                .ok_or_else(|| "fleet renderer is not wired".to_string())?;
+            let sb = state
+                .secretbox()
+                .await
+                .map_err(|e| store_fault("[personal-agent] secretbox unusable", e))?;
+            let rf = talaria_fleet_create::RENDER_FLEET.get().ok_or_else(|| {
+                store_fault("[personal-agent] render", "fleet renderer is not wired")
+            })?;
             // APPLIED, like the admin editor's edit, never bounced: the render
             // rewrites SOUL.md and config.yaml in place, and the container is
             // rolled only when the render moved it (talaria-fleet-reconcile
@@ -861,7 +896,16 @@ async fn update_whole(
             // On the call's own task (above `create_personal_agent`): a
             // caller that goes away mid-roll no longer takes the compose verb
             // with it. A render that fails still fails the PATCH.
-            rf(pg.clone(), sb.clone()).await?;
+            //
+            // The render's error is the operator's (a file, YAML, a docker
+            // failure, or the database under it), never the owner's to act
+            // on: logged in full here, and the owner gets the house 500.
+            rf(pg.clone(), sb.clone()).await.map_err(|e| {
+                store_fault(
+                    "[personal-agent] the update is saved, but its render failed",
+                    e,
+                )
+            })?;
             // The container is the department's, and where another agent
             // shares this one's department and runs there (a pair from
             // before a department became one agent's), it is THAT agent's:
@@ -870,7 +914,7 @@ async fn update_whole(
             // stands for when the two are untied.
             if let Some(runner) = talaria_agent_defs::runner_instead_of(pg, &id, &department)
                 .await
-                .map_err(|e| e.to_string())?
+                .map_err(|e| store_fault("[personal-agent] department holder read failed", e))?
             {
                 tracing::warn!(
                     "[personal-agent] {}: saved, not applied — {}",
@@ -884,7 +928,7 @@ async fn update_whole(
                 );
                 return personal_agent_for(pg, user.id)
                     .await
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| store_fault("[personal-agent] assistant read failed", e))?
                     .ok_or_else(|| "assistant vanished during update".to_string());
             }
             for (_, verdict) in apply_after_render(pg, &sb, std::slice::from_ref(&department)).await
@@ -904,7 +948,7 @@ async fn update_whole(
 
     personal_agent_for(pg, user.id)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| store_fault("[personal-agent] assistant read failed", e))?
         .ok_or_else(|| "assistant vanished during update".to_string())
 }
 

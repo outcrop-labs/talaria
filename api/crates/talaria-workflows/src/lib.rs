@@ -176,13 +176,14 @@ pub async fn update_workflow(
     Ok(true)
 }
 
-/// No 404 — a missed id deletes nothing and the route still answers ok.
-pub async fn delete_workflow(pg: &PgPool, id: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("delete from task_workflows where id = $1::uuid")
+/// Whether a workflow was there to delete: a missed id deletes nothing, and
+/// the route answers it 404.
+pub async fn delete_workflow(pg: &PgPool, id: &str) -> Result<bool, sqlx::Error> {
+    let done = sqlx::query("delete from task_workflows where id = $1::uuid")
         .bind(id)
         .execute(pg)
         .await?;
-    Ok(())
+    Ok(done.rows_affected() > 0)
 }
 
 // ── The match half ───────────────────────────────────────────────────────────

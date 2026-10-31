@@ -8,7 +8,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { submitOnEnter } from '@/components/ui/control'
-  import { delJson, errorMessage, getList, postJson, putJson } from '@/lib/fetch-json'
+  import { delJsonGone, errorMessage, getList, postJson, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import { relativeTime } from '@/lib/fleet'
@@ -71,9 +71,10 @@
 
   const qc = useQueryClient()
   const key = () => ['agent-secrets', agentId]
-  // GET is 200 `{ secrets }` or 403 — there is no 404 here, so EVERY non-2xx is
-  // a failure. It used to answer `[]`, which rendered "No secrets": an operator
-  // reading that would go add the token that is already there.
+  // GET is 200 `{ secrets }`, 403, or 404 for an agent that no longer exists:
+  // EVERY non-2xx is a failure. It used to answer `[]`, which rendered "No
+  // secrets": an operator reading that would go add the token that is
+  // already there.
   const query = createQuery(() => ({
     queryKey: key(),
     queryFn: (): Promise<SecretMeta[]> => getList<SecretMeta>(`/api/fleet/agents/${agentId}/secrets`, 'secrets'),
@@ -112,7 +113,11 @@
     const confirmLabel = used.length ? 'Remove secret and setting' : 'Remove'
     if (!(await confirm({ title: 'Remove secret', message, confirmLabel, danger: true }))) return
     try {
-      await delJson(`/api/fleet/agents/${agentId}/secrets`, { name: s.name, removeSetting: used.length > 0 })
+      // A 404 is an agent that no longer exists, and its secrets went with it.
+      await delJsonGone(`/api/fleet/agents/${agentId}/secrets`, { name: s.name, removeSetting: used.length > 0 })
+      // Off the list now, not only after the re-read: for an agent that is
+      // gone, that re-read fails, and a failed refetch keeps the last list.
+      qc.setQueryData<SecretMeta[]>(key(), (rows) => rows?.filter((r) => r.name !== s.name))
     } catch (e) {
       // Fire-and-forget from a row button; the err line belongs to the form.
       toastError('Remove failed', e)

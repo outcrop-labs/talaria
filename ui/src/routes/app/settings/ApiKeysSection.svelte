@@ -8,7 +8,7 @@
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { delJson, errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
+  import { delJsonGone, errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { fade, slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
@@ -100,7 +100,8 @@
   const revoke = async (id: string) => {
     if (!(await confirm({ title: 'Revoke key', message: 'Revoke this key? Anything using it stops working immediately.', confirmLabel: 'Revoke', danger: true }))) return
     try {
-      await delJson(`/api/keys/${id}`)
+      // A 404 is a key that is not this person's any more: nothing to revoke.
+      await delJsonGone(`/api/keys/${id}`)
     } catch (e) {
       // Row button; the err line belongs to the mint form below.
       toastError('Revoke failed', e)

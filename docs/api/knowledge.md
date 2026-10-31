@@ -383,13 +383,14 @@ Source: [`api/crates/talaria-routes-knowledge/src/knowledge/rag_collections_id.r
 
 > /api/rag/collections/{id}. One collection, admin. PUT → replace its access
 > bindings wholesale; an unknown (but well-formed) id 404s. DELETE → drop it
-> (the two auto collections are protected); a missing id is a no-op delete —
-> it still answers ok, it still audits.
+> (the two auto collections are protected); an unknown id is the same 404,
+> with nothing deleted and nothing audited. The collection is read by the
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | PUT | `admin` | [body](#put-apiragcollectionsid-body) | `{ok}` | 200, 400, 404 | audit |
-| DELETE | `admin` | — | `{ok}` | 200, 400 | audit |
+| DELETE | `admin` | — | `{ok}` | 200, 400, 404 | audit |
 
 ### PUT `/api/rag/collections/{id}` body
 

@@ -456,6 +456,13 @@ pub fn router(state: AppState) -> Router {
             "/api/chat/chips/approvals/{id}",
             post(talaria_routes_comms::comms::chips_approvals_id::post).fallback(|| async { method_not_allowed("POST") }),
         )
+        // A stop that names the page's own send rather than a thread: a new
+        // thread's first turn, before its id is known.
+        .route(
+            "/api/chat/turns/{id}/stop",
+            post(talaria_routes_comms::comms::chat_turns_id_stop::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
         .route(
             "/api/conversations",
             get(talaria_routes_comms::comms::conversations::get).fallback(|| async { method_not_allowed("GET") }),

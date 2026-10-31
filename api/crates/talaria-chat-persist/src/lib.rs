@@ -6,6 +6,9 @@
 // the agent makes, and `send_turn` hands the transport this conversation as
 // the flow those calls belong to (talaria-gateway usage.rs, "Attribution").
 
+mod turn_stop;
+pub use turn_stop::{HELD_FOR, SentTurn, TurnAwaited, await_sent_turn, turn_sent};
+
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -901,6 +904,9 @@ struct Opening {
 pub struct OpeningTurn {
     conversation_id: String,
     claim: Option<u64>,
+    /// The send's own name for this turn, when the page gave one: held as
+    /// long as the opening, so the turn reads as ended once it is let go.
+    turn: Option<SentTurn>,
 }
 
 impl OpeningTurn {
@@ -928,7 +934,32 @@ impl OpeningTurn {
         OpeningTurn {
             conversation_id,
             claim,
+            turn: None,
         }
+    }
+
+    /// Keep the send's name for its turn ([`turn_sent`]) for as long as
+    /// this opening is held.
+    pub fn keep_turn(&mut self, turn: SentTurn) {
+        self.turn = Some(turn);
+    }
+
+    /// Hold a person's stop on this claim's own turn, for its drain to send
+    /// the moment the turn names itself. False for an inert claim: another
+    /// turn holds the thread's opening, and a stop meant for this send is
+    /// not handed to it.
+    pub fn hold_stop_here(&self) -> bool {
+        let Some(claim) = self.claim else {
+            return false;
+        };
+        let held = OPENING.lock().ok().is_some_and(|mut open| {
+            open.get_mut(&self.conversation_id)
+                .filter(|o| o.claim == claim)
+                .map(|o| o.stop_held = true)
+                .is_some()
+        });
+        TURN_NAMED.notify_waiters();
+        held
     }
 
     /// Change this claim's entry; `f` answers whether a held stop is now
@@ -1054,13 +1085,15 @@ pub fn hold_stop(conversation_id: &str) -> HeldStop {
 }
 
 /// Send a held stop from the drain, on its own task: the drain keeps reading
-/// the stream the stop is about to end.
+/// the stream the stop is about to end. Nobody waits for it, so a completion
+/// Hermes has not bound yet is placed with the headers window's patience
+/// (`stop_completion_held`), not a waiting caller's control window.
 fn send_held_stop(agent_model: String, conversation_id: String, handle: TurnHandle) {
     tokio::spawn(async move {
         let done = match &handle {
             TurnHandle::Completion { message_id } => {
                 let message_id = message_id.clone();
-                talaria_gateway::fleet_chat::stop_completion(&agent_model, move || {
+                talaria_gateway::fleet_chat::stop_completion_held(&agent_model, move || {
                     open_completion(&message_id)
                 })
                 .await

@@ -29,9 +29,12 @@ export interface ChatFocus {
  * Start a durable streaming turn. The server owns history — we send only the
  * new user message (+ optional conversationId). `onMeta` fires with the
  * conversation/message ids (from response headers) before the stream begins.
+ * `turnId` is the caller's own name for this turn (a uuid it draws), which a
+ * Stop can carry before the server has heard of the send (`stopChat`,
+ * `stopTurn`).
  */
 export async function* streamChat(
-  params: { model: string; conversationId?: string; content: string; tier?: string; effort?: string; attachmentIds?: string[]; refs?: Array<{ type: 'kb-doc' | 'artifact'; id: string }>; kind?: ChatKind; templateId?: string | null; focus?: ChatFocus },
+  params: { model: string; conversationId?: string; content: string; tier?: string; effort?: string; attachmentIds?: string[]; refs?: Array<{ type: 'kb-doc' | 'artifact'; id: string }>; kind?: ChatKind; templateId?: string | null; focus?: ChatFocus; turnId?: string },
   onMeta?: (m: ChatMeta) => void,
   signal?: AbortSignal,
 ) {
@@ -86,13 +89,32 @@ export interface StopResult {
   held?: true
 }
 
+/** A stop outlives the page that sent it: pressed and then closed, the
+ *  request still goes out (`keepalive`), and the server holds what it cannot
+ *  place yet. */
+const STOP_INIT: RequestInit = { keepalive: true }
+
 /** Stop the turn a conversation is streaming. A reader's abort is LOCAL — it
  *  ends this client's stream and nothing else — so a Hermes run carried on
  *  generating (and spending) behind a frozen transcript. This is the half that
- *  reaches the run. Nothing streaming is a 409 and throws like any other
- *  non-2xx: a stop that arrives after the turn landed has nothing to do. */
-export async function stopChat(conversationId: string): Promise<StopResult> {
-  return postJson<StopResult>(`/api/conversations/${encodeURIComponent(conversationId)}/stop`)
+ *  reaches the run. `turnId` names this page's own send, so a stop that
+ *  reaches the server before that send has is held for it rather than lost.
+ *  Nothing streaming is a 409 and throws like any other non-2xx: a stop that
+ *  arrives after the turn landed has nothing to do. */
+export async function stopChat(conversationId: string, turnId?: string): Promise<StopResult> {
+  return postJson<StopResult>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/stop`,
+    turnId ? { turnId } : undefined,
+    STOP_INIT,
+  )
+}
+
+/** Stop this page's own send by the name it gave it (`streamChat`'s
+ *  `turnId`): the stop a new thread's first turn needs, since its thread id
+ *  arrives only with the response headers. The server waits for that send,
+ *  or holds the stop for it. */
+export async function stopTurn(turnId: string): Promise<StopResult> {
+  return postJson<StopResult>(`/api/chat/turns/${encodeURIComponent(turnId)}/stop`, undefined, STOP_INIT)
 }
 
 /** Where a mid-turn message landed. `steered` — the running turn took it;

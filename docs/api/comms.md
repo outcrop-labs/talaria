@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-32 routes.
+33 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -38,6 +38,7 @@
 | [`/api/chat`](#apichat) | POST | `session` |
 | [`/api/chat/chips/approvals/{id}`](#apichatchipsapprovalsid) | POST | `session` |
 | [`/api/chat/chips/resolve`](#apichatchipsresolve) | POST | `session` |
+| [`/api/chat/turns/{id}/stop`](#apichatturnsidstop) | POST | `session` |
 | [`/api/conversations`](#apiconversations) | GET | `session` |
 | [`/api/conversations/{id}`](#apiconversationsid) | GET | `session` |
 | [`/api/conversations/{id}`](#apiconversationsid) | PATCH | `session` |
@@ -370,6 +371,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/chat.rs`](../../api/crates/t
 | `templateId` | `uuid?` |  |
 | `queue` | `bool?` |  |
 | `focus` | `focus` | { kind: artifact|google, id, title? } or null — the file open in the teammate's pane; read on work turns only |
+| `turnId` | `uuid?` |  |
 
 ## `/api/chat/chips/approvals/{id}`
 
@@ -412,6 +414,22 @@ Source: [`api/crates/talaria-routes-comms/src/comms/chips.rs`](../../api/crates/
 Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
 through the `crate::body` member vocabulary — the field set lives in the route
 source.
+
+## `/api/chat/turns/{id}/stop`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/chat_turns_id_stop.rs`](../../api/crates/talaria-routes-comms/src/comms/chat_turns_id_stop.rs)
+
+> /api/chat/turns/{id}/stop.
+> POST → stop the turn the page's own send named `id` (`turnId` on
+> /api/chat), wherever it has got to. The page sends this the moment Stop is
+> pressed on a new thread's first turn, whose thread id rides back only with
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{ok, hermes, held}` | 200, 409 | — |
+
+**POST** — Stop the turn the caller's own send named (`turnId` on /api/chat), before or after the api has heard of it: the stop a page sends for a new thread, whose id it does not have yet. Waits up to 10 s for the send, then stops its thread's turn as /api/conversations/{id}/stop does (`hermes`). A send that has not come by then gets the stop `held`, for its turn to be stopped when it opens. Only the sender's own turn: anything else, or a turn that ended → 409.
 
 ## `/api/conversations`
 
@@ -668,9 +686,9 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_stop.rs`](.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | — | `{ok, hermes}` | 200, 403, 409, 502 | — |
+| POST | `session` | — | `{ok, hermes} or {ok, hermes, held}` | 200, 400, 403, 409, 502 | — |
 
-**POST** — Interrupt the reply streaming in this thread, on either arm: a session turn by its run id, a completions turn by its completion id. A turn this instance is still opening (sent, but not yet named by the agent) is waited for, up to 10 s. `hermes` says whether the agent's own run was interrupted, or whether hanging up was the whole stop (a completions turn a drain in another process reads). `held` says the agent had not opened the turn within the wait, and the stop is sent when it does. Nothing is streaming → 409.
+**POST** — Interrupt the reply streaming in this thread, on either arm: a session turn by its run id, a completions turn by its completion id. A turn this instance is still opening (sent, but not yet named by the agent) is waited for, up to 10 s. The optional body `{ turnId }` names the page's own send: a stop that comes before that send has been read waits for it too, and is held for it past the wait. `hermes` says whether the agent's own run was interrupted, or whether hanging up was the whole stop (a completions turn a drain in another process reads). `held` says the agent had not opened the turn within the wait, and the stop is sent when it does. Nothing is streaming → 409.
 
 ## `/api/conversations/{id}/teams`
 

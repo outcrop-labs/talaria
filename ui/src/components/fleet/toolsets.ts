@@ -154,16 +154,73 @@ function pyText(v: unknown): string {
  * - `cdp` / `hosted`: the built-in tools on a CDP endpoint
  *   (`browser.cdp_url`) or a hosted provider (`browser.cloud_provider`),
  *   which keep that check.
+ * - `checked`: the built-in tools on this machine's Chromium while the
+ *   agent's terminal runs elsewhere (`terminal.backend` other than local,
+ *   which Hermes bridges into `TERMINAL_ENV`), so Hermes keeps the check
+ *   for it too. `terminal` names that setting.
+ *
+ * A browser that would keep the check is `local` all the same, with
+ * `unchecked` saying why, when Hermes passes it a private address anyway:
+ * the def turns the check off (`browser.allow_private_urls`, or
+ * `security.allow_private_urls`, read as Hermes' `is_truthy_value`), or a
+ * hosted provider sends private addresses to a local Chromium
+ * (`_hybrid_routes_locally`) while `browser.auto_local_for_private_urls`
+ * is on (Python's `bool()`, on when absent).
  *
  * It mirrors talaria-fleet-render's `hermes_browser`: the config, and the
  * names of the agent's own secrets, which reach Hermes as its env. A
  * `BROWSER_CDP_URL` secret is the same CDP override as `browser.cdp_url`
  * (Hermes reads it first). With no names (a viewer who cannot read the
- * agent's secrets) it reads the config alone; the renderer also reads a
- * `CAMOFOX_URL` secret, which this does not.
+ * agent's secrets) it reads the config alone.
  * `via` is the setting that decided it, as the grid's line names it.
  */
-export type AuthoredBrowser = { kind: 'exec' | 'local' | 'cdp' | 'hosted'; via: string }
+export type AuthoredBrowser = {
+  kind: 'exec' | 'local' | 'cdp' | 'hosted' | 'checked'
+  via: string
+  terminal?: string
+  unchecked?: string
+}
+
+/** Hermes' `is_truthy_value(v, default=False)`: a string is truthy when it
+ *  strips and lower-cases to `1`, `true`, `yes` or `on`; anything else is
+ *  Python's `bool()`. Mirrors talaria-fleet-render's `py_truthy`. */
+function pyTruthy(v: unknown): boolean {
+  if (typeof v === 'string') return ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase())
+  return pyText(v) !== ''
+}
+
+/** The setting that turns Hermes v0.22.4's private-address check off for
+ *  every browser (`browser.allow_private_urls`, then
+ *  `security.allow_private_urls`), or null. Mirrors talaria-fleet-render's
+ *  `hermes_private_urls_allowed`. */
+function privateUrlsAllowed(raw: unknown): string | null {
+  for (const section of ['browser', 'security'] as const) {
+    const block = (raw as Record<string, unknown> | null | undefined)?.[section]
+    if (block && typeof block === 'object' && !Array.isArray(block) && 'allow_private_urls' in block) {
+      if (pyTruthy((block as Record<string, unknown>).allow_private_urls)) return `${section}.allow_private_urls`
+    }
+  }
+  return null
+}
+
+/** The terminal backend Hermes v0.22.4 reads as elsewhere (`TERMINAL_ENV`
+ *  neither `local` nor empty), as the setting that says so, or null for a
+ *  local one. The gateway writes `terminal.backend` into that variable as
+ *  `str()` of the value whenever the key is present, so a null reads
+ *  `None`, a bool `True`/`False`, and only a string can be local; no
+ *  `terminal` map, or no `backend` in it, is the default `local`. Mirrors
+ *  talaria-fleet-render's `hermes_terminal_local`. */
+function terminalElsewhere(raw: unknown): string | null {
+  const terminal = (raw as { terminal?: unknown } | null | undefined)?.terminal
+  if (!terminal || typeof terminal !== 'object' || Array.isArray(terminal) || !('backend' in terminal)) return null
+  const backend = (terminal as Record<string, unknown>).backend
+  if (typeof backend === 'string') {
+    const name = backend.trim().toLowerCase()
+    return name === 'local' || name === '' ? null : `terminal.backend: ${name}`
+  }
+  const spelled = backend === null ? 'None' : backend === true ? 'True' : backend === false ? 'False' : typeof backend === 'number' ? String(backend) : JSON.stringify(backend)
+  return `terminal.backend: ${spelled}`
+}
 
 export function authoredBrowser(config: unknown, secretNames: readonly string[] = []): AuthoredBrowser | null {
   const raw = (config as { raw?: unknown } | null | undefined)?.raw
@@ -186,12 +243,31 @@ export function authoredBrowser(config: unknown, secretNames: readonly string[] 
   if (!camofox && (backend === '' || backend === 'browser-use')) {
     return backend ? { kind: 'exec', via: 'browser.backend: browser-use' } : null
   }
-  if (cdp) return { kind: 'cdp', via: cdpSecret ? 'a BROWSER_CDP_URL secret' : 'browser.cdp_url' }
+  // A browser that keeps the check, unless the def turns it off.
+  const allowed = privateUrlsAllowed(raw)
+  const kept = (browser: AuthoredBrowser): AuthoredBrowser =>
+    allowed ? { kind: 'local', via: browser.via, unchecked: allowed } : browser
+  if (cdp) return kept({ kind: 'cdp', via: cdpSecret ? 'a BROWSER_CDP_URL secret' : 'browser.cdp_url' })
   if (camofox) return { kind: 'local', via: 'browser.cloud_provider: camofox' }
   const hosted = pyText(provider).trim().toLowerCase()
   if (hosted && hosted !== 'local' && hosted !== 'camofox') {
-    return { kind: 'hosted', via: `browser.cloud_provider: ${hosted}` }
+    const via = `browser.cloud_provider: ${hosted}`
+    // `_hybrid_routes_locally`: private addresses go to a local Chromium
+    // that skips the check, while this is on (`bool()`, on when absent).
+    const sidecar = !('auto_local_for_private_urls' in cfg) || pyText(cfg.auto_local_for_private_urls) !== ''
+    if (sidecar && !allowed) {
+      return {
+        kind: 'local',
+        via,
+        unchecked: 'Hermes sends its private addresses to a local Chromium while browser.auto_local_for_private_urls is on, as it is by default',
+      }
+    }
+    return kept({ kind: 'hosted', via })
   }
+  // `_is_local_backend` asks last where the terminal runs: a shell in a
+  // container (or over ssh) keeps the check for this machine's browser.
+  const terminal = terminalElsewhere(raw)
+  if (terminal) return kept({ kind: 'checked', via: `browser.backend: ${backend}`, terminal })
   return { kind: 'local', via: `browser.backend: ${backend}` }
 }
 
@@ -214,8 +290,11 @@ export function authoredBrowser(config: unknown, secretNames: readonly string[] 
  * [`authoredBrowser`]) stands with the terminal open. With it closed, a
  * local one has the toolset closed by the renderer
  * (`fleet_browser_local_close`), so an engine an earlier start left on the
- * volume runs nothing; a CDP endpoint or a hosted provider keeps Hermes'
- * check and is left alone. The engine is installed from npm onto the
+ * volume runs nothing; a CDP endpoint, a hosted provider, or a terminal
+ * that runs elsewhere keeps Hermes' check and is left alone, unless Hermes
+ * lets it reach private addresses anyway (`unchecked`), when it is a local
+ * one too. The engine is
+ * installed from npm onto the
  * agent's volume once per Hermes pin, which is why the line says a start
  * needs the registry.
  */
@@ -231,8 +310,14 @@ export function browserNote(rows: readonly ToolsetRow[], authored: AuthoredBrows
     if (authored?.kind === 'hosted') {
       return `Browser: the built-in browser tools on the hosted browser this agent’s config sets (${authored.via}), which keeps Hermes’ private-address check. They need the browser engine, which Talaria installs only while the terminal is open.`
     }
+    if (authored?.kind === 'checked') {
+      return `Browser: the built-in browser tools this agent’s config sets (${authored.via}), which keep Hermes’ private-address check because its terminal runs elsewhere (${authored.terminal}). They need the browser engine, which Talaria installs only while the terminal is open.`
+    }
     const why =
       'On this image, Hermes’ own browser skips its private-address check, on the grounds that the terminal already reaches this machine, other agents and your LAN. That holds only with a terminal, so Talaria gives an agent the browser only with the terminal open.'
+    if (authored?.kind === 'local' && authored.unchecked) {
+      return `Browser: none while the terminal is closed. ${why} This agent’s config sets a browser (${authored.via}) that Hermes lets reach private addresses (${authored.unchecked}), so Talaria closes the browser toolset for it until the terminal opens.`
+    }
     return authored?.kind === 'local'
       ? `Browser: none while the terminal is closed. ${why} This agent’s config picks a browser Hermes runs locally (${authored.via}), so Talaria closes the browser toolset for it until the terminal opens.`
       : `Browser: none while the terminal is closed. ${why}`

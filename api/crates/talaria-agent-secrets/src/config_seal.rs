@@ -479,7 +479,7 @@ pub async fn copy_config_secrets(
     .bind(&names)
     .execute(pg)
     .await
-    .map_err(|e| format!("agent secrets copy failed: {e}"))?;
+    .map_err(|e| talaria_error::store_fault("[agent-secrets] secrets copy failed", e))?;
     Ok(())
 }
 

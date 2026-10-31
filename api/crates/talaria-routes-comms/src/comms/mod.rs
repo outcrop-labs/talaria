@@ -17,6 +17,7 @@ pub mod channels_id_read;
 pub mod channels_id_teams;
 pub mod channels_id_typing;
 pub mod chat;
+pub mod chat_turns_id_stop;
 pub mod chips;
 pub mod chips_approvals_id;
 pub mod chips_expose;

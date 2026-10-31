@@ -191,7 +191,7 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         .bind(&input.slug)
         .fetch_optional(pg)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| talaria_error::store_fault("[fleet-create] slug check failed", e))?;
     if exists.is_some() {
         return Err(format!("agent \"{}\" already exists", input.slug));
     }
@@ -200,7 +200,9 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
     // fleet key below is a line in a file); the lock is the race's answer.
     if let Some(taken) = department_holder(pg, &input.department, &input.slug)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| {
+            talaria_error::store_fault("[fleet-create] department holder read failed", e)
+        })?
     {
         return Err(taken.to_string());
     }
@@ -211,13 +213,15 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         Some(template_id) => {
             let template_version = list_versions(pg, template_id)
                 .await
-                .map_err(|e| e.to_string())?
+                .map_err(|e| {
+                    talaria_error::store_fault("[fleet-create] template versions read failed", e)
+                })?
                 .into_iter()
                 .next()
                 .ok_or("template agent has no versions")?;
             let from_slug = agent_def_by_id(pg, template_id)
                 .await
-                .map_err(|e| e.to_string())?
+                .map_err(|e| talaria_error::store_fault("[fleet-create] template read failed", e))?
                 .map(|d| d.slug)
                 .ok_or("template agent not found")?;
             (
@@ -228,7 +232,9 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         None => {
             // Platform defaults: main model from the first local endpoint
             // (else any).
-            let eps = list_endpoints(pg).await.map_err(|e| e.to_string())?;
+            let eps = list_endpoints(pg).await.map_err(|e| {
+                talaria_error::store_fault("[fleet-create] endpoints read failed", e)
+            })?;
             let ep = eps
                 .iter()
                 .find(|e| e.class == "local" && !e.models.is_empty())
@@ -263,7 +269,11 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         }
     };
 
-    let key_created = ensure_agent_key(&input.slug).await?;
+    // The fleet .env's own failure names its path: the operator's, in the
+    // log, and the caller's house 500 (as the rename's is).
+    let key_created = ensure_agent_key(&input.slug)
+        .await
+        .map_err(|e| talaria_error::store_fault("[fleet-create] agent key write failed", e))?;
 
     let mut def = match upsert_agent_def(
         pg,
@@ -296,7 +306,12 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
             }
             return Err(taken.to_string());
         }
-        Err(e) => return Err(e.to_string()),
+        Err(e) => {
+            return Err(talaria_error::store_fault(
+                "[fleet-create] def write failed",
+                e,
+            ));
+        }
     };
     // MANAGED AND MANAGED-BY, IN ONE TRANSACTION, STRAIGHT AFTER THE ROW.
     // The def now exists under a slug that any later `create` will see as
@@ -308,12 +323,15 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
     // transaction. (The version write that follows is idempotent on resume:
     // `add_version_if_changed` adds nothing a prior pass already wrote.)
     let manager = input.manager_user_id.as_deref().filter(|m| !m.is_empty());
-    let mut tx = pg.begin().await.map_err(|e| e.to_string())?;
+    let mut tx = pg
+        .begin()
+        .await
+        .map_err(|e| talaria_error::store_fault("[fleet-create] begin failed", e))?;
     sqlx::query("update agent_defs set managed = true, updated_at = now() where id = $1::uuid")
         .bind(&def.id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| talaria_error::store_fault("[fleet-create] managed stamp failed", e))?;
     if let Some(manager) = manager {
         sqlx::query(
             "insert into agent_managers (agent_id, user_id, added_by) \
@@ -323,9 +341,11 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         .bind(manager)
         .execute(&mut *tx)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| talaria_error::store_fault("[fleet-create] manager stamp failed", e))?;
     }
-    tx.commit().await.map_err(|e| e.to_string())?;
+    tx.commit()
+        .await
+        .map_err(|e| talaria_error::store_fault("[fleet-create] commit failed", e))?;
     def.managed = true;
 
     // A template's config can name sealed literals (`${CONFIG_…}`, see
@@ -373,7 +393,7 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
         },
     )
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| talaria_error::store_fault("[fleet-create] first version write failed", e))?;
 
     // The agent belongs to somebody from the transaction above — written in
     // this function rather than at the call sites so every create path (the
@@ -399,7 +419,7 @@ async fn takes_template_secrets(
         .bind(user)
         .fetch_optional(pg)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| talaria_error::store_fault("[fleet-create] hirer role read failed", e))?;
     talaria_agent_managers::manages_agent(
         pg,
         user,
@@ -407,7 +427,7 @@ async fn takes_template_secrets(
         template_id,
     )
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| talaria_error::store_fault("[fleet-create] template managers read failed", e))
 }
 
 /// The "already exists" resume: a re-entered `create` stage finds the def the

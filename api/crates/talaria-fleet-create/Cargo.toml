@@ -16,6 +16,7 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-agent-defs = { workspace = true }
 talaria-agent-secrets = { workspace = true }
+talaria-error = { workspace = true }
 talaria-fleet-docker = { workspace = true }
 talaria-fleet-layout = { workspace = true }
 talaria-gateway = { workspace = true }
