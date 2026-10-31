@@ -118,18 +118,27 @@ a choice made in one instance reaches the others.
 
 ## Security posture
 
-- **Instance webviews get the switcher, window chrome, a notification post and the suspend
-  report — nothing else.** The shell's
+- **Instance webviews get the switcher, window chrome, the notification commands and the
+  suspend report — nothing else.** The shell's
   commands are gated behind capabilities (`AppManifest::commands` in `desktop/src-tauri/build.rs`);
   the launcher holds all of them (`capabilities/launcher.json`), and each REGISTERED instance
   origin gets a runtime grant (`grant_switcher` in `src-tauri/src/lib.rs`, via Tauri's
-  dynamic-ACL) scoped to `list_instances`, `activate_instance`, `show_welcome`,
-  `get_desktop_settings`, `set_titlebar_mode`, `set_suspend_after`, `desktop_window`,
-  `check_for_update`, `install_update`, `desktop_notify` and `desktop_suspend_report` on that
-  one webview. A suspend report counts only as the answer to the question the shell just
-  asked that webview (a nonce). No fs, no generic window API —
-  remote content can switch instances, move/close *this* window, and post a notification
-  (title, body, and a same-origin path). An origin the user never registered gets no IPC at all.
+  dynamic-ACL) of `INSTANCE_PERMISSIONS` on that one webview: `list_instances`,
+  `activate_instance`, `show_welcome`, `get_desktop_settings`, `set_titlebar_mode`,
+  `set_suspend_after`, `desktop_window`, `check_for_update`, `install_update`,
+  `desktop_notify`, `desktop_notification_status`, `desktop_notification_request`,
+  `desktop_notification_test`, `desktop_set_badge`, `desktop_quit`,
+  `set_close_to_background` and `desktop_suspend_report`. A suspend report counts only as
+  the answer to the question the shell just asked that webview (a nonce). No fs, no generic
+  window API, and **no `core:*` permission** (a unit test holds the line): `core:event`
+  would let a page listen, and an event emitted to `EventTarget::Any` reaches every
+  listener whatever its webview, so one instance could hear another's. A notification
+  click reaches its page by `eval` of a validated script instead (see "Notifications").
+  Remote content can switch instances, move/close *this* window, quit, and post a
+  notification — a title, a body, a tag, a same-origin path and a kind, clamped, at most a
+  burst of 20 and then one every 2 s per webview (`rate limited` past it); a test at most
+  every 5 s and a permission request every 10 s. Its badge is its own share of the count.
+  An origin the user never registered gets no IPC at all.
 - Login happens inside each instance webview via the instance's own flows (password or
   OAuth). **Known limitation:** Google blocks OAuth inside embedded webviews; password login
   works, and for dev instances a session can be minted into Redis directly (see the
@@ -266,12 +275,23 @@ and scroll after a relaunch (only the URL is kept on disk).
   store, sent only to its origin, redirects not followed), made live by `/api/me/events`
   with the page's 30 s poll floor. The first read is taken while the page is still open: if
   it fails for anything but a 401/403 (a proxy or certificate only the webview knows, the
-  instance down), the page is kept. After that every new row is posted, oldest first, with
-  the same clamps, tag and click as `desktop_notify`; a 401/403 ends the watcher. It runs
-  only when the page said it would post (ui's `browserNotifyEnabled`). The restored page's
-  own tracker takes its first read as a baseline, so nothing is posted twice. A row that
-  lands in the second or so between the restore and the page's first read is in the inbox
-  but gets no banner, as with any reload.
+  instance down), the page is kept. It runs only when the page said it would post (ui's
+  `browserNotifyEnabled`), and keeps the page's own arrival rule (interface I-3): a row is
+  posted when it is unread, newer than the high-water mark less two minutes, and unseen —
+  or seen at an earlier `createdAt`, which is a re-alert under the same tag. **It starts
+  from the page's record**, `localStorage['talaria.notify.arrivals.v1']`, which the suspend
+  report hands over (`arrivals`): whatever the page missed — a dead stream, a sleep — is
+  posted on the watcher's first read instead of being swallowed into a new baseline (D2).
+  A page with no record (an older UI) gets the old baseline. More than three at once are
+  one "N new in <instance>" banner. A failed stream — a 502 while the instance restarts, a
+  deploy, Cloudflare dropping an idle connection — is reopened with backoff (1 s doubling to
+  30 s, reset after a minute up), every reopen reads the rows again, and the 30 s poll floor
+  keeps reading through the outage; a 401/403 ends the watcher. Each read sets the
+  instance's share of the badge from the server's `unread`. A click on a watcher's banner
+  marks the row read (`PUT /api/notifications` with the instance's cookies) and restores
+  the instance at its path. **The restore hands back** what the watcher posted: it is
+  merged into the page's record by a document-start script before the page's own scripts
+  read it, so the restored page never posts it again.
 - *The switcher, the titlebar mode, the launcher's state:* all read again when a page loads;
   a hidden page did nothing else for the shell.
 
@@ -377,9 +397,13 @@ account of where an installer came from is the workflow run that built it.
 
 Two packaging details worth knowing before editing those configs. The deb's `Depends` comes
 from Tauri's own defaults for the crates the shell links (`libwebkit2gtk-4.1-0`,
-`libgtk-3-0`); a list in `tauri.linux.conf.json` would only duplicate them, so the workflow
-asserts the built deb declares them instead. rpm has no defaults at all, which is why its
-dependencies are written out and the deb's are not.
+`libgtk-3-0`, and with the tray `libayatana-appindicator3-1`); a list in
+`tauri.linux.conf.json` would only duplicate them, so the workflow asserts the built deb
+declares them instead. rpm has no defaults of its own for the webview, which is why its
+dependencies are written out and the deb's are not (the bundler adds the appindicator
+library to both). The tray also means the Linux build job needs
+`libayatana-appindicator3-dev`: the bundler finds the library with pkg-config, and aborts
+the build when it cannot.
 
 And the version is not free-form across the bundlers: Windows product versioning has a
 numeric fourth field, so an `.msi` can only be built from a version with no pre-release
@@ -456,22 +480,123 @@ means installed copies can no longer verify a new payload. OS code signing
 
 ## Notifications
 
-The instance UI's Desktop notifications toggle posts through the shell (`desktop_notify`),
-not the webview's Notification API. WKWebView and WebKitGTK report that API denied, and
-there is no site-settings page inside the shell, so a page cannot grant it. The shell posts
-through the OS notification service — the same path other desktop apps use. A click focuses
-this window, brings that instance forward, and opens the notification's path when it is a
-same-origin path. The app has to be running; a quit process is not listening. Tray and
-delivery after quit stay deferred. A suspended instance's notifications are posted by the
-shell itself ("Suspending inactive instances" above); an instance not opened this session
-posts none, as before. The post is off the main thread (see "The launcher's
-cost"), and the click never calls `show()` on the already-visible window (see the geometry
-section).
+The shell posts OS notifications itself; the webview's Notification API has no permission
+handler inside the shell (it reads `default` and resolves `denied`) and no site-settings
+page. ui's toasts call `desktop_notify` with the row's title, body, tag (the row id), path,
+kind and re-alert flag (interface I-2); a suspended instance's watcher posts the same way
+(above). The shared half is `src-tauri/src/notify/mod.rs`: the clamps, the kind → urgency
+and category rule (Needs-you kinds — `approval_pending`, `judge_escalation`,
+`agent-problem`, `workchain_turn` — are critical; status kinds are low; DMs, mentions and
+agent replies are `im.received`), the per-(instance, tag) banner map, the badge shares,
+the rate limits, the status record and the click route. One backend per OS:
+
+- **Linux** (`notify/linux.rs`) speaks `org.freedesktop.Notifications` over ONE zbus
+  session connection for the whole process, with one subscription each to
+  `ActionInvoked`, `NotificationClosed` and `ActivationToken`, dispatched by id. No thread
+  or connection is held per banner (notify-rust held one of each until the server retired
+  it: 30 open banners cost 30 bus names and 63 threads; now 0 and 0). A post carries
+  app name `Talaria`, the icon and `desktop-entry` hint of the desktop file this install
+  actually has — detected, never renamed: `$FLATPAK_ID` or `$APPIMAGE` →
+  `app.talaria.desktop`, else the first `applications/app.talaria.desktop.desktop` then
+  `applications/Talaria.desktop` across `$XDG_DATA_HOME` and `$XDG_DATA_DIRS` (deb/rpm
+  ship `Talaria.desktop`, flatpak/AppImage/pacman `app.talaria.desktop`, and existing pins
+  keep working) — the instance's label in front of the body, escaped when the server
+  advertises `body-markup`, the urgency and category, and the server's own id from the last
+  post of the same (instance, tag) as `replaces_id` (never an invented one). A click comes
+  with the server's xdg-activation token, which GTK hands to the compositor, so the window
+  takes focus from another app on Wayland (D7) instead of only changing page. The same
+  connection emits `com.canonical.Unity.LauncherEntry` for the badge (Plasma, Ubuntu Dock,
+  Dash-to-Dock; stock GNOME shows none) with the detected id — Tauri's own
+  `set_badge_count` assumes `Talaria.desktop` — and owns `app.talaria.desktop.Shell`: a
+  second launch calls its `Activate(token)` with `$XDG_ACTIVATION_TOKEN` and exits 0 before
+  it builds a window.
+- **macOS** (`notify/macos.rs`) posts through UNUserNotificationCenter in a bundled run,
+  with a delegate of our own: `willPresent` answers banner + list + sound (with the window
+  closed to the menu bar Talaria is often the active app, and macOS hides banners for it
+  otherwise), and every click comes back by request identifier `<label>/<tag>`, whichever
+  banner it is. The subtitle names the instance and the thread identifier groups its
+  banners; a re-post of the same pair replaces and re-shows. Permission is asked only from a
+  click — the launcher's "Allow notifications" card, or Settings → Desktop — never at
+  launch; denied opens System Settings → Notifications. A post while not allowed is an
+  error that names the state and the fix, and an `add` macOS refuses is an error too:
+  nothing reads as success that is not one. The bundle is ad-hoc signed
+  (`tauri.macos.conf.json` `signingIdentity: "-"`) as `app.talaria.desktop`, which is
+  what macOS ties the permission to; desktop-package.yml asserts the signature, the
+  identifier and the UserNotifications link, and runs the self-test. UN cannot run outside
+  a real `.app`, so an unbundled dev run falls back to the legacy center, attributed to
+  Terminal, and says so (`ns-legacy (unbundled dev run)`). mac-usernotifications
+  (notify-rust's `preview-macos-un`) was read for this and not used: it routes a click only
+  to a per-banner waiter registered at send time.
+- **Windows** (`notify/windows.rs`) is attribution only, for now: toasts carry AUMID
+  `app.talaria.desktop` — the Start-menu shortcut's when it carries that id (the NSIS and
+  MSI shortcuts do), else a `HKCU\Software\Classes\AppUserModelId` entry the shell writes,
+  else PowerShell's as before — and the process takes the same id.
+
+**The click** reaches the page as a cancelable `talaria:notification-open` event with
+`{href, id}` (interface I-1), dispatched by `eval` into the webview that posted the banner
+(the IPC caller's label, never a value from the page). A page that handles it routes in
+place, with no reload; a page with no listener — a Talaria older than it — gets
+`location.assign`, as before. Only a same-origin path is ever opened.
+
+**What the person sees and controls.** Settings → Desktop → Notifications reads the
+status from the OS (`desktop_notification_status`): "On — shown by GNOME Shell 50 (spec
+1.2)", "Not allowed yet", "Blocked in System Settings", or "Notification service
+unavailable: …" with the D-Bus error; the last error; Allow (macOS) or Open System Settings;
+**Send test notification**, which posts through the real path and reports what happened;
+and **Keep running in the background**. The launcher shows the same ask on macOS, a notice
+when Linux has no notification service, the no-tray notice, and Quit.
+
+**Closing the window** (`src-tauri/src/background.rs`, `tray.rs`) keeps Talaria running so
+notifications arrive, with `closeToBackground` on (the default):
+
+- macOS: the window hides; the dock and a menu-bar item (Open Talaria, Quit) stay; the
+  dock icon reopens it.
+- Linux with a tray: the window hides; the tray icon has Open Talaria and Quit Talaria, and
+  its tooltip the unread sum. A tray needs the appindicator library — probed with `dlopen`
+  BEFORE any tray call, because libappindicator-sys panics without it — AND an
+  `org.kde.StatusNotifierWatcher` on the bus, which the shell follows live (turning on
+  GNOME's AppIndicator extension takes effect at once).
+- Linux without one (stock GNOME): the window **minimizes** instead — it stays in the dash
+  and Alt+Tab, and the dash's Quit works — and a one-time notice says how to quit. A hidden
+  window with no icon anywhere would be a process nobody can see or quit.
+- Windows: Close quits, as before (no single-instance guard yet, so a hidden window would
+  let a Start-menu relaunch open a second process on the same WebView2 profile).
+
+Quit is always one step away: Ctrl+Q (Cmd+Q on macOS) in every page — injected by the
+shell, so it works on any instance version — the switcher's Quit Talaria, the launcher's
+Quit, the tray's Quit. With the setting off, Close quits everywhere.
+
+**The badge** is the sum of every instance's unread count: each page reports its own
+(`desktop_set_badge`, from the bell's query, debounced), a suspended instance's watcher
+reports its share from each read, and removing an instance drops its share. macOS: the dock
+badge, cleared at 0. Linux: the LauncherEntry above. Windows: none yet.
+
+**Packages.** With the tray, Tauri's bundler makes the deb depend on
+`libayatana-appindicator3-1`, the rpm require its library, and the AppImage carry it; the
+pacman package lists it as optional. The flatpak may talk to
+`org.kde.StatusNotifierWatcher` and `com.canonical.Unity`, but the GNOME runtime carries
+no appindicator library, so in the flatpak Close minimizes.
+
+**Verified how.** Linux on the headless rig (private mutter, private session bus, a
+recording notification server, real input through mutter's RemoteDesktop, real
+xdg-activation tokens): every check in the wave-1 acceptance list, recorded with the PR.
+macOS through CI: `desktop-macos` in ci.yml compiles and lints the UN backend on every
+desktop pull request, and desktop-package.yml checks the signed bundle and runs
+`--notify-selftest` through LaunchServices (`backend un`, the bundle id, the
+authorization, and a post that agrees with it). Windows through desktop-package.yml's
+installed-exe self-test (attribution and AUMID). `--notify-selftest[=<path>]` posts one
+real banner where the OS allows it: it is for CI and test sessions, not a person's own
+desktop.
 
 ## Deferred on purpose
 
-Rename/reorder instances, health badges, tray, deep links, OAuth via
-external browser, code signing and notarization.
+Rename/reorder instances, health badges, deep links, OAuth via external browser, Developer
+ID signing and notarization (the macOS app is ad-hoc signed; Authenticode on Windows), and
+launch at login. For notifications: instances not opened this session still post nothing
+(D8 — a stored cookie copy would be plaintext or an ad-hoc-signed keychain item that
+re-prompts on every update; the next round loads signed-in instances hidden at launch
+instead); Windows' tray, close-to-background, single instance, body click and late clicks;
+the Flatpak portal Notification API; and the watcher's `?since=` cursor.
 
 macOS and Windows build and ship, but the session-isolation invariant above does not hold
 there yet: `data_directory` is a no-op on those platforms (macOS wants
