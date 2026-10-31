@@ -361,7 +361,17 @@ const SHAPES: Array<{ name: string; sources: DitherSource[]; opts: DitherEngineO
   { name: 'stream (masked)', opts: { alphaFloor: 0.06, maxAlpha: 0.4, shimmer: 0.15 }, sources: [{ id: 'v', kind: 'uniform', strength: 0.22 }, { ...drift, strength: 0.08 }], mask: [{ x: 40.4, y: 10.2, w: 120.6, h: 21.5 }, { x: 0, y: 33.7, w: 61.3, h: 21.5 }] },
   // Pitch 3 / dot 2: a gap of exactly one device pixel at DPR 1, the disjoint path's edge.
   { name: 'pitch 3 dot 2', opts: { pitch: 3, dot: 2, alphaFloor: 0.11, maxAlpha: 0.9 }, sources: [{ id: 'l', kind: 'edge', side: 'left', depth: 26, strength: 0.4 }, { ...drift, wavelength: 160, strength: 0.5 }] },
-  // Dots that touch (cover mode): the full-rebuild path.
+  // A snapped dot wider than a CSS px at pitch 2: disjoint at every DPR once snapped.
+  { name: 'pitch 2 dot 1.4 (snapped)', opts: { dot: 1.4, alphaFloor: 0.2, maxAlpha: 0.9 }, sources: [{ id: 'a', kind: 'wave', axis: 'x', wavelength: 150, speed: 26, strength: 0.5 }, { id: 'v', kind: 'uniform', strength: 0.1 }] },
+  // The antialiased path (`snap: false`): a fractional dot, a masked tail.
+  { name: 'card wash (antialiased)', opts: { pitch: 4, dot: 1.4, alphaFloor: 0.04, maxAlpha: 0.26, snap: false }, sources: [{ id: 'l', kind: 'edge', side: 'top', depth: 34, strength: 0.16 }, { ...drift, strength: 0.3 }] },
+  { name: 'stream (masked, antialiased)', opts: { alphaFloor: 0.06, maxAlpha: 0.4, shimmer: 0.15, snap: false }, sources: [{ id: 'v', kind: 'uniform', strength: 0.22 }, { ...drift, strength: 0.08 }], mask: [{ x: 40.4, y: 10.2, w: 120.6, h: 21.5 }, { x: 0, y: 33.7, w: 61.3, h: 21.5 }] },
+  // The drafting ghost as shipped: antialiased 1.4 px dots at pitch 2, masked. They share pixels below
+  // DPR 1.67, so those frames are full rebuilds; above it the incremental path runs.
+  { name: 'ghost (masked, antialiased, pitch 2 dot 1.4)', opts: { dot: 1.4, alphaFloor: 0.3188, maxAlpha: 0.981, shimmer: 0.08, snap: false }, sources: [{ id: 'a', kind: 'wave', axis: 'y', wavelength: 138, speed: 28, strength: 0.45 }, { ...drift, wavelength: 74, speed: -14, strength: 0.25 }, { id: 'v', kind: 'uniform', strength: 0.3 }], mask: [{ x: 14.3, y: 14.6, w: 14, h: 14 }, { x: 38.2, y: 16.4, w: 150, h: 10 }, { x: 14.3, y: 40.6, w: 260, h: 10 }] },
+  // Antialiased dots that touch (cover mode): the full-rebuild path.
+  { name: 'cover (antialiased)', opts: { cover: true, snap: false }, sources: [{ id: 'r', kind: 'ramp', axis: 'x', from: 0, to: 180, fromLevel: 0.1, toLevel: 0.6, strength: 0.6 }, { ...drift, speed: 18 }] },
+  // Dots that touch (cover mode), snapped: they abut on the device grid.
   { name: 'cover', opts: { cover: true }, sources: [{ id: 'r', kind: 'ramp', axis: 'x', from: 0, to: 180, fromLevel: 0.1, toLevel: 0.6, strength: 0.6 }, { ...drift, speed: 18 }] },
 ]
 
@@ -369,7 +379,7 @@ for (const clearMode of ['round', 'coverage'] as const) {
   test(`a live field paints what a rebuild of the same frame paints — ${clearMode === 'round' ? 'Chromium' : 'WebKit'}'s clear`, () => {
     const misses: string[] = []
     for (const shape of SHAPES) {
-      for (const dpr of [1, 1.5, 2]) {
+      for (const dpr of [1, 1.25, 1.5, 1.75, 2]) {
         for (const pos of [0, 0.25, 0.5]) {
           frames = []
           const r = buildUp(shape.sources, shape.opts, { left: 30 + pos, top: 20 + pos, dpr }, clearMode, 150, shape.mask)
@@ -382,8 +392,8 @@ for (const clearMode of ['round', 'coverage'] as const) {
   })
 }
 
-test('a page zoomed out (dots closer than a device pixel) rebuilds instead of drifting', () => {
-  const shape = SHAPES[3]!
+test('a page zoomed out keeps a backing pixel per CSS px, and paints what a rebuild paints', () => {
+  const shape = SHAPES.find((x) => x.name === 'generating')!
   for (const dpr of [0.67, 0.8, 0.9]) {
     frames = []
     const r = buildUp(shape.sources, shape.opts, { left: 30.25, top: 20.25, dpr }, 'round', 120)
@@ -471,36 +481,51 @@ for (const firstAtMount of [true, false]) {
   })
 }
 
-test('a mask set during a fade-in skips the cells it hides from then on, and paints what a rebuild paints', () => {
+test('a mask changed while nothing is drawn is honoured when the field comes back, as a rebuild paints it', () => {
+  // The stale case: the skip is computed for mask A; every source fades out; then
+  // the sources come back and the mask grows to B in the same moment, and the first
+  // frame lands at that moment — every source still at strength 0, so that fresh
+  // frame draws nothing and returns early, and the frames that fade the field in are
+  // not fresh. A skip still keyed to A drops every dot B adds.
   pinClock(() => {
     frames = []
-    const mask = [{ x: 10.3, y: 8.6, w: 50.2, h: 12.5 }]
+    const maskA = [{ x: 10.3, y: 8.6, w: 30.2, h: 12.5 }]
+    const maskB = [{ x: 10.3, y: 8.6, w: 120.4, h: 32.5 }]
     const sources: DitherSource[] = [{ id: 'v', kind: 'uniform', strength: 0.3 }, { ...drift, strength: 0.2 }]
     const live = rasterCanvas(30.25, 20.5, 'round')
     clock = 50_000
     const e = new DitherEngine(live.canvas, { alphaFloor: 0.06, maxAlpha: 0.4 })
     made.push(e)
     e.setSize(180, 60, 2)
-    e.setSources(sources)
+    e.setMask(maskA)
+    e.setSources(sources, { immediate: true })
     const painted = trackPaint(e)
-    for (let f = 0; f < 60; f++) {
-      if (f === 5) e.setMask(mask)
-      const next = frames.shift()
-      if (!next) break
-      clock = 50_000 + f * 16.667
-      next(clock)
+    const run = (n: number, step = 16.667) => {
+      for (let k = 0; k < n; k++) {
+        const next = frames.shift()
+        if (!next) return
+        clock += step
+        next(clock)
+      }
     }
+    run(20)
+    e.setSources([]) // every source fades out, and the field parks empty
+    run(30)
+    e.setSources(sources) // back, from strength 0 …
+    e.setMask(maskB) // … under a grown mask, set in the same moment
+    run(1, 0) // the first frame lands at that moment: fresh, nothing to draw
+    run(40) // the fade-in, on frames that are not fresh
     const fresh = rasterCanvas(30.25, 20.5, 'round')
     const r = new DitherEngine(fresh.canvas, { alphaFloor: 0.06, maxAlpha: 0.4 })
     made.push(r)
     r.setSize(180, 60, 2)
-    r.setMask(mask)
+    r.setMask(maskB)
     r.setSources(sources, { immediate: true })
     ;(r as unknown as Painter).paint(painted.t, true)
     const a = live.pixels()
     const b = fresh.pixels()
     let differ = 0
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) differ++
-    assert.equal(differ, 0)
+    assert.equal(differ, 0, `${differ} px differ from a rebuild under the grown mask`)
   })
 })

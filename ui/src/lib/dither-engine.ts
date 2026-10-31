@@ -165,33 +165,62 @@ export interface DitherEngineOptions {
    * a mask.
    */
   edgeBand?: number
+  /**
+   * Draw each dot on whole device pixels (default true): its left and top
+   * edges rounded to the device grid (a cover cell's far edges rounded too, so
+   * neighbours abut). A dot antialiased across pixel edges reads as a soft grey
+   * blot at a fractional position, and the two browsers antialias it
+   * differently — WebKit's accelerated canvas puts up to 1.7 times Chromium's
+   * ink into the same dot. Snapped, a dot is the same crisp pixels in both, at
+   * full alpha, and its erase is exact. `false` keeps the antialiased rect.
+   *
+   * A dot of 1.4 CSS px is 1.75 device px at DPR 1.25 and 2.8 at DPR 2, so no
+   * one whole width stands for it: rounded, its area is off by up to half, and
+   * a field reads denser or sparser at each DPR. So the columns take the two
+   * whole widths either side (1 and 2 device px at DPR 1.25) in the proportion
+   * that averages the dot's own width, spread evenly (`snapWidth`), and the
+   * rows do the same for height; the dots' area, and the field's look, are the
+   * same at every DPR.
+   */
+  snap?: boolean
+  /**
+   * How many alpha levels a dot can take (default 64). A live field rewrites a
+   * dot whenever its stored alpha changes, so the number of levels between the
+   * floor and the ceiling is what a passing crest costs. 64 levels (a step of
+   * 4/255) is below what the eye separates on a dot field and keeps a
+   * bright-ceilinged field's rewrites at or under the ones a 0.26-ceilinged
+   * field paid at 255 levels. 255 is exact.
+   */
+  alphaSteps?: number
 }
 
-/* LIVE_FIELD_TUNING — why the live fields' call sites carry heavier numbers
- * than they were designed with (#624's N11, round 7).
+/* LIVE_FIELD_TUNING — why every field's call site carries heavier numbers than
+ * it was designed with (#624's N11, round 7).
  *
- * Until `drawChanged` erased whole device pixels, a live field built up: every
- * rewrite of a dot left ink in the device pixels its fill half covered. How
- * much depended on everything — the engine (Chromium never stops adding,
- * WebKit settles at 2 to 4x), the DPR and the canvas's sub-pixel position (a
- * dot on whole device pixels builds nothing) — so people saw anything from
- * the designed look to a solid slab.
+ * Until `drawChanged` erased whole device pixels, a field built up: every
+ * rewrite of a dot left ink in the device pixels its fill half covered — a
+ * live field all the time, an idle one over its 200 ms entrance. How much
+ * depended on everything — the engine (Chromium never stops adding, WebKit
+ * settles at 2 to 4x), the DPR, the page zoom and the canvas's sub-pixel
+ * position — so people saw anything from the designed look to a solid slab.
  *
- * The owner asked for the fix without the UI going faint. So each live field
- * (the card wash and trace, the ticket strip, the list strip's wash and trace,
- * generating blocks, the design splash, the stream tail, drafting ghosts) is
- * tuned to the MEDIAN of that look, 4 to 6 s after mount, over 8 sub-pixel
- * positions at DPR 1, 1.5 and 2 in Chromium and WebKitGTK: about 2 to 3 times
- * its designed ink. Each matches that median's ink and visible-dot area, and
- * the spread of dots across a wave's crest, shoulders and troughs, within 10
- * to 20% (the drafting ghost reaches three quarters of its ink: at the house
- * grain its paths saturate first); a wash that meets text puts no more weight
- * over it than that median did. The dot keeps its designed size, the finest
- * that reaches the weight — the build-up's look was a fringe, not a bigger
- * dot — and where the build-up had left an even scatter between crests, a
- * faint uniform `grain` source carries it. The numbers live at the call
- * sites; the method and the measurements are in #633. Idle fields keep their
- * designed numbers: they never built up past their entrance.
+ * The owner asked for the fix without the UI going faint. So each field (the
+ * card wash and trace, the ticket strip, the list strip's wash and trace,
+ * generating blocks, the design splash, the stream tail, drafting ghosts, and
+ * the still empty state, brief crest and ambient panel) is tuned to the
+ * MEDIAN of that look over the environments people use: 8 sub-pixel positions
+ * at DPR 1, 1.25, 1.5, 1.75 and 2 in Chromium and in WebKitGTK on its default
+ * (accelerated) canvas, plus Chromium at 90% and 110% zoom, 4 to 6 s after
+ * mount (an idle field once settled). The fit ran on half of those positions
+ * and DPRs and was checked on the other half. It matches the median's ink and
+ * visible-dot area, carries at least its highlights (the share of pixels past
+ * alpha 64, and how bright its brightest dots get) where the field can, and
+ * puts no more weight over text than the median did. The weight comes from
+ * the sources' strength and the ceiling, at the designed floor-to-ceiling
+ * ratio or near it, and the dots snap to device pixels (`snap`), so they read
+ * crisp and the same in both browsers and at every DPR (the drafting ghost
+ * alone stays antialiased: see TicketGhost). The numbers live at the call
+ * sites; the method and the measurements are in #633.
  */
 
 /* ── Bayer 8×8 ─────────────────────────────────────────────────────────── */
@@ -413,6 +442,27 @@ interface TickerClient {
  *  pixels (`drawChanged`): an edge at 2.9999999 is the pixel boundary at 3. */
 const SNAP_EPS = 1e-6
 
+/** Eight thresholds in bit-reversed order: any run of eight columns (or rows)
+ *  takes the wider of a snapped dot's two widths in proportion to the dot's
+ *  fractional width, and the wide ones are spread out, never bunched. */
+const SNAP_SPREAD = [0, 4, 2, 6, 1, 5, 3, 7].map((k) => (k + 0.5) / 8)
+
+/** A snapped dot's width in device pixels in column (or row) `c`, for a dot
+ *  `s` device pixels wide: floor(s) or one more, so eight columns average s
+ *  (to within 1/16 px). Never under one pixel. */
+function snapWidth(s: number, c: number): number {
+  const base = Math.max(1, Math.floor(s + SNAP_EPS))
+  return base + (s - base > SNAP_SPREAD[c & 7]! ? 1 : 0)
+}
+
+/** The mean of `snapWidth` over eight columns: what a snapped dot's width
+ *  averages, so its alpha can carry the last 1/16 px. */
+function snapMean(s: number): number {
+  let w = 0
+  for (let c = 0; c < 8; c++) w += snapWidth(s, c)
+  return w / 8
+}
+
 const tickerQueue = new Set<TickerClient>()
 let tickerHandle = 0
 
@@ -517,6 +567,8 @@ export class DitherEngine {
       organic: opts.organic ?? 0,
       tweenMs: opts.tweenMs ?? 200,
       edgeBand: opts.edgeBand ?? 0,
+      snap: opts.snap ?? true,
+      alphaSteps: opts.alphaSteps ?? 64,
     }
     this.tones = resolveTones()
 
@@ -570,10 +622,17 @@ export class DitherEngine {
     this.fy = gy.frac
     this.ox = gx.cell
     this.oy = gy.cell
-    this.dpr = dpr
-    this.canvas.width = Math.round(wCss * dpr)
-    this.canvas.height = Math.round(hCss * dpr)
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    // NEVER BELOW ONE BACKING PIXEL PER CSS PX. A page zoomed out (DPR 0.9 at
+    // 90%) would put a pitch-2 field's dots under a device pixel apart, and
+    // dots that share a pixel can only be drawn by a full rebuild every frame
+    // (`drawChanged`): a splash at 90% went from 161k to 508k fills a second.
+    // At scale 1 the backing store keeps its dots a pixel apart and the
+    // compositor scales the canvas down, as it does any image.
+    const scale = Math.max(1, dpr)
+    this.dpr = scale
+    this.canvas.width = Math.round(wCss * scale)
+    this.canvas.height = Math.round(hCss * scale)
+    this.ctx.setTransform(scale, 0, 0, scale, 0, 0)
     this.invalidate()
     this.schedule()
   }
@@ -778,6 +837,12 @@ export class DitherEngine {
     const rows = Math.ceil((hCss + this.fy) / pitch)
     const cells = cols * rows
     const size = cover ? pitch : dot
+    // A snapped dot's columns and rows average its own width to within 1/16 of
+    // a device pixel (`snapWidth`); its alpha carries what is left, so a field
+    // holds the same ink at every DPR. Under a device pixel (a dot under 1 CSS
+    // px), the dot is one pixel and its alpha carries all of the difference.
+    const snapMeanW = snapMean(size * this.dpr)
+    const snapComp = this.opts.snap && !cover ? (size * this.dpr) ** 2 / (snapMeanW * snapMeanW) : 1
     const off = cover ? 0 : (pitch - dot) / 2
     const bucket = Math.floor(now / 160)
     const t = now / 1000
@@ -944,7 +1009,9 @@ export class DitherEngine {
             : lit
               ? alphaFloor + (maxAlpha - alphaFloor) * clamp01(density)
               : maxAlpha * clamp01(density) * OFF_TIER
-          packed = ((ink << 8) | (cover ? 255 : Math.round(alpha * 255))) >>> 0
+          const steps = this.opts.alphaSteps
+          const a8 = cover ? 255 : Math.round((Math.round(clamp01(alpha * snapComp) * steps) / steps) * 255)
+          packed = ((ink << 8) | a8) >>> 0
         }
         if (packed === painted[i]) continue
         painted[i] = packed
@@ -1059,6 +1126,31 @@ export class DitherEngine {
     const dotY = (i: number) => Math.floor(i / cols) * pitch - fy + off
     const lo = (v: number) => Math.floor(v * dpr + SNAP_EPS)
     const hi = (v: number) => Math.ceil(v * dpr - SNAP_EPS)
+    // The device pixels a dot covers: snapped (see `snap`), exactly its own
+    // pixels; antialiased, every pixel its rect touches.
+    const { snap, cover } = this.opts
+    const sDev = size * dpr
+    const from = (v: number) => (snap ? Math.round(v * dpr) : lo(v))
+    // The far edge of cell i's dot: a column's width, a row's height.
+    const toX = (i: number) => {
+      const x = dotX(i)
+      if (!snap) return hi(x + size)
+      return cover ? Math.round((x + size) * dpr) : Math.round(x * dpr) + snapWidth(sDev, i % cols)
+    }
+    const toY = (i: number) => {
+      const y = dotY(i)
+      if (!snap) return hi(y + size)
+      return cover ? Math.round((y + size) * dpr) : Math.round(y * dpr) + snapWidth(sDev, Math.floor(i / cols))
+    }
+    const fillDot = (i: number) => {
+      if (!snap) {
+        ctx.fillRect(dotX(i), dotY(i), size, size)
+        return
+      }
+      const x0 = from(dotX(i))
+      const y0 = from(dotY(i))
+      ctx.fillRect(x0, y0, toX(i) - x0, toY(i) - y0)
+    }
     const clipToMask = () => {
       if (!mask || mask.length === 0) return
       ctx.beginPath()
@@ -1068,7 +1160,15 @@ export class DitherEngine {
 
     // `1 - SNAP_EPS`: a gap of exactly one device pixel (pitch 3 / dot 2 at
     // DPR 1) is disjoint, and float error must not tip it into the rebuild.
-    if (fresh || (pitch - size) * dpr >= 1 - SNAP_EPS) {
+    // Snapped, two neighbours' left edges are floor or ceil of pitch × DPR
+    // apart, so they never share a pixel while that floor is at least a dot's
+    // widest snapped width — column 0's, whose threshold is the lowest (and
+    // cover cells abut exactly). Antialiased, the gap has to be a whole device
+    // pixel.
+    const disjoint = snap
+      ? cover || Math.floor(pitch * dpr + SNAP_EPS) >= snapWidth(sDev, 0)
+      : (pitch - size) * dpr >= 1 - SNAP_EPS
+    if (fresh || disjoint) {
       if (!fresh) {
         // One erase per RUN of a row's rewritten dots, not one per dot: the
         // pixels between two footprints belong to no dot and are always clear,
@@ -1097,21 +1197,24 @@ export class DitherEngine {
             last = j
             k2++
           }
-          const x0 = lo(dotX(first))
-          const y0 = lo(dotY(first))
-          ctx.clearRect(x0, y0, hi(dotX(last) + size) - x0, hi(dotY(first) + size) - y0)
+          const x0 = from(dotX(first))
+          const y0 = from(dotY(first))
+          ctx.clearRect(x0, y0, toX(last) - x0, toY(first) - y0)
           k = k2
         }
         ctx.restore()
       }
       ctx.save()
       clipToMask()
+      // A snapped dot is drawn in device pixels; the mask's clip, set above in
+      // CSS px, stays where it is.
+      if (snap) ctx.setTransform(1, 0, 0, 1, 0, 0)
       for (let k = 0; k < n; k++) {
         const i = changed[k]!
         const packed = painted[i]!
         if (packed === 0) continue
         ctx.fillStyle = this.styleOf(packed)
-        ctx.fillRect(dotX(i), dotY(i), size, size)
+        fillDot(i)
         this.drew = true
       }
       ctx.restore()
@@ -1124,11 +1227,12 @@ export class DitherEngine {
     this.clearAll()
     ctx.save()
     clipToMask()
+    if (snap) ctx.setTransform(1, 0, 0, 1, 0, 0)
     for (let i = 0; i < painted.length; i++) {
       const packed = painted[i]!
       if (packed === 0) continue
       ctx.fillStyle = this.styleOf(packed)
-      ctx.fillRect(dotX(i), dotY(i), size, size)
+      fillDot(i)
       this.drew = true
     }
     ctx.restore()
