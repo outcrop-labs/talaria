@@ -125,9 +125,12 @@ A browser with no record for this person baselines silently (a fresh profile mus
 replay the inbox). Every later read, including the first after a reload, a reopen or a
 deploy, surfaces what landed since. Up to three arrivals show one by one, oldest first;
 more than three show as one summary ("5 new — …", tag `talaria-summary`) whose click opens
-the bell. Rows read elsewhere are never surfaced, and neither is a row version this browser
-already showed as a banner (the worker's, while every tab was closed), so the summary never
-stacks on top of the worker's per-row banners.
+the bell. In the desktop shell the summary banner carries the page it was posted from
+(`shellHref` in `browser-notify.ts`): the shell dispatches `talaria:notification-open` only
+for a banner that names a path (I-1), and the page's listener opens the bell. Rows read
+elsewhere are never surfaced, and neither is a row version this browser already showed as a
+banner (the worker's, while every tab was closed), so the summary never stacks on top of the
+worker's per-row banners.
 
 ## Push lifecycle
 
@@ -165,7 +168,11 @@ stacks on top of the worker's per-row banners.
 - **DMs.** One unread `dm` row per conversation. A new message refreshes it in place (same
   id, the newest body, `created_at = now()`), publishes it, and pushes with `renotify`; it
   sends no new mail. Reading the channel to its newest message clears the row (and any
-  mention pointing there).
+  mention pointing there). An open conversation reads only while the person is looking at
+  it, shown and focused (`ui/src/lib/looking.ts`, the rule the toast decision uses too): a
+  background tab, a minimized window or an instance behind the desktop shell's launcher
+  leaves new messages unread, so their DM or mention still alerts, and the read lands the
+  moment the person looks.
 - **Mentions on edit.** A ticket description edit notifies only the people the edit adds.
 - **Assignment.** A person assigned by a patch gets `task-assigned` only; the same patch's
   status move goes to every other watcher.
