@@ -79,8 +79,11 @@ pub(crate) fn app() -> Option<&'static AppHandle> {
 }
 
 /// A path the shell may open. Same-origin only: a leading `/`, no scheme, no
-/// protocol-relative `//`, no controls. Anything else is dropped rather than
-/// eval'd.
+/// protocol-relative `//`, no controls, no `.` or `..` segment. Anything else
+/// is dropped rather than eval'd. The same rule as the instance's own
+/// (talaria-notify's `openable_href`, the page's `safeInAppHref`, the
+/// worker's `safeHref`), so a row the instance refuses is one the shell
+/// refuses too.
 pub fn openable_href(raw: &str) -> Option<&str> {
     let href = raw.trim();
     if href.is_empty()
@@ -93,7 +96,26 @@ pub fn openable_href(raw: &str) -> Option<&str> {
     if href.bytes().any(|b| b < 0x20 || b == 0x7f || b == b'\\') {
         return None;
     }
+    if has_dot_segment(href) {
+        return None;
+    }
     Some(href)
+}
+
+/// Does the PATH part (before any `?` or `#`) hold a segment a URL parser
+/// would resolve away? The WHATWG URL standard's single-dot (`.`, `%2e`) and
+/// double-dot (`..`, `.%2e`, `%2e.`, `%2e%2e`) segments, ASCII
+/// case-insensitive. `/..//evil.example` resolves to the PATH
+/// `//evil.example`, which a second parse reads as another host, and an
+/// instance URL with a path prefix (`https://host/talaria`) plus `/../x`
+/// climbs out of the instance. A query or fragment is never path-resolved, so
+/// a `?next=/../x` stays allowed.
+fn has_dot_segment(href: &str) -> bool {
+    let path = href.split(['?', '#']).next().unwrap_or("");
+    path.split('/').any(|seg| {
+        let s = seg.to_ascii_lowercase().replace("%2e", ".");
+        s == "." || s == ".."
+    })
 }
 
 /// The click, handed to the page (interface I-1). The page's router gets a
@@ -881,6 +903,65 @@ mod tests {
         assert_eq!(openable_href("/foo\\bar"), None);
         assert_eq!(openable_href(""), None);
         assert_eq!(openable_href("   "), None);
+    }
+
+    // The instance's table of cases, verbatim: talaria-notify's
+    // `openable_href_refuses_dot_segments_in_every_spelling`,
+    // ui/src/lib/notify-open.test.ts and ui/src/sw.test.ts hold the same
+    // one, so the server, the page, the worker and the shell agree.
+    const DOT_SEGMENT_HREFS: &[&str] = &[
+        "/..//evil.example",
+        "/.//evil.example",
+        "/a/..//evil.example",
+        "/%2e%2e//evil.example",
+        "/%2E%2e//evil.example",
+        "/.%2e//evil.example",
+        "/%2e.//evil.example",
+        "/%2e//evil.example",
+        "/a/b/../../..//evil.example",
+        "/boards/..",
+        "/boards/.",
+        "/./boards",
+    ];
+    const DOT_LOOKALIKES: &[&str] = &[
+        "/.../x",
+        "/..a//x",
+        "/a.b/c",
+        "/x?next=/..//evil.example",
+        "/x#/..//evil.example",
+        "/%2e%2ea/x",
+    ];
+
+    #[test]
+    fn openable_href_refuses_dot_segments_in_every_spelling() {
+        for bad in DOT_SEGMENT_HREFS {
+            assert_eq!(openable_href(bad), None, "{bad}");
+            // So the click never dispatches it, and a suspended instance is
+            // never recreated at it (commands.rs `activate`).
+            assert!(open_js(bad, "n-1").is_none(), "{bad}");
+        }
+        for good in DOT_LOOKALIKES {
+            assert_eq!(openable_href(good), Some(*good), "{good}");
+            assert!(open_js(good, "n-1").is_some(), "{good}");
+        }
+    }
+
+    #[test]
+    fn what_a_dot_segment_would_have_done() {
+        // The hazard itself, through the shell's own URL parser: each of
+        // these resolves to the PATH `//evil.example`, which a second parse
+        // reads as another host…
+        let origin = url::Url::parse("https://instance.example").unwrap();
+        for bad in DOT_SEGMENT_HREFS
+            .iter()
+            .filter(|h| h.ends_with("//evil.example"))
+        {
+            assert_eq!(origin.join(bad).unwrap().path(), "//evil.example", "{bad}");
+        }
+        // …and after an instance URL with a path prefix (`activate` opens
+        // `{instance.url}{href}`), `..` climbs out of the instance.
+        let joined = url::Url::parse("https://host.example/talaria/../x").unwrap();
+        assert_eq!(joined.path(), "/x");
     }
 
     #[test]
