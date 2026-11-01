@@ -24,14 +24,23 @@
 // as it liked (75 s measured), and every notification spawned its own
 // unbounded fan. The payload is clamped under the 4,096-byte record every
 // push service guarantees; a 413 still gets one minimal resend. 429, 5xx and
-// transport failures are retried twice at most. The row records every
-// attempt (`last_status`, `last_error`, `last_attempt_at`): 2xx resets
-// `failures`, 404/410 prune at once (the service already forgot it), and
-// 401/403 prune at three in a row — except a refusal of the INSTANCE's own
-// token (Apple's `BadJwtToken` family), which is this server's fault and no
-// device's.
+// connect failures are retried twice at most, a TIMEOUT once (an endpoint
+// that accepts and never answers holds a process-wide permit 15 s a try).
+// The row records every attempt (`last_status`, `last_error`,
+// `last_attempt_at`): 2xx resets `failures`, 404/410 prune at once (the
+// service already forgot it), and 401/403 prune at three in a row — except a
+// refusal of the INSTANCE's own token (Apple's `BadJwtToken` family), which
+// is this server's fault and no device's. A row that timed out, or failed
+// three times running, is SKIPPED for 2^failures minutes (an hour at most)
+// after its last attempt, and ten failures with no delivery for a week
+// prune it.
+//
+// The VAPID keypair is unsealed once and cached, keyed by the sealed string
+// the row holds: the cheap SELECT stays on every delivery, so a re-mint, a
+// restore or a key rotation's re-seal is seen at once (SE-15).
 
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -278,6 +287,35 @@ pub struct VapidKeys {
     pub public: [u8; 65],
 }
 
+impl Clone for VapidKeys {
+    fn clone(&self) -> Self {
+        Self {
+            signing: self.signing.clone(),
+            public: self.public,
+        }
+    }
+}
+
+/// The unsealed keypair, keyed by the sealed `private` string it came from.
+/// A different string (re-minted, restored, re-sealed by a rotation) misses
+/// and unseals again.
+static VAPID_CACHE: Mutex<Option<(String, VapidKeys)>> = Mutex::new(None);
+/// How many times this process has unsealed the keypair — the number the
+/// cache keeps at one per key.
+static VAPID_UNSEALS: AtomicU64 = AtomicU64::new(0);
+
+/// How many VAPID unseals this process has done since boot.
+pub fn vapid_unseals() -> u64 {
+    VAPID_UNSEALS.load(Ordering::Relaxed)
+}
+
+/// Drop the cached keypair, so the next read unseals again. For a test that
+/// opens the row with a second box, and for anything that restores keys in
+/// place.
+pub fn forget_vapid_cache() {
+    *VAPID_CACHE.lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
 /// Read-or-create the instance VAPID keypair. The private half lives in
 /// app_settings SEALED by the instance secretbox; the INSERT is
 /// on-conflict-do-nothing so two concurrent first calls (two processes, two
@@ -323,6 +361,11 @@ async fn read_vapid_keys(pg: &PgPool, sb: &SecretBox) -> Result<Option<VapidKeys
         .get("private")
         .and_then(Value::as_str)
         .ok_or("the vapid row has no private key")?;
+    if let Some((cached_for, keys)) = &*VAPID_CACHE.lock().unwrap_or_else(|p| p.into_inner())
+        && cached_for == sealed
+    {
+        return Ok(Some(keys.clone()));
+    }
     let der_b64 = sb
         .open(sealed)
         .map_err(|e| format!("opening the vapid private key failed: {e}"))?;
@@ -339,7 +382,12 @@ async fn read_vapid_keys(pg: &PgPool, sb: &SecretBox) -> Result<Option<VapidKeys
         .to_vec()
         .try_into()
         .expect("uncompressed p256 is 65 bytes");
-    Ok(Some(VapidKeys { signing, public }))
+    let keys = VapidKeys { signing, public };
+    let n = VAPID_UNSEALS.fetch_add(1, Ordering::Relaxed) + 1;
+    tracing::debug!("[push] vapid keypair unsealed (unseal #{n} since boot)");
+    *VAPID_CACHE.lock().unwrap_or_else(|p| p.into_inner()) =
+        Some((sealed.to_string(), keys.clone()));
+    Ok(Some(keys))
 }
 
 // ── Fresh key material ───────────────────────────────────────────────────────
@@ -719,9 +767,11 @@ impl Default for PushPolicy {
 }
 
 /// The wait before retry number `retries_done + 1`, or `None` when this
-/// answer is final. Retried: 429, 5xx, a timeout, a connect failure — at
-/// most twice. `Retry-After` wins when it is within the cap; past it the
-/// service asked for more patience than a notification is worth.
+/// answer is final. Retried: 429, 5xx and a connect failure at most twice; a
+/// TIMEOUT once — an endpoint that accepts and never answers holds one of the
+/// process's 32 permits for the whole 15 s bound on every try. `Retry-After`
+/// wins when it is within the cap; past it the service asked for more
+/// patience than a notification is worth.
 pub fn retry_delay(
     retries_done: usize,
     result: &PushResult,
@@ -738,12 +788,16 @@ pub fn retry_delay(
             }
             None => Some(policy.backoff[retries_done]),
         },
-        Err(PushFailure::Timeout(_) | PushFailure::Connect(_)) => {
+        Err(PushFailure::Timeout(_)) if retries_done < TIMEOUT_RETRIES => {
             Some(policy.backoff[retries_done])
         }
+        Err(PushFailure::Connect(_)) => Some(policy.backoff[retries_done]),
         _ => None,
     }
 }
+
+/// Retries a timeout gets.
+pub const TIMEOUT_RETRIES: usize = 1;
 
 /// Apple's refusals of the INSTANCE's token rather than the subscription:
 /// the JWT itself is bad, expired, missing or unverifiable. Counting these
@@ -774,6 +828,25 @@ pub enum Tend {
 
 /// Consecutive counted failures that prune a row refused by its service.
 pub const REFUSALS_TO_PRUNE: i32 = 3;
+/// Consecutive failures of any kind that prune a row once it has also gone a
+/// week with no delivery: an endpoint that has not worked for days.
+pub const FAILURES_TO_PRUNE: i32 = 10;
+/// Failures after which a row sits out its backoff window.
+pub const FAILURES_TO_SKIP: i32 = 3;
+/// The longest backoff window, in minutes.
+pub const SKIP_CAP_MIN: i32 = 60;
+
+/// A delivery's rows: the person's subscriptions, less any sitting out its
+/// backoff — it timed out last time (no status, a `timeout:` error) or has
+/// failed `FAILURES_TO_SKIP` times running, and its last attempt is within
+/// 2^failures minutes (`SKIP_CAP_MIN` at most). A 2xx resets `failures`, so
+/// the window closes itself; the per-device test ignores it.
+const DELIVERY_ROWS: &str = "select endpoint, p256dh, auth from push_subscriptions \
+     where user_id = $1::uuid \
+       and not (last_attempt_at is not null \
+                and (failures >= 3 or (last_status is null and last_error like 'timeout:%')) \
+                and last_attempt_at > now() \
+                    - least(power(2, greatest(failures, 1)), 60) * interval '1 minute')";
 
 pub fn classify(result: &PushResult) -> Tend {
     match result {
@@ -799,10 +872,17 @@ fn error_text(result: &PushResult) -> Option<String> {
             format!("{} {}", a.status, a.body.trim())
                 .trim()
                 .chars()
+                .filter(|c| !c.is_control())
                 .take(300)
                 .collect(),
         ),
-        Err(e) => Some(e.to_string().chars().take(300).collect()),
+        Err(e) => Some(
+            e.to_string()
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(300)
+                .collect(),
+        ),
     }
 }
 
@@ -882,6 +962,19 @@ async fn tend(pg: &PgPool, endpoint: &str, result: &PushResult) {
                     "[push] a subscription was refused {REFUSALS_TO_PRUNE} times in a row; pruning"
                 );
                 prune(pg, endpoint).await;
+            } else if failures.is_some_and(|n| n >= FAILURES_TO_PRUNE)
+                && sqlx::query(
+                    "delete from push_subscriptions where endpoint = $1 \
+                     and last_seen_at < now() - interval '7 days'",
+                )
+                .bind(endpoint)
+                .execute(pg)
+                .await
+                .is_ok_and(|r| r.rows_affected() > 0)
+            {
+                tracing::warn!(
+                    "[push] a subscription failed {FAILURES_TO_PRUNE} times with no delivery for a week; pruned"
+                );
             } else {
                 tracing::warn!(
                     "[push] delivery to an endpoint failed ({}); keeping the row",
@@ -1012,12 +1105,10 @@ pub async fn deliver_push_with(
     policy: &PushPolicy,
     subject: &str,
 ) {
-    let rows: Vec<(String, String, String)> = match sqlx::query_as(
-        "select endpoint, p256dh, auth from push_subscriptions where user_id = $1::uuid",
-    )
-    .bind(user_id)
-    .fetch_all(pg)
-    .await
+    let rows: Vec<(String, String, String)> = match sqlx::query_as(DELIVERY_ROWS)
+        .bind(user_id)
+        .fetch_all(pg)
+        .await
     {
         Ok(rows) => rows,
         Err(e) => {
@@ -1047,19 +1138,39 @@ pub async fn deliver_push_with(
 
 // ── The plane: installed once at boot, consulted by the single writer ────────
 
+/// Where the plane gets the instance secretbox, per delivery. Production
+/// reads the process's CURRENT box (AppState's), never a clone taken at boot:
+/// a key rotation installs a new box and re-seals `push_vapid` under its new
+/// version, and a stale clone could not open the re-sealed key.
+pub type SecretBoxSource =
+    Arc<dyn Fn() -> BoxFuture<'static, Result<SecretBox, String>> + Send + Sync>;
+
+/// A source that always answers the same box (tests).
+pub fn fixed_secretbox(sb: SecretBox) -> SecretBoxSource {
+    Arc::new(move || {
+        let sb = sb.clone();
+        Box::pin(async move { Ok(sb) })
+    })
+}
+
 struct Plane {
     pg: PgPool,
-    sb: SecretBox,
+    sb: SecretBoxSource,
     post: PostPushFn,
 }
 
 static PLANE: OnceLock<Plane> = OnceLock::new();
 
-/// Install the push plane at boot (jobs.rs, beside real_drain_deps — the
-/// secretbox loads through AppState there). Not installed = push off: the
-/// hook below is a no-op, which is exactly what tests and any
-/// push-less deployment want.
+/// Install the push plane at boot (talaria-jobs, beside real_drain_deps).
+/// Not installed = push off: the hook below is a no-op, which is exactly
+/// what tests and any push-less deployment want. A fixed box; production
+/// installs with `install_push_plane_with` and AppState's live box.
 pub fn install_push_plane(pg: PgPool, sb: SecretBox) {
+    install_push_plane_with(pg, fixed_secretbox(sb));
+}
+
+/// Install the push plane with a secretbox SOURCE, read per delivery.
+pub fn install_push_plane_with(pg: PgPool, sb: SecretBoxSource) {
     let _ = PLANE.set(Plane {
         pg,
         sb,
@@ -1081,10 +1192,17 @@ pub fn push_plane_installed() -> bool {
 pub fn push_notification(user_id: &str, note: PushNote) {
     let Some(plane) = PLANE.get() else { return };
     let pg = plane.pg.clone();
-    let sb = plane.sb.clone();
+    let source = plane.sb.clone();
     let post = plane.post.clone();
     let user_id = user_id.to_string();
     tokio::spawn(async move {
+        let sb = match source().await {
+            Ok(sb) => sb,
+            Err(e) => {
+                tracing::error!("[push] the secretbox did not load; not delivering: {e}");
+                return;
+            }
+        };
         deliver_push(&pg, &sb, &post, &user_id, &note).await;
     });
 }
@@ -1336,10 +1454,193 @@ pub enum TestError {
     NotFound,
 }
 
-/// Send one test push to one of the person's devices. A STUB in phase 0:
-/// it answers NotReady, and the route says 501. W2-E implements it.
-pub async fn send_test(_user_id: &str, _device_id: &str) -> Result<DeviceTest, TestError> {
-    Err(TestError::NotReady)
+/// The test push's payload — the shape the service worker shows whether or
+/// not a window is focused (`kind: "test"`, ui/src/sw.ts).
+pub fn test_note(instance: &str, now_ms: i64) -> PushNote {
+    PushNote {
+        id: format!("talaria-test-{now_ms}"),
+        title: "Talaria test notification".into(),
+        body: format!("{instance}: this device gets alerts"),
+        href: "/settings/notifications".into(),
+        kind: "test".into(),
+        renotify: false,
+        created_at: iso_ms(now_ms),
+        // A test is worth showing now or never: high urgency, five minutes.
+        ttl_secs: Some(300),
+        urgency: Some(Urgency::High),
+        topic: None,
+    }
+}
+
+fn iso_ms(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let millis = ms.rem_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    // Civil date from days since the epoch (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{millis:03}Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+/// What the test push names the instance by: the company name an admin set,
+/// else the verified domain, else "Talaria".
+async fn instance_label(pg: &PgPool) -> String {
+    if let Some(name) = talaria_instance::get_company_name(pg)
+        .await
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+    {
+        return name;
+    }
+    talaria_instance::instance_base_url(pg)
+        .await
+        .map(|u| u.trim_start_matches("https://").to_string())
+        .unwrap_or_else(|| "Talaria".into())
+}
+
+/// Send one test push to one of the person's devices (the status panel's
+/// per-device test, O-20 rate-limits it at the route): ONE direct delivery to
+/// that subscription — no presence, no DND, no retry, no backoff window, so
+/// the answer is this device's right now — tended like any delivery, so the
+/// panel's last status moves with it. The instance's push kill switch still
+/// holds: a test that pushes when the operator said no push would lie about
+/// what a notification would do.
+pub async fn send_test(user_id: &str, device_id: &str) -> Result<DeviceTest, TestError> {
+    let Some(plane) = PLANE.get() else {
+        return Err(TestError::NotReady);
+    };
+    let pg = &plane.pg;
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "select endpoint, p256dh, auth from push_subscriptions \
+         where id = $1::uuid and user_id = $2::uuid",
+    )
+    .bind(device_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| {
+        tracing::error!("[push] the test's device read failed: {e}");
+        TestError::NotReady
+    })?;
+    let Some((endpoint, p256dh, auth)) = row else {
+        return Err(TestError::NotFound);
+    };
+    let fail = |error: String| DeviceTest {
+        id: device_id.to_string(),
+        status: None,
+        ms: 0,
+        error: Some(plain_error(&error)),
+    };
+    let switch: Option<Value> =
+        sqlx::query_scalar("select value from app_settings where key = 'notify_delivery'")
+            .fetch_optional(pg)
+            .await
+            .unwrap_or(None);
+    if switch.as_ref().and_then(|v| v.get("pushEnabled")) == Some(&Value::Bool(false)) {
+        return Ok(fail("push is switched off for this instance".into()));
+    }
+    let sb = match (plane.sb)().await {
+        Ok(sb) => sb,
+        Err(e) => return Ok(fail(format!("the secretbox did not load: {e}"))),
+    };
+    let keys = match vapid_keys(pg, &sb).await {
+        Ok(k) => k,
+        Err(e) => return Ok(fail(e)),
+    };
+    let subject = vapid_subject(pg).await;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let note = test_note(&instance_label(pg).await, now_ms);
+    let started = std::time::Instant::now();
+    let result = post_once(
+        &plane.post,
+        &keys,
+        &subject,
+        &push_payload(&note),
+        &note,
+        (endpoint.clone(), p256dh, auth),
+    )
+    .await;
+    let ms = started.elapsed().as_millis() as u64;
+    let Some(result) = result else {
+        // Unreadable key material: the row is dead weight, pruned like any
+        // delivery would.
+        prune(pg, &endpoint).await;
+        return Ok(fail(
+            "this device's subscription is unreadable and was removed".into(),
+        ));
+    };
+    tend(pg, &endpoint, &result).await;
+    Ok(DeviceTest {
+        id: device_id.to_string(),
+        status: result.as_ref().ok().map(|a| a.status),
+        ms,
+        error: error_text(&result)
+            .map(|e| plain_error(&e))
+            .filter(|e| !e.is_empty()),
+    })
+}
+
+/// One POST of one payload to one subscription: encrypt against its keys,
+/// sign with the instance identity, send under the process-wide bound. None
+/// when the subscription's key material cannot be used.
+async fn post_once(
+    post: &PostPushFn,
+    keys: &VapidKeys,
+    subject: &str,
+    payload: &[u8],
+    note: &PushNote,
+    (endpoint, p256dh_b64, auth_b64): (String, String, String),
+) -> Option<PushResult> {
+    let key_bytes = B64U
+        .decode(p256dh_b64.as_bytes())
+        .or_else(|_| B64.decode(p256dh_b64.as_bytes()))
+        .ok()?;
+    let auth_bytes = B64U
+        .decode(auth_b64.as_bytes())
+        .or_else(|_| B64.decode(auth_b64.as_bytes()))
+        .ok()?;
+    if key_bytes.len() != 65 || auth_bytes.len() != 16 {
+        return None;
+    }
+    let subscriber_key = PublicKey::from_sec1_bytes(&key_bytes).ok()?;
+    let auth: [u8; 16] = auth_bytes.try_into().ok()?;
+    let origin = url::Url::parse(&endpoint)
+        .ok()?
+        .origin()
+        .ascii_serialization();
+    let mut salt = [0u8; 16];
+    _ = getrandom::fill(&mut salt);
+    let ephemeral = EphemeralSecret::generate();
+    let body = aes128gcm_encrypt(payload, &subscriber_key, &auth, &salt, &ephemeral);
+    let authorization = vapid_authorization(&keys.signing, &origin, now_unix(), subject);
+    let _permit = IN_FLIGHT.acquire().await;
+    Some(
+        post(PushPost {
+            endpoint,
+            authorization,
+            body,
+            ttl_secs: note.ttl_secs,
+            urgency: note.urgency,
+            topic: note.topic.clone(),
+        })
+        .await,
+    )
 }
 
 #[cfg(test)]
@@ -1561,6 +1862,12 @@ mod tests {
             retry_delay(1, &Err(PushFailure::Connect("c".into())), &p),
             Some(s8)
         );
+        // A timeout is retried ONCE: a hung endpoint holds a permit for the
+        // whole 15 s bound every try (two tries at most, ≤ 2 × 15 s).
+        assert_eq!(
+            retry_delay(1, &Err(PushFailure::Timeout("t".into())), &p),
+            None
+        );
         assert_eq!(
             retry_delay(0, &Err(PushFailure::Other("o".into())), &p),
             None
@@ -1569,6 +1876,42 @@ mod tests {
         for code in [201, 400, 403, 404, 410, 413] {
             assert_eq!(retry_delay(0, &answer(code, None, ""), &p), None, "{code}");
         }
+    }
+
+    // The backoff window's numbers live in SQL; the consts name them.
+    #[test]
+    fn the_backoff_window_is_the_named_rule() {
+        assert!(DELIVERY_ROWS.contains(&format!("failures >= {FAILURES_TO_SKIP}")));
+        assert!(DELIVERY_ROWS.contains(&format!(", {SKIP_CAP_MIN}) * interval '1 minute'")));
+        assert!(DELIVERY_ROWS.contains("last_error like 'timeout:%'"));
+        // …and the timeout prefix it matches is the one error_text writes.
+        let e = error_text(&Err(PushFailure::Timeout("operation timed out".into()))).unwrap();
+        assert!(e.starts_with("timeout:"), "{e}");
+        // Control characters never reach the row.
+        let e = error_text(&Ok(PushAnswer {
+            status: 500,
+            retry_after: None,
+            body: "bad\u{7}\r\nthing".into(),
+        }))
+        .unwrap();
+        assert_eq!(e, "500 badthing");
+    }
+
+    #[test]
+    fn the_test_push_is_a_test_kind_with_a_short_life() {
+        let n = test_note("Acme", 1_767_268_800_123);
+        assert_eq!(n.id, "talaria-test-1767268800123");
+        assert_eq!(n.kind, "test");
+        assert_eq!(n.title, "Talaria test notification");
+        assert_eq!(n.body, "Acme: this device gets alerts");
+        assert_eq!(n.href, "/settings/notifications");
+        assert_eq!(n.created_at, "2026-01-01T12:00:00.123Z");
+        assert_eq!((n.ttl_secs, n.urgency), (Some(300), Some(Urgency::High)));
+        let p: serde_json::Value = serde_json::from_slice(&push_payload(&n)).unwrap();
+        assert_eq!(p["kind"], "test");
+        assert_eq!(iso_ms(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(iso_ms(951_782_400_000), "2000-02-29T00:00:00.000Z");
+        assert_eq!(iso_ms(1_798_761_599_999), "2026-12-31T23:59:59.999Z");
     }
 
     #[test]
