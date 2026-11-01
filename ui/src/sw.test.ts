@@ -24,11 +24,11 @@ interface FakeWindow {
 const handlers = new Map<string, Handler>()
 const opened: string[] = []
 const navigated: string[] = []
-const shown: Array<{ title: string; tag?: string }> = []
+const shown: Array<{ title: string; tag?: string; silent?: boolean }> = []
 const fetches: Array<{ url: string; body?: string }> = []
 let windows: FakeWindow[] = []
 /** The banners on screen, as getNotifications answers them. */
-let onScreen: Array<{ tag: string; data: { v?: string } }> = []
+let onScreen: Array<{ tag: string; title?: string; body?: string; data: { v?: string } }> = []
 
 /** The bannered store (IndexedDB, which node lacks): a map behind just the
  *  calls sw.ts makes, each answering on a later microtask, as IDB does. */
@@ -108,9 +108,13 @@ beforeAll(async () => {
       },
     },
     registration: {
-      showNotification: async (title: string, opts: { tag?: string; data?: { v?: string } }) => {
-        shown.push({ title, tag: opts?.tag })
-        if (opts?.tag) onScreen = [...onScreen.filter((n) => n.tag !== opts.tag), { tag: opts.tag, data: opts.data ?? {} }]
+      showNotification: async (title: string, opts: { tag?: string; body?: string; silent?: boolean; data?: { v?: string } }) => {
+        shown.push(opts?.silent ? { title, tag: opts?.tag, silent: true } : { title, tag: opts?.tag })
+        if (opts?.tag)
+          onScreen = [
+            ...onScreen.filter((n) => n.tag !== opts.tag),
+            { tag: opts.tag, title, body: opts.body, data: opts.data ?? {} },
+          ]
       },
       getNotifications: async (o?: { tag?: string }) => onScreen.filter((n) => !o?.tag || n.tag === o.tag),
     },
@@ -309,6 +313,23 @@ describe('sw push — an out-of-order older push neither shows nor replaces the 
       // …while WebKit still shows a repeat of the same version, as before.
       await push({ id: ROW, title: 'Bob: second line', href: '/comms', createdAt: NEWER })
       expect(shown).toEqual([{ title: 'Bob: second line', tag: ROW }])
+    } finally {
+      vi.stubGlobal('navigator', real)
+    }
+  })
+
+  it('on WebKit, the older push shows the newer copy again, silently, so the push is never silent', async () => {
+    const real = globalThis.navigator
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15' })
+    try {
+      await push({ id: ROW, title: 'Bob: second line', body: 'and more', href: '/comms', renotify: true, createdAt: NEWER })
+      await push({ id: ROW, title: 'Bob: first line', href: '/comms', renotify: true, createdAt: OLDER })
+      expect(shown).toEqual([
+        { title: 'Bob: second line', tag: ROW },
+        { title: 'Bob: second line', tag: ROW, silent: true },
+      ])
+      expect(onScreen).toEqual([{ tag: ROW, title: 'Bob: second line', body: 'and more', data: expect.objectContaining({ v: NEWER }) }])
+      expect(idb.get(ROW)?.v).toBe(NEWER)
     } finally {
       vi.stubGlobal('navigator', real)
     }

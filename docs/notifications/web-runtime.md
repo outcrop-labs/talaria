@@ -246,9 +246,11 @@ on screen) is dropped on every engine: not shown, and not replacing the newer
 copy. Two pushes of one row filed in quick succession are separate sends and
 can arrive out of order, and a push service that replaces by `Topic` may keep
 only the older. Pushes are handled one at a time, so two arriving together
-cannot both pass the check. On WebKit a dropped push is one that shows
-nothing, which Safari counts against the subscription; it takes two sends of
-one row crossing in flight.
+cannot both pass the check. Safari counts a push that shows nothing against
+the subscription, so on WebKit the newer copy still on screen is shown again
+in its place, silently (no sound, no re-alert); only when the person already
+dismissed it does the push show nothing, which takes two sends of one row
+crossing in flight after a dismissal.
 
 ## Diagnostics
 

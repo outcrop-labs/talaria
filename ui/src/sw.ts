@@ -24,10 +24,11 @@
 //     copy. Two pushes of one row filed in quick succession are separate
 //     sends and can arrive out of order (a push service replacing by `Topic`
 //     may even keep only the older); the person must not see a DM's newer
-//     line swapped back to an older one. (On WebKit that is a push that
-//     shows nothing — rare, as it takes two sends of one row crossing in
-//     flight, and the lesser harm.) Pushes are handled one at a time, so two
-//     arriving together cannot both pass the check.
+//     line swapped back to an older one. On WebKit, which counts a push
+//     that shows nothing against the subscription, the newer copy still on
+//     screen is shown again in its place, silently; only when the person
+//     already dismissed it does the push show nothing. Pushes are handled
+//     one at a time, so two arriving together cannot both pass the check.
 //
 //   notificationclick: the person answered. The row is marked read (a
 //     same-origin PUT), the window already at the href — else the most
@@ -180,6 +181,25 @@ function safeHref(raw: unknown, origin: string): string | null {
   }
 }
 
+/** WebKit's stand-in for an out-of-order older push: the newer copy on
+ *  screen under `tag`, shown again in place with no sound and no re-alert,
+ *  so the push still showed something. Nothing on screen (the person
+ *  dismissed it): nothing to show. */
+async function reshowSilently(tag: string): Promise<void> {
+  const [cur] = await sw.registration.getNotifications({ tag })
+  if (!cur) return
+  const ts = (cur as Notification & { timestamp?: number }).timestamp
+  await sw.registration.showNotification(cur.title, {
+    body: cur.body,
+    tag,
+    icon: ICON,
+    badge: BADGE,
+    data: cur.data,
+    silent: true,
+    ...({ renotify: false, timestamp: ts } as object),
+  })
+}
+
 /** The push queue's tail (see the push handler). */
 let pushQueue: Promise<void> = Promise.resolve()
 
@@ -202,8 +222,11 @@ sw.addEventListener('push', (event: PushEvent) => {
 async function showPush(n: PushNote & { id: string }): Promise<void> {
   const version = n.createdAt || ''
   // Older than the copy already shown under this tag (an out-of-order
-  // delivery): drop it, on every engine — see the top of this file.
-  if (await olderThanShown(n.id, version)) return
+  // delivery): never shown, on every engine — see the top of this file.
+  if (await olderThanShown(n.id, version)) {
+    if (isWebKit()) await reshowSilently(n.id)
+    return
+  }
   if (!isWebKit()) {
     const wins = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true })
     // The person is looking at Talaria: the page toasts it — except a
