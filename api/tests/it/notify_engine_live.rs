@@ -891,7 +891,7 @@ async fn engine(pg: &PgPool) {
     talaria_api::notify::run_missed_mail(&md).await.unwrap();
     let mails = mail.mails_to(&bob);
     assert_eq!(mails.len(), 3);
-    assert_eq!(mails[2].ids, [g1.clone()]);
+    assert_eq!(mails[2].ids, std::slice::from_ref(&g1));
     assert!(mails[2].text.contains("grouped three"));
     sqlx::query("update notifications set read_at = now() where id = any($1::uuid[])")
         .bind([g1.clone(), four[0].clone()])
