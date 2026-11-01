@@ -411,6 +411,65 @@ pub struct PushPost {
     pub endpoint: String,
     pub authorization: String,
     pub body: Vec<u8>,
+    /// `TTL` in seconds; `None` sends 3600 (wave 1's value).
+    pub ttl_secs: Option<u32>,
+    /// `Urgency`; `None` sends `normal`.
+    pub urgency: Option<Urgency>,
+    /// `Topic` (RFC 8030 §5.4: a newer push under the same topic replaces an
+    /// undelivered one); `None`, or one that is not ≤ 32 base64url
+    /// characters, sends no header.
+    pub topic: Option<String>,
+}
+
+/// RFC 8030 §5.3 urgency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Urgency {
+    VeryLow,
+    Low,
+    Normal,
+    High,
+}
+
+impl Urgency {
+    /// The header value.
+    pub fn as_header(self) -> &'static str {
+        match self {
+            Urgency::VeryLow => "very-low",
+            Urgency::Low => "low",
+            Urgency::Normal => "normal",
+            Urgency::High => "high",
+        }
+    }
+}
+
+/// The TTL a post carries when its note names none.
+pub const DEFAULT_TTL_SECS: u32 = 3600;
+
+/// A `Topic` the push services accept: 1–32 characters of the URL-safe
+/// base64 alphabet. Anything else is dropped rather than sent.
+pub fn valid_topic(t: &str) -> bool {
+    (1..=32).contains(&t.len())
+        && t.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The three delivery headers a post sends, from what it carries: wave 1's
+/// `TTL: 3600` / `Urgency: normal` / no `Topic` when it carries nothing.
+pub fn post_headers(post: &PushPost) -> Vec<(&'static str, String)> {
+    let mut h = vec![
+        ("TTL", post.ttl_secs.unwrap_or(DEFAULT_TTL_SECS).to_string()),
+        (
+            "Urgency",
+            post.urgency
+                .unwrap_or(Urgency::Normal)
+                .as_header()
+                .to_string(),
+        ),
+    ];
+    if let Some(t) = post.topic.as_deref().filter(|t| valid_topic(t)) {
+        h.push(("Topic", t.to_string()));
+    }
+    h
 }
 
 /// What a push service answered.
@@ -490,11 +549,13 @@ pub fn real_post_push() -> PostPushFn {
     Arc::new(move |post: PushPost| {
         let client = client.clone();
         Box::pin(async move {
-            let resp = client
+            let mut req = client
                 .post(&post.endpoint)
-                .header("Authorization", &post.authorization)
-                .header("TTL", "3600")
-                .header("Urgency", "normal")
+                .header("Authorization", &post.authorization);
+            for (name, value) in post_headers(&post) {
+                req = req.header(name, value);
+            }
+            let resp = req
                 .header("Content-Encoding", "aes128gcm")
                 .header("Content-Type", "application/octet-stream")
                 .body(post.body)
@@ -536,7 +597,9 @@ pub fn real_post_push() -> PostPushFn {
 // ── Delivery ─────────────────────────────────────────────────────────────────
 
 /// The row-shaped notification the plane sends — everything the service
-/// worker needs to show AND to navigate on click.
+/// worker needs to show AND to navigate on click. `Default` so a call site
+/// names only what it sets (C15): `PushNote { id, title, ..Default::default() }`.
+#[derive(Clone, Debug, Default)]
 pub struct PushNote {
     pub id: String,
     pub title: String,
@@ -552,6 +615,10 @@ pub struct PushNote {
     /// VERSION the worker and the pages record as bannered, so one version
     /// of a row is shown once per browser and a refreshed row again.
     pub created_at: String,
+    /// Delivery headers (W2-E sets them per category); `None` sends wave 1's.
+    pub ttl_secs: Option<u32>,
+    pub urgency: Option<Urgency>,
+    pub topic: Option<String>,
 }
 
 /// Title and body bounds before the byte budget applies.
@@ -837,6 +904,7 @@ async fn deliver_one(
     subject: &str,
     payload: &[u8],
     minimal: &[u8],
+    note: &PushNote,
     (endpoint, p256dh_b64, auth_b64): (String, String, String),
 ) {
     // Decode the subscription's key material; unreadable rows are dead
@@ -885,6 +953,9 @@ async fn deliver_one(
                 endpoint: endpoint.clone(),
                 authorization,
                 body,
+                ttl_secs: note.ttl_secs,
+                urgency: note.urgency,
+                topic: note.topic.clone(),
             })
             .await
         };
@@ -967,7 +1038,9 @@ pub async fn deliver_push_with(
     use futures_util::StreamExt as _;
     futures_util::stream::iter(rows)
         .for_each_concurrent(PER_USER_PARALLEL, |row| {
-            deliver_one(pg, &keys, post, policy, subject, &payload, &minimal, row)
+            deliver_one(
+                pg, &keys, post, policy, subject, &payload, &minimal, note, row,
+            )
         })
         .await;
 }
@@ -994,6 +1067,12 @@ pub fn install_push_plane(pg: PgPool, sb: SecretBox) {
     });
 }
 
+/// Whether this process can push at all (the plane is installed at boot).
+/// A row filed while it is not records no `pushed_at`.
+pub fn push_plane_installed() -> bool {
+    PLANE.get().is_some()
+}
+
 /// The single writer's hook: every notification row that lands with an
 /// in-app or both route also reaches closed tabs. Detached — a push service
 ///'s latency must never ride a request — and quiet: the row in the database
@@ -1008,6 +1087,259 @@ pub fn push_notification(user_id: &str, note: PushNote) {
     tokio::spawn(async move {
         deliver_push(&pg, &sb, &post, &user_id, &note).await;
     });
+}
+
+// ── Devices: the person's own subscriptions, as a status panel reads them ────
+
+/// One device browser, as `GET /api/push/devices` serves it (`to_wire`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Device {
+    pub id: String,
+    /// "Chrome on Linux", from the User-Agent the subscription was filed with.
+    pub label: String,
+    pub created_at: String,
+    pub last_seen_at: String,
+    pub last_attempt_at: Option<String>,
+    pub last_status: Option<i32>,
+    /// What the push service last said, as plain text of at most 120
+    /// characters: an endpoint's body is whatever its operator (or an
+    /// attacker holding the endpoint) chose to answer.
+    pub last_error: Option<String>,
+    pub failures: i32,
+    /// Filed by the session asking.
+    pub this_session: bool,
+}
+
+impl Device {
+    /// The wire shape, camelCase, in field order.
+    pub fn to_wire(&self) -> Value {
+        serde_json::json!({
+            "id": self.id,
+            "label": self.label,
+            "createdAt": self.created_at,
+            "lastSeenAt": self.last_seen_at,
+            "lastAttemptAt": self.last_attempt_at,
+            "lastStatus": self.last_status,
+            "lastError": self.last_error,
+            "failures": self.failures,
+            "thisSession": self.this_session,
+        })
+    }
+}
+
+/// The longest `last_error` a client is shown.
+pub const DEVICE_ERROR_CHARS: usize = 120;
+/// The longest User-Agent a row keeps.
+pub const USER_AGENT_CHARS: usize = 300;
+
+/// A User-Agent as stored: trimmed, control characters dropped, at most 300
+/// characters; None when nothing is left.
+pub fn stored_user_agent(raw: Option<&str>) -> Option<String> {
+    let ua: String = raw?
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(USER_AGENT_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    (!ua.is_empty()).then_some(ua)
+}
+
+/// "<browser> on <OS>" from a User-Agent, or "Browser" when it says nothing
+/// recognisable. Order matters: Edge and Opera carry "Chrome", Chrome carries
+/// "Safari", and an iPad says "Mac OS X".
+pub fn device_label(user_agent: Option<&str>) -> String {
+    let ua = user_agent.unwrap_or("");
+    let browser = if ua.contains("Edg/") || ua.contains("EdgA/") || ua.contains("EdgiOS/") {
+        "Edge"
+    } else if ua.contains("OPR/") || ua.contains("Opera") {
+        "Opera"
+    } else if ua.contains("Firefox/") || ua.contains("FxiOS/") {
+        "Firefox"
+    } else if ua.contains("Chromium/") {
+        "Chromium"
+    } else if ua.contains("Chrome/") || ua.contains("CriOS/") {
+        "Chrome"
+    } else if ua.contains("Safari/") || ua.contains("AppleWebKit/") {
+        "Safari"
+    } else {
+        ""
+    };
+    let os = if ua.contains("iPhone") || ua.contains("iPad") || ua.contains("iPod") {
+        "iOS"
+    } else if ua.contains("Android") {
+        "Android"
+    } else if ua.contains("CrOS") {
+        "ChromeOS"
+    } else if ua.contains("Mac OS X") || ua.contains("Macintosh") {
+        "macOS"
+    } else if ua.contains("Windows") {
+        "Windows"
+    } else if ua.contains("Linux") || ua.contains("X11") {
+        "Linux"
+    } else {
+        ""
+    };
+    match (browser, os) {
+        ("", "") => "Browser".into(),
+        (b, "") => b.into(),
+        ("", o) => format!("Browser on {o}"),
+        (b, o) => format!("{b} on {o}"),
+    }
+}
+
+/// `last_error` as a client may see it: markup removed, control characters
+/// and runs of whitespace collapsed to one space, at most 120 characters.
+pub fn plain_error(raw: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    let mut space = false;
+    for c in raw.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => {
+                in_tag = false;
+                space = true;
+            }
+            _ if in_tag => {}
+            c if c.is_control() || c.is_whitespace() => space = true,
+            c => {
+                if space && !out.is_empty() {
+                    out.push(' ');
+                }
+                space = false;
+                out.push(c);
+            }
+        }
+    }
+    if out.chars().count() > DEVICE_ERROR_CHARS {
+        let mut cut: String = out.chars().take(DEVICE_ERROR_CHARS - 1).collect();
+        cut.push('…');
+        return cut;
+    }
+    out
+}
+
+type DeviceRow = (
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    Option<i32>,
+    Option<String>,
+    i32,
+    Option<String>,
+);
+
+/// A timestamptz column as the wire's ISO shape (ms precision, UTC, `Z`).
+macro_rules! iso_col {
+    ($c:literal) => {
+        concat!(
+            "to_char(",
+            $c,
+            " at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')"
+        )
+    };
+}
+
+/// The person's device browsers, newest first, with which one the asking
+/// session filed (`session_hash`, the hex SHA-256 of its id).
+pub async fn list_devices(
+    pg: &PgPool,
+    user_id: &str,
+    session_hash: Option<&str>,
+) -> Result<Vec<Device>, sqlx::Error> {
+    let rows: Vec<DeviceRow> = sqlx::query_as(concat!(
+        "select id::text, user_agent, ",
+        iso_col!("created_at"),
+        ", ",
+        iso_col!("last_seen_at"),
+        ", ",
+        iso_col!("last_attempt_at"),
+        ", last_status, last_error, failures, session_hash \
+         from push_subscriptions where user_id = $1::uuid \
+         order by created_at desc, id"
+    ))
+    .bind(user_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, ua, created, seen, attempt, status, error, failures, hash)| Device {
+                id,
+                label: device_label(ua.as_deref()),
+                created_at: created,
+                last_seen_at: seen,
+                last_attempt_at: attempt,
+                last_status: status,
+                last_error: error.as_deref().map(plain_error).filter(|e| !e.is_empty()),
+                failures,
+                this_session: session_hash.is_some() && hash.as_deref() == session_hash,
+            },
+        )
+        .collect())
+}
+
+/// Retire one of the caller's own device browsers; false when no row of
+/// theirs has that id (another person's id answers the same false).
+pub async fn delete_device(pg: &PgPool, user_id: &str, id: &str) -> Result<bool, sqlx::Error> {
+    let res =
+        sqlx::query("delete from push_subscriptions where id = $1::uuid and user_id = $2::uuid")
+            .bind(id)
+            .bind(user_id)
+            .execute(pg)
+            .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Whether `id` is one of the caller's own device browsers.
+pub async fn owns_device(pg: &PgPool, user_id: &str, id: &str) -> Result<bool, sqlx::Error> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "select 1 from push_subscriptions where id = $1::uuid and user_id = $2::uuid",
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.is_some())
+}
+
+/// What a per-device test push did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceTest {
+    pub id: String,
+    /// The push service's status, or None when nothing answered.
+    pub status: Option<u16>,
+    pub ms: u64,
+    pub error: Option<String>,
+}
+
+impl DeviceTest {
+    /// The wire shape (`device` in the test route's answer).
+    pub fn to_wire(&self) -> Value {
+        serde_json::json!({
+            "id": self.id,
+            "status": self.status,
+            "ms": self.ms,
+            "error": self.error,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TestError {
+    /// The test send is not built yet (phase 0) or the plane is absent.
+    NotReady,
+    /// Not one of the caller's devices.
+    NotFound,
+}
+
+/// Send one test push to one of the person's devices. A STUB in phase 0:
+/// it answers NotReady, and the route says 501. W2-E implements it.
+pub async fn send_test(_user_id: &str, _device_id: &str) -> Result<DeviceTest, TestError> {
+    Err(TestError::NotReady)
 }
 
 #[cfg(test)]
@@ -1141,6 +1473,7 @@ mod tests {
             kind: "plan-share".into(),
             renotify: false,
             created_at: "2026-10-31T12:00:00.000Z".into(),
+            ..Default::default()
         }
     }
 
@@ -1332,5 +1665,95 @@ mod tests {
         assert!(authz.starts_with("vapid t="));
         assert!(authz.ends_with(&format!(", k={want_k}")));
         assert_eq!(point.as_bytes().len(), 65);
+    }
+
+    // Wave 1's headers when a note carries none; a carried value wins; a
+    // topic the services would refuse is dropped, not sent.
+    #[test]
+    fn delivery_headers_default_to_wave_ones() {
+        let post = |ttl, urgency, topic: Option<&str>| PushPost {
+            endpoint: "https://push.example/x".into(),
+            authorization: "vapid t=x, k=y".into(),
+            body: vec![],
+            ttl_secs: ttl,
+            urgency,
+            topic: topic.map(str::to_string),
+        };
+        assert_eq!(
+            post_headers(&post(None, None, None)),
+            vec![
+                ("TTL", "3600".to_string()),
+                ("Urgency", "normal".to_string())
+            ]
+        );
+        assert_eq!(
+            post_headers(&post(Some(60), Some(Urgency::High), Some("dm-c1"))),
+            vec![
+                ("TTL", "60".to_string()),
+                ("Urgency", "high".to_string()),
+                ("Topic", "dm-c1".to_string())
+            ]
+        );
+        assert_eq!(post_headers(&post(None, None, Some("has space"))).len(), 2);
+        assert_eq!(
+            post_headers(&post(None, None, Some(&"a".repeat(33)))).len(),
+            2
+        );
+        assert_eq!(Urgency::VeryLow.as_header(), "very-low");
+    }
+
+    #[test]
+    fn devices_are_named_from_their_user_agent() {
+        for (ua, label) in [
+            (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+                "Chrome on Linux",
+            ),
+            (
+                "Mozilla/5.0 (X11; Linux x86_64; rv:144.0) Gecko/20100101 Firefox/144.0",
+                "Firefox on Linux",
+            ),
+            (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15",
+                "Safari on macOS",
+            ),
+            (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0",
+                "Edge on Windows",
+            ),
+            (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1",
+                "Safari on iOS",
+            ),
+            (
+                "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Mobile Safari/537.36",
+                "Chrome on Android",
+            ),
+            ("curl/8.9", "Browser"),
+        ] {
+            assert_eq!(device_label(Some(ua)), label, "{ua}");
+        }
+        assert_eq!(device_label(None), "Browser");
+        assert_eq!(stored_user_agent(Some("  \u{7}  ")), None);
+        assert_eq!(
+            stored_user_agent(Some(&"x".repeat(400))).unwrap().len(),
+            300
+        );
+    }
+
+    // An endpoint's answer is attacker-shaped: no markup, no control
+    // characters, at most 120 characters reach a client.
+    #[test]
+    fn a_device_error_is_plain_and_short() {
+        let planted = format!(
+            "500 <html><head><script>alert(1)</script></head><body>\u{1b}[31m{}\r\nbad\u{0}</body></html>",
+            "x".repeat(480)
+        );
+        let e = plain_error(&planted);
+        assert!(e.chars().count() <= 120, "{}", e.chars().count());
+        assert!(!e.contains('<') && !e.contains('>'));
+        assert!(!e.chars().any(char::is_control));
+        assert!(e.starts_with("500 alert(1) [31mxxx"), "{e}");
+        assert_eq!(plain_error("410  Gone\n"), "410 Gone");
     }
 }

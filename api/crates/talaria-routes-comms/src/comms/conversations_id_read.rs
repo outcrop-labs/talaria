@@ -4,7 +4,10 @@
 // turn — mark the bell rows pointing at the thread read (opening the thread
 // is the same gesture as clicking its notification). The same contract as
 // /api/channels/{id}/read, gated by the conversations' own access rule: the
-// owner, or a member of the plan. An absent seq means "the thread's latest"
+// owner, or a member of the plan — and, like it, tells the person's other
+// tabs and devices which rows were read (it published nothing before the
+// notification contract, so a thread read in one tab left the bell up in the
+// others). An absent seq means "the thread's latest"
 // — the context menu's Mark read knows WHICH thread, not its seq, and a
 // caller that had to load the thread to clear it would be a mark-read that
 // opens what it marks.
@@ -17,6 +20,7 @@ use serde_json::json;
 use talaria_body::{NumKind, optional_number_member};
 use talaria_conversations::{conversation_accessible, latest_message_seq, mark_conversation_read};
 use talaria_error::{house_error, internal, object_or_400};
+use talaria_notify::{NotifyDeps, publish_read};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -80,12 +84,18 @@ pub async fn post(
     // gesture the bell's own click performs, arriving by the other door.
     // A failed sweep must not fail the read: the cursor advanced, and the
     // rows will clear on the next read (or the click that still works).
-    let mut cleared = 0;
+    let mut cleared: Vec<String> = Vec::new();
     if seq >= latest {
-        match talaria_notify::clear_thread_notifications(&state.pg, &user.id, &id).await {
-            Ok(n) => cleared = n,
+        match talaria_notify::clear_thread_notification_ids(&state.pg, &user.id, &id).await {
+            Ok(ids) => cleared = ids,
             Err(e) => tracing::error!("[conversations] notification sweep on read failed: {e}"),
         }
     }
-    Ok(Json(json!({ "ok": true, "cleared": cleared })).into_response())
+    // READ-SYNC, as a channel read does: the other tabs drop their bell and
+    // close the banners for exactly these rows.
+    if !cleared.is_empty() {
+        let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+        publish_read(&notify, &user.id, &cleared, false).await;
+    }
+    Ok(Json(json!({ "ok": true, "cleared": cleared.len() })).into_response())
 }

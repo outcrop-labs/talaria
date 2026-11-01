@@ -7,7 +7,11 @@ use talaria_realtime::{UserEvent, publish_user};
 
 use crate::NotifyDeps;
 use crate::brief::mark_brief_stale;
+use crate::inbox::mark_read_by_href;
 use crate::write::{NotificationInput, add_notification};
+
+/// The thread producers' own feature flags (I-23). W2-P adds its own here.
+pub const FEATURES: &[&str] = &[];
 
 /// The members of a channel — who a message in it might be about.
 ///
@@ -213,37 +217,41 @@ fn notification_href(
 /// calls this once the advanced cursor covers the thread's latest turn:
 /// every unread notification pointing at the thread (its href, whatever
 /// kind filed it) is now seen — the row's whole job was to draw the reader
-/// here. Returns how many rows it cleared, so the caller can tell the client
-/// whether the bell owes it a refetch. A reply landing DURING the sweep
+/// here. Returns the ids it cleared, so the caller can publish the read-sync
+/// event (and tell the client whether the bell owes it a refetch). A reply landing DURING the sweep
 /// files its own fresh row after — the writer's cursor gate reads the
 /// already-advanced cursor, and a reply newer than that cursor rightly
 /// rings again.
-pub async fn clear_thread_notifications(
+pub async fn clear_thread_notification_ids(
     pg: &PgPool,
     user_id: &str,
     conversation_id: &str,
-) -> Result<u64, sqlx::Error> {
+) -> Result<Vec<String>, sqlx::Error> {
     let row: Option<(String, String)> =
         sqlx::query_as("select kind, agent_model from conversations where id = $1::uuid")
             .bind(conversation_id)
             .fetch_optional(pg)
             .await?;
     let Some((kind, agent_model)) = row else {
-        return Ok(0); // the access gate already proved the thread exists
+        return Ok(Vec::new()); // the access gate already proved the thread exists
     };
     let Some(href) = conversation_notification_href(pg, &kind, &agent_model, conversation_id).await
     else {
-        return Ok(0);
+        return Ok(Vec::new());
     };
-    let res = sqlx::query(
-        "update notifications set read_at = now() \
-         where user_id = $1::uuid and href = $2 and read_at is null",
-    )
-    .bind(user_id)
-    .bind(&href)
-    .execute(pg)
-    .await?;
-    Ok(res.rows_affected())
+    mark_read_by_href(pg, user_id, &href).await
+}
+
+/// `clear_thread_notification_ids`, answering how many — wave 1's signature,
+/// kept for its callers.
+pub async fn clear_thread_notifications(
+    pg: &PgPool,
+    user_id: &str,
+    conversation_id: &str,
+) -> Result<u64, sqlx::Error> {
+    clear_thread_notification_ids(pg, user_id, conversation_id)
+        .await
+        .map(|ids| ids.len() as u64)
 }
 
 /// An agent reply that landed while its readers were away: file ONE

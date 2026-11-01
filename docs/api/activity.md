@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-11 routes.
+15 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -20,6 +20,10 @@
 | [`/api/notifications`](#apinotifications) | GET | `session` |
 | [`/api/notifications`](#apinotifications) | PUT | `session` |
 | [`/api/notifications`](#apinotifications) | PATCH | `session` |
+| [`/api/notifications/ack`](#apinotificationsack) | POST | `session` |
+| [`/api/notifications/test`](#apinotificationstest) | POST | `session` |
+| [`/api/push/devices`](#apipushdevices) | GET | `session` |
+| [`/api/push/devices/{id}`](#apipushdevicesid) | DELETE | `session` |
 | [`/api/push/key`](#apipushkey) | GET | `session` |
 | [`/api/push/subscribe`](#apipushsubscribe) | POST | `session` |
 | [`/api/push/unsubscribe`](#apipushunsubscribe) | POST | `session` |
@@ -104,15 +108,15 @@ Source: [`api/crates/talaria-routes-comms/src/activity/notifications.rs`](../../
 
 > /api/notifications. The caller's inbox: GET is the bell's one read (list,
 > unread, prefs, digest, the instance switch, whether THIS user may flip it,
-> and the desktop-alerts soft ask's memory), PUT marks read — by ids, by
-> href, or all of them — and tells the person's other tabs, and PATCH
+> and the desktop-alerts soft ask's memory — and, since the contract, the v2
+> rows, the For-you count, the notify seq read in the same statement as the
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{notifications, unread, prefs, digest, delivery, canSetDelivery, prompt}` | 200 | — |
+| GET | `session` | — | `{notifications, unread, prefs, digest, delivery, canSetDelivery, prompt, unreadForYou, seq, classes, channels, dnd, emailFrequency, features, next}` | 200 | — |
 | PUT | `session` | [body](#put-apinotifications-body) | `{ok}` | 200, 400 | — |
-| PATCH | `session` | [body](#patch-apinotifications-body) | `{prefs, digest, delivery, canSetDelivery, prompt}` | 200, 400, 403 | audit |
+| PATCH | `session` | [body](#patch-apinotifications-body) | `{prefs, digest, delivery, canSetDelivery, prompt, channels, dnd, emailFrequency}` | 200, 400, 403 | audit |
 
 ### PUT `/api/notifications` body
 
@@ -126,6 +130,75 @@ Source: [`api/crates/talaria-routes-comms/src/activity/notifications.rs`](../../
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `digest` | `enum(on|off)` |  |
+| `emailFrequency` | `enum(15m|1h|1d|off)` |  |
+
+## `/api/notifications/ack`
+
+Source: [`api/crates/talaria-routes-comms/src/activity/notifications_ack.rs`](../../api/crates/talaria-routes-comms/src/activity/notifications_ack.rs)
+
+> POST /api/notifications/ack. A client SURFACED these rows to the person —
+> toasted them to someone looking, or posted an OS banner (I-18) — and says
+> so: `{ids: uuid[] ≤ 200}` → `{ok, acked}`. Only the caller's own rows are
+> touched and the first ack wins (`surfaced_at`). W2-E's deferred push fires
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apinotificationsack-body) | `{ok, acked}` | 200, 400 | — |
+
+### POST `/api/notifications/ack` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `ids` | `uuid[]()` |  |
+
+## `/api/notifications/test`
+
+Source: [`api/crates/talaria-routes-comms/src/activity/notifications_test.rs`](../../api/crates/talaria-routes-comms/src/activity/notifications_test.rs)
+
+> POST /api/notifications/test. One test push to one of the caller's own
+> devices, for the status panel: `{deviceId: uuid}` → `{ok, device: {id,
+> status, ms, error}}`. 404 when the device is not the caller's; 429 with
+> `Retry-After` and `{error, retryAfter}` past 5 calls in 10 minutes per
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apinotificationstest-body) | `{ok, device}` | 200, 400, 404, 429, 501 | — |
+
+### POST `/api/notifications/test` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `deviceId` | `uuid` |  |
+
+## `/api/push/devices`
+
+Source: [`api/crates/talaria-routes-comms/src/activity/push.rs`](../../api/crates/talaria-routes-comms/src/activity/push.rs)
+
+> /api/push — the browser's half of the closed-tab plane. GET /key hands the
+> instance's VAPID public key (what pushManager.subscribe wants as
+> applicationServerKey); POST /subscribe files a device browser's
+> subscription (the push service's endpoint plus the two key halves RFC 8291
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{devices}` | 200 | — |
+
+## `/api/push/devices/{id}`
+
+Source: [`api/crates/talaria-routes-comms/src/activity/push.rs`](../../api/crates/talaria-routes-comms/src/activity/push.rs)
+
+> /api/push — the browser's half of the closed-tab plane. GET /key hands the
+> instance's VAPID public key (what pushManager.subscribe wants as
+> applicationServerKey); POST /subscribe files a device browser's
+> subscription (the push service's endpoint plus the two key halves RFC 8291
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| DELETE | `session` | — | `{ok}` | 200, 404 | — |
 
 ## `/api/push/key`
 

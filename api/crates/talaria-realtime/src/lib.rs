@@ -357,8 +357,13 @@ pub enum UserEvent {
         run_id: String,
         state: RunState,
     },
+    /// A row landed or re-alerted. `seq` is the person's notify seq the write
+    /// took (I-10); absent from a writer that predates the contract. A frame
+    /// carrying it gets an SSE `id:` once the hub replays (W2-H).
     Notification {
         notification_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<i64>,
     },
     Brief {
         brief_id: String,
@@ -383,8 +388,40 @@ pub enum UserEvent {
     /// a number and nothing else, so a second tab's bell drops the moment the
     /// first one clears it instead of on its next poll. Consumers that do not
     /// know it ignore it (the shell's watcher, older pages).
+    ///
+    /// The v2 fields (I-16), each absent when not known: `unreadForYou` (Needs
+    /// you + Direct), `readIds` — exactly the rows just read, at most 100, so
+    /// every client can close their OS banners — `all` (a mark-all), and
+    /// `resync` (more than 100 were read: refetch instead of reading ids).
     Notifications {
         unread: i64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unread_for_you: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        read_ids: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        all: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        resync: Option<bool>,
+    },
+    /// Which of the person's clients is the one they are on (I-17), published
+    /// only when that answer changes: the most recent `looking` client, the
+    /// most recent `active` one, and how many report at all.
+    Presence {
+        looking: Option<String>,
+        active: Option<String>,
+        clients: u32,
+    },
+    /// The stream's replay state (I-19, implemented by W2-H): every row up to
+    /// `seq` was sent (`complete`), or the client must read `?since` itself.
+    Resync {
+        seq: i64,
+        complete: bool,
+    },
+    /// The session behind this stream ended (`state: "ended"`); the stream
+    /// closes after it (W2-H).
+    Session {
+        state: String,
     },
 }
 
@@ -814,10 +851,71 @@ mod tests {
         drop(tx);
     }
 
-    // The new read-sync event is a number and a tag, nothing else.
+    // The read-sync event is a number and a tag; the v2 fields are absent
+    // unless set, so a wave-1 publisher's frame is byte-identical.
     #[test]
     fn the_notifications_event_is_id_shaped() {
-        let s = serde_json::to_string(&UserEvent::Notifications { unread: 3 }).unwrap();
+        let s = serde_json::to_string(&UserEvent::Notifications {
+            unread: 3,
+            unread_for_you: None,
+            read_ids: None,
+            all: None,
+            resync: None,
+        })
+        .unwrap();
         assert_eq!(s, "{\"type\":\"notifications\",\"unread\":3}");
+        let s = serde_json::to_string(&UserEvent::Notifications {
+            unread: 1,
+            unread_for_you: Some(0),
+            read_ids: Some(vec!["a".into(), "b".into()]),
+            all: Some(false),
+            resync: None,
+        })
+        .unwrap();
+        assert_eq!(
+            s,
+            "{\"type\":\"notifications\",\"unread\":1,\"unreadForYou\":0,\"readIds\":[\"a\",\"b\"],\"all\":false}"
+        );
+    }
+
+    // The contract's wire (I-17, I-19): every new frame is tag + ids/flags.
+    #[test]
+    fn the_v2_frames_are_pinned() {
+        let j = |e: &UserEvent| serde_json::to_string(e).unwrap();
+        assert_eq!(
+            j(&UserEvent::Notification {
+                notification_id: "n1".into(),
+                seq: None
+            }),
+            "{\"type\":\"notification\",\"notificationId\":\"n1\"}"
+        );
+        assert_eq!(
+            j(&UserEvent::Notification {
+                notification_id: "n1".into(),
+                seq: Some(7)
+            }),
+            "{\"type\":\"notification\",\"notificationId\":\"n1\",\"seq\":7}"
+        );
+        assert_eq!(
+            j(&UserEvent::Presence {
+                looking: Some("c-a".into()),
+                active: None,
+                clients: 2
+            }),
+            "{\"type\":\"presence\",\"looking\":\"c-a\",\"active\":null,\"clients\":2}"
+        );
+        assert_eq!(
+            j(&UserEvent::Resync {
+                seq: 9,
+                complete: false
+            }),
+            "{\"type\":\"resync\",\"seq\":9,\"complete\":false}"
+        );
+        assert_eq!(
+            j(&UserEvent::Session {
+                state: "ended".into()
+            }),
+            "{\"type\":\"session\",\"state\":\"ended\"}"
+        );
     }
 }

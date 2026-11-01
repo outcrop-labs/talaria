@@ -12,6 +12,7 @@ pub mod channels_id_members;
 pub mod channels_id_messages;
 pub mod channels_id_messages_msgid;
 pub mod channels_id_messages_msgid_reactions;
+pub mod channels_id_notify;
 pub mod channels_id_plan;
 pub mod channels_id_read;
 pub mod channels_id_teams;
