@@ -232,25 +232,36 @@ test.describe('the bell', () => {
 
 test.describe('the matrix', () => {
   test('its rows are the served classes, for a member and for an admin', async ({ browser }) => {
-    for (const [key, role, want] of [
-      ['member', 'member', 9],
-      ['admin', 'admin', 11],
-    ] as const) {
-      const p = await person(`matrix-${key}`, role)
+    // The registry grows (W2-E adds `account`), so the counts are read from
+    // the server: the contract alone serves 9 and 11.
+    const served: Record<string, number> = {}
+    let adminOnly = 0
+    for (const role of ['member', 'admin'] as const) {
+      const p = await person(`matrix-${role}`, role)
       const ctx = await contextFor(browser, p)
       const page = await ctx.newPage()
       await page.goto('/settings/notifications')
       const payload = await getPayload(page)
-      expect(payload.classes?.length, `${role} classes served`).toBe(want)
-      await expect(page.locator('[data-matrix-row]')).toHaveCount(want)
+      const classes = payload.classes ?? []
+      served[role] = classes.length
+      if (role === 'member') expect(classes.filter((c) => c.adminOnly), 'a member is served no admin-only class').toEqual([])
+      else adminOnly = classes.filter((c) => c.adminOnly).length
+      await expect(page.locator('[data-matrix-row]')).toHaveCount(classes.length)
       const shown = await page.locator('[data-matrix-row]').evaluateAll((els) => els.map((e) => e.getAttribute('data-matrix-row')))
-      expect(new Set(shown)).toEqual(new Set(payload.classes!.map((c) => c.id)))
+      const known = ['needs_you', 'direct', 'following', 'workspace']
+      expect(shown, 'the rows, in registry order within their groups').toEqual([
+        ...known.flatMap((cat) => classes.filter((c) => c.category === cat).map((c) => c.id)),
+        ...classes.filter((c) => !known.includes(c.category)).map((c) => c.id),
+      ])
       // In-app cannot be unchecked.
       const inApp = page.locator('[data-matrix-row="dm"] [data-matrix-cell="inApp"] input')
       await expect(inApp).toBeChecked()
       await expect(inApp).toBeDisabled()
       await ctx.close()
     }
+    expect(adminOnly).toBeGreaterThan(0)
+    expect(served.admin).toBe(served.member! + adminOnly)
+    test.info().annotations.push({ type: 'classes', description: `member ${served.member}, admin ${served.admin}` })
   })
 
   test('Push off for direct messages saves, survives a reload and derives the legacy route', async ({ browser }) => {
