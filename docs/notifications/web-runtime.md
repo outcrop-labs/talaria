@@ -51,7 +51,9 @@ A board's, a channel's or a run's stream in a tab nobody can see is a socket
 and a Redis subscriber spent on nothing. `openStream(url, fn, {pauseWhenHidden:
 true, onResume})` closes the stream after the tab has been hidden for 30 s.
 When the tab is shown again, `onResume` runs first (refetch what the stream
-would have said), then the stream reopens, and its `onOpen` says `resumed`.
+would have said, so it shows at once), then the stream reopens, and its
+`onOpen` says `resumed`; the callers read once more then, so a change landing
+between the first read and the subscription is not left for the next event.
 
 - Boards refetch their cards; channels their messages and the channel; the
   work-watch pane reads the run's own record (`/api/tasks/{id}/work-sessions`)

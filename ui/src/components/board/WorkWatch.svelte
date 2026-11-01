@@ -89,8 +89,10 @@
         reconnect: true,
         pauseWhenHidden: true,
         onResume: readRun,
+        // Once live again, read once more: a transition between the resume's
+        // read and the subscription is not left unseen.
         onOpen: ({ first, resumed }) => {
-          if (!first && !resumed) void readRun()
+          if (!first || resumed) void readRun()
         },
       },
     )

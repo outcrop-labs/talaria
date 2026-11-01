@@ -187,12 +187,14 @@ export function useChannelEvents(
       // Reconnecting (lib/sse.ts): a deploy's 502 no longer leaves the room
       // silently frozen, and a REopen refetches what the gap may have dropped.
       // Paused while the tab is hidden (BT-3): the stream closes after 30 s
-      // out of sight, and coming back refetches the room first, then reopens.
+      // out of sight. Coming back refetches the room at once, reopens, and
+      // refetches again once the stream is live (subscribe, then read: a
+      // message landing between the two is not left for the next event).
       reconnect: true,
       pauseWhenHidden: true,
       onResume: catchUp,
       onOpen: ({ first, resumed }) => {
-        if (first || resumed) return;
+        if (first && !resumed) return;
         catchUp();
       },
     });
