@@ -115,6 +115,20 @@ export function isLookedAt(t: TabState, now: number): boolean {
   return t.visible && t.focused && now - t.at <= STALE_MS
 }
 
+/** Does Do Not Disturb hold arrivals NOW? The server computes `active` when
+ *  the list is read, and the list can be a poll old (a minute, in a page
+ *  hidden long enough for the browser to throttle it). A pause or a quiet
+ *  period that has ENDED since (its `until` is past) holds nothing: else the
+ *  first arrival after it ends would be recorded silently and never alerted.
+ *  (One that has started since the read is the server's to hold: it files
+ *  rows written during DND as `feed`.) */
+export function dndHolds(dnd: { active?: boolean; until?: string | null } | null | undefined, now: number): boolean {
+  if (!dnd?.active) return false
+  if (!dnd.until) return true
+  const end = Date.parse(dnd.until)
+  return !Number.isFinite(end) || end > now
+}
+
 /** Is this tab LOOKING: shown, focused, and touched within 60 s (I-17)? */
 export function selfLooking(self: DecideInput['self'], now: number): boolean {
   const at = self.lastInputAt ?? 0

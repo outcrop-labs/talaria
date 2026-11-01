@@ -20,7 +20,7 @@
   import { canvasDot, startAmbient, type Ambient } from '@/lib/notify-ambient'
   import { PersistedArrivals, coalesce, frameNeedsRead, present, readSince, summaryTitle, type Arrival, type SincePage } from '@/lib/notify-arrivals'
   import { idbBanneredStore, markBannered, wasBannered } from '@/lib/notify-bannered'
-  import { CLAIM_WINDOW_MS, atPath, decide, selfLooking, visitReadIds, winnerIsHere, type DecideInput } from '@/lib/notify-decide'
+  import { CLAIM_WINDOW_MS, atPath, decide, dndHolds, selfLooking, visitReadIds, winnerIsHere, type DecideInput } from '@/lib/notify-decide'
   import { blockedSteps, detectBrowser, type BlockedSteps } from '@/lib/notify-help'
   import type { NotifyLeader } from '@/lib/notify-leader'
   import { openNotification } from '@/lib/notify-open'
@@ -436,14 +436,17 @@
       focused = false
     }
     const d = query.data
+    const now = Date.now()
     return {
       self: { visible, focused, tabId: l?.tabId, lastInputAt: Math.max(lastInputAt(), l?.lastInputAt() ?? 0), clientId: me },
       others: l?.others() ?? [],
       isLeader: l?.isLeader() ?? true,
       bannersOn: browserNotifyEnabled(),
-      dnd: d?.dnd ? { active: !!d.dnd.active } : null,
+      // As of NOW, not as of the list's read: a pause that has ended since
+      // holds nothing (dndHolds).
+      dnd: d?.dnd ? { active: dndHolds(d.dnd, now) } : null,
       winner: has('presence-store') ? presenceWinner() : null,
-      now: Date.now(),
+      now,
     }
   }
 

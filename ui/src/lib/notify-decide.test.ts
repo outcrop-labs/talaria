@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { STALE_MS, atPath, decide, hrefPath, selfLooking, visitReadIds, winnerIsHere, type DecideInput, type TabState } from './notify-decide'
+import { STALE_MS, atPath, decide, dndHolds, hrefPath, selfLooking, visitReadIds, winnerIsHere, type DecideInput, type TabState } from './notify-decide'
 
 const NOW = 1_800_000_000_000
 const tab = (over: Partial<TabState> = {}): TabState => ({
@@ -230,5 +230,29 @@ describe('the helpers', () => {
       { id: 'else', href: '/comms/channel/y', readAt: null, category: 'direct' },
     ]
     expect(visitReadIds(rows, '/comms/channel/x', O)).toEqual(['dm', 'fol'])
+  })
+})
+
+describe('dndHolds — Do Not Disturb as of now, not as of the list read', () => {
+  const iso = (ms: number) => new Date(ms).toISOString()
+  it('off, or absent, holds nothing', () => {
+    expect(dndHolds(null, NOW)).toBe(false)
+    expect(dndHolds(undefined, NOW)).toBe(false)
+    expect(dndHolds({ active: false, until: iso(NOW + 60_000) }, NOW)).toBe(false)
+  })
+  it('active with no end, or an end still ahead (until I resume included), holds', () => {
+    expect(dndHolds({ active: true }, NOW)).toBe(true)
+    expect(dndHolds({ active: true, until: null }, NOW)).toBe(true)
+    expect(dndHolds({ active: true, until: iso(NOW + 1) }, NOW)).toBe(true)
+    expect(dndHolds({ active: true, until: '9999-12-31T23:59:59.999Z' }, NOW)).toBe(true)
+  })
+  it('a pause that ended since the list was read holds nothing: the next arrival alerts', () => {
+    expect(dndHolds({ active: true, until: iso(NOW) }, NOW)).toBe(false)
+    expect(dndHolds({ active: true, until: iso(NOW - 5_000) }, NOW)).toBe(false)
+    const row = { ...base, self: { visible: false, focused: false }, isLeader: true }
+    expect(decide({ ...row, dnd: { active: dndHolds({ active: true, until: iso(NOW - 5_000) }, NOW) } })).toBe('banner')
+  })
+  it('an unreadable end is taken as still holding', () => {
+    expect(dndHolds({ active: true, until: 'soon' }, NOW)).toBe(true)
   })
 })
