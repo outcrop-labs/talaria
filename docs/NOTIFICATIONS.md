@@ -56,12 +56,14 @@ The center itself (the bell, the page, the settings, the status panel) is
   header ("TAL-112 · 3 updates"), a row that stands for several events says so ("3
   messages", "Moved 4 times"), and each row says why it reached you ("Mentioned you").
   Clicking a row opens it in place and marks it read. Each row can be marked Done, which
-  also marks it read, or read and unread; the header pauses notifications and marks all
-  read; View all opens the full page.
+  also marks it read, or read and unread; a Done can be undone for a few seconds, and comes
+  back unread if it was. Done clears the notification, not the thing it is about: a direct
+  message marked done still shows in Home's inbox until you read the conversation. The
+  header pauses notifications and marks all read; View all opens the full page.
 - **`/notifications`** is the same inbox on a page: For you, All and Done; unread only, by
   category, and by what happened; as many rows as you scroll; and the keyboard (`j`/`k`
   move, `Enter` opens, `e` Done, `u` read or unread, `x` selects, `Shift+E` Done everything
-  shown or selected, `?` lists them).
+  shown or selected, `z` undoes the last Done, `?` lists them).
 - **Settings → Notifications** is a matrix: one row per kind of notification, grouped as
   Needs you, Direct, Following and Workspace, and one column per channel. **In-app** is
   always on: every notification is kept in your inbox. **Desktop** is a banner on this
@@ -201,8 +203,9 @@ worker's per-row banners.
   resolves to the path `//evil.example`, which a router or `navigate()` reads as another
   host.
 - **DMs.** One unread `dm` row per conversation. A new message refreshes it in place (same
-  id, the newest body, `created_at = now()`), publishes it, and pushes with `renotify`; it
-  sends no new mail. Reading the channel to its newest message clears the row (and any
+  id, the newest body, `created_at = now()`), publishes it, and pushes with `renotify`; its
+  missed-activity mail follows the delivery engine's rules
+  ([delivery.md](./notifications/delivery.md)). Reading the channel to its newest message clears the row (and any
   mention pointing there). An open conversation reads only while the person is looking at
   it, shown and focused (`ui/src/lib/looking.ts`, the rule the toast decision uses too): a
   background tab, a minimized window or an instance behind the desktop shell's launcher

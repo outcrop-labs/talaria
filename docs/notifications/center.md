@@ -35,11 +35,22 @@ invalidation of the bell refreshes the page's views too.
 - **The reason** is the row's `reason`, else the registry's reason for its kind.
 - **Opening a row** is wave 1's one door (`openNotification`): route in place, mark read.
 - **Done also marks read** (O-11, the server's rule). Move to inbox brings a row back read.
+- **Undo.** Each Done and Move to inbox can be taken back for a few seconds: the bell's
+  "Marked done · Undo" line, and on the page the bar under the header or `z`. Undoing a
+  Done puts the rows back exactly: in the inbox, and unread again where they were unread.
+- **Bulk writes** go in slices of 200 ids, the most one `PUT /api/notifications` takes, so
+  `Shift+E` over a long scrolled list marks every row done.
+- **Rows line up.** A row with a person behind it shows their avatar, an agent's row the
+  agent glyph, and any other row its category's glyph, so every title starts at one place.
+  The row's actions show on hover or focus, and always on a screen with no hover.
 - **The degrade rule (I-23).** Without `inbox-v2` there is no Done, no Mark unread, no Done
   view and no paging; For you and All slice the newest 50, and the page's filters run on
   those 50 in the browser. Nothing else changes.
 
 ## The matrix
+
+Under the `sm` breakpoint each row's label takes its own line and the four channels sit
+under it, each with its name; from `sm` up it is one row with column heads.
 
 Its rows are `classes[]`, grouped by category in the order Needs you, Direct, Following,
 Workspace (a category the client does not know goes last, under its id). Members are not
@@ -74,6 +85,8 @@ more `id: '<class id>'` entries. Its allowlist is empty.
 - **Enforcement** is W2-E's (`dnd-enforced`) and the clients' (W2-R, W2-D). Until the api
   serves `dnd-enforced`, Settings says that a pause is saved and shown but that push and
   email may still arrive.
+- **Saves are confirmed in the Do Not Disturb panel itself**, not in the matrix's panel
+  above it.
 
 ## The status panel
 
@@ -91,7 +104,11 @@ Five sections in Settings → Notifications:
 3. **Live connection**: the event stream's state and this tab's role, from `notify-status`
    (W2-R calls its setters; until it does the panel says it is not reported), and where
    alerts go now by the presence winner (I-17): this browser, Talaria Desktop, another
-   browser or tab, or no device active.
+   browser or tab, or nowhere (no device is active). The sentence under it says only what
+   this instance does: that the device being looked at banners and the others stay quiet
+   when the web runtime reports (W2-R), and that push waits while a device is in use only
+   when the api serves `presence-gated-push` (W2-E); before that, it says every alert with
+   Push on is pushed to every registered browser at once.
 4. **Talaria Desktop** (in the shell only): the shell's notification service and its test,
    through the bridge (`desktop_notification_status`, `desktop_notification_test`), with a
    link to Settings → Desktop.
@@ -109,10 +126,15 @@ Five sections in Settings → Notifications:
 | `u` | read when any target is unread, else unread |
 | `x` | select or unselect |
 | `Shift+E` | Done the selection, else every visible row |
+| `z` | undo the last Done or Move to inbox |
 | `?` | the shortcut sheet |
 | `Esc` | clear the selection |
 
-A key typed into a field is the field's; a chord with Ctrl, Cmd or Alt is the browser's.
+A key typed into a text field is the field's (a checkbox is not one: after a click on a
+row's select box the keys still work); a chord with Ctrl, Cmd or Alt is the browser's; a
+key typed while the focus is outside the page (the bell's panel, the account menu) is not
+the page's. Letters are read case-blind and the bulk Done needs a real Shift, so Caps Lock
+neither kills the keyboard nor turns `e` into "Done everything shown".
 Nearing the end of what is loaded, `j` fetches the next page.
 
 ## Files
@@ -126,8 +148,9 @@ Nearing the end of what is loaded, `j` fetches the next page.
   `BrowserNotifications.svelte`
 - `ui/src/lib/notify-center.ts`, `notify-matrix.ts`, `notify-dnd.ts`, `notify-keys.ts`,
   each with its test; `notify-classes.ts` (the list retired)
-- `ui/e2e/notify-center-ui.spec.ts`: the bell, the matrix, DND, the status panel, and (with
-  `inbox-v2`) Done, filters, paging and the keyboard
+- `ui/e2e/notify-center-ui.spec.ts`: the bell, a 390 px window, the matrix, DND, the status
+  panel, and (with `inbox-v2`) Done, undo, filters, paging, the keyboard (Caps Lock and a
+  focused select box included) and a `Shift+E` over 230 rows
 
 ## Verification
 
