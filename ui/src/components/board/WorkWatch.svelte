@@ -56,9 +56,13 @@
   const readRun = async () => {
     void qc.invalidateQueries({ queryKey: ['work-session', taskId] })
     void qc.invalidateQueries({ queryKey: ['task', taskId] })
-    void qc.invalidateQueries({ queryKey: ['work-sessions-history', taskId] })
     try {
-      const { sessions } = await getJson<{ sessions: WorkSessionHistoryRow[] }>(`/api/tasks/${taskId}/work-sessions`)
+      // Through the cache: one request, and the work log shows what it says.
+      const { sessions } = await qc.fetchQuery({
+        queryKey: ['work-sessions-history', taskId],
+        queryFn: () => getJson<{ sessions: WorkSessionHistoryRow[] }>(`/api/tasks/${taskId}/work-sessions`),
+        staleTime: 0,
+      })
       const row = sessions.find((s) => s.runId === runId)
       if (!row) return
       if (row.phase !== undefined) phase = row.phase
