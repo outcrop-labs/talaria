@@ -155,9 +155,13 @@ pub async fn add_notification(
 /// deferred push's due time and `$17` the mail's, as epoch ms. A Realert
 /// coalesce is a new version of the row: it takes this write's push decision
 /// (a pending deferral is replaced, or cancelled when this write does not
-/// push) and forgets the old version's ack (`surfaced_at`), and it arms a
-/// mail only when the row has none pending and none sent — the first mail
-/// stands. A Quiet coalesce changes none of them.
+/// push) and forgets the old version's ack (`surfaced_at`). Its mail: one
+/// already pending stands (the batch carries the row's newest content when
+/// it goes); a row already MAILED is armed again with this write's due time —
+/// a conversation the person is away from is mailed again at their frequency
+/// while it stays unread, as Slack's and Teams' missed-activity mail does,
+/// instead of once and then never; a row the batcher gave up on stays given
+/// up. A Quiet coalesce changes none of them.
 const UPSERT: &str = "insert into notifications \
        (user_id, kind, title, body, href, seq, group_key, count, created_at, updated_at, \
         alert, actor_kind, actor_id, actor_label, entity_type, entity_id, pushed_at, \
@@ -184,11 +188,19 @@ const UPSERT: &str = "insert into notifications \
        push_due_at = case when $15::boolean then to_timestamp($16::bigint / 1000.0) \
                           else notifications.push_due_at end, \
        surfaced_at = case when $15::boolean then null else notifications.surfaced_at end, \
-       email_due_at = case when $15::boolean and notifications.emailed_at is null \
-                                and notifications.email_attempts < 3 \
-                           then coalesce(notifications.email_due_at, \
-                                         to_timestamp($17::bigint / 1000.0)) \
-                           else notifications.email_due_at end \
+       email_due_at = case when not $15::boolean then notifications.email_due_at \
+                           when notifications.emailed_at is not null \
+                             then coalesce(to_timestamp($17::bigint / 1000.0), \
+                                           notifications.email_due_at) \
+                           when notifications.email_attempts < 3 \
+                             then coalesce(notifications.email_due_at, \
+                                           to_timestamp($17::bigint / 1000.0)) \
+                           else notifications.email_due_at end, \
+       emailed_at = case when $15::boolean and $17::bigint is not null then null \
+                         else notifications.emailed_at end, \
+       email_attempts = case when $15::boolean and $17::bigint is not null \
+                                  and notifications.emailed_at is not null then 0 \
+                             else notifications.email_attempts end \
      where notifications.read_at is null and notifications.archived_at is null \
      returning id::text, count, (xmax = 0), \
        (trunc(extract(epoch from created_at) * 1000))::bigint";
@@ -368,10 +380,13 @@ fn announce(deps: &NotifyDeps, user_id: &str, notification_id: &str, seq: i64) {
 /// delete-and-reinsert would lose them; and one row per conversation is what
 /// keeps the bell a list of places, not a transcript.
 ///
-/// NO NEW MAIL. The first row's mail stands; a burst of DMs is one email, not
-/// one per line. The push follows this write's decision, as a Realert
-/// coalesce's does: now, deferred (the old version's ack is forgotten), or
-/// not at all (a pending deferral is cancelled), and `alert` is this write's.
+/// THE MAIL AND THE PUSH follow this write's decision, as a Realert
+/// coalesce's do. Mail: one already pending stands, so a burst of DMs is one
+/// email, not one per line; a conversation already MAILED and still unread
+/// is armed again at the person's frequency, so it is mailed again while they
+/// stay away rather than once and never again. Push: now, deferred (the old
+/// version's ack is forgotten), or not at all (a pending deferral is
+/// cancelled), and `alert` is this write's.
 /// Answers false when the row is gone or was read meanwhile — the caller
 /// files a fresh row then, the ordinary way — and then no seq is spent (the
 /// transaction rolls back).
@@ -406,7 +421,17 @@ pub async fn refresh_notification(
                 pushed_at = case when $7::boolean then now() \
                                  when $8::bigint is not null then null else pushed_at end, \
                 push_due_at = to_timestamp($8::bigint / 1000.0), \
-                surfaced_at = null \
+                surfaced_at = null, \
+                email_due_at = case when emailed_at is not null \
+                                      then coalesce(to_timestamp($10::bigint / 1000.0), \
+                                                    email_due_at) \
+                                    when email_attempts < 3 \
+                                      then coalesce(email_due_at, \
+                                                    to_timestamp($10::bigint / 1000.0)) \
+                                    else email_due_at end, \
+                emailed_at = case when $10::bigint is not null then null else emailed_at end, \
+                email_attempts = case when $10::bigint is not null and emailed_at is not null \
+                                      then 0 else email_attempts end \
          where id = $1::uuid and user_id = $2::uuid and read_at is null \
          returning id::text, (trunc(extract(epoch from created_at) * 1000))::bigint",
     )
@@ -419,6 +444,7 @@ pub async fn refresh_notification(
     .bind(decision.records_push())
     .bind(decision.push_due_ms)
     .bind(decision.alert.as_str())
+    .bind(decision.email_due_ms)
     .fetch_optional(&mut *tx)
     .await?;
     let Some((id, created_ms)) = updated else {

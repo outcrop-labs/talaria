@@ -240,8 +240,8 @@ pub(crate) fn after_write(
 }
 
 /// The tail of `refresh_notification`, after the row was brought up to date:
-/// pushed again now as a re-alert when the decision says so; a deferral is on
-/// the row; never mailed.
+/// pushed again now as a re-alert when the decision says so; a deferral and
+/// the mail are on the row for their jobs.
 pub(crate) fn after_refresh(
     user_id: &str,
     n: &NotificationInput<'_>,
