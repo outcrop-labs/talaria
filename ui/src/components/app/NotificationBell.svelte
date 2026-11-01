@@ -187,9 +187,10 @@
   // where the row is, and the local hide can go (a failure brings it back).
   // The last Done can be taken back for a few seconds, exactly: back in the
   // inbox, and unread again if it was (Done also reads, O-11).
-  let undone = $state<{ id: string; unread: boolean } | null>(null)
+  type Undo = { id: string; unread: boolean; write: Promise<boolean> }
+  let undone = $state.raw<Undo | null>(null)
   let undoTimer: ReturnType<typeof setTimeout> | undefined
-  const offerUndo = (next: { id: string; unread: boolean } | null) => {
+  const offerUndo = (next: Undo | null) => {
     clearTimeout(undoTimer)
     undone = next
     if (next) undoTimer = setTimeout(() => (undone = null), 8_000)
@@ -200,8 +201,9 @@
   })
   const done = (n: CenterRow) => {
     hidden.add(n.id)
-    offerUndo({ id: n.id, unread: !n.readAt })
-    void actions.done([n.id]).then((ok) => {
+    const write = actions.done([n.id])
+    offerUndo({ id: n.id, unread: !n.readAt, write })
+    void write.then((ok) => {
       hidden.delete(n.id)
       if (!ok && undone?.id === n.id) offerUndo(null)
     })
@@ -210,8 +212,9 @@
     const u = undone
     if (!u) return
     offerUndo(null)
-    void actions.restore([u.id]).then((ok) => {
-      if (ok && u.unread) void actions.unread([u.id])
+    // After the Done itself has landed, so the inverse never overtakes it.
+    void u.write.then(async (landed) => {
+      if (landed && (await actions.restore([u.id])) && u.unread) await actions.unread([u.id])
     })
   }
 

@@ -149,10 +149,14 @@
   // Move to inbox can be taken back for a few seconds — the bar under the
   // header, or `z`. An undo of Done puts the rows back exactly: in the inbox,
   // and unread again where they were unread (Done also reads, O-11).
+  // Raw, not a deep proxy: the record is replaced whole, and `ids` keeps its
+  // identity for the failure check below. `write` is the action being undone:
+  // the undo waits for it, so the inverse never reaches the server first.
   const UNDO_MS = 10_000
-  let undo = $state<{ ids: string[]; unread: string[]; restored: boolean } | null>(null)
+  type Undo = { ids: string[]; unread: string[]; restored: boolean; write: Promise<boolean> }
+  let undo = $state.raw<Undo | null>(null)
   let undoTimer: ReturnType<typeof setTimeout> | undefined
-  const offerUndo = (next: { ids: string[]; unread: string[]; restored: boolean } | null) => {
+  const offerUndo = (next: Undo | null) => {
     clearTimeout(undoTimer)
     undo = next
     if (next) undoTimer = setTimeout(() => (undo = null), UNDO_MS)
@@ -165,8 +169,8 @@
     const wasUnread = rowsOf(targets).filter((r) => !r.readAt).map((r) => r.id)
     for (const id of targets) hidden.add(id)
     selection = new Set([...selection].filter((id) => !targets.includes(id)))
-    offerUndo({ ids: targets, unread: wasUnread, restored })
     const write = restored ? actions.restore(targets) : actions.done(targets)
+    offerUndo({ ids: targets, unread: wasUnread, restored, write })
     void write.then((ok) => {
       for (const id of targets) hidden.delete(id)
       // A write that failed has nothing to undo (its toast says why).
@@ -178,12 +182,13 @@
     const u = undo
     if (!u) return
     offerUndo(null)
-    if (u.restored) {
-      void actions.done(u.ids)
-      return
-    }
-    void actions.restore(u.ids).then((ok) => {
-      if (ok && u.unread.length) void actions.unread(u.unread)
+    void u.write.then(async (landed) => {
+      if (!landed) return
+      if (u.restored) {
+        await actions.done(u.ids)
+        return
+      }
+      if ((await actions.restore(u.ids)) && u.unread.length) await actions.unread(u.unread)
     })
   }
 
