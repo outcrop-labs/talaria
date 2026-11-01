@@ -196,17 +196,40 @@ async fn serve() {
         "[shutdown] scheduler stopped in {}ms",
         phase.elapsed().as_millis()
     );
+    // THE POOL, bounded too. `close` waits for every checked-out connection
+    // to come back, and a detached task's query is not drained by anything
+    // above — measured: the boot seed of the builtin MCP rows, an insert held
+    // behind a slow disk's commit, kept the process alive 11-35 s after every
+    // stream, run and job had finished. Past the bound the stop goes on: the
+    // query's connection drops with the process, as the container's own kill
+    // would drop it, and Postgres keeps the statement atomic either way.
     let phase = std::time::Instant::now();
-    state.pg.close().await;
-    tracing::info!(
-        "[shutdown] complete — pool closed in {}ms, {}ms after the signal",
-        phase.elapsed().as_millis(),
-        started
-            .elapsed()
-            .as_millis()
-            .saturating_sub(signal_ms(&started))
-    );
+    let closed = tokio::time::timeout(
+        std::time::Duration::from_millis(POOL_CLOSE_MS),
+        state.pg.close(),
+    )
+    .await
+    .is_ok();
+    let after_signal = started
+        .elapsed()
+        .as_millis()
+        .saturating_sub(signal_ms(&started));
+    if closed {
+        tracing::info!(
+            "[shutdown] complete — pool closed in {}ms, {after_signal}ms after the signal",
+            phase.elapsed().as_millis()
+        );
+    } else {
+        tracing::warn!(
+            "[shutdown] complete — {} pool connection(s) still running a query {POOL_CLOSE_MS}ms on (a detached task's, after every drain); not waiting for them. {after_signal}ms after the signal",
+            (state.pg.size() as usize).saturating_sub(state.pg.num_idle())
+        );
+    }
 }
+
+/// How long the pool gets to take its connections back once everything that
+/// is drained on purpose has been.
+const POOL_CLOSE_MS: u64 = 1_000;
 
 /// How long in-flight responses get after the shutdown signal. Event streams
 /// end at the signal itself (`end_streams`); this bounds everything else.
