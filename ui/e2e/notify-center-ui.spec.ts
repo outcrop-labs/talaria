@@ -491,6 +491,8 @@ test.describe('the status panel', () => {
     await page.locator('[role="dialog"]').getByRole('button', { name: 'Remove' }).click()
     await expect(rows).toHaveCount(1)
     expect((await sql`select count(*)::int as n from push_subscriptions where user_id = ${p.id}::uuid`)[0]?.n).toBe(1)
+    // Leave no device behind.
+    await sql`delete from push_subscriptions where user_id = ${p.id}::uuid`
     await ctx.close()
   })
 
