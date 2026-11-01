@@ -13,18 +13,34 @@
 // callers subscribe, the last unsubscribe closes the socket.
 import { openStream } from '@/lib/sse'
 import { useQueryClient } from '@tanstack/svelte-query'
+import type { PresenceEvent, ResyncEvent, SessionEvent } from './notify-wire'
 
-/** The wire's id-shaped events — camelCase, tagged `type`, nothing else. */
+/** The wire's id-shaped events — camelCase, tagged `type`, nothing else. The
+ *  contract's additions (notify-wire.ts) are optional fields on two of them
+ *  and three new members; the switch below ignores what it does not handle. */
 export type UserEvent =
   | { type: 'run'; runId: string; state: string }
-  | { type: 'notification'; notificationId: string }
+  /** `seq`: the person's notify seq the write took (I-10). */
+  | { type: 'notification'; notificationId: string; seq?: number }
   /** Something was READ (another tab, a channel read to its end): the count
-   *  after it. The bell drops now instead of on its next poll. */
-  | { type: 'notifications'; unread: number }
+   *  after it. The bell drops now instead of on its next poll. Since the
+   *  contract: the For-you count, exactly which rows (≤ 100; past that
+   *  `resync`), and whether it was a mark-all (I-16). */
+  | {
+      type: 'notifications'
+      unread: number
+      unreadForYou?: number
+      readIds?: string[]
+      all?: boolean
+      resync?: boolean
+    }
   | { type: 'brief'; briefId: string; seq: number }
   | { type: 'channel'; channelId: string }
   | { type: 'conversation'; conversationId: string }
   | { type: 'typing'; channelId: string; userId: string; typing: boolean }
+  | PresenceEvent
+  | ResyncEvent
+  | SessionEvent
 
 type Listener = (event: UserEvent) => void
 type OpenListener = (info: { first: boolean }) => void
