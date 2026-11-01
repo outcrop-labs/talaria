@@ -148,10 +148,30 @@ if rpm -qpR "$built" | grep -qF "$lib_rpm"; then
   echo "::error::the rpm still requires $lib_rpm" >&2; exit 1
 fi
 rpm -qp --recommends "$built" | grep -qF "$lib_rpm" || { echo "::error::the rpm does not recommend $lib_rpm" >&2; exit 1; }
-if ! diff <(rpm -qp --qf '[%{FILENAMES} %{FILESIZES} %{FILEMODES}\n]' "$rpm" | sort) \
-          <(rpm -qp --qf '[%{FILENAMES} %{FILESIZES} %{FILEMODES}\n]' "$built" | sort) >/dev/null; then
-  echo "::error::the rebuilt rpm's files differ from the original's" >&2; exit 1
-fi
+# The same files: every path with its mode, and each regular file's size and
+# digest. A directory's size is whatever its builder recorded (tauri's rpm
+# crate and rpmbuild differ), so it is not compared.
+python3 - "$rpm" "$built" <<'PY2'
+import subprocess, sys
+def files(rpm):
+    out = subprocess.run(['rpm', '-qp', '--qf', '[%{FILENAMES}\t%{FILEMODES}\t%{FILESIZES}\t%{FILEDIGESTS}\n]', rpm],
+                         check=True, capture_output=True, text=True).stdout
+    rows = {}
+    for line in out.splitlines():
+        name, mode, size, digest = line.split('\t')
+        mode = int(mode)
+        regular = mode & 0o170000 == 0o100000
+        rows[name] = (mode, int(size) if regular else None, digest if regular else None)
+    return rows
+old, new = files(sys.argv[1]), files(sys.argv[2])
+diffs = [n for n in sorted(set(old) | set(new)) if old.get(n) != new.get(n)]
+for n in diffs[:20]:
+    print(f'  {n}: was {old.get(n)}, now {new.get(n)}', file=sys.stderr)
+if diffs:
+    print(f"::error::the rebuilt rpm's files differ from the original's ({len(diffs)} of {len(old)})", file=sys.stderr)
+    sys.exit(1)
+print(f'rpm files: the same {len(old)} paths, modes, sizes and digests')
+PY2
 echo "rpm Requires: $(rpm -qpR "$built" | grep -v '^rpmlib(' | paste -sd, -)"
 echo "rpm Recommends: $(rpm -qp --recommends "$built" | paste -sd, -)"
 mv "$built" "$rpm"
