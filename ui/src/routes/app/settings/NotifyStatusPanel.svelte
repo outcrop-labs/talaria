@@ -53,6 +53,9 @@
   // Nothing has reported the stream: an app whose web runtime predates the
   // status hooks (they are W2-R's to call).
   const streamReported = $derived(status.stream.since !== null || status.stream.lastEventAt !== null || status.hubRole !== 'unknown')
+  // The delivery engine (W2-E) holds push while a device is in use; before it,
+  // every alert is pushed at once.
+  const gatedPush = $derived(features.has('presence-gated-push'))
 
   const STREAM_LABEL: Record<string, string> = {
     open: 'Connected',
@@ -192,9 +195,18 @@
         {/if}
       {/if}
     </dl>
-    <p class="mt-2 max-w-xl font-sans text-xs text-muted">
-      The device you are looking at alerts, and the others stay quiet. When no device is active, your alerts go out as push
-      to every registered browser.
+    <!-- Each sentence is said only where this instance does it: the client
+         side by the web runtime (it reports here), the push side by the
+         delivery engine (`presence-gated-push`). -->
+    <p class="mt-2 max-w-xl font-sans text-xs text-muted" data-live-explain={gatedPush ? 'gated' : 'immediate'}>
+      {#if streamReported}The device you are looking at shows the banner, and your other devices stay quiet.{/if}
+      {#if gatedPush}
+        Push waits a minute while you are using one of your devices, and goes to every registered browser when you are
+        not.
+      {:else}
+        This instance pushes every alert that has Push on to every registered browser at once, whichever device you are
+        using.
+      {/if}
     </p>
   </div>
 

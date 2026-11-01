@@ -76,6 +76,17 @@
   const failed = (m: string) => {
     error = m
   }
+  // Do Not Disturb is its own panel, further down the page: its saves and
+  // refusals are said there, where the person clicked, not in the panel above.
+  let dndError = $state<string | null>(null)
+  const dndFlash = useSavedFlash()
+  const dndSaved = () => {
+    dndError = null
+    dndFlash.flash()
+  }
+  const dndFailed = (m: string) => {
+    dndError = m
+  }
 
   // The digest switch: optimistic, rolled back on refusal, and the server's
   // effective answer is what stays on screen — turning email off for every
@@ -242,7 +253,7 @@
 
     <ul class="mt-4 divide-y divide-line-subtle border-t border-line-subtle">
       {#if frequency}
-        <li class="flex items-center gap-4 py-3" data-email-frequency={frequency}>
+        <li class="flex flex-col items-start gap-2 py-3 sm:flex-row sm:items-center sm:gap-4" data-email-frequency={frequency}>
           <div class="min-w-0 flex-1">
             <div class="text-sm text-fg">Missed-activity email</div>
             <div class="font-sans text-xs text-muted">
@@ -260,7 +271,7 @@
       <!-- The digest is not a class — it is one mail that summarises the
            queues — so it gets its own row and its own On/Off, below the
            matrix it does not belong to. -->
-      <li class="flex items-center gap-4 py-3">
+      <li class="flex flex-col items-start gap-2 py-3 sm:flex-row sm:items-center sm:gap-4">
         <div class="min-w-0 flex-1">
           <div class="text-sm text-fg">Daily digest</div>
           <div class="font-sans text-xs text-muted">
@@ -295,11 +306,15 @@
       <div>
         <div class="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Pause</div>
         <div class="-mx-3">
-          <PauseMenu dnd={data.dnd} onDone={saved} />
+          <PauseMenu dnd={data.dnd} onDone={dndSaved} />
         </div>
       </div>
-      <NotifySchedule dnd={data.dnd} onSaved={saved} onError={failed} />
+      <NotifySchedule dnd={data.dnd} onSaved={dndSaved} onError={dndFailed} />
     </div>
+    <p class="mt-3 text-xs text-muted" aria-live="polite" data-dnd-status>
+      {#if dndFlash.saved && !dndError}<span class="text-success">Saved</span>{/if}
+      {#if dndError}<span class="text-danger" role="alert">{dndError}</span>{/if}
+    </p>
   </Panel>
 {/if}
 

@@ -61,12 +61,20 @@
 
   const CELLS: MatrixChannel[] = ['desktop', 'push', 'email']
   const toggle = (id: string, ch: MatrixChannel, on: boolean) => void save(setChannel(id, ch, on))
-  const grid = 'grid grid-cols-[minmax(0,1fr)_repeat(4,3.5rem)_2rem] items-center gap-x-1'
+  // Wide: the label, then the four channels and the reset in one row. Narrow
+  // (under `sm`): the label on its own line across the row, the channels
+  // under it in four equal columns, so a label is never squeezed to a word a
+  // line.
+  const cell = 'flex flex-col items-center gap-0.5 sm:flex-row sm:justify-center'
+  const cellLabel = 'font-mono text-[9px] uppercase tracking-[0.05em] text-ink-dim sm:hidden'
+  const grid =
+    'grid grid-cols-[repeat(4,minmax(0,1fr))_2rem] items-center gap-x-1 gap-y-1.5 sm:grid-cols-[minmax(0,1fr)_repeat(4,3.5rem)_2rem] sm:gap-y-0'
 </script>
 
 <div data-notify-matrix>
-  <div class={cn(grid, 'border-b border-line pb-2')}>
-    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Notify me about</span>
+  <!-- The column heads; under `sm` each cell carries its own label instead. -->
+  <div class={cn(grid, 'hidden border-b border-line pb-2 sm:grid')}>
+    <span class="hidden font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim sm:block">Notify me about</span>
     {#each MATRIX_COLUMNS as col (col.id)}
       <span
         class={cn(
@@ -90,15 +98,16 @@
       <ul class="mt-1 divide-y divide-line-subtle">
         {#each g.rows as r (r.cls.id)}
           <li class={cn(grid, 'py-2.5')} data-matrix-row={r.cls.id}>
-            <div class="min-w-0">
+            <div class="col-span-full min-w-0 sm:col-span-1">
               <div class="text-sm text-fg">{r.cls.label}</div>
               <div class="font-sans text-xs text-muted">{r.cls.blurb}</div>
             </div>
-            <span class="flex justify-center" data-matrix-cell="inApp">
+            <span class={cell} data-matrix-cell="inApp">
               <Checkbox bare checked disabled title="In-app is always on: every notification is kept in your inbox" onChange={() => {}} />
+              <span class={cellLabel}>In-app</span>
             </span>
             {#each CELLS as ch (ch)}
-              <span class="flex justify-center" data-matrix-cell={ch}>
+              <span class={cell} data-matrix-cell={ch}>
                 <Checkbox
                   bare
                   checked={r.channels[ch]}
@@ -106,6 +115,7 @@
                   title="{MATRIX_COLUMNS.find((c) => c.id === ch)?.label}: {r.cls.label}"
                   onChange={(on) => toggle(r.cls.id, ch, on)}
                 />
+                <span class={cellLabel}>{MATRIX_COLUMNS.find((c) => c.id === ch)?.label}</span>
               </span>
             {/each}
             <span class="flex justify-center">
