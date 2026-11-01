@@ -33,9 +33,14 @@
           <div class="flex items-center gap-2">
             <span class="truncate text-[13px] leading-tight text-readout">{instance.label}</span>
             {#if unread > 0}
+              <!-- On the ground colour so the pill keeps its shape on the lit
+                   row too; a muted instance's count is dimmed, as a muted
+                   source reads everywhere — it still counts, quietly. -->
               <span
-                class="shrink-0 rounded-full bg-raised px-1.5 font-mono text-[10px] leading-4 text-gold"
-                aria-label="{unread} unread"
+                class="shrink-0 rounded-full bg-ground px-1.5 font-mono text-[10px] leading-4 {muted
+                  ? 'text-muted'
+                  : 'text-gold'}"
+                aria-label="{unread} unread{muted ? ', muted' : ''}"
               >
                 {unread > 99 ? '99+' : unread}
               </span>

@@ -258,7 +258,7 @@
       </p>
     {/if}
     {#if notify.muted}
-      <p class="mb-1 font-sans text-sm text-muted" data-testid="desktop-notify-muted">
+      <p class="mb-1 max-w-xl font-sans text-sm text-fg" data-testid="desktop-notify-muted">
         This instance is muted in the launcher: it posts no banners on this desktop. Its unread
         count still counts toward the dock badge. Unmute it from the launcher's instance list.
       </p>
