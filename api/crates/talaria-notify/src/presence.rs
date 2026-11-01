@@ -87,6 +87,20 @@ pub struct Heartbeat {
     pub os_idle_ms: Option<u64>,
 }
 
+/// Whether a heartbeat also sets the person's ONLINE key (`GET /api/users`'
+/// green dot), which wave 1's no-body ping set from every visible tab. A web
+/// client counts unless it is hidden — wave 1's rule, since only a visible tab
+/// pinged. A desktop client counts only while its OS is in use (`looking` or
+/// `active`): the shell keeps running in the tray or menu bar with every
+/// window closed, and its watcher heartbeats `idle` all night, which must not
+/// show the person online all night.
+pub fn marks_online(h: &Heartbeat) -> bool {
+    match h.kind {
+        ClientKind::Web => h.state != ClientState::Hidden,
+        ClientKind::Desktop => matches!(h.state, ClientState::Looking | ClientState::Active),
+    }
+}
+
 /// A client id the store accepts.
 pub fn valid_client_id(id: &str) -> bool {
     (8..=64).contains(&id.len())
@@ -287,6 +301,34 @@ mod tests {
         )];
         assert_eq!(winner(&stale, now), Presence::default());
         assert_eq!(winner(&[], now), Presence::default());
+    }
+
+    #[test]
+    fn only_a_client_in_use_marks_the_person_online() {
+        let beat = |kind, state| Heartbeat {
+            client_id: "tab-aaaaaaaa".into(),
+            kind,
+            state,
+            os_idle_ms: None,
+        };
+        use ClientKind::{Desktop, Web};
+        use ClientState::{Active, Hidden, Idle, Looking};
+        for (kind, state, online) in [
+            (Web, Looking, true),
+            (Web, Active, true),
+            (Web, Idle, true),
+            (Web, Hidden, false),
+            (Desktop, Looking, true),
+            (Desktop, Active, true),
+            (Desktop, Idle, false),
+            (Desktop, Hidden, false),
+        ] {
+            assert_eq!(
+                marks_online(&beat(kind, state)),
+                online,
+                "{kind:?} {state:?}"
+            );
+        }
     }
 
     #[test]

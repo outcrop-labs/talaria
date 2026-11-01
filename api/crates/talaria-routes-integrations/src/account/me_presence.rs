@@ -9,8 +9,10 @@
 // PUT with a body is a client's presence heartbeat (I-17): `{clientId, kind:
 // "web"|"desktop", state: "looking"|"active"|"idle"|"hidden", osIdleMs?}`. It
 // records the client in the person's presence store, announces the winner on
-// `user:<id>` when it changed, and — unless the client is hidden — still sets
-// the online key. Answers { ok, looking, active }.
+// `user:<id>` when it changed, and sets the online key when the client is in
+// use (`presence::marks_online`: a web tab unless hidden, the desktop shell
+// only while its OS is looking or active — it heartbeats from the tray all
+// night). Answers { ok, looking, active }.
 //
 // GET answers the store: { looking, active, clients: [{clientId, kind, state,
 // at}] }, newest first. Phase 0 stores and announces; W2-E gates delivery on
@@ -77,7 +79,7 @@ pub async fn put(
         Ok(c) => c,
         Err(e) => return Ok(internal("[me/presence] redis unavailable", e)),
     };
-    if beat.as_ref().is_none_or(|h| h.state != ClientState::Hidden)
+    if beat.as_ref().is_none_or(presence::marks_online)
         && let Err(e) = redis::cmd("SET")
             .arg(presence_key(&user.id))
             .arg(1)
