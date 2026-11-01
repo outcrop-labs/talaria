@@ -470,12 +470,14 @@ pub async fn put(
         return Ok(internal("[boards] agent request decide commit failed", e));
     }
     // DECIDED: every editor's announcement of this request reads now, on
-    // each of their devices (SE-10) — spawned before the next await, so a
-    // caller that hangs up cannot take it with them.
+    // each of their devices (SE-10) — spawned before the next await (the
+    // redis handle is fetched inside the task), so a caller that hangs up
+    // right after the commit cannot take it with them.
     {
-        let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+        let state = state.clone();
         let key = announce_key(&id, &agent_model);
         tokio::spawn(async move {
+            let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
             resolve_approval(&notify, &key).await;
         });
     }
