@@ -49,8 +49,11 @@ them. A read row has left the open-group index, so the next write files a fresh 
 The status row coalesces for ten minutes after its last change
 (`talaria_tasks::status_window_secs`; `TALARIA_NOTIFY_STATUS_WINDOW_SECS` shortens it for
 a live check). The first move's body is the ticket's title; later moves in the window say
-`Moved 4 times — now in review`. Past the window, the old row keeps its content and loses
-its key, and a fresh row is filed. A person the same patch assigns is told by the
+`Moved 4 times — now in review`. The count in that line is the row's own: each move's
+fan-out runs detached, so moves close together can land in any order and word the line
+from a stale count; after its write, a fan-out whose count differs rewords the body, but
+only while the row still holds its seq, so the last write keeps the last word. Past the
+window, the old row keeps its content and loses its key, and a fresh row is filed. A person the same patch assigns is told by the
 `task-assigned` row instead (one action, one row).
 
 ### Resolutions (I-16)
