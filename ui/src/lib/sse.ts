@@ -28,14 +28,56 @@
 // from there). `onOpen` runs on EVERY open, the first included, so a caller
 // refetches whatever it may have missed while the stream was down — the
 // stream carries no replay.
+//
+// AND, FOR A TOPIC STREAM, SLEEP WHILE HIDDEN (`pauseWhenHidden`). A board,
+// a channel or a run's stream in a tab nobody can see is a socket and a
+// Redis subscriber spent on nothing — and on a plain-http dev origin, where
+// the browser allows six connections per host, eight such tabs starve every
+// fetch (BT-3). So a paused stream closes after the tab has been hidden for
+// 30 s; when the tab is shown again, `onResume` runs first (refetch what the
+// stream would have said) and then the stream reopens. On an HTTP/1.x page
+// (a dev stack: real instances are HTTP/2 at the edge) the wait is 5 s, so
+// the six-socket budget frees up as fast as the person moves between tabs.
+// The person's own `/api/me/events` never pauses: it is what alerts.
 
 import { getJson } from '@/lib/fetch-json'
+
+export type StreamState = 'connecting' | 'open' | 'reconnecting' | 'paused' | 'closed'
 
 export interface StreamOptions {
   /** Reopen a CLOSED stream with backoff (see above). */
   reconnect?: boolean
-  /** Called on every open; `first` is the initial connection. */
-  onOpen?: (info: { first: boolean }) => void
+  /** Called on every open; `first` is the initial connection, `resumed` an
+   *  open that follows a hidden-tab pause (its `onResume` already ran). */
+  onOpen?: (info: { first: boolean; resumed?: boolean }) => void
+  /** Close while the tab is hidden (see above): `true` for the default wait,
+   *  or a wait in ms. */
+  pauseWhenHidden?: boolean | number
+  /** Runs when a paused stream's tab is shown again, BEFORE it reopens. */
+  onResume?: () => unknown
+  /** Every change of the connection's state (the status panel's feed). */
+  onState?: (state: StreamState) => void
+}
+
+/** How long a hidden tab keeps a paused stream open. */
+export const HIDDEN_PAUSE_MS = 30_000
+/** …and on an HTTP/1.x page, whose browser allows six sockets per host. */
+export const HIDDEN_PAUSE_H1_MS = 5_000
+
+/** The page's own transport: `http/1.1` on a dev stack, `h2`/`h3` at an edge. */
+export function pageProtocol(): string {
+  try {
+    if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') return ''
+    const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
+    return nav?.nextHopProtocol ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/** The wait before a hidden tab's topic stream closes. */
+export function hiddenPauseMs(protocol: string = pageProtocol()): number {
+  return /^http\/1/i.test(protocol) ? HIDDEN_PAUSE_H1_MS : HIDDEN_PAUSE_MS
 }
 
 const BASE_MS = 1_000
@@ -66,9 +108,11 @@ async function stillSignedIn(): Promise<boolean> {
 }
 
 /** Subscribe to an SSE endpoint. Returns the unsubscribe — call it from the
- *  effect's teardown, where the four call sites used to write `es.close()`. */
+ *  effect's teardown, where the four call sites used to write `es.close()`.
+ *  `url` may be a getter: it is read at every (re)connect, so a reconnect can
+ *  carry a fresh cursor (`?since=`). */
 export function openStream(
-  url: string,
+  url: string | (() => string),
   onMessage: (data: string) => void,
   opts: StreamOptions = {},
 ): () => void {
@@ -78,6 +122,17 @@ export function openStream(
   let failures = 0
   let retryTimer: ReturnType<typeof setTimeout> | null = null
   let stableTimer: ReturnType<typeof setTimeout> | null = null
+  let hideTimer: ReturnType<typeof setTimeout> | null = null
+  let paused = false
+  let resumed = false
+  let state: StreamState | null = null
+  const pauseMs =
+    typeof opts.pauseWhenHidden === 'number' ? opts.pauseWhenHidden : opts.pauseWhenHidden ? hiddenPauseMs() : 0
+  const setState = (s: StreamState) => {
+    if (s === state) return
+    state = s
+    opts.onState?.(s)
+  }
 
   const clearTimers = () => {
     if (retryTimer) clearTimeout(retryTimer)
@@ -91,41 +146,87 @@ export function openStream(
     // fifth failure's session probe is in flight connects; the probe's own
     // answer must not open a SECOND source — stop() would never close the
     // first, and every frame would be dispatched twice.
-    if (stopped || es) return
+    if (stopped || es || paused) return
     clearTimers()
-    const source = new EventSource(url)
+    const source = new EventSource(typeof url === 'function' ? url() : url)
     es = source
+    setState(first ? 'connecting' : 'reconnecting')
     source.onmessage = (e: MessageEvent<string>) => onMessage(e.data)
     source.onopen = () => {
       if (es !== source) return
       const wasFirst = first
+      const wasResumed = resumed
       first = false
+      resumed = false
+      setState('open')
       if (opts.reconnect) {
         if (stableTimer) clearTimeout(stableTimer)
         stableTimer = setTimeout(() => {
           failures = 0
         }, STABLE_MS)
       }
-      opts.onOpen?.({ first: wasFirst })
+      opts.onOpen?.(wasResumed ? { first: wasFirst, resumed: true } : { first: wasFirst })
     }
-    if (!opts.reconnect) return
     source.onerror = () => {
       if (es !== source) return
+      if (!opts.reconnect) {
+        if (source.readyState === EventSource.CLOSED) setState('closed')
+        else setState('reconnecting')
+        return
+      }
       // CONNECTING is the browser's own retry (the stream ended cleanly and
       // `retry:` is counting down) — let it. CLOSED is a non-200 (502, 524,
       // 401): the browser has given up, so this door takes over.
-      if (source.readyState !== EventSource.CLOSED) return
+      if (source.readyState !== EventSource.CLOSED) {
+        setState('reconnecting')
+        return
+      }
       source.close()
       es = null
       if (stableTimer) clearTimeout(stableTimer)
       stableTimer = null
       failures++
+      setState('reconnecting')
       schedule()
     }
   }
 
+  // ── The hidden-tab pause ──────────────────────────────────────────────────
+  const pause = () => {
+    hideTimer = null
+    if (stopped || paused) return
+    paused = true
+    clearTimers()
+    es?.close()
+    es = null
+    // A paused stream is not a failing one: the next open starts afresh.
+    failures = 0
+    setState('paused')
+  }
+  const resume = () => {
+    if (!paused || stopped) return
+    paused = false
+    resumed = true
+    let ran: unknown
+    try {
+      ran = opts.onResume?.()
+    } catch {
+      ran = undefined
+    }
+    // Reopen after the caller's refetch has gone out (and, when it answers a
+    // promise, after it settles) — what the stream missed is read first.
+    void Promise.resolve(ran)
+      .catch(() => {})
+      .then(() => connect())
+  }
+  const hidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden'
+  const armPause = () => {
+    if (!pauseMs || paused || hideTimer || stopped) return
+    hideTimer = setTimeout(pause, pauseMs)
+  }
+
   const schedule = () => {
-    if (stopped || retryTimer) return
+    if (stopped || retryTimer || paused) return
     const wait = backoffDelay(failures)
     retryTimer = setTimeout(() => {
       retryTimer = null
@@ -144,30 +245,45 @@ export function openStream(
   /** Reconnect NOW if the stream is down and waiting: the network came back,
    *  or the person came back to the tab. */
   const kick = () => {
-    if (stopped || es) return
+    if (stopped || es || paused) return
     if (retryTimer) clearTimeout(retryTimer)
     retryTimer = null
     connect()
   }
   const onVisible = () => {
-    if (document.visibilityState === 'visible') kick()
+    if (pauseMs) {
+      if (hidden()) armPause()
+      else {
+        if (hideTimer) clearTimeout(hideTimer)
+        hideTimer = null
+        if (paused) return resume()
+      }
+    }
+    if (opts.reconnect && document.visibilityState === 'visible') kick()
   }
 
+  const watchVisibility = (opts.reconnect || pauseMs > 0) && typeof window !== 'undefined'
   const stop = () => {
     stopped = true
     clearTimers()
+    if (hideTimer) clearTimeout(hideTimer)
+    hideTimer = null
     es?.close()
     es = null
-    if (opts.reconnect && typeof window !== 'undefined') {
-      window.removeEventListener('online', kick)
+    setState('closed')
+    if (watchVisibility) {
+      if (opts.reconnect) window.removeEventListener('online', kick)
       document.removeEventListener('visibilitychange', onVisible)
     }
   }
 
-  if (opts.reconnect && typeof window !== 'undefined') {
-    window.addEventListener('online', kick)
+  if (watchVisibility) {
+    if (opts.reconnect) window.addEventListener('online', kick)
     document.addEventListener('visibilitychange', onVisible)
   }
   connect()
+  // Opened in a tab that is already hidden (a background tab's first load):
+  // the clock starts now.
+  if (pauseMs && hidden()) armPause()
   return stop
 }

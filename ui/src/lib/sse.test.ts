@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { PROBE_AFTER, STABLE_MS, backoffDelay, openStream } from './sse'
+import { HIDDEN_PAUSE_H1_MS, HIDDEN_PAUSE_MS, PROBE_AFTER, STABLE_MS, backoffDelay, hiddenPauseMs, openStream, type StreamState } from './sse'
 
 class FakeES {
   static CONNECTING = 0
@@ -206,5 +206,104 @@ describe('openStream', () => {
     }
     expect(FakeES.all).toHaveLength(PROBE_AFTER + 1)
     stop()
+  })
+
+  // ── Wave 2: a URL read at every connect, the state, the hidden pause ─────
+
+  it('reads a URL getter at every (re)connect — a reconnect carries a fresh cursor', () => {
+    let since = 3
+    const stop = openStream(() => `/api/me/events?since=${since}`, () => {}, { reconnect: true })
+    expect(at(0).url).toBe('/api/me/events?since=3')
+    since = 9
+    at(0).fail()
+    vi.advanceTimersByTime(1000)
+    expect(at(1).url).toBe('/api/me/events?since=9')
+    stop()
+  })
+
+  it('reports its state: connecting → open → reconnecting → open → closed', () => {
+    const states: StreamState[] = []
+    const stop = openStream('/x', () => {}, { reconnect: true, onState: (s) => states.push(s) })
+    at(0).open()
+    at(0).fail()
+    vi.advanceTimersByTime(1000)
+    at(1).open()
+    stop()
+    expect(states).toEqual(['connecting', 'open', 'reconnecting', 'open', 'closed'])
+  })
+
+  it('pauseWhenHidden: closes 30 s after the tab hides, and a quick look back cancels it', () => {
+    const stop = openStream('/b', () => {}, { reconnect: true, pauseWhenHidden: true })
+    at(0).open()
+    doc.visibilityState = 'hidden'
+    doc.fire('visibilitychange')
+    vi.advanceTimersByTime(HIDDEN_PAUSE_MS - 1)
+    expect(at(0).closed).toBe(false)
+    doc.visibilityState = 'visible'
+    doc.fire('visibilitychange')
+    vi.advanceTimersByTime(HIDDEN_PAUSE_MS * 2)
+    expect(at(0).closed).toBe(false)
+    expect(FakeES.all).toHaveLength(1)
+    doc.visibilityState = 'hidden'
+    doc.fire('visibilitychange')
+    vi.advanceTimersByTime(HIDDEN_PAUSE_MS)
+    expect(at(0).closed).toBe(true)
+    // Paused is not failing: no reconnect while hidden, however long.
+    vi.advanceTimersByTime(10 * 60_000)
+    expect(FakeES.all).toHaveLength(1)
+    stop()
+  })
+
+  it('on show: onResume runs first, then the stream reopens, and onOpen says resumed', async () => {
+    const order: string[] = []
+    const stop = openStream('/b', () => {}, {
+      reconnect: true,
+      pauseWhenHidden: 1000,
+      onResume: () => {
+        order.push('resume')
+        return Promise.resolve().then(() => order.push('refetched'))
+      },
+      onOpen: (i) => order.push(`open first=${i.first} resumed=${!!i.resumed}`),
+    })
+    at(0).open()
+    doc.visibilityState = 'hidden'
+    doc.fire('visibilitychange')
+    vi.advanceTimersByTime(1000)
+    expect(at(0).closed).toBe(true)
+    doc.visibilityState = 'visible'
+    doc.fire('visibilitychange')
+    expect(FakeES.all).toHaveLength(1) // not before the refetch settles
+    await vi.advanceTimersByTimeAsync(0)
+    expect(FakeES.all).toHaveLength(2)
+    at(1).open()
+    expect(order).toEqual(['open first=true resumed=false', 'resume', 'refetched', 'open first=false resumed=true'])
+    stop()
+  })
+
+  it('a stream opened in a tab that is already hidden starts its clock at once', () => {
+    doc.visibilityState = 'hidden'
+    const stop = openStream('/b', () => {}, { pauseWhenHidden: 2000 })
+    vi.advanceTimersByTime(2000)
+    expect(at(0).closed).toBe(true)
+    stop()
+  })
+
+  it('stop() while paused leaves nothing behind', () => {
+    const stop = openStream('/b', () => {}, { reconnect: true, pauseWhenHidden: 1000 })
+    doc.visibilityState = 'hidden'
+    doc.fire('visibilitychange')
+    vi.advanceTimersByTime(1000)
+    stop()
+    doc.visibilityState = 'visible'
+    doc.fire('visibilitychange')
+    expect(FakeES.all).toHaveLength(1)
+    expect(doc.count('visibilitychange')).toBe(0)
+  })
+
+  it('the wait is 5 s on an HTTP/1.x page (six sockets per host), 30 s at an edge', () => {
+    expect(hiddenPauseMs('http/1.1')).toBe(HIDDEN_PAUSE_H1_MS)
+    expect(hiddenPauseMs('h2')).toBe(HIDDEN_PAUSE_MS)
+    expect(hiddenPauseMs('h3')).toBe(HIDDEN_PAUSE_MS)
+    expect(hiddenPauseMs('')).toBe(HIDDEN_PAUSE_MS)
   })
 })

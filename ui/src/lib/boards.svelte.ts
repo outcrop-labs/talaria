@@ -27,10 +27,14 @@ export function useBoardLive(boardId: MaybeGetter<string | null>) {
     }
     // Reconnecting (lib/sse.ts): a deploy's 502 no longer leaves the board
     // silently frozen, and a REopen refetches what the gap may have dropped.
+    // Paused while the tab is hidden (BT-3): the stream closes after 30 s
+    // out of sight, and coming back refetches the cards first, then reopens.
     return openStream(`/api/boards/${id}/events`, refresh, {
       reconnect: true,
-      onOpen: ({ first }) => {
-        if (!first) refresh()
+      pauseWhenHidden: true,
+      onResume: refresh,
+      onOpen: ({ first, resumed }) => {
+        if (!first && !resumed) refresh()
       },
     })
   })

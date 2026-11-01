@@ -160,6 +160,10 @@ export function useChannelEvents(
   $effect(() => {
     const cid = resolve(id);
     if (!cid) return;
+    const catchUp = () => {
+      void qc.invalidateQueries({ queryKey: ["channel-messages", cid] });
+      void qc.invalidateQueries({ queryKey: ["channel", cid] });
+    };
     return openStream(`/api/channels/${cid}/events`, (data) => {
       const ev = JSON.parse(data) as
         | { type: "message" | "channel" }
@@ -182,11 +186,14 @@ export function useChannelEvents(
     }, {
       // Reconnecting (lib/sse.ts): a deploy's 502 no longer leaves the room
       // silently frozen, and a REopen refetches what the gap may have dropped.
+      // Paused while the tab is hidden (BT-3): the stream closes after 30 s
+      // out of sight, and coming back refetches the room first, then reopens.
       reconnect: true,
-      onOpen: ({ first }) => {
-        if (first) return;
-        void qc.invalidateQueries({ queryKey: ["channel-messages", cid] });
-        void qc.invalidateQueries({ queryKey: ["channel", cid] });
+      pauseWhenHidden: true,
+      onResume: catchUp,
+      onOpen: ({ first, resumed }) => {
+        if (first || resumed) return;
+        catchUp();
       },
     });
   });
