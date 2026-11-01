@@ -19,6 +19,8 @@ export interface DesktopSettings {
   /** How long an instance's page may stay off screen before the shell
    *  suspends it, in minutes. 0 is Off. */
   suspendAfterMinutes: number
+  /** Closing the window keeps Talaria running so notifications arrive. */
+  closeToBackground: boolean
 }
 
 export type DesktopWindowAction = 'minimize' | 'toggleMaximize' | 'close' | 'startDragging'
@@ -48,6 +50,27 @@ export interface ShellSnapshot {
   /** The instance to reopen at boot, until the first view change. */
   reopen: string | null
   failure: LoadFailure | null
+  /** Closing the window keeps Talaria running. */
+  closeToBackground: boolean
+  /** What closing does on this desktop now. */
+  background: Background
+}
+
+/** What closing the window does: hide to the tray (Linux) or the menu bar
+ *  (macOS), minimize (a Linux desktop with no tray, stock GNOME), or quit
+ *  (Windows). */
+export type Background = 'tray' | 'menu-bar' | 'minimize' | 'none'
+
+/** What the OS says about notifications (src-tauri/src/notify/mod.rs). */
+export interface NotificationStatus {
+  backend: string
+  permission: 'granted' | 'denied' | 'not-determined' | 'unavailable'
+  server?: { name: string; vendor: string; version: string; spec: string }
+  detail?: string
+  lastError?: string
+  pending: boolean
+  closeToBackground: boolean
+  background: Background
 }
 
 /** What `add_instance` answers when the person cancelled it. */
@@ -90,6 +113,13 @@ export interface DesktopUpdate {
 }
 
 export const checkForUpdate = () => invoke<DesktopUpdate | null>('check_for_update')
+
+export const notificationStatus = () => invoke<NotificationStatus>('desktop_notification_status')
+
+/** macOS: the system prompt (from this click; never at launch). */
+export const requestNotifications = () => invoke<NotificationStatus>('desktop_notification_request')
+
+export const quit = () => invoke<void>('desktop_quit')
 
 export const installUpdate = () => invoke<void>('install_update')
 

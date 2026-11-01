@@ -46,8 +46,12 @@ pub const CANCELLED: &str = "cancelled";
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long `desktop_notify` waits for the OS notification service before it
-/// answers the page anyway. The post keeps going on its own thread.
+/// answers the page anyway. The post keeps going on its own task, and the
+/// status records it as pending: an unanswered post is never a success.
 const NOTIFY_WAIT: Duration = Duration::from_secs(2);
+
+/// How long the test post may take before Send test says so.
+const TEST_WAIT: Duration = Duration::from_secs(10);
 
 fn main_window(app: &AppHandle) -> Result<Window, String> {
     app.get_window("main")
@@ -61,15 +65,22 @@ fn instance_label(id: &str) -> String {
 /// Injected into every instance webview: Ctrl/Cmd+Shift+H returns to the
 /// launcher. The in-UI switcher is the intended way back, but an instance
 /// running an older Talaria (the switcher ships with the UI) would otherwise
-/// be a one-way door — the shell itself provides the floor.
+/// be a one-way door — the shell itself provides the floor. Ctrl+Q (Cmd+Q on
+/// macOS, where the app menu also has it) quits the shell from any page, for
+/// the same reason: with Close keeping Talaria in the background, Quit must
+/// never depend on the instance's UI version.
 const ESCAPE_HATCH: &str = r#"
   if (window.__TAURI_INTERNALS__) {
+    const mac = /Mac|iPhone|iPad/.test(navigator.userAgent);
     window.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'h') {
         e.preventDefault();
         window.__TAURI_INTERNALS__.invoke('show_welcome').catch(() => {});
+      } else if ((mac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'q') {
+        e.preventDefault();
+        window.__TAURI_INTERNALS__.invoke('desktop_quit').catch(() => {});
       }
-    });
+    }, true);
   }
 "#;
 
@@ -95,6 +106,11 @@ pub struct ShellSnapshot {
     /// The instance to reopen at boot, until the first view change.
     pub reopen: Option<String>,
     pub failure: Option<LoadFailure>,
+    /// Closing the window keeps Talaria running (Settings → Desktop).
+    pub close_to_background: bool,
+    /// What closing does on this desktop now: `tray`, `menu-bar`,
+    /// `minimize` (no tray host: stock GNOME) or `none` (Windows).
+    pub background: &'static str,
 }
 
 fn snapshot(app: &AppHandle) -> ShellSnapshot {
@@ -114,9 +130,13 @@ fn snapshot(app: &AppHandle) -> ShellSnapshot {
     // add runs on a tokio worker while the main thread reads this.
     let view = *state.view.lock().unwrap();
     let active_id = state.active.lock().unwrap().clone();
-    let (titlebar, suspend_after_minutes) = {
+    let (titlebar, suspend_after_minutes, close_to_background) = {
         let settings = state.settings.lock().unwrap();
-        (settings.titlebar, settings.suspend_after_minutes)
+        (
+            settings.titlebar,
+            settings.suspend_after_minutes,
+            settings.close_to_background,
+        )
     };
     let instances = state.instances.lock().unwrap().clone();
     let notices = state.notices.lock().unwrap().clone();
@@ -135,11 +155,13 @@ fn snapshot(app: &AppHandle) -> ShellSnapshot {
         notices,
         reopen,
         failure,
+        close_to_background,
+        background: crate::background::mode(app).as_str(),
     }
 }
 
 /// Push the current state to the launcher. Never call it holding a lock.
-fn emit_state(app: &AppHandle) {
+pub(crate) fn emit_state(app: &AppHandle) {
     let _ = app.emit_to(EventTarget::webview("main"), STATE_EVENT, snapshot(app));
 }
 
@@ -150,7 +172,7 @@ fn emit_state(app: &AppHandle) {
 ///
 /// The page leaving the screen has its URL remembered, and starts its
 /// suspend clock (suspend.rs); the one coming on screen stops its own.
-fn set_view(app: &AppHandle, view: View) -> Result<(), String> {
+pub(crate) fn set_view(app: &AppHandle, view: View) -> Result<(), String> {
     let state = app.state::<ShellState>();
     let window = main_window(app)?;
     *state.view.lock().unwrap() = view;
@@ -205,6 +227,24 @@ fn set_view(app: &AppHandle, view: View) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     set_header_title(&window, &title);
     Ok(())
+}
+
+/// Give the webview on screen the keyboard focus. A window brought back from
+/// hidden or minimized holds no focused widget (a hidden child loses it), so
+/// Ctrl+Q and typing did nothing until a click into the page.
+pub(crate) fn focus_view(app: &AppHandle) {
+    let state = app.state::<ShellState>();
+    let view = *state.view.lock().unwrap();
+    let active = state.active.lock().unwrap().clone();
+    let label = match (view, active) {
+        (View::Active, Some(id)) => instance_label(&id),
+        _ => "main".to_string(),
+    };
+    if let Some(webview) = app.get_webview(&label)
+        && let Err(e) = webview.set_focus()
+    {
+        eprintln!("talaria-desktop: focusing {label}: {e}");
+    }
 }
 
 /// GTK on Wayland: the OS titlebar is tao's own `GtkHeaderBar`, built with the
@@ -426,6 +466,23 @@ fn activate(app: &AppHandle, id: &str, href: Option<&str>) -> Result<bool, Strin
         if let Some(watcher) = resumed.as_ref().and_then(|r| r.watcher.as_ref()) {
             watcher.abort();
         }
+        // What the watcher posted goes back into the page's own record before
+        // its scripts run, whichever page the webview is born at.
+        let handback = resumed
+            .as_ref()
+            .and_then(|r| r.handback.as_ref())
+            .and_then(|h| {
+                let h = h.lock().unwrap();
+                h.user
+                    .as_deref()
+                    .and_then(|user| suspend::arrivals_js(user, &h.posted))
+                    .inspect(|_| {
+                        eprintln!(
+                            "talaria-desktop: handing {} watcher banner(s) back to {label}",
+                            h.posted.len()
+                        );
+                    })
+            });
         let page = state
             .last_urls
             .lock()
@@ -459,7 +516,8 @@ fn activate(app: &AppHandle, id: &str, href: Option<&str>) -> Result<bool, Strin
                 registry::now_ms()
             );
         }
-        create_instance_webview(app, &window, &instance, &target, scroll)?;
+        let scripts: Vec<String> = handback.into_iter().chain(scroll).collect();
+        create_instance_webview(app, &window, &instance, &target, scripts)?;
     }
     *state.active.lock().unwrap() = Some(instance.id.clone());
     {
@@ -485,7 +543,7 @@ fn create_instance_webview(
     window: &Window,
     instance: &Instance,
     target: &str,
-    restore: Option<String>,
+    restore: Vec<String>,
 ) -> Result<Webview, String> {
     let state = app.state::<ShellState>();
     let label = instance_label(&instance.id);
@@ -503,7 +561,7 @@ fn create_instance_webview(
         .data_directory(dir)
         .background_color(GROUND)
         .initialization_script(ESCAPE_HATCH);
-    if let Some(script) = restore {
+    for script in restore {
         builder = builder.initialization_script(script);
     }
     let webview = window
@@ -635,6 +693,7 @@ pub fn remove_instance(app: AppHandle, id: String) -> Result<Vec<Instance>, Stri
     }
     state.last_urls.lock().unwrap().remove(&id);
     state.activity.lock().unwrap().forget(&id);
+    notify::forget_label(&app, &label);
     let registered = {
         let mut instances = state.instances.lock().unwrap();
         let before = instances.len();
@@ -901,6 +960,10 @@ pub fn desktop_suspend_report(
     }
     let scroll = suspend::clean_scrolls(&report.scroll);
     let session = suspend::clean_session(&report.session);
+    let handoff = report
+        .arrivals
+        .as_ref()
+        .and_then(watch::Handoff::from_value);
     let nonce = report.nonce;
     // From here until finish_suspend (or keep_for_notify) the page is closing:
     // the ticks meanwhile do not ask it again, which would start a second
@@ -922,7 +985,24 @@ pub fn desktop_suspend_report(
                 // is not fetching notifications either.
                 Ok(None) => None,
                 Ok(Some(cookie)) => match watch::baseline(&instance.url, &cookie).await {
-                    watch::Baseline::Ready(arrivals) => Some((cookie, arrivals)),
+                    // The page's own record, when it handed one over: what it
+                    // missed is posted on the watcher's first read. Without
+                    // one (an older UI), this read is the baseline.
+                    watch::Baseline::Ready(arrivals) => Some(match handoff {
+                        Some(handoff) => {
+                            eprintln!(
+                                "talaria-desktop: {}: starting from the page's record ({} seen)",
+                                webview.label(),
+                                handoff.seen.len()
+                            );
+                            (
+                                cookie,
+                                watch::Arrivals::from_handoff(&handoff),
+                                Some(handoff.user),
+                            )
+                        }
+                        None => (cookie, arrivals, None),
+                    }),
                     watch::Baseline::SignedOut => None,
                     watch::Baseline::Unreachable => {
                         keep_for_notify(
@@ -1001,7 +1081,7 @@ fn finish_suspend(
     reported_url: &str,
     scroll: Vec<suspend::Scroll>,
     session: Vec<(String, String)>,
-    watch: Option<(String, watch::Arrivals)>,
+    watch: Option<(String, watch::Arrivals, Option<String>)>,
 ) {
     let state = app.state::<ShellState>();
     let id = instance.id.clone();
@@ -1033,14 +1113,22 @@ fn finish_suspend(
         eprintln!("talaria-desktop: suspending {label}: {e}");
         return;
     }
-    let watcher = watch.map(|(cookie, arrivals)| {
-        watch::spawn(
-            app.clone(),
-            label.clone(),
-            instance.url.clone(),
+    let mut handback = None;
+    let watcher = watch.map(|(cookie, arrivals, user)| {
+        let shared: watch::Shared = std::sync::Arc::new(std::sync::Mutex::new(watch::Handback {
+            user,
+            posted: Vec::new(),
+        }));
+        handback = Some(shared.clone());
+        watch::spawn(watch::Watch {
+            app: app.clone(),
+            label: label.clone(),
+            instance: instance.label.clone(),
+            origin: instance.url.clone(),
             cookie,
             arrivals,
-        )
+            shared,
+        })
     });
     eprintln!(
         "talaria-desktop: suspended {label}{} (t={} ms)",
@@ -1058,6 +1146,7 @@ fn finish_suspend(
             scroll,
             session,
             watcher,
+            handback,
         },
     );
     // Never two watchers for one instance: one replaced here would post every
@@ -1084,38 +1173,42 @@ pub enum WindowAction {
     StartDragging,
 }
 
+/// The shell's own minimize: the titlebar's –, and Close on a desktop with
+/// no tray (background.rs).
+pub(crate) fn minimize_main(app: &AppHandle) -> Result<(), String> {
+    let window = main_window(app)?;
+    // GTK on Wayland never reports a minimized window (the protocol has no
+    // such state for the client), so the suspend clock needs the shell's own
+    // word for the minimize it did. The next focus clears it.
+    app.state::<ShellState>()
+        .self_minimized
+        .store(true, Ordering::Relaxed);
+    window.minimize().map_err(|e| format!("minimizing: {e}"))?;
+    // A compositor may ignore the request and leave the window where it is,
+    // focused. Look once, a moment later: still focused means not minimized.
+    // Otherwise the word would outlive the person clicking into another app,
+    // and the instance on screen would be suspended while visible.
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(MINIMIZE_SETTLE).await;
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if main_window(&handle).is_ok_and(|w| w.is_focused().unwrap_or(false)) {
+                handle
+                    .state::<ShellState>()
+                    .self_minimized
+                    .store(false, Ordering::Relaxed);
+            }
+        });
+    });
+    Ok(())
+}
+
 #[tauri::command]
 pub fn desktop_window(app: AppHandle, action: WindowAction) -> Result<(), String> {
     let window = main_window(&app)?;
     match action {
-        WindowAction::Minimize => {
-            // GTK on Wayland never reports a minimized window (the protocol
-            // has no such state for the client), so the suspend clock needs
-            // the shell's own word for the minimize it did. The next focus
-            // clears it.
-            app.state::<ShellState>()
-                .self_minimized
-                .store(true, Ordering::Relaxed);
-            window.minimize().map_err(|e| format!("minimizing: {e}"))?;
-            // A compositor may ignore the request and leave the window where
-            // it is, focused. Look once, a moment later: still focused means
-            // not minimized. Otherwise the word would outlive the person
-            // clicking into another app, and the instance on screen would be
-            // suspended while visible.
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(MINIMIZE_SETTLE).await;
-                let handle = app.clone();
-                let _ = app.run_on_main_thread(move || {
-                    if main_window(&handle).is_ok_and(|w| w.is_focused().unwrap_or(false)) {
-                        handle
-                            .state::<ShellState>()
-                            .self_minimized
-                            .store(false, Ordering::Relaxed);
-                    }
-                });
-            });
-        }
+        WindowAction::Minimize => minimize_main(&app)?,
         WindowAction::ToggleMaximize => {
             if window
                 .is_maximized()
@@ -1128,6 +1221,8 @@ pub fn desktop_window(app: AppHandle, action: WindowAction) -> Result<(), String
                 window.maximize().map_err(|e| format!("maximizing: {e}"))?;
             }
         }
+        // Through CloseRequested, like the window manager's own close:
+        // background.rs decides whether it hides, minimizes or quits.
         WindowAction::Close => window.close().map_err(|e| format!("closing: {e}"))?,
         WindowAction::StartDragging => window
             .start_dragging()
@@ -1208,16 +1303,31 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
     app.restart();
 }
 
-/// Post an OS notification. The webview's Notification API reads denied inside
-/// the shell and has no site-settings page; this is the path that actually
-/// reaches the OS. A click focuses the window, brings the calling instance
-/// forward, and opens `href` when it is a same-origin path.
+/// What the person calls the instance behind a webview label, for the banner:
+/// its registry label, or "Talaria" for the shell's own webview.
+fn instance_name(app: &AppHandle, label: &str) -> String {
+    label
+        .strip_prefix("instance-")
+        .and_then(|id| app.state::<ShellState>().find(id).ok())
+        .map(|i| i.label)
+        .unwrap_or_else(|| "Talaria".into())
+}
+
+/// Post an OS notification. The webview's Notification API has no permission
+/// handler inside the shell and no site-settings page; this is the path that
+/// actually reaches the OS. A click focuses the window, brings the calling
+/// instance forward, and hands it the route (`notify::open_js`).
 ///
-/// Async, and the post itself on a blocking thread: notify-rust's `show()` is
-/// a blocking D-Bus call, and as a sync command it ran on the main thread — a
-/// notification server that took 30 s to answer froze every webview and the
-/// window for those 30 s. The page gets its answer within `NOTIFY_WAIT`.
+/// Remote-callable, so it is bounded per calling webview: a burst of 20 and
+/// then one every 2 s (`Err("rate limited")` past it), clamped fields, a
+/// `kind` that is a plain slug or nothing, `renotify` a boolean or nothing.
+/// The banner is keyed by the CALLER's label and the tag, never by anything
+/// else the page says, so one instance cannot replace another's banner.
+///
+/// The page gets its answer within `NOTIFY_WAIT`; a post the service has not
+/// answered by then keeps going and is recorded as pending, not success.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn desktop_notify(
     app: AppHandle,
     webview: Webview,
@@ -1225,35 +1335,51 @@ pub async fn desktop_notify(
     body: Option<String>,
     tag: Option<String>,
     href: Option<String>,
+    kind: Option<serde_json::Value>,
+    renotify: Option<serde_json::Value>,
 ) -> Result<(), String> {
+    let label = webview.label().to_string();
+    if !notify::allow_post(&app, &label) {
+        return Err("rate limited".into());
+    }
     let title = notify::clamped_title(&title);
     if title.is_empty() {
         return Err("a notification needs a title".into());
     }
-    let body = body
-        .as_deref()
-        .map(notify::clamped_body)
-        .filter(|b| !b.is_empty());
-    let tag = tag
-        .as_deref()
-        .map(notify::clamped_tag)
-        .filter(|t| !t.is_empty());
-    let label = webview.label().to_string();
-    let href = href
-        .as_deref()
-        .and_then(notify::openable_href)
-        .map(str::to_string);
-    let posting = tauri::async_runtime::spawn_blocking(move || {
-        let on_open = {
-            let app = app.clone();
-            move || reveal_notice(&app, &label, href.as_deref())
-        };
-        notify::post(&app, &title, body.as_deref(), tag.as_deref(), on_open)
-    });
+    let post = notify::Post {
+        instance: instance_name(&app, &label),
+        title,
+        body: body
+            .as_deref()
+            .map(notify::clamped_body)
+            .filter(|b| !b.is_empty()),
+        tag: tag
+            .as_deref()
+            .map(notify::clamped_tag)
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        href: href
+            .as_deref()
+            .and_then(notify::openable_href)
+            .map(str::to_string),
+        kind: kind
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .and_then(notify::clean_kind),
+        renotify: renotify
+            .as_ref()
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        source: notify::Source::Page,
+        label,
+    };
+    let handle = app.clone();
+    let posting = tauri::async_runtime::spawn(async move { notify::post(&handle, post).await });
     match tokio::time::timeout(NOTIFY_WAIT, posting).await {
         Ok(Ok(result)) => result,
         Ok(Err(e)) => Err(format!("posting the notification: {e}")),
         Err(_) => {
+            notify::record_pending(&app, webview.label());
             eprintln!(
                 "talaria-desktop: the notification service has not answered in {} s; the post continues",
                 NOTIFY_WAIT.as_secs()
@@ -1263,47 +1389,141 @@ pub async fn desktop_notify(
     }
 }
 
-/// A notification click: bring `label`'s instance forward, open `href` in it,
-/// and put the window in front. A suspended instance is recreated straight at
-/// `href`: the notification's own page wins over the page it was on.
-pub(crate) fn reveal_notice(app: &AppHandle, label: &str, href: Option<&str>) {
+/// The notification service's state, as the OS reports it now: for Settings
+/// → Desktop and the launcher. No service, no "On".
+#[tauri::command]
+pub async fn desktop_notification_status(app: AppHandle, webview: Webview) -> notify::Status {
+    notify::status(&app, webview.label()).await
+}
+
+/// Ask the OS for permission (macOS: the system prompt when it has not asked
+/// yet, System Settings when the person said no before), then report. Only
+/// ever from a click; once per 10 s per caller.
+#[tauri::command]
+pub async fn desktop_notification_request(
+    app: AppHandle,
+    webview: Webview,
+) -> Result<notify::Status, String> {
+    if !notify::allow_every(&app, "request", webview.label(), notify::REQUEST_EVERY) {
+        return Err("rate limited".into());
+    }
+    Ok(notify::request(&app, webview.label()).await)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestResult {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub status: notify::Status,
+}
+
+/// Send test notification: one banner through the real path, and what
+/// happened to it. Once per 5 s per caller.
+#[tauri::command]
+pub async fn desktop_notification_test(
+    app: AppHandle,
+    webview: Webview,
+) -> Result<TestResult, String> {
+    let label = webview.label().to_string();
+    if !notify::allow_every(&app, "test", &label, notify::TEST_EVERY) {
+        return Err("rate limited".into());
+    }
+    let post = notify::Post {
+        instance: instance_name(&app, &label),
+        title: notify::TEST_TITLE.into(),
+        body: Some(notify::TEST_BODY.into()),
+        tag: "test".into(),
+        href: None,
+        kind: None,
+        renotify: true,
+        source: notify::Source::Page,
+        label,
+    };
+    let outcome = match tokio::time::timeout(TEST_WAIT, notify::post(&app, post)).await {
+        Ok(outcome) => outcome,
+        Err(_) => Err(format!(
+            "the notification service did not answer in {} s",
+            TEST_WAIT.as_secs()
+        )),
+    };
+    let status = notify::status(&app, webview.label()).await;
+    Ok(TestResult {
+        ok: outcome.is_ok(),
+        error: outcome.err(),
+        status,
+    })
+}
+
+/// This instance's unread count, for the dock and launcher badge. Each
+/// calling webview has its own share, clamped to 0..=99,999; the OS shows the
+/// sum, so no instance can overwrite another's.
+#[tauri::command]
+pub fn desktop_set_badge(
+    app: AppHandle,
+    webview: Webview,
+    count: serde_json::Value,
+) -> Result<(), String> {
+    let count = count
+        .as_u64()
+        .or_else(|| count.as_f64().filter(|n| *n >= 0.0).map(|n| n as u64))
+        .ok_or("a badge is a count")?;
+    let count = u32::try_from(count.min(u64::from(notify::BADGE_MAX))).unwrap_or(notify::BADGE_MAX);
+    notify::set_badge(&app, webview.label(), count);
+    Ok(())
+}
+
+/// Quit: from the switcher, the launcher, Ctrl+Q, or the tray.
+#[tauri::command]
+pub fn desktop_quit(app: AppHandle) {
+    crate::background::quit(&app);
+}
+
+/// Settings → Desktop's "Keep running in the background".
+#[tauri::command]
+pub fn set_close_to_background(
+    app: AppHandle,
+    on: bool,
+) -> Result<settings::DesktopSettings, String> {
+    let state = app.state::<ShellState>();
+    let saved = {
+        let mut current = state.settings.lock().unwrap();
+        current.close_to_background = on;
+        settings::save(&state.settings_path, &current)?;
+        current.clone()
+    };
+    emit_state(&app);
+    Ok(saved)
+}
+
+/// A notification click: bring `label`'s instance forward and put the window
+/// in front (with the activation token the notification server passed, so
+/// Wayland lets it take focus), then hand the page its route. A suspended
+/// instance is recreated straight at `href`: the notification's own page
+/// wins over the page it was on.
+pub(crate) fn reveal_notice(
+    app: &AppHandle,
+    label: &str,
+    href: Option<&str>,
+    id: Option<&str>,
+    token: Option<String>,
+) {
     let label = label.to_string();
     let href = href.map(str::to_string);
+    let id = id.unwrap_or_default().to_string();
     let app = app.clone();
-    // WebKitGTK eval and window ops belong on the main thread. The click
-    // waiter is a blocking thread; this only queues the reveal.
+    // WebKitGTK eval and window ops belong on the main thread; the click
+    // arrives on a bus or delegate thread. This only queues the reveal.
     let _ = app.clone().run_on_main_thread(move || {
         let mut born_at_href = false;
-        if let Some(id) = label.strip_prefix("instance-") {
-            born_at_href = activate(&app, id, href.as_deref()).unwrap_or(false);
+        if let Some(instance) = label.strip_prefix("instance-") {
+            born_at_href = activate(&app, instance, href.as_deref()).unwrap_or(false);
         }
-        if let Some(window) = app.get_window("main") {
-            let _ = window.unminimize();
-            // The shell asked for the window back. On Wayland that brings no
-            // focus event without an activation token, so the shell's own
-            // minimize would keep counting the instance on screen as away
-            // and suspend it while it is visible. Never risk that: the
-            // window is back as far as the suspend clock is concerned.
-            app.state::<ShellState>()
-                .self_minimized
-                .store(false, Ordering::Relaxed);
-            // NEVER `show()` a window that is already visible. On Linux tao's
-            // show is gtk `show_all`, which re-shows every hidden child
-            // webview — and wry's vertical GtkBox then gives the hidden
-            // launcher and every hidden instance an equal slice of the window
-            // (the instance came up at half height under a blank band). Only
-            // a window that really is hidden is shown, and the view is put
-            // back straight after.
-            if !window.is_visible().unwrap_or(true) {
-                let _ = window.show();
-                let view = *app.state::<ShellState>().view.lock().unwrap();
-                let _ = set_view(&app, view);
-            }
-            let _ = window.set_focus();
-        }
+        crate::background::present_main(&app, token);
         if !born_at_href
             && let Some(href) = href
-            && let Some(js) = notify::assign_js(&href)
+            && let Some(js) = notify::open_js(&href, &id)
             && let Some(webview) = app.get_webview(&label)
         {
             let _ = webview.eval(js);

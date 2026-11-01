@@ -21,6 +21,12 @@ fn main() {
             "check_for_update",
             "install_update",
             "desktop_notify",
+            "desktop_notification_status",
+            "desktop_notification_request",
+            "desktop_notification_test",
+            "desktop_set_badge",
+            "desktop_quit",
+            "set_close_to_background",
         ]),
     ))
     .expect("failed to run tauri-build");

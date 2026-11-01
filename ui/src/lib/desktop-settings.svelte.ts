@@ -6,6 +6,7 @@ import {
   inDesktopShell,
   shellDesktopWindow,
   shellGetDesktopSettings,
+  shellSetCloseToBackground,
   shellSetSuspendAfter,
   shellSetTitlebarMode,
   type DesktopSettings,
@@ -47,6 +48,13 @@ export async function setTitlebarMode(mode: TitlebarMode): Promise<void> {
 
 export async function setSuspendAfter(minutes: number): Promise<void> {
   settings = await shellSetSuspendAfter(minutes)
+}
+
+/** Keep running in the background when the window closes. A shell that
+ *  predates the setting leaves it unchanged. */
+export async function setCloseToBackground(on: boolean): Promise<void> {
+  const saved = await shellSetCloseToBackground(on)
+  if (saved) settings = saved
 }
 
 export function desktopWindow(

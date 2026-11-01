@@ -4,13 +4,22 @@
     checkForUpdate,
     errorText,
     installUpdate,
+    quit,
     type TitlebarMode,
     type DesktopUpdate,
   } from '../lib/instances'
   import DitherField from './DitherField.svelte'
   import InstanceList from './InstanceList.svelte'
   import WingMark from './WingMark.svelte'
-  import { cancelOpen, dismissNotice, open, setSuspend, setTitlebar, shell } from '../lib/state.svelte'
+  import {
+    allowNotifications,
+    cancelOpen,
+    dismissNotice,
+    open,
+    setSuspend,
+    setTitlebar,
+    shell,
+  } from '../lib/state.svelte'
 
   // The signature ambient field, wearing the same shape the nav rail wears in
   // the product: a soft bloom off the top edge, a heavier foot at the bottom,
@@ -99,6 +108,54 @@
           >
         </div>
       {/each}
+
+      {#if shell.notify?.permission === 'not-determined'}
+        <!-- macOS asks once, and only from a click: never at launch. -->
+        <div class="mt-4 rounded border border-hairline bg-panel px-3 py-2 text-left text-xs text-muted" role="status">
+          <p class="text-readout">Allow notifications</p>
+          <p class="mt-1">
+            Talaria posts a banner when a message or an approval needs you, from every instance you open. macOS asks
+            you first.
+          </p>
+          <div class="mt-2 flex justify-end">
+            <button
+              type="button"
+              class="rounded bg-gold px-3 py-1 text-xs font-semibold text-ground hover:brightness-110 disabled:opacity-50"
+              disabled={shell.asking}
+              onclick={() => void allowNotifications()}
+            >
+              {shell.asking ? 'Waiting for macOS' : 'Allow notifications'}
+            </button>
+          </div>
+        </div>
+      {:else if shell.notify?.permission === 'denied'}
+        <div class="mt-4 rounded border border-hairline bg-panel px-3 py-2 text-left text-xs text-muted" role="status">
+          <p class="text-readout">Notifications are off for Talaria</p>
+          <p class="mt-1">Turn them on in System Settings → Notifications → Talaria.</p>
+          <div class="mt-2 flex justify-end">
+            <button
+              type="button"
+              class="rounded border border-hairline-strong px-2 py-0.5 text-readout hover:bg-hover disabled:opacity-50"
+              disabled={shell.asking}
+              onclick={() => void allowNotifications()}>Open System Settings</button
+            >
+          </div>
+        </div>
+      {:else if shell.notify?.permission === 'unavailable'}
+        <div class="mt-4 rounded border border-hairline bg-panel px-3 py-2 text-left text-xs text-muted" role="status">
+          <p class="text-readout">No notification service</p>
+          <p class="mt-1 break-words">
+            Banners cannot be shown on this desktop right now ({shell.notify.detail ?? 'no reason given'}).
+          </p>
+        </div>
+      {/if}
+
+      {#if shell.closeToBackground && shell.background === 'minimize'}
+        <p class="mt-4 rounded border border-hairline bg-panel px-3 py-2 text-left text-[11px] leading-snug text-dim" role="note">
+          This desktop shows no tray icons, so closing the window minimizes Talaria instead of hiding it — it keeps
+          running so notifications arrive. Quit with Ctrl+Q, or Quit below.
+        </p>
+      {/if}
 
       {#if shell.instances.length > 0}
         <p class="mt-2 text-xs text-muted">Switch below, or add another instance.</p>
@@ -235,6 +292,16 @@
         {#if updateMsg}
           <p class="mt-2 text-xs text-muted">{updateMsg}</p>
         {/if}
+      </div>
+
+      <div class="mt-6">
+        <button
+          type="button"
+          class="rounded border border-hairline px-5 py-2 text-xs text-muted hover:text-readout"
+          onclick={() => void quit()}
+        >
+          Quit Talaria
+        </button>
       </div>
     </div>
   </main>

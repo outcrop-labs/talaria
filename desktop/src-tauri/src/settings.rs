@@ -1,6 +1,7 @@
 //! Shell settings — `settings.json` next to the instance registry: the window
-//! titlebar mode, and how long an instance's page may stay off screen before
-//! the shell suspends it (suspend.rs). Written atomically (tmp + rename), same
+//! titlebar mode, how long an instance's page may stay off screen before the
+//! shell suspends it (suspend.rs), and whether closing the window keeps
+//! Talaria running (background.rs). Written atomically (tmp + rename), same
 //! as the registry, so a crash mid-write cannot truncate it.
 //!
 //! Reading it never stops the app: a value this build does not know (a newer
@@ -41,6 +42,14 @@ pub struct DesktopSettings {
     /// its webview (suspend.rs). `0` is Off. An older build ignores the field.
     #[serde(default = "default_suspend", deserialize_with = "lenient_minutes")]
     pub suspend_after_minutes: u32,
+    /// Closing the window keeps Talaria running, so notifications still
+    /// arrive (background.rs). On by default; ignored on Windows, where Close
+    /// still quits. An older build ignores the field.
+    #[serde(default = "default_true", deserialize_with = "lenient_true")]
+    pub close_to_background: bool,
+    /// The one-time "Talaria is still running" notice has been shown.
+    #[serde(default, deserialize_with = "lenient")]
+    pub background_notice_shown: bool,
 }
 
 impl Default for DesktopSettings {
@@ -48,6 +57,8 @@ impl Default for DesktopSettings {
         Self {
             titlebar: TitlebarMode::default(),
             suspend_after_minutes: DEFAULT_SUSPEND_MINUTES,
+            close_to_background: true,
+            background_notice_shown: false,
         }
     }
 }
@@ -62,6 +73,16 @@ impl DesktopSettings {
 
 fn default_suspend() -> u32 {
     DEFAULT_SUSPEND_MINUTES
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// A boolean, or the default (on) for anything else.
+fn lenient_true<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(value.as_bool().unwrap_or(true))
 }
 
 /// A whole number of minutes from 0 (Off) to a day; anything else is the
@@ -159,6 +180,8 @@ mod tests {
         let settings = DesktopSettings {
             titlebar: TitlebarMode::Os,
             suspend_after_minutes: 0,
+            close_to_background: false,
+            background_notice_shown: true,
         };
         save(&path, &settings).unwrap();
         assert_eq!(load(&path), (settings, None));
@@ -214,6 +237,25 @@ mod tests {
         let parsed: DesktopSettings =
             serde_json::from_str(r#"{"titlebar":"os","suspendAfterMinutes":"x"}"#).unwrap();
         assert_eq!(parsed.titlebar, TitlebarMode::Os);
+    }
+
+    #[test]
+    fn closing_to_the_background_is_on_unless_the_file_says_false() {
+        let parsed: DesktopSettings = serde_json::from_str("{}").unwrap();
+        assert!(parsed.close_to_background);
+        assert!(!parsed.background_notice_shown);
+        let off: DesktopSettings =
+            serde_json::from_str(r#"{"closeToBackground":false,"backgroundNoticeShown":true}"#)
+                .unwrap();
+        assert!(!off.close_to_background);
+        assert!(off.background_notice_shown);
+        for junk in [
+            r#"{"closeToBackground":"no"}"#,
+            r#"{"closeToBackground":0}"#,
+        ] {
+            let parsed: DesktopSettings = serde_json::from_str(junk).unwrap();
+            assert!(parsed.close_to_background, "{junk}");
+        }
     }
 
     #[test]

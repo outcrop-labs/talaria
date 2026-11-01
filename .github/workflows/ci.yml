@@ -9,6 +9,7 @@
 #     cd cli && typecheck + bun test            (the `talaria` CLI)
 #     cd api && fmt + clippy + cargo test       (the Rust port)
 #     cd desktop && fmt + clippy + cargo test + svelte-check  (the desktop shell)
+#     cd desktop/src-tauri && clippy + cargo test on macOS    (its macOS-only code)
 #     the MCP end-to-end suite (Playwright against a booted app + api + stubs)
 #   That is the whole thing. It takes a couple of minutes (the e2e job, when
 #   its surface moved, is the long pole — see its own note).
@@ -588,6 +589,41 @@ jobs:
       - name: Typecheck
         working-directory: desktop
         run: bun run typecheck
+
+  # The same crate on macOS. The shell's macOS code — the
+  # UNUserNotificationCenter backend and its delegate (notify/macos.rs), the
+  # dock badge, the menu-bar item, `RunEvent::Reopen` — is behind
+  # `cfg(target_os = "macos")`, so the Linux job above never compiles a line
+  # of it, and desktop-package.yml only builds on main and by dispatch. This
+  # job is what puts it through clippy and the tests on every desktop pull
+  # request. No bundle and no apt step: macOS has the webview already.
+  desktop-macos:
+    name: clippy + test (desktop macos)
+    needs: [changes]
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: ./.github/actions/setup-runtime
+        with:
+          install-dir: desktop
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Clippy
+        working-directory: desktop/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: desktop/src-tauri
+        run: cargo test --quiet
 
   # The surface gate, on Linux: what `bun run mobile:check` runs, and what a
   # devbox runs. `--no-daemon` because a CI runner is thrown away afterwards and
