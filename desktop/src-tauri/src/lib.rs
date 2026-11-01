@@ -501,13 +501,58 @@ fn install_quit_action(app: &tauri::AppHandle) {
         background::quit(&handle);
     });
     application.add_action(&quit);
+    // The registered application also answers D-Bus `Activate`
+    // (`gapplication launch app.talaria.desktop`, a dock or launcher that
+    // activates by GApplication). Each one reaches tao's `activate` handler,
+    // which hands tauri a fresh start, and tauri runs its setup again and
+    // panics on the `main` window that already exists. Tao's one start has
+    // happened — setup, which is running this, came from it — so every
+    // handler connected so far is blocked, and an activate shows the window
+    // instead, as a second launch does.
+    let blocked = block_activate_handlers(&application);
+    let handle = app.clone();
+    application.connect_activate(move |_| {
+        eprintln!(
+            "talaria-desktop: the desktop activated Talaria (GApplication); showing the window"
+        );
+        background::present_main(&handle, None);
+    });
     eprintln!(
-        "talaria-desktop: GTK application {} (prgname {}): app.quit exported",
+        "talaria-desktop: GTK application {} (prgname {}): app.quit exported; activate shows the window ({blocked} start handler(s) retired)",
         application
             .application_id()
             .map_or("(none)".to_string(), |id| id.to_string()),
         gtk::glib::prgname().map_or("(none)".to_string(), |p| p.to_string())
     );
+}
+
+/// Block every handler of the application's `activate` signal connected so
+/// far (tao's start handler); the number blocked.
+#[cfg(target_os = "linux")]
+fn block_activate_handlers(application: &gtk::Application) -> u32 {
+    use gtk::glib::{gobject_ffi, object::ObjectType};
+    // SAFETY: `application` is a live GApplication for the whole call; the
+    // signal id is looked up on GApplication's own type with a NUL-terminated
+    // name; the match is by signal id alone, so the closure, func and data
+    // filters are unused and null.
+    unsafe {
+        let signal = gobject_ffi::g_signal_lookup(
+            c"activate".as_ptr(),
+            gtk::gio::ffi::g_application_get_type(),
+        );
+        if signal == 0 {
+            return 0;
+        }
+        gobject_ffi::g_signal_handlers_block_matched(
+            application.as_ptr().cast(),
+            gobject_ffi::G_SIGNAL_MATCH_ID,
+            signal,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    }
 }
 
 #[cfg(test)]
