@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { HIDDEN_PAUSE_H1_MS, HIDDEN_PAUSE_MS, PROBE_AFTER, STABLE_MS, backoffDelay, hiddenPauseMs, openStream, type StreamState } from './sse'
+import { HIDDEN_PAUSE_H1_MS, HIDDEN_PAUSE_MS, PROBE_AFTER, STABLE_MS, backoffDelay, hiddenPauseMs, openStream, pageProtocol, type StreamState } from './sse'
 
 class FakeES {
   static CONNECTING = 0
@@ -314,5 +314,22 @@ describe('openStream', () => {
     expect(hiddenPauseMs('h2')).toBe(HIDDEN_PAUSE_MS)
     expect(hiddenPauseMs('h3')).toBe(HIDDEN_PAUSE_MS)
     expect(hiddenPauseMs('')).toBe(HIDDEN_PAUSE_MS)
+  })
+
+  it('reads the protocol from the navigation, else the first networked resource, else the scheme', () => {
+    const O = 'https://talaria.example'
+    const perf = (nav: string, res: Array<[string, string]>) => ({
+      getEntriesByType: (t: string) =>
+        (t === 'navigation' ? [{ nextHopProtocol: nav }] : res.map(([name, p]) => ({ name, nextHopProtocol: p }))) as unknown as PerformanceEntryList,
+    })
+    expect(pageProtocol(perf('h2', []), 'https:', O)).toBe('h2')
+    // A navigation served from the HTTP cache reports '': a same-origin
+    // resource that went to the network still knows…
+    expect(pageProtocol(perf('', [[`${O}/a.js`, ''], [`${O}/api/x`, 'h2']]), 'https:', O)).toBe('h2')
+    // …and another origin's (a font CDN) says nothing about this host.
+    expect(pageProtocol(perf('', [['https://fonts.googleapis.com/css2', 'h2']]), 'http:', 'http://localhost:5310')).toBe('http/1.1')
+    expect(pageProtocol(perf('', [['http://localhost:5310/@vite/client', 'http/1.1']]), 'http:', 'http://localhost:5310')).toBe('http/1.1')
+    expect(pageProtocol(perf('', []), 'https:', O)).toBe('')
+    expect(pageProtocol(undefined, 'http:', 'http://localhost:5310')).toBe('http/1.1')
   })
 })

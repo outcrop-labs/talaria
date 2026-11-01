@@ -64,14 +64,41 @@ export const HIDDEN_PAUSE_MS = 30_000
 /** …and on an HTTP/1.x page, whose browser allows six sockets per host. */
 export const HIDDEN_PAUSE_H1_MS = 5_000
 
-/** The page's own transport: `http/1.1` on a dev stack, `h2`/`h3` at an edge. */
-export function pageProtocol(): string {
+/** The page's own transport: `http/1.1` on a dev stack, `h2`/`h3` at an edge.
+ *  The navigation entry says it — unless the page came from the HTTP cache,
+ *  when its `nextHopProtocol` is empty: then the first SAME-ORIGIN resource
+ *  that went to the network says it (another origin's — a font CDN on h2 —
+ *  says nothing about this host's six sockets); and failing both, a
+ *  plain-http page is HTTP/1.1, since browsers speak HTTP/2 only over TLS.
+ *  Seen live: from the second tab of a dev stack on, the navigation was
+ *  cached, the first networked entry was Google Fonts on h2, and every hidden
+ *  tab held its streams for the edge's 30 s. */
+export function pageProtocol(
+  perf: Pick<Performance, 'getEntriesByType'> | undefined = typeof performance === 'undefined' ? undefined : performance,
+  scheme: string = typeof location === 'undefined' ? '' : location.protocol,
+  origin: string = typeof location === 'undefined' ? '' : location.origin,
+): string {
   try {
-    if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') return ''
-    const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
-    return nav?.nextHopProtocol ?? ''
+    if (perf && typeof perf.getEntriesByType === 'function') {
+      const nav = perf.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
+      if (nav?.nextHopProtocol) return nav.nextHopProtocol
+      for (const e of perf.getEntriesByType('resource') as PerformanceResourceTiming[]) {
+        if (!e.nextHopProtocol) continue
+        if (origin && !sameOrigin(e.name, origin)) continue
+        return e.nextHopProtocol
+      }
+    }
   } catch {
-    return ''
+    /* no timing: the scheme still says enough */
+  }
+  return scheme === 'http:' ? 'http/1.1' : ''
+}
+
+function sameOrigin(url: string, origin: string): boolean {
+  try {
+    return new URL(url, origin).origin === origin
+  } catch {
+    return false
   }
 }
 
