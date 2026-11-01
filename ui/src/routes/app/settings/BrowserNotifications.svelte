@@ -74,7 +74,15 @@
       if (p === 'granted' && on) void ensurePushSubscription()
     }),
   )
-  $effect(() => onPushStatus((s) => (push = s)))
+  $effect(() =>
+    onPushStatus((s) => {
+      push = s
+      // The boot re-files this browser's subscription; once it lands, the
+      // devices list (and "On the server" below) reads it afresh rather than
+      // keeping a read that raced it.
+      if (s.state === 'registered') void qc.invalidateQueries({ queryKey: ['push-devices'] })
+    }),
+  )
 
   // The worker and the subscription, as the browser reports them now —
   // re-read whenever the permission or the push status moves.
