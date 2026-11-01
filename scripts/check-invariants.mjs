@@ -2901,19 +2901,49 @@ const UNSET_SEAM_CENSUS = [
       found: [],
     })
   } else {
-    // Rust half: every literal kind a NotificationInput files.
+    // Rust half: every kind a writer files, in the two literal shapes that
+    // carry one — `NotificationInput { kind, … }`, and the tickets' own
+    // `TaskNotification { kind: "…".into(), … }` that becomes one — as a
+    // string literal, or as a `const NAME: &str = "…"` it names (the MCP
+    // health pass's `KIND_SERVER_DOWN`). A kind passed through a variable is
+    // read where its caller spells it in one of these shapes.
+    const kindConsts = new Map()
+    for (const src of rustSources.values()) {
+      for (const c of src.matchAll(/\bconst\s+([A-Z][A-Z0-9_]+)\s*:\s*&(?:'static\s+)?str\s*=\s*"([^"]+)"/g)) {
+        if (!kindConsts.has(c[1])) kindConsts.set(c[1], c[2])
+      }
+    }
     const unknown = []
+    let seen = 0
     for (const [path, src] of rustSources) {
       const skip = cfgTestRanges(src)
-      for (const m of src.matchAll(/\bNotificationInput\s*\{/g)) {
+      for (const m of src.matchAll(/\b(?:NotificationInput|TaskNotification)\s*\{/g)) {
         if (skip.some(([s, e]) => m.index >= s && m.index < e)) continue
         const body = braceBody(src, m.index)
         if (!body) continue
-        const k = /\bkind:\s*"([^"]+)"/.exec(src.slice(body[0], body[1]))
-        if (k && !kinds.has(k[1]) && !classIds.has(k[1])) {
-          unknown.push({ path, line: lineOf(src, m.index), text: `kind: "${k[1]}" — not in KIND_CLASS and not a class id` })
+        const k = /\bkind:\s*(?:"([^"]+)"|([A-Z][A-Z0-9_]+)\b)/.exec(src.slice(body[0], body[1]))
+        if (!k) continue
+        const kind = k[1] ?? kindConsts.get(k[2])
+        if (kind === undefined) continue
+        seen++
+        if (!kinds.has(kind) && !classIds.has(kind)) {
+          const spelled = k[1] ? `"${kind}"` : `${k[2]} (= "${kind}")`
+          unknown.push({ path, line: lineOf(src, m.index), text: `kind: ${spelled} — not in KIND_CLASS and not a class id` })
         }
       }
+    }
+    // The shapes' own anchor: a tree where neither shape names a kind any
+    // more has moved its writers somewhere this rule no longer reads.
+    if (seen === 0) {
+      failures.push({
+        id: 'notify-kind-writers-anchor',
+        what: 'no NotificationInput or TaskNotification literal names a kind — the writers moved out of reach of the class-registry rule',
+        fix: [
+          'Point the Rust half of this rule at the struct literals that now carry a notification',
+          'kind, in the same commit that moved them.',
+        ],
+        found: [],
+      })
     }
     if (unknown.length) {
       failures.push({
@@ -2958,7 +2988,7 @@ const UNSET_SEAM_CENSUS = [
         found: lists,
       })
     }
-    notes.push(`notification classes: ${classIds.size} in the registry, ${kinds.size} kinds in KIND_CLASS`)
+    notes.push(`notification classes: ${classIds.size} in the registry, ${kinds.size} kinds in KIND_CLASS, ${seen} writer literals read`)
   }
 }
 
