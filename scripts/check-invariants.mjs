@@ -2861,6 +2861,107 @@ const UNSET_SEAM_CENSUS = [
   }
 }
 
+// ── The notification class registry is the one class list (C14) ──────────────
+//
+// The registry lives in api/crates/talaria-notify/src/classes.rs: KIND_CLASS
+// maps every kind a writer files to its class, and CLASSES is the class list
+// the wire serves as `classes[]` (labels, blurbs and defaults included). Two
+// ways it rots, one half each:
+//
+//   RUST — a writer files `NotificationInput { kind: "<new-kind>" }` that the
+//   table never heard of. It does not fail: `notify_class_of` drops it into
+//   the quiet bucket, and the person's matrix has no row that controls it.
+//   Every literal kind must be a KIND_CLASS kind or a class id.
+//
+//   TS — the client grows its own hand-kept class list (three or more
+//   `id: '<class id>'` entries in one file). The server owns the copy now; a
+//   second list is the first one drifting. notify-classes.ts is the one list
+//   allowed until W2-C retires it with this allowlist line.
+//
+// The anchors fail when the registry parses empty — a rule whose subject was
+// renamed keeps passing on a tree that no longer contains it.
+{
+  const registryPath = 'api/crates/talaria-notify/src/classes.rs'
+  const registry = rustSources.get(registryPath) ?? ''
+  const tableAt = registry.indexOf('pub const KIND_CLASS')
+  const table = tableAt === -1 ? '' : registry.slice(tableAt, registry.indexOf('];', tableAt))
+  const kinds = new Set([...table.matchAll(/\(\s*"([a-z0-9_-]+)"\s*,\s*"([a-z0-9_]+)"\s*,/g)].map((m) => m[1]))
+  const classesAt = registry.indexOf('pub const CLASSES')
+  const classesBody = classesAt === -1 ? '' : registry.slice(classesAt, registry.indexOf('];', classesAt))
+  const classIds = new Set([...classesBody.matchAll(/\bid:\s*"([a-z0-9_]+)"/g)].map((m) => m[1]))
+  if (kinds.size === 0 || classIds.size === 0) {
+    failures.push({
+      id: 'notify-class-registry-anchor',
+      what: `${registryPath} no longer parses: KIND_CLASS gave ${kinds.size} kinds and CLASSES ${classIds.size} classes`,
+      fix: [
+        'The class registry moved or changed shape. Point this rule at its new home in the same',
+        'commit, so the two checks below keep reading the real list — a rule over an empty list',
+        'passes on everything.',
+      ],
+      found: [],
+    })
+  } else {
+    // Rust half: every literal kind a NotificationInput files.
+    const unknown = []
+    for (const [path, src] of rustSources) {
+      const skip = cfgTestRanges(src)
+      for (const m of src.matchAll(/\bNotificationInput\s*\{/g)) {
+        if (skip.some(([s, e]) => m.index >= s && m.index < e)) continue
+        const body = braceBody(src, m.index)
+        if (!body) continue
+        const k = /\bkind:\s*"([^"]+)"/.exec(src.slice(body[0], body[1]))
+        if (k && !kinds.has(k[1]) && !classIds.has(k[1])) {
+          unknown.push({ path, line: lineOf(src, m.index), text: `kind: "${k[1]}" — not in KIND_CLASS and not a class id` })
+        }
+      }
+    }
+    if (unknown.length) {
+      failures.push({
+        id: 'notify-kind-not-in-registry',
+        what: 'a writer files a notification kind the class registry does not name — it lands in the quiet bucket and no setting controls it',
+        fix: [
+          `Add the kind to KIND_CLASS in ${registryPath} — (kind, class, the reason a row`,
+          'of it shows) — with the class a person would look for it under. If no class fits,',
+          'that is a registry change: add the class to CLASSES with its category and defaults,',
+          'and say so in the pull request. Or name an existing class id as the kind.',
+        ],
+        found: unknown,
+      })
+    }
+    // TS half: no second hand-kept class list.
+    const CLASS_LIST_ALLOWED = ['ui/src/lib/notify-classes.ts'] // W2-C retires it, and this line
+    const lists = []
+    const counts = new Map()
+    for (const [path, src] of sources) {
+      if (!path.startsWith('ui/src/') || /\.test\.[a-z]+$/.test(path)) continue
+      const n = [...src.matchAll(/\bid:\s*['"]([a-z0-9_]+)['"]/g)].filter((m) => classIds.has(m[1])).length
+      counts.set(path, n)
+      if (n >= 3 && !CLASS_LIST_ALLOWED.includes(path)) {
+        lists.push({ path, line: 1, text: `${n} entries name a notification class id — a hand-kept class list` })
+      }
+    }
+    for (const path of CLASS_LIST_ALLOWED) {
+      if ((counts.get(path) ?? 0) < 3) {
+        lists.push({ path, line: 1, text: 'allowlisted as a class list, but it no longer is one — delete the allowlist line' })
+      }
+    }
+    if (lists.length) {
+      failures.push({
+        id: 'notify-class-list-in-the-client',
+        what: 'the client keeps its own list of notification classes — the server serves the registry as `classes[]`',
+        fix: [
+          'Render from `classes` in GET /api/notifications (`ClassInfo` in ui/src/lib/notify-wire.ts):',
+          'labels, blurbs, categories and defaults all come from the registry. A second list is',
+          `the first one drifting. The one allowed list is in CLASS_LIST_ALLOWED in this file`,
+          'until W2-C retires it; when it goes, its allowlist line goes in the same commit.',
+        ],
+        found: lists,
+      })
+    }
+    notes.push(`notification classes: ${classIds.size} in the registry, ${kinds.size} kinds in KIND_CLASS`)
+  }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 
 const BAR = '─'.repeat(78)
