@@ -78,7 +78,9 @@ more `id: '<class id>'` entries. Its allowlist is empty.
   UTC instant; the label names the zone when it differs from the browser's.
 - **Working hours** (`NotifySchedule.svelte`): days, a start and an end (`start > end`
   crosses midnight), and "Let Needs you through". The server evaluates them in the profile's
-  zone, else UTC; the editor says so when the profile has no zone.
+  zone, else the workspace's (the zone the brief opens in, UTC unless the workspace sets
+  one), and serves the zone it used as `dnd.timeZone`; the editor names it, and says so
+  when the profile has no zone and that leaves the hours in UTC.
 - **What is shown**: a pause is read from `pausedUntil` itself, so it shows the moment it
   is saved and goes the moment it ends; a schedule trusts the server's `active` and `until`
   until that `until` passes. The bell's icon becomes a crossed-out bell while either holds.

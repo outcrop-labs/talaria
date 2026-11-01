@@ -69,12 +69,23 @@ The center itself (the bell, the page, the settings, the status panel) is
   always on: every notification is kept in your inbox. **Desktop** is a banner on this
   computer from a Talaria tab or the desktop app. **Push** is a banner from your browser
   with every Talaria tab closed. **Email** is a missed-activity email, sent as often as you
-  choose (every 15 minutes, hourly, daily or never), and disabled, with the reason, while
-  the instance's email switch is off. The daily digest keeps its own switch.
+  choose (every 15 minutes, hourly, daily or never); a conversation that stays unread is
+  mailed again at that frequency. It is disabled, with the reason, while the instance's
+  email switch is off. The daily digest keeps its own switch.
+- **Each channel and direct message** has its own setting in its header: All messages,
+  Mentions only or Nothing, and a mute for 1, 8 or 24 hours or until you turn it back on.
+  A channel starts at Mentions only and a direct message at All messages. A channel you set
+  to All messages alerts like a direct message: a banner, a push and the missed-activity
+  email, by default (its row in the matrix is Channel activity, where each can be turned
+  off). Its later messages add to the same notification without alerting again until you
+  read it. Nothing silences @mentions too, and a muted channel's notifications arrive
+  quietly.
 - **Do Not Disturb.** Pause from the account menu or the bell for 30 minutes, an hour, two
   hours, until 9:00 tomorrow in your time zone, until you resume, or until a time you pick;
-  and set working hours, outside which notifications arrive quietly. Needs you comes through
-  either way unless you turn that off. The bell shows "Paused until …" with Resume.
+  and set working hours, outside which notifications arrive quietly. Working hours are read
+  in your profile's time zone, or the workspace's when your profile has none. Needs you
+  comes through either way unless you turn that off. The bell shows "Paused until …" with
+  Resume.
 - **The status panel** (Settings → Notifications) says, live, whether this browser can
   show alerts and why not, which browsers are registered for push and what the push service
   last said to each, a test per device, which of your devices alerts go to right now, the
@@ -203,10 +214,11 @@ worker's per-row banners.
   resolves to the path `//evil.example`, which a router or `navigate()` reads as another
   host.
 - **DMs.** One unread `dm` row per conversation. A new message refreshes it in place (same
-  id, the newest body, `created_at = now()`), publishes it, and pushes with `renotify`; its
-  missed-activity mail follows the delivery engine's rules
-  ([delivery.md](./notifications/delivery.md)). Reading the channel to its newest message clears the row (and any
-  mention pointing there). An open conversation reads only while the person is looking at
+  id, the newest body, `created_at = now()`), publishes it, and pushes with `renotify`.
+  While the row stays unread, the conversation is mailed again at the person's
+  missed-activity frequency: a mail already pending covers a burst, and once one has gone
+  the next message arms the next ([delivery.md](./notifications/delivery.md)). Reading the
+  channel to its newest message clears the row (and any mention pointing there). An open conversation reads only while the person is looking at
   it, shown and focused (`ui/src/lib/looking.ts`, the rule the toast decision uses too): a
   background tab, a minimized window or an instance behind the desktop shell's launcher
   leaves new messages unread, so their DM or mention still alerts, and the read lands the
