@@ -18,8 +18,12 @@
 # the same files, the same md5sums. The rpm: its header cannot be edited in
 # place (the signature header covers it), so it is rebuilt with rpmbuild from
 # its own payload and its own header's fields, with AutoReqProv off so the
-# requirement set is exactly the old one minus the library. Both are then
-# checked: the library is gone from the hard dependencies and present as a
+# requirement set is exactly the old one minus the library. A pre-release
+# Version (`0.0.0-sha…`, `0.2.0-rc.1`) carries a `-`, which tauri's rpm crate
+# writes and rpmbuild refuses; it becomes `_`, and since rpm's version compare
+# treats every non-alphanumeric character as the same separator, the new
+# Version orders exactly as the old one did. Both packages are then checked:
+# the library is gone from the hard dependencies and present as a
 # recommendation, and the rpm carries the same files as before.
 set -euo pipefail
 
@@ -91,14 +95,21 @@ for row in q('[%{FILEMODES}\t%{FILEUSERNAME}\t%{FILEGROUPNAME}\t%{FILENAMES}\n]'
 def field(tag, fallback=''):
     v = q('%{' + tag + '}')
     return fallback if v == '(none)' else v
+# rpmbuild refuses a '-' in Version or Release; rpmvercmp reads '-' and '_'
+# as the same separator, so the order is unchanged (the header comment).
+def evr(tag):
+    v = field(tag)
+    if '-' in v:
+        print(f'rpm {tag.lower()}: {v} is written {v.replace("-", "_")} (rpmbuild refuses "-"; same order)', file=sys.stderr)
+    return v.replace('-', '_')
 body = [
     '%define _build_id_links none',
     '%define __os_install_post %{nil}',
     '%define __strip /bin/true',
     '%define debug_package %{nil}',
     f'Name: {name}',
-    f'Version: {field("VERSION")}',
-    f'Release: {field("RELEASE")}',
+    f'Version: {evr("VERSION")}',
+    f'Release: {evr("RELEASE")}',
     f'Summary: {field("SUMMARY", name)}',
     f'License: {field("LICENSE", "unknown")}',
     *( [f'URL: {field("URL")}'] if field("URL") else [] ),
