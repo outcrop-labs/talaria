@@ -148,8 +148,11 @@ export interface NotificationRowV2 {
 export interface NotificationsPayloadV2Fields {
   /** Unread rows of a For-you class (Needs you + Direct). */
   unreadForYou?: number
-  /** The person's notify seq, read in the same statement as the rows: every
-   *  row with a seq at or below it is in this read (I-10). */
+  /** The person's notify seq, read in the same statement (one snapshot) as
+   *  the rows: every row with a seq at or below it had committed when this
+   *  list was read (I-10). The list is still only the newest 50 by createdAt,
+   *  so this is NOT a complete read through `seq`: only a `?since` read whose
+   *  `more` is false advances an arrival record's `seq` (I-20). */
   seq?: number
   classes?: ClassInfo[]
   channels?: ChannelsPrefs

@@ -4,7 +4,15 @@ The interfaces every wave-2 notification stream builds against. It is landed by 
 request (the "contract"): every schema change, the single write path, the shared Rust
 types and wire shapes, the route surfaces, the TypeScript types, and the test and doc
 scaffolding. With the contract alone, every wave-1 behaviour is identical: new columns are
-written, new wire fields are served, and nothing consumes them yet.
+written, new wire fields are served, and nothing consumes them yet. The exceptions are the
+correctness fixes the contract makes itself: the instance email switch merges instead of
+overwriting its row (C28); reading an agent thread publishes the read-sync event; the
+digest's derived default is frozen to the original nine classes (C27); a re-alert's
+`createdAt` always moves later (a writer queued behind another no longer stamps an earlier
+time); a matrix Push switch turned off is obeyed; the Home Inbox's undo of a read restores
+the row (its guard compared a microsecond `read_at` with a millisecond timestamp and never
+matched); and a desktop client heartbeating from the tray while its OS is idle does not
+mark the person online.
 
 This file is frozen for wave 2. A stream that finds the contract wrong says so in its own
 pull request, and the fix lands after. The user-facing story and troubleshooting stay in
@@ -134,19 +142,36 @@ producer compiles untouched; they file through `add_notification_with` with
    unkeyed row of the same kind and href takes the key. Same id, so an inbox-focus snooze
    on it stays.
 4. Insert, or `on conflict` the open row of the group: content, `count + 1`, the new
-   seq, `updated_at`, and `created_at = now()` for a `Realert` coalesce (a `Quiet` one
-   keeps it). The update applies only to a row that is still open; a row read in between
-   is retried as a fresh insert.
+   seq, `updated_at`, and for a `Realert` coalesce a new `created_at` (a `Quiet` one keeps
+   it). The update applies only to a row that is still open; a row read in between is
+   retried as a fresh insert.
+
+**The clock is read under the lock.** `now()` is the transaction's start, and a writer
+queued behind the person's row lock started before the commit it waited for. So a fresh
+row's `created_at` is `clock_timestamp()`, and a `Realert` (or a refresh) sets
+`greatest(clock_timestamp(), created_at + 1 ms)`. A person's `createdAt` therefore rises
+with their `seq`, and a re-alert is always "a known id whose `createdAt` moved later" — to
+the millisecond the wire carries. (Measured before the fix: 16 of 49 coalesce steps under
+50 concurrent writers moved `createdAt` backwards or not at all.)
 
 After commit: `{type:"notification", notificationId, seq}`, the brief nudge, and
-`deliver::after_write` — in the contract, wave 1's tail moved: push unless the class's
-route is email-only (read through prefs v2), or the producer said `quiet`/`skip_push`;
-mail through the in-memory outbox as before. A row's `alert` is `feed` when the producer
-muted it or the class's Desktop channel is off, else `banner`.
+`deliver::after_write` — in the contract, wave 1's tail moved: push when the class's Push
+channel is on (for every blob wave 1 could store, that is "the route is not email-only"),
+unless the producer said `quiet`/`skip_push`; mail through the in-memory outbox as before.
+A row's `alert` is `feed` when the producer muted it or the class's Desktop channel is
+off, else `banner`.
 
 Reading or archiving never takes a seq. A read row leaves the open-group index, so the
 next write files a fresh row. `refresh_notification` keeps its signature and meaning, and
 now takes a seq too.
+
+**Reopening a row** (`read_at = null`: the Home Inbox's undo today, W2-H's mark-unread)
+goes through `reopen_notifications(pg, user, ids, read_at?)` and nowhere else. A read row
+may have been succeeded by a newer open row of its group, and putting it back with its key
+would be a second open row for one (person, key), which the unique index refuses. The door
+locks the person's users row as writers do, and a reopened row whose key another open row
+holds (or a newer row reopened in the same call) comes back without its key. Archived rows
+are not reopened. The optional `read_at` guard compares to the millisecond.
 
 ## Prefs v2 (I-13), DND (I-14)
 
@@ -160,6 +185,10 @@ routes), `digest`, `prompt`, `channels`, `dnd`, `email`.
 - **Both ways.** A v2 write merges its bools and rewrites the class's legacy route (email
   and a screen → `both`, email alone → `email`, no email → `in_app`). A legacy write from a
   stale bundle writes the route and the class's channels.
+- **What the contract already enforces.** Email follows the route, as in wave 1. Push
+  follows `channels.<class>.push`. Desktop sets the row's `alert` (`feed` when off), which
+  clients honour from W2-R and W2-D on. DND is stored and evaluated, but not enforced
+  until W2-E.
 - **Digest frozen (C27).** With no explicit `digest`, it is on when any of the nine
   original classes has email on. A new class cannot switch it on.
 - **DND.** `dnd: {pausedUntil, schedule: {enabled, days, start, end}, allowNeedsYou}`.
@@ -178,7 +207,13 @@ routes), `digest`, `prompt`, `channels`, `dnd`, `email`.
 `CLASSES` (id, label, blurb, category, defaults, breaks-through, admin-only, email delay),
 served in order as `classes[]`. Members are not served admin-only classes. For you =
 `needs_you` + `direct`. The registry adds `participating` and `channel_activity`; neither
-has rows until W2-P files their kinds. `scripts/check-invariants.mjs` fails a writer
+has rows until W2-P files their kinds.
+
+Filters (W2-H) read the class through `kind`: `kinds_of(class)`, `kinds_of_category(c)`
+and `known_kinds()`. A kind the table does not name is filed under `FALLBACK_CLASS`
+(`work_complete`, a Following class), so a filter that includes that class or category is
+`kind = any(kinds_of(…)) or kind <> all(known_kinds())`. For you is a positive list
+(`for_you_kinds()`), because no fallback kind is For you. `scripts/check-invariants.mjs` fails a writer
 whose literal kind the table does not name, and a client file that keeps its own class
 list.
 
@@ -210,6 +245,114 @@ list.
 **`features`** in the contract: `seq`, `classes`, `channels`, `dnd-store`,
 `presence-store`, `ack`, `devices`, `read-ids`, `channel-levels-store`. Each stream adds
 its own in its own module's `FEATURES`.
+
+## The live stream (I-16, I-19)
+
+The types are the contract's; W2-H implements the framing, the replay and the revocation.
+
+- **Read-sync (I-16).** Every read path publishes
+  `{"type":"notifications","unread":N,"unreadForYou":M,"readIds":[…],"all":bool}` on
+  `user:<id>`. `readIds` holds exactly the rows just read, at most 100; past that it is
+  absent and `resync: true` says "refetch". `unread` and `unreadForYou` exclude archived
+  rows. Every client closes the OS banners it posted for the read ids (`all`: every
+  Talaria banner; `resync`: every banner whose row is no longer unread). `publish_unread`
+  (counts only, no ids) remains for a caller that does not know which rows were read; a
+  client never closes banners on it.
+- **`id:` framing.** A frame carrying a `notification` event has `id: <seq>` before its
+  `data:` line. Other frames carry no `id:`.
+- **Replay.** `GET /api/me/events?since=S` (or `Last-Event-ID: S`; the query wins): after
+  `: connected` and `retry:`, the server sends the current `presence` frame, then one
+  `notification` frame per row with `seq > S` in seq order (at most 100), then
+  `{"type":"resync","seq":N,"complete":true}`. Over 100 rows it sends only
+  `{"type":"resync","seq":N,"complete":false}`, and the client reads `?since` itself. Live
+  frames that land during the replay are buffered and deduplicated by seq.
+- After the hub's Redis connection comes back, every user stream gets
+  `{"type":"resync","seq":N,"complete":false}`.
+- A stream whose session ended sends `{"type":"session","state":"ended"}` and closes.
+- **`GET /api/notifications?since=S`** (W2-H): the rows with `seq > S`, in seq order, at
+  most 200, with `more` and `seq`, from one statement.
+- **The GET's top-level `seq` is not a read-through.** It is read in the same snapshot as
+  the rows, so every row with a seq at or below it had committed. But the list is the
+  newest 50 by `createdAt` (and a `Quiet` coalesce keeps an older `createdAt`), so only a
+  `?since` read whose `more` is false advances a client's record (I-20).
+- Older consumers ignore all of it (see the wire changes above).
+
+## Presence (I-17) and the ack (I-18)
+
+- **The heartbeat.** `PUT /api/me/presence` with `{clientId, kind: "web"|"desktop", state:
+  "looking"|"active"|"idle"|"hidden", osIdleMs?}`, where `clientId` matches
+  `[A-Za-z0-9_-]{8,64}` and is stable for the client's life (per tab for the web, `desk-<instance
+  id>` for the shell's watcher). The client computes the state. **looking**: visible,
+  focused, and input in the last 60 s. **active**: for the web, visible with input in the
+  last 120 s; for the desktop, OS input in the last 120 s. Otherwise **idle** or
+  **hidden**. A PUT with no body (or no `clientId`) is wave 1's online ping, exactly.
+- **The online key** (`GET /api/users`' presence) is set by a no-body ping, by a web
+  heartbeat unless it is `hidden`, and by a desktop heartbeat only while `looking` or
+  `active` (`presence::marks_online`). The shell runs in the tray with every window
+  closed, and an idle machine must not show its owner online all night.
+- **The store.** The Redis hash `presence:dev:<userId>` maps `clientId` to
+  `{"k":kind,"s":state,"at":ms,"i":osIdleMs}`, with `EXPIRE 120` on every beat. Entries
+  older than 75 s are pruned on read.
+- **The winner** (`presence::winner`, pure): the most recent `looking` client, else the
+  most recent `active` one. The `presence` frame `{"type":"presence","looking","active",
+  "clients"}` is published on `user:<id>` only when that pair changes (the previous pair is
+  cached under `presence:win:<userId>`, `EX 120`). It is recomputed only on a heartbeat,
+  so a client that stops beating is dropped from the winner at the next beat of any of the
+  person's clients after 75 s. `GET /api/me/presence` serves `{looking, active, clients:
+  [{clientId, kind, state, at}]}`.
+- **The ack.** `POST /api/notifications/ack {ids: uuid[] ≤ 200}` → `{ok, acked}` sets
+  `surfaced_at` on the caller's own rows (the first ack wins; another person's id acks
+  nothing). The client that toasted a row to a looking person, or posted an OS banner for
+  it, acks it. W2-E's deferred push fires only for rows still unread and un-acked.
+- The thresholds (60 s, 120 s, 75 s, the 60 s push deferral) are consts W2-E may tune.
+
+## The arrival record (I-20)
+
+The record stays under `localStorage['talaria.notify.arrivals.v1']`, keyed by user id,
+and gains two fields; nothing is renamed:
+
+```
+{ "<userId>": {
+    "hw":   "<ISO createdAt high-water>",          // wave 1
+    "seen": { "<rowId>": "<ISO createdAt as last surfaced>", … ≤ 300 },   // wave 1
+    "at":   <ms of the last successful read>,      // wave 1
+    "v":    2,                                     // new
+    "seq":  <the notify seq this browser has read THROUGH, or absent> } }   // new
+```
+
+- **A row with a `seq`, when the record has one:** an arrival if and only if it is unread,
+  `row.seq > rec.seq`, and its id is unseen or its `createdAt` is later than `seen[id]` (a
+  re-alert). `row.seq ≤ rec.seq` is never an arrival, and no margin is needed.
+- **Otherwise** (a legacy row with no seq, or a wave-1 record): wave 1's rule, the
+  high-water minus 120 s plus `seen` and `createdAt`.
+- An arrival whose `alert` is `feed` is recorded and never toasted or bannered (I-15).
+- `rec.seq` advances only to the `seq` of a `?since` read whose `more` is false.
+- The page tracker (W2-R) and the shell's merge (W2-D) write `v` and `seq`. A wave-1
+  shell's merge mutates the entry in place and keeps them; its report reads only
+  `hw`/`seen`/`at`.
+
+## Notes for the streams
+
+Found while reviewing the contract. Each is a constraint a stream builds within, not a
+change to its plan:
+
+- **W2-E's Redis handle.** `NotifyDeps` carries a Postgres pool and the publish plane,
+  and no Redis connection, so the write path cannot reach the presence store through it
+  (and `lib.rs` is frozen). Install a handle at boot instead, beside
+  `talaria_push::install_push_plane` in `talaria-jobs`, as the push plane holds its pool.
+  If the handle is absent or Redis errors, report "no winner": fail open toward delivery.
+- **The presence winner cache is not atomic.** Two heartbeats racing can each publish,
+  and the later write of `presence:win` can be the older pair; the next beat (≤ 30 s)
+  corrects it. W2-E may make it a single script if that matters for the deferral.
+- **Team-roster channels have no row to hold a level.** A team member who reaches a
+  channel through `channel_teams` (no `channel_members` row) gets 409 from `PUT
+  /api/channels/{id}/notify`, as a task room does. They also get no `channel-message`
+  rows, because `channel_member_ids` reads `channel_members` alone. Giving them levels
+  needs a schema decision (a per-person table, not an inserted membership row, which would
+  outlive their team membership). That decision is the coordinator's, and W2-P builds the
+  rest without it.
+- **Mark-unread is W2-H's through `reopen_notifications`**, never a bare `read_at = null`.
+- **The GET seq**: see the live stream above. The newest 50 are not a read-through.
 
 ## Who owns what in wave 2
 

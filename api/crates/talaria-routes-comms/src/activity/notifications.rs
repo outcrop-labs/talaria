@@ -256,8 +256,9 @@ async fn delivery_or_off(pg: &sqlx::PgPool) -> bool {
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
-    // The rows and the notify seq in ONE statement (I-10): a client that
-    // records `seq` as read through has seen every row at or below it.
+    // The rows and the notify seq in ONE statement (I-10): every row at or
+    // below `seq` had committed when the rows were read. The newest 50 are
+    // not a read THROUGH it — only `?since` (W2-H) is (I-20).
     let (notifications, seq) = match list_inbox(&state.pg, &user.id).await {
         Ok(v) => v,
         Err(e) => return Ok(internal("[notifications] list failed", e)),
