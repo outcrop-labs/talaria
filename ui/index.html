@@ -14,6 +14,11 @@
          rounded ground. ui/public is Vite's static root — served at / in dev
          and copied into dist/client, which server-entry.js serves in prod. -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- The web app manifest (WP-14): what an installed Talaria is called and
+         drawn with — the dock or taskbar icon the app badge (the For-you
+         unread count, lib/notify-ambient.ts) lands on, and what Safari needs
+         before a Home Screen web app may receive push. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
     <!-- Pre-hydration default; App.svelte's svelte:head takes over on boot —
          "Talaria" stays the answer until (and unless) an admin names the
          instance, so the static tag matches the unconfigured title exactly. -->

@@ -1,0 +1,15 @@
+{
+  "id": "/",
+  "name": "Talaria",
+  "short_name": "Talaria",
+  "description": "Talaria — your workspace, its agents and the people you work with.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#090a09",
+  "theme_color": "#090a09",
+  "icons": [
+    { "src": "/icons/notify-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
