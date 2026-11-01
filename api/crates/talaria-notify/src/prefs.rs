@@ -1092,7 +1092,27 @@ mod tests {
         };
         assert_eq!(channels_of(&json!({}), "work_complete"), quiet);
         assert_eq!(channels_of(&json!({}), "workchain_paused"), quiet);
-        assert_eq!(channels_of(&json!({}), "channel_activity"), quiet);
+        // …but a channel set to All, which only the person can set, alerts
+        // like a direct message: banner, push and mail.
+        assert_eq!(
+            channels_of(&json!({}), "channel_activity"),
+            channels_of(&json!({}), "dm")
+        );
+        assert_eq!(
+            channels_of(&json!({}), "channel_activity"),
+            Channels {
+                in_app: true,
+                desktop: true,
+                push: true,
+                email: true
+            }
+        );
+        // A person who turned it off keeps it off.
+        let c = channels_of(
+            &json!({ "channels": { "channel_activity": { "desktop": false, "push": false } } }),
+            "channel_activity",
+        );
+        assert!(!c.desktop && !c.push && c.email);
         assert_eq!(resolve_prefs(&json!({}))["work_complete"], json!("in_app"));
         // A stored legacy route keeps what it meant in wave 1.
         let c = channels_of(&json!({ "work_complete": "in_app" }), "work_complete");

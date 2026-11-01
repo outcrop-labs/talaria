@@ -641,14 +641,38 @@ async fn engine(pg: &PgPool) {
         r.pushed.is_some() && r.email_due.is_some(),
         "account alerts and mails: {r:?}"
     );
-    let hits = cap
-        .wait("/ada-ok", before + 2, Duration::from_secs(5))
-        .await;
-    assert_eq!(
-        hits.len(),
-        before + 2,
-        "both the route-both row and the account row pushed"
+    // A channel the person set to All (W2-P files `channel-message` only
+    // then) alerts like a DM by default: banner, push, mail. Its later
+    // messages coalesce quietly, so the second pushes nothing.
+    let channel = NotifyMeta {
+        group_key: Some(group_key::channel_activity("c-engine")),
+        coalesce: Coalesce::Quiet,
+        ..Default::default()
+    };
+    let id = file(&pg, &ada, "channel-message", "a channel at All", &channel).await;
+    let r = row(&pg, &id).await;
+    assert_eq!(r.alert.as_deref(), Some("banner"), "{r:?}");
+    assert!(
+        r.pushed.is_some() && r.email_due.is_some(),
+        "a channel at All alerts and mails: {r:?}"
     );
+    let again = file(&pg, &ada, "channel-message", "and again", &channel).await;
+    assert_eq!(again, id, "one row per channel");
+    let hits = cap
+        .wait("/ada-ok", before + 3, Duration::from_secs(5))
+        .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        (hits.len(), cap.on("/ada-ok").len()),
+        (before + 3, before + 3),
+        "the route-both row, the account row and the channel's first message pushed"
+    );
+    exec(
+        &pg,
+        "update notifications set read_at = now() where id = $1::uuid",
+        &id,
+    )
+    .await;
     println!("PASS defaults");
 
     // ── 4. Presence: the deferred push, the ack, the read ──────────────────

@@ -144,7 +144,9 @@ pub struct ClassDef {
     /// answer (push whenever the route kept an in-app copy, mail when the
     /// fallback route was `both`), except Following, which is quiet — the
     /// row lands in the feed and nothing banners, pushes or mails (EB-05,
-    /// O-9). A stored legacy route or channel still wins (`channels_of`).
+    /// O-9) — but for `channel_activity`, which a person opts into by setting
+    /// a channel to All. A stored legacy route or channel still wins
+    /// (`channels_of`).
     pub defaults: ChannelDefaults,
     /// Alerts through DND (a decision a person is blocking).
     pub breaks_through: bool,
@@ -270,12 +272,18 @@ pub const CLASSES: &[ClassDef] = &[
         admin_only: false,
         email_delay_min: 0,
     },
+    // The one Following class that alerts by default: its rows exist only for
+    // a channel the person set to All themselves (a channel starts at
+    // Mentions), so choosing All IS the opt-in, and they get what every chat
+    // app gives "All new messages" — the banner, the push and the missed-
+    // activity mail a direct message gets. It stays Following: news about a
+    // channel, in the All tab, off the For-you badge.
     ClassDef {
         id: "channel_activity",
         label: "Channel activity",
         blurb: "New messages in channels you set to notify on every message.",
         category: Category::Following,
-        defaults: ch(false, false, false),
+        defaults: ch(true, true, true),
         breaks_through: false,
         admin_only: false,
         email_delay_min: 0,
@@ -503,7 +511,8 @@ mod tests {
     // Every original class's default mail is its wave-1 fallback route
     // (`both` mails, `in_app` does not), so the digest's derived answer and
     // the legacy table never move. The screens are wave 1's (desktop and
-    // push) everywhere but Following, which is quiet (EB-05).
+    // push) everywhere but Following, which is quiet (EB-05) — all of it but
+    // the channel a person set to All.
     #[test]
     fn the_defaults_are_wave_ones_but_following_is_quiet() {
         for (id, fallback) in NOTIFY_CLASSES {
@@ -516,7 +525,10 @@ mod tests {
                 assert!(d.desktop && d.push, "{id}");
             }
         }
-        for c in CLASSES.iter().filter(|c| c.category == Category::Following) {
+        for c in CLASSES
+            .iter()
+            .filter(|c| c.category == Category::Following && c.id != "channel_activity")
+        {
             assert_eq!(
                 (c.defaults.desktop, c.defaults.push, c.defaults.email),
                 (false, false, false),
@@ -524,6 +536,14 @@ mod tests {
                 c.id
             );
         }
+        // A channel the person set to All alerts as a direct message does:
+        // they opted in by choosing All. Still news (Following): the All tab,
+        // not the For-you badge.
+        let channel = class_def("channel_activity").unwrap();
+        assert_eq!(channel.defaults, class_def("dm").unwrap().defaults);
+        assert_eq!(channel.category, Category::Following);
+        assert!(!channel.breaks_through && !channel.admin_only);
+        assert!(!ORIGINAL_CLASSES.contains(&"channel_activity"), "C27");
         let account = class_def("account").unwrap();
         assert_eq!(account.category, Category::Direct);
         assert!(account.defaults.desktop && account.defaults.push && account.defaults.email);

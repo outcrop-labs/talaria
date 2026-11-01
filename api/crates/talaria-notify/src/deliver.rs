@@ -34,7 +34,8 @@ use crate::prefs::{
 use crate::write::NotificationInput;
 
 /// The delivery engine's own feature flags (I-23): Following is quiet by
-/// default, DND and working hours are enforced on the server, and
+/// default (all but a channel the person set to All, whose defaults
+/// `classes[]` serves), DND and working hours are enforced on the server, and
 /// missed-activity mail is batched.
 pub const FEATURES: &[&str] = &["email-batch", "quiet-following", "dnd-enforced"];
 
