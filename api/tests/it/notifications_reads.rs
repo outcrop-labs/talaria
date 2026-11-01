@@ -547,20 +547,40 @@ async fn the_entity_selector_reaches_only_the_callers_rows() {
 
 // ── N3: what a read and a reopen do to a row's deliveries ───────────────────
 
-/// One unread row with its delivery columns set as W2-E's write leaves them:
-/// a deferred push due in `push_s` seconds, a mail due in `mail_s` seconds
+/// The delivery columns a row is filed with, as W2-E's write leaves them: a
+/// deferred push due in `push_s` seconds, a mail due in `mail_s` seconds
 /// (negative: already due), `mailed` (sent 4 minutes ago) and the batcher's
 /// `attempts`. None leaves the column null.
-async fn with_deliveries(
-    pg: &PgPool,
-    user: &str,
-    kind: &str,
-    href: &str,
+#[derive(Clone, Copy, Default)]
+struct Due {
     push_s: Option<i64>,
     mail_s: Option<i64>,
     mailed: bool,
     attempts: i32,
-) -> String {
+}
+
+fn push_in(s: i64) -> Due {
+    Due {
+        push_s: Some(s),
+        ..Due::default()
+    }
+}
+
+fn mail_in(s: i64) -> Due {
+    Due {
+        mail_s: Some(s),
+        ..Due::default()
+    }
+}
+
+/// One unread row with these delivery columns.
+async fn with_deliveries(pg: &PgPool, user: &str, kind: &str, href: &str, due: Due) -> String {
+    let Due {
+        push_s,
+        mail_s,
+        mailed,
+        attempts,
+    } = due;
     sqlx::query_scalar(
         "insert into notifications \
            (user_id, kind, title, body, href, push_due_at, email_due_at, emailed_at, email_attempts) \
@@ -662,37 +682,18 @@ async fn a_read_cancels_the_deferred_push_and_a_reopen_rearms_the_mail_from_now(
         &user,
         "dm",
         "/n3/ids",
-        Some(60),
-        Some(15 * MIN),
-        false,
-        0,
+        Due {
+            push_s: Some(60),
+            mail_s: Some(15 * MIN),
+            ..Due::default()
+        },
     )
     .await;
-    let by_href = with_deliveries(&pg, &user, "dm", "/n3/href", Some(60), None, false, 0).await;
-    let by_done = with_deliveries(&pg, &user, "dm", "/n3/done", Some(60), None, false, 0).await;
+    let by_href = with_deliveries(&pg, &user, "dm", "/n3/href", push_in(60)).await;
+    let by_done = with_deliveries(&pg, &user, "dm", "/n3/done", push_in(60)).await;
     let about_task = NotifyEntity::new(entity::TASK, "n3-task");
-    let by_entity = with_deliveries(
-        &pg,
-        &user,
-        "mention",
-        "/n3/entity",
-        Some(60),
-        None,
-        false,
-        0,
-    )
-    .await;
-    let by_resolve = with_deliveries(
-        &pg,
-        &user,
-        "mention",
-        "/n3/resolve",
-        Some(60),
-        None,
-        false,
-        0,
-    )
-    .await;
+    let by_entity = with_deliveries(&pg, &user, "mention", "/n3/entity", push_in(60)).await;
+    let by_resolve = with_deliveries(&pg, &user, "mention", "/n3/resolve", push_in(60)).await;
     sqlx::query("update notifications set entity_type = $2, entity_id = $3 where id = $1::uuid")
         .bind(&by_entity)
         .bind(about_task.kind)
@@ -709,7 +710,7 @@ async fn a_read_cancels_the_deferred_push_and_a_reopen_rearms_the_mail_from_now(
         .await
         .unwrap();
     // A push that already went keeps its due time (the record of when).
-    let pushed = with_deliveries(&pg, &user, "dm", "/n3/pushed", Some(-10), None, false, 0).await;
+    let pushed = with_deliveries(&pg, &user, "dm", "/n3/pushed", push_in(-10)).await;
     sqlx::query("update notifications set pushed_at = now() where id = $1::uuid")
         .bind(&pushed)
         .execute(&pg)
@@ -751,21 +752,15 @@ async fn a_read_cancels_the_deferred_push_and_a_reopen_rearms_the_mail_from_now(
     // Rows read by a path outside this file (the Home Inbox's mark-read, a
     // thread sweep, the email-only route) keep their push_due_at; and rows in
     // each mail state.
-    let other_read =
-        with_deliveries(&pg, &user, "mention", "/n3/other", Some(40), None, false, 0).await;
-    let mail_past =
-        with_deliveries(&pg, &user, "dm", "/n3/past", None, Some(-5 * MIN), false, 0).await;
-    let mail_ahead =
-        with_deliveries(&pg, &user, "dm", "/n3/ahead", None, Some(2 * MIN), false, 0).await;
+    let other_read = with_deliveries(&pg, &user, "mention", "/n3/other", push_in(40)).await;
+    let mail_past = with_deliveries(&pg, &user, "dm", "/n3/past", mail_in(-5 * MIN)).await;
+    let mail_ahead = with_deliveries(&pg, &user, "dm", "/n3/ahead", mail_in(2 * MIN)).await;
     let needs_you = with_deliveries(
         &pg,
         &user,
         "approval_pending",
         "/n3/approval",
-        None,
-        Some(-5 * MIN),
-        false,
-        0,
+        mail_in(-5 * MIN),
     )
     .await;
     let mailed = with_deliveries(
@@ -773,14 +768,25 @@ async fn a_read_cancels_the_deferred_push_and_a_reopen_rearms_the_mail_from_now(
         &user,
         "dm",
         "/n3/mailed",
-        None,
-        Some(-5 * MIN),
-        true,
-        0,
+        Due {
+            mail_s: Some(-5 * MIN),
+            mailed: true,
+            ..Due::default()
+        },
     )
     .await;
-    let gave_up = with_deliveries(&pg, &user, "dm", "/n3/gaveup", None, None, false, 3).await;
-    let no_mail = with_deliveries(&pg, &user, "dm", "/n3/none", None, None, false, 0).await;
+    let gave_up = with_deliveries(
+        &pg,
+        &user,
+        "dm",
+        "/n3/gaveup",
+        Due {
+            attempts: 3,
+            ..Due::default()
+        },
+    )
+    .await;
+    let no_mail = with_deliveries(&pg, &user, "dm", "/n3/none", Due::default()).await;
     let rest = [
         &other_read,
         &mail_past,
@@ -868,26 +874,13 @@ async fn a_read_cancels_the_deferred_push_and_a_reopen_rearms_the_mail_from_now(
         .execute(&pg)
         .await
         .unwrap();
-    let daily = with_deliveries(
-        &pg,
-        &user,
-        "dm",
-        "/n3/daily",
-        None,
-        Some(-5 * MIN),
-        false,
-        0,
-    )
-    .await;
+    let daily = with_deliveries(&pg, &user, "dm", "/n3/daily", mail_in(-5 * MIN)).await;
     let daily_needs = with_deliveries(
         &pg,
         &user,
         "approval_pending",
         "/n3/daily-approval",
-        None,
-        Some(-5 * MIN),
-        false,
-        0,
+        mail_in(-5 * MIN),
     )
     .await;
     sqlx::query("update notifications set read_at = now() where id = any($1::uuid[])")
@@ -926,7 +919,7 @@ async fn a_read_cancels_the_deferred_push_and_a_reopen_rearms_the_mail_from_now(
         .execute(&pg)
         .await
         .unwrap();
-    let off = with_deliveries(&pg, &user, "dm", "/n3/off", None, Some(-5 * MIN), false, 0).await;
+    let off = with_deliveries(&pg, &user, "dm", "/n3/off", mail_in(-5 * MIN)).await;
     sqlx::query("update notifications set read_at = now() where id = $1::uuid")
         .bind(&off)
         .execute(&pg)
