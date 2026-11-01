@@ -652,10 +652,14 @@ test.describe('the inbox', () => {
     await page.goto('/notifications')
     await needsInbox(page)
     const list = page.locator('[data-center-list] [data-notification-row]')
-    for (let i = 0; i < 10 && (await list.count()) < 130; i++) {
-      const more = page.locator('[data-center-more]')
-      if (await more.count()) await more.click()
-      await page.waitForTimeout(400)
+    await expect(list).toHaveCount(50)
+    // Scroll to the end, as a person does: the sentinel loads the next page.
+    // "Load more" is the fallback — it vanishes once the last page is in, so
+    // a click on it is a short attempt, never a wait.
+    for (let i = 0; i < 20 && (await list.count()) < 130; i++) {
+      await list.last().scrollIntoViewIfNeeded()
+      await page.locator('[data-center-more]').click({ timeout: 1_000 }).catch(() => {})
+      await page.waitForTimeout(500)
     }
     await expect(list).toHaveCount(130)
     const shown = await list.evaluateAll((els) => els.map((e) => e.getAttribute('data-notification-row')))
