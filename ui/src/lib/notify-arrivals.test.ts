@@ -9,6 +9,7 @@ import {
   frameNeedsRead,
   present,
   readSince,
+  rebaseArrivals,
   summaryTitle,
   type ArrivalRecord,
   type ArrivalStore,
@@ -261,6 +262,76 @@ describe('readSince — the ?since pager', () => {
     const r = await readSince(async () => ({ notifications: [srow('a', 4, 0)], more: false, seq: 7 }), 3)
     expect(r.through).toBe(7)
   })
+
+  it("the server's seq BELOW the cursor (a restore): `behind`, through the server's seq — never the larger one", async () => {
+    // The hub's answer after a restore: no rows past 1004, seq 4.
+    const r = await readSince(async () => ({ notifications: [], more: false, seq: 4 }), 1004)
+    expect(r).toMatchObject({ rows: [], through: 4, complete: true, behind: true })
+    const level = await readSince(async () => ({ notifications: [], more: false, seq: 1004 }), 1004)
+    expect(level.behind).toBeUndefined()
+    expect(level.through).toBe(1004)
+  })
+})
+
+describe('the rebase — the server\'s seq went back (a restored database, a reset dev stack)', () => {
+  // The browser had read through 1004 at T0 + 10 min; the restore puts the
+  // server back at seq 4, and rows filed since take 5, 6, … — all below the
+  // old cursor.
+  const before = (): ArrivalRecord => ({
+    hw: iso(600_000),
+    seen: { old1: iso(590_000), old2: iso(600_000) },
+    at: T0 + 600_000,
+    v: 2,
+    seq: 1004,
+  })
+
+  it('a row filed since the restore surfaces; nothing older replays; the cursor is the server\'s seq', () => {
+    const page = [srow('new5', 5, 660_000), srow('old2', 2, 600_000), srow('old1', 1, 590_000), srow('ancient', 3, 0)]
+    const { arrivals, next } = rebaseArrivals(before(), page, T0 + 661_000, 5)
+    expect(arrivals.map((a) => a.row.id)).toEqual(['new5'])
+    expect(next).toMatchObject({ v: 2, seq: 5, rebased: T0 + 661_000 })
+    expect(next.seen.new5).toBe(iso(660_000))
+    // …and the cursor rule takes over from the new base: 6 is an arrival.
+    expect(computeArrivals(next, [srow('new6', 6, 662_000)], T0 + 663_000, 6).arrivals.map((a) => a.row.id)).toEqual(['new6'])
+  })
+
+  it('without the rebase, the same row is never news (the defect)', () => {
+    expect(computeArrivals(before(), [srow('new5', 5, 660_000)], T0 + 661_000, 1004).arrivals).toEqual([])
+  })
+
+  it('no record at all: the silent baseline, at the server\'s seq', () => {
+    const { arrivals, next } = rebaseArrivals(null, [srow('a', 3, 0)], T0, 3)
+    expect(arrivals).toEqual([])
+    expect(next).toMatchObject({ v: 2, seq: 3 })
+  })
+
+  it("persisted: the lower seq is kept — a merge with another tab's pre-restore cursor does not put 1004 back", () => {
+    const store = memStore(JSON.stringify({ u1: before() }))
+    const a = new PersistedArrivals<SRow>('u1', store)
+    const stale = new PersistedArrivals<SRow>('u1', store)
+    expect(stale.cursor()).toBe(1004) // primed before the restore
+    expect(a.rebase([srow('new5', 5, 660_000)], 5, T0 + 661_000).map((x) => x.row.id)).toEqual(['new5'])
+    expect(JSON.parse(store.value ?? '{}').u1).toMatchObject({ seq: 5, rebased: T0 + 661_000 })
+    expect(a.persistedCursor()).toBe(5)
+    // The stale tab writes its own view (cursor 1004, never rebased): the
+    // record rebased last holds the cursor.
+    stale.arrive([], T0 + 662_000, 1004)
+    expect(JSON.parse(store.value ?? '{}').u1.seq).toBe(5)
+    // The rebased tab reads on from its new base: the usual max again.
+    a.arrive([srow('new6', 6, 662_000)], T0 + 663_000, 6)
+    expect(JSON.parse(store.value ?? '{}').u1.seq).toBe(6)
+    // The stale tab's own read then finds the server behind it and rebases
+    // too, later: its cursor (the server's, now 7) wins.
+    stale.rebase([srow('new7', 7, 664_000)], 7, T0 + 665_000)
+    expect(JSON.parse(store.value ?? '{}').u1).toMatchObject({ seq: 7, rebased: T0 + 665_000 })
+  })
+
+  it('a junk `rebased` in storage is dropped', () => {
+    const store = memStore(JSON.stringify({ u1: { ...before(), rebased: 'x' } }))
+    const t = new PersistedArrivals<SRow>('u1', store)
+    t.arrive([], T0 + 700_000, 1004)
+    expect(JSON.parse(store.value ?? '{}').u1.rebased).toBeUndefined()
+  })
 })
 
 describe('coalesce', () => {
@@ -356,10 +427,15 @@ describe('frameNeedsRead — a replay of rows already read asks for nothing', ()
     expect(frameNeedsRead({ type: 'notification' }, 10)).toBe(true)
     expect(frameNeedsRead({ type: 'notification', seq: 3 }, null)).toBe(true)
   })
-  it('a complete resync at or below the cursor is done; an incomplete one always reads', () => {
+  it('a complete resync at the cursor is done; an incomplete one always reads', () => {
     expect(frameNeedsRead({ type: 'resync', seq: 10, complete: true }, 10)).toBe(false)
     expect(frameNeedsRead({ type: 'resync', seq: 12, complete: true }, 10)).toBe(true)
     expect(frameNeedsRead({ type: 'resync', seq: 9, complete: false }, 10)).toBe(true)
+  })
+  it("a resync BELOW the cursor reads: the server's seq went back (a restore), and the read rebases", () => {
+    expect(frameNeedsRead({ type: 'resync', seq: 4, complete: true }, 1004)).toBe(true)
+    // A replayed notification frame below the cursor is still nothing.
+    expect(frameNeedsRead({ type: 'notification', seq: 4 }, 1004)).toBe(false)
   })
   it('other frames never read', () => {
     expect(frameNeedsRead({ type: 'notifications' }, 10)).toBe(false)

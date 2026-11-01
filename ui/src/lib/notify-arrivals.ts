@@ -38,6 +38,17 @@
  *  rule. A wave-1 reader (the desktop shell's suspend handoff) reads only
  *  `hw`/`seen`/`at` and keeps the rest.
  *
+ *  THE SERVER'S SEQ CAN GO BACK (docs/notifications/live-and-inbox.md): a
+ *  database restored from a backup, a dev stack reset. A `?since` read then
+ *  answers no rows and a seq BELOW the cursor, and every row filed since has
+ *  a seq at or below the old cursor — a tracker that kept its cursor would
+ *  never count one of them as new. So the tracker REBASES: it takes the
+ *  server's seq, judges the newest page by wave 1's rule (createdAt against
+ *  the high-water and the seen set: what was filed since the restore
+ *  surfaces, nothing older replays), and stamps the record `rebased` (ms
+ *  epoch). A merge takes the cursor of the record rebased last, so another
+ *  tab's pre-restore cursor cannot put the old seq back.
+ *
  *  Framework-free so it is testable without a DOM. */
 
 export const ARRIVALS_KEY = 'talaria.notify.arrivals.v1'
@@ -57,6 +68,10 @@ export interface ArrivalRecord {
   v?: 2
   /** The notify seq this browser has read through: a complete `?since` read. */
   seq?: number
+  /** When this browser last took a seq LOWER than its cursor from the server
+   *  (a restore; see above), ms epoch. In a merge, the record rebased last
+   *  holds the cursor. */
+  rebased?: number
 }
 
 export interface ArrivalRow {
@@ -105,10 +120,12 @@ function absorb(rec: ArrivalRecord | null, rows: readonly ArrivalRow[], now: num
     out.v = 2
     out.seq = seq
   } else if (rec?.v === 2) out.v = 2
+  if (isStamp(rec?.rebased)) out.rebased = rec.rebased
   return out
 }
 
 const isSeq = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0
+const isStamp = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0
 function maxSeq(a: number | null | undefined, b: number | null | undefined): number | undefined {
   if (isSeq(a) && isSeq(b)) return Math.max(a, b)
   if (isSeq(a)) return a
@@ -149,6 +166,22 @@ export function computeArrivals<T extends ArrivalRow>(
   return { arrivals, next: absorb(rec, rows, now, through) }
 }
 
+/** The server's seq went BELOW the cursor (a restore; see the top of this
+ *  file). `rows` is the newest page, read now, and `seq` the server's seq:
+ *  the page is judged by wave 1's rule — the cursor set aside, createdAt
+ *  against the high-water and the seen set — and the record takes `seq`,
+ *  stamped `rebased: now`. With no record at all it is the silent baseline. */
+export function rebaseArrivals<T extends ArrivalRow>(
+  rec: ArrivalRecord | null,
+  rows: readonly T[],
+  now: number,
+  seq: number,
+): { arrivals: Arrival<T>[]; next: ArrivalRecord } {
+  const base: ArrivalRecord | null = rec ? { hw: rec.hw, seen: rec.seen, at: rec.at } : null
+  const { arrivals, next } = computeArrivals(base, rows, now, seq)
+  return { arrivals, next: { ...next, v: 2, seq, rebased: now } }
+}
+
 // ── The `?since` read (I-19, I-20) ───────────────────────────────────────────
 
 /** One `GET /api/notifications?since=S` page: rows with a seq past S in seq
@@ -166,12 +199,14 @@ export const SINCE_PAGES = 10
 /** Read every row past `from`, page by page. `through` is how far the read
  *  is complete: the snapshot's seq when the last page said `more: false`;
  *  after `SINCE_PAGES` pages, the last row's seq (a page is every row up to
- *  its last one, I-10), and `complete` is false — the caller reads on. */
+ *  its last one, I-10), and `complete` is false — the caller reads on.
+ *  `behind`: the server's seq is BELOW where the read stood (a restore) —
+ *  `through` is then the server's seq, and the caller rebases on it. */
 export async function readSince<T extends ArrivalRow>(
   fetchPage: (since: number) => Promise<SincePage<T>>,
   from: number,
   maxPages = SINCE_PAGES,
-): Promise<{ rows: T[]; through: number | null; complete: boolean }> {
+): Promise<{ rows: T[]; through: number | null; complete: boolean; behind?: boolean }> {
   const rows: T[] = []
   let cursor = from
   for (let i = 0; i < maxPages; i++) {
@@ -181,6 +216,9 @@ export async function readSince<T extends ArrivalRow>(
     let last = cursor
     for (const r of got) if (isSeq(r.seq) && r.seq > last) last = r.seq
     if (!page.more) {
+      // The server's seq is below this read's cursor: it went back. Its seq
+      // is the truth (never the larger one this browser had).
+      if (isSeq(page.seq) && page.seq < cursor) return { rows, through: page.seq, complete: true, behind: true }
       const snap = isSeq(page.seq) ? page.seq : last
       return { rows, through: Math.max(snap, last), complete: true }
     }
@@ -192,10 +230,12 @@ export async function readSince<T extends ArrivalRow>(
 }
 
 /** Does this stream frame call for a `?since` read? A `notification` frame
- *  whose seq the cursor already covers, and a complete `resync` at or below
- *  it, do not: a replay (I-19) sends one frame per row past the STREAM's
- *  cursor, one at a time, and the first read has usually covered them all.
- *  Anything without a seq, or a tab without a cursor yet, reads. */
+ *  whose seq the cursor already covers, and a complete `resync` AT it, do
+ *  not: a replay (I-19) sends one frame per row past the STREAM's cursor,
+ *  one at a time, and the first read has usually covered them all. Anything
+ *  without a seq, or a tab without a cursor yet, reads — and so does a
+ *  `resync` BELOW the cursor: the server's seq went back (a restore), and
+ *  the read rebases. */
 export function frameNeedsRead(
   ev: { type: string; seq?: number; complete?: boolean },
   cursor: number | null,
@@ -203,6 +243,7 @@ export function frameNeedsRead(
   if (ev.type !== 'notification' && ev.type !== 'resync') return false
   if (cursor === null || !isSeq(ev.seq)) return true
   if (ev.seq > cursor) return true
+  if (ev.type === 'resync' && ev.seq < cursor) return true
   return ev.type === 'resync' && !ev.complete
 }
 
@@ -285,6 +326,7 @@ function isRecord(v: unknown): v is ArrivalRecord {
   if (!(typeof r.hw === 'string' && !!r.seen && typeof r.seen === 'object' && typeof r.at === 'number')) return false
   // A junk cursor is no cursor: the record falls back to wave 1's rule.
   if (r.seq !== undefined && !isSeq(r.seq)) delete r.seq
+  if (r.rebased !== undefined && !isStamp(r.rebased)) delete r.rebased
   return true
 }
 
@@ -316,10 +358,15 @@ function merge(a: ArrivalRecord | undefined, b: ArrivalRecord): ArrivalRecord {
     at: Math.max(a.at, b.at),
   }
   // The union's cursor is the furthest either read through: each tab's view
-  // only ever advances on a complete read.
-  const seq = maxSeq(a.seq, b.seq)
+  // only ever advances on a complete read. Unless one of them REBASED later
+  // than the other (the server's seq went back): its cursor is the server's
+  // truth, and the other's larger one is from before the restore.
+  const ra = isStamp(a.rebased) ? a.rebased : 0
+  const rb = isStamp(b.rebased) ? b.rebased : 0
+  const seq = ra === rb ? maxSeq(a.seq, b.seq) : ra > rb ? maxSeq(a.seq, undefined) : maxSeq(b.seq, undefined)
   if (seq !== undefined) out.seq = seq
   if (a.v === 2 || b.v === 2 || seq !== undefined) out.v = 2
+  if (ra || rb) out.rebased = Math.max(ra, rb)
   return out
 }
 
@@ -343,11 +390,24 @@ export class PersistedArrivals<T extends ArrivalRow> {
   arrive(rows: readonly T[], now = Date.now(), through?: number | null): Arrival<T>[] {
     this.prime()
     const { arrivals, next } = computeArrivals(this.view, rows, now, through)
+    this.save(next)
+    return arrivals
+  }
+
+  /** The server's seq went below the cursor (a restore): judge the newest
+   *  page by wave 1's rule and take the server's `seq` (rebaseArrivals). */
+  rebase(rows: readonly T[], seq: number, now = Date.now()): Arrival<T>[] {
+    this.prime()
+    const { arrivals, next } = rebaseArrivals(this.view, rows, now, seq)
+    this.save(next)
+    return arrivals
+  }
+
+  private save(next: ArrivalRecord): void {
     this.view = next
     const all = readAll(this.store)
     all[this.userId] = merge(all[this.userId], next)
     this.store.write(JSON.stringify(all))
-    return arrivals
   }
 
   /** Where this tab's `?since` read starts: its cursor, or null when it has

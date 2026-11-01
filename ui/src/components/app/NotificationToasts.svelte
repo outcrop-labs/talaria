@@ -397,9 +397,10 @@
       if (data?.features?.includes('since')) {
         // The list's snapshot seq says whether anything committed past the
         // cursor: only then is a `?since` read worth making (a frame already
-        // asked for one).
+        // asked for one). A seq BELOW the cursor says the server's went back
+        // (a restore): the read rebases.
         const c = tracker.cursor()
-        if (!tracker.hasRecord() || c === null || (typeof data.seq === 'number' && data.seq > c)) void catchUp()
+        if (!tracker.hasRecord() || c === null || (typeof data.seq === 'number' && data.seq !== c)) void catchUp()
         return
       }
       void surface(tracker.arrive(rows))
@@ -423,6 +424,19 @@
     const from = t.cursor() ?? 0
     const r = await readSince<Row>((since) => getJson<SincePage<Row>>(`/api/notifications?since=${since}`), from)
     if (tracker !== t) return
+    if (r.behind && r.through !== null) {
+      // The server's seq is BELOW the cursor: the database was restored, or
+      // a dev stack reset. Every row filed since has a seq at or below the
+      // old cursor, so the record takes the server's seq, and the newest
+      // page — read now — is judged by createdAt (wave 1's rule): what was
+      // filed since surfaces, nothing older replays.
+      const page = await getJson<NotificationsPayload>('/api/notifications')
+      if (tracker !== t) return
+      const seq = typeof page.seq === 'number' ? page.seq : r.through
+      note('cursor', `rebased: the server's seq ${r.through} is below the cursor ${from}`)
+      await surface(t.rebase((page.notifications ?? []) as Row[], seq))
+      return
+    }
     await surface(t.arrive(r.rows, Date.now(), r.through))
     if (!r.complete && r.through !== null) void catchUp()
   })
