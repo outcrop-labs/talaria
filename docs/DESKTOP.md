@@ -286,7 +286,13 @@ and scroll after a relaunch (only the URL is kept on disk).
   a catch-up outruns its ten pages (2,000 rows), to the last row read, so the next read goes
   on from there instead of starting over and posting again — and its stream asks
   `/api/me/events?since=<seq>` so the server replays what a cut lost (I-19): a reconnect
-  after an outage is exact, never "the newest 50". **It starts from the page's record**,
+  after an outage is exact, never "the newest 50". A complete page whose snapshot seq is
+  BELOW the watcher's — the instance's database was restored or reset under it — makes the
+  watcher rebase, as the page does: it reads the newest page, judges it by wave 1's rule
+  (the high-water mark less two minutes, and the rows it has seen), and takes the server's
+  seq, so what was filed since the restore is posted instead of waiting for the server to
+  pass the old seq; a `resync` frame below its seq asks for that read at once.
+  **It starts from the page's record**,
   `localStorage['talaria.notify.arrivals.v1']`, which the suspend report hands over
   (`arrivals`, with the record's `v` and `seq`): whatever the page missed — a dead stream,
   a sleep — is posted on the watcher's first read instead of being swallowed into a new
