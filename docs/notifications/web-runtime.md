@@ -56,8 +56,9 @@ would have said, so it shows at once), then the stream reopens, and its
 between the first read and the subscription is not left for the next event.
 
 - Boards refetch their cards; channels their messages and the channel; the
-  work-watch pane reads the run's own record (`/api/tasks/{id}/work-sessions`)
-  before it reopens, so a run that finished while the tab was hidden shows its
+  work-watch pane reads the run's own record (`/api/tasks/{id}/work-sessions`,
+  through the query cache, so the work log shows the same read) before it
+  reopens, so a run that finished while the tab was hidden shows its
   end (C31). The run stream also reconnects after a 502 now, with the same
   read on reopen.
 - A topic stream opened in a tab that is already hidden (a tab opened in the
@@ -71,7 +72,9 @@ between the first read and the subscription is not left for the next event.
   origin's, a font CDN on h2, says nothing about this host), and failing both
   a plain-http page is HTTP/1.1.
 - The person's own `/api/me/events` never pauses: it is what alerts. The
-  work-watch transcript tail (a fetch stream) is unchanged.
+  work-watch transcript tail (a fetch stream) is unchanged: a reopened tail
+  replays the turn in flight, and its parent (`RunDetailModal`) keeps the
+  frames it was handed, so pausing it needs that parent to drop them first.
 - `url` may be a getter, read at every connect, and `onState` reports
   `connecting`, `open`, `reconnecting`, `paused` and `closed`.
 
@@ -111,7 +114,12 @@ Each tab decides each arrival. The first rule that answers wins:
 2. Its `alert` is `feed` (I-15): nothing. It is recorded and counted in the
    bell, never toasted or bannered.
 3. Do Not Disturb is active and the row's class does not break through (I-14;
-   `allowNeedsYou: false` holds Needs-you rows too): nothing.
+   `allowNeedsYou: false` holds Needs-you rows too): nothing. "Active" is as
+   of now, not as of the list's read: the list can be a poll old (a minute in
+   a throttled hidden page, or a `?since` read that beat the list's refetch),
+   so a pause whose `until` has passed since holds nothing (`dndHolds`). A
+   pause that has started since is the server's to hold: it files the rows
+   written during it as `feed`.
 4. **Viewing**: this tab is looking (shown, focused, and touched in the last
    60 s) at the row's own page, and the row is Direct or Following: nothing,
    and the row is marked read (EB-13). A hidden tab never qualifies (C8).
@@ -138,7 +146,11 @@ never on a glance.
 The heartbeat AppLayout mounts now sends a body on `PUT /api/me/presence`:
 `{clientId, kind, state, osIdleMs?}`.
 
-- `clientId` is per tab (sessionStorage `talaria.notify.client`).
+- `clientId` is per tab (sessionStorage `talaria.notify.client`). A
+  duplicated tab starts with a copy of its original's sessionStorage, so the
+  two would report as one client and overwrite each other's state. The tab
+  registry spots the twin (both announce the same id); the one with the
+  greater tab id takes a fresh id, announces it, and beats under it at once.
 - `kind` is `desktop` inside the shell, with `osIdleMs` from
   `shellOsIdleMs()` (I-22); without it, page signals only.
 - `state`: **looking** = shown, focused, input within 60 s; **active** = shown
@@ -169,7 +181,8 @@ On a `notifications` event:
   (`registration.getNotifications()`), their toasts are dismissed (toasts now
   carry the row id as their key), and inside the shell
   `shellCloseNotifications(readIds)` asks it to close its own. A catch-up
-  summary whose rows are all read goes too.
+  summary whose rows are all read goes too. The shell takes at most 100 tags
+  a call, so longer lists go in chunks of 100, the summary tag first.
 - `all`: every banner and every notification toast; in the shell, the tags
   this browser bannered in the last 48 hours plus the summary tag.
 - `resync`: refetch, then close every banner whose row is no longer unread.
