@@ -80,7 +80,6 @@
   const shell = inDesktopShell()
   const bannered = idbBanneredStore()
   const loadedAt = typeof performance !== 'undefined' ? performance.timeOrigin : Date.now()
-  const me = clientId()
 
   let perm = $state<PermissionState>(permissionState())
   let leader: NotifyLeader | null = null
@@ -151,7 +150,10 @@
       // A read-only diagnostics hook (the status panel and the live checks read it).
       ;(window as unknown as { __talariaNotify?: object }).__talariaNotify = {
         tabId: leader?.tabId ?? '',
-        clientId: me,
+        // A getter: a duplicated tab re-mints its id (notify-presence.ts).
+        get clientId() {
+          return clientId()
+        },
         isLeader: () => notifyLeader()?.isLeader() ?? false,
         alone: leader?.alone ?? true,
         hubRole: () => hubRole(),
@@ -225,7 +227,7 @@
         void readSync(ev)
       } else if (ev.type === 'presence') {
         notePresence(ev)
-        untrack(() => setPresence({ looking: ev.looking, active: ev.active, clients: ev.clients, self: me }))
+        untrack(() => setPresence({ looking: ev.looking, active: ev.active, clients: ev.clients, self: clientId() }))
       }
     }),
   )
@@ -274,7 +276,7 @@
     void getJson<PresenceSnapshot>('/api/me/presence')
       .then((p) => {
         notePresence({ looking: p.looking, active: p.active, clients: p.clients?.length ?? 0 })
-        untrack(() => setPresence({ looking: p.looking, active: p.active, clients: p.clients?.length ?? 0, self: me }))
+        untrack(() => setPresence({ looking: p.looking, active: p.active, clients: p.clients?.length ?? 0, self: clientId() }))
       })
       .catch(() => {})
   })
@@ -438,7 +440,7 @@
     const d = query.data
     const now = Date.now()
     return {
-      self: { visible, focused, tabId: l?.tabId, lastInputAt: Math.max(lastInputAt(), l?.lastInputAt() ?? 0), clientId: me },
+      self: { visible, focused, tabId: l?.tabId, lastInputAt: Math.max(lastInputAt(), l?.lastInputAt() ?? 0), clientId: clientId() },
       others: l?.others() ?? [],
       isLeader: l?.isLeader() ?? true,
       bannersOn: browserNotifyEnabled(),

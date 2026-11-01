@@ -7,13 +7,17 @@ import {
   createAckBatcher,
   newClientId,
   notePresence,
+  onClientIdChange,
   onPresenceView,
   presenceView,
   presenceWinner,
   resetClientIdForTests,
+  remintClientId,
   resetPresenceForTests,
+  startHeartbeat,
   type ClientSignals,
 } from './notify-presence'
+import type { PresenceBody } from './notify-wire'
 
 const NOW = 1_800_000_000_000
 const sig = (over: Partial<ClientSignals> = {}): ClientSignals => ({
@@ -80,6 +84,80 @@ describe('clientId', () => {
     const id = clientId(throws)
     expect(id).toMatch(/^[A-Za-z0-9_-]{8,64}$/)
     expect(clientId(throws)).toBe(id)
+  })
+})
+
+describe('remintClientId — a duplicated tab takes a fresh id', () => {
+  beforeEach(() => resetClientIdForTests())
+  afterEach(() => resetClientIdForTests())
+
+  it('stores a new valid id, answers it from then on, and tells the listeners', () => {
+    const m = new Map<string, string>()
+    const store = { get: (k: string) => m.get(k) ?? null, set: (k: string, v: string) => void m.set(k, v) }
+    const before = clientId(store)
+    const heard: string[] = []
+    const off = onClientIdChange((id) => heard.push(id))
+    const after = remintClientId(store)
+    expect(after).not.toBe(before)
+    expect(after).toMatch(/^[A-Za-z0-9_-]{8,64}$/)
+    expect(m.get(CLIENT_KEY)).toBe(after)
+    expect(clientId(store)).toBe(after)
+    expect(heard).toEqual([after])
+    off()
+    remintClientId(store)
+    expect(heard).toEqual([after])
+  })
+})
+
+describe('startHeartbeat — the id is read at each beat', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('a re-minted id beats at once when forced, past the 5 s gap', async () => {
+    let t = NOW
+    let id = 'tab-old-0001'
+    const sent: PresenceBody[] = []
+    const hb = startHeartbeat({
+      clientId: () => id,
+      kind: 'web',
+      read: () => ({ visible: true, focused: true, lastInputAt: t }),
+      send: async (b) => void sent.push(b),
+      now: () => t,
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent.map((b) => b.clientId)).toEqual(['tab-old-0001'])
+    t += 6_000
+    id = 'tab-new-0002'
+    hb.poke() // same state, not due: nothing
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent).toHaveLength(1)
+    hb.poke(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent.map((b) => b.clientId)).toEqual(['tab-old-0001', 'tab-new-0002'])
+    expect(sent[1]?.state).toBe('looking')
+    hb.stop()
+  })
+
+  it('a forced beat inside the gap waits for it, never two beats within 5 s', async () => {
+    let t = NOW
+    const sent: Array<{ at: number }> = []
+    const hb = startHeartbeat({
+      clientId: 'tab-gap-0001',
+      kind: 'web',
+      read: () => ({ visible: true, focused: true, lastInputAt: t }),
+      send: async () => void sent.push({ at: t }),
+      now: () => t,
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    t += 1_000
+    hb.poke(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent).toHaveLength(1)
+    t += 4_000
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(sent).toHaveLength(2)
+    expect((sent[1]?.at ?? 0) - (sent[0]?.at ?? 0)).toBeGreaterThanOrEqual(5_000)
+    hb.stop()
   })
 })
 

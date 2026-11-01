@@ -25,7 +25,7 @@ import { useQueryClient } from '@tanstack/svelte-query'
 import { lastInputAt, trackInput } from '@/lib/looking'
 import { startHub, type Hub, type HubRole } from '@/lib/notify-hub'
 import { browserLeaderEdges, startNotifyLeader, type NotifyLeader } from '@/lib/notify-leader'
-import { clientId } from '@/lib/notify-presence'
+import { clientId, remintClientId } from '@/lib/notify-presence'
 import { noteStreamEvent, setHubRole, setStreamState } from '@/lib/notify-status.svelte'
 import type { PresenceEvent, ResyncEvent, SessionEvent } from './notify-wire'
 
@@ -124,6 +124,8 @@ function start(): void {
     self: () => ({ visible: document.visibilityState === 'visible', focused: safeFocus(), clientId: clientId() }),
     lastInputAt,
     hub: true,
+    // A duplicated tab shares its original's client id until one re-mints.
+    onClientIdClash: () => void remintClientId(),
   })
   // The connection itself goes through the shared door, which RECONNECTS it:
   // a deploy or an api restart is a 502/524 at the edge, and the firehose

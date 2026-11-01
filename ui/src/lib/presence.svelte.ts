@@ -19,7 +19,7 @@ import { untrack } from 'svelte'
 import { putJson } from '@/lib/fetch-json'
 import { inDesktopShell, shellOsIdleMs } from '@/lib/desktop-shell'
 import { lastInputAt, onInput, trackInput } from '@/lib/looking'
-import { clientId, notePresence, presenceView, startHeartbeat, BEAT_MS, type Heartbeat } from '@/lib/notify-presence'
+import { clientId, notePresence, onClientIdChange, presenceView, startHeartbeat, BEAT_MS, type Heartbeat } from '@/lib/notify-presence'
 import { setPresence } from '@/lib/notify-status.svelte'
 import type { PresenceBody } from '@/lib/notify-wire'
 
@@ -81,10 +81,11 @@ export function startPresenceHeartbeat(opts: PresenceOptions = {}): () => void {
   const win = opts.win ?? (typeof window === 'undefined' ? undefined : window)
   const shell = inDesktopShell()
   const kind = opts.kind ?? (shell ? 'desktop' : 'web')
-  const id = opts.clientId ?? clientId()
+  // Read at each beat: a duplicated tab re-mints its id (notify-presence.ts).
+  const id = () => opts.clientId ?? clientId()
   // Untracked: the setter reads the status it writes, and this runs inside
   // AppLayout's $effect.
-  untrack(() => setPresence({ self: id }))
+  untrack(() => setPresence({ self: id() }))
   const releaseInput = opts.win ? () => {} : trackInput()
   const hb: Heartbeat = startHeartbeat({
     clientId: id,
@@ -103,7 +104,12 @@ export function startPresenceHeartbeat(opts: PresenceOptions = {}): () => void {
   // a last beat says `hidden`, so the server's winner moves to the person's
   // other device now rather than when this entry ages out (75 s). A page
   // restored from the cache beats again on `pageshow`.
-  const bye = () => (opts.sendFinal ?? defaultFinal)({ clientId: id, kind, state: 'hidden' })
+  const bye = () => (opts.sendFinal ?? defaultFinal)({ clientId: id(), kind, state: 'hidden' })
+  // A re-minted id beats at once, under its new name (the twin keeps the old).
+  const offId = onClientIdChange((next) => {
+    untrack(() => setPresence({ self: next }))
+    hb.poke(true)
+  })
   doc.addEventListener('visibilitychange', poke)
   win?.addEventListener('focus', poke)
   win?.addEventListener('blur', poke)
@@ -116,6 +122,7 @@ export function startPresenceHeartbeat(opts: PresenceOptions = {}): () => void {
   })
   return () => {
     hb.stop()
+    offId()
     offInput()
     releaseInput()
     doc.removeEventListener('visibilitychange', poke)

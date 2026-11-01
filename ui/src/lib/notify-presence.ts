@@ -106,9 +106,17 @@ function defaultRandom(n: number): Uint8Array {
 }
 
 let memoId: string | null = null
+const idListeners = new Set<(id: string) => void>()
 
 /** This tab's client id: stable across reloads of the tab (sessionStorage),
- *  new for a new tab. Without storage, stable for the page's life. */
+ *  new for a new tab. Without storage, stable for the page's life.
+ *
+ *  A DUPLICATED tab starts with a copy of its original's sessionStorage (the
+ *  browser's "Duplicate tab", or a page opened with an opener), so both tabs
+ *  would report as one client and overwrite each other's state on the
+ *  server — the person looking at one twin reads as `hidden` whenever the
+ *  other beats last. The tab registry spots the twin (notify-leader.ts) and
+ *  one of the two calls `remintClientId`. */
 export function clientId(store: IdStore | null = sessionStore()): string {
   if (memoId) return memoId
   let id: string | null = null
@@ -129,9 +137,30 @@ export function clientId(store: IdStore | null = sessionStore()): string {
   return id
 }
 
+/** Take a fresh client id for this tab (its twin keeps the old one), and
+ *  tell whoever reports it (the heartbeat beats under the new id at once). */
+export function remintClientId(store: IdStore | null = sessionStore()): string {
+  const id = newClientId()
+  try {
+    store?.set(CLIENT_KEY, id)
+  } catch {
+    /* the id lives for this page only */
+  }
+  memoId = id
+  for (const fn of idListeners) fn(id)
+  return id
+}
+
+/** Hear this tab's client id change (a re-mint). Returns the unsubscribe. */
+export function onClientIdChange(fn: (id: string) => void): () => void {
+  idListeners.add(fn)
+  return () => idListeners.delete(fn)
+}
+
 /** Test hook. */
 export function resetClientIdForTests(): void {
   memoId = null
+  idListeners.clear()
 }
 
 // ── The presence view: who the server says the person is on ─────────────────
@@ -184,7 +213,8 @@ export function resetPresenceForTests(): void {
 // ── The heartbeat ────────────────────────────────────────────────────────────
 
 export interface HeartbeatEnv {
-  clientId: string
+  /** The client id, or a getter read at each beat (it can be re-minted). */
+  clientId: string | (() => string)
   kind: ClientKind
   /** The page's own signals, read at each evaluation. */
   read: () => { visible: boolean; focused: boolean; lastInputAt: number }
@@ -198,8 +228,9 @@ export interface HeartbeatEnv {
 }
 
 export interface Heartbeat {
-  /** Re-evaluate now (a focus, a visibility change, an input). */
-  poke(): void
+  /** Re-evaluate now (a focus, a visibility change, an input); `force`
+   *  beats even if the state did not change (a re-minted id). */
+  poke(force?: boolean): void
   /** The state as last computed. */
   state(): ClientState | null
   stop(): void
@@ -220,16 +251,19 @@ export function startHeartbeat(env: HeartbeatEnv): Heartbeat {
   let evaluating = false
   let again = false
 
+  const idOf = () => (typeof env.clientId === 'function' ? env.clientId() : env.clientId)
   const send = (state: ClientState, osIdleMs: number | null) => {
     sentState = state
     sentAt = now()
-    const body: PresenceBody = { clientId: env.clientId, kind: env.kind, state }
+    const body: PresenceBody = { clientId: idOf(), kind: env.kind, state }
     if (typeof osIdleMs === 'number') body.osIdleMs = Math.max(0, Math.round(osIdleMs))
     void env.send(body).catch(() => {})
   }
 
-  const evaluate = async () => {
+  let forced = false
+  const evaluate = async (force = false) => {
     if (stopped) return
+    if (force) forced = true
     if (evaluating) {
       again = true
       return
@@ -249,7 +283,7 @@ export function startHeartbeat(env: HeartbeatEnv): Heartbeat {
       const state = clientState({ ...sig, now: now(), kind: env.kind, osIdleMs })
       last = state
       const t = now()
-      const due = state !== sentState || t - sentAt >= beatMs
+      const due = forced || state !== sentState || t - sentAt >= beatMs
       if (!due) return
       const wait = sentAt + minGap - t
       if (wait > 0) {
@@ -263,6 +297,7 @@ export function startHeartbeat(env: HeartbeatEnv): Heartbeat {
         }
         return
       }
+      forced = false
       send(state, osIdleMs)
     } finally {
       evaluating = false
@@ -276,7 +311,7 @@ export function startHeartbeat(env: HeartbeatEnv): Heartbeat {
   void evaluate()
   const tick = setInterval(() => void evaluate(), tickMs)
   return {
-    poke: () => void evaluate(),
+    poke: (force) => void evaluate(!!force),
     state: () => last,
     stop: () => {
       stopped = true

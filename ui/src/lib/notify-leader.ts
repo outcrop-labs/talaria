@@ -68,6 +68,11 @@ export interface LeaderEnv {
   /** This tab runs a hub (notify-hub.ts): announced, so followers know a
    *  leader that will rebroadcast the stream from one that will not. */
   hub?: boolean
+  /** Another tab announced THIS tab's presence client id — a duplicated tab
+   *  starts with a copy of its original's sessionStorage. Called in exactly
+   *  one of the two (the one with the greater tab id), which takes a fresh
+   *  id (notify-presence.ts `remintClientId`); its next announcement says so. */
+  onClientIdClash?: () => void
   now?: () => number
   tabId?: string
   heartbeatMs?: number
@@ -156,9 +161,14 @@ export function startNotifyLeader(env: LeaderEnv): NotifyLeader {
       if (!m.tab || m.tab.tabId === tabId) return
       const known = registry.has(m.tab.tabId)
       registry.set(m.tab.tabId, m.tab)
+      // A twin: the same presence client in another tab. Both see it; the
+      // greater tab id gives way, so exactly one re-mints.
+      const mine = env.self().clientId
+      const twin = !!mine && m.tab.clientId === mine && tabId > m.tab.tabId
+      if (twin) env.onClientIdClash?.()
       // A tab we had not heard from: answer at once, so it learns of us now
-      // rather than at our next heartbeat.
-      if (!known) post({ type: 'state', tab: state() })
+      // rather than at our next heartbeat (and a re-minted twin, its new id).
+      if (!known || (twin && env.onClientIdClash)) post({ type: 'state', tab: state() })
     } else if (m.type === 'bye') {
       registry.delete(m.tabId)
     } else if (m.type === 'claimed') {
