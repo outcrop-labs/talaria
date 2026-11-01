@@ -878,7 +878,7 @@ mod tests {
         assert_eq!(q.kinds.as_ref().unwrap().len(), 2);
         assert_eq!(q.limit, 20);
         assert_eq!(page("view=done").view, InboxView::Done);
-        assert_eq!(page("view=all&unread=0").unread_only, false);
+        assert!(!page("view=all&unread=0").unread_only);
         // An empty list is no filter; unknown parameters are ignored.
         assert_eq!(page("category=&class=,&future=1"), InboxQuery::default());
         // `since` wins, and the view parameters are not even read.

@@ -490,16 +490,10 @@ async fn the_route_replays_by_seq_and_ends_with_its_session() {
     );
     let mut by_query = Vec::new();
     let mut a = open_events(&state, &cookie, &format!("?since={since}"), None).await;
-    frames_until(&mut a, &mut by_query, 3_000, |f| {
-        f.iter().any(|x| *x == resync)
-    })
-    .await;
+    frames_until(&mut a, &mut by_query, 3_000, |f| f.contains(&resync)).await;
     let mut by_header = Vec::new();
     let mut b = open_events(&state, &cookie, "", Some(&since.to_string())).await;
-    frames_until(&mut b, &mut by_header, 3_000, |f| {
-        f.iter().any(|x| *x == resync)
-    })
-    .await;
+    frames_until(&mut b, &mut by_header, 3_000, |f| f.contains(&resync)).await;
     assert_eq!(by_query, by_header, "Last-Event-ID replays the same frames");
     assert_eq!(by_query.len(), 10, "{by_query:?}");
     assert_eq!(by_query[0], ": connected\nretry: 3000");
