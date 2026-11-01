@@ -102,12 +102,17 @@ pub async fn get(
     let deps = RealtimeDeps::streams_only(&state.cfg.redis_url);
 
     // SUBSCRIBE FIRST: the hub answers once Redis holds the topic, so a write
-    // that commits after the replay's snapshot is heard live.
-    let events = (deps.subscribe)(format!("user:{}", user.id)).await;
-    let revoked = match session_hash_of(&headers) {
-        Some(hash) => Some(((deps.subscribe)(SESSION_REVOKED_TOPIC.into()).await, hash)),
-        None => None,
-    };
+    // that commits after the replay's snapshot is heard live. Both topics at
+    // once: while the hub reconnects each wait is bounded (3 s), and two in a
+    // row would hold the stream's first byte twice as long.
+    let hash = session_hash_of(&headers);
+    let (events, revoked) = tokio::join!((deps.subscribe)(format!("user:{}", user.id)), async {
+        match hash {
+            Some(_) => Some((deps.subscribe)(SESSION_REVOKED_TOPIC.into()).await),
+            None => None,
+        }
+    });
+    let revoked = revoked.zip(hash);
 
     let mut preamble = Vec::new();
     // The person's presence as it stands: the frame is otherwise sent only
