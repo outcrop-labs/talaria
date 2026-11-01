@@ -132,7 +132,9 @@
   const openBell = () => window.dispatchEvent(new CustomEvent('talaria:open-notifications'))
 
   // ── The ack (I-18) ───────────────────────────────────────────────────────
-  const acker = createAckBatcher((ids) => postJson('/api/notifications/ack', { ids }))
+  // `keepalive`: a batch still queued when the tab goes away (flushed on
+  // pagehide, below) outlives the page.
+  const acker = createAckBatcher((ids) => postJson('/api/notifications/ack', { ids }, { keepalive: true }))
   const ack = (ids: string[]) => {
     if (has('ack')) acker.add(ids)
   }
@@ -187,13 +189,18 @@
       if (now && !wasLooking) visitSoon()
       wasLooking = now
     })
+    // A banner posted in the last half second is still in the ack batch: the
+    // tab closing must not drop it (the phone would buzz for it).
+    const flushAcks = () => void acker.flush()
     window.addEventListener('focus', onFocus)
     window.addEventListener('blur', onBlur)
+    window.addEventListener('pagehide', flushAcks)
     document.addEventListener('visibilitychange', onVisible)
     const offSince = setStreamSince(() => tracker?.persistedCursor() ?? null)
     return () => {
       window.removeEventListener('focus', onFocus)
       window.removeEventListener('blur', onBlur)
+      window.removeEventListener('pagehide', flushAcks)
       document.removeEventListener('visibilitychange', onVisible)
       offInput()
       offSince()
