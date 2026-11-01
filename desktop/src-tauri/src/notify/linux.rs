@@ -8,6 +8,14 @@
 //! each until the server retired the banner, and 30 banners left open cost 30
 //! bus names and 63 threads (D11).
 //!
+//! A read elsewhere closes a banner (I-16): `CloseNotification` for the id
+//! the server issued for that (instance, tag). The OS idle time (I-22) comes
+//! from mutter's `org.gnome.Mutter.IdleMonitor`, else the session's
+//! `org.freedesktop.ScreenSaver.GetSessionIdleTime` (KDE on X11: its
+//! kscreenlocker answers KIdleTime's milliseconds, though the interface's XML
+//! names the value seconds; on Plasma's Wayland it is not supported), else
+//! none.
+//!
 //! The same connection carries the launcher badge
 //! (`com.canonical.Unity.LauncherEntry`) and owns `app.talaria.desktop.Shell`,
 //! the single-instance name: a second launch calls its `Activate(token)` and
@@ -347,6 +355,84 @@ pub async fn post(post: &Post, previous: Option<u32>) -> Result<u32, String> {
             Err(format!("showing the notification: {e}"))
         }
     }
+}
+
+/// Close these banners (their entries already taken from the map): a
+/// `CloseNotification` each, for the id the server issued. The number the
+/// server accepted.
+pub async fn close(label: &str, _tags: &[String], entries: &[super::Entry]) -> u32 {
+    let ids: Vec<u32> = entries
+        .iter()
+        .map(|e| e.server_id)
+        .filter(|id| *id != 0)
+        .collect();
+    if ids.is_empty() {
+        return 0;
+    }
+    let conn = match connection().await {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("talaria-desktop: {label}: closing banners: {e}");
+            return 0;
+        }
+    };
+    let mut closed = 0;
+    for id in ids {
+        match call(&conn, "CloseNotification", &(id,)).await {
+            Ok(_) => {
+                eprintln!("talaria-desktop: {label}: closed notification {id}");
+                closed += 1;
+            }
+            Err(e) => {
+                reset_if_broken(&e);
+                eprintln!("talaria-desktop: {label}: closing notification {id}: {e}");
+            }
+        }
+    }
+    closed
+}
+
+/// How long an idle-time service may take to answer before the next is
+/// asked.
+const IDLE_WAIT: Duration = Duration::from_secs(2);
+
+/// Milliseconds since the last input, from whichever service this desktop
+/// has (see the module docs), or None.
+pub async fn os_idle() -> Option<u64> {
+    let conn = connection().await.ok()?;
+    let ask = |dest: &'static str, path: &'static str, method: &'static str| {
+        let conn = conn.clone();
+        async move {
+            tokio::time::timeout(
+                IDLE_WAIT,
+                conn.call_method(Some(dest), path, Some(dest), method, &()),
+            )
+            .await
+            .ok()?
+            .ok()
+        }
+    };
+    if let Some(reply) = ask(
+        "org.gnome.Mutter.IdleMonitor",
+        "/org/gnome/Mutter/IdleMonitor/Core",
+        "GetIdletime",
+    )
+    .await
+        && let Ok(ms) = reply.body().deserialize::<u64>()
+    {
+        return Some(ms);
+    }
+    if let Some(reply) = ask(
+        "org.freedesktop.ScreenSaver",
+        "/org/freedesktop/ScreenSaver",
+        "GetSessionIdleTime",
+    )
+    .await
+        && let Ok(ms) = reply.body().deserialize::<u32>()
+    {
+        return Some(u64::from(ms));
+    }
+    None
 }
 
 /// The server, as it describes itself, or the bus's reason there is none.
@@ -708,9 +794,22 @@ pub fn selftest() -> serde_json::Value {
             renotify: false,
             source: super::Source::Page,
         };
-        let posted = match self::post(&post, None).await {
-            Ok(id) => format!("ok (id {id})"),
-            Err(e) => format!("error: {e}"),
+        let (posted, close) = match self::post(&post, None).await {
+            Ok(id) => {
+                let conn = connection().await;
+                let close = match conn {
+                    Ok(conn) => match call(&conn, "CloseNotification", &(id,)).await {
+                        Ok(_) => "ok".to_string(),
+                        Err(e) => format!("error: {e}"),
+                    },
+                    Err(e) => format!("error: {e}"),
+                };
+                (format!("ok (id {id})"), close)
+            }
+            Err(e) => (
+                format!("error: {e}"),
+                "skipped: nothing was posted".to_string(),
+            ),
         };
         serde_json::json!({
             "backend": status.backend,
@@ -718,6 +817,8 @@ pub fn selftest() -> serde_json::Value {
             "authorization": status.permission,
             "detail": status.detail,
             "post": posted,
+            "close": close,
+            "osIdle": os_idle().await,
             "background": if crate::background::tray_library() { "tray-capable" } else { "minimize" },
         })
     })

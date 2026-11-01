@@ -10,6 +10,7 @@
 //! WebKitGTK geometry depends on their order (docs/DESKTOP.md).
 
 use std::{
+    collections::BTreeMap,
     sync::atomic::Ordering,
     time::{Duration, Instant},
 };
@@ -111,6 +112,11 @@ pub struct ShellSnapshot {
     /// What closing does on this desktop now: `tray`, `menu-bar`,
     /// `minimize` (no tray host: stock GNOME) or `none` (Windows).
     pub background: &'static str,
+    /// Instances muted in the launcher: no banners, the badge still counts.
+    pub muted: Vec<String>,
+    /// Each instance's unread count (its share of the badge: For you), by
+    /// local id; an instance with none is absent.
+    pub unread: BTreeMap<String, u32>,
 }
 
 fn snapshot(app: &AppHandle) -> ShellSnapshot {
@@ -144,6 +150,15 @@ fn snapshot(app: &AppHandle) -> ShellSnapshot {
     let failure = state.failure.lock().unwrap().clone();
     let mut suspended: Vec<String> = state.suspended.lock().unwrap().keys().cloned().collect();
     suspended.sort();
+    let muted: Vec<String> = state.muted.lock().unwrap().iter().cloned().collect();
+    let unread = notify::badge_shares(app)
+        .into_iter()
+        .filter_map(|(label, n)| {
+            label
+                .strip_prefix("instance-")
+                .map(|id| (id.to_string(), n))
+        })
+        .collect();
     ShellSnapshot {
         view,
         active_id,
@@ -157,6 +172,8 @@ fn snapshot(app: &AppHandle) -> ShellSnapshot {
         failure,
         close_to_background,
         background: crate::background::mode(app).as_str(),
+        muted,
+        unread,
     }
 }
 
@@ -396,6 +413,7 @@ pub async fn add_instance(app: AppHandle, url: String) -> Result<Instance, Strin
     crate::grant_switcher(&app, &instance)?;
     drop(adding);
     emit_state(&app);
+    crate::tray::refresh_menu(&app);
     Ok(instance)
 }
 
@@ -440,13 +458,31 @@ pub async fn probe_instance(app: AppHandle, id: String) -> Result<(), String> {
 /// it. A new webview opens at the instance's last page (suspend.rs).
 #[tauri::command]
 pub fn activate_instance(app: AppHandle, id: String) -> Result<(), String> {
-    activate(&app, &id, None).map(|_| ())
+    activate(&app, &id, None, None).map(|_| ())
+}
+
+/// What `activate` did to the instance's webview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Opened {
+    /// It was live already: the caller hands the page what it has to say.
+    Live,
+    /// Created now, at the notification's own href: nothing more to say.
+    AtHref,
+    /// Created now, at its last page; a `pending` script, if one was given,
+    /// carries what the caller had to say once the page is up.
+    Created,
 }
 
 /// `activate_instance`, plus a notification's `href`: a webview created for
-/// it opens there instead of at the last page. True when it did, so the
-/// caller does not navigate it a second time.
-fn activate(app: &AppHandle, id: &str, href: Option<&str>) -> Result<bool, String> {
+/// it opens there instead of at the last page. `pending` is an init script
+/// for a webview created here (notify::pending_open_js): an event that a
+/// page still loading would otherwise miss.
+fn activate(
+    app: &AppHandle,
+    id: &str,
+    href: Option<&str>,
+    pending: Option<String>,
+) -> Result<Opened, String> {
     let state = app.state::<ShellState>();
     let instance = state.find(id)?;
     let window = main_window(app)?;
@@ -457,7 +493,7 @@ fn activate(app: &AppHandle, id: &str, href: Option<&str>) -> Result<bool, Strin
             let _ = other.hide();
         }
     }
-    let mut born_at_href = false;
+    let mut opened = Opened::Live;
     if window.get_webview(&label).is_none() {
         // Restoring: the load starts here, on the first signal. No probe —
         // a suspended instance answered a moment ago, and a page that fails
@@ -475,11 +511,13 @@ fn activate(app: &AppHandle, id: &str, href: Option<&str>) -> Result<bool, Strin
                 let h = h.lock().unwrap();
                 h.user
                     .as_deref()
-                    .and_then(|user| suspend::arrivals_js(user, &h.posted))
+                    .and_then(|user| suspend::arrivals_js(user, &h.posted, h.seq))
                     .inspect(|_| {
                         eprintln!(
-                            "talaria-desktop: handing {} watcher banner(s) back to {label}",
-                            h.posted.len()
+                            "talaria-desktop: handing {} watcher arrival(s) back to {label}{}",
+                            h.posted.len(),
+                            h.seq
+                                .map_or(String::new(), |seq| format!(", read through seq {seq}"))
                         );
                     })
             });
@@ -491,10 +529,11 @@ fn activate(app: &AppHandle, id: &str, href: Option<&str>) -> Result<bool, Strin
             .and_then(|u| suspend::restorable_url(&instance.url, u));
         let (target, scroll) = match href.and_then(notify::openable_href) {
             Some(href) => {
-                born_at_href = true;
+                opened = Opened::AtHref;
                 (format!("{}{href}", instance.url), None)
             }
             None => {
+                opened = Opened::Created;
                 let scroll = resumed.as_ref().zip(page.as_deref()).and_then(|(r, page)| {
                     (r.page.as_deref() == Some(page))
                         .then(|| {
@@ -516,7 +555,12 @@ fn activate(app: &AppHandle, id: &str, href: Option<&str>) -> Result<bool, Strin
                 registry::now_ms()
             );
         }
-        let scripts: Vec<String> = handback.into_iter().chain(scroll).collect();
+        let pending = if opened == Opened::Created {
+            pending
+        } else {
+            None
+        };
+        let scripts: Vec<String> = handback.into_iter().chain(scroll).chain(pending).collect();
         create_instance_webview(app, &window, &instance, &target, scripts)?;
     }
     *state.active.lock().unwrap() = Some(instance.id.clone());
@@ -535,7 +579,7 @@ fn activate(app: &AppHandle, id: &str, href: Option<&str>) -> Result<bool, Strin
     *state.failure.lock().unwrap() = None;
     set_view(app, View::Active)?;
     emit_state(app);
-    Ok(born_at_href)
+    Ok(opened)
 }
 
 fn create_instance_webview(
@@ -557,10 +601,16 @@ fn create_instance_webview(
         .or_else(|_| instance.url.parse())
         .map_err(|e| format!("stored URL no longer parses: {e}"))?;
     let rect = layout::creation_rect(window);
+    let loaded_id = instance.id.clone();
     let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
         .data_directory(dir)
         .background_color(GROUND)
-        .initialization_script(ESCAPE_HATCH);
+        .initialization_script(ESCAPE_HATCH)
+        .on_page_load(move |webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                page_loaded(webview.app_handle(), &loaded_id);
+            }
+        });
     for script in restore {
         builder = builder.initialization_script(script);
     }
@@ -630,7 +680,16 @@ fn instance_load_failed(app: &AppHandle, id: &str, message: &str) {
     {
         let _ = webview.close();
     }
+    let prewarming = state.activity.lock().unwrap().prewarming(id);
     state.activity.lock().unwrap().forget(id);
+    // Loaded hidden at launch (D8) and nobody asked to see it: no card on
+    // the launcher, just the log. The person opening it later gets the probe.
+    if prewarming {
+        eprintln!(
+            "talaria-desktop: instance-{id} (loaded at launch) did not load: {message}; not watched"
+        );
+        return;
+    }
     let seq = state.failure_seq.fetch_add(1, Ordering::Relaxed) + 1;
     *state.failure.lock().unwrap() = Some(LoadFailure {
         seq,
@@ -692,6 +751,7 @@ pub fn remove_instance(app: AppHandle, id: String) -> Result<Vec<Instance>, Stri
         watcher.abort();
     }
     state.last_urls.lock().unwrap().remove(&id);
+    state.muted.lock().unwrap().remove(&id);
     state.activity.lock().unwrap().forget(&id);
     notify::forget_label(&app, &label);
     let registered = {
@@ -732,6 +792,7 @@ pub fn remove_instance(app: AppHandle, id: String) -> Result<Vec<Instance>, Stri
         set_view(&app, View::Welcome)?;
     }
     emit_state(&app);
+    crate::tray::refresh_menu(&app);
     Ok(state.instances.lock().unwrap().clone())
 }
 
@@ -828,7 +889,7 @@ fn restore_shown(app: &AppHandle, window: &Window) {
         return;
     }
     let suspended = state.suspended.lock().unwrap().contains_key(&id);
-    if suspended && let Err(e) = activate(app, &id, None) {
+    if suspended && let Err(e) = activate(app, &id, None, None) {
         eprintln!("talaria-desktop: restoring {id}: {e}");
     }
 }
@@ -851,13 +912,16 @@ pub fn window_returned(app: &AppHandle, focused: bool) {
     }
 }
 
-/// Remember every live instance's page now (the window is closing).
+/// Remember every live instance's page now (the window is closing, or the
+/// app is quitting).
 pub fn remember_all(app: &AppHandle) {
     let Ok(window) = main_window(app) else {
         return;
     };
     let mut changed = false;
-    for (id, webview) in live_instances(&window) {
+    let live = live_instances(&window);
+    eprintln!("talaria-desktop: remember_all: {} live page(s)", live.len());
+    for (id, webview) in live {
         changed |= remember_page(app, &id, &webview);
     }
     if changed && let Err(e) = app.state::<ShellState>().persist() {
@@ -933,6 +997,21 @@ pub fn desktop_suspend_report(
     }
     let page = match report.page {
         Some(page) if page.version >= 1 => page,
+        // Loaded hidden at launch and still booting: asked again in a
+        // second (the tick would ask within five), a few times, before it
+        // counts as an older Talaria.
+        None if state.activity.lock().unwrap().prewarm_retry(&id) => {
+            eprintln!(
+                "talaria-desktop: {}: no page hook yet (loaded at launch); asking again",
+                webview.label()
+            );
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(PREWARM_RETRY).await;
+                page_loaded(&app, &id);
+            });
+            return Ok(());
+        }
         _ => {
             eprintln!(
                 "talaria-desktop: keeping {}: its Talaria predates suspend support",
@@ -986,22 +1065,23 @@ pub fn desktop_suspend_report(
                 Ok(None) => None,
                 Ok(Some(cookie)) => match watch::baseline(&instance.url, &cookie).await {
                     // The page's own record, when it handed one over: what it
-                    // missed is posted on the watcher's first read. Without
+                    // missed is posted on the watcher's first read, and its
+                    // seq (I-20 v2) is where the watcher reads from. Without
                     // one (an older UI), this read is the baseline.
-                    watch::Baseline::Ready(arrivals) => Some(match handoff {
+                    watch::Baseline::Ready(start) => Some(match handoff {
                         Some(handoff) => {
                             eprintln!(
-                                "talaria-desktop: {}: starting from the page's record ({} seen)",
+                                "talaria-desktop: {}: starting from the page's record ({} seen{})",
                                 webview.label(),
-                                handoff.seen.len()
+                                handoff.seen.len(),
+                                handoff
+                                    .seq
+                                    .map_or(String::new(), |seq| format!(", seq {seq}"))
                             );
-                            (
-                                cookie,
-                                watch::Arrivals::from_handoff(&handoff),
-                                Some(handoff.user),
-                            )
+                            let user = handoff.user.clone();
+                            (cookie, start.with_handoff(&handoff), Some(user))
                         }
-                        None => (cookie, arrivals, None),
+                        None => (cookie, start, None),
                     }),
                     watch::Baseline::SignedOut => None,
                     watch::Baseline::Unreachable => {
@@ -1081,7 +1161,7 @@ fn finish_suspend(
     reported_url: &str,
     scroll: Vec<suspend::Scroll>,
     session: Vec<(String, String)>,
-    watch: Option<(String, watch::Arrivals, Option<String>)>,
+    watch: Option<(String, watch::Start, Option<String>)>,
 ) {
     let state = app.state::<ShellState>();
     let id = instance.id.clone();
@@ -1114,10 +1194,11 @@ fn finish_suspend(
         return;
     }
     let mut handback = None;
-    let watcher = watch.map(|(cookie, arrivals, user)| {
+    let watcher = watch.map(|(cookie, start, user)| {
         let shared: watch::Shared = std::sync::Arc::new(std::sync::Mutex::new(watch::Handback {
             user,
             posted: Vec::new(),
+            seq: start.arrivals.seq(),
         }));
         handback = Some(shared.clone());
         watch::spawn(watch::Watch {
@@ -1126,7 +1207,8 @@ fn finish_suspend(
             instance: instance.label.clone(),
             origin: instance.url.clone(),
             cookie,
-            arrivals,
+            arrivals: start.arrivals,
+            server: start.server,
             shared,
         })
     });
@@ -1342,6 +1424,12 @@ pub async fn desktop_notify(
     if !notify::allow_post(&app, &label) {
         return Err("rate limited".into());
     }
+    // Muted in the launcher: no banner, and no error either — the page's
+    // toast and the bell are its own, and the badge still counts.
+    if is_muted(&app, &label) {
+        eprintln!("talaria-desktop: {label}: muted; not posting");
+        return Ok(());
+    }
     let title = notify::clamped_title(&title);
     if title.is_empty() {
         return Err("a notification needs a title".into());
@@ -1513,20 +1601,251 @@ pub(crate) fn reveal_notice(
     let href = href.map(str::to_string);
     let id = id.unwrap_or_default().to_string();
     let app = app.clone();
+    // The catch-up summary (I-21) names no row: its click hands the page the
+    // summary's tag, which opens the bell — on a page that is up now, or, for
+    // a suspended instance the click restores, once the restored page is up.
+    let summary = id == notify::SUMMARY_TAG && href.is_none();
     // WebKitGTK eval and window ops belong on the main thread; the click
     // arrives on a bus or delegate thread. This only queues the reveal.
     let _ = app.clone().run_on_main_thread(move || {
-        let mut born_at_href = false;
+        let mut opened = Opened::Live;
         if let Some(instance) = label.strip_prefix("instance-") {
-            born_at_href = activate(&app, instance, href.as_deref()).unwrap_or(false);
+            let pending = summary
+                .then(|| notify::pending_open_js(None, &id, registry::now_ms() as u64))
+                .flatten();
+            opened = activate(&app, instance, href.as_deref(), pending).unwrap_or(Opened::AtHref);
         }
         crate::background::present_main(&app, token);
-        if !born_at_href
-            && let Some(href) = href
-            && let Some(js) = notify::open_js(&href, &id)
+        if opened != Opened::Live {
+            return;
+        }
+        let js = if summary {
+            Some(notify::summary_js())
+        } else {
+            href.as_deref().and_then(|href| notify::open_js(href, &id))
+        };
+        if let Some(js) = js
             && let Some(webview) = app.get_webview(&label)
         {
+            eprintln!("talaria-desktop: {label}: handing the page notification {id}");
             let _ = webview.eval(js);
+        }
+    });
+}
+
+/// Is the instance behind this webview label muted in the launcher?
+pub(crate) fn is_muted(app: &AppHandle, label: &str) -> bool {
+    let Some(id) = label.strip_prefix("instance-") else {
+        return false;
+    };
+    app.try_state::<ShellState>()
+        .is_some_and(|s| s.muted.lock().unwrap().contains(id))
+}
+
+/// Mute or unmute an instance (the launcher's bell on its row): a muted
+/// instance posts no banner, from its page or its watcher, and its share of
+/// the badge still counts. Launcher only.
+#[tauri::command]
+pub fn set_instance_muted(app: AppHandle, id: String, muted: bool) -> Result<(), String> {
+    let state = app.state::<ShellState>();
+    state.find(&id)?;
+    let changed = {
+        let mut set = state.muted.lock().unwrap();
+        if muted {
+            set.insert(id.clone())
+        } else {
+            set.remove(&id)
+        }
+    };
+    if changed {
+        eprintln!(
+            "talaria-desktop: instance-{id} {}",
+            if muted { "muted" } else { "unmuted" }
+        );
+        state.persist()?;
+        emit_state(&app);
+        crate::tray::refresh_menu(&app);
+    }
+    Ok(())
+}
+
+/// A tray row: that instance, in front.
+pub(crate) fn open_from_tray(app: &AppHandle, id: &str) {
+    if let Err(e) = activate(app, id, None, None) {
+        eprintln!("talaria-desktop: opening instance-{id} from the tray: {e}");
+    }
+    crate::background::present_main(app, None);
+}
+
+/// Close this instance's OS banners for these tags (I-16, I-22): ui calls it
+/// for the rows a read elsewhere names (`readIds`). Keyed by the CALLER's
+/// label, never anything the page says, so one instance can close only its
+/// own; at most `CLOSE_MAX` tags a call. Answers how many it closed.
+#[tauri::command]
+pub async fn desktop_notify_close(
+    app: AppHandle,
+    webview: Webview,
+    tags: Vec<serde_json::Value>,
+) -> Result<u32, String> {
+    let tags: Vec<String> = tags
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(notify::clamped_tag)
+        .filter(|t| !t.is_empty())
+        .take(notify::CLOSE_MAX)
+        .collect();
+    let label = webview.label().to_string();
+    let closed = notify::close(&app, &label, &tags).await;
+    if closed > 0 {
+        eprintln!("talaria-desktop: {label}: the page closed {closed} banner(s) read elsewhere");
+    }
+    Ok(closed)
+}
+
+/// Milliseconds since the last OS input (I-22), for a page computing its
+/// presence: null where the OS cannot say. Once a second per caller.
+#[tauri::command]
+pub async fn desktop_os_idle(app: AppHandle, webview: Webview) -> Result<Option<u64>, String> {
+    if !notify::allow_every(&app, "idle", webview.label(), notify::IDLE_EVERY) {
+        return Err("rate limited".into());
+    }
+    Ok(notify::os_idle().await)
+}
+
+/// How long after launch the first never-shown instance is loaded (D8), and
+/// how far apart the rest are (O-17).
+const PREWARM_FIRST: Duration = Duration::from_secs(1);
+const PREWARM_EVERY: Duration = Duration::from_secs(5);
+/// The most instances loaded hidden at launch (O-17).
+const PREWARM_MAX: usize = 5;
+/// How long a page loaded at launch that answered before its hook was
+/// installed waits before it is asked again.
+const PREWARM_RETRY: Duration = Duration::from_secs(1);
+
+/// D8: at launch, every signed-in instance the person has not shown this
+/// session is loaded hidden — five seconds apart, five at most (O-17) — and
+/// asked at once whether it can go, so its watcher starts and its alerts
+/// arrive without anyone opening it. The suspend path does the rest: the
+/// page answers, the shell reads its cookies into memory (nothing is written
+/// at rest) and starts the watcher, and the webview closes. With suspending
+/// Off, the page stays loaded, hidden, and posts its own.
+///
+/// "Signed in" is "has a cookie jar": an instance never opened has no data
+/// dir and is skipped (its page could only show a sign-in screen). One whose
+/// session has ended is loaded, its watcher finds no cookie or a 401, and it
+/// is closed like any other.
+pub fn schedule_prewarm(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(PREWARM_FIRST).await;
+        let candidates: Vec<String> = {
+            let state = app.state::<ShellState>();
+            let reopen = state.reopen.lock().unwrap().clone();
+            let instances = state.instances.lock().unwrap().clone();
+            instances
+                .into_iter()
+                .filter(|i| Some(&i.id) != reopen.as_ref())
+                .filter(|i| state.data_root.join(&i.id).join("webview").is_dir())
+                .map(|i| i.id)
+                .take(PREWARM_MAX)
+                .collect()
+        };
+        if !candidates.is_empty() {
+            eprintln!(
+                "talaria-desktop: loading {} instance(s) nobody has opened yet, {} s apart",
+                candidates.len(),
+                PREWARM_EVERY.as_secs()
+            );
+        }
+        for (n, id) in candidates.into_iter().enumerate() {
+            if n > 0 {
+                tokio::time::sleep(PREWARM_EVERY).await;
+            }
+            let handle = app.clone();
+            if app
+                .run_on_main_thread(move || prewarm(&handle, &id))
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
+}
+
+/// Load one instance hidden (D8). Main thread. Skipped when the person got
+/// there first: it is live, suspended, or on screen.
+fn prewarm(app: &AppHandle, id: &str) {
+    let state = app.state::<ShellState>();
+    let Ok(instance) = state.find(id) else {
+        return;
+    };
+    let Ok(window) = main_window(app) else {
+        return;
+    };
+    let label = instance_label(id);
+    if window.get_webview(&label).is_some()
+        || state.suspended.lock().unwrap().contains_key(id)
+        || state.active.lock().unwrap().as_deref() == Some(id)
+    {
+        return;
+    }
+    let target = state
+        .last_urls
+        .lock()
+        .unwrap()
+        .get(id)
+        .and_then(|u| suspend::restorable_url(&instance.url, u))
+        .unwrap_or_else(|| instance.url.clone());
+    state.activity.lock().unwrap().prewarm(id, Instant::now());
+    match create_instance_webview(app, &window, &instance, &target, Vec::new()) {
+        Ok(webview) => {
+            // Hidden in the same turn it was made: no frame shows it, and the
+            // view on screen keeps the keyboard.
+            let _ = webview.hide();
+            layout::relayout(&window);
+            focus_view(app);
+            eprintln!(
+                "talaria-desktop: {label}: loading hidden at launch (t={} ms)",
+                registry::now_ms()
+            );
+            emit_state(app);
+        }
+        Err(e) => {
+            state.activity.lock().unwrap().forget(id);
+            eprintln!("talaria-desktop: {label}: loading at launch: {e}");
+        }
+    }
+}
+
+/// A page finished loading. One loaded hidden at launch is asked now
+/// whether it can go (the tick would ask within five seconds anyway).
+fn page_loaded(app: &AppHandle, id: &str) {
+    let app = app.clone();
+    let id = id.to_string();
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let state = handle.state::<ShellState>();
+        if !state.activity.lock().unwrap().prewarm_loaded(&id) {
+            return;
+        }
+        let Some(timeout) = state.settings.lock().unwrap().suspend_after() else {
+            eprintln!(
+                "talaria-desktop: instance-{id}: loaded at launch; suspending is off, so it stays loaded"
+            );
+            return;
+        };
+        let now = Instant::now();
+        let due = state
+            .activity
+            .lock()
+            .unwrap()
+            .due(std::slice::from_ref(&id), now, timeout);
+        if due.is_empty() {
+            return;
+        }
+        let nonce = state.activity.lock().unwrap().ask(&id, now);
+        if let Some(webview) = handle.get_webview(&instance_label(&id)) {
+            let _ = webview.eval(suspend::report_js(nonce));
         }
     });
 }

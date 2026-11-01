@@ -27,6 +27,9 @@ fn main() {
             "desktop_set_badge",
             "desktop_quit",
             "set_close_to_background",
+            "desktop_notify_close",
+            "desktop_os_idle",
+            "set_instance_muted",
         ]),
     ))
     .expect("failed to run tauri-build");

@@ -13,6 +13,11 @@
 //! instance reads (`list_instances`), and one instance's paths are not another
 //! origin's business.
 //!
+//! Which instances the person muted in the launcher (`muted`) lives here too,
+//! beside the entries for the same reason: a muted instance posts no banner
+//! (its badge share still counts), and that is the shell's business, not any
+//! instance page's.
+//!
 //! Data dirs are deleted only for an instance the person removed. The file
 //! records each removal (`removed`) until a launch finds its dir gone, because
 //! a closing WebKit process can re-create the dir after the remove deleted
@@ -86,6 +91,10 @@ struct RegistryFile {
     /// already applied). Older builds ignore the field and drop it on save.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     last_urls: BTreeMap<String, String>,
+    /// Local ids muted in the launcher. Older builds ignore the field and
+    /// drop it on save.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    muted: Vec<String>,
 }
 
 /// Everything `save` writes, borrowed from the shell state.
@@ -96,6 +105,8 @@ pub struct Record<'a> {
     /// The removals still waiting on a sweep.
     pub removed: &'a [String],
     pub last_urls: &'a BTreeMap<String, String>,
+    /// The instances muted in the launcher.
+    pub muted: &'a [String],
 }
 
 /// Distinguish an absent field (None, from `default`) from `null`.
@@ -114,6 +125,8 @@ pub struct Loaded {
     /// Each registered instance's last page. Entries for ids the file no
     /// longer registers are dropped.
     pub last_urls: BTreeMap<String, String>,
+    /// The registered instances muted in the launcher.
+    pub muted: Vec<String>,
 }
 
 pub fn load(path: &Path) -> Loaded {
@@ -126,6 +139,7 @@ pub fn load(path: &Path) -> Loaded {
                 notice: None,
                 removed: Vec::new(),
                 last_urls: BTreeMap::new(),
+                muted: Vec::new(),
             };
         }
         Err(e) => {
@@ -138,6 +152,7 @@ pub fn load(path: &Path) -> Loaded {
                 )),
                 removed: Vec::new(),
                 last_urls: BTreeMap::new(),
+                muted: Vec::new(),
             };
         }
     };
@@ -145,6 +160,9 @@ pub fn load(path: &Path) -> Loaded {
         Ok(file) => {
             let mut last_urls = file.last_urls;
             last_urls.retain(|id, _| file.instances.iter().any(|i| &i.id == id));
+            let mut muted = file.muted;
+            muted.retain(|id| file.instances.iter().any(|i| &i.id == id));
+            muted.dedup();
             Loaded {
                 instances: file.instances,
                 resume: match file.last_view {
@@ -155,6 +173,7 @@ pub fn load(path: &Path) -> Loaded {
                 notice: None,
                 removed: file.removed,
                 last_urls,
+                muted,
             }
         }
         Err(strict) => {
@@ -180,6 +199,7 @@ pub fn load(path: &Path) -> Loaded {
                         last_view: None,
                         removed: &[],
                         last_urls: &BTreeMap::new(),
+                        muted: &[],
                     },
                 );
             }
@@ -191,6 +211,7 @@ pub fn load(path: &Path) -> Loaded {
                 )),
                 removed: Vec::new(),
                 last_urls: BTreeMap::new(),
+                muted: Vec::new(),
             }
         }
     }
@@ -235,6 +256,12 @@ pub fn save(path: &Path, record: &Record<'_>) -> Result<(), String> {
             .iter()
             .filter(|(id, _)| record.instances.iter().any(|i| &i.id == *id))
             .map(|(id, url)| (id.clone(), url.clone()))
+            .collect(),
+        muted: record
+            .muted
+            .iter()
+            .filter(|id| record.instances.iter().any(|i| &i.id == *id))
+            .cloned()
             .collect(),
     })
     .map_err(|e| format!("serializing registry: {e}"))?;
@@ -342,11 +369,17 @@ mod tests {
                 last_view: Some("b"),
                 removed: &gone,
                 last_urls: &urls,
+                muted: &["a".to_string(), "gone".to_string()],
             },
         )
         .unwrap();
         let loaded = load(&path);
         assert_eq!(loaded.instances, vec![a.clone(), b.clone()]);
+        assert_eq!(
+            loaded.muted,
+            vec!["a".to_string()],
+            "a mute is kept only for a registered instance"
+        );
         assert_eq!(loaded.resume, Resume::Instance("b".into()));
         assert_eq!(loaded.removed, gone);
         assert_eq!(
@@ -364,6 +397,7 @@ mod tests {
                 last_view: None,
                 removed: &[],
                 last_urls: &BTreeMap::new(),
+                muted: &[],
             },
         )
         .unwrap();
@@ -389,6 +423,7 @@ mod tests {
                 last_view: None,
                 removed: &[],
                 last_urls: &BTreeMap::new(),
+                muted: &[],
             },
         )
         .unwrap();
@@ -482,6 +517,7 @@ mod tests {
                 last_view: Some("a"),
                 removed: &[],
                 last_urls: &urls,
+                muted: &[],
             },
         )
         .unwrap();
