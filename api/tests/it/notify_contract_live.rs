@@ -3,7 +3,8 @@
 // (I-10), the group-key upsert and its window, adoption of a pre-contract
 // row, the entity clears, and the ack. Postgres decides every one of these —
 // the row lock, the partial unique index, ON CONFLICT — so only a real
-// database can confirm them. House rule: #[ignore]d, never CI.
+// database can confirm them. #[ignore]d, so the plain `cargo test` never
+// needs a database; CI's api-integration job runs them with --ignored.
 //
 //   DATABASE_URL=postgres://… cargo test -p talaria-api --test it notify_contract_live:: -- --ignored --test-threads=1
 //
@@ -22,7 +23,7 @@ use std::time::{Duration, Instant};
 use talaria_api::notify::{
     Coalesce, NotificationInput, NotifyDeps, NotifyEntity, NotifyMeta, add_notification,
     add_notification_with, clear_entity, defer, entity, group_key, mark_notifications_read,
-    resolve_entity,
+    refresh_notification, reopen_notifications, resolve_entity,
 };
 use talaria_api::realtime::RealtimeDeps;
 
@@ -256,13 +257,31 @@ async fn fifty_concurrent_writes_to_one_key_are_one_row() {
                 &keyed(&key),
             )
             .await
-            .map(|f| (f.seq, body, f.inserted))
+            .map(|f| (f.seq, body, f.inserted, f.created_ms))
         }));
     }
     let mut filed = Vec::new();
     for t in tasks {
         filed.push(t.await.unwrap().expect("no write may fail (never 23505)"));
     }
+    // Every Realert moves createdAt strictly LATER, in seq (= commit) order —
+    // the re-alert rule every client keeps (a known id whose createdAt moved
+    // later). A writer that queued behind the person's row lock must not
+    // stamp the transaction's start, which can be earlier than the commit it
+    // waited for.
+    let mut by_seq: Vec<(i64, i64)> = filed.iter().map(|f| (f.0, f.3)).collect();
+    by_seq.sort();
+    let backwards: Vec<_> = by_seq
+        .windows(2)
+        .filter(|w| w[1].1 <= w[0].1)
+        .map(|w| (w[0], w[1]))
+        .collect();
+    assert!(
+        backwards.is_empty(),
+        "createdAt did not rise with seq ({} of 49 steps): {:?}",
+        backwards.len(),
+        &backwards[..backwards.len().min(5)]
+    );
     let (rows, count, body, seq): (i64, i32, String, i64) = sqlx::query_as(
         "select count(*) over (), count, body, seq from notifications where user_id = $1::uuid",
     )
@@ -270,7 +289,7 @@ async fn fifty_concurrent_writes_to_one_key_are_one_row() {
     .fetch_one(&pg)
     .await
     .unwrap();
-    let last = filed.iter().max_by_key(|(s, _, _)| *s).unwrap();
+    let last = filed.iter().max_by_key(|f| f.0).unwrap();
     println!(
         "group upsert: rows={rows} count={count} inserted={} body={body:?} (last writer {:?}), seqs {}..{}",
         filed.iter().filter(|f| f.2).count(),
@@ -526,6 +545,198 @@ async fn concurrent_window_expiry_never_conflicts() {
     assert_eq!(open, 1, "one open row holds the key");
     assert_eq!(rows, 4, "the window split the group once per burst");
     cleanup(&pg, &["expiry"]).await;
+}
+
+// ── I-24: a key is one person's; a read row comes back without a fight ─────
+
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn keys_are_per_person_and_a_reopen_never_conflicts() {
+    let _serial = SERIAL.lock().await;
+    let pg = pg().await;
+    cleanup(&pg, &["iso-ada", "iso-bob"]).await;
+    let ada = person(&pg, "iso-ada").await;
+    let bob = person(&pg, "iso-bob").await;
+    let deps = NotifyDeps::publishing(pg.clone(), None);
+    let key = group_key::dm("5e000000-0000-4000-8000-0000000000e1");
+    let href = "/comms/channel/5e000000-0000-4000-8000-0000000000e1";
+
+    // One key, two people: two rows, each its own count — never one row.
+    let a1 = add_notification_with(&deps, &ada, &input("dm", "Cy", "1", href), &keyed(&key))
+        .await
+        .unwrap();
+    let b1 = add_notification_with(&deps, &bob, &input("dm", "Cy", "1", href), &keyed(&key))
+        .await
+        .unwrap();
+    let a2 = add_notification_with(&deps, &ada, &input("dm", "Cy", "2", href), &keyed(&key))
+        .await
+        .unwrap();
+    assert!(
+        a1.inserted && b1.inserted,
+        "each person files their own row"
+    );
+    assert_ne!(a1.id, b1.id);
+    assert_eq!(
+        (a2.id.clone(), a2.count),
+        (a1.id.clone(), 2),
+        "Ada's coalesces into Ada's"
+    );
+    let bob_count: i32 = sqlx::query_scalar("select count from notifications where id = $1::uuid")
+        .bind(&b1.id)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+    assert_eq!(bob_count, 1, "Bob's row never saw Ada's write");
+    // A window expiry is one person's too: Ada's 0 s window splits only Ada's.
+    let split = NotifyMeta {
+        group_window_secs: Some(0),
+        ..keyed(&key)
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let a3 = add_notification_with(&deps, &ada, &input("dm", "Cy", "3", href), &split)
+        .await
+        .unwrap();
+    assert!(a3.inserted);
+    let bob_key: Option<String> =
+        sqlx::query_scalar("select group_key from notifications where id = $1::uuid")
+            .bind(&b1.id)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+    assert_eq!(
+        bob_key.as_deref(),
+        Some(key.as_str()),
+        "Bob's row kept its key"
+    );
+
+    // The reopen: Ada reads a3, the group files a4 (fresh, keyed), then the
+    // Home Inbox's undo brings a3 back. Before the reopen door that was a
+    // second open row for (Ada, key): 23505.
+    let ids = mark_notifications_read(&pg, &ada, Some(std::slice::from_ref(&a3.id)), None)
+        .await
+        .unwrap();
+    assert_eq!(ids, vec![a3.id.clone()]);
+    // What the Home Inbox records as `afterReadAt`: the read at ms precision.
+    let read_ms: i64 = sqlx::query_scalar(
+        "select (trunc(extract(epoch from read_at) * 1000))::bigint from notifications where id = $1::uuid",
+    )
+    .bind(&a3.id)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    let read_iso = talaria_api::agent_auth::epoch_ms_to_iso(read_ms);
+    // The guard wave 1's undo used, an exact compare against that ms string,
+    // matches no microsecond-stamped read (the undo could never restore).
+    let (exact, whole_ms): (i64, bool) = sqlx::query_as(
+        "select count(*) filter (where read_at = $2::timestamptz), \
+                bool_and(read_at = date_trunc('milliseconds', read_at)) \
+         from notifications where id = $1::uuid",
+    )
+    .bind(&a3.id)
+    .bind(&read_iso)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    let a4 = add_notification_with(&deps, &ada, &input("dm", "Cy", "4", href), &keyed(&key))
+        .await
+        .unwrap();
+    assert!(a4.inserted, "the read row left the group");
+    // A stale guard (a newer read) reopens nothing.
+    let stale = reopen_notifications(
+        &pg,
+        &ada,
+        std::slice::from_ref(&a3.id),
+        Some("2001-01-01T00:00:00.000Z"),
+    )
+    .await
+    .unwrap();
+    assert!(stale.is_empty());
+    let back = reopen_notifications(&pg, &ada, std::slice::from_ref(&a3.id), Some(&read_iso))
+        .await
+        .expect("a reopen never fails the open-group index");
+    assert_eq!(back, vec![a3.id.clone()]);
+    let (a3_read, a3_key): (bool, Option<String>) =
+        sqlx::query_as("select read_at is null, group_key from notifications where id = $1::uuid")
+            .bind(&a3.id)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+    assert!(a3_read, "unread again");
+    assert_eq!(a3_key, None, "and it gave the key up to the open a4");
+    let a5 = add_notification_with(&deps, &ada, &input("dm", "Cy", "5", href), &keyed(&key))
+        .await
+        .unwrap();
+    assert_eq!(
+        (a5.id.clone(), a5.inserted),
+        (a4.id.clone(), false),
+        "the group writes into a4"
+    );
+    // With no open holder the key comes back with the row; two reopened rows
+    // of one group in one call keep it on the newest only.
+    let both = mark_notifications_read(&pg, &ada, Some(std::slice::from_ref(&a4.id)), None)
+        .await
+        .unwrap();
+    assert_eq!(both, vec![a4.id.clone()]);
+    sqlx::query("update notifications set group_key = $2, read_at = now() where id = $1::uuid")
+        .bind(&a3.id)
+        .bind(&key)
+        .execute(&pg)
+        .await
+        .unwrap();
+    let pair = reopen_notifications(&pg, &ada, &[a3.id.clone(), a4.id.clone()], None)
+        .await
+        .expect("two rows of one group reopened together never conflict");
+    assert_eq!(pair.len(), 2);
+    let holders: Vec<String> = sqlx::query_scalar(
+        "select id::text from notifications where user_id = $1::uuid and group_key = $2 and read_at is null",
+    )
+    .bind(&ada)
+    .bind(&key)
+    .fetch_all(&pg)
+    .await
+    .unwrap();
+    assert_eq!(holders.len(), 1, "one open row holds the key");
+
+    // refresh_notification: same id, a seq of its own, createdAt strictly later.
+    let before_seq = notify_seq(&pg, &ada).await;
+    let before_ms: i64 = sqlx::query_scalar(
+        "select (trunc(extract(epoch from created_at) * 1000))::bigint from notifications where id = $1::uuid",
+    )
+    .bind(&b1.id)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert!(
+        refresh_notification(&deps, &b1.id, &bob, &input("dm", "Cy", "again", href))
+            .await
+            .unwrap()
+    );
+    let (seq, ms): (Option<i64>, i64) = sqlx::query_as(
+        "select seq, (trunc(extract(epoch from created_at) * 1000))::bigint from notifications where id = $1::uuid",
+    )
+    .bind(&b1.id)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert_eq!(
+        seq,
+        Some(notify_seq(&pg, &bob).await),
+        "the refresh took Bob's next seq"
+    );
+    assert!(ms > before_ms, "and moved createdAt later");
+    assert_eq!(
+        notify_seq(&pg, &ada).await,
+        before_seq,
+        "Ada's cursor never moved for Bob"
+    );
+    println!(
+        "isolation: one key, 2 people → 2 rows; reopen with a newer open holder kept 1 holder; the wave-1 exact undo guard matched {exact}"
+    );
+    assert!(
+        exact == 0 || whole_ms,
+        "wave 1's exact guard never matches a read stamped past the millisecond"
+    );
+    cleanup(&pg, &["iso-ada", "iso-bob"]).await;
 }
 
 // ── I-24: entity clears; I-18: the ack ──────────────────────────────────────
