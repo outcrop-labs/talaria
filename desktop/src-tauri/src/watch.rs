@@ -786,15 +786,16 @@ impl Winner {
         })
     }
 
-    /// The client the person is on, when it is not `own` (this watcher's
-    /// client id): the page runtime's cross-device rule, so only the device
-    /// the person is on alerts. None when nobody wins (the person is idle
-    /// everywhere: every client keeps its own rule) or this watcher does.
-    pub fn elsewhere(&self, own: &str) -> Option<&str> {
+    /// The client the person is on, when it is none of `own` (this
+    /// watcher's client id, and the instance's page on this desktop): the
+    /// page runtime's cross-device rule, so only the device the person is on
+    /// alerts. None when nobody wins (the person is idle everywhere: every
+    /// client keeps its own rule) or this desktop does.
+    pub fn elsewhere(&self, own: &[String]) -> Option<&str> {
         self.looking
             .as_deref()
             .or(self.active.as_deref())
-            .filter(|id| *id != own)
+            .filter(|id| !own.iter().any(|o| o == id))
     }
 }
 
@@ -1045,6 +1046,10 @@ pub struct Watch {
     pub arrivals: Arrivals,
     pub server: Server,
     pub shared: Shared,
+    /// The presence client id the instance's page used on this desktop (its
+    /// session's `talaria.notify.client`), which is this device too: the
+    /// page's last heartbeat outlives its suspend in the store by up to 75 s.
+    pub page_client: Option<String>,
 }
 
 /// Start watching. The handle aborts it.
@@ -1077,9 +1082,13 @@ async fn run(mut watch: Watch) {
         winner: Arc::new(Mutex::new(None)),
     };
     eprintln!(
-        "talaria-desktop: {label}: watching notifications{}",
+        "talaria-desktop: {label}: watching notifications{}{}",
         match watch.arrivals.seq() {
             Some(seq) => format!(" from seq {seq}"),
+            None => String::new(),
+        },
+        match &watch.page_client {
+            Some(id) => format!(" (its page was presence client {id})"),
             None => String::new(),
         }
     );
@@ -1381,6 +1390,24 @@ pub fn client_id(label: &str) -> String {
     format!("desk-{}", instance_id(label))
 }
 
+/// Where the page runtime keeps its per-tab presence client id.
+pub const PAGE_CLIENT_KEY: &str = "talaria.notify.client";
+
+/// The page's presence client id from its suspended session, when it is one
+/// the store would take (`[A-Za-z0-9_-]{8,64}`). A restore seeds the session
+/// back, so the restored page beats under the same id.
+pub fn page_client(session: &[(String, String)]) -> Option<String> {
+    session
+        .iter()
+        .find(|(k, _)| k == PAGE_CLIENT_KEY)
+        .map(|(_, v)| v.trim_matches('"').to_string())
+        .filter(|v| {
+            (8..=64).contains(&v.len())
+                && v.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+}
+
 /// The client the person is on, when it is another one (see `Winner`). The
 /// winner comes from the stream's `presence` frames and each heartbeat's
 /// answer; before either has said (the first read after a suspend), it is
@@ -1416,9 +1443,10 @@ async fn elsewhere(watch: &Watch, state: &Running) -> Option<String> {
             w
         }
     };
-    winner
-        .elsewhere(&client_id(&watch.label))
-        .map(str::to_string)
+    let own: Vec<String> = std::iter::once(client_id(&watch.label))
+        .chain(watch.page_client.clone())
+        .collect();
+    winner.elsewhere(&own).map(str::to_string)
 }
 
 /// The handback stays the size the page's record can use: its newest
@@ -2081,8 +2109,9 @@ mod tests {
 
     #[test]
     fn the_watcher_stays_quiet_while_the_person_is_on_another_client() {
-        let own = client_id("instance-aaaa");
-        assert_eq!(own, "desk-aaaa");
+        assert_eq!(client_id("instance-aaaa"), "desk-aaaa");
+        // This desktop: the watcher, and the instance's own page here.
+        let own = vec![client_id("instance-aaaa"), "page-tab-aaaa".to_string()];
         let looking_web =
             Winner::of(&serde_json::json!({"ok": true, "looking": "tab-1", "active": null}))
                 .unwrap();
@@ -2092,13 +2121,18 @@ mod tests {
             Winner::of(&serde_json::json!({"looking": null, "active": "desk-bbbb"})).unwrap();
         assert_eq!(other_desk.elsewhere(&own), Some("desk-bbbb"));
         // This watcher wins, or nobody does (idle everywhere): it alerts.
-        let me = Winner::of(&serde_json::json!({"looking": null, "active": own.clone()})).unwrap();
+        let me = Winner::of(&serde_json::json!({"looking": null, "active": "desk-aaaa"})).unwrap();
         assert_eq!(me.elsewhere(&own), None);
         let nobody = Winner::of(&serde_json::json!({"looking": null, "active": null})).unwrap();
         assert_eq!(nobody.elsewhere(&own), None);
+        // The instance's own page, suspended a moment ago: its last beat is
+        // still the newest active one, and it is this desktop, not another.
+        let my_page =
+            Winner::of(&serde_json::json!({"looking": null, "active": "page-tab-aaaa"})).unwrap();
+        assert_eq!(my_page.elsewhere(&own), None);
         // Looking beats active, as the server's rule has it.
         let both =
-            Winner::of(&serde_json::json!({"looking": "tab-1", "active": own.clone()})).unwrap();
+            Winner::of(&serde_json::json!({"looking": "tab-1", "active": "desk-aaaa"})).unwrap();
         assert_eq!(both.elsewhere(&own), Some("tab-1"));
         // A wave-1 ping's answer names no winner at all.
         assert_eq!(Winner::of(&serde_json::json!({"ok": true})), None);
@@ -2106,6 +2140,27 @@ mod tests {
             Winner::of(&serde_json::json!({"looking": "", "active": 7})),
             Some(Winner::default())
         );
+    }
+
+    #[test]
+    fn the_page_client_comes_from_the_suspended_session() {
+        let s = |v: &str| {
+            vec![
+                ("x".to_string(), "y".to_string()),
+                (PAGE_CLIENT_KEY.to_string(), v.to_string()),
+            ]
+        };
+        assert_eq!(
+            page_client(&s("tV3bZZd6ew2ztx0ui1ijwxA")).as_deref(),
+            Some("tV3bZZd6ew2ztx0ui1ijwxA")
+        );
+        assert_eq!(
+            page_client(&s("\"abcdefgh12\"")).as_deref(),
+            Some("abcdefgh12")
+        );
+        assert_eq!(page_client(&s("short")), None);
+        assert_eq!(page_client(&s("bad id!!!")), None);
+        assert_eq!(page_client(&[]), None);
     }
 
     fn since_page(seqs: &[i64], more: bool, snapshot: i64) -> Read {

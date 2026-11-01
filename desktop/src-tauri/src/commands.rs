@@ -1210,6 +1210,7 @@ fn finish_suspend(
             arrivals: start.arrivals,
             server: start.server,
             shared,
+            page_client: watch::page_client(&session),
         })
     });
     eprintln!(
