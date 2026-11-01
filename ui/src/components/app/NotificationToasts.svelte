@@ -6,6 +6,7 @@
     browserNotifyEnabled,
     browserNotifyPrefOff,
     ensurePushSubscription,
+    pageBanners,
     permissionState,
     showOsNotification,
     turnOnDesktopAlerts,
@@ -228,7 +229,9 @@
 
   async function readSync(ev: NotificationsEventV2) {
     const r = await applyReadSync(ev, {
-      shown: () => (shell ? Promise.resolve([]) : registrationBanners()),
+      // The worker registration's banners, and the ones this page posted
+      // itself with no registration (the `new Notification` fallback).
+      shown: async () => (shell ? [] : [...(await registrationBanners().catch(() => [])), ...pageBanners()]),
       dismiss: (keys) => (keys === 'all' ? dismissKeyedToasts() : dismissToastsByKey(keys)),
       toastKeys,
       shellClose: shell ? shellCloseNotifications : undefined,
