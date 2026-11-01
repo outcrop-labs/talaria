@@ -38,10 +38,14 @@
 //   · otherwise                           → nothing (the leader has it)
 //
 // Rule 7 compares the winner with THIS browser's clients (this tab's own and
-// every fresh tab's announced one): a winner among them is this device, and
-// the tail decides which tab. With no presence (an api without it, or no
-// winner — the person is idle everywhere), rule 7 does not apply and the tail
-// is wave 1's per-browser rule.
+// every fresh tab's announced one) and with the other clients that ARE this
+// device (`sameDevice`: inside the desktop shell, the shell's own watcher for
+// this instance, `desk-<local instance id>` — it beats while the page is
+// suspended, and its last `active` outlives a restore by up to 75 s): a
+// winner among them is this device, and the tail decides which tab. With no
+// presence (an api without it, or no winner — the person is idle
+// everywhere), rule 7 does not apply and the tail is wave 1's per-browser
+// rule.
 //
 // Why "touched last" and not "every visible tab": each tab knows its own
 // last input exactly and the others' only as of their last announcement
@@ -107,6 +111,10 @@ export interface DecideInput {
   /** The client the person is on, per the server (I-17: looking, else
    *  active), or null/absent: no presence — rule 7 does not apply. */
   winner?: string | null
+  /** Presence clients that are THIS device besides this browser's tabs: in
+   *  the desktop shell, its watcher for this instance (notify-presence.ts
+   *  `deskClientId`). */
+  sameDevice?: readonly string[]
   now: number
 }
 
@@ -135,10 +143,12 @@ export function selfLooking(self: DecideInput['self'], now: number): boolean {
   return self.visible && self.focused && at > 0 && now - at <= LOOKING_INPUT_MS
 }
 
-/** Is the presence winner one of THIS browser's clients? */
-export function winnerIsHere(i: Pick<DecideInput, 'winner' | 'self' | 'others' | 'now'>): boolean {
+/** Is the presence winner one of THIS device's clients: this tab, a fresh
+ *  tab of this browser, or a client named in `sameDevice`? */
+export function winnerIsHere(i: Pick<DecideInput, 'winner' | 'self' | 'others' | 'now' | 'sameDevice'>): boolean {
   if (!i.winner) return true
   if (i.self.clientId && i.winner === i.self.clientId) return true
+  if (i.sameDevice?.includes(i.winner)) return true
   return i.others.some((t) => t.clientId === i.winner && i.now - t.at <= STALE_MS)
 }
 

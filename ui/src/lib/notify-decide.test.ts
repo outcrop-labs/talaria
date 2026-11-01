@@ -192,6 +192,18 @@ describe('decide — wave 2 rules, in order', () => {
     expect(decide({ ...base, self: hiddenSelf, others: [gone], isLeader: true, winner: 'c-gone' })).toBe('none')
   })
 
+  it("7. in the desktop shell, its own watcher (desk-<local instance id>) is THIS device: the restored page alerts", () => {
+    // After a restore the watcher's last `active` beat can be the winner for
+    // up to 75 s while the page's own first state is `idle`.
+    const desk = 'desk-7d1f0f6e-3a52-4c1e-9d55-0c3f8f2b9a11'
+    expect(decide({ ...base, self: hiddenSelf, isLeader: true, winner: desk, sameDevice: [desk] })).toBe('banner')
+    expect(decide({ ...base, self: { ...hiddenSelf, visible: true }, isLeader: true, bannersOn: false, winner: desk, sameDevice: [desk] })).toBe('toast')
+    // Without it (the defect): quiet, "on another device".
+    expect(decide({ ...base, self: hiddenSelf, isLeader: true, winner: desk })).toBe('none')
+    // Another machine's watcher is another device.
+    expect(decide({ ...base, self: hiddenSelf, isLeader: true, winner: 'desk-0b9e2c1d-5f4a-4e3b-8c2d-1a0f9e8d7c6b', sameDevice: [desk] })).toBe('none')
+  })
+
   it('no presence (null / absent winner): wave 1, exactly', () => {
     expect(decide({ ...base, self: hiddenSelf, isLeader: true, winner: null })).toBe('banner')
     expect(decide({ ...base, self: hiddenSelf, isLeader: false, winner: null })).toBe('none')
@@ -209,6 +221,8 @@ describe('the helpers', () => {
     expect(winnerIsHere({ winner: null, self: { visible: false, focused: false }, others: [], now: NOW })).toBe(true)
     expect(winnerIsHere({ winner: 'a', self: { visible: false, focused: false, clientId: 'a' }, others: [], now: NOW })).toBe(true)
     expect(winnerIsHere({ winner: 'a', self: { visible: false, focused: false, clientId: 'b' }, others: [], now: NOW })).toBe(false)
+    expect(winnerIsHere({ winner: 'desk-x', self: { visible: false, focused: false, clientId: 'b' }, others: [], sameDevice: ['desk-x'], now: NOW })).toBe(true)
+    expect(winnerIsHere({ winner: 'desk-y', self: { visible: false, focused: false, clientId: 'b' }, others: [], sameDevice: ['desk-x'], now: NOW })).toBe(false)
   })
   it('hrefPath and atPath compare the path only, on this origin', () => {
     expect(hrefPath('/comms/channel/x?m=1#y', O)).toBe('/comms/channel/x')

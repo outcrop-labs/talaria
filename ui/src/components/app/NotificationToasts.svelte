@@ -13,7 +13,7 @@
     watchPermission,
     type PermissionState,
   } from '@/lib/browser-notify'
-  import { inDesktopShell, shellCloseNotifications } from '@/lib/desktop-shell'
+  import { inDesktopShell, shellCloseNotifications, shellListInstances } from '@/lib/desktop-shell'
   import { getJson, postJson, putJson } from '@/lib/fetch-json'
   import { lastInputAt, lookingNow, lookingWithInput, onInput } from '@/lib/looking'
   import { saveNotifyPrompt, useNotifications, type Notification, type NotificationsPayload } from '@/lib/notifications'
@@ -24,7 +24,7 @@
   import { blockedSteps, detectBrowser, type BlockedSteps } from '@/lib/notify-help'
   import type { NotifyLeader } from '@/lib/notify-leader'
   import { openNotification } from '@/lib/notify-open'
-  import { clientId, createAckBatcher, notePresence, presenceView, presenceWinner } from '@/lib/notify-presence'
+  import { clientId, createAckBatcher, deskClientId, notePresence, presenceView, presenceWinner } from '@/lib/notify-presence'
   import { shouldAsk, turnOnResult, type PromptMemory } from '@/lib/notify-prompt'
   import { applyReadSync, registrationBanners } from '@/lib/notify-readsync'
   import { setPresence } from '@/lib/notify-status.svelte'
@@ -267,6 +267,29 @@
       note('read-sync', `closed ${r.closed.length}, shell ${r.shell.length}, toasts ${r.dismissed === 'all' ? 'all' : r.dismissed.length}`)
   }
 
+  // In the desktop shell, its own watcher for this instance is THIS device
+  // (notify-decide.ts `sameDevice`): it beats `desk-<local instance id>`
+  // while the page is suspended, and after a restore its last `active` can
+  // be the winner for up to 75 s — a page that read it as another device
+  // would stay quiet. The id comes from the shell's registry (the switcher's
+  // list), matched to this page's instance.
+  let sameDevice: string[] = []
+  $effect(() => {
+    if (!shell) return
+    let live = true
+    void shellListInstances()
+      .then((list) => {
+        if (!live) return
+        const beacon = qc.getQueryData<{ instance?: string }>(['instance-branding'])?.instance
+        const id = deskClientId(list, beacon, location.origin)
+        sameDevice = id ? [id] : []
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  })
+
   // Who the person is on, at start (frames come only when it changes; each
   // heartbeat's answer refreshes it — presence.svelte.ts).
   let presenceAsked = false
@@ -462,6 +485,7 @@
       // holds nothing (dndHolds).
       dnd: d?.dnd ? { active: dndHolds(d.dnd, now) } : null,
       winner: has('presence-store') ? presenceWinner() : null,
+      sameDevice,
       now,
     }
   }

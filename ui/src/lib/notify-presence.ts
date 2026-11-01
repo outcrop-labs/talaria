@@ -30,6 +30,7 @@
 // Framework-free over injected edges: the state table, the schedule and the
 // batcher are unit tests (notify-presence.test.ts).
 
+import { findCurrentInstance } from './desktop-instance'
 import { ACTIVE_INPUT_MS, LOOKING_INPUT_MS } from './looking'
 import type { ClientKind, ClientState, PresenceBody } from './notify-wire'
 
@@ -161,6 +162,29 @@ export function onClientIdChange(fn: (id: string) => void): () => void {
 export function resetClientIdForTests(): void {
   memoId = null
   idListeners.clear()
+}
+
+// ── The desktop shell's own watcher ──────────────────────────────────────────
+
+/** The presence client the desktop shell's watcher beats under for THIS
+ *  page's instance: `desk-<local instance id>` (desktop/src-tauri/src/
+ *  watch.rs `client_id`, where the local id is the shell registry entry's
+ *  `id`, the suffix of the webview's `instance-<id>` label). The entry is
+ *  this page's instance by the beacon's instance id, else by origin
+ *  (desktop-instance.ts `findCurrentInstance`, as the switcher finds it).
+ *  The watcher beats while the page is suspended, and its last `active`
+ *  outlives a restore by up to 75 s: the decider counts it as this device
+ *  (notify-decide.ts `sameDevice`). Null when the shell does not list this
+ *  instance, or its id is not one the store takes. */
+export function deskClientId(
+  instances: ReadonlyArray<{ id: string; instanceId: string; url: string }>,
+  beaconId: string | null | undefined,
+  origin: string,
+): string | null {
+  const hit = findCurrentInstance([...instances], beaconId, origin)
+  if (!hit?.id) return null
+  const id = `desk-${hit.id}`
+  return VALID_ID.test(id) ? id : null
 }
 
 // ── The presence view: who the server says the person is on ─────────────────

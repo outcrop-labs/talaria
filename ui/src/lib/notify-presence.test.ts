@@ -5,6 +5,7 @@ import {
   clientId,
   clientState,
   createAckBatcher,
+  deskClientId,
   newClientId,
   notePresence,
   onClientIdChange,
@@ -158,6 +159,26 @@ describe('startHeartbeat — the id is read at each beat', () => {
     expect(sent).toHaveLength(2)
     expect((sent[1]?.at ?? 0) - (sent[0]?.at ?? 0)).toBeGreaterThanOrEqual(5_000)
     hb.stop()
+  })
+})
+
+describe("deskClientId — the desktop shell's own watcher for this instance", () => {
+  const LOCAL = '7d1f0f6e-3a52-4c1e-9d55-0c3f8f2b9a11'
+  const reg = [
+    { id: '0b9e2c1d-5f4a-4e3b-8c2d-1a0f9e8d7c6b', instanceId: 'beacon-other', url: 'https://other.example' },
+    { id: LOCAL, instanceId: 'beacon-here', url: 'https://talaria.example.com' },
+  ]
+  it("is desk-<the registry entry's local id>, as watch.rs names it — by the beacon's instance id", () => {
+    expect(deskClientId(reg, 'beacon-here', 'https://elsewhere.example')).toBe(`desk-${LOCAL}`)
+  })
+  it('else by origin (trailing slash or not)', () => {
+    expect(deskClientId(reg, null, 'https://talaria.example.com')).toBe(`desk-${LOCAL}`)
+    expect(deskClientId(reg, '', 'https://talaria.example.com/')).toBe(`desk-${LOCAL}`)
+  })
+  it('null when the shell does not list this instance, or the id is not one the store takes', () => {
+    expect(deskClientId(reg, null, 'https://nope.example')).toBeNull()
+    expect(deskClientId([], 'beacon-here', 'https://talaria.example.com')).toBeNull()
+    expect(deskClientId([{ id: 'bad id!', instanceId: 'b', url: 'https://x.example' }], 'b', 'https://x.example')).toBeNull()
   })
 })
 
