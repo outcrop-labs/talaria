@@ -16,6 +16,7 @@ import {
   probeInstance,
   removeInstance,
   requestNotifications,
+  setInstanceMuted,
   setSuspendAfter,
   setTitlebarMode,
   type Background,
@@ -69,6 +70,10 @@ export const shell = $state({
   notify: null as NotificationStatus | null,
   /** The macOS prompt is up (the Allow card's click). */
   asking: false,
+  /** Instances muted on this desktop: no banners, the badge still counts. */
+  muted: [] as string[],
+  /** Each instance's unread count (For you), by local id. */
+  unread: {} as Record<string, number>,
 })
 
 let dismissedFailure = 0
@@ -92,6 +97,8 @@ function sync(s: ShellSnapshot) {
   shell.notices = s.notices.filter((n) => !dismissedNotices.has(n))
   shell.background = s.background ?? shell.background
   shell.closeToBackground = s.closeToBackground ?? shell.closeToBackground
+  shell.muted = s.muted ?? []
+  shell.unread = s.unread ?? {}
   shell.recentId = mostRecent(s.instances)
   applyFailure(s.failure)
   if (shell.confirmRemove && !s.instances.some((i) => i.id === shell.confirmRemove)) {
@@ -206,6 +213,16 @@ export async function remove(id: string) {
   try {
     shell.instances = await removeInstance(id)
     shell.recentId = mostRecent(shell.instances)
+  } catch (e) {
+    shell.error = errorText(e)
+  }
+}
+
+/** The bell on a row: mute or unmute that instance's banners here. */
+export async function toggleMuted(id: string) {
+  shell.error = ''
+  try {
+    await setInstanceMuted(id, !shell.muted.includes(id))
   } catch (e) {
     shell.error = errorText(e)
   }

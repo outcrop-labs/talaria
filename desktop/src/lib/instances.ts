@@ -54,6 +54,11 @@ export interface ShellSnapshot {
   closeToBackground: boolean
   /** What closing does on this desktop now. */
   background: Background
+  /** Instances muted here: no banners; the badge still counts. Absent: a
+   *  shell that predates muting. */
+  muted?: string[]
+  /** Each instance's unread count (For you), by local id. */
+  unread?: Record<string, number>
 }
 
 /** What closing the window does: hide to the tray (Linux) or the menu bar
@@ -95,6 +100,10 @@ export const activateInstance = (id: string) => invoke<void>('activate_instance'
 export const showWelcome = () => invoke<void>('show_welcome')
 
 export const removeInstance = (id: string) => invoke<Instance[]>('remove_instance', { id })
+
+/** Mute an instance on this desktop: its banners stop, its badge share stays. */
+export const setInstanceMuted = (id: string, muted: boolean) =>
+  invoke<void>('set_instance_muted', { id, muted })
 
 export const getDesktopSettings = () => invoke<DesktopSettings>('get_desktop_settings')
 

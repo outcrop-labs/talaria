@@ -153,7 +153,7 @@
       {#if shell.closeToBackground && shell.background === 'minimize'}
         <p class="mt-4 rounded border border-hairline bg-panel px-3 py-2 text-left text-[11px] leading-snug text-dim" role="note">
           This desktop shows no tray icons, so closing the window minimizes Talaria instead of hiding it — it keeps
-          running so notifications arrive. Quit with Ctrl+Q, or Quit below.
+          running so notifications arrive. Quit from the dock, with Ctrl+Q, or Quit below.
         </p>
       {/if}
 
