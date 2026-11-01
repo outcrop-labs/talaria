@@ -39,8 +39,16 @@ six connections a browser allows one host (BT-3).
 - A page restored from the back/forward cache starts a new runtime; a frozen
   page's `resume` refetches as after a reopen.
 - A `session` frame (`state: "ended"`: the session behind the stream was
-  signed out or expired) re-reads the session at once, so the session gate
-  signs the tab out instead of waiting out five failed reconnects.
+  signed out or expired) closes the tab's stream at once (reopening it would
+  only collect 401s) and asks for the session until the read answers: the
+  session gate (AppLayout) shows the sign-in screen on `{user: null}`, and a
+  failed read is a backend blip, not an answer, so it is asked again on the
+  door's backoff (1 s, 2 s, 4 s … 30 s) instead of leaving the signed-in page
+  up. If the answer is "still signed in", the runtime starts again. The
+  leader hands the frame to the other tabs before it closes, so every tab
+  does this. When the door's own probe (after five failed reconnects) finds
+  the person signed out — the frame was lost, or an older api sends none —
+  it hands on the same frame.
 
 The tab registry's announcements now also carry the tab's presence client id,
 whether it leads, and whether it runs a hub.
@@ -103,6 +111,16 @@ The record keeps its key and wave 1's `hw`/`seen`/`at`, and gains `v: 2` and
   it already surfaced comes back.
 - A row without a seq (filed before the contract), and every row against an
   api without `since`, keep wave 1's rule over the newest 50.
+- **The server's seq can go back** (a database restored from a backup, a dev
+  stack reset): a `?since` read then answers no rows and a `seq` below the
+  cursor, and so do the stream's `resync` and the list's snapshot. Every row
+  filed since has a seq at or below the old cursor, so the tracker
+  **rebases**: it takes the server's seq, judges the newest page by wave 1's
+  rule (what was filed since the restore surfaces; nothing older replays),
+  and stamps the record `rebased` (ms epoch). A `resync` or a list snapshot
+  below the cursor asks for that read. In a merge the record rebased last
+  holds the cursor, so another tab's pre-restore cursor cannot put the old
+  seq back; that tab rebases on its own next read.
 - More than three arrivals at once are one summary under `SUMMARY_TAG`
   (`talaria-summary`, the same tag the shell's watcher uses, I-21).
 
@@ -128,7 +146,12 @@ Each tab decides each arrival. The first rule that answers wins:
    toasts).
 7. **Cross-device**: the presence winner (I-17) is a client of another device:
    nothing. The winner is compared with this tab's client id and every fresh
-   tab's announced one; a winner among them is this device.
+   tab's announced one; a winner among them is this device. Inside the
+   desktop shell, so is the shell's own watcher for this instance,
+   `desk-<local instance id>` (the registry entry's `id`, found as the
+   switcher finds the current instance): it beats while the page is
+   suspended, and after a restore its last `active` can be the winner for up
+   to 75 s while the page's first state is `idle`.
 8. Wave 1's tail: with banners off, the visible tab touched last toasts; else
    the leader posts the OS banner after the claim window.
 
@@ -211,6 +234,18 @@ Everything goes back to plain when the runtime stops (sign-out).
 its icons (`/icons/notify-192.png`, `/favicon.svg`), `start_url /` and
 `display: standalone` (WP-14): what an installed Talaria is drawn with, and
 what Safari needs before a Home Screen web app may receive push.
+
+## The service worker's pushes (`sw.ts`)
+
+A push whose `createdAt` is OLDER than the version already shown under its
+tag (the bannered store, which the leader tab writes too, or the copy still
+on screen) is dropped on every engine: not shown, and not replacing the newer
+copy. Two pushes of one row filed in quick succession are separate sends and
+can arrive out of order, and a push service that replaces by `Topic` may keep
+only the older. Pushes are handled one at a time, so two arriving together
+cannot both pass the check. On WebKit a dropped push is one that shows
+nothing, which Safari counts against the subscription; it takes two sends of
+one row crossing in flight.
 
 ## Diagnostics
 
