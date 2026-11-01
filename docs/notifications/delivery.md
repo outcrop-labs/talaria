@@ -18,7 +18,7 @@ zone that the seq bump returned, and its answer lands on the row:
 | Input | Where it comes from |
 |---|---|
 | The class's Desktop, Push and Email channels | `prefs::channels_of` (prefs v2, I-13) |
-| DND and working hours | `prefs::dnd_state` in `users.timezone` (I-14) |
+| DND and working hours | `prefs::dnd_state` in the person's zone (I-14): `users.timezone`, else the workspace's (below) |
 | What the producer said | `NotifyMeta` (`quiet`, `skip_push`, `force_alert`) |
 | The instance switches | `app_settings.notify_delivery`: `emailEnabled` (off unless exactly `true`), `pushEnabled` (on unless exactly `false`), read through a 10 s cache |
 | Whether a client is in use | the presence winner (I-17), read before the transaction |
@@ -39,6 +39,15 @@ email  = Email && emailEnabled && !quiet && frequency != off
 
 - **A held row** (DND, or outside working hours) is a feed row: no banner, no push, and its
   mail is due when the pause ends. A pause with no end ("until I resume") mails nothing.
+- **The zone** a person's working hours, pause end and daily 09:00 mail are read in is
+  `prefs::person_zone`: their profile's zone, else the workspace's, the zone the brief
+  opens in for them (`brief_config.timeZone`, else the `TZ` env, else UTC). It is the
+  brief's and the digest's rule (`zone_for`; the digest reads its own
+  `digest_config.timeZone` over the same `TZ` → UTC fallback), and what Profile → Time
+  zone's "Workspace default" promises; the GET's `dnd.timeZone` serves the zone used.
+  The workspace's zone is read before the transaction, through a 10 s cache; the deferred
+  push and the batcher read it once a pass. (The frozen [contract](./contract.md)'s I-14
+  still says "else UTC"; this is the rule.)
 - **Needs you breaks through** (`approval_pending`, `judge_escalation`, `agent_blocked`,
   `workchain_turn`) unless the person turned `allowNeedsYou` off. A producer's
   `force_alert` always does.
@@ -62,17 +71,27 @@ email  = Email && emailEnabled && !quiet && frequency != off
 
 ### Defaults
 
-The registry (`classes.rs`) defaults are wave 1's effective answer, with two changes:
+The registry (`classes.rs`) defaults are wave 1's effective answer, with these changes:
 
-- **Following is quiet** (EB-05, O-9). `work_complete`, `workchain_paused` and
-  `channel_activity` default to the feed only: no banner, no push, no mail. A person who
-  stored a legacy route (`in_app`, `both`) or a v2 channel keeps what they chose, because a
-  stored value always wins over the default.
+- **Following is quiet** (EB-05, O-9). `work_complete` and `workchain_paused` default to
+  the feed only: no banner, no push, no mail. A person who stored a legacy route (`in_app`,
+  `both`) or a v2 channel keeps what they chose, because a stored value always wins over
+  the default.
+- **A channel set to All alerts** like a direct message: `channel_activity` defaults to
+  banner, push and mail, the `dm` class's defaults. Its rows (`channel-message`) are filed
+  only for a member who set that channel to All themselves (a channel starts at Mentions,
+  and the level is written only by the member's own `PUT /api/channels/{id}/notify`), so
+  choosing All is the opt-in, and it gets what "All new messages" gets in every chat app.
+  The producer coalesces the channel's later messages quietly into the same row, so the
+  first unread message alerts and the rest count. The class stays Following: its rows sit
+  in the All tab, off the For-you badge, and push at Following's urgency (`low`, 1 h). The
+  matrix row "Channel activity" turns any of the three off for every channel at All; a
+  channel set back to Mentions files no such rows.
 - **The `account` class** (Direct; banner, push and mail on) carries
   `agent_google_principal`, the notice that an agent now acts as you on Google. It used to
   fall through into the quiet `work_complete` bucket (SE-14).
 
-The digest's derived default reads only the nine original classes (C27), so neither change
+The digest's derived default reads only the nine original classes (C27), so none of these
 moves anyone's digest.
 
 ## Presence and the deferred push
