@@ -187,6 +187,17 @@ export function bannerOptions(n: OsNote): NotificationOptions {
   }
 }
 
+/** The href a shell banner carries. The shell hands a click back to the page
+ *  (`talaria:notification-open`, I-1) only for a banner that names a path —
+ *  it drops an empty one — and the catch-up summary names no row of its own.
+ *  So the summary carries the page it was posted from: the click reaches the
+ *  page, whose listener opens the bell, and a shell that fell back to
+ *  `location.assign` could only reload where the person already was. */
+export function shellHref(n: Pick<OsNote, 'href' | 'summary'>): string | undefined {
+  if (n.href || !n.summary || typeof location === 'undefined') return n.href
+  return location.pathname + location.search
+}
+
 /** Post one banner. Through the service worker registration whenever one
  *  exists — the same tag namespace a push lands in, so the two sources
  *  collapse into one copy — and through `new Notification` only without one.
@@ -206,7 +217,7 @@ export async function showOsNotification(
       title: n.title,
       body: n.body,
       tag: n.tag ?? n.id,
-      href: n.href,
+      href: shellHref(n),
       kind: n.kind,
       renotify: n.renotify,
     }

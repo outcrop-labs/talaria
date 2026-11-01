@@ -3,6 +3,8 @@ import {
   NOTIFY_BADGE,
   NOTIFY_ICON,
   bannerOptions,
+  shellHref,
+  showOsNotification,
   browserNotifyEnabled,
   effectiveNotifyPermission,
   ensurePushSubscription,
@@ -13,6 +15,9 @@ import {
   shouldBrowserNotify,
   urlB64ToUint8Array,
 } from './browser-notify'
+
+const invoke = vi.fn()
+vi.mock('@tauri-apps/api/core', () => ({ invoke: (...args: unknown[]) => invoke(...args) }))
 
 // localStorage isn't guaranteed under the node test environment; the modules
 // read it lazily inside functions (through `window.localStorage`, see
@@ -174,5 +179,51 @@ describe('bannerOptions (what every OS banner carries)', () => {
     const o = bannerOptions({ id: 'dm1', title: 'T', renotify: true }) as NotificationOptions & { renotify: boolean }
     expect(o.renotify).toBe(true)
     expect(o.tag).toBe('dm1')
+  })
+})
+
+// The shell dispatches `talaria:notification-open` only for a banner whose
+// href passes its openable_href (I-1), and drops an empty one. The catch-up
+// summary had href '' — so its click in the shell never reached the page and
+// the bell never opened (found by the #634 + #635 integration run).
+describe('shell banners — the summary carries a path the shell will hand back', () => {
+  beforeEach(() => {
+    invoke.mockReset()
+    invoke.mockResolvedValue(undefined)
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
+    vi.stubGlobal('location', { pathname: '/boards/b1', search: '?view=list' })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('a summary with no href carries the page it was posted from', () => {
+    expect(shellHref({ href: '', summary: true })).toBe('/boards/b1?view=list')
+    expect(shellHref({ summary: true })).toBe('/boards/b1?view=list')
+  })
+
+  it('a row keeps its own href, and a link-less row stays link-less', () => {
+    expect(shellHref({ href: '/comms/channel/c1', summary: false })).toBe('/comms/channel/c1')
+    expect(shellHref({ href: '' })).toBe('')
+    expect(shellHref({})).toBeUndefined()
+  })
+
+  it('posts the summary to the shell with that path, under its own tag', async () => {
+    const ok = await showOsNotification(
+      { id: '', tag: 'talaria-summary', title: '4 new — x…', href: '', kind: 'summary', renotify: true, summary: true },
+      () => {},
+    )
+    expect(ok).toBe(true)
+    // kind and renotify are forwarded by a shell bridge that knows them
+    // (desktop-shell.ts, #634); tag and href are this file's to choose.
+    expect(invoke).toHaveBeenCalledWith(
+      'desktop_notify',
+      expect.objectContaining({ title: '4 new — x…', tag: 'talaria-summary', href: '/boards/b1?view=list' }),
+    )
+  })
+
+  it('posts a row with its own href, untouched', async () => {
+    await showOsNotification({ id: 'r1', title: 'DM', href: '/comms/channel/c1', kind: 'dm' }, () => {})
+    expect(invoke).toHaveBeenCalledWith('desktop_notify', expect.objectContaining({ tag: 'r1', href: '/comms/channel/c1' }))
   })
 })
