@@ -471,7 +471,9 @@ CREATE TABLE public.channel_members (
     user_id uuid NOT NULL,
     role text DEFAULT 'member'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    last_read_seq integer DEFAULT 0 NOT NULL
+    last_read_seq integer DEFAULT 0 NOT NULL,
+    notify_level text,
+    muted_until timestamp with time zone
 );
 CREATE TABLE public.channel_message_reactions (
     message_id uuid NOT NULL,
@@ -1059,7 +1061,24 @@ CREATE TABLE public.notifications (
     body text DEFAULT ''::text NOT NULL,
     href text DEFAULT ''::text NOT NULL,
     read_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    seq bigint,
+    group_key text,
+    count integer DEFAULT 1 NOT NULL,
+    updated_at timestamp with time zone,
+    alert text,
+    actor_kind text,
+    actor_id text,
+    actor_label text,
+    entity_type text,
+    entity_id text,
+    archived_at timestamp with time zone,
+    surfaced_at timestamp with time zone,
+    push_due_at timestamp with time zone,
+    pushed_at timestamp with time zone,
+    email_due_at timestamp with time zone,
+    emailed_at timestamp with time zone,
+    email_attempts integer DEFAULT 0 NOT NULL
 );
 CREATE TABLE public.org_domains (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1168,7 +1187,8 @@ CREATE TABLE public.push_subscriptions (
     failures integer DEFAULT 0 NOT NULL,
     last_status integer,
     last_error text,
-    last_attempt_at timestamp with time zone
+    last_attempt_at timestamp with time zone,
+    user_agent text
 );
 CREATE TABLE public.quality_reviews (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1542,7 +1562,8 @@ CREATE TABLE public.users (
     avatar_upload_id uuid,
     status_emoji text,
     status_text text,
-    title text
+    title text,
+    notify_seq bigint DEFAULT 0 NOT NULL
 );
 CREATE TABLE public.work_dispatch_blocks (
     task_id uuid NOT NULL,
@@ -2101,8 +2122,13 @@ CREATE INDEX mcp_tool_calls_server_idx ON public.mcp_tool_calls USING btree (ser
 CREATE INDEX messages_conv_idx ON public.messages USING btree (conversation_id, seq);
 CREATE INDEX messages_conversation_timeline_idx ON public.messages USING btree (conversation_id, created_at DESC, id DESC);
 CREATE INDEX messages_streaming_idx ON public.messages USING btree (created_at) WHERE (status = 'streaming'::text);
+CREATE INDEX notifications_email_due_idx ON public.notifications USING btree (email_due_at) WHERE ((email_due_at IS NOT NULL) AND (emailed_at IS NULL));
+CREATE INDEX notifications_entity_open_idx ON public.notifications USING btree (entity_type, entity_id) WHERE ((entity_id IS NOT NULL) AND (read_at IS NULL));
+CREATE UNIQUE INDEX notifications_open_group_idx ON public.notifications USING btree (user_id, group_key) WHERE ((group_key IS NOT NULL) AND (read_at IS NULL) AND (archived_at IS NULL));
+CREATE INDEX notifications_push_due_idx ON public.notifications USING btree (push_due_at) WHERE ((push_due_at IS NOT NULL) AND (pushed_at IS NULL));
 CREATE INDEX notifications_unread_idx ON public.notifications USING btree (user_id) WHERE (read_at IS NULL);
 CREATE INDEX notifications_user_idx ON public.notifications USING btree (user_id, created_at DESC);
+CREATE UNIQUE INDEX notifications_user_seq_idx ON public.notifications USING btree (user_id, seq) WHERE (seq IS NOT NULL);
 CREATE INDEX outreach_events_agent_idx ON public.outreach_events USING btree (agent_model, kind, created_at DESC);
 CREATE INDEX plan_drafts_conversation_idx ON public.plan_drafts USING btree (conversation_id, created_at DESC);
 CREATE INDEX plugin_notices_by_kind ON public.plugin_notices USING btree (app_slug, kind);
