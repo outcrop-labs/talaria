@@ -71,9 +71,12 @@ pub async fn list_notifications(
 }
 
 /// The newest 50 rows in the v2 wire shape, AND the person's notify seq, from
-/// ONE statement — one snapshot, so a client that records `seq` as read
-/// through has seen every row with a seq at or below it (I-10). A person with
-/// no row answers seq 0 and no rows.
+/// ONE statement — one snapshot, so every row with a seq at or below the
+/// answer had committed when the rows were read (I-10). It is not a complete
+/// read through that seq (a Quiet coalesce keeps an older createdAt, and the
+/// list stops at 50): only a `?since` read with `more: false` lets a client
+/// record `seq` as read through (I-20). A person with no row answers seq 0
+/// and no rows.
 pub async fn list_inbox(pg: &PgPool, user_id: &str) -> Result<(Vec<Value>, i64), sqlx::Error> {
     let rows = sqlx::query(
         "select u.notify_seq, n.id::text, n.kind, n.title, n.body, n.href, \
@@ -229,6 +232,70 @@ pub async fn mark_read_by_href(
     .bind(href)
     .fetch_all(pg)
     .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Make the caller's own rows UNREAD again — the Home Inbox's undo of a read
+/// today, a mark-unread in W2-H — and answer the ids reopened. Archived rows
+/// are not reopened (Done is undone by unarchiving, and stays read). With
+/// `read_at`, only rows read at that instant come back — to the millisecond,
+/// the precision the wire carries it at (`read_at` itself is stored to the
+/// microsecond, so an exact compare against a wire timestamp never matched)
+/// — the undo's guard against a newer read it must not reverse.
+///
+/// THE OPEN-GROUP INDEX. A read row left `notifications_open_group_idx`, so
+/// its group may have filed a NEWER open row since; putting the old one back
+/// with its key would be two open rows for one (person, key), and the update
+/// would fail with 23505. So a reopened row whose key another open row holds
+/// — or a newer row reopened in the same call — gives the key up: it comes
+/// back as an ungrouped row, and the group's next write coalesces into the
+/// row that holds the key. The person's users row is locked first, as every
+/// writer locks it, so no keyed row can be filed between the check and the
+/// update. Every path that sets `read_at = null` goes through here.
+pub async fn reopen_notifications(
+    pg: &PgPool,
+    user_id: &str,
+    ids: &[String],
+    read_at: Option<&str>,
+) -> Result<Vec<String>, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut tx = pg.begin().await?;
+    sqlx::query("select 1 from users where id = $1::uuid for no key update")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "with target as ( \
+           select n.id, n.group_key, \
+                  row_number() over (partition by n.group_key \
+                                     order by n.created_at desc, n.id desc) as rn \
+             from notifications n \
+            where n.user_id = $1::uuid and n.id = any($2::uuid[]) \
+              and n.read_at is not null and n.archived_at is null \
+              and ($3::timestamptz is null \
+                   or date_trunc('milliseconds', n.read_at) \
+                      = date_trunc('milliseconds', $3::timestamptz)) \
+         ) \
+         update notifications n \
+            set read_at = null, \
+                group_key = case \
+                  when t.group_key is null or t.rn > 1 then null \
+                  when exists (select 1 from notifications o \
+                                where o.user_id = $1::uuid and o.group_key = t.group_key \
+                                  and o.read_at is null and o.archived_at is null) then null \
+                  else t.group_key end \
+           from target t \
+          where n.id = t.id \
+         returning n.id::text",
+    )
+    .bind(user_id)
+    .bind(ids)
+    .bind(read_at)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 

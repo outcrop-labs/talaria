@@ -995,17 +995,17 @@ async fn undo_decision(
                 "Undo can no longer verify the original read action.",
             ));
         };
-        let updated = sqlx::query_scalar::<_, String>(
-            "update notifications set read_at = null \
-             where id = $1::uuid and user_id = $2::uuid and read_at = $3::timestamptz \
-             returning id::text",
+        // Through the notification contract's one reopen door: a grouped row
+        // whose group filed a newer open row since the read comes back
+        // without its key instead of failing the unique open-group index.
+        let reopened = talaria_notify::reopen_notifications(
+            pg,
+            &user.id,
+            std::slice::from_ref(&source_id),
+            Some(&after_read_at),
         )
-        .bind(&source_id)
-        .bind(&user.id)
-        .bind(&after_read_at)
-        .fetch_optional(pg)
         .await?;
-        restored = updated.is_some();
+        restored = !reopened.is_empty();
     } else if source_type == "channel" {
         let before = number_of(outcome.get("beforeCursor")).max(0);
         let after = number_of(outcome.get("afterCursor")).max(0);
