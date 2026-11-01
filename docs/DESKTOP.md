@@ -551,7 +551,10 @@ the rate limits, the status record and the click route. One backend per OS:
 `{href, id}` (interface I-1), dispatched by `eval` into the webview that posted the banner
 (the IPC caller's label, never a value from the page). A page that handles it routes in
 place, with no reload; a page with no listener — a Talaria older than it — gets
-`location.assign`, as before. Only a same-origin path is ever opened.
+`location.assign`, as before. Only a same-origin path is ever opened, by the instance's
+own rule (`openable_href` in talaria-notify): a leading `/`, no `//`, no backslash or
+control character, and no `.` or `..` segment in any spelling (`%2e` included), so a link
+the instance refuses is one the shell refuses too.
 
 **What the person sees and controls.** Settings → Desktop → Notifications reads the
 status from the OS (`desktop_notification_status`): "On — shown by GNOME Shell 50 (spec
