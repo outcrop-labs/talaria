@@ -18,8 +18,14 @@
 // the duplicates. Pure wiring over injectable edges, so the protocol is a
 // unit test.
 //
-// Wave 2 makes the leader the hub that owns the only `/api/me/events` and
-// rebroadcasts it here; the channel name and message shapes are kept for it.
+// Since wave 2 the leader is also the HUB (notify-hub.ts): it owns the
+// browser's only `/api/me/events` and rebroadcasts every frame on this same
+// channel, so five tabs are one stream and one Redis subscriber. The hub's
+// messages ride `send`/`onMessage` below; this file's own three (`state`,
+// `claimed`, `bye`) are unchanged, and a tab of an older build ignores the
+// rest. Each announcement also says whether its tab leads and hosts a hub,
+// and which presence client it is (notify-presence.ts), so a tab can tell
+// "the person is on another of MY tabs" from "on another device".
 
 import type { TabState } from '@/lib/notify-decide'
 
@@ -43,11 +49,25 @@ type Msg =
   | { type: 'claimed'; tabId: string; key: string }
   | { type: 'bye'; tabId: string }
 
+/** A message of another protocol on the same channel (the hub's). */
+export interface ExtMessage {
+  type: string
+  [k: string]: unknown
+}
+const OWN = new Set(['state', 'claimed', 'bye'])
+
 export interface LeaderEnv {
   locks?: LockManagerLike | null
   channel?: ChannelLike | null
-  /** This tab's view of itself, read at announce time. */
-  self: () => { visible: boolean; focused: boolean }
+  /** This tab's view of itself, read at announce time (`clientId`: its
+   *  presence client, notify-presence.ts). */
+  self: () => { visible: boolean; focused: boolean; clientId?: string }
+  /** When the person last touched this tab (looking.ts); default: the
+   *  leader's own `noteInput` record. */
+  lastInputAt?: () => number
+  /** This tab runs a hub (notify-hub.ts): announced, so followers know a
+   *  leader that will rebroadcast the stream from one that will not. */
+  hub?: boolean
   now?: () => number
   tabId?: string
   heartbeatMs?: number
@@ -72,6 +92,10 @@ export interface NotifyLeader {
   waitForClaim(id: string, version: string, ms: number): Promise<boolean>
   /** Called whenever leadership changes (for the debug hook and tests). */
   onLeaderChange(fn: (leader: boolean) => void): () => void
+  /** Post a message of another protocol on the channel (the hub's). */
+  send(m: ExtMessage): void
+  /** Hear the messages this file does not handle itself. */
+  onMessage(fn: (m: ExtMessage) => void): () => void
   close(): void
 }
 
@@ -94,15 +118,17 @@ export function startNotifyLeader(env: LeaderEnv): NotifyLeader {
   const claims = new Map<string, number>()
   const claimWaiters = new Map<string, Set<() => void>>()
   const leaderListeners = new Set<(leader: boolean) => void>()
+  const extListeners = new Set<(m: ExtMessage) => void>()
 
-  const setLeader = (v: boolean) => {
-    if (leader === v) return
-    leader = v
-    for (const fn of leaderListeners) fn(v)
-  }
-
-  const state = (): TabState => ({ tabId, ...env.self(), lastInputAt, at: now() })
-  const post = (m: Msg) => {
+  const state = (): TabState => ({
+    tabId,
+    ...env.self(),
+    lastInputAt: env.lastInputAt ? Math.max(lastInputAt, env.lastInputAt()) : lastInputAt,
+    at: now(),
+    leader,
+    hub: !!env.hub,
+  })
+  const post = (m: Msg | ExtMessage) => {
     if (closed || !channel) return
     try {
       channel.postMessage(m)
@@ -111,9 +137,21 @@ export function startNotifyLeader(env: LeaderEnv): NotifyLeader {
     }
   }
 
+  const setLeader = (v: boolean) => {
+    if (leader === v) return
+    leader = v
+    for (const fn of leaderListeners) fn(v)
+    // The others learn who leads now, not at the next heartbeat.
+    post({ type: 'state', tab: state() })
+  }
+
   const onMessage = (e: { data: unknown }) => {
     const m = e.data as Msg | null
     if (!m || typeof m !== 'object' || typeof (m as { type?: unknown }).type !== 'string') return
+    if (!OWN.has(m.type)) {
+      for (const fn of extListeners) fn(m as unknown as ExtMessage)
+      return
+    }
     if (m.type === 'state') {
       if (!m.tab || m.tab.tabId === tabId) return
       const known = registry.has(m.tab.tabId)
@@ -176,7 +214,7 @@ export function startNotifyLeader(env: LeaderEnv): NotifyLeader {
     noteInput: () => {
       lastInputAt = now()
     },
-    lastInputAt: () => lastInputAt,
+    lastInputAt: () => (env.lastInputAt ? Math.max(lastInputAt, env.lastInputAt()) : lastInputAt),
     claim: (id, version) => {
       const key = claimKey(id, version)
       claims.set(key, now())
@@ -204,6 +242,14 @@ export function startNotifyLeader(env: LeaderEnv): NotifyLeader {
       leaderListeners.add(fn)
       return () => leaderListeners.delete(fn)
     },
+    send: (m) => {
+      if (OWN.has(m.type)) return
+      post(m)
+    },
+    onMessage: (fn) => {
+      extListeners.add(fn)
+      return () => extListeners.delete(fn)
+    },
     close: () => {
       if (closed) return
       post({ type: 'bye', tabId })
@@ -217,7 +263,11 @@ export function startNotifyLeader(env: LeaderEnv): NotifyLeader {
       }
       release?.()
       release = null
-      setLeader(false)
+      if (leader) {
+        leader = false
+        for (const fn of leaderListeners) fn(false)
+      }
+      extListeners.clear()
     },
   }
 }

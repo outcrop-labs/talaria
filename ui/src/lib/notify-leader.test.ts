@@ -140,3 +140,49 @@ describe('startNotifyLeader', () => {
     t.close()
   })
 })
+
+describe('startNotifyLeader — wave 2', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('carries another protocol\'s messages without reading them, and refuses to send its own types', async () => {
+    const b = browser()
+    const self = () => ({ visible: false, focused: false })
+    const t1 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self, tabId: 't1' })
+    const t2 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self, tabId: 't2' })
+    const got: unknown[] = []
+    t2.onMessage((m) => got.push(m))
+    await flush()
+    t1.send({ type: 'hub:frame', from: 't1', data: 'x' })
+    t1.send({ type: 'bye', tabId: 't1' }) // not an extension: dropped
+    await flush()
+    expect(got).toEqual([{ type: 'hub:frame', from: 't1', data: 'x' }])
+    expect(t2.others().map((t) => t.tabId)).toEqual(['t1'])
+    t1.close()
+    t2.close()
+  })
+
+  it('announces whether it leads, hosts a hub, and its presence client — and re-announces on taking the lock', async () => {
+    const b = browser()
+    const t1 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self: () => ({ visible: true, focused: true, clientId: 'c1' }), tabId: 't1', hub: true })
+    const t2 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self: () => ({ visible: false, focused: false, clientId: 'c2' }), tabId: 't2', hub: true })
+    await flush()
+    expect(t2.others()[0]).toMatchObject({ tabId: 't1', clientId: 'c1', leader: true, hub: true })
+    t1.close()
+    await flush()
+    expect(t2.isLeader()).toBe(true)
+    t2.close()
+  })
+
+  it('reads the shared input clock when given one', async () => {
+    const b = browser()
+    const t1 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self: () => ({ visible: true, focused: true }), tabId: 't1', lastInputAt: () => 1234 })
+    const t2 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self: () => ({ visible: false, focused: false }), tabId: 't2' })
+    await flush()
+    expect(t1.lastInputAt()).toBe(1234)
+    expect(t2.others()[0]?.lastInputAt).toBe(1234)
+    t1.close()
+    t2.close()
+  })
+})
+
