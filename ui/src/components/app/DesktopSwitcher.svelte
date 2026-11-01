@@ -14,7 +14,7 @@
     shellShowWelcome,
     type ShellInstance,
   } from '@/lib/desktop-shell'
-  import { createBadgeReporter } from '@/lib/desktop-badge'
+  import { badgeCount, createBadgeReporter } from '@/lib/desktop-badge'
   import { findCurrentInstance, instanceDisplayLabel } from '@/lib/desktop-instance'
   import type { NotificationsPayload } from '@/lib/notifications'
 
@@ -37,19 +37,20 @@
     void refresh()
   })
 
-  // The dock and launcher badge (interface I-5): this instance's unread
-  // count, the same number the bell shows. Read from the query cache the bell
-  // and the toasts already keep fresh, rather than through a query of its
-  // own, so a signed-out page (the login screen mounts this too) fetches
-  // nothing; lib/desktop-badge debounces it and reports 0 when signed out.
-  // The shell keeps a share per instance and shows the sum.
+  // The dock and launcher badge (interface I-5): this instance's For you
+  // count (Needs you + Direct, EB-11; `unread` from an instance that predates
+  // it). Read from the query cache the bell and the toasts already keep
+  // fresh, rather than through a query of its own, so a signed-out page (the
+  // login screen mounts this too) fetches nothing; lib/desktop-badge
+  // debounces it and reports 0 when signed out. The shell keeps a share per
+  // instance and shows the sum.
   const queries = inDesktopShell() ? useQueryClient() : null
   $effect(() => {
     if (!queries) return
     const badge = createBadgeReporter((count) => void shellSetBadge(count))
     const report = () =>
       badge.update(
-        queries.getQueryData<NotificationsPayload>(['notifications'])?.unread,
+        badgeCount(queries.getQueryData<NotificationsPayload>(['notifications'])),
         queries.getQueryData<{ user?: unknown }>(['session'])?.user === null,
       )
     report()
