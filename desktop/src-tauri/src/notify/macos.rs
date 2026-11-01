@@ -380,7 +380,7 @@ pub async fn os_idle() -> Option<u64> {
     // SAFETY: a pure query with two plain values; no pointers.
     let secs =
         unsafe { CGEventSourceSecondsSinceLastEventType(COMBINED_SESSION_STATE, ANY_INPUT_EVENT) };
-    (secs.is_finite() && secs >= 0.0).then(|| (secs * 1000.0) as u64)
+    (secs.is_finite() && secs >= 0.0).then_some((secs * 1000.0) as u64)
 }
 
 fn legacy_status() -> OsStatus {

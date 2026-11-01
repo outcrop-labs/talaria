@@ -140,6 +140,8 @@ impl Activity {
         }
     }
 
+    // Read by the WebKitGTK load-failed hook, which is Linux-only.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn prewarming(&self, id: &str) -> bool {
         self.prewarm.contains_key(id)
     }
