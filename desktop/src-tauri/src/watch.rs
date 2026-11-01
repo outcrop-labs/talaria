@@ -16,8 +16,10 @@
 //! rule: unread, newer than the high-water mark minus two minutes, unseen or
 //! later. With `since` in the instance's `features`, the watcher reads
 //! `GET /api/notifications?since=<seq>`, page after page, and the record's
-//! seq advances only on a page whose `more` is false — so a reconnect after
-//! an outage, a sleep or a cut stream is exact, never "the newest 50". The
+//! seq advances to the snapshot of a page whose `more` is false — or, when a
+//! long catch-up runs out of its ten pages, to the last row read, so the next
+//! read goes on from there — so a reconnect after an outage, a sleep or a cut
+//! stream is exact, never "the newest 50". The
 //! watcher starts from the PAGE's record when the page hands one over in its
 //! suspend report, so whatever the page missed is posted on the watcher's
 //! first read (D2); with none (an older instance UI), the first read is the
@@ -28,9 +30,13 @@
 //!
 //! What it posts (I-15): never a row whose `alert` is `feed`; while the
 //! person's Do Not Disturb is active, only rows of a class that breaks
-//! through it; nothing at all for an instance muted in the launcher. Every
-//! row it does post is acked (`POST /api/notifications/ack`, I-18), so the
-//! server's deferred push for it is cancelled: the person was told here.
+//! through it; nothing at all for an instance muted in the launcher; and
+//! nothing while the person's presence winner (I-17) is another of their
+//! clients — a browser tab they are looking at, another desktop — which
+//! alerts instead, as the page runtime's cross-device rule has it, so one
+//! device alerts, not two. Every row it does post is acked (`POST
+//! /api/notifications/ack`, I-18), so the server's deferred push for it is
+//! cancelled: the person was told here.
 //!
 //! Read-sync (I-16): a `notifications` frame names the rows read elsewhere
 //! (`readIds`, or `all`), and the watcher closes its own banners for them —
@@ -41,7 +47,8 @@
 //! Presence (I-17, I-22): every 30 s it heartbeats `PUT /api/me/presence` as
 //! `desk-<instance id>`, kind `desktop`, `active` while the OS saw input in
 //! the last two minutes, else `idle` — so the instance's push waits while
-//! the person is at this desktop, and does not while they are away.
+//! the person is at this desktop, and does not while they are away. Each
+//! beat's answer, and each `presence` frame, names the winner.
 //!
 //! It runs only when the page said it would post (`notify` in its report: ui's
 //! `browserNotifyEnabled`), with that instance's own cookies, read from its
@@ -110,9 +117,10 @@ pub const SUMMARY_OVER: usize = 3;
 /// The catch-up summary's tag, the page's and the watcher's (I-21).
 pub const SUMMARY_TAG: &str = "talaria-summary";
 
-/// `?since` pages read in one go before the watcher settles for what it has
-/// (200 rows each: a thousand rows behind is one summary either way).
-const MAX_SINCE_PAGES: usize = 5;
+/// `?since` pages read in one go (200 rows each), the page runtime's budget.
+/// Past it, the cursor moves to the last row read — a page is complete up to
+/// its last row (I-10) — and the next read goes on from there.
+pub const MAX_SINCE_PAGES: usize = 10;
 
 /// The ack's own bound per request (the route refuses more).
 const ACK_CHUNK: usize = 200;
@@ -317,6 +325,50 @@ pub fn parse_read(payload: &serde_json::Value) -> Option<Read> {
             .unwrap_or(false),
         server: Server::of(payload),
     })
+}
+
+/// How far one catch-up of `?since` pages has judged (I-20). The snapshot
+/// seq of a page whose `more` is false is a read-through; so, when the page
+/// budget or a failed page stops a catch-up short, is the last row of the
+/// last page read, because a page is complete up to its last row (I-10:
+/// every row at or below a seen seq had committed). Without the second rule
+/// a catch-up longer than the budget would start over on every read: the
+/// rows the seen set has since let go of would be posted again each time,
+/// and the rows past the budget never.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SincePages {
+    /// The read-through the pages so far establish.
+    through: Option<i64>,
+}
+
+impl SincePages {
+    /// Take one page; the cursor for the next, or None when this one ends
+    /// the catch-up (the last page, or a `more` with no row to go on from).
+    pub fn page(&mut self, read: &Read) -> Option<i64> {
+        let end = read.rows.iter().filter_map(|r| r.seq).max();
+        match (read.more, end) {
+            (false, _) => {
+                if let Some(seq) = read.seq {
+                    self.advance(seq);
+                }
+                None
+            }
+            (true, Some(end)) => {
+                self.advance(end);
+                Some(end)
+            }
+            (true, None) => None,
+        }
+    }
+
+    fn advance(&mut self, seq: i64) {
+        self.through = Some(self.through.map_or(seq, |t| t.max(seq)));
+    }
+
+    /// The seq every row at or below has been judged, if any page said.
+    pub fn through(&self) -> Option<i64> {
+        self.through
+    }
 }
 
 /// `YYYY-MM-DDTHH:MM:SS[.fff…][Z|±HH:MM]` in epoch ms. A string that is not
@@ -700,7 +752,50 @@ pub enum Frame {
     },
     /// The session behind the stream ended; the stream closes after it.
     SessionEnded,
+    /// The person's presence winner changed (I-17).
+    Presence(Winner),
     Other,
+}
+
+/// The presence winner (I-17): the client the person is looking at, else
+/// the one they are active on — a client id each, or none.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Winner {
+    pub looking: Option<String>,
+    pub active: Option<String>,
+}
+
+impl Winner {
+    /// The winner pair from a `presence` frame, a heartbeat's answer or
+    /// `GET /api/me/presence`: the same two keys. None for a body without
+    /// either key (an instance that predates the presence store).
+    pub fn of(value: &serde_json::Value) -> Option<Self> {
+        if value.get("looking").is_none() && value.get("active").is_none() {
+            return None;
+        }
+        let id = |key: &str| {
+            value
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        Some(Self {
+            looking: id("looking"),
+            active: id("active"),
+        })
+    }
+
+    /// The client the person is on, when it is not `own` (this watcher's
+    /// client id): the page runtime's cross-device rule, so only the device
+    /// the person is on alerts. None when nobody wins (the person is idle
+    /// everywhere: every client keeps its own rule) or this watcher does.
+    pub fn elsewhere(&self, own: &str) -> Option<&str> {
+        self.looking
+            .as_deref()
+            .or(self.active.as_deref())
+            .filter(|id| *id != own)
+    }
 }
 
 pub fn frame(data: &str) -> Frame {
@@ -758,6 +853,7 @@ pub fn frame(data: &str) -> Frame {
         {
             Frame::SessionEnded
         }
+        Some("presence") => Winner::of(&value).map_or(Frame::Other, Frame::Presence),
         _ => Frame::Other,
     }
 }
@@ -966,6 +1062,10 @@ struct Running {
     summary: HashSet<String>,
     /// The last heartbeat's state, so only a change is logged.
     beat: Arc<Mutex<Option<&'static str>>>,
+    /// The person's presence winner as last heard (I-17): from a `presence`
+    /// frame, a heartbeat's answer, or a read of `/api/me/presence` before
+    /// the first post. None until one of them has said.
+    winner: Arc<Mutex<Option<Winner>>>,
 }
 
 async fn run(mut watch: Watch) {
@@ -974,6 +1074,7 @@ async fn run(mut watch: Watch) {
         client: client(),
         summary: HashSet::new(),
         beat: Arc::new(Mutex::new(None)),
+        winner: Arc::new(Mutex::new(None)),
     };
     eprintln!(
         "talaria-desktop: {label}: watching notifications{}",
@@ -1053,6 +1154,9 @@ async fn run(mut watch: Watch) {
                                     }
                                 }
                                 Frame::SessionEnded => ended = true,
+                                Frame::Presence(winner) => {
+                                    *state.winner.lock().unwrap() = Some(winner);
+                                }
                                 Frame::Other => {}
                             }
                         }
@@ -1123,32 +1227,25 @@ async fn read_and_post(watch: &mut Watch, state: &mut Running) -> Result<(), Sig
     let since_mode = watch.server.has("since") && watch.arrivals.seq().is_some();
     if since_mode {
         let mut cursor = watch.arrivals.seq();
+        let mut pages = SincePages::default();
         for _ in 0..MAX_SINCE_PAGES {
             match fetch(&state.client, &watch.origin, &watch.cookie, cursor).await {
                 Fetch::Read(read) => {
                     fresh.extend(watch.arrivals.arrive(&read.rows));
-                    let page_end = read.rows.iter().filter_map(|r| r.seq).max();
-                    let more = read.more;
-                    let seq = read.seq;
+                    let next = pages.page(&read);
                     watch.server = read.server.clone();
                     last = Some(read);
-                    match (more, page_end) {
-                        (true, Some(end)) => cursor = Some(end),
-                        // The last page: everything at or below the
-                        // snapshot's seq has been judged (I-20).
-                        (false, _) => {
-                            if let Some(seq) = seq {
-                                watch.arrivals.read_through(seq);
-                            }
-                            break;
-                        }
-                        // "More" with no seq to go on: settle for this.
-                        (true, None) => break,
+                    match next {
+                        Some(end) => cursor = Some(end),
+                        None => break,
                     }
                 }
                 Fetch::SignedOut => return Err(signed_out_now(watch)),
                 Fetch::Failed => break,
             }
+        }
+        if let Some(seq) = pages.through() {
+            watch.arrivals.read_through(seq);
         }
     } else {
         match fetch(&state.client, &watch.origin, &watch.cookie, None).await {
@@ -1279,6 +1376,63 @@ fn instance_id(label: &str) -> &str {
     label.strip_prefix("instance-").unwrap_or(label)
 }
 
+/// This watcher's presence client id (I-17): `desk-<instance id>`.
+pub fn client_id(label: &str) -> String {
+    format!("desk-{}", instance_id(label))
+}
+
+/// The client the person is on, when it is another one (see `Winner`). The
+/// winner comes from the stream's `presence` frames and each heartbeat's
+/// answer; before either has said (the first read after a suspend), it is
+/// read once from `GET /api/me/presence`. An instance without the presence
+/// store, or a read that fails, has no winner: every client keeps its own
+/// rule, as in wave 1.
+async fn elsewhere(watch: &Watch, state: &Running) -> Option<String> {
+    if !watch.server.has("presence-store") {
+        return None;
+    }
+    let known = state.winner.lock().unwrap().clone();
+    let winner = match known {
+        Some(w) => w,
+        None => {
+            let read = state
+                .client
+                .get(format!("{}/api/me/presence", watch.origin))
+                .timeout(WRITE_TIMEOUT)
+                .header(COOKIE, &watch.cookie)
+                .header(ACCEPT, "application/json")
+                .send()
+                .await;
+            let w = match read {
+                Ok(r) if r.status().is_success() => r
+                    .json::<serde_json::Value>()
+                    .await
+                    .ok()
+                    .as_ref()
+                    .and_then(Winner::of),
+                _ => None,
+            }?;
+            *state.winner.lock().unwrap() = Some(w.clone());
+            w
+        }
+    };
+    winner
+        .elsewhere(&client_id(&watch.label))
+        .map(str::to_string)
+}
+
+/// The handback stays the size the page's record can use: its newest
+/// `MAX_SEEN` (the record keeps no more), so a long suspension of a busy
+/// instance does not grow it without bound. With a seq handed back too, the
+/// record's cursor covers the rest.
+fn bound_posted(posted: &mut Vec<(String, String)>) {
+    if posted.len() <= MAX_SEEN * 2 {
+        return;
+    }
+    posted.sort_by_key(|(_, at)| std::cmp::Reverse(parse_iso_ms(at).unwrap_or(i64::MIN)));
+    posted.truncate(MAX_SEEN);
+}
+
 /// The heartbeat's state from the OS's idle time (I-17): `active` while the
 /// OS saw input in the last two minutes; `idle` when it did not, or cannot
 /// say (no input means nobody to defer a push for).
@@ -1292,7 +1446,7 @@ pub fn presence_state(os_idle_ms: Option<u64>) -> &'static str {
 /// `PUT /api/me/presence`'s body for this instance's watcher.
 pub fn presence_body(label: &str, os_idle_ms: Option<u64>) -> serde_json::Value {
     let mut body = serde_json::json!({
-        "clientId": format!("desk-{}", instance_id(label)),
+        "clientId": client_id(label),
         "kind": "desktop",
         "state": presence_state(os_idle_ms),
     });
@@ -1314,6 +1468,7 @@ fn heartbeat(watch: &Watch, state: &Running) {
     let cookie = watch.cookie.clone();
     let label = watch.label.clone();
     let last = state.beat.clone();
+    let winner = state.winner.clone();
     tauri::async_runtime::spawn(async move {
         let idle = crate::notify::os_idle().await;
         let body = presence_body(&label, idle);
@@ -1328,7 +1483,19 @@ fn heartbeat(watch: &Watch, state: &Running) {
             .send()
             .await;
         let outcome = match sent {
-            Ok(r) if r.status().is_success() => Some(state),
+            Ok(r) if r.status().is_success() => {
+                // The answer names the winner after this beat (I-17).
+                if let Some(w) = r
+                    .json::<serde_json::Value>()
+                    .await
+                    .ok()
+                    .as_ref()
+                    .and_then(Winner::of)
+                {
+                    *winner.lock().unwrap() = Some(w);
+                }
+                Some(state)
+            }
             Ok(r) => {
                 eprintln!(
                     "talaria-desktop: {label}: the presence heartbeat answered {}",
@@ -1429,6 +1596,7 @@ async fn post_all(watch: &Watch, state: &mut Running, fresh: Vec<Arrival>) {
                 .posted
                 .push((arrival.row.id.clone(), arrival.row.created_text()));
         }
+        bound_posted(&mut shared.posted);
     }
     let total = fresh.len();
     let (show, feed, held) = bannerable(&watch.server, fresh);
@@ -1450,6 +1618,17 @@ async fn post_all(watch: &Watch, state: &mut Running, fresh: Vec<Arrival>) {
     if crate::commands::is_muted(&watch.app, &watch.label) {
         eprintln!(
             "talaria-desktop: {}: muted; {} arrival(s) not posted",
+            watch.label,
+            show.len()
+        );
+        return;
+    }
+    // Cross-device (I-17, the page runtime's rule): the person is looking
+    // at, or active on, another of their clients — a browser tab, another
+    // desktop — so that one alerts and acks, and this one stays quiet.
+    if let Some(other) = elsewhere(watch, state).await {
+        eprintln!(
+            "talaria-desktop: {}: the person is on another client ({other}); {} arrival(s) left to it",
             watch.label,
             show.len()
         );
@@ -1892,8 +2071,114 @@ mod tests {
         assert_eq!(frame(r#"{"type":"session","state":"x"}"#), Frame::Other);
         assert_eq!(
             frame(r#"{"type":"presence","looking":null,"active":"desk-a","clients":1}"#),
-            Frame::Other
+            Frame::Presence(Winner {
+                looking: None,
+                active: Some("desk-a".into()),
+            })
         );
+        assert_eq!(frame(r#"{"type":"presence","clients":0}"#), Frame::Other);
+    }
+
+    #[test]
+    fn the_watcher_stays_quiet_while_the_person_is_on_another_client() {
+        let own = client_id("instance-aaaa");
+        assert_eq!(own, "desk-aaaa");
+        let looking_web =
+            Winner::of(&serde_json::json!({"ok": true, "looking": "tab-1", "active": null}))
+                .unwrap();
+        assert_eq!(looking_web.elsewhere(&own), Some("tab-1"));
+        // Active on another desktop, nobody looking: that one alerts.
+        let other_desk =
+            Winner::of(&serde_json::json!({"looking": null, "active": "desk-bbbb"})).unwrap();
+        assert_eq!(other_desk.elsewhere(&own), Some("desk-bbbb"));
+        // This watcher wins, or nobody does (idle everywhere): it alerts.
+        let me = Winner::of(&serde_json::json!({"looking": null, "active": own.clone()})).unwrap();
+        assert_eq!(me.elsewhere(&own), None);
+        let nobody = Winner::of(&serde_json::json!({"looking": null, "active": null})).unwrap();
+        assert_eq!(nobody.elsewhere(&own), None);
+        // Looking beats active, as the server's rule has it.
+        let both =
+            Winner::of(&serde_json::json!({"looking": "tab-1", "active": own.clone()})).unwrap();
+        assert_eq!(both.elsewhere(&own), Some("tab-1"));
+        // A wave-1 ping's answer names no winner at all.
+        assert_eq!(Winner::of(&serde_json::json!({"ok": true})), None);
+        assert_eq!(
+            Winner::of(&serde_json::json!({"looking": "", "active": 7})),
+            Some(Winner::default())
+        );
+    }
+
+    fn since_page(seqs: &[i64], more: bool, snapshot: i64) -> Read {
+        Read {
+            rows: seqs
+                .iter()
+                .map(|s| seq_row(&format!("r{s}"), T0 + s, *s))
+                .collect(),
+            badge: None,
+            seq: Some(snapshot),
+            more,
+            server: Server::default(),
+        }
+    }
+
+    #[test]
+    fn a_catch_up_past_the_page_budget_reads_on_from_its_last_row() {
+        // The last page: the snapshot seq is the read-through.
+        let mut done = SincePages::default();
+        assert_eq!(done.page(&since_page(&[11, 12], false, 14)), None);
+        assert_eq!(done.through(), Some(14));
+        // Pages with more: each moves the cursor to its last row, and a
+        // catch-up cut short (the budget, a failed page) keeps that.
+        let mut cut = SincePages::default();
+        assert_eq!(cut.page(&since_page(&[11, 12, 13], true, 900)), Some(13));
+        assert_eq!(cut.page(&since_page(&[14, 15], true, 900)), Some(15));
+        assert_eq!(
+            cut.through(),
+            Some(15),
+            "never the snapshot of a page with more"
+        );
+        // `more` with no row to go on from ends it, and moves nothing.
+        let mut odd = SincePages::default();
+        assert_eq!(odd.page(&since_page(&[], true, 900)), None);
+        assert_eq!(odd.through(), None);
+        // Why: the seen set keeps 300, so a catch-up that started over from
+        // its old cursor would post again every row the set let go of.
+        let rows: Vec<Row> = (11..=1_200)
+            .map(|s| seq_row(&format!("r{s}"), T0 + s, s))
+            .collect();
+        let mut over = Arrivals::default();
+        over.arrive(&[]);
+        over.read_through(10);
+        assert_eq!(over.arrive(&rows[..1_000]).len(), 1_000);
+        assert_eq!(
+            over.arrive(&rows[..1_000]).len(),
+            700,
+            "the old cursor posts again what the seen set let go of"
+        );
+        let mut on = Arrivals::default();
+        on.arrive(&[]);
+        on.read_through(10);
+        on.arrive(&rows[..1_000]);
+        on.read_through(1_010);
+        assert_eq!(
+            on.arrive(&rows).len(),
+            190,
+            "read on from the last row: only the rest"
+        );
+    }
+
+    #[test]
+    fn the_handback_keeps_the_newest_the_record_can_use() {
+        let mut posted: Vec<(String, String)> = (0..(MAX_SEEN * 2) as i64)
+            .map(|i| (format!("n{i}"), iso_of_ms(T0 + i)))
+            .collect();
+        bound_posted(&mut posted);
+        assert_eq!(posted.len(), MAX_SEEN * 2, "within the bound: untouched");
+        posted.push(("newest".into(), iso_of_ms(T0 + 10_000)));
+        bound_posted(&mut posted);
+        assert_eq!(posted.len(), MAX_SEEN);
+        assert_eq!(posted[0].0, "newest");
+        assert!(!posted.iter().any(|(id, _)| id == "n0"));
     }
 
     #[test]
