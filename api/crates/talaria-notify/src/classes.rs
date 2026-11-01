@@ -301,7 +301,7 @@ pub fn notify_class_of(kind: &str) -> &'static str {
     }
     // The registry's OWN static id, not the caller's borrow — the ids are the
     // same bytes, and only one of them can be returned as &'static.
-    class_def(kind).map(|c| c.id).unwrap_or("work_complete")
+    class_def(kind).map(|c| c.id).unwrap_or(FALLBACK_CLASS)
 }
 
 /// Why a row of this kind shows ("Mentioned you"), or None for a kind the
@@ -327,6 +327,54 @@ pub fn for_you_kinds() -> Vec<&'static str> {
         .map(|(kind, _, _)| *kind)
         .collect();
     for c in CLASSES.iter().filter(|c| c.category.for_you()) {
+        if !out.contains(&c.id) {
+            out.push(c.id);
+        }
+    }
+    out
+}
+
+/// The class every kind the registry does not name is filed under
+/// (`notify_class_of`): the quiet bucket.
+pub const FALLBACK_CLASS: &str = "work_complete";
+
+/// The kinds that land in `class`: its `KIND_CLASS` kinds, then the class id
+/// itself (a writer may name a class as its kind). What a `class=` filter
+/// matches with `kind = any($1)` — plus, for `FALLBACK_CLASS` only, every kind
+/// outside `known_kinds()`, which `notify_class_of` files there too.
+pub fn kinds_of(class: &str) -> Vec<&'static str> {
+    let Some(def) = class_def(class) else {
+        return Vec::new();
+    };
+    let mut out: Vec<&'static str> = KIND_CLASS
+        .iter()
+        .filter(|(_, c, _)| *c == def.id)
+        .map(|(kind, _, _)| *kind)
+        .collect();
+    if !out.contains(&def.id) {
+        out.push(def.id);
+    }
+    out
+}
+
+/// The kinds of every class in `category` (`kinds_of`, class by class). A
+/// `category=following` filter must also take every kind outside
+/// `known_kinds()`: the fallback class is a Following one.
+pub fn kinds_of_category(category: Category) -> Vec<&'static str> {
+    CLASSES
+        .iter()
+        .filter(|c| c.category == category)
+        .flat_map(|c| kinds_of(c.id))
+        .collect()
+}
+
+/// Every kind the registry names: each `KIND_CLASS` kind and each class id. A
+/// row whose kind is outside it is filed under `FALLBACK_CLASS`, so a SQL
+/// filter that includes that class reads `kind = any(kinds_of(..)) or kind
+/// <> all(known_kinds())`.
+pub fn known_kinds() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = KIND_CLASS.iter().map(|(kind, _, _)| *kind).collect();
+    for c in CLASSES {
         if !out.contains(&c.id) {
             out.push(c.id);
         }
@@ -449,6 +497,42 @@ mod tests {
             assert!(d.desktop && d.push, "{id}");
             assert_eq!(d.email, *fallback == "both", "{id}");
         }
+    }
+
+    // kinds_of / kinds_of_category / known_kinds agree with notify_class_of:
+    // every named kind is in exactly its own class's list, the lists cover
+    // the registry, and an unknown kind is outside known_kinds (so a filter
+    // on the fallback class takes it by exclusion).
+    #[test]
+    fn kinds_of_partitions_the_named_kinds() {
+        let known = known_kinds();
+        let mut union: Vec<&str> = Vec::new();
+        for c in CLASSES {
+            for kind in kinds_of(c.id) {
+                assert_eq!(notify_class_of(kind), c.id, "{kind} listed under {}", c.id);
+                assert!(!union.contains(&kind), "{kind} listed twice");
+                union.push(kind);
+            }
+        }
+        let (mut a, mut b) = (union.clone(), known.clone());
+        a.sort();
+        b.sort();
+        assert_eq!(a, b);
+        assert!(kinds_of("mention").starts_with(&["mention", "kb-comment"]));
+        assert_eq!(
+            kinds_of("participating"),
+            ["task-comment", "thread-reply", "participating"]
+        );
+        assert!(kinds_of("no-such-class").is_empty());
+        assert!(!known.contains(&"brand-new-kind"));
+        assert_eq!(notify_class_of("brand-new-kind"), FALLBACK_CLASS);
+        let mut fy = for_you_kinds();
+        let mut cat: Vec<&str> = kinds_of_category(Category::NeedsYou);
+        cat.extend(kinds_of_category(Category::Direct));
+        fy.sort();
+        cat.sort();
+        assert_eq!(fy, cat, "For you = needs_you + direct, kind for kind");
+        assert!(kinds_of_category(Category::Following).contains(&"task-status"));
     }
 
     #[test]

@@ -14,7 +14,9 @@ use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_agent_auth::now_ms as wall_ms;
 use talaria_settings::{get_setting, set_setting};
 
-use crate::classes::{CLASSES, ChannelDefaults, NOTIFY_CLASSES, ORIGINAL_CLASSES, class_def};
+use crate::classes::{
+    CLASSES, ChannelDefaults, FALLBACK_CLASS, NOTIFY_CLASSES, ORIGINAL_CLASSES, class_def,
+};
 
 const DIGEST_PREF_KEY: &str = "digest";
 const CHANNELS_KEY: &str = "channels";
@@ -80,7 +82,7 @@ pub fn legacy_route(c: Channels) -> &'static str {
 /// 3. else the registry default (an unknown class: `work_complete`'s).
 pub fn channels_of(blob: &Value, class: &str) -> Channels {
     let defaults = class_def(class)
-        .or_else(|| class_def("work_complete"))
+        .or_else(|| class_def(FALLBACK_CLASS))
         .map(|c| c.defaults)
         .unwrap_or(ChannelDefaults {
             desktop: true,
@@ -805,9 +807,13 @@ pub async fn get_notify_delivery(pg: &PgPool) -> bool {
 ///
 /// MERGES (C28): the row may carry other delivery switches beside
 /// `emailEnabled` (W2-E adds `pushEnabled`), and flipping one must not erase
-/// the others. A non-object row is replaced.
+/// the others. A non-object row is replaced. A read that FAILS fails the
+/// write — merging into a fallback `{}` would be exactly the overwrite this
+/// exists to prevent.
 pub async fn set_notify_delivery(pg: &PgPool, email_enabled: bool) -> Result<(), sqlx::Error> {
-    let stored = get_setting(pg, DELIVERY_KEY, serde_json::json!({})).await;
+    let stored = talaria_settings::try_get_setting(pg, DELIVERY_KEY)
+        .await?
+        .unwrap_or_else(|| serde_json::json!({}));
     set_setting(pg, DELIVERY_KEY, &merge_delivery(&stored, email_enabled)).await
 }
 
