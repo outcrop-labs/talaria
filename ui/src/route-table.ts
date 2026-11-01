@@ -109,6 +109,9 @@ export const routes = {
     },
     '/channels': () => import('./routes/app/Channels.svelte'),
     '/inbox': () => import('./routes/app/Inbox.svelte'),
+    // The notification center, the bell's full page: For you / All / Done,
+    // filters and the keyboard. The view and the filters are search params.
+    '/notifications': () => import('./routes/app/Notifications.svelte'),
     '/boards': {
       layout: () => import('./routes/app/boards/BoardsShell.svelte'),
       '/': () => import('./routes/app/boards/BoardsIndex.svelte'),
