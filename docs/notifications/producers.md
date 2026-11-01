@@ -35,6 +35,10 @@ timed mute. Every producer files through `add_notification_with` and the convent
 | An approval waiting (`talaria-approvals`), and its SLA nag, escalation and stall report (`talaria-digest`) | `approval_pending` | `approval(key)` | Realert | `approval` (the approval's stable key) | the approvals system | the authority (content) and the fact audience |
 | Research ready, research and plan shares, KB comments, gaps, agent problems, the Google principal, the board-access outcome | as in wave 1 | none | — | `research_run`, `plan`, `kb_doc` or `task` where one exists | the person or agent who caused it | as in wave 1 |
 
+A post with no text — an attachment or a ref chip on its own — notifies exactly as a line of
+text would (the DM row, a thread reply, the channel's `all` row); the row's body reads
+"Sent an attachment".
+
 **Realert** moves `createdAt` later on each coalesce, so every client reads a re-alert (a
 known id whose `createdAt` moved). **Quiet** updates the count and the content and keeps
 `createdAt`: the first write alerts, the rest do not, and nothing is pushed or mailed for
@@ -93,9 +97,14 @@ level and mute in one query per post (`threads::channel_listeners`).
   settable}`, with `mutedUntil` null once a mute has run out.
 - **The menu** (`ui/src/components/chat/ChannelNotifyMenu.svelte`, beside the star in the
   conversation header): All / Mentions / Nothing; Mute for 1 hour, 8 hours, 24 hours, or
-  until I turn it back on; and Unmute. The header says "Muted until …". The menu is hidden
-  when the api serves no `notify` (an older server) and when `settable` is false. A refused
-  write is shown in a dialog.
+  until I turn it back on; and Unmute. The same component's `status` part puts "Muted until
+  …" after the conversation's name and topic; in a tight header that line gives way first
+  (down to its icon, the words in its tooltip and the bell's), never the name. A write puts
+  the server's answer straight into the channel-detail query both parts read, then
+  refetches, so nothing local outlives the server's state. The menu is hidden when the api
+  serves no `notify` (an older server) and when `settable` is false. A refused write is
+  shown in a dialog: a 403 as "You're no longer in this conversation…", a 409 in the
+  server's own words.
 
 ### Team-roster members have no level (S10, an owner decision)
 
@@ -122,7 +131,8 @@ work still queued behind the write's tail never ran. Measured on the slot-9 stac
 - `update_task` spawns its notices (the status move, the newly assigned, the workchain
   hand-off, a decided review) right after the ticket's UPDATE, before the activity-log
   writes, so every other caller gets the same.
-- The board-access decision spawns its resolution before its next await.
+- The board-access decision spawns its resolution before its next await (the task fetches
+  its own redis handle).
 - The test pause is `TALARIA_TEST_POST_COMMIT_MS` in the task route, honoured in debug
   builds only.
 
