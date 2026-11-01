@@ -141,7 +141,10 @@ Each tab decides each arrival. The first rule that answers wins:
 4. **Viewing**: this tab is looking (shown, focused, and touched in the last
    60 s) at the row's own page, and the row is Direct or Following: nothing,
    and the row is marked read (EB-13). A hidden tab never qualifies (C8).
-5. This tab is focused and visible: the in-app toast.
+5. This tab is focused and visible, and either the person is looking at it (touched in the
+   last 60 s) or no other device wins presence (rule 7): the in-app toast. A focused tab
+   nobody has touched for a minute while the person is active on another device stays
+   quiet, so that device alerts alone.
 6. Another fresh tab of this browser is focused and visible: nothing (it
    toasts).
 7. **Cross-device**: the presence winner (I-17) is a client of another device:
