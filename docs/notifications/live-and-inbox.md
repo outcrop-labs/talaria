@@ -65,6 +65,12 @@ data: {"type":"resync","seq":47,"complete":true}
   `{"type":"resync","seq":N,"complete":false}`, and the client reads
   `GET /api/notifications?since=` itself. A value that is not a whole number is ignored and
   the stream opens fresh.
+- **The answered seq is the server's, even when it is lower than `since`.** A client that
+  asks from a seq past the person's (the database was restored from a backup, or a dev
+  stack was reset) gets no rows and `{"type":"resync","seq":N,"complete":true}` with `N`
+  below what it sent; `GET ?since=` answers the same `seq`. A client must then take `N` as
+  its record, not keep the larger value, or every row up to its old seq would never count
+  as new.
 - **Each row exactly once.** A write that committed before the replay's snapshot is in the
   replay, and its live frame (published after its commit, so after the subscribe) has a
   seq ≤ N and is dropped. A write after the snapshot has a seq > N and arrives live. A row
@@ -129,8 +135,9 @@ Lists are OR'd within a parameter and AND'd across parameters. A kind the class 
 does not name belongs to the fallback class (`work_complete`, a Following class), so a
 `category=following` or `class=work_complete` filter includes it. Unknown parameters are
 ignored; a bad value is a 400 (`unknown category`, `unknown notification class`,
-`limit must be a whole number from 1 to 100`, `invalid cursor`, `since must be a whole
-number`, the view's enum message).
+`limit must be a whole number from 1 to 100`, `invalid cursor` (also for a cursor whose
+time is outside years 1 to 9999), `since must be a whole number`, the view's enum
+message).
 
 The answer is every key the GET always served, plus:
 
@@ -145,7 +152,7 @@ The answer is every key the GET always served, plus:
 - `seq` is read in the same statement as the rows (I-10).
 - `unread` and `unreadForYou` come from one read and both leave Done rows out, so they
   never disagree (N3). `/api/unreads`' `notifications` arm is the same "all unread" count
-  (O-10).
+  (O-10), and its `research` arm leaves Done rows out too.
 
 ### `PUT /api/notifications`
 
