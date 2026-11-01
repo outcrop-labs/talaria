@@ -2103,6 +2103,69 @@ mod tests {
         );
     }
 
+    // The batch mail: grouped by category in the center's order, each item's
+    // title linked on the verified base, its reason and first body line; with
+    // no verified domain, no links at all — the path is named instead.
+    #[test]
+    fn the_batch_mail_groups_links_and_degrades_without_a_domain() {
+        let item = |category, title: &str, href: &str| MailItem {
+            category,
+            title: title.into(),
+            reason: "Direct message".into(),
+            body: "first line\nsecond line".into(),
+            href: href.into(),
+        };
+        let items = [
+            item(
+                Category::Direct,
+                "Bob sent you a message",
+                "/comms/channel/c1",
+            ),
+            item(Category::NeedsYou, "Approve <the> deploy", "/approvals/a1"),
+            item(Category::Following, "A ticket moved", ""),
+        ];
+        let p = missed_mail_parts(
+            &items,
+            Some("https://talaria.example.com"),
+            Some("https://talaria.example.com/settings/notifications"),
+        );
+        assert_eq!(p.subject, "3 unread in Talaria");
+        // Needs you first, then Direct, then Following.
+        let (n, d, f) = (
+            p.html.find("Needs you").unwrap(),
+            p.html.find("Direct").unwrap(),
+            p.html.find("Following").unwrap(),
+        );
+        assert!(n < d && d < f);
+        assert!(
+            p.html
+                .contains("href=\"https://talaria.example.com/comms/channel/c1\"")
+        );
+        assert!(
+            p.html.contains("Approve &lt;the&gt; deploy"),
+            "titles are escaped"
+        );
+        assert!(p.html.contains("first line") && !p.html.contains("second line"));
+        assert!(p.html.contains("change what Talaria emails you"));
+        assert!(p.text.contains("- Bob sent you a message (Direct message)"));
+        assert!(
+            p.text
+                .contains("  https://talaria.example.com/approvals/a1")
+        );
+        assert!(p.text.contains("NEEDS YOU") && p.text.contains("FOLLOWING"));
+        // No verified domain: no absolute link anywhere, the path is named.
+        let bare = missed_mail_parts(&items, None, None);
+        assert!(!bare.html.contains("https://"));
+        assert!(
+            bare.html
+                .contains("Open Talaria and go to <code>/comms/channel/c1</code>")
+        );
+        assert!(bare.text.contains("Settings → Notifications"));
+        let one = missed_mail_parts(&items[..1], None, None);
+        assert_eq!(one.subject, "1 unread in Talaria");
+        assert!(one.html.contains("one notification"));
+    }
+
     #[test]
     fn the_composed_mail_is_pinned() {
         // Full case: verified domain → deep link, settings URL, real body.
