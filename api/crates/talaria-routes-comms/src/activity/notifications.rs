@@ -310,10 +310,16 @@ fn encode_cursor(c: &Cursor) -> String {
     URL_SAFE_NO_PAD.encode(format!("{}.{}", c.at_us, c.id))
 }
 
+/// The span a cursor's order key may name, in µs from the epoch: years 1 to
+/// 9999. Every real row's timestamp is inside it, and Postgres turns any value
+/// inside it into a `timestamptz`, so a crafted cursor past it is a 400 here
+/// rather than an "interval out of range" 500 from the page's query.
+const CURSOR_US: std::ops::RangeInclusive<i64> = -62_135_596_800_000_000..=253_402_300_799_999_999;
+
 fn decode_cursor(s: &str) -> Option<Cursor> {
     let raw = String::from_utf8(URL_SAFE_NO_PAD.decode(s.trim()).ok()?).ok()?;
     let (at, id) = raw.split_once('.')?;
-    let at_us: i64 = at.parse().ok()?;
+    let at_us: i64 = at.parse().ok().filter(|us| CURSOR_US.contains(us))?;
     zod_uuid_ok(id).then(|| Cursor {
         at_us,
         id: id.to_string(),
@@ -928,6 +934,32 @@ mod tests {
             None
         );
         assert_eq!(decode_cursor("%%%"), None);
+        // An order key Postgres cannot make a timestamp of is no cursor (a
+        // 400), never the page query's out-of-range 500.
+        let id = "5e000000-0000-4000-8000-00000000000a";
+        for at in [
+            i64::MAX,
+            i64::MIN,
+            253_402_300_800_000_000,
+            -62_135_596_800_000_001,
+        ] {
+            assert_eq!(
+                decode_cursor(&URL_SAFE_NO_PAD.encode(format!("{at}.{id}"))),
+                None,
+                "{at}"
+            );
+        }
+        for at in [0i64, -62_135_596_800_000_000, 253_402_300_799_999_999] {
+            assert!(decode_cursor(&URL_SAFE_NO_PAD.encode(format!("{at}.{id}"))).is_some());
+        }
+        assert_eq!(
+            parse_list_read(Some(&format!(
+                "view=foryou&before={}",
+                URL_SAFE_NO_PAD.encode(format!("{}.{id}", i64::MAX))
+            )))
+            .unwrap_err(),
+            "invalid cursor"
+        );
     }
 
     fn put(v: Value) -> Result<(Selector, PutAction), String> {
