@@ -19,6 +19,15 @@
 //     bannered or on screen. On WebKit nothing is skipped: Safari revokes a
 //     subscription after a few pushes that show nothing, so it may banner
 //     while a tab is focused until the server gates push on presence.
+//     ONE EXCEPTION, ON EVERY ENGINE: a push OLDER than the version already
+//     shown under its tag is dropped — neither shown nor replacing the newer
+//     copy. Two pushes of one row filed in quick succession are separate
+//     sends and can arrive out of order (a push service replacing by `Topic`
+//     may even keep only the older); the person must not see a DM's newer
+//     line swapped back to an older one. (On WebKit that is a push that
+//     shows nothing — rare, as it takes two sends of one row crossing in
+//     flight, and the lesser harm.) Pushes are handled one at a time, so two
+//     arriving together cannot both pass the check.
 //
 //   notificationclick: the person answered. The row is marked read (a
 //     same-origin PUT), the window already at the href — else the most
@@ -108,6 +117,34 @@ async function markBannered(id: string, v: string): Promise<void> {
   }
 }
 
+/** The instant an ISO version names, or null. */
+function instant(v: unknown): number | null {
+  if (typeof v !== 'string' || !v) return null
+  const t = Date.parse(v)
+  return Number.isFinite(t) ? t : null
+}
+
+/** Is `version` OLDER than the one this browser already showed under the
+ *  row's tag? The bannered store says (the leader tab records there too);
+ *  the copy still on screen says it as well, for a store that could not be
+ *  read. Compared as instants: an unversioned or unreadable one is never
+ *  "older". */
+async function olderThanShown(id: string, version: string): Promise<boolean> {
+  const t = instant(version)
+  if (t === null) return false
+  const newer = (v: unknown) => {
+    const s = instant(v)
+    return s !== null && s > t
+  }
+  if (newer((await bannered(id))?.v)) return true
+  try {
+    const up = await sw.registration.getNotifications({ tag: id })
+    return up.some((n) => newer((n.data as { v?: unknown } | null)?.v))
+  } catch {
+    return false
+  }
+}
+
 /** Safari (and every WebKit) — the engine that revokes silent pushes. */
 function isWebKit(): boolean {
   const ua = navigator.userAgent
@@ -143,6 +180,9 @@ function safeHref(raw: unknown, origin: string): string | null {
   }
 }
 
+/** The push queue's tail (see the push handler). */
+let pushQueue: Promise<void> = Promise.resolve()
+
 sw.addEventListener('push', (event: PushEvent) => {
   let note: PushNote | null = null
   try {
@@ -152,40 +192,47 @@ sw.addEventListener('push', (event: PushEvent) => {
   }
   if (!note || !note.id) return
   const n = note as PushNote & { id: string }
-  event.waitUntil(
-    (async () => {
-      const version = n.createdAt || ''
-      if (!isWebKit()) {
-        const wins = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true })
-        // The person is looking at Talaria: the page toasts it — except a
-        // per-device TEST push, which is always shown: its whole point is a
-        // banner on the device in front of you.
-        if (n.kind !== 'test' && wins.some((w) => w.focused && w.visibilityState === 'visible')) return
-        // This version is already bannered (the leader tab got there first).
-        const seen = await bannered(n.id)
-        if (seen && (!version || seen.v >= version)) return
-        // Already on screen under its tag, and not a re-alert.
-        if (!n.renotify && (await sw.registration.getNotifications({ tag: n.id })).length > 0) return
-      }
-      await markBannered(n.id, version)
-      const ts = version ? Date.parse(version) : NaN
-      await sw.registration.showNotification(n.title ?? '', {
-        body: n.body || '',
-        // The notification row's id: one OS copy per row, so a re-delivery
-        // replaces its own earlier copy instead of stacking.
-        tag: n.id,
-        icon: ICON,
-        badge: BADGE,
-        data: { id: n.id, href: n.href || '', v: version },
-        ...({ renotify: !!n.renotify, timestamp: Number.isFinite(ts) ? ts : undefined } as object),
-      })
-      // Tell the open pages, so a leader that was about to post the same row
-      // stands down.
-      const all = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true })
-      for (const c of all) c.postMessage({ type: 'talaria:bannered', id: n.id, v: version })
-    })(),
-  )
+  // One push at a time: the check and the show of two pushes for one row
+  // must not interleave (both would read the store before either wrote it).
+  const run = pushQueue.then(() => showPush(n)).catch(() => {})
+  pushQueue = run
+  event.waitUntil(run)
 })
+
+async function showPush(n: PushNote & { id: string }): Promise<void> {
+  const version = n.createdAt || ''
+  // Older than the copy already shown under this tag (an out-of-order
+  // delivery): drop it, on every engine — see the top of this file.
+  if (await olderThanShown(n.id, version)) return
+  if (!isWebKit()) {
+    const wins = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true })
+    // The person is looking at Talaria: the page toasts it — except a
+    // per-device TEST push, which is always shown: its whole point is a
+    // banner on the device in front of you.
+    if (n.kind !== 'test' && wins.some((w) => w.focused && w.visibilityState === 'visible')) return
+    // This version is already bannered (the leader tab got there first).
+    const seen = await bannered(n.id)
+    if (seen && (!version || seen.v >= version)) return
+    // Already on screen under its tag, and not a re-alert.
+    if (!n.renotify && (await sw.registration.getNotifications({ tag: n.id })).length > 0) return
+  }
+  await markBannered(n.id, version)
+  const ts = version ? Date.parse(version) : NaN
+  await sw.registration.showNotification(n.title ?? '', {
+    body: n.body || '',
+    // The notification row's id: one OS copy per row, so a re-delivery
+    // replaces its own earlier copy instead of stacking.
+    tag: n.id,
+    icon: ICON,
+    badge: BADGE,
+    data: { id: n.id, href: n.href || '', v: version },
+    ...({ renotify: !!n.renotify, timestamp: Number.isFinite(ts) ? ts : undefined } as object),
+  })
+  // Tell the open pages, so a leader that was about to post the same row
+  // stands down.
+  const all = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true })
+  for (const c of all) c.postMessage({ type: 'talaria:bannered', id: n.id, v: version })
+}
 
 /** Ask one window to route in place; true when it answered within the bound. */
 function askToOpen(win: WindowClient, msg: { id: string; href: string; summary?: boolean }): Promise<boolean> {
