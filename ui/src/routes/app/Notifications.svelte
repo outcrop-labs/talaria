@@ -85,7 +85,11 @@
   })
   const ids = $derived(rows.map((r) => r.id))
   const pending = $derived(v2 ? list.isPending : base.isPending)
-  const failed = $derived(v2 ? list.isError && !list.data : base.isError && !base.data)
+  // Each query's flags read on their own line: a short-circuit across two
+  // queries would leave the second unread, and unsubscribed.
+  const listFailed = $derived(list.isError && !list.data)
+  const baseFailed = $derived(base.isError && !base.data)
+  const failed = $derived(v2 ? listFailed : baseFailed)
   const hasMore = $derived(v2 && !!list.hasNextPage)
 
   // ── Focus and selection ────────────────────────────────────────────────────
