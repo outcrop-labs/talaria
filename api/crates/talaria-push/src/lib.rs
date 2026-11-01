@@ -32,8 +32,10 @@
 // refusal of the INSTANCE's own token (Apple's `BadJwtToken` family), which
 // is this server's fault and no device's. A row that timed out, or failed
 // three times running, is SKIPPED for 2^failures minutes (an hour at most)
-// after its last attempt, and ten failures with no delivery for a week
-// prune it.
+// after its last attempt, and ten failures in a row with `last_seen_at` a
+// week old prune it (`last_seen_at` moves on a 2xx AND on every re-file of
+// the subscription, so a browser that keeps opening Talaria keeps its row,
+// tried at most hourly).
 //
 // The VAPID keypair is unsealed once and cached, keyed by the sealed string
 // the row holds: the cheap SELECT stays on every delivery, so a re-mint, a
@@ -828,8 +830,9 @@ pub enum Tend {
 
 /// Consecutive counted failures that prune a row refused by its service.
 pub const REFUSALS_TO_PRUNE: i32 = 3;
-/// Consecutive failures of any kind that prune a row once it has also gone a
-/// week with no delivery: an endpoint that has not worked for days.
+/// Consecutive failures of any kind that prune a row once its `last_seen_at`
+/// (a 2xx, or the browser filing it again) is also a week old: an endpoint
+/// that has not worked, nor been opened, for days.
 pub const FAILURES_TO_PRUNE: i32 = 10;
 /// Failures after which a row sits out its backoff window.
 pub const FAILURES_TO_SKIP: i32 = 3;
@@ -973,7 +976,7 @@ async fn tend(pg: &PgPool, endpoint: &str, result: &PushResult) {
                 .is_ok_and(|r| r.rows_affected() > 0)
             {
                 tracing::warn!(
-                    "[push] a subscription failed {FAILURES_TO_PRUNE} times with no delivery for a week; pruned"
+                    "[push] a subscription failed {FAILURES_TO_PRUNE} times running and was neither delivered to nor re-filed for a week; pruned"
                 );
             } else {
                 tracing::warn!(
