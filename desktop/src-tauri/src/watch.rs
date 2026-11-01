@@ -371,6 +371,25 @@ impl SincePages {
     }
 }
 
+/// The server's seq, when a complete `?since` page says it is BELOW the
+/// cursor the watcher read from: the instance's database was restored or
+/// reset under it (a person's seq never goes back otherwise, I-10). Every row
+/// filed since then has a seq at or below the old cursor, so reading on from
+/// it would surface nothing until the server passed it again. The caller
+/// rebases (`Arrivals::rebase`) instead, as the page does (W2-R).
+pub fn server_behind(cursor: Option<i64>, read: &Read) -> Option<i64> {
+    match (cursor, read.more, read.seq) {
+        (Some(cursor), false, Some(seq)) if seq < cursor => Some(seq),
+        _ => None,
+    }
+}
+
+/// Whether a `resync` frame asks for a read: an incomplete replay, a seq past
+/// the one read through, or one BELOW it (a restore; the read then rebases).
+pub fn resync_needs_read(seq: i64, complete: bool, through: Option<i64>) -> bool {
+    !complete || through.is_none_or(|through| seq != through)
+}
+
 /// `YYYY-MM-DDTHH:MM:SS[.fff…][Z|±HH:MM]` in epoch ms. A string that is not
 /// that is `None`, never a guess.
 pub fn parse_iso_ms(s: &str) -> Option<i64> {
@@ -581,6 +600,18 @@ impl Arrivals {
     /// Never moves backwards.
     pub fn read_through(&mut self, seq: i64) {
         self.seq = Some(self.seq.map_or(seq, |s| s.max(seq)));
+    }
+
+    /// The server's seq fell below the record's (`server_behind`): judge the
+    /// newest rows by wave 1's rule — the high-water mark minus the margin,
+    /// and the seen set — so a row filed since the restore surfaces and one
+    /// from before it does not, then take the server's seq as the cursor. The
+    /// one place the cursor moves back.
+    pub fn rebase(&mut self, rows: &[Row], seq: i64) -> Vec<Arrival> {
+        self.seq = None;
+        let fresh = self.arrive(rows);
+        self.seq = Some(seq);
+        fresh
     }
 
     /// Rows to surface now, oldest first. `rows` may come in any order (a
@@ -1156,9 +1187,7 @@ async fn run(mut watch: Watch) {
                                     list |= sync.resync;
                                 }
                                 Frame::Resync { seq, complete } => {
-                                    if !complete
-                                        || watch.arrivals.seq().is_none_or(|through| seq > through)
-                                    {
+                                    if resync_needs_read(seq, complete, watch.arrivals.seq()) {
                                         check = true;
                                     }
                                 }
@@ -1234,13 +1263,18 @@ async fn read_and_post(watch: &mut Watch, state: &mut Running) -> Result<(), Sig
     let mut fresh = Vec::new();
     let mut last = None;
     let since_mode = watch.server.has("since") && watch.arrivals.seq().is_some();
+    let mut rebased = false;
     if since_mode {
         let mut cursor = watch.arrivals.seq();
         let mut pages = SincePages::default();
+        let mut behind = None;
         for _ in 0..MAX_SINCE_PAGES {
             match fetch(&state.client, &watch.origin, &watch.cookie, cursor).await {
                 Fetch::Read(read) => {
-                    fresh.extend(watch.arrivals.arrive(&read.rows));
+                    behind = server_behind(cursor, &read);
+                    if behind.is_none() {
+                        fresh.extend(watch.arrivals.arrive(&read.rows));
+                    }
                     let next = pages.page(&read);
                     watch.server = read.server.clone();
                     last = Some(read);
@@ -1253,8 +1287,32 @@ async fn read_and_post(watch: &mut Watch, state: &mut Running) -> Result<(), Sig
                 Fetch::Failed => break,
             }
         }
-        if let Some(seq) = pages.through() {
-            watch.arrivals.read_through(seq);
+        match behind {
+            // A restore under the watcher: rebase on the newest rows.
+            Some(server) => {
+                eprintln!(
+                    "talaria-desktop: {}: the server's seq {server} is below the cursor {}; rebasing on the newest rows",
+                    watch.label,
+                    watch.arrivals.seq().unwrap_or_default()
+                );
+                match fetch(&state.client, &watch.origin, &watch.cookie, None).await {
+                    Fetch::Read(read) => {
+                        let seq = read.seq.unwrap_or(server);
+                        fresh.extend(watch.arrivals.rebase(&read.rows, seq));
+                        watch.server = read.server.clone();
+                        last = Some(read);
+                        rebased = true;
+                    }
+                    Fetch::SignedOut => return Err(signed_out_now(watch)),
+                    // The next read tries again from the old cursor.
+                    Fetch::Failed => {}
+                }
+            }
+            None => {
+                if let Some(seq) = pages.through() {
+                    watch.arrivals.read_through(seq);
+                }
+            }
         }
     } else {
         match fetch(&state.client, &watch.origin, &watch.cookie, None).await {
@@ -1282,7 +1340,7 @@ async fn read_and_post(watch: &mut Watch, state: &mut Running) -> Result<(), Sig
             crate::notify::set_badge(&watch.app, &watch.label, badge);
         }
         // A plain read also says which banners stand for rows read since.
-        if !since_mode {
+        if !since_mode || rebased {
             close_read_rows(watch, state, &read.rows).await;
         }
     }
@@ -2220,6 +2278,67 @@ mod tests {
             190,
             "read on from the last row: only the rest"
         );
+    }
+
+    #[test]
+    fn a_server_seq_below_the_cursor_is_a_restore_and_the_watcher_rebases() {
+        // Only a complete page whose snapshot is below the cursor says so.
+        assert_eq!(
+            server_behind(Some(100), &since_page(&[], false, 95)),
+            Some(95)
+        );
+        assert_eq!(server_behind(Some(100), &since_page(&[], false, 100)), None);
+        assert_eq!(
+            server_behind(Some(100), &since_page(&[101], false, 101)),
+            None
+        );
+        assert_eq!(server_behind(Some(100), &since_page(&[], true, 95)), None);
+        assert_eq!(server_behind(None, &since_page(&[], false, 95)), None);
+        // The watcher read through 100; the restore put the server back at
+        // 95, and two rows were filed after it: seqs 96 and 97, both at or
+        // below the old cursor.
+        let mut a = Arrivals::default();
+        a.arrive(&[seq_row("old", T0, 100)]);
+        a.read_through(100);
+        let since_restore = [
+            seq_row("n2", T0 + 60_000, 97),
+            seq_row("n1", T0 + 30_000, 96),
+        ];
+        // The defect: by the record's seq, neither is ever news.
+        assert!(a.clone().arrive(&since_restore).is_empty());
+        // Rebased on the newest page (newest first, as a plain read is): the
+        // rows filed since the restore surface, oldest first; a row from
+        // before it (older than the high-water mark's margin) does not; the
+        // cursor is the server's.
+        let before = seq_row("pre", T0 - MARGIN_MS - 1, 90);
+        let mut page = since_restore.to_vec();
+        page.push(before);
+        assert_eq!(ids(&a.rebase(&page, 97)), vec!["n1", "n2"]);
+        assert_eq!(a.seq(), Some(97));
+        // Then the record rule again, from the server's seq.
+        assert_eq!(
+            ids(&a.arrive(&[seq_row("n3", T0 + 90_000, 98)])),
+            vec!["n3"]
+        );
+        assert!(a.arrive(&page).is_empty());
+    }
+
+    #[test]
+    fn a_resync_below_the_cursor_asks_for_a_read() {
+        assert!(!resync_needs_read(50, true, Some(50)), "nothing new");
+        assert!(
+            resync_needs_read(51, true, Some(50)),
+            "rows past the cursor"
+        );
+        assert!(
+            resync_needs_read(40, true, Some(50)),
+            "a restore: the read rebases"
+        );
+        assert!(
+            resync_needs_read(50, false, Some(50)),
+            "an incomplete replay"
+        );
+        assert!(resync_needs_read(50, true, None), "no cursor yet");
     }
 
     #[test]
