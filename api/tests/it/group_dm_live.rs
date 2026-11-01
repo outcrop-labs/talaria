@@ -178,3 +178,106 @@ async fn one_person_is_the_plain_dm_and_the_refusals_hold() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+/// Every other person in a group DM gets ONE row for it (`group_key::dm`),
+/// each message coalescing into it; the sender gets none; a member who set
+/// the conversation to `mentions` hears only a message that @mentions them.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn a_group_dm_message_files_one_coalescing_row_per_other_member() {
+    let state = live_app_state().await;
+    let (me, cookie) = member(&state).await;
+    let (maya, maya_cookie) = member(&state).await;
+    let (jordan, _) = member(&state).await;
+    sqlx::query("update users set name = 'Maya Groupdm' where id = $1::uuid")
+        .bind(&maya)
+        .execute(&state.pg)
+        .await
+        .unwrap();
+    let (_, out) = call_json(
+        &state,
+        "POST",
+        "/api/dms",
+        Some(&cookie),
+        Some(json!({ "userIds": [maya, jordan] })),
+    )
+    .await;
+    let id = out["channel"]["id"].as_str().unwrap().to_string();
+    let href = format!("/comms/channel/{id}");
+    let dm_rows = |user: String| {
+        let pg = state.pg.clone();
+        let href = href.clone();
+        async move {
+            sqlx::query_as::<_, (i32, String, Option<String>)>(
+                "select count, body, group_key from notifications \
+                 where user_id = $1::uuid and kind = 'dm' and href = $2 and read_at is null",
+            )
+            .bind(&user)
+            .bind(&href)
+            .fetch_all(&pg)
+            .await
+            .unwrap()
+        }
+    };
+    let wait_for = |user: String, count: i32| {
+        let dm_rows = &dm_rows;
+        async move {
+            for _ in 0..150 {
+                if dm_rows(user.clone())
+                    .await
+                    .first()
+                    .is_some_and(|r| r.0 == count)
+                {
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            false
+        }
+    };
+    // Maya would rather hear only her @mentions here.
+    let (status, _) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/channels/{id}/notify"),
+        Some(&maya_cookie),
+        Some(json!({ "level": "mentions" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for line in ["first", "second"] {
+        let (status, _) = call_json(
+            &state,
+            "POST",
+            &format!("/api/channels/{id}/messages"),
+            Some(&cookie),
+            Some(json!({ "content": line })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    assert!(
+        wait_for(jordan.clone(), 2).await,
+        "Jordan's one row counts both"
+    );
+    let jordan_rows = dm_rows(jordan.clone()).await;
+    assert_eq!(jordan_rows.len(), 1);
+    assert_eq!(jordan_rows[0].1, "second");
+    assert_eq!(jordan_rows[0].2, Some(format!("dm:{id}")));
+    assert!(dm_rows(me.clone()).await.is_empty(), "never the sender");
+    assert!(
+        dm_rows(maya.clone()).await.is_empty(),
+        "Maya is at mentions"
+    );
+    let (status, _) = call_json(
+        &state,
+        "POST",
+        &format!("/api/channels/{id}/messages"),
+        Some(&cookie),
+        Some(json!({ "content": "@maya a question for you" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(wait_for(maya.clone(), 1).await, "an @mention reaches Maya");
+    assert!(wait_for(jordan.clone(), 3).await);
+}
