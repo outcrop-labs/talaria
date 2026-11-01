@@ -789,12 +789,24 @@ async fn engine(pg: &PgPool) {
     let hits = cap
         .wait("/ada-ok", before + 2, Duration::from_secs(5))
         .await;
-    let (a, b) = (&hits[hits.len() - 2], &hits[hits.len() - 1]);
-    assert_eq!(a.headers.get("topic"), b.headers.get("topic"));
-    assert_eq!(a.headers.get("topic"), Some(&first.replace('-', "")));
-    assert_eq!(b.headers.get("urgency").map(String::as_str), Some("normal"));
-    assert_eq!(b.headers.get("ttl").map(String::as_str), Some("43200"));
-    assert_eq!(browser.decrypt(&b.body)["renotify"], true);
+    // The two pushes are detached tasks, so they may reach the service in
+    // either order: tell them apart by what they carry, not by arrival.
+    let pair = &hits[hits.len() - 2..];
+    assert_eq!(pair[0].headers.get("topic"), pair[1].headers.get("topic"));
+    assert_eq!(pair[0].headers.get("topic"), Some(&first.replace('-', "")));
+    let realert = pair
+        .iter()
+        .find(|h| browser.decrypt(&h.body)["renotify"] == true)
+        .expect("one of the two is the re-alert");
+    assert_eq!(browser.decrypt(&realert.body)["title"], "two");
+    assert_eq!(
+        realert.headers.get("urgency").map(String::as_str),
+        Some("normal")
+    );
+    assert_eq!(
+        realert.headers.get("ttl").map(String::as_str),
+        Some("43200")
+    );
     println!("PASS topic");
 
     // ── 6. The missed-activity batcher ─────────────────────────────────────
