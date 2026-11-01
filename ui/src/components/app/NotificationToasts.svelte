@@ -19,6 +19,7 @@
   import { idbBanneredStore, markBannered, wasBannered } from '@/lib/notify-bannered'
   import { CLAIM_WINDOW_MS, decide } from '@/lib/notify-decide'
   import { blockedSteps, detectBrowser, type BlockedSteps } from '@/lib/notify-help'
+  import { lookingNow } from '@/lib/looking'
   import { browserLeaderEdges, startNotifyLeader, type NotifyLeader } from '@/lib/notify-leader'
   import { openNotification } from '@/lib/notify-open'
   import { shouldAsk, turnOnResult, type PromptMemory } from '@/lib/notify-prompt'
@@ -83,7 +84,9 @@
   let promptBlocked = $state<BlockedSteps | null>(null)
   const browser = typeof navigator !== 'undefined' ? detectBrowser(navigator.userAgent, { brave: 'brave' in navigator }) : null
 
-  const lookingHere = () => document.visibilityState === 'visible' && document.hasFocus()
+  // The one "looking" rule, shared with ChannelView's read cursor: a page the
+  // person looks at toasts, and only it reads a conversation.
+  const lookingHere = () => lookingNow()
 
   const open = (n: { id: string; href?: string | null }) =>
     openNotification(n, {

@@ -25,6 +25,7 @@
   import { useSession } from '@/lib/session'
   import { useProfilePrefs } from '@/lib/muse.svelte'
   import { dayDividerMap } from '@/lib/day-dividers'
+  import { lookingNow, readCursorToPost, watchLooking } from '@/lib/looking'
   import { userMentionInsert, type Mentionable } from '@/components/chat/mentions.svelte'
   import { splitAttachments, type Attachment } from '@/lib/attachments'
   import type { AgentModel } from '@/lib/agents'
@@ -132,16 +133,22 @@
   let composerH = $state(0)
   const qc = useQueryClient()
 
-  // Having the channel open = having read it: advance the read cursor as
-  // messages land, so the sidebar badge clears live.
+  // Having the channel open IN FRONT OF THE PERSON = having read it: advance
+  // the read cursor as messages land, so the sidebar badge clears live. Only
+  // while they are looking (lib/looking.ts): a read also clears the
+  // conversation's bell rows — its DM, an @mention in it — so a page nobody
+  // looks at (a background tab, a minimized window, an instance behind the
+  // desktop shell's launcher) would mark a message read before it ever
+  // alerted. The cursor catches up the moment they look.
+  let looking = $state(lookingNow())
+  $effect(() => watchLooking((v) => (looking = v)))
   let lastReadPosted: { id: string; seq: number } = { id: '', seq: 0 }
   $effect(() => {
     const latest = messages[messages.length - 1]?.seq ?? 0
-    if (!latest) return
-    const prev = lastReadPosted
-    if (prev.id === channelId && latest <= prev.seq) return
-    lastReadPosted = { id: channelId, seq: latest }
-    void markChannelRead(channelId, latest).then(() => qc.invalidateQueries({ queryKey: ['channels'] })).catch(() => {})
+    const seq = readCursorToPost({ channelId, latest, posted: lastReadPosted, looking })
+    if (seq === null) return
+    lastReadPosted = { id: channelId, seq }
+    void markChannelRead(channelId, seq).then(() => qc.invalidateQueries({ queryKey: ['channels'] })).catch(() => {})
   })
 
   // A thread panel only survives while its root does.
