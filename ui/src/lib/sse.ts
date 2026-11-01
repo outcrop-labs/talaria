@@ -281,9 +281,14 @@ export function openStream(
     if (opts.reconnect) window.addEventListener('online', kick)
     document.addEventListener('visibilitychange', onVisible)
   }
-  connect()
-  // Opened in a tab that is already hidden (a background tab's first load):
-  // the clock starts now.
-  if (pauseMs && hidden()) armPause()
+  // Opened in a tab that is already hidden — a tab opened in the background,
+  // or a component re-created while its tab is out of sight (a list refetch
+  // that remounts the view) — it starts paused: no socket until the tab is
+  // shown, and then `onResume` reads what it would have said, as after any
+  // pause. The caller's own first read has just been made.
+  if (pauseMs && hidden()) {
+    paused = true
+    setState('paused')
+  } else connect()
   return stop
 }

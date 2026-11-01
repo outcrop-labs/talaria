@@ -280,11 +280,20 @@ describe('openStream', () => {
     stop()
   })
 
-  it('a stream opened in a tab that is already hidden starts its clock at once', () => {
+  it('a stream opened in a tab that is already hidden starts paused, and opens on show after onResume', async () => {
     doc.visibilityState = 'hidden'
-    const stop = openStream('/b', () => {}, { pauseWhenHidden: 2000 })
-    vi.advanceTimersByTime(2000)
-    expect(at(0).closed).toBe(true)
+    const resumed = vi.fn()
+    const opens: Array<{ first: boolean; resumed?: boolean }> = []
+    const stop = openStream('/b', () => {}, { pauseWhenHidden: 2000, onResume: resumed, onOpen: (i) => opens.push(i) })
+    vi.advanceTimersByTime(60_000)
+    expect(FakeES.all).toHaveLength(0)
+    doc.visibilityState = 'visible'
+    doc.fire('visibilitychange')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resumed).toHaveBeenCalledTimes(1)
+    expect(FakeES.all).toHaveLength(1)
+    at(0).open()
+    expect(opens).toEqual([{ first: true, resumed: true }])
     stop()
   })
 

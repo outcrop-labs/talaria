@@ -526,7 +526,10 @@
   }) {
     const l = leader
     const ctx = context()
-    const decision = decide({ ...ctx, read: false })
+    // Read, feed and Do Not Disturb were settled per row before this (a
+    // summary stands for rows that each passed them): what is left is which
+    // tab, and which device.
+    const decision = decide({ ...ctx, dnd: null, read: false })
     const toast = () =>
       pushToast({
         key: n.key,

@@ -325,6 +325,12 @@ export function useUserEventInvalidation(): void {
         case 'brief':
           void qc.invalidateQueries({ queryKey: ['daily-brief'] })
           break
+        case 'session':
+          // The api ended the stream because the session behind it ended (a
+          // sign-out elsewhere, the expiry; I-19): ask now, so the session
+          // gate signs this tab out instead of waiting out five reconnects.
+          void qc.invalidateQueries({ queryKey: ['session'] })
+          break
       }
     }),
   )
