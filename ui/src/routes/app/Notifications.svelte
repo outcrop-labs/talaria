@@ -16,7 +16,6 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
   import { putJson } from '@/lib/fetch-json'
-  import { useNotifications } from '@/lib/notifications'
   import {
     badgeCount,
     centerQuery,
@@ -31,6 +30,7 @@
     useCachedPictures,
     useCenterList,
     useInboxActions,
+    useNotifySettings,
     viewFrom,
     VIEW_LABEL,
     type CenterFilters,
@@ -52,7 +52,7 @@
   // newest 50 sliced and filtered here — the same rows the bell holds.
   claimViewTitle('Notifications')
 
-  const base = useNotifications()
+  const base = useNotifySettings()
   const actions = useInboxActions()
   const pictures = useCachedPictures()
   const features = $derived(featureSet(base.data))

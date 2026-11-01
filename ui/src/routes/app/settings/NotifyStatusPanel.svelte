@@ -10,7 +10,6 @@
     shellSendTestNotification,
     type ShellNotificationStatus,
   } from '@/lib/desktop-shell'
-  import { useNotifications } from '@/lib/notifications'
   import {
     ALERT_TARGET_LABEL,
     alertTarget,
@@ -18,6 +17,7 @@
     thisBrowserId,
     useDevices,
     useNotifyPatch,
+    useNotifySettings,
     usePresenceSnapshot,
   } from '@/lib/notify-center'
   import { dndView, safeZone, scheduleSummary } from '@/lib/notify-dnd'
@@ -42,7 +42,7 @@
   //
   // Each section gates on what the api serves (`features`) and on where it
   // runs (a browser or the shell), and says so rather than showing a dead row.
-  const query = useNotifications()
+  const query = useNotifySettings()
   const features = $derived(featureSet(query.data))
   const shell = inDesktopShell()
   const devices = useDevices(() => features.has('devices'))
