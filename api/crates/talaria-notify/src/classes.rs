@@ -82,13 +82,11 @@ pub const KIND_CLASS: &[(&str, &str, &str)] = &[
     // An access request's outcome — the request was yours, but the
     // notification is news, not a door.
     ("board_access", "work_complete", "Access decided"),
-    // A Google principal for an agent was provisioned. W2-E remaps it to an
-    // `account` class; until then it is where the fall-through put it.
-    (
-        "agent_google_principal",
-        "work_complete",
-        "Agent Google account",
-    ),
+    // A Google principal for an agent was provisioned: an agent now reads
+    // your mail, calendar and Drive. A security notice about YOUR account,
+    // never the quiet outcome bucket the fall-through used to put it in
+    // (SE-14).
+    ("agent_google_principal", "account", "An agent acts as you"),
     ("workchain_paused", "workchain_paused", "Workchain paused"),
     // A channel at level `all` (W2-P files these).
     ("channel-message", "channel_activity", "New message"),
@@ -142,9 +140,11 @@ pub struct ClassDef {
     pub label: &'static str,
     pub blurb: &'static str,
     pub category: Category,
-    /// What a person who never touched the matrix gets. Phase 0: exactly
-    /// wave 1's effective answer (push whenever the route kept an in-app copy,
-    /// mail when the fallback route was `both`).
+    /// What a person who never touched the matrix gets: wave 1's effective
+    /// answer (push whenever the route kept an in-app copy, mail when the
+    /// fallback route was `both`), except Following, which is quiet — the
+    /// row lands in the feed and nothing banners, pushes or mails (EB-05,
+    /// O-9). A stored legacy route or channel still wins (`channels_of`).
     pub defaults: ChannelDefaults,
     /// Alerts through DND (a decision a person is blocking).
     pub breaks_through: bool,
@@ -239,11 +239,23 @@ pub const CLASSES: &[ClassDef] = &[
         email_delay_min: 0,
     },
     ClassDef {
+        id: "account",
+        label: "Your account",
+        blurb: "Changes to what can act as you, like an agent given your Google account.",
+        category: Category::Direct,
+        defaults: ch(true, true, true),
+        breaks_through: false,
+        admin_only: false,
+        email_delay_min: 0,
+    },
+    // Following: news, not a door. Quiet by default (EB-05): the row lands in
+    // the feed; a person who wants the banners turns them on.
+    ClassDef {
         id: "work_complete",
         label: "Work finished",
         blurb: "A ticket moved, or research you asked for is ready.",
         category: Category::Following,
-        defaults: ch(true, true, false),
+        defaults: ch(false, false, false),
         breaks_through: false,
         admin_only: false,
         email_delay_min: 0,
@@ -253,7 +265,7 @@ pub const CLASSES: &[ClassDef] = &[
         label: "Workchains paused",
         blurb: "A workchain you run stopped and is waiting.",
         category: Category::Following,
-        defaults: ch(true, true, false),
+        defaults: ch(false, false, false),
         breaks_through: false,
         admin_only: false,
         email_delay_min: 0,
@@ -263,7 +275,7 @@ pub const CLASSES: &[ClassDef] = &[
         label: "Channel activity",
         blurb: "New messages in channels you set to notify on every message.",
         category: Category::Following,
-        defaults: ch(true, false, false),
+        defaults: ch(false, false, false),
         breaks_through: false,
         admin_only: false,
         email_delay_min: 0,
@@ -439,8 +451,9 @@ mod tests {
             // An access request's outcome — news, not a door. Explicit so the
             // quiet bucket is a decision here, not the fall-through's default.
             ("board_access", "work_complete"),
-            // Wave 1 filed it through the fall-through; the table now says so.
-            ("agent_google_principal", "work_complete"),
+            // A security notice about your own account (SE-14), never the
+            // quiet outcome bucket wave 1's fall-through put it in.
+            ("agent_google_principal", "account"),
             // The MCP health pass's ok → down notification: in-app, like the
             // capability gaps it is one of.
             ("mcp_server_down", "gap_reported"),
@@ -487,16 +500,34 @@ mod tests {
         assert_eq!(kinds.len(), n, "a kind is listed twice");
     }
 
-    // Phase 0 changes no delivery: each original class's registry defaults
-    // ARE its wave-1 fallback route (`both` = desktop+push+email, `in_app` =
-    // desktop+push), the shape `legacy_route` derives back.
+    // Every original class's default mail is its wave-1 fallback route
+    // (`both` mails, `in_app` does not), so the digest's derived answer and
+    // the legacy table never move. The screens are wave 1's (desktop and
+    // push) everywhere but Following, which is quiet (EB-05).
     #[test]
-    fn the_defaults_are_wave_ones_fallbacks() {
+    fn the_defaults_are_wave_ones_but_following_is_quiet() {
         for (id, fallback) in NOTIFY_CLASSES {
-            let d = class_def(id).unwrap().defaults;
-            assert!(d.desktop && d.push, "{id}");
+            let c = class_def(id).unwrap();
+            let d = c.defaults;
             assert_eq!(d.email, *fallback == "both", "{id}");
+            if c.category == Category::Following {
+                assert!(!d.desktop && !d.push && !d.email, "{id} is quiet");
+            } else {
+                assert!(d.desktop && d.push, "{id}");
+            }
         }
+        for c in CLASSES.iter().filter(|c| c.category == Category::Following) {
+            assert_eq!(
+                (c.defaults.desktop, c.defaults.push, c.defaults.email),
+                (false, false, false),
+                "{}",
+                c.id
+            );
+        }
+        let account = class_def("account").unwrap();
+        assert_eq!(account.category, Category::Direct);
+        assert!(account.defaults.desktop && account.defaults.push && account.defaults.email);
+        assert!(!account.breaks_through && !account.admin_only);
     }
 
     // kinds_of / kinds_of_category / known_kinds agree with notify_class_of:

@@ -4,9 +4,17 @@
 // the client to alert on, and a `presence` event goes out on `user:<id>` only
 // when that answer changes.
 //
-// Phase 0 stores and announces; nothing gates on it yet. W2-E gates the push
-// on it (docs/notifications/delivery.md); the thresholds are consts it may
-// tune.
+// The delivery engine gates the web push on it (docs/notifications/delivery.md):
+// a write while one of the person's clients is looking or active defers the
+// push 60 s, and the client that surfaced the row acks it (defer.rs). The
+// write path reaches the store through a handle installed at boot
+// (`install_presence_redis`, beside the push plane in talaria-jobs) — the
+// contract's `NotifyDeps` carries no Redis connection — and with no handle,
+// or Redis failing, there is no winner: the push goes now (fail open toward
+// delivery).
+
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use redis::AsyncCommands;
 use serde_json::{Value, json};
@@ -14,8 +22,20 @@ use talaria_realtime::{UserEvent, publish_user};
 
 use crate::NotifyDeps;
 
-/// The presence plane's own feature flags (I-23). W2-E adds its own here.
-pub const FEATURES: &[&str] = &[];
+/// The presence plane's own feature flags (I-23): the web push waits while
+/// one of the person's clients is in use.
+pub const FEATURES: &[&str] = &["presence-gated-push"];
+
+/// `looking`: visible, focused, and input in the last 60 s (the client
+/// computes it; the number is the contract's, served here for the record).
+pub const LOOKING_INPUT_MS: i64 = 60_000;
+/// `active`: input in the last 120 s (the desktop: OS input).
+pub const ACTIVE_INPUT_MS: i64 = 120_000;
+/// How long a push waits while a client is looking or active (O-13).
+pub const PUSH_DEFER_MS: i64 = 60_000;
+/// The longest the write path waits for the presence store before it treats
+/// the person as away and pushes now.
+pub const WINNER_READ_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// The hash's TTL: a person whose every client went silent has no presence.
 pub const PRESENCE_TTL_SECS: i64 = 120;
@@ -149,6 +169,86 @@ pub fn winner(entries: &[Entry], now_ms: i64) -> Presence {
     Presence { looking, active }
 }
 
+static REDIS: OnceLock<redis::aio::ConnectionManager> = OnceLock::new();
+
+/// Install the presence store's connection at boot (talaria-jobs, beside the
+/// push plane). The manager reconnects on its own; installing twice keeps the
+/// first.
+pub fn install_presence_redis(conn: redis::aio::ConnectionManager) {
+    let _ = REDIS.set(conn);
+}
+
+/// The boot-installed connection, for the engine's own jobs (the push prune
+/// reads session markers through it). None before boot, and in tests that
+/// never install one.
+pub fn presence_redis() -> Option<redis::aio::ConnectionManager> {
+    REDIS.get().cloned()
+}
+
+/// The person's winner pair right now, for the write path's push decision:
+/// one HGETALL, read-only, bounded by `WINNER_READ_TIMEOUT`. No handle, a
+/// Redis error or a timeout answer "nobody there" — the push goes now, never
+/// silently withheld.
+pub async fn active_winner(user_id: &str, now_ms: i64) -> Presence {
+    let Some(mut conn) = presence_redis() else {
+        return Presence::default();
+    };
+    let read = async {
+        let raw: Vec<(String, String)> = conn.hgetall(dev_key(user_id)).await?;
+        Ok::<_, redis::RedisError>(raw)
+    };
+    match tokio::time::timeout(WINNER_READ_TIMEOUT, read).await {
+        Ok(Ok(raw)) => {
+            let entries: Vec<Entry> = raw
+                .iter()
+                .filter_map(|(id, v)| parse_entry(id, v))
+                .collect();
+            winner(&entries, now_ms)
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("[presence] the winner read failed ({e}); pushing now");
+            Presence::default()
+        }
+        Err(_) => {
+            tracing::warn!("[presence] the winner read timed out; pushing now");
+            Presence::default()
+        }
+    }
+}
+
+impl Presence {
+    /// A client is looking or active: the person is at a screen.
+    pub fn present(&self) -> bool {
+        self.looking.is_some() || self.active.is_some()
+    }
+}
+
+/// The winner cache's compare-and-set, atomic (contract note N2). The cache
+/// holds `<at>|<pair>`: a beat whose entries were read EARLIER than the
+/// cached answer's never overwrites it (two racing beats can no longer leave
+/// the older pair cached), and a beat publishes only when it moved the pair.
+/// Answers 1 when the caller should publish.
+const WIN_CAS: &str = r#"
+local cur = redis.call('GET', KEYS[1])
+local at = tonumber(ARGV[2])
+if cur then
+  local sep = string.find(cur, '|', 1, true)
+  if sep then
+    local cur_at = tonumber(string.sub(cur, 1, sep - 1))
+    if cur_at and cur_at > at then
+      redis.call('EXPIRE', KEYS[1], ARGV[3])
+      return 0
+    end
+    if string.sub(cur, sep + 1) == ARGV[1] then
+      redis.call('SET', KEYS[1], ARGV[2] .. '|' .. ARGV[1], 'EX', ARGV[3])
+      return 0
+    end
+  end
+end
+redis.call('SET', KEYS[1], ARGV[2] .. '|' .. ARGV[1], 'EX', ARGV[3])
+return 1
+"#;
+
 fn dev_key(user_id: &str) -> String {
     format!("presence:dev:{user_id}")
 }
@@ -210,13 +310,16 @@ pub async fn record(
     let entries = read_entries(conn, user_id, now_ms).await?;
     let win = winner(&entries, now_ms);
     let pair = json!([win.looking, win.active]).to_string();
-    let prev: Option<String> = conn.get(win_key(user_id)).await?;
     // The cache's own TTL is refreshed every beat, so a winner that holds for
     // an hour is announced once, not every two minutes.
-    let _: () = conn
-        .set_ex(win_key(user_id), &pair, PRESENCE_TTL_SECS as u64)
+    let moved: i64 = redis::Script::new(WIN_CAS)
+        .key(win_key(user_id))
+        .arg(&pair)
+        .arg(now_ms)
+        .arg(PRESENCE_TTL_SECS)
+        .invoke_async(conn)
         .await?;
-    if prev.as_deref() != Some(pair.as_str()) {
+    if moved == 1 {
         publish_user(
             &deps.realtime,
             user_id,

@@ -4,6 +4,7 @@
 // group (I-24).
 
 use serde_json::Value;
+use talaria_agent_auth::now_ms as wall_ms;
 use talaria_realtime::{UserEvent, publish_user};
 
 use crate::NotifyDeps;
@@ -12,6 +13,51 @@ use crate::classes::notify_class_of;
 use crate::deliver::{self, Decision};
 use crate::href::stored_href;
 use crate::meta::{Coalesce, Filed, NotifyMeta};
+use crate::prefs::DeliverySwitches;
+
+/// What the write reads BEFORE its transaction, so nothing slow runs while the
+/// person's users row is locked: the instance switches (10 s cache) and
+/// whether one of their clients is in use (one bounded Redis read, failing
+/// open).
+struct Outside {
+    switches: DeliverySwitches,
+    present: bool,
+}
+
+async fn outside(deps: &NotifyDeps, user_id: &str) -> Outside {
+    let switches = crate::mail::delivery_switches(&deps.pg).await;
+    let present = crate::presence::active_winner(user_id, wall_ms())
+        .await
+        .present();
+    Outside { switches, present }
+}
+
+/// The decision, from what the transaction's users-row read returned.
+fn decision_for(
+    blob: &Value,
+    zone: Option<String>,
+    class: &str,
+    meta: &NotifyMeta,
+    o: &Outside,
+) -> Decision {
+    let zone = zone
+        .map(|z| z.trim().to_string())
+        .filter(|z| !z.is_empty())
+        .unwrap_or_else(|| "UTC".into());
+    deliver::decide(
+        blob,
+        class,
+        meta,
+        &deliver::Context {
+            zone: &zone,
+            now_ms: wall_ms(),
+            switches: o.switches,
+            present: o.present,
+            plane: talaria_push::push_plane_installed(),
+            email_delay_override_secs: crate::mail::test_email_delay_secs(),
+        },
+    )
+}
 
 // ── The write: one notification, filed ───────────────────────────────────────
 
@@ -77,10 +123,10 @@ pub async fn add_notification_capped(
 /// they have no reason to open. A delivery that did not happen must not mark
 /// the record consumed.
 ///
-/// MAIL IS QUEUED, NEVER SENT HERE. The caller is servicing somebody else's
-/// request; it must not wait on, or fail with, an SMTP timeout. Everything on
-/// this path is a database write on a connection it was going to use anyway
-/// plus a push into the outbox.
+/// MAIL IS NEVER SENT HERE. The caller is servicing somebody else's request;
+/// it must not wait on, or fail with, an SMTP timeout. The row carries
+/// `email_due_at` and the batcher (mail.rs) sends it later — once per person
+/// per batch, and never for a row read by then.
 pub async fn add_notification(
     deps: &NotifyDeps,
     user_id: &str,
@@ -104,11 +150,21 @@ pub async fn add_notification(
 /// steps under 50 concurrent writers). `clock_timestamp()` is read after the
 /// lock is held, and a Realert never stamps less than 1 ms past what the row
 /// already says, so createdAt rises with seq.
+///
+/// THE DELIVERY COLUMNS (W2-E). `$14` pushes now (`pushed_at`), `$16` is a
+/// deferred push's due time and `$17` the mail's, as epoch ms. A Realert
+/// coalesce is a new version of the row: it takes this write's push decision
+/// (a pending deferral is replaced, or cancelled when this write does not
+/// push) and forgets the old version's ack (`surfaced_at`), and it arms a
+/// mail only when the row has none pending and none sent — the first mail
+/// stands. A Quiet coalesce changes none of them.
 const UPSERT: &str = "insert into notifications \
        (user_id, kind, title, body, href, seq, group_key, count, created_at, updated_at, \
-        alert, actor_kind, actor_id, actor_label, entity_type, entity_id, pushed_at) \
+        alert, actor_kind, actor_id, actor_label, entity_type, entity_id, pushed_at, \
+        push_due_at, email_due_at) \
      values ($1::uuid, $2, $3, $4, $5, $6, $7, 1, clock_timestamp(), clock_timestamp(), \
-             $8, $9, $10, $11, $12, $13, case when $14::boolean then now() end) \
+             $8, $9, $10, $11, $12, $13, case when $14::boolean then now() end, \
+             to_timestamp($16::bigint / 1000.0), to_timestamp($17::bigint / 1000.0)) \
      on conflict (user_id, group_key) \
        where group_key is not null and read_at is null and archived_at is null \
      do update set title = excluded.title, body = excluded.body, href = excluded.href, \
@@ -121,8 +177,18 @@ const UPSERT: &str = "insert into notifications \
                          then greatest(clock_timestamp(), \
                                        notifications.created_at + interval '1 millisecond') \
                          else notifications.created_at end, \
-       pushed_at = case when $14::boolean and $15::boolean then now() \
-                        else notifications.pushed_at end \
+       pushed_at = case when not $15::boolean then notifications.pushed_at \
+                        when $14::boolean then now() \
+                        when $16::bigint is not null then null \
+                        else notifications.pushed_at end, \
+       push_due_at = case when $15::boolean then to_timestamp($16::bigint / 1000.0) \
+                          else notifications.push_due_at end, \
+       surfaced_at = case when $15::boolean then null else notifications.surfaced_at end, \
+       email_due_at = case when $15::boolean and notifications.emailed_at is null \
+                                and notifications.email_attempts < 3 \
+                           then coalesce(notifications.email_due_at, \
+                                         to_timestamp($17::bigint / 1000.0)) \
+                           else notifications.email_due_at end \
      where notifications.read_at is null and notifications.archived_at is null \
      returning id::text, count, (xmax = 0), \
        (trunc(extract(epoch from created_at) * 1000))::bigint";
@@ -141,9 +207,15 @@ const UPSERT: &str = "insert into notifications \
 ///     takes the key — same id, so its inbox-focus snooze stays with it.
 /// (d) insert, or coalesce into the open row.
 ///
-/// Reading or archiving never takes a seq; only alerting writes do. After
-/// commit: the `notification` event with the seq, the brief nudge, and
-/// `deliver::after_write` (push and mail, wave 1's tail).
+/// Reading or archiving never takes a seq; only alerting writes do. The
+/// delivery decision (`deliver::decide`) is taken inside, from the prefs the
+/// seq bump returned, and lands on the row (`alert`, the push and mail due
+/// columns). After commit: the `notification` event with the seq, the brief
+/// nudge, and `deliver::after_write` (a push decided "now").
+///
+/// NOTHING SLOW UNDER THE LOCK. The users row stays locked to commit, so the
+/// presence read and the switch read happen before `begin`, and a caller must
+/// never file a notification while it holds that person's users row itself.
 pub async fn add_notification_with(
     deps: &NotifyDeps,
     user_id: &str,
@@ -153,21 +225,22 @@ pub async fn add_notification_with(
     let class = notify_class_of(n.kind);
     let href = stored_href(n.kind, n.href);
     let key = meta.group_key.as_deref().filter(|k| !k.is_empty());
+    let out = outside(deps, user_id).await;
     let mut tx = deps.pg.begin().await?;
-    // (a) — and the prefs ride the same row read.
-    let bumped: Option<(i64, Option<Value>)> = sqlx::query_as(
+    // (a) — and the prefs and the zone ride the same row read.
+    let bumped: Option<(i64, Option<Value>, Option<String>)> = sqlx::query_as(
         "update users set notify_seq = notify_seq + 1 where id = $1::uuid \
-         returning notify_seq, notify_prefs",
+         returning notify_seq, notify_prefs, timezone",
     )
     .bind(user_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((seq, blob)) = bumped else {
+    let Some((seq, blob, zone)) = bumped else {
         tx.rollback().await?;
         return Err(sqlx::Error::RowNotFound);
     };
     let blob = blob.unwrap_or(Value::Null);
-    let decision = deliver::decide(&blob, class, meta);
+    let decision = decision_for(&blob, zone, class, meta, &out);
     let window = meta
         .group_window_secs
         .map(|w| w.min(i32::MAX as u32) as i32);
@@ -232,6 +305,8 @@ pub async fn add_notification_with(
             .bind(entity.map(|e| e.id.as_str()))
             .bind(decision.records_push())
             .bind(realert)
+            .bind(decision.push_due_ms)
+            .bind(decision.email_due_ms)
             .fetch_optional(&mut *tx)
             .await?;
         if landed.is_some() {
@@ -252,7 +327,7 @@ pub async fn add_notification_with(
         alert: decision.alert,
     };
     announce(deps, user_id, &filed.id, seq);
-    deliver::after_write(deps, user_id, n, meta, &filed, &decision, &href).await;
+    deliver::after_write(user_id, n, meta, &filed, &decision, &href);
     Ok(filed)
 }
 
@@ -293,10 +368,13 @@ fn announce(deps: &NotifyDeps, user_id: &str, notification_id: &str, seq: i64) {
 /// delete-and-reinsert would lose them; and one row per conversation is what
 /// keeps the bell a list of places, not a transcript.
 ///
-/// NO MAIL. The first row's mail stands; a burst of DMs is one email, not
-/// one per line. Answers false when the row is gone or was read meanwhile —
-/// the caller files a fresh row then, the ordinary way — and then no seq is
-/// spent (the transaction rolls back).
+/// NO NEW MAIL. The first row's mail stands; a burst of DMs is one email, not
+/// one per line. The push follows this write's decision, as a Realert
+/// coalesce's does: now, deferred (the old version's ack is forgotten), or
+/// not at all (a pending deferral is cancelled), and `alert` is this write's.
+/// Answers false when the row is gone or was read meanwhile — the caller
+/// files a fresh row then, the ordinary way — and then no seq is spent (the
+/// transaction rolls back).
 pub async fn refresh_notification(
     deps: &NotifyDeps,
     notification_id: &str,
@@ -305,25 +383,30 @@ pub async fn refresh_notification(
 ) -> Result<bool, sqlx::Error> {
     let class = notify_class_of(n.kind);
     let href = stored_href(n.kind, n.href);
+    let meta = NotifyMeta::default();
+    let out = outside(deps, user_id).await;
     let mut tx = deps.pg.begin().await?;
-    let bumped: Option<(i64, Option<Value>)> = sqlx::query_as(
+    let bumped: Option<(i64, Option<Value>, Option<String>)> = sqlx::query_as(
         "update users set notify_seq = notify_seq + 1 where id = $1::uuid \
-         returning notify_seq, notify_prefs",
+         returning notify_seq, notify_prefs, timezone",
     )
     .bind(user_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((seq, blob)) = bumped else {
+    let Some((seq, blob, zone)) = bumped else {
         tx.rollback().await?;
         return Ok(false);
     };
     let blob = blob.unwrap_or(Value::Null);
-    let decision: Decision = deliver::decide(&blob, class, &NotifyMeta::default());
+    let decision: Decision = decision_for(&blob, zone, class, &meta, &out);
     let updated: Option<(String, i64)> = sqlx::query_as(
         "update notifications set title = $3, body = $4, href = $5, \
                 created_at = greatest(clock_timestamp(), created_at + interval '1 millisecond'), \
-                seq = $6, updated_at = clock_timestamp(), count = count + 1, \
-                pushed_at = case when $7::boolean then now() else pushed_at end \
+                seq = $6, updated_at = clock_timestamp(), count = count + 1, alert = $9, \
+                pushed_at = case when $7::boolean then now() \
+                                 when $8::bigint is not null then null else pushed_at end, \
+                push_due_at = to_timestamp($8::bigint / 1000.0), \
+                surfaced_at = null \
          where id = $1::uuid and user_id = $2::uuid and read_at is null \
          returning id::text, (trunc(extract(epoch from created_at) * 1000))::bigint",
     )
@@ -334,6 +417,8 @@ pub async fn refresh_notification(
     .bind(&href)
     .bind(seq)
     .bind(decision.records_push())
+    .bind(decision.push_due_ms)
+    .bind(decision.alert.as_str())
     .fetch_optional(&mut *tx)
     .await?;
     let Some((id, created_ms)) = updated else {
@@ -342,6 +427,6 @@ pub async fn refresh_notification(
     };
     tx.commit().await?;
     announce(deps, user_id, &id, seq);
-    deliver::after_refresh(user_id, n, id, created_ms, href, &decision);
+    deliver::after_refresh(user_id, n, &id, created_ms, &href, &decision);
     Ok(true)
 }

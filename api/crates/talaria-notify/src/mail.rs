@@ -1,6 +1,15 @@
-// The mail plane — the one door out, the outbox, the breaker, and the drain
-// the scheduler ticks. The transport itself (SMTP/Resend) and the shared mail
-// chrome live in talaria-email; the digest builds on the same door.
+// The mail plane — the one door out, the missed-activity batcher, and the
+// wave-1 outbox with its breaker and drain. The transport itself
+// (SMTP/Resend) and the shared mail chrome live in talaria-email; the digest
+// builds on the same door.
+//
+// Notification mail is the BATCHER's (W2-E, docs/notifications/delivery.md):
+// a write sets `email_due_at` on the row, and the batcher sends each person
+// ONE mail with every row of theirs that came due and is still unread —
+// durable (the state is the row), cancelled by a read, retried with backoff.
+// The in-memory outbox below is no longer fed by the write path; its drain
+// stays registered for one release so a queue accepted by the previous
+// binary still drains (PLAN3 §13 retires it).
 
 use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -9,9 +18,15 @@ use futures_util::future::BoxFuture;
 use serde_json::Value;
 use sqlx::PgPool;
 use talaria_agent_auth::now_ms as wall_ms;
+use talaria_realtime::RealtimeDeps;
 
 use crate::NotificationInput;
-use crate::prefs::DELIVERY_KEY;
+use crate::NotifyDeps;
+use crate::classes::{Category, class_def, kind_reason, notify_class_of};
+use crate::prefs::{
+    DELIVERY_KEY, DeliverySwitches, allow_needs_you, channels_of, dnd_state, email_frequency,
+    prefs_and_zone, switches_of,
+};
 
 // ── THE ONE DOOR OUT ─────────────────────────────────────────────────────────
 //
@@ -45,25 +60,34 @@ async fn read_delivery_switch(pg: &PgPool) -> Result<bool, sqlx::Error> {
     Ok(stored.as_ref().and_then(|v| v.get("emailEnabled")) == Some(&Value::Bool(true)))
 }
 
-/// The 10s-cached switch read `add_notification` gates on.
-/// A failed read is off (the answer that sends less mail) and is NOT cached:
-/// a blip must not pin the wrong answer for ten seconds.
+/// The 10s-cached switch read the write path decides with: both instance
+/// switches, from one row. A failed read is the default (no mail; push as
+/// wave 1) and is NOT cached: a blip must not pin the wrong answer for ten
+/// seconds. The batcher and every send re-read fresh anyway, so the cache's
+/// whole job is saving a settings query per notification.
 const DELIVERY_TTL_MS: i64 = 10_000;
-static DELIVERY_GATE: LazyLock<Mutex<Option<(i64, bool)>>> = LazyLock::new(|| Mutex::new(None));
+static DELIVERY_GATE: LazyLock<Mutex<Option<(i64, DeliverySwitches)>>> =
+    LazyLock::new(|| Mutex::new(None));
 
-pub(crate) async fn delivery_gate(pg: &PgPool) -> bool {
+pub(crate) async fn delivery_switches(pg: &PgPool) -> DeliverySwitches {
     let now = wall_ms();
     if let Some((at, v)) = *DELIVERY_GATE.lock().unwrap_or_else(|p| p.into_inner())
         && now - at < DELIVERY_TTL_MS
     {
         return v;
     }
-    match read_delivery_switch(pg).await {
+    let read: Result<Option<Value>, sqlx::Error> =
+        sqlx::query_scalar("select value from app_settings where key = $1")
+            .bind(DELIVERY_KEY)
+            .fetch_optional(pg)
+            .await;
+    match read {
         Ok(v) => {
+            let v = switches_of(&v.unwrap_or(Value::Null));
             *DELIVERY_GATE.lock().unwrap_or_else(|p| p.into_inner()) = Some((now, v));
             v
         }
-        Err(_) => false,
+        Err(_) => DeliverySwitches::default(),
     }
 }
 
@@ -259,13 +283,9 @@ fn outbox_state() -> OutboxState {
 
 impl Outbox {
     /// Accept one mail for later sending, or refuse it. NEVER sends, never
-    /// blocks, never fails — this is called from a request path.
-    pub(crate) fn enqueue(
-        &self,
-        user_id: &str,
-        n: &NotificationInput<'_>,
-        mark_read_id: Option<String>,
-    ) {
+    /// blocks, never fails. The write path no longer calls it (the batcher
+    /// sends notification mail); it stays for the drain's one-release tail.
+    pub fn enqueue(&self, user_id: &str, n: &NotificationInput<'_>, mark_read_id: Option<String>) {
         let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if s.queue.len() >= MAX_QUEUED {
             s.dropped += 1;
@@ -969,6 +989,752 @@ pub fn notification_mail_job_spec(deps: Arc<DrainDeps>) -> talaria_scheduler::Jo
 
 pub fn register_notification_mail_job(deps: Arc<DrainDeps>) {
     talaria_scheduler::register_job(notification_mail_job_spec(deps));
+}
+
+// ── The missed-activity batcher ──────────────────────────────────────────────
+//
+// Every minute: the people with a row whose mail came due (`email_due_at <=
+// now()`). For each, EVERY row of theirs still pending — unread, not
+// archived, not yet mailed, with a due time, whether or not it is due yet —
+// at most 50 per person and 1,000 per pass, so a burst is one mail, not one
+// mail per row as each comes due a few seconds after the last. The rows are
+// CLAIMED with `for update skip locked` by moving their due time ten minutes
+// on (a lease: a process that dies mid-send leaves them to come due again,
+// and two processes never take the same row). Then per person:
+//   · re-read which of them are still unread (cancelled by read, right up to
+//     the send) and whether the person still wants each one mailed (the
+//     class's Email channel, the frequency, DND — a row held by a pause that
+//     began after it was filed waits for the pause's end);
+//   · ONE mail through `send_gated_mail`, so the kill switch, the transport
+//     bounds and the fail-closed rule are the digest's and the outbox's;
+//   · accepted → `emailed_at`, and the legacy email-only route's rows are
+//     filed read (wave 1's "marked read after an accepted mail");
+//   · refused by the switch → the rows are DISCARDED (no due time): a mail
+//     the operator switched off is not held for later, exactly the outbox's
+//     rule;
+//   · failed → `email_attempts + 1` and the due time backs off 5, then 15
+//     minutes; the third failure gives up, out loud, and the rows stay unread
+//     in the inbox.
+// Five failed people in a row is a transport, not an address: the pass stops
+// and leaves the rest for five minutes.
+
+/// How often the batcher looks for due rows.
+pub const MISSED_MAIL_EVERY_MS: u64 = 60_000;
+/// Rows one person's mail carries at most; the rest come due next pass.
+pub const MISSED_MAIL_PER_USER: i64 = 50;
+/// Rows one pass claims at most.
+pub const MISSED_MAIL_PER_PASS: i64 = 1_000;
+/// How long a claim holds its rows (the lease a dead process leaves behind).
+pub const MISSED_MAIL_LEASE_SECS: i32 = 600;
+/// The waits after the first and second failure, in minutes; the third gives
+/// up (`MAX_SEND_ATTEMPTS`).
+pub const MISSED_MAIL_BACKOFF_MIN: [i64; 2] = [5, 15];
+/// People failed in a row before the pass stops, and how long the rest wait.
+pub const MISSED_MAIL_BREAKER_AFTER: u32 = 5;
+pub const MISSED_MAIL_BREAKER_SECS: i32 = 300;
+/// How long one pass may spend before it puts the rest back (due now) for
+/// the next tick. It bounds the pass, and so the job's lease — which is how
+/// late mail can be after a process dies mid-pass.
+pub const MISSED_MAIL_BUDGET_MS: i64 = 45_000;
+
+/// TEST ONLY: `TALARIA_TEST_NOTIFY_EMAIL_DELAY_SECS=<n>` makes every
+/// missed-activity delay and every backoff step n seconds and the batcher tick
+/// every 5 s, so a live run can watch a batch, a cancel-by-read and three
+/// failures in minutes. Read once; loud at registration.
+pub fn test_email_delay_secs() -> Option<u64> {
+    static V: LazyLock<Option<u64>> = LazyLock::new(|| {
+        std::env::var("TALARIA_TEST_NOTIFY_EMAIL_DELAY_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|v| *v > 0)
+    });
+    *V
+}
+
+/// One mail as the batcher hands it to the send edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MissedMail {
+    pub user_id: String,
+    pub to: String,
+    pub subject: String,
+    pub html: String,
+    pub text: String,
+    pub unsubscribe_url: Option<String>,
+    /// The rows it carries, in mail order.
+    pub ids: Vec<String>,
+}
+
+pub type MissedSendFn =
+    Arc<dyn Fn(MissedMail) -> BoxFuture<'static, GatedSendResult> + Send + Sync>;
+
+/// The batcher's edges: the pool, the publish half (a mail that files rows
+/// read tells the person's tabs), and the send — `send_gated_mail` in
+/// production, a fake in the live suite.
+pub struct MissedMailDeps {
+    pub pg: PgPool,
+    pub realtime: RealtimeDeps,
+    pub send: MissedSendFn,
+}
+
+/// Production edges. The secretbox is resolved PER SEND through `sb`, never
+/// held: a key rotation installs a new box, and a clone taken at boot could
+/// not open the transport password the rotation re-sealed.
+pub fn real_missed_mail_deps(
+    pg: PgPool,
+    sb: talaria_push::SecretBoxSource,
+    realtime: RealtimeDeps,
+) -> Arc<MissedMailDeps> {
+    let send: MissedSendFn = {
+        let pg = pg.clone();
+        Arc::new(move |m: MissedMail| {
+            let pg = pg.clone();
+            let sb = sb.clone();
+            Box::pin(async move {
+                let sb = match sb().await {
+                    Ok(sb) => sb,
+                    Err(e) => {
+                        return GatedSendResult {
+                            ok: false,
+                            blocked: false,
+                            error: Some(format!("the secretbox did not load: {e}")),
+                        };
+                    }
+                };
+                send_gated_mail(
+                    &pg,
+                    &sb,
+                    &GatedMail {
+                        to: &m.to,
+                        subject: &m.subject,
+                        html: &m.html,
+                        text: Some(&m.text),
+                        unsubscribe_url: m.unsubscribe_url.as_deref(),
+                        what: "missed-activity mail",
+                    },
+                )
+                .await
+            })
+        })
+    };
+    Arc::new(MissedMailDeps { pg, realtime, send })
+}
+
+/// One claimed row.
+#[derive(Clone, Debug)]
+struct Claimed {
+    id: String,
+    user_id: String,
+    kind: String,
+    title: String,
+    body: String,
+    href: String,
+    attempts: i32,
+}
+
+/// What one pass did, for the job's log line.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MissedMailPass {
+    /// Mails a provider accepted, and the rows they carried.
+    pub mailed: usize,
+    pub rows: usize,
+    /// Mails that failed and will be retried.
+    pub failed: usize,
+    /// Rows given up on after the last attempt.
+    pub gave_up: usize,
+    /// Rows dropped because delivery is switched off.
+    pub discarded: usize,
+    /// Rows put back: read meanwhile, no longer wanted, held by DND, or left
+    /// by an open breaker.
+    pub deferred: usize,
+}
+
+impl MissedMailPass {
+    fn message(&self) -> Option<String> {
+        if *self == MissedMailPass::default() {
+            return None;
+        }
+        let mut m = format!(
+            "mailed {} person(s) ({} row(s)), failed {}",
+            self.mailed, self.rows, self.failed
+        );
+        if self.gave_up > 0 {
+            m.push_str(&format!(
+                ", GAVE UP on {} row(s) after {MAX_SEND_ATTEMPTS} attempts (still unread in-app)",
+                self.gave_up
+            ));
+        }
+        if self.discarded > 0 {
+            m.push_str(&format!(", discarded {} (delivery off)", self.discarded));
+        }
+        if self.deferred > 0 {
+            m.push_str(&format!(", {} put back", self.deferred));
+        }
+        Some(m)
+    }
+}
+
+async fn claim_due(pg: &PgPool) -> Result<Vec<Claimed>, sqlx::Error> {
+    let rows: Vec<(String, String, String, String, String, String, i32)> = sqlx::query_as(
+        "with due as ( \
+           select distinct user_id from notifications \
+            where email_due_at <= now() and emailed_at is null \
+              and read_at is null and archived_at is null \
+            limit 200), \
+         locked as ( \
+           select n.id, n.user_id, n.email_due_at from notifications n \
+             join due on due.user_id = n.user_id \
+            where n.email_due_at is not null and n.emailed_at is null \
+              and n.read_at is null and n.archived_at is null \
+            order by n.email_due_at limit $1 \
+            for update of n skip locked), \
+         picked as ( \
+           select id from (select id, row_number() over \
+                             (partition by user_id order by email_due_at, id) as rn \
+                           from locked) r \
+            where rn <= $2) \
+         update notifications n set email_due_at = now() + $3::int * interval '1 second' \
+           from picked where n.id = picked.id \
+         returning n.id::text, n.user_id::text, n.kind, n.title, n.body, n.href, \
+                   n.email_attempts",
+    )
+    .bind(MISSED_MAIL_PER_PASS)
+    .bind(MISSED_MAIL_PER_USER)
+    .bind(MISSED_MAIL_LEASE_SECS)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, user_id, kind, title, body, href, attempts)| Claimed {
+            id,
+            user_id,
+            kind,
+            title,
+            body,
+            href,
+            attempts,
+        })
+        .collect())
+}
+
+/// Put rows back to come due at `secs` from now (0 = now).
+async fn requeue(pg: &PgPool, ids: &[String], secs: i64) {
+    if ids.is_empty() {
+        return;
+    }
+    if let Err(e) = sqlx::query(
+        "update notifications set email_due_at = now() + $2::bigint * interval '1 second' \
+         where id = any($1::uuid[]) and emailed_at is null",
+    )
+    .bind(ids)
+    .bind(secs)
+    .execute(pg)
+    .await
+    {
+        tracing::error!(
+            "[notifications] could not put {} mail row(s) back: {e}",
+            ids.len()
+        );
+    }
+}
+
+/// Take rows out of the mail plane for good (no due time; nothing sent).
+async fn drop_mail(pg: &PgPool, ids: &[String]) {
+    if ids.is_empty() {
+        return;
+    }
+    if let Err(e) = sqlx::query(
+        "update notifications set email_due_at = null \
+         where id = any($1::uuid[]) and emailed_at is null",
+    )
+    .bind(ids)
+    .execute(pg)
+    .await
+    {
+        tracing::error!(
+            "[notifications] could not retire {} mail row(s): {e}",
+            ids.len()
+        );
+    }
+}
+
+fn backoff_secs(attempts_after: i32) -> i64 {
+    if let Some(s) = test_email_delay_secs() {
+        return s as i64;
+    }
+    let i = (attempts_after.max(1) as usize - 1).min(MISSED_MAIL_BACKOFF_MIN.len() - 1);
+    MISSED_MAIL_BACKOFF_MIN[i] * 60
+}
+
+/// A failed send: each row's attempts + 1; the last attempt gives up (no due
+/// time), the others back off. Answers how many rows were given up on.
+async fn record_failure(pg: &PgPool, rows: &[&Claimed]) -> usize {
+    let mut gave_up = Vec::new();
+    for r in rows {
+        let next = r.attempts + 1;
+        let res = if next >= MAX_SEND_ATTEMPTS as i32 {
+            gave_up.push(r.id.clone());
+            sqlx::query(
+                "update notifications set email_attempts = $2, email_due_at = null \
+                 where id = $1::uuid",
+            )
+            .bind(&r.id)
+            .bind(next)
+            .execute(pg)
+            .await
+        } else {
+            sqlx::query(
+                "update notifications set email_attempts = $2, \
+                        email_due_at = now() + $3::bigint * interval '1 second' \
+                 where id = $1::uuid",
+            )
+            .bind(&r.id)
+            .bind(next)
+            .bind(backoff_secs(next))
+            .execute(pg)
+            .await
+        };
+        if let Err(e) = res {
+            tracing::error!(
+                "[notifications] could not record a failed mail for {}: {e}",
+                r.id
+            );
+        }
+    }
+    gave_up.len()
+}
+
+/// One pass of the batcher. The job's work, and safe to call directly (the
+/// live suite does).
+pub async fn run_missed_mail(deps: &MissedMailDeps) -> Result<MissedMailPass, String> {
+    let pg = &deps.pg;
+    let mut pass = MissedMailPass::default();
+    // The kill switch first, FRESH: off means due rows are dropped, not
+    // held — turning mail back on must never deliver a backlog in one burst.
+    match read_delivery_switch(pg).await {
+        Err(e) => {
+            return Err(format!(
+                "could not read the delivery switch — sending nothing this pass: {e}"
+            ));
+        }
+        Ok(false) => {
+            let dropped = sqlx::query(
+                "update notifications set email_due_at = null \
+                 where id in (select id from notifications \
+                              where email_due_at <= now() and emailed_at is null \
+                              limit 1000 for update skip locked)",
+            )
+            .execute(pg)
+            .await
+            .map_err(|e| e.to_string())?
+            .rows_affected();
+            if dropped > 0 {
+                tracing::warn!(
+                    "[notifications] email delivery is off — discarded {dropped} due mail row(s). Every one of them is still in its recipient's in-app inbox."
+                );
+            }
+            pass.discarded = dropped as usize;
+            return Ok(pass);
+        }
+        Ok(true) => {}
+    }
+    let claimed = claim_due(pg).await.map_err(|e| e.to_string())?;
+    if claimed.is_empty() {
+        return Ok(pass);
+    }
+    // Per person, in the order their first row came due.
+    let mut people: Vec<(String, Vec<Claimed>)> = Vec::new();
+    for c in claimed {
+        match people.iter_mut().find(|(u, _)| *u == c.user_id) {
+            Some((_, rows)) => rows.push(c),
+            None => people.push((c.user_id.clone(), vec![c])),
+        }
+    }
+    let base = instance_base_url(pg).await;
+    let settings_url = base.as_ref().map(|b| format!("{b}{NOTIFY_SETTINGS_PATH}"));
+    let notify = NotifyDeps {
+        pg: pg.clone(),
+        realtime: deps.realtime.clone(),
+    };
+    let mut failed_in_a_row = 0u32;
+    let deadline = wall_ms() + MISSED_MAIL_BUDGET_MS;
+    let mut people = people.into_iter();
+    while let Some((user_id, rows)) = people.next() {
+        let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        if wall_ms() >= deadline {
+            // Out of budget: this person and everyone behind them come due
+            // again at once, for the next tick.
+            let mut rest = ids;
+            rest.extend(
+                people
+                    .by_ref()
+                    .flat_map(|(_, rows)| rows.into_iter().map(|r| r.id)),
+            );
+            requeue(pg, &rest, 0).await;
+            pass.deferred += rest.len();
+            break;
+        }
+        // Cancelled by read, right up to the send.
+        let unread: Vec<String> = match sqlx::query_scalar(
+            "select id::text from notifications \
+             where id = any($1::uuid[]) and read_at is null and archived_at is null",
+        )
+        .bind(&ids)
+        .fetch_all(pg)
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[notifications] could not re-read {user_id}'s mail rows: {e}");
+                requeue(pg, &ids, 60).await;
+                pass.deferred += ids.len();
+                continue;
+            }
+        };
+        let (blob, zone) = prefs_and_zone(pg, &user_id).await;
+        let now = wall_ms();
+        let dnd = dnd_state(&blob, &zone, now);
+        let mut send: Vec<&Claimed> = Vec::new();
+        let mut unwanted: Vec<String> = Vec::new();
+        let mut held: Vec<String> = Vec::new();
+        for r in &rows {
+            if !unread.contains(&r.id) {
+                continue; // read meanwhile: never mailed, and no longer due
+            }
+            let class = notify_class_of(&r.kind);
+            if !channels_of(&blob, class).email || email_frequency(&blob) == "off" {
+                unwanted.push(r.id.clone());
+                continue;
+            }
+            let breaks =
+                class_def(class).is_some_and(|d| d.breaks_through) && allow_needs_you(&blob);
+            if dnd.active && !breaks {
+                held.push(r.id.clone());
+                continue;
+            }
+            send.push(r);
+        }
+        drop_mail(pg, &unwanted).await;
+        pass.deferred += unwanted.len();
+        if !held.is_empty() {
+            match dnd.until {
+                Some(until) if until < crate::prefs::FOREVER_MS => {
+                    requeue(pg, &held, ((until - now) / 1000).max(1)).await
+                }
+                _ => drop_mail(pg, &held).await,
+            }
+            pass.deferred += held.len();
+        }
+        if send.is_empty() {
+            continue;
+        }
+        let to: Option<String> = match sqlx::query_scalar::<_, Option<String>>(
+            "select email from users where id = $1::uuid",
+        )
+        .bind(&user_id)
+        .fetch_optional(pg)
+        .await
+        {
+            Ok(v) => v
+                .flatten()
+                .map(|e| e.trim().to_string())
+                .filter(|e| !e.is_empty()),
+            Err(e) => {
+                tracing::error!("[notifications] could not read {user_id}'s address: {e}");
+                let ids: Vec<String> = send.iter().map(|r| r.id.clone()).collect();
+                requeue(pg, &ids, 60).await;
+                pass.deferred += ids.len();
+                continue;
+            }
+        };
+        let send_ids: Vec<String> = send.iter().map(|r| r.id.clone()).collect();
+        let Some(to) = to else {
+            tracing::warn!(
+                "[notifications] no email address for user {user_id} — {} row(s) stay in-app only",
+                send.len()
+            );
+            drop_mail(pg, &send_ids).await;
+            pass.deferred += send_ids.len();
+            continue;
+        };
+        let items: Vec<MailItem> = send
+            .iter()
+            .map(|r| MailItem {
+                category: crate::classes::category_of(&r.kind),
+                title: r.title.clone(),
+                reason: kind_reason(&r.kind)
+                    .or_else(|| class_def(notify_class_of(&r.kind)).map(|c| c.label))
+                    .unwrap_or("Notification")
+                    .to_string(),
+                body: r.body.clone(),
+                href: r.href.clone(),
+            })
+            .collect();
+        let parts = missed_mail_parts(&items, base.as_deref(), settings_url.as_deref());
+        let result = (deps.send)(MissedMail {
+            user_id: user_id.clone(),
+            to: to.clone(),
+            subject: parts.subject,
+            html: parts.html,
+            text: parts.text,
+            unsubscribe_url: settings_url.clone(),
+            ids: send_ids.clone(),
+        })
+        .await;
+        if result.ok {
+            failed_in_a_row = 0;
+            pass.mailed += 1;
+            pass.rows += send_ids.len();
+            if let Err(e) = sqlx::query(
+                "update notifications set emailed_at = now() where id = any($1::uuid[])",
+            )
+            .bind(&send_ids)
+            .execute(pg)
+            .await
+            {
+                // The mail left; the row may be mailed again next pass. Said
+                // out loud, because a duplicate is the lesser harm here.
+                tracing::error!("[notifications] mailed {user_id} but could not record it: {e}");
+            }
+            // The legacy email-only route: the mail IS the delivery, so the
+            // in-app copy is filed read — only now, after a provider took it.
+            let email_only: Vec<String> = send
+                .iter()
+                .filter(|r| {
+                    let c = channels_of(&blob, notify_class_of(&r.kind));
+                    c.email && !c.desktop && !c.push
+                })
+                .map(|r| r.id.clone())
+                .collect();
+            if !email_only.is_empty() {
+                match sqlx::query_scalar::<_, String>(
+                    "update notifications set read_at = now() \
+                     where id = any($1::uuid[]) and read_at is null returning id::text",
+                )
+                .bind(&email_only)
+                .fetch_all(pg)
+                .await
+                {
+                    Ok(read) if !read.is_empty() => {
+                        crate::inbox::publish_read(&notify, &user_id, &read, false).await
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(
+                        "[notifications] mailed {user_id} but could not file the email-only rows read: {e}"
+                    ),
+                }
+            }
+        } else if result.blocked {
+            // The switch went off mid-pass: drop this person's rows and every
+            // claimed row behind them. Nothing is held for later.
+            drop_mail(pg, &send_ids).await;
+            pass.discarded += send_ids.len();
+            let rest: Vec<String> = people
+                .by_ref()
+                .flat_map(|(_, rows)| rows.into_iter().map(|r| r.id))
+                .collect();
+            drop_mail(pg, &rest).await;
+            pass.discarded += rest.len();
+            tracing::warn!(
+                "[notifications] email delivery was switched off mid-pass — discarded {} mail row(s). Every one of them is still in its recipient's in-app inbox.",
+                pass.discarded
+            );
+            break;
+        } else {
+            pass.failed += 1;
+            failed_in_a_row += 1;
+            let gave_up = record_failure(pg, &send).await;
+            pass.gave_up += gave_up;
+            tracing::error!(
+                "[notifications] the missed-activity mail to {to} failed: {}{}",
+                result.error.as_deref().unwrap_or("unknown error"),
+                if gave_up > 0 {
+                    format!(" — GAVE UP on {gave_up} row(s); they stay unread in-app")
+                } else {
+                    String::new()
+                }
+            );
+            if failed_in_a_row >= MISSED_MAIL_BREAKER_AFTER {
+                let rest: Vec<String> = people
+                    .by_ref()
+                    .flat_map(|(_, rows)| rows.into_iter().map(|r| r.id))
+                    .collect();
+                requeue(pg, &rest, i64::from(MISSED_MAIL_BREAKER_SECS)).await;
+                pass.deferred += rest.len();
+                tracing::error!(
+                    "[notifications] {failed_in_a_row} missed-activity mails failed in a row — pausing the rest of this pass for 5 minutes"
+                );
+                break;
+            }
+        }
+    }
+    Ok(pass)
+}
+
+/// One row as the mail lists it.
+#[derive(Clone, Debug)]
+struct MailItem {
+    category: Category,
+    title: String,
+    reason: String,
+    body: String,
+    href: String,
+}
+
+const MAIL_SECTIONS: &[(Category, &str)] = &[
+    (Category::NeedsYou, "Needs you"),
+    (Category::Direct, "Direct"),
+    (Category::Following, "Following"),
+    (Category::Workspace, "Workspace"),
+];
+
+/// The first line of a body, at most 160 characters.
+fn snippet(body: &str) -> String {
+    let line = body.trim().lines().next().unwrap_or("").trim();
+    if line.chars().count() <= 160 {
+        return line.to_string();
+    }
+    let mut s: String = line.chars().take(159).collect();
+    s.push('…');
+    s
+}
+
+/// Compose the batch mail. Pure: the base URL and settings link are
+/// instance facts the caller resolves. Items are grouped by category in the
+/// center's order; each carries its title, why it showed, the first line of
+/// its body, and its link (or, with no verified domain, where to find it).
+fn missed_mail_parts(
+    items: &[MailItem],
+    base: Option<&str>,
+    settings_url: Option<&str>,
+) -> EmailParts {
+    use talaria_email::{email_button, email_escape, email_shell};
+    let n = items.len();
+    let subject = format!("{n} unread in Talaria");
+    let link = |href: &str| -> Option<String> {
+        let href = href.trim();
+        if href.is_empty() {
+            return None;
+        }
+        base.map(|b| {
+            let slash = if href.starts_with('/') { "" } else { "/" };
+            format!("{b}{slash}{href}")
+        })
+    };
+    let mut html = String::new();
+    let mut text: Vec<String> = vec![subject.clone(), String::new()];
+    for (cat, label) in MAIL_SECTIONS {
+        let group: Vec<&MailItem> = items.iter().filter(|i| i.category == *cat).collect();
+        if group.is_empty() {
+            continue;
+        }
+        html.push_str(&format!(
+            "<p style=\"margin:20px 0 6px;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#8a8a84\">{}</p>",
+            email_escape(label)
+        ));
+        text.push(label.to_uppercase());
+        for i in group {
+            let title = match link(&i.href) {
+                Some(url) => format!(
+                    "<a href=\"{}\" style=\"color:inherit;font-weight:600\">{}</a>",
+                    email_escape(&url),
+                    email_escape(&i.title)
+                ),
+                None => format!("<strong>{}</strong>", email_escape(&i.title)),
+            };
+            let snip = snippet(&i.body);
+            let where_ = match (link(&i.href), i.href.trim().is_empty()) {
+                (None, false) => format!(
+                    "<br><span style=\"font-size:12px;color:#8a8a84\">Open Talaria and go to <code>{}</code></span>",
+                    email_escape(i.href.trim())
+                ),
+                _ => String::new(),
+            };
+            html.push_str(&format!(
+                "<p style=\"margin:0 0 12px\">{title} <span style=\"font-size:12px;color:#8a8a84\">· {}</span>{}{where_}</p>",
+                email_escape(&i.reason),
+                if snip.is_empty() {
+                    String::new()
+                } else {
+                    format!("<br><span style=\"color:#55554f\">{}</span>", email_escape(&snip))
+                }
+            ));
+            text.push(format!("- {} ({})", i.title, i.reason));
+            if !snip.is_empty() {
+                text.push(format!("  {snip}"));
+            }
+            if let Some(url) = link(&i.href)
+                .or_else(|| (!i.href.trim().is_empty()).then(|| i.href.trim().to_string()))
+            {
+                text.push(format!("  {url}"));
+            }
+        }
+        text.push(String::new());
+    }
+    if let Some(b) = base {
+        html.push_str(&email_button(&format!("{b}/"), "Open Talaria"));
+    }
+    let footer = format!(
+        "{} · {}",
+        email_escape(WHAT_IS_THIS),
+        match settings_url {
+            Some(u) => format!(
+                "<a href=\"{}\" style=\"color:#8a8a84\">change what Talaria emails you</a>",
+                email_escape(u)
+            ),
+            None => "change what Talaria emails you under Settings → Notifications".to_string(),
+        }
+    );
+    text.push(format!(
+        "{WHAT_IS_THIS}. Change what Talaria emails you: {}",
+        settings_url.unwrap_or("Settings → Notifications")
+    ));
+    EmailParts {
+        html: email_shell(
+            &email_escape(&subject),
+            &format!(
+                "<p style=\"margin:0 0 4px\">While you were away, {} came in that you have not seen yet.</p>{html}",
+                if n == 1 {
+                    "one notification".to_string()
+                } else {
+                    format!("{n} notifications")
+                }
+            ),
+            &footer,
+        ),
+        subject,
+        text: text.join("\n"),
+    }
+}
+
+/// The batcher as a scheduler job: leased (it reads rows every instance can
+/// reach), every minute — every 5 s under the test-only delay.
+pub fn missed_mail_job_spec(deps: Arc<MissedMailDeps>) -> talaria_scheduler::JobSpec {
+    use talaria_scheduler::{JobName, JobSpec};
+    let fast = test_email_delay_secs().is_some();
+    JobSpec {
+        name: JobName::NotifyMissedMail,
+        every_ms: if fast { 5_000 } else { MISSED_MAIL_EVERY_MS },
+        first_run_delay_ms: Some(if fast { 5_000 } else { 30_000 }),
+        // One pass stops taking people at its 45 s budget, and the send in
+        // hand is bounded at 30 s by the transport. This is also how long a
+        // process killed mid-pass holds the lease; its claimed rows wait out
+        // their own 10-minute lease (`MISSED_MAIL_LEASE_SECS`).
+        max_run_ms: Some(2 * 60_000),
+        per_instance: false,
+        run: Arc::new(move || {
+            let deps = deps.clone();
+            Box::pin(async move { run_missed_mail(&deps).await.map(|p| p.message()) })
+        }),
+    }
+}
+
+pub fn register_missed_mail_job(deps: Arc<MissedMailDeps>) {
+    if let Some(s) = test_email_delay_secs() {
+        tracing::warn!(
+            "[notifications] TALARIA_TEST_NOTIFY_EMAIL_DELAY_SECS={s}: every missed-activity mail delay and backoff is {s}s and the batcher ticks every 5s. TEST ONLY."
+        );
+    }
+    talaria_scheduler::register_job(missed_mail_job_spec(deps));
 }
 
 #[cfg(test)]

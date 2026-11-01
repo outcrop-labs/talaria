@@ -6220,6 +6220,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sqlx",
  "talaria-agent-auth",
  "talaria-body",
