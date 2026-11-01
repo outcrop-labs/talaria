@@ -77,9 +77,11 @@ test('the write goes to the channel notify route and answers what was stored', a
   })
   const r = await putChannelNotify('c-1', { mutedUntil: '2026-11-01T23:00:00.000Z' })
   assert.deepEqual(r, { level: 'mentions', mutedUntil: '2026-11-01T23:00:00.000Z' })
-  assert.equal(calls[0].url, '/api/channels/c-1/notify')
-  assert.equal(calls[0].init.method, 'PUT')
-  assert.deepEqual(JSON.parse(String(calls[0].init.body)), { mutedUntil: '2026-11-01T23:00:00.000Z' })
+  const [call] = calls
+  assert.ok(call)
+  assert.equal(call.url, '/api/channels/c-1/notify')
+  assert.equal(call.init.method, 'PUT')
+  assert.deepEqual(JSON.parse(String(call.init.body)), { mutedUntil: '2026-11-01T23:00:00.000Z' })
 })
 
 test('a refusal rejects with the server sentence (403 non-member, 409 team grant)', async () => {

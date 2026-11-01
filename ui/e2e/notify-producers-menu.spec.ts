@@ -91,8 +91,8 @@ test('a person taken off the channel gets the refusal shown, and no row is creat
     await expect(dialog).toContainText('Notifications not changed')
     await expect(dialog).toContainText('forbidden')
     // The refusal made nothing: the route never inserts a membership row.
-    const [{ n }] = await sql<Array<{ n: number }>>`select count(*)::int as n from channel_members where channel_id = ${id}::uuid`
-    expect(n).toBe(0)
+    const rows = await sql<Array<{ n: number }>>`select count(*)::int as n from channel_members where channel_id = ${id}::uuid`
+    expect(rows[0]?.n).toBe(0)
   } finally {
     await sql.end({ timeout: 2 })
   }
