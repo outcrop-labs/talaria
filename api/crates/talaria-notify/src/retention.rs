@@ -13,8 +13,10 @@
 //     markers, the pass backfills one for every live session that lacks it —
 //     sessions minted before the marker existed, or by another writer — so a
 //     deploy never mistakes a live session for a dead one. Rows from before
-//     wave 1 (no `session_hash`) go after 30 days with no delivery, and a row
-//     that has failed ten times with no delivery for seven days goes too.
+//     wave 1 (no `session_hash`) go after 30 days with no delivery and no
+//     re-file (`last_seen_at`, which a 2xx and every re-file move), and a row
+//     that has failed ten times running with `last_seen_at` seven days old
+//     goes too.
 //
 // Both are leased scheduler jobs (rows every instance can reach). Without the
 // boot-installed Redis handle the session pass is skipped, never guessed:
@@ -31,11 +33,12 @@ pub const READ_RETENTION_DAYS: i32 = 90;
 pub const UNREAD_RETENTION_DAYS: i32 = 180;
 /// Rows one delete takes.
 pub const RETENTION_BATCH: i64 = 10_000;
-/// A pre-wave-1 subscription (no session hash) with no delivery for this long.
+/// A pre-wave-1 subscription (no session hash) with no delivery and no
+/// re-file (`last_seen_at`) for this long.
 pub const UNBOUND_SUBSCRIPTION_DAYS: i32 = 30;
 /// A subscription failed this many times in a row…
 pub const FAILURES_TO_PRUNE: i32 = 10;
-/// …with no delivery for this long.
+/// …with `last_seen_at` (a 2xx, or a re-file) this old.
 pub const FAILING_SUBSCRIPTION_DAYS: i32 = 7;
 
 /// The session liveness marker's key prefix. talaria-session writes
@@ -71,6 +74,12 @@ const DAY_MS: u64 = 24 * 60 * 60_000;
 
 /// One retention pass: aged rows and their inbox-focus rows, batch by batch.
 /// Answers how many notification rows went.
+///
+/// An UNREAD row's age is its last activity, not its birth: a group row that a
+/// `Quiet` coalesce keeps up to date keeps its `created_at` (only a re-alert
+/// moves it), so a channel's activity row filed six months ago and updated
+/// yesterday is not "unread for 180 days" — deleting it would drop the
+/// newest message it carries.
 pub async fn retention_pass(pg: &PgPool) -> Result<u64, sqlx::Error> {
     let mut total = 0u64;
     loop {
@@ -78,7 +87,8 @@ pub async fn retention_pass(pg: &PgPool) -> Result<u64, sqlx::Error> {
             "with aged as ( \
                select id from notifications \
                 where (read_at is not null and read_at < now() - $1::int * interval '1 day') \
-                   or (read_at is null and created_at < now() - $2::int * interval '1 day') \
+                   or (read_at is null \
+                       and coalesce(updated_at, created_at) < now() - $2::int * interval '1 day') \
                 limit $3), \
              gone as ( \
                delete from notifications n using aged where n.id = aged.id \
