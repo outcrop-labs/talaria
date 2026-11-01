@@ -1,11 +1,14 @@
 <script lang="ts">
-  import { Cog, LogOut, Settings, Shield, SunMoon } from '@lucide/svelte'
+  import { BellOff, ChevronRight, Cog, LogOut, Settings, Shield, SunMoon } from '@lucide/svelte'
   import ThemeToggle from '@/components/ThemeToggle.svelte'
+  import PauseMenu from '@/components/notify/PauseMenu.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Popover from '@/components/ui/Popover.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import type { SessionUser } from '@/lib/session'
   import { cn } from '@/lib/cn'
+  import { useNotifySettings } from '@/lib/notify-center'
+  import { dndView, safeZone } from '@/lib/notify-dnd'
   import { p } from '@/router'
 
   // THE DOCK'S ACCOUNT CHIP: status dot + display name, with everything
@@ -30,6 +33,14 @@
     /** Whether this viewer has any manage view — the dock decides, once. */
     hasManage?: boolean
   } = $props()
+
+  // PAUSE NOTIFICATIONS lives here too (Slack's place for it): the menu that
+  // is about the person. Read from the bell's cached payload — no poll of its
+  // own — and expanded in place, since this menu is a popover already.
+  const notify = useNotifySettings()
+  const dnd = $derived(notify.data?.dnd)
+  let pauseOpen = $state(false)
+  const pauseLine = $derived(dndView(dnd, Date.now(), safeZone(dnd?.timeZone)))
 </script>
 
 <!-- The §7 popover shell owns the mechanics (outside-click, Esc, portal);
@@ -101,6 +112,30 @@
         <Cog size={15} class="shrink-0 text-muted" />
         <span>Manage</span>
       </a>
+    {/if}
+    {#if dnd}
+      <button
+        type="button"
+        aria-expanded={pauseOpen}
+        onclick={() => (pauseOpen = !pauseOpen)}
+        class="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm text-fg transition-colors duration-[120ms] dither-fill"
+        data-user-menu-pause
+      >
+        <BellOff size={15} class="shrink-0 {pauseLine.active ? 'text-accent' : 'text-muted'}" />
+        <span class="min-w-0 flex-1 truncate">{pauseLine.active && pauseLine.reason === 'paused' ? pauseLine.label : 'Pause notifications'}</span>
+        <ChevronRight size={13} class={cn('shrink-0 text-muted transition-transform duration-150', pauseOpen && 'rotate-90')} />
+      </button>
+      {#if pauseOpen}
+        <div class="mx-1 mb-1 rounded-md border border-line-subtle py-1">
+          <PauseMenu
+            {dnd}
+            onDone={() => {
+              pauseOpen = false
+              close()
+            }}
+          />
+        </div>
+      {/if}
     {/if}
     <!-- Theme toggles in place — the flyover stays open for it. -->
     <div class="flex items-center justify-between rounded-md px-3 py-1.5 text-sm text-muted">
