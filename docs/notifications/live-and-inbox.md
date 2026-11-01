@@ -95,10 +95,17 @@ the next read decides.
 On SIGTERM the api calls `end_streams()`: every event stream ends, and the hub closes,
 which also ends the streams a route built on the hub by hand (the run-watch tail had no
 shutdown hook of its own). Each client reconnects after its `retry:`, with its seq. The
-HTTP drain then waits at most 5 s for any other in-flight response, and the run drivers,
-the scheduler and the pool drain after it. Each phase logs how long it took
+HTTP drain then waits at most 5 s for any other in-flight response, the run drivers (≤ 5 s)
+and the scheduler (≤ 30 s for a job in flight) drain after it, and the pool gets 1 s to
+take its connections back. Each phase logs how long it took
 (`[shutdown] http drained in …`, `run drivers drained in …`, `scheduler stopped in …`,
 `complete …`), so a stop that lingers names what it waited for.
+
+The pool bound is the one that mattered. With 20 streams open, a stop took 11–35 s in 3 of
+10 tries while every stream had ended in 15 ms and no run or job was in flight: the pool's
+`close` was waiting for a query in a detached boot task (the builtin MCP rows' seed, an
+insert held behind a slow commit). Past the bound that connection drops with the process,
+as the container's own kill would drop it.
 
 ## The inbox API
 
