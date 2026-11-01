@@ -282,7 +282,9 @@ and scroll after a relaunch (only the URL is kept on disk).
   `createdAt`, which is a re-alert under the same tag; a row with no seq (filed before the
   contract) keeps wave 1's rule, newer than the high-water mark less two minutes. With
   `since` in the instance's `features`, the watcher reads `GET /api/notifications?since=<seq>`
-  page by page and moves its seq only on a page whose `more` is false, and its stream asks
+  page by page and moves its seq to the snapshot of a page whose `more` is false — or, when
+  a catch-up outruns its ten pages (2,000 rows), to the last row read, so the next read goes
+  on from there instead of starting over and posting again — and its stream asks
   `/api/me/events?since=<seq>` so the server replays what a cut lost (I-19): a reconnect
   after an outage is exact, never "the newest 50". **It starts from the page's record**,
   `localStorage['talaria.notify.arrivals.v1']`, which the suspend report hands over
@@ -295,8 +297,13 @@ and scroll after a relaunch (only the URL is kept on disk).
   the bell. **What it posts** (I-15): never a row whose `alert` is `feed`; while the
   person's Do Not Disturb is active (`dnd.active`), only a row of a class that breaks
   through it (`classes[].breaksThrough`, and `dnd.allowNeedsYou`); nothing for an instance
-  muted in the launcher. Every row it posts is acked (`POST /api/notifications/ack`, I-18),
-  so the instance's deferred push for it is cancelled. **Read-sync** (I-16): a
+  muted in the launcher; and nothing while the person's presence winner (I-17) is another
+  of their clients — a browser tab they are looking at, another desktop — which alerts
+  instead, as the page runtime's cross-device rule has it. The winner comes from `presence`
+  frames, each heartbeat's answer, and one `GET /api/me/presence` before the first post; the
+  watcher's own id and its instance's page here (the page's `talaria.notify.client`, from the
+  suspended session) count as this desktop. Every row it posts is acked (`POST
+  /api/notifications/ack`, I-18), so the instance's deferred push for it is cancelled. **Read-sync** (I-16): a
   `notifications` frame that names `readIds` (or `all`) closes this instance's banners for
   those rows — keyed by its label, so another instance's read never closes them — and
   `resync` closes every banner whose row a fresh read finds read. **Presence** (I-17):
@@ -634,8 +641,9 @@ notifications arrive, with `closeToBackground` on (the default):
   The menu-bar item is a template image (the wing mark in black, which the menu bar tints)
   and a left click shows its menu, as every menu-bar item does.
 - Linux with a tray: the window hides; the tray icon's menu has a row per instance with its
-  own unread count ("Acme — 3"; a click opens that instance; a read anywhere drops it),
-  Open Talaria and Quit Talaria, and the unread sum as the label beside it (appindicator
+  own unread count ("Acme — 3"; a click opens that instance; a read anywhere drops it; a
+  count changes its row's text in place, because a new menu makes libayatana register the
+  item with the host again), Open Talaria and Quit Talaria, and the unread sum as the label beside it (appindicator
   has no tooltip — tray-icon's
   `set_tooltip` does nothing on Linux — and the label shows where the host draws Ayatana
   labels, as the GNOME AppIndicator extension does). A tray needs the appindicator library —
@@ -654,7 +662,12 @@ notifications arrive, with `closeToBackground` on (the default):
   each window, the same close request as ×. The GApplication's bus name
   (`app.talaria.desktop`) and the shell's single-instance name
   (`app.talaria.desktop.Shell`) are two names on two connections, and a second launch still
-  hands over on the latter before GTK starts. With the app id on, the window's Wayland
+  hands over on the latter before GTK starts. The registered application also answers
+  D-Bus `org.freedesktop.Application.Activate` (`gapplication launch app.talaria.desktop`,
+  a launcher that activates by GApplication): tao's start handler would hand tauri a second
+  start, and tauri would run its setup again and panic on the existing window, so that
+  handler is blocked once the app is up and an activate shows the window instead. With the
+  app id on, the window's Wayland
   `app_id` is `app.talaria.desktop`, and so is its X11 `WM_CLASS` (the program name is set
   to it), so a dock matches it to `app.talaria.desktop.desktop` (flatpak, AppImage, pacman)
   directly and to the deb/rpm `Talaria.desktop` by its `StartupWMClass` (the bundler's
