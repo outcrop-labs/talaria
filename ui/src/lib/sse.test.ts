@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { HIDDEN_PAUSE_H1_MS, HIDDEN_PAUSE_MS, PROBE_AFTER, STABLE_MS, backoffDelay, hiddenPauseMs, openStream, pageProtocol, type StreamState } from './sse'
+import {
+  HIDDEN_PAUSE_H1_MS,
+  HIDDEN_PAUSE_MS,
+  PROBE_AFTER,
+  STABLE_MS,
+  backoffDelay,
+  hiddenPauseMs,
+  openStream,
+  pageProtocol,
+  untilSessionAnswers,
+  type StreamState,
+} from './sse'
 
 class FakeES {
   static CONNECTING = 0
@@ -172,6 +183,33 @@ describe('openStream', () => {
     stop()
   })
 
+  it('a stop because the person is signed out tells the caller (onSignedOut) — once, and only then', async () => {
+    const signedOut = vi.fn()
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    // Signed in: the probe reconnects, and says nothing.
+    fetchMock.mockResolvedValue(json({ user: { id: 'u' } }))
+    const stopA = openStream('/x', () => {}, { reconnect: true, onSignedOut: signedOut })
+    for (let i = 0; i < PROBE_AFTER; i++) {
+      at(i).fail()
+      await vi.advanceTimersByTimeAsync(backoffDelay(i + 1))
+    }
+    expect(signedOut).not.toHaveBeenCalled()
+    stopA()
+    // Signed out: the door stops and says so.
+    FakeES.all = []
+    fetchMock.mockResolvedValue(json({ user: null }))
+    const stopB = openStream('/y', () => {}, { reconnect: true, onSignedOut: signedOut })
+    for (let i = 0; i < PROBE_AFTER; i++) {
+      at(i).fail()
+      await vi.advanceTimersByTimeAsync(backoffDelay(i + 1))
+    }
+    expect(signedOut).toHaveBeenCalledTimes(1)
+    expect(FakeES.all).toHaveLength(PROBE_AFTER)
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(signedOut).toHaveBeenCalledTimes(1)
+    stopB()
+  })
+
   it('a kick during the session probe opens ONE source, not two', async () => {
     // The probe answers "signed in", but only after the person came back.
     let answer: (r: Response) => void = () => {}
@@ -331,5 +369,39 @@ describe('openStream', () => {
     expect(pageProtocol(perf('', [['http://localhost:5310/@vite/client', 'http/1.1']]), 'http:', 'http://localhost:5310')).toBe('http/1.1')
     expect(pageProtocol(perf('', []), 'https:', O)).toBe('')
     expect(pageProtocol(undefined, 'http:', 'http://localhost:5310')).toBe('http/1.1')
+  })
+})
+
+describe('untilSessionAnswers — after `session: ended`, ask until the read answers', () => {
+  it('a failed read is not an answer: asks again on the backoff, then returns the answer', async () => {
+    const answers: Array<boolean | null | Error> = [null, new Error('502'), false]
+    const waits: number[] = []
+    const got = await untilSessionAnswers(
+      async () => {
+        const a = answers.shift()
+        if (a instanceof Error) throw a
+        return a ?? null
+      },
+      { alive: () => true, wait: async (ms) => void waits.push(ms), rand: () => 0.5 },
+    )
+    expect(got).toBe(false)
+    expect(waits).toEqual([1000, 2000])
+  })
+  it('"still signed in" is an answer too', async () => {
+    expect(await untilSessionAnswers(async () => true, { alive: () => true, wait: async () => {} })).toBe(true)
+  })
+  it('gives up (null) once nobody is waiting — the page left', async () => {
+    let alive = true
+    let asks = 0
+    const got = await untilSessionAnswers(
+      async () => {
+        asks++
+        if (asks === 3) alive = false
+        return null
+      },
+      { alive: () => alive, wait: async () => {} },
+    )
+    expect(got).toBeNull()
+    expect(asks).toBe(3)
   })
 })

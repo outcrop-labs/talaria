@@ -19,9 +19,9 @@
 // subscriber here cannot tell which it is: frames and opens arrive the same
 // way. The stream opens with `?since=<the arrival record's cursor>` (I-19),
 // read at every reconnect, so a reopened stream replays what it missed.
-import { openStream, type StreamState } from '@/lib/sse'
+import { openStream, untilSessionAnswers, type StreamState } from '@/lib/sse'
 import { untrack } from 'svelte'
-import { useQueryClient } from '@tanstack/svelte-query'
+import { useQueryClient, type QueryClient } from '@tanstack/svelte-query'
 import { lastInputAt, trackInput } from '@/lib/looking'
 import { startHub, type Hub, type HubRole } from '@/lib/notify-hub'
 import { browserLeaderEdges, startNotifyLeader, type NotifyLeader } from '@/lib/notify-leader'
@@ -72,6 +72,13 @@ const openListeners = new Set<OpenListener>()
 const runtimeListeners = new Set<(r: { leader: NotifyLeader; hub: Hub } | null) => void>()
 let sinceFn: (() => number | null) | null = null
 let pageHooked = false
+/** A `session: ended` is being confirmed: the runtime stays down meanwhile
+ *  (see confirmSessionEnded). */
+let confirming = false
+
+/** What the door's probe hands on when it finds the person signed out: the
+ *  same frame the api sends when it ends the stream with the session. */
+const SESSION_ENDED = JSON.stringify({ type: 'session', state: 'ended' })
 
 /** Where the stream's replay starts: the arrival tracker registers its
  *  cursor here (NotificationToasts). Returns the unregister. */
@@ -116,7 +123,7 @@ const statusOf = (s: StreamState): 'connecting' | 'open' | 'reconnecting' | 'clo
 const status = (fn: () => void) => untrack(fn)
 
 function start(): void {
-  if (runtime || typeof window === 'undefined' || typeof document === 'undefined') return
+  if (runtime || confirming || typeof window === 'undefined' || typeof document === 'undefined') return
   hookPage()
   const releaseInput = trackInput()
   const leader = startNotifyLeader({
@@ -132,9 +139,19 @@ function start(): void {
   // comes back on a backoff instead of staying dead until a reload. Every
   // (re)open tells the open-listeners, which refetch whatever the stream may
   // have missed while it was down.
+  // A stream whose door gave up because the person is signed out (its
+  // probe after five failures: the api's `session: ended` was lost, or an
+  // older api sends none) hands on that frame itself, through the hub, so
+  // every tab takes it to the session gate.
   const hub = startHub({
     leader,
-    open: (onFrame, cb) => openStream(streamUrl, onFrame, { reconnect: true, onOpen: cb.onOpen, onState: cb.onState }),
+    open: (onFrame, cb) =>
+      openStream(streamUrl, onFrame, {
+        reconnect: true,
+        onOpen: cb.onOpen,
+        onState: cb.onState,
+        onSignedOut: () => onFrame(SESSION_ENDED),
+      }),
   })
   const offs = [
     hub.onFrame(dispatch),
@@ -269,6 +286,37 @@ export function useUserEvents(fn: Listener): void {
   $effect(() => onUserEvent((event) => fn(event)))
 }
 
+/** THE SESSION ENDED (`session: ended`, I-19: a sign-out elsewhere, the
+ *  expiry; or the door's probe). The stream is closed in this tab at once —
+ *  reopening it would only collect 401s — and the session is asked for
+ *  until the read ANSWERS: the session gate (AppLayout) shows the sign-in
+ *  screen on its `{user: null}`, and a failed read is a backend blip, never a
+ *  logout, so it is asked again on the door's backoff rather than given up
+ *  on (one failed refetch used to leave the signed-in page up for good). If
+ *  the answer is "still signed in", the runtime starts again. */
+async function confirmSessionEnded(qc: QueryClient): Promise<void> {
+  if (confirming) return
+  confirming = true
+  // After this frame's delivery has finished: the leader hands it to the
+  // other tabs after its own listeners, and closing first would drop that.
+  await Promise.resolve()
+  stop()
+  let signedIn: boolean | null = null
+  try {
+    signedIn = await untilSessionAnswers(
+      async () => {
+        await qc.invalidateQueries({ queryKey: ['session'], refetchType: 'all' })
+        if (qc.getQueryState(['session'])?.status !== 'success') return null
+        return !!qc.getQueryData<{ user?: unknown }>(['session'])?.user
+      },
+      { alive: () => refs > 0 },
+    )
+  } finally {
+    confirming = false
+  }
+  if (signedIn && refs > 0) start()
+}
+
 /** Every query key the map below drives — refetched on each reopen. */
 export const USER_STREAM_KEYS = [
   'notifications',
@@ -329,9 +377,10 @@ export function useUserEventInvalidation(): void {
           break
         case 'session':
           // The api ended the stream because the session behind it ended (a
-          // sign-out elsewhere, the expiry; I-19): ask now, so the session
-          // gate signs this tab out instead of waiting out five reconnects.
-          void qc.invalidateQueries({ queryKey: ['session'] })
+          // sign-out elsewhere, the expiry; I-19), or the door found it so:
+          // close the stream and ask until the session read answers, so the
+          // session gate signs this tab out (confirmSessionEnded).
+          if (event.state === 'ended') void confirmSessionEnded(qc)
           break
       }
     }),

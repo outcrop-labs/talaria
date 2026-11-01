@@ -24,10 +24,11 @@
 // on a backoff (1 s, 2 s, 4 s … 30 s, ±20 %), at once when the network comes
 // back or the tab comes back into view, and the backoff resets once a
 // connection has held for 30 s. After five failures in a row it asks whether
-// the person is still signed in, and stops if not (the session gate takes it
-// from there). `onOpen` runs on EVERY open, the first included, so a caller
-// refetches whatever it may have missed while the stream was down — the
-// stream carries no replay.
+// the person is still signed in, and stops if not, telling the caller
+// (`onSignedOut`: the person's own stream hands that to the session gate,
+// which shows the sign-in screen). `onOpen` runs on EVERY open, the first
+// included, so a caller refetches whatever it may have missed while the
+// stream was down — the stream carries no replay.
 //
 // AND, FOR A TOPIC STREAM, SLEEP WHILE HIDDEN (`pauseWhenHidden`). A board,
 // a channel or a run's stream in a tab nobody can see is a socket and a
@@ -57,6 +58,9 @@ export interface StreamOptions {
   onResume?: () => unknown
   /** Every change of the connection's state (the status panel's feed). */
   onState?: (state: StreamState) => void
+  /** The door stopped because the session probe said the person is signed
+   *  out (`reconnect` only). */
+  onSignedOut?: () => void
 }
 
 /** How long a hidden tab keeps a paused stream open. */
@@ -132,6 +136,31 @@ async function stillSignedIn(): Promise<boolean> {
   } catch {
     return true
   }
+}
+
+/** After the person's stream said their session ENDED (`session: ended`, or
+ *  the door's probe): ask until the session read ANSWERS, on the door's
+ *  backoff (1 s, 2 s, 4 s … 30 s). `ask` resolves true (signed in), false
+ *  (signed out) or null (the read failed: a backend blip is not an answer,
+ *  and not a logout either). Resolves the answer, or null once `alive` says
+ *  nobody is waiting any more. */
+export async function untilSessionAnswers(
+  ask: () => Promise<boolean | null>,
+  opts: { alive: () => boolean; wait?: (ms: number) => Promise<void>; rand?: () => number },
+): Promise<boolean | null> {
+  const wait = opts.wait ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
+  for (let attempt = 1; opts.alive(); attempt++) {
+    let answer: boolean | null = null
+    try {
+      answer = await ask()
+    } catch {
+      answer = null
+    }
+    if (answer !== null) return answer
+    if (!opts.alive()) break
+    await wait(backoffDelay(attempt, opts.rand))
+  }
+  return null
 }
 
 /** Subscribe to an SSE endpoint. Returns the unsubscribe — call it from the
@@ -261,7 +290,10 @@ export function openStream(
         void stillSignedIn().then((ok) => {
           if (stopped) return
           if (ok) connect()
-          else stop()
+          else {
+            stop()
+            opts.onSignedOut?.()
+          }
         })
         return
       }
